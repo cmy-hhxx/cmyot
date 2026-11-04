@@ -44,7 +44,7 @@ struct DefaultSettings {
             // Appearance
             .font: try? FontType.standard.systemFont().archivedData,
             .shouldAntialias: true,
-            .ligature: true,
+            .ligature: false,
             .monospacedFont: try? FontType.monospaced.systemFont().archivedData,
             .monospacedShouldAntialias: true,
             .monospacedLigature: false,
@@ -55,7 +55,7 @@ struct DefaultSettings {
             .pinsThemeAppearance: false,
             
             // Window
-            .windowTabbing: -1,  // = Respect System Setting
+            .windowTabbing: 1,  // = NSWindow.UserTabbingPreference.always
             .showLineNumbers: true,
             .showLineNumberSeparator: false,
             .showInvisibles: false,

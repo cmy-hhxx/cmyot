@@ -485,6 +485,11 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             for viewController in self.editorViewControllers {
                 viewController.showsLineNumber = showsLineNumber
             }
+            // Store the toggle in the shared default so that the `Show Line Numbers`
+            // menu item keeps in sync with the Settings pane and survives relaunch.
+            if UserDefaults.standard[.showLineNumbers] != self.showsLineNumber {
+                UserDefaults.standard[.showLineNumbers] = self.showsLineNumber
+            }
         }
     }
     

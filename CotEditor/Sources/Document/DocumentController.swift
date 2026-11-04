@@ -284,7 +284,9 @@ final class DocumentController: NSDocumentController {
         
         switch item.action {
             case #selector(newDocumentAsTab):
-                return self.currentDocument is Document
+                // `New` (⌘N) is bound to this action: keep it enabled so that ⌘N
+                // can still create the first window when no document is open.
+                return true
             default:
                 break
         }

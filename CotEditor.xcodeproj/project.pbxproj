@@ -529,7 +529,7 @@
 				INFOPLIST_FILE = CotEditor/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				MARKETING_VERSION = 7.0.9;
-				PRODUCT_BUNDLE_IDENTIFIER = com.coteditor.CotEditor;
+				PRODUCT_BUNDLE_IDENTIFIER = local.cmy.Cot;
 				PRODUCT_NAME = CotEditor;
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_UPCOMING_FEATURE_CONCISE_MAGIC_FILE = YES;
@@ -659,7 +659,7 @@
 				INFOPLIST_FILE = CotEditor/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				MARKETING_VERSION = 7.0.9;
-				PRODUCT_BUNDLE_IDENTIFIER = com.coteditor.CotEditor;
+				PRODUCT_BUNDLE_IDENTIFIER = local.cmy.Cot;
 				PRODUCT_NAME = CotEditor;
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_UPCOMING_FEATURE_CONCISE_MAGIC_FILE = YES;
@@ -763,7 +763,7 @@
 				INFOPLIST_FILE = CotEditor/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				MARKETING_VERSION = 7.0.9;
-				PRODUCT_BUNDLE_IDENTIFIER = com.coteditor.CotEditor;
+				PRODUCT_BUNDLE_IDENTIFIER = local.cmy.Cot;
 				PRODUCT_NAME = CotEditor;
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_UPCOMING_FEATURE_CONCISE_MAGIC_FILE = YES;
@@ -794,7 +794,7 @@
 				INFOPLIST_FILE = CotEditor/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				MARKETING_VERSION = 7.0.9;
-				PRODUCT_BUNDLE_IDENTIFIER = com.coteditor.CotEditor;
+				PRODUCT_BUNDLE_IDENTIFIER = local.cmy.Cot;
 				PRODUCT_NAME = CotEditor;
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_UPCOMING_FEATURE_CONCISE_MAGIC_FILE = YES;

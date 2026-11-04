@@ -102,6 +102,8 @@
 			<true/>
 		</dict>
 	</array>
+	<key>CFBundleDisplayName</key>
+	<string>Cot</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleHelpBookFolder</key>

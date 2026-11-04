@@ -10,7 +10,7 @@
                 <application id="hnw-xV-0zn" sceneMemberID="viewController">
                     <menu key="mainMenu" title="Main Menu" systemMenu="main" id="29">
                         <items>
-                            <menuItem title="CotEditor" id="56">
+                            <menuItem title="Cot" id="56">
                                 <menu key="submenu" title="CotEditor" systemMenu="apple" id="57">
                                     <items>
                                         <menuItem title="About CotEditor" id="58">
@@ -62,7 +62,7 @@
                                     <items>
                                         <menuItem title="New" keyEquivalent="n" id="82">
                                             <connections>
-                                                <action selector="newDocument:" target="Ady-hI-5gd" id="82J-OW-zaP"/>
+                                                <action selector="newDocumentAsTab:" target="Ady-hI-5gd" id="82J-OW-zaP"/>
                                             </connections>
                                         </menuItem>
                                         <menuItem title="New Window" secondaryImage="macwindow.badge.plus" catalog="system" keyEquivalent="N" id="cTV-Rh-597">
@@ -696,8 +696,8 @@ Gw
                                                 <action selector="toggleNavigationBar:" target="Ady-hI-5gd" id="iX7-bD-yP3"/>
                                             </connections>
                                         </menuItem>
-                                        <menuItem title="Show Line Numbers" secondaryImage="inset.filled.leadingthird.rectangle" catalog="system" id="323">
-                                            <modifierMask key="keyEquivalentModifierMask"/>
+                                        <menuItem title="Show Line Numbers" secondaryImage="inset.filled.leadingthird.rectangle" catalog="system" keyEquivalent="l" id="323">
+                                            <modifierMask key="keyEquivalentModifierMask" command="YES" option="YES"/>
                                             <connections>
                                                 <action selector="toggleLineNumber:" target="Ady-hI-5gd" id="0ux-pU-v0B"/>
                                             </connections>

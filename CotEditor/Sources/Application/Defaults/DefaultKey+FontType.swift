@@ -38,13 +38,13 @@ enum FontType: String, CaseIterable, Codable {
     /// - Returns: An NSFont.
     func systemFont(size: Double = 13) -> NSFont {
         
+        // Personal build: always use the system monospaced font (SF Mono),
+        // regardless of the font type and of the system-wide font preferences
+        // (`userFont` / `userFixedPitchFont`), which resolve to a proportional
+        // font or to a legacy monospaced font on some systems.
         switch self {
-            case .standard:
-                .userFont(ofSize: size)
-                ?? .systemFont(ofSize: size)
-            case .monospaced:
-                .userFixedPitchFont(ofSize: size)
-                ?? .monospacedSystemFont(ofSize: size, weight: .regular)
+            case .standard, .monospaced:
+                .monospacedSystemFont(ofSize: size, weight: .regular)
         }
     }
 }
