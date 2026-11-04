@@ -60,30 +60,6 @@ struct NavigationBar: View {
             OutlineNavigationView(navigator: $outlineNavigator)
             
             Spacer()
-            
-            Button {
-                NSApp.sendAction(#selector(DocumentViewController.openSplitTextView), to: nil, from: self.outlineNavigator.textView)
-            } label: {
-                Label(String(localized: "Split Editor", table: "Document", comment: "accessibility label for button"), image: .splitAdd)
-                    .frame(width: 18)
-                    .frame(maxHeight: .infinity, alignment: .center)
-            }
-            .rotationEffect(.degrees(self.splitState.isVertical ? -90 : 0))
-            .labelStyle(.iconOnly)
-            .help(String(localized: "Split editor", table: "Document", comment: "tooltip for button"))
-            .contextMenu {
-                Button {
-                    NSApp.sendAction(#selector(DocumentViewController.toggleSplitOrientation), to: nil, from: nil)
-                } label: {
-                    if self.splitState.isVertical {
-                        Label(String(localized: "Stack Editors Horizontally", table: "MainMenu"),
-                              systemImage: "rectangle.split.1x2")
-                    } else {
-                        Label(String(localized: "Stack Editors Vertically", table: "MainMenu"),
-                              systemImage: "rectangle.split.2x1")
-                    }
-                }
-            }
         }
         .buttonStyle(.borderless)
         .controlSize(.small)
