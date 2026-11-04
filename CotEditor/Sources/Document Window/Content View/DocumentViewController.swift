@@ -950,7 +950,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Splits the focused pane in the given direction and opens another file in the new pane.
+    /// Splits the focused pane in the given direction, giving the new pane an empty document.
     ///
     /// - Parameters:
     ///   - sender: The action sender.
@@ -964,56 +964,18 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             let window = self.view.window
         else { return assertionFailure() }
         
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.beginSheetModal(for: window) { [weak self] response in
-            guard response == .OK, let url = panel.url else { return }
-            
-            Task { @MainActor [weak self] in
-                await self?.openSplitEditor(at: url, beside: currentViewController, isVertical: isVertical)
-            }
-        }
-    }
-    
-    
-    /// Opens the file at the given URL in a new pane beside the given one.
-    ///
-    /// - Parameters:
-    ///   - url: The file to edit in the new pane.
-    ///   - currentViewController: The pane the new one is placed next to.
-    ///   - isVertical: `true` to place the new pane to the right, `false` to place it below.
-    private func openSplitEditor(at url: URL, beside currentViewController: EditorViewController, isVertical: Bool) async {
-        
         let opened: NSDocument
-        let wasAlreadyOpen: Bool
-        let controller = NSDocumentController.shared
-        let documentController = controller as? DocumentController
-        documentController?.opensDocumentInPane = true
         do {
-            (opened, wasAlreadyOpen) = try await controller.openDocument(withContentsOf: url, display: false)
-            documentController?.opensDocumentInPane = false
+            opened = try NSDocumentController.shared.openUntitledDocumentAndDisplay(false)
         } catch {
-            documentController?.opensDocumentInPane = false
             NSApp.presentError(error)
             return
         }
         
         guard let document = opened as? Document else { return assertionFailure() }
         
-        guard !wasAlreadyOpen else {
-            // the file already lives in its own window: showing it there is the honest thing to do
-            document.showWindows()
-            NSApp.activate()
-            return
-        }
-        
-        guard
-            self.editorViewControllers.count < Self.maximumNumberOfSplitEditors,
-            let window = self.view.window
-        else { return NSSound.beep() }
-        
-        // a document without a window never gets its parser started
+        // the new document belongs to this pane, never to a window of its own
+        document.isTransient = false
         document.syntaxController.setupParser()
         
         let newEditorViewController = self.makeEditorViewController(document: document, copying: currentViewController)
@@ -1024,6 +986,40 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.scheduleRatioRebalance()
         
         window.makeFirstResponderDiscardingMarkedText(newEditorViewController.textView)
+    }
+    
+    
+    /// Gives a pane another document without touching the layout.
+    ///
+    /// - Parameters:
+    ///   - viewController: The pane to refill.
+    ///   - document: The document it should show from now on.
+    private func replaceDocument(of viewController: EditorViewController, with document: Document) {
+        
+        guard
+            let parentGroup = self.splitGroup(containing: viewController),
+            let index = parentGroup.splitViewItems.firstIndex(where: { $0.viewController === viewController })
+        else { return assertionFailure() }
+        
+        let previousDocument = viewController.document
+        
+        document.syntaxController.setupParser()
+        
+        let newViewController = self.makeEditorViewController(document: document, copying: viewController)
+        self.removeItem(for: viewController, from: parentGroup)
+        parentGroup.insertSplitViewItem(self.makeSplitViewItem(for: newViewController), at: index)
+        
+        self.focusedChild = newViewController
+        self.updateSplitState()
+        self.scheduleRatioRebalance()
+        self.view.window?.makeFirstResponderDiscardingMarkedText(newViewController.textView)
+        
+        NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
+        
+        // the empty placeholder document has no reason to live on
+        if previousDocument !== self.document {
+            previousDocument.close()
+        }
     }
     
     
@@ -1186,6 +1182,38 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         collect(self)
         
         return editors
+    }
+    
+    
+    /// The pane the user is in, provided it is an empty split pane waiting for content.
+    ///
+    /// Opening a document while such a pane has the focus loads that document into the pane
+    /// instead of creating a window for it.
+    var focusedBlankEditor: EditorViewController? {
+        
+        guard
+            self.editorViewControllers.count > 1,
+            let focusedChild
+        else { return nil }
+        
+        let document = focusedChild.document
+        guard document.fileURL == nil, !document.isDocumentEdited, document.textStorage.length == 0 else { return nil }
+        
+        return focusedChild
+    }
+    
+    
+    /// Fills the blank focused pane with the given document.
+    ///
+    /// - Parameter document: The document that was opened for the pane.
+    /// - Returns: `false` if the pane disappeared in the meantime and the document is still homeless.
+    func absorb(_ document: Document) -> Bool {
+        
+        guard let viewController = self.focusedBlankEditor else { return false }
+        
+        self.replaceDocument(of: viewController, with: document)
+        
+        return true
     }
     
     

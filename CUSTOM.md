@@ -46,7 +46,8 @@ opens in Xcode 26; upstream `main` already requires Xcode 27.2 + macOS 27).
 
 | Area | Change | Files |
 |---|---|---|
-| Split panes | 向右分割 / 向下分割 now ask for a file and open it in the new pane with its own `Document`. Before, every pane was a second view of the same text storage, so all panes always showed the same content. | `DocumentViewController.swift`, `EditorViewController.swift` |
+| Split panes | 向右分割 / 向下分割 split instantly and give the new pane its own empty (untitled) `Document` — the same thing ⌘N does, without any dialog. Before, every pane was a second view of the same text storage, so all panes always showed the same content. | `DocumentViewController.swift`, `EditorViewController.swift` |
+| Opening into a pane | With a blank split pane focused, ⌘O / 打开… loads the chosen file **into that pane** instead of creating a window: `DocumentController.openDocument(withContentsOf:display:)` asks the frontmost window for its `focusedBlankEditor` and hands the document over (`absorb`), which swaps the pane's document and closes the empty placeholder. Opening a file any other way keeps the usual window/tab behaviour. | `DocumentController.swift`, `DocumentViewController.swift` |
 | Split ratios | Every structural change rebalances each container in proportion to the number of panes in its branches, so nested layouts also end up with panes of equal size. | `DocumentViewController.swift` |
 | Focus routing | `save:` / `saveAs:` / `changeSyntax:` are implemented on `EditorViewController`, so ⌘S, ⌘⇧S, the syntax menu and the toolbar popup act on the **focused** pane's document. The status bar follows the focused pane as well. | `EditorViewController.swift`, `DocumentWindowController.swift`, `WindowContentViewController.swift` |
 | Document lifecycle | The extra document is opened with `display: false`, i.e. it never gets a window controller of its own; it is closed when its pane closes and when the window closes. `windowForSheet` falls back to the key window so save/revert sheets still have an anchor. Untitled-document reuse is suppressed while a document is being opened into a pane, otherwise the empty placeholder window would be repurposed and the file would appear twice in one window. | `DocumentViewController.swift`, `Document.swift`, `DocumentController.swift` |
@@ -54,7 +55,8 @@ opens in Xcode 26; upstream `main` already requires Xcode 27.2 + macOS 27).
 
 Known limits of the independent panes:
 
-- The window still has *one* title, one dirty dot and one tab group, because the window's primary document is still the only one AppKit associates with the window. A dirty secondary pane shows no modified indicator.
+- The window still has *one* title, one dirty dot and one tab group, because the window's primary document is still the only one AppKit associates with the window. A dirty secondary pane shows no modified indicator; it is still reviewed when the window closes or the app quits.
+- ⌘O only lands in a pane while that pane is empty and untouched. Once it holds text of its own, ⌘O goes back to opening a window, so nothing typed is thrown away.
 - Closing the window saves a dirty secondary pane through the standard autosave-in-place path (`enablesAutosaveInPlace` defaults to `true`). With autosave turned off, `NSDocument` falls back to its save prompt anchored at the key window.
 - Saving the *same* file twice in one window is impossible: `NSDocumentController` returns the already-open document, and the split command then just brings that window forward.
 - Toolbar text size, wrap, appearance and the read-only toggle stay window-wide; they are applied to every pane.

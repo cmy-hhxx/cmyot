@@ -350,7 +350,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     
     
     /// The document view controller of this window, if the window shows one.
-    private var documentViewController: DocumentViewController? {
+    var documentViewController: DocumentViewController? {
         
         (self.contentViewController as? WindowContentViewController)?.documentViewController
     }

@@ -100,6 +100,12 @@ final class DocumentController: NSDocumentController {
             return try await super.openDocument(withContentsOf: url, display: displayDocument)
         }
         
+        // put the file into the empty split pane the user is in, if there is one
+        let paneTarget = displayDocument ? self.blankFocusedPane : nil
+        let showsDocument = displayDocument && paneTarget == nil
+        self.opensDocumentInPane = (paneTarget != nil)
+        defer { self.opensDocumentInPane = false }
+        
         // obtain transient document if exists
         // -> Not when the document is opened into a pane of an existing window:
         //    reusing the placeholder window would show the file twice.
@@ -146,14 +152,14 @@ final class DocumentController: NSDocumentController {
                 if transientDocument.textStorage.length == 0 {
                     self.replaceTransientDocument(transientDocument, with: document)
                 }
-                if displayDocument {
+                if showsDocument {
                     document.makeWindowControllers()
                     document.showWindows()
                 }
                 
                 self.displayDeferredDocuments()
                 
-            } else if displayDocument {
+            } else if showsDocument {
                 if self.deferredDocuments != nil {
                     // defer displaying this document, because the transient document has not yet been replaced
                     self.deferredDocuments?.append(document)
@@ -169,8 +175,18 @@ final class DocumentController: NSDocumentController {
             
             transientDocument?.isTransient = true
             self.displayDeferredDocuments()
-            if displayDocument {
+            if showsDocument {
                 document.makeWindowControllers()
+                document.showWindows()
+            }
+        }
+        
+        if let paneTarget {
+            if let paneDocument = document as? Document, !documentWasAlreadyOpen,
+               paneTarget.absorb(paneDocument)
+            {
+                // seated in the pane
+            } else {
                 document.showWindows()
             }
         }
@@ -417,6 +433,19 @@ final class DocumentController: NSDocumentController {
     /// Whether the document being opened is placed in a pane of an existing window
     /// rather than in a window of its own.
     var opensDocumentInPane = false
+    
+    
+    /// The empty split pane of the frontmost window, if one has the focus.
+    private var blankFocusedPane: DocumentViewController? {
+        
+        guard
+            let windowController = NSApp.mainWindow?.windowController as? DocumentWindowController,
+            let viewController = windowController.documentViewController,
+            viewController.focusedBlankEditor != nil
+        else { return nil }
+        
+        return viewController
+    }
     
     
     // MARK: Private Methods
