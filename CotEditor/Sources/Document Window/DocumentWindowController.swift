@@ -129,7 +129,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         toolbar.allowsUserCustomization = true
         toolbar.autosavesConfiguration = true
         toolbar.delegate = self
-        window.toolbarStyle = .unifiedCompact
+        // .expanded puts the toolbar controls on their own row, starting at the leading
+        // edge; with .unified/.unifiedCompact macOS lays the items out on the trailing side.
+        window.toolbarStyle = .expanded
         window.toolbar = toolbar
         
         // observe opacity setting change
@@ -605,6 +607,9 @@ extension DocumentWindowController: NSToolbarDelegate {
             case .syntax:
                 let popUpButton = NSPopUpButton()
                 popUpButton.bezelStyle = .toolbar
+                // A popup normally opens above itself, aligned with the selected item,
+                // which runs off-screen when the window sits at the top. Open downwards.
+                popUpButton.preferredEdge = .minY
                 popUpButton.isEnabled = (self.fileDocument is Document)
                 // store the reference only for the actual toolbar
                 // -> this method is invoked also for creating the item copies for the customization palette.
