@@ -27,15 +27,37 @@ import SwiftUI
 import StringUtils
 import SyntaxParsers
 
+/// The identity of the document a pane shows, so that panes stay distinguishable.
+@Observable final class PaneIdentity {
+    
+    var name: String
+    
+    
+    init(name: String) {
+        
+        self.name = name
+    }
+}
+
+
 struct NavigationBar: View {
     
     @State var outlineNavigator: OutlineNavigator
     var splitState: SplitState
+    var identity: PaneIdentity
     
     
     var body: some View {
         
         HStack(alignment: .center, spacing: 0) {
+            Text(self.identity.name)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.horizontal, 4)
+                .help(self.identity.name)
+            
             Button {
                 NSApp.sendAction(#selector(DocumentViewController.closeSplitTextView), to: nil, from: self.outlineNavigator.textView)
             } label: {
@@ -169,6 +191,6 @@ private struct OutlineNavigationView: View {
         OutlineItem(title: "Heading 2", range: .notFound),
     ]
     
-    return NavigationBar(outlineNavigator: navigator, splitState: SplitState(canClose: true))
+    return NavigationBar(outlineNavigator: navigator, splitState: SplitState(canClose: true), identity: PaneIdentity(name: "Untitled"))
         .frame(width: 300)
 }

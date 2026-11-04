@@ -1083,7 +1083,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         guard
             let parentGroup = self.splitGroup(containing: currentViewController),
-            let index = parentGroup.splitViewItems.firstIndex(where: { $0.viewController === currentViewController })
+            parentGroup.splitViewItems.contains(where: { $0.viewController === currentViewController })
         else { return }
         
         self.removeItem(for: currentViewController, from: parentGroup)
@@ -1214,6 +1214,13 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.replaceDocument(of: viewController, with: document)
         
         return true
+    }
+    
+    
+    /// The documents this window shows, in pane order.
+    var paneDocuments: [Document] {
+        
+        self.editorViewControllers.map(\.document)
     }
     
     

@@ -45,6 +45,7 @@ final class EditorViewController: NSSplitViewController {
     
     private lazy var outlineNavigator = OutlineNavigator()
     private lazy var textViewController = EditorTextViewController(document: self.document)
+    private lazy var identity = PaneIdentity(name: self.document.displayName)
     @ViewLoading private var navigationBarItem: NSSplitViewItem
     
     private var outlineObserver: AnyCancellable?
@@ -76,7 +77,9 @@ final class EditorViewController: NSSplitViewController {
         
         // setup navigation bar
         self.outlineNavigator.textView = self.textView
-        let navigationBar = NavigationBar(outlineNavigator: self.outlineNavigator, splitState: self.splitState)
+        let navigationBar = NavigationBar(outlineNavigator: self.outlineNavigator,
+                                          splitState: self.splitState,
+                                          identity: self.identity)
         self.navigationBarItem = NSSplitViewItem(viewController: NSHostingController(rootView: navigationBar))
         self.navigationBarItem.isCollapsed = true  // reconsidered below
         self.addSplitViewItem(self.navigationBarItem)
@@ -104,6 +107,10 @@ final class EditorViewController: NSSplitViewController {
         self.defaultObservers = [
             UserDefaults.standard.publisher(for: .showNavigationBar)
                 .sink { [weak self] _ in self?.updateNavigationBarVisibility() },
+            
+            // keep the pane label in sync with the document name
+            NotificationCenter.default.publisher(for: NSDocument.DidChangeFileURLMessage.name, object: self.document)
+                .sink { [weak self] _ in self?.refreshIdentity() },
         ]
         
         self.updateNavigationBarVisibility()
@@ -116,6 +123,13 @@ final class EditorViewController: NSSplitViewController {
         
         self.outlineObserver?.cancel()
         self.defaultObservers.removeAll()
+    }
+    
+    
+    /// Updates the pane label to the current document name.
+    private func refreshIdentity() {
+        
+        self.identity.name = self.document.displayName
     }
     
     

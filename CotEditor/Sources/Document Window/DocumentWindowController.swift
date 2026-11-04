@@ -73,6 +73,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     
     private var documentSyntaxObserver: AnyCancellable?
     private var focusObserver: AnyCancellable?
+    private var editedStateObserver: AnyCancellable?
     private var syntaxListObserver: AnyCancellable?
     private weak var syntaxPopUpButton: NSPopUpButton?
     
@@ -170,6 +171,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
             .compactMap { $0.object as? DocumentViewController }
             .filter { [weak self] in $0 === self?.documentViewController }
             .sink { [weak self] in self?.followFocusedDocument($0.focusedDocument) }
+        
+        // a pane that holds its own document edits independently: the window still
+        // has to show that something in it is unsaved
+        self.editedStateObserver = NotificationCenter.default
+            .publisher(for: Document.DidUpdateChangeMessage.name)
+            .compactMap { $0.object as? Document }
+            .filter { [weak self] in self?.documentViewController?.paneDocuments.contains($0) == true }
+            .sink { [weak self] _ in self?.updateEditedState() }
     }
     
     
@@ -201,10 +210,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     
     override func windowTitle(forDocumentDisplayName displayName: String) -> String {
         
+        // the title always names the file the user is actually editing
+        let name = self.documentViewController?.focusedDocument.displayName ?? displayName
+        
         if let uniqueDirectory {
-            displayName + " \u{2014} " + uniqueDirectory  // EM DASH
+            return name + " \u{2014} " + uniqueDirectory  // EM DASH
         } else {
-            displayName
+            return name
         }
     }
     
@@ -214,7 +226,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         super.synchronizeWindowTitleWithDocumentName()
         
         // Lets the title bar offer the proxy icon and rename-on-double-click.
-        self.window?.representedURL = self.fileDocument?.fileURL
+        self.window?.representedURL = self.documentViewController?.focusedDocument.fileURL ?? self.fileDocument?.fileURL
         
         if self.isDirectoryDocument {
             // display current document title as window subtitle
@@ -356,6 +368,15 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     }
     
     
+    /// Reflects the unsaved state of every pane in the window's close button.
+    private func updateEditedState() {
+        
+        let isEdited = self.documentViewController?.paneDocuments.contains { $0.isDocumentEdited } ?? false
+        
+        self.setDocumentEdited(isEdited)
+    }
+    
+    
     /// Makes the toolbar reflect the document of the focused pane.
     ///
     /// - Parameter document: The document the focused pane edits.
@@ -364,6 +385,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         self.documentSyntaxObserver = document.$syntaxName
             .sink { [weak self] in self?.selectSyntaxPopUpItem(with: $0) }
         self.selectSyntaxPopUpItem(with: document.syntaxName)
+        self.synchronizeWindowTitleWithDocumentName()
     }
     
     
