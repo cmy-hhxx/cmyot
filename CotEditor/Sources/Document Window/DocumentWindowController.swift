@@ -1081,6 +1081,19 @@ extension DocumentWindowController {
             menu.addItem(item)
         }
         
+        let appearanceItem = NSMenuItem(title: "外观", action: nil, keyEquivalent: "")
+        let appearanceMenu = NSMenu()
+        for (title, mode) in [("跟随系统", AppearanceMode.default), ("浅色", .light), ("深色", .dark)] {
+            let item = NSMenuItem(title: title,
+                                  action: #selector(DocumentViewController.changeAppearance(_:)),
+                                  keyEquivalent: "")
+            item.target = nil
+            item.tag = mode.rawValue
+            appearanceMenu.addItem(item)
+        }
+        appearanceItem.submenu = appearanceMenu
+        menu.addItem(appearanceItem)
+        
         add("折行", #selector(DocumentViewController.toggleLineWrap(_:)))
         add("不可见字符", #selector(DocumentViewController.toggleInvisibleChars(_:)))
         add("缩进参考线", #selector(DocumentViewController.toggleIndentGuides(_:)))

@@ -315,6 +315,17 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
+    /// Keeps the checkmark of the appearance menu items in sync.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        
+        if menuItem.action == #selector(changeAppearance) {
+            menuItem.state = (menuItem.tag == UserDefaults.standard[.documentAppearance].rawValue) ? .on : .off
+        }
+        
+        return true
+    }
+    
+    
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         
         switch item.action {
@@ -657,6 +668,17 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     @IBAction func changeTheme(_ sender: NSMenuItem) {
         
         self.setTheme(name: sender.title)
+    }
+    
+    
+    /// Switches the document appearance between system / light / dark.
+    ///
+    /// - Parameter sender: The menu item whose tag is the `AppearanceMode`.
+    @IBAction func changeAppearance(_ sender: NSMenuItem) {
+        
+        guard let mode = AppearanceMode(rawValue: sender.tag) else { return }
+        
+        UserDefaults.standard[.documentAppearance] = mode
     }
     
     
