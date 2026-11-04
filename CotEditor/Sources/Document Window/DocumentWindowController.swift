@@ -603,11 +603,8 @@ extension DocumentWindowController: NSToolbarDelegate {
                 return item
                 
             case .syntax:
-                let popUpButton = NSPopUpButton()
+                let popUpButton = SyntaxPopUpButton()
                 popUpButton.bezelStyle = .toolbar
-                // A popup normally opens above itself, aligned with the selected item,
-                // which runs off-screen when the window sits at the top. Open downwards.
-                popUpButton.preferredEdge = .minY
                 popUpButton.isEnabled = (self.fileDocument is Document)
                 // store the reference only for the actual toolbar
                 // -> this method is invoked also for creating the item copies for the customization palette.
@@ -1149,5 +1146,23 @@ final class EmojiMenuRowView: NSView {
     required init?(coder: NSCoder) {
         
         fatalError("init(coder:) has not been implemented")
+    }
+}
+
+
+/// Popup button for the document type.
+///
+/// A stock `NSPopUpButton` presents its menu *above* itself, aligned with the selected
+/// item. When the window sits at the top of the screen that runs off the top edge and
+/// the menu gets clipped, so present the menu downward from the button's bottom edge.
+final class SyntaxPopUpButton: NSPopUpButton {
+    
+    override func mouseDown(with event: NSEvent) {
+        
+        guard let menu = self.menu else { return super.mouseDown(with: event) }
+        
+        let origin = NSPoint(x: 0, y: self.isFlipped ? self.bounds.maxY + 4 : self.bounds.minY - 4)
+        
+        menu.popUp(positioning: nil, at: origin, in: self)
     }
 }
