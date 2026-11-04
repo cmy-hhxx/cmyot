@@ -107,7 +107,6 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     private var themeName: String?
     private var theme: Theme?  { self.focusedTextView?.theme }
     
-    private var needsRatioRebalance = false
     
     private var observers: Set<AnyCancellable> = []
     private var defaultsObservers: Set<AnyCancellable> = []
@@ -223,17 +222,6 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                     NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
                 },
         ]
-    }
-    
-    
-    override func viewDidLayout() {
-        
-        super.viewDidLayout()
-        
-        // dividers can only be moved once the split views have a size
-        guard self.needsRatioRebalance, self.view.bounds.width > 0, self.view.bounds.height > 0 else { return }
-        self.needsRatioRebalance = false
-        self.rebalancePanes(in: self)
     }
     
     
@@ -1100,50 +1088,42 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     // MARK: Private Methods
     
-    /// Gives every editor pane the same share of its container.
+    /// Gives every editor pane the same share of the container it sits in.
     ///
-    /// Containers distribute their thickness in proportion to the number of panes
-    /// in each branch, so nested containers end up with equal panes as well.
+    /// `NSSplitViewController` squeezes an existing pane down to its minimum thickness and
+    /// hands the rest to the newly inserted item, so the dividers have to be reset by hand
+    /// after a split. Each container is divided evenly among its direct children, so nested
+    /// containers end up with equal shares at every level as well.
     ///
     /// - Parameter group: The container to rebalance, including its nested containers.
     private func rebalancePanes(in group: NSSplitViewController) {
         
-        for item in group.splitViewItems {
+        let items = group.splitViewItems
+        
+        if items.count > 1 {
+            let splitView = group.splitView
+            let thickness = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
+            let dividerThickness = splitView.dividerThickness
+            let available = thickness - dividerThickness * CGFloat(items.count - 1)
+            
+            if available > 0 {
+                let share = available / CGFloat(items.count)
+                
+                for index in 0..<(items.count - 1) {
+                    let position = share * CGFloat(index + 1) + dividerThickness * CGFloat(index)
+                    splitView.setPosition(position, ofDividerAt: index)
+                }
+            }
+        }
+        
+        // let the containers take their new size before touching their dividers
+        group.view.layoutSubtreeIfNeeded()
+        
+        for item in items {
             if let nested = item.viewController as? SplitGroupViewController {
                 self.rebalancePanes(in: nested)
             }
         }
-        
-        let items = group.splitViewItems
-        guard items.count > 1 else { return }
-        
-        let splitView = group.splitView
-        let weights = items.map { CGFloat(self.paneCount(of: $0.viewController)) }
-        let totalWeight = weights.reduce(0, +)
-        let available = (splitView.isVertical ? splitView.bounds.width : splitView.bounds.height)
-            - splitView.dividerThickness * CGFloat(items.count - 1)
-        
-        guard totalWeight > 0, available > 0 else { return }
-        
-        var offset: CGFloat = 0
-        for (index, weight) in weights.dropLast().enumerated() {
-            offset += available * weight / totalWeight
-            splitView.setPosition(offset, ofDividerAt: index)
-        }
-    }
-    
-    
-    /// The number of editor panes a view controller contributes to the layout.
-    ///
-    /// - Parameter viewController: The pane or container to count.
-    /// - Returns: `1` for an editor pane, the sum for a container, otherwise `0`.
-    private func paneCount(of viewController: NSViewController) -> Int {
-        
-        if let group = viewController as? SplitGroupViewController {
-            return group.splitViewItems.reduce(0) { $0 + self.paneCount(of: $1.viewController) }
-        }
-        
-        return viewController is EditorViewController ? 1 : 0
     }
     
     
@@ -1156,11 +1136,20 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Requests equal shares for all panes after the next layout pass.
+    /// Balances every container, retrying briefly so that freshly inserted panes and
+    /// containers, which only get their size on a later layout pass, are included.
     private func scheduleRatioRebalance() {
         
-        self.needsRatioRebalance = true
-        self.view.needsLayout = true
+        Task { @MainActor [weak self] in
+            for _ in 0..<3 {
+                guard let self else { return }
+                
+                self.view.layoutSubtreeIfNeeded()
+                self.rebalancePanes(in: self)
+                
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+        }
     }
     
     
