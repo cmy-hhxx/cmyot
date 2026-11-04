@@ -129,9 +129,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         toolbar.allowsUserCustomization = true
         toolbar.autosavesConfiguration = true
         toolbar.delegate = self
-        // .expanded puts the toolbar controls on their own row, starting at the leading
-        // edge; with .unified/.unifiedCompact macOS lays the items out on the trailing side.
-        window.toolbarStyle = .expanded
+        window.toolbarStyle = .unifiedCompact
         window.toolbar = toolbar
         
         // observe opacity setting change
@@ -624,6 +622,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.toolTip = String(localized: "Toolbar.syntax.tooltip",
                                       defaultValue: "Change syntax", table: "Document")
                 item.view = popUpButton
+                item.isNavigational = true
                 item.visibilityPriority = .high
                 
                 let menuItem = NSMenuItem()
@@ -647,6 +646,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.label = "文字大小"
                 item.toolTip = "拖动调整文字大小"
                 item.view = slider
+                item.isNavigational = true
                 item.visibilityPriority = .high
                 return item
                 
@@ -654,6 +654,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                 let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
                 item.isBordered = true
                 item.showsIndicator = false
+                item.isNavigational = true
                 item.label = "Emoji"
                 item.toolTip = "常用 Emoji"
                 item.image = NSImage(systemSymbolName: "face.smiling.inverse", accessibilityDescription: item.label)
@@ -683,6 +684,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.action = itemIdentifier == .splitRight
                     ? #selector(DocumentViewController.splitEditorVertically(_:))
                     : #selector(DocumentViewController.splitEditorHorizontally(_:))
+                item.isNavigational = true
                 item.visibilityPriority = .high
                 return item
                 
@@ -914,6 +916,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.stateImages[.on] = NSImage(systemSymbolName: "pencil", accessibilityDescription: item.label)
                 item.stateImages[.off] = NSImage(systemSymbolName: "pencil.slash", accessibilityDescription: item.label)
                 item.action = #selector(Document.toggleEditable)
+                item.isNavigational = true
                 return item
                 
             case .spellCheck:
