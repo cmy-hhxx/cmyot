@@ -320,6 +320,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         super.viewDidMoveToWindow()
         
+        // show the editing mode right away, before the first key press
+        if self.window != nil, UserDefaults.standard[.vimMode] {
+            self.vimEngine.publishStatus()
+        }
+        
         // apply theme to window when attached
         if let window = self.window as? DocumentWindow, let theme = self.theme {
             window.contentBackgroundColor = theme.background.color
@@ -468,6 +473,36 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     /// Modal (Vim-style) editing layer, active while the `vimMode` default is on.
     private(set) lazy var vimEngine = VimEngine(textView: self)
+    
+    
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
+        
+        guard UserDefaults.standard[.vimMode], VimState.shared.mode != .insert else {
+            super.drawInsertionPoint(in: rect, color: color, turnedOn: flag)
+            return
+        }
+        
+        // Vim keeps the cursor visible in normal/visual mode: draw a solid block
+        // instead of the thin blinking bar, so the current mode is obvious.
+        var block = rect
+        block.size.width = self.blockCursorWidth()
+        color.withAlphaComponent(VimState.shared.mode == .visual ? 0.30 : 0.55).setFill()
+        NSBezierPath(rect: block).fill()
+    }
+    
+    
+    /// Width of the block cursor: the character under the caret, or a space at the line end.
+    private func blockCursorWidth() -> CGFloat {
+        
+        let string = self.string as NSString
+        let location = self.selectedRange().location
+        let sample = location < string.length
+            ? string.substring(with: NSRange(location: location, length: 1))
+            : " "
+        let font = self.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
+        
+        return max((sample as NSString).size(withAttributes: [.font: font]).width, 2)
+    }
     
     
     override func keyDown(with event: NSEvent) {

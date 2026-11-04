@@ -49,8 +49,9 @@ extension NSFont {
     /// - Returns: The line number font.
     static func lineNumberFont(ofSize size: CGFloat = 0, weight: NSFont.Weight = .regular) -> NSFont {
         
-        NSFont(named: .avenirNextCondensed, weight: weight, size: size)
-            ?? .monospacedDigitSystemFont(ofSize: size, weight: weight)
+        // Personal build: a proper monospaced font keeps the numbers in a neat,
+        // evenly spaced column (the condensed system face looked thin and ragged).
+        .monospacedSystemFont(ofSize: size, weight: weight)
     }
     
     

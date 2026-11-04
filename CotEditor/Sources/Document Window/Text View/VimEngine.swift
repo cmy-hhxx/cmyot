@@ -73,6 +73,7 @@ final class VimEngine {
     private var register: String = ""
     private var registerIsLinewise = false
     private var commandBuffer: String?
+    private var lastStatus: String?
     
     init(textView: NSTextView) {
         
@@ -273,6 +274,7 @@ final class VimEngine {
             case ":":
                 self.commandBuffer = ""
                 VimState.shared.commandLine = ""
+                self.updateStatus()
             default:
                 break
         }
@@ -323,12 +325,14 @@ final class VimEngine {
         if self.isEscape(event) {
             self.commandBuffer = nil
             state.commandLine = nil
+            self.updateStatus()
             return true
         }
         if event.keyCode == 36 {  // Return
             let command = self.commandBuffer ?? ""
             self.commandBuffer = nil
             state.commandLine = nil
+            self.updateStatus()
             self.execute(command: command)
             return true
         }
@@ -636,6 +640,38 @@ final class VimEngine {
         VimState.shared.mode = mode
         if mode == .insert { self.visualAnchor = nil }
         self.resetPending(keepCount: false)
+        self.refreshCursor()
+        self.updateStatus()
+    }
+    
+    
+    /// Redraws the caret so the block cursor appears/disappears with the mode.
+    private func refreshCursor() {
+        
+        self.textView?.updateInsertionPointStateAndRestartTimer(true)
+        self.textView?.setNeedsDisplay(self.textView?.visibleRect ?? .zero)
+    }
+    
+    
+    /// Publishes the current mode immediately, e.g. when a document window appears.
+    func publishStatus() {
+        
+        self.lastStatus = nil
+        self.updateStatus()
+    }
+    
+    
+    /// Shows the current mode (or the `:` command being typed) in the window subtitle,
+    /// so it is always obvious which mode the editor is in.
+    private func updateStatus() {
+        
+        guard let window = self.textView?.window else { return }
+        let state = VimState.shared
+        let text = state.commandLine ?? state.mode.label
+        guard text != self.lastStatus else { return }
+        
+        self.lastStatus = text
+        window.subtitle = text
     }
     
     
