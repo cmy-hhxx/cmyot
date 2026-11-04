@@ -234,7 +234,7 @@ private struct NotEditableBadge: View {
             }
         }
         .onReceive(self.document.$isEditable) { self.isEditable = $0 }
-        .animation(.default.speed(1.5), value: self.isEditable)
+        .cotAnimation(.cotFast, value: self.isEditable)
     }
 }
 

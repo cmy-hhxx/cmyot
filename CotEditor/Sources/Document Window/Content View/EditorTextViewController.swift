@@ -473,7 +473,7 @@ final class EditorTextViewController: NSViewController, NSServicesMenuRequestor,
         
         guard let counterView = self.advancedCounterView else { return assertionFailure() }
         
-        NSAnimationContext.runAnimationGroup { _ in
+        NSAnimationContext.withTiming(duration: AnimationConstants.fast, timingFunction: AnimationConstants.easeOut) {
             counterView.animator().alphaValue = 0
         } completionHandler: {
             Task { @MainActor in

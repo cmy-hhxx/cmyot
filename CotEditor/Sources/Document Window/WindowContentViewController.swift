@@ -210,11 +210,19 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
         if #available(macOS 26, *) {
             let statusBarController = self.contentViewItem.bottomAlignedAccessoryViewControllers.first
             self.defaultsObserver = UserDefaults.standard.publisher(for: .showStatusBar)
-                .sink { statusBarController?.animator().isHidden = !$0 }
+                .sink { isShown in
+                    NSAnimationContext.withStandardTiming {
+                        statusBarController?.animator().isHidden = !isShown
+                    }
+                }
         } else {
             let statusBarItem = self.contentViewController.splitViewItems.last
             self.defaultsObserver = UserDefaults.standard.publisher(for: .showStatusBar)
-                .sink { statusBarItem?.animator().isCollapsed = !$0 }
+                .sink { isShown in
+                    NSAnimationContext.withStandardTiming {
+                        statusBarItem?.animator().isCollapsed = !isShown
+                    }
+                }
         }
     }
     
@@ -318,8 +326,10 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
     ///
     /// - Parameter pane: The inspector pane to open.
     func showInspector(pane: InspectorPane) {
-        
-        self.inspectorViewItem.animator().isCollapsed = false
+
+        NSAnimationContext.withStandardTiming {
+            self.inspectorViewItem.animator().isCollapsed = false
+        }
         self.inspectorViewController.selectedTabViewItemIndex = pane.rawValue
     }
     
@@ -352,7 +362,9 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
             let viewController = sidebarViewItem.viewController as? FileBrowserViewController
         else { return assertionFailure() }
         
-        sidebarViewItem.animator().isCollapsed = false
+        NSAnimationContext.withStandardTiming {
+            sidebarViewItem.animator().isCollapsed = false
+        }
         self.view.window?.makeFirstResponderDiscardingMarkedText(viewController.outlineView)
     }
     

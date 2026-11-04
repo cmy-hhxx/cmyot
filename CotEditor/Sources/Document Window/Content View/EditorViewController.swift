@@ -158,7 +158,9 @@ final class EditorViewController: NSSplitViewController {
         guard shouldShow != !self.navigationBarItem.isCollapsed else { return }
         
         if animated {
-            self.navigationBarItem.animator().isCollapsed = !shouldShow
+            NSAnimationContext.withStandardTiming {
+                self.navigationBarItem.animator().isCollapsed = !shouldShow
+            }
         } else {
             self.navigationBarItem.isCollapsed = !shouldShow
         }

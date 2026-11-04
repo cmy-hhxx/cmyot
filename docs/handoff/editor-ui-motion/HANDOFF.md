@@ -1,62 +1,73 @@
-# HANDOFF — <任务名>
+# HANDOFF — editor-ui-motion
 
 > **谁改哪一节**：§1 §2 §3 §6 由 Opus（P1）写；§4 的状态列和 §5 由 DeepSeek（P2）改；§5 的「Opus 裁决」列由 Opus（P3）填。
-> 除了这些，谁都不许改这份文件。
 
 ## 1. 状态（Opus 写，P2 / P3 更新门状态）
 
-- 模式：Full / Lite
-- 当前阶段：P1 / P2 / P3 / 交付
-- 下一步是谁：Opus / DeepSeek / 人
-- baseline tag：`baseline/<slug>`
-- 门状态：G0 ✅ / G1 ✅（零 console error · 3 视口 ✅ · 主视效两帧有差 ✅ · reduced-motion ✅）
-- 已跑通命令：`<install / dev / build / typecheck>`
-- Opus 花费：`$X.XX`（来源：CC Switch 用量面板）
+- 模式：Full
+- 当前阶段：P1
+- 下一步是谁：DeepSeek
+- baseline tag：`baseline/editor-ui-motion`
+- 门状态：G1 ✅（build ✅ · DESIGN.md ✅ · HANDOFF.md ✅）；截图 / console error / 两帧差 / reduced-motion 由 gate 跳过（STILLS_URL 为空，原生 app），**需人工截图 + 录屏确认**
+- 已跑通命令：`xcodebuild -project CotEditor.xcodeproj -scheme CotEditor -configuration Debug -derivedDataPath /tmp/cmyot-dd build -quiet -skipPackagePluginValidation -skipMacroValidation`
+- Opus 花费：（待从 CC Switch 用量面板读取）
 
 ## 2. 已完成的决定（不要推翻）
 
 | 决定 | 为什么 | 推翻的代价 |
 |---|---|---|
-| <例：动效用 CSS transition 而非 GSAP> | <体积 / 依赖> | 全部动效重写 |
-| | | |
+| 动效统一用 `AnimationConstants` 而非裸值 | 统一时长 + prefers-reduced-motion 降级 | 全部动效重写，且失去无障碍支持 |
+| AppKit 侧用 `NSAnimationContext.withStandardTiming` 包裹 | `animator()` 默认时长不可控；包裹后统一 250ms | 21 处 animator() 调用都要改回去 |
+| SwiftUI 侧用 `.cotAnimation` helper | 自动处理 reduced-motion 降级 | 失去无障碍支持 |
+| macOS 26 vs 15 双路径保留 | 状态栏实现不同（`isHidden` vs `isCollapsed`） | 破坏兼容性 |
 
 ## 3. FROZEN（DeepSeek 不得修改）
 
-> 明确到文件或选择器，**每一项都要写为什么**。需要动就记 NEEDS-OPUS。
-
 | 路径 / 选择器 | 为什么不能动 |
 |---|---|
-| `src/styles/tokens.css` | 令牌是唯一真相，改一个值全站漂移 |
-| `src/components/HeroCard.tsx` 的 svg 内部结构 | 内部两个 group 分别做 0.3x / 1x 视差 |
-| `#parallax-bg` 的 transform 层级 | 与滚动 hook 耦合，改了视差断 |
+| `CotEditor/Sources/Utilities/AppKit/AnimationConstants.swift` | 令牌唯一真相；改一个值全站动效漂移 |
+| `CotEditor/Sources/Utilities/AppKit/NSAnimationContext+Timing.swift` | 参照实现；DeepSeek 照抄这个模式到其他 animator() 调用 |
+| `CotEditor/Sources/Utilities/SwiftUI/AnimationConstants+SwiftUI.swift` | 参照实现；DeepSeek 照抄这个模式到其他 SwiftUI 动画 |
+| `WindowContentViewController.swift:210~226` 的 macOS 26 vs 15 分支 | 两个系统 API 不同，不能合并 |
+| `AnimationConstants` 里的五个时长值（0.0 / 0.15 / 0.25 / 0.35 / 0.5） | 匹配系统默认时长，改了会和原生动效不协调 |
+| `AnimationConstants.reorderAnimation` 的 `dampingFraction: 0.8` | 再低会过度弹跳，偏离 macOS 原生观感 |
 
 ## 4. TODO（有序，一次一条）
 
-> 状态只能由 DeepSeek 改：`todo` → `doing` → `done` / `blocked` / `NEEDS-OPUS` / `dropped`。
-> 同一时刻只允许一条是 `doing`。DeepSeek 只做第一条 `todo`。
-> 标 `NEEDS-OPUS` 时，必须在 §5 加一行；P3 裁决后执行：做了改 `done`，不做改 `dropped`。
-> 交付（G3）前不允许有 `doing`。
-
 | ID | 目标 | 文件 | 验收 | 预估 | 状态 |
 |---|---|---|---|---|---|
-| T01 | 按 HeroCard 复制出 StatTile | `src/components/StatTile.tsx` | 1450 视口截图三列排布正确 | S | todo |
-| T02 | 列表入场交错 | `src/pages/List.tsx` | 截图两帧字节不同 + 交错 60ms | M | todo |
-| T03 | 移动端断点收敛 | `src/styles/responsive.css` | 390 视口无横向滚动 | S | todo |
+| T01 | 迁移 FindPanelContentViewController 的动画 | `Text Finder/Views/FindPanelContentViewController.swift:202` | animator() 包在 withStandardTiming 里 | S | todo |
+| T02 | 迁移 SynchronizedScrollView 的三处 magnification 动画 | `Text Finder/Text View/SynchronizedScrollView.swift:100,109,118` | 同上 | S | todo |
+| T03 | 迁移 FileBrowserViewController 的 collapse/expand 动画 | `Sidebar/FileBrowserViewController.swift:653,655` | 同上 | S | todo |
+| T04 | 迁移 FileBrowserViewController 的 separator alpha 动画 | `Sidebar/FileBrowserViewController.swift:944` | 用 withTiming(duration: .fast, easeOut) | S | todo |
+| T05 | 迁移 AboutView 的 Picker 动画 | `Panels/AboutView.swift:93` | `.cotAnimation(.cotStandard)` | S | todo |
+| T06 | 迁移 WhatsNewView 的延迟淡入动画 | `Panels/WhatsNewView.swift:269` | `.cotAnimation(.cotFast)` + delay 0.1s | S | todo |
+| T07 | 迁移 DonationSettingsView 的数量动画 | `Settings Window/Panes/DonationSettingsView.swift:303` | `.cotAnimation(.cotStandard)` | S | todo |
+| T08 | 迁移 EncodingListView 的列表动画 | `Settings Window/Other Views/EncodingListView.swift:103` | `.cotAnimation(.cotSlow)` | S | todo |
+| T09 | 迁移 PatternSortView 的 Picker 动画 | `Accessory Views/PatternSortView.swift:98` | `.cotAnimation(.cotStandard)` | S | todo |
+| T10 | 迁移 CharacterCountOptionsView 的 Picker 动画 | `Accessory Views/Advanced Character Count/CharacterCountOptionsView.swift:83` | `.cotAnimation(.cotStandard)` | S | todo |
+
+**预估**：S = Small（1 处修改，≤5 分钟） | M = Medium（2~5 处修改，≤15 分钟） | L = Large（>5 处或需重构，≤30 分钟）
 
 ## 5. NEEDS-OPUS（不要自己去猜）
 
-> DeepSeek 只填前三列（第 3 列写你临时采用的假设）；「Opus 裁决」由 P3 填，要给出**具体值**，不要给方向。
-
 | 位置 | 我卡在 | DeepSeek 的假设 | Opus 裁决 |
 |---|---|---|---|
-| | | | |
+| — | — | — | — |
 
 ## 6. 禁止的简化（含原因）
 
-- <同 DESIGN.md 第 7 节，交接时强调一遍>
+- **不要去掉 `NSAnimationContext.withStandardTiming` 的包裹，直接用 `animator()`** — `animator()` 默认时长不可控，且不同 macOS 版本可能有差异；包裹是为了统一时长并支持 reduced-motion 降级。
+- **不要把 SwiftUI 的 `.cotAnimation(.cotFast, value:)` 改成 `.animation(.easeOut(duration: 0.15), value:)`** — `.cotAnimation` 内部处理 reduced-motion 降级；裸 `.animation` 不处理。
+- **不要合并 macOS 26 和 macOS 15 的状态栏动画分支**（`WindowContentViewController.swift:210~226`）— 两个分支操作不同的对象（`isHidden` vs `isCollapsed`），强行合并会破坏类型安全。
+
+**DeepSeek 最可能做错的 3 个地方**（Opus 预判）：
+1. **直接用 `.animation(.default)` 而不用 `.cotAnimation`** — `.default` 不处理 reduced-motion，且时长不受控。必须用 `.cotStandard` / `.cotFast` / `.cotSlow` 或 `.cotAnimation` helper。
+2. **忘记包 `NSAnimationContext.withStandardTiming`** — 看到 `animator()` 就以为已经在动画了，实际上时长还是默认的不可控值。每个 `animator()` 调用都必须包在 `with{Standard}Timing` 里。
+3. **修改 `AnimationConstants` 里的数值**（如把 0.25 改成 0.3）— 这些值匹配系统默认时长，改了会让新动效和系统原生动效不协调。要改时长必须先在 §5 提 NEEDS-OPUS。
 
 ## 7. 度量（任务结束后由人补一行）
 
 | 日期 | Opus 花费 | Opus 代码占比 | NEEDS-OPUS 数 | POLISH 条数 | 首轮通过 |
 |---|---|---|---|---|---|
-| | | | | | |
+| — | — | — | — | — | — |
