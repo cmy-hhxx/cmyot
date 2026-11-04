@@ -1039,6 +1039,44 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 NSGraphicsContext.restoreGraphicsState()
             }
         }
+        
+        // In visual mode the selection replaces the caret, so draw the cursor block
+        // ourselves at the active end; otherwise the user loses the cursor entirely.
+        if
+            UserDefaults.standard[.vimMode],
+            VimState.shared.mode == .visual,
+            let location = VimState.shared.visualActiveLocation,
+            let rect = self.vimCursorRect(at: location)
+        {
+            NSGraphicsContext.saveGraphicsState()
+            NSColor.selectedTextBackgroundColor.blended(withFraction: 0.5, of: .controlAccentColor)?.setFill()
+            self.centerScanRect(rect).intersection(dirtyRect).fill()
+            NSGraphicsContext.restoreGraphicsState()
+        }
+    }
+    
+    
+    /// The rectangle of the character at the given location, used for the Vim block cursor.
+    private func vimCursorRect(at location: Int) -> NSRect? {
+        
+        guard let layoutManager, let textContainer else { return nil }
+        let length = (self.string as NSString).length
+        guard length > 0 else { return nil }
+        
+        let index = min(max(0, location), length - 1)
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: NSRange(location: index, length: 1),
+                                                  actualCharacterRange: nil)
+        var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        rect.origin.x += self.textContainerOrigin.x
+        rect.origin.y += self.textContainerOrigin.y
+        
+        if rect.width < 2 {
+            // newline or an empty line: use a space-wide block
+            let font = self.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
+            rect.size.width = (" " as NSString).size(withAttributes: [.font: font]).width
+        }
+        
+        return rect
     }
     
     

@@ -38,6 +38,7 @@ final class VimState {
     
     var mode: VimMode = .normal
     var commandLine: String?  // non-nil while a `:` command is being typed
+    var visualActiveLocation: Int?  // caret position to draw in visual mode
 }
 
 
@@ -251,7 +252,9 @@ final class VimEngine {
             case "u":
                 self.textView?.undoManager?.undo()
             case "v":
-                self.visualAnchor = textView.selectedRange().location
+                let location = textView.selectedRange().location
+                self.visualAnchor = location
+                VimState.shared.visualActiveLocation = location
                 self.enter(mode: .visual)
                 
             case "i":
@@ -450,6 +453,8 @@ final class VimEngine {
         if VimState.shared.mode == .visual, let anchor = self.visualAnchor {
             textView.setSelectedRange(NSRange(location: min(anchor, location),
                                               length: abs(location - anchor)))
+            VimState.shared.visualActiveLocation = location
+            self.refreshCursor()
         } else {
             self.setCursor(location)
         }
@@ -678,6 +683,7 @@ final class VimEngine {
     private func endVisual() {
         
         self.visualAnchor = nil
+        VimState.shared.visualActiveLocation = nil
         self.enter(mode: .normal)
     }
     
