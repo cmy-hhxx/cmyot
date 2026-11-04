@@ -84,6 +84,7 @@ final class VimEngine {
     private var lastFind: (character: Character, kind: FindKind)?
     private var pendingTextObject: (operator: OperatorKind, inner: Bool)?
     private var visualLinewise = false
+    private var lastChange: (op: OperatorKind, motion: Motion, count: Int)?
     private var lastStatus: String?
     
     init(textView: NSTextView) {
@@ -154,9 +155,19 @@ final class VimEngine {
         
         // Control combinations: only ⌃R (redo) is claimed.
         if flags.contains(.control) {
-            guard let chars = event.charactersIgnoringModifiers?.lowercased(), chars == "r" else { return false }
-            textView.undoManager?.redo()
-            return true
+            switch event.charactersIgnoringModifiers?.lowercased() {
+                case "r":
+                    textView.undoManager?.redo()
+                    return true
+                case "d":
+                    self.moveHalfPage(down: true)
+                    return true
+                case "u":
+                    self.moveHalfPage(down: false)
+                    return true
+                default:
+                    return false
+            }
         }
         if flags.contains(.option) { return false }
         
@@ -235,10 +246,17 @@ final class VimEngine {
             return true
         }
         
-        // Resolve the `g` prefix (only `gg` is supported).
+        // Resolve the `g` prefix (`gg`).
         if self.pendingPrefix == "g" {
             self.pendingPrefix = nil
             if character == "g" { self.move(.documentStart) }
+            return true
+        }
+        
+        // Resolve `>>` / `<<`.
+        if let prefix = self.pendingPrefix, prefix == ">" || prefix == "<" {
+            self.pendingPrefix = nil
+            if character == prefix { self.indentLines(outdent: prefix == "<") }
             return true
         }
         
@@ -276,6 +294,17 @@ final class VimEngine {
                 self.updateStatus()
             case "n": self.findSearch(backward: false)
             case "N": self.findSearch(backward: true)
+            case "*": self.searchWordUnderCursor(forward: true)
+            case "#": self.searchWordUnderCursor(forward: false)
+            case "%": self.jumpToMatchingBracket()
+            case "J": self.joinLines()
+            case ">": self.pendingPrefix = ">"
+            case "<": self.pendingPrefix = "<"
+            case ".":
+                if let lastChange = self.lastChange {
+                    self.count = lastChange.count
+                    self.apply(lastChange.op, motion: lastChange.motion)
+                }
                 
             case "d", "c", "y":
                 self.pendingOperator = OperatorKind(rawValue: character)
@@ -513,10 +542,14 @@ final class VimEngine {
                 let range = self.lineRange(at: location)
                 location = max(range?.location ?? 0, NSMaxRange(range ?? NSRange(location: 0, length: 0)) - 1)
             case .documentStart:
-                location = 0
+                location = count > 1 ? self.lineLocation(number: count) : 0
             case .documentEnd:
-                let range = self.lineRange(at: max(0, string.length - 1))
-                location = self.firstNonBlank(in: range, string: string)
+                if count > 1 {
+                    location = self.lineLocation(number: count)
+                } else {
+                    let range = self.lineRange(at: max(0, string.length - 1))
+                    location = self.firstNonBlank(in: range, string: string)
+                }
         }
         
         if VimState.shared.mode == .visual, let anchor = self.visualAnchor {
@@ -609,8 +642,10 @@ final class VimEngine {
         switch op {
             case .delete:
                 self.delete(range)
+                self.lastChange = (op, motion, count)
             case .change:
                 self.delete(range)
+                self.lastChange = (op, motion, count)
                 self.enter(mode: .insert)
             case .yank:
                 self.register = string.substring(with: range)
@@ -982,6 +1017,168 @@ final class VimEngine {
         
         guard found.location != NSNotFound else { return }
         self.setCursor(found.location)
+    }
+    
+    
+    // MARK: Practical extras
+    
+    /// Half-page jump used by ⌃D / ⌃U.
+    private func moveHalfPage(down: Bool) {
+        
+        guard let textView else { return }
+        let lineHeight = max(1, (textView.font?.pointSize ?? 13) * 1.3)
+        let lines = max(1, Int(textView.visibleRect.height / lineHeight / 2))
+        let string = textView.string as NSString
+        let location = self.verticalLocation(from: textView.selectedRange().location,
+                                             direction: down ? lines : -lines)
+        let clamped = max(0, min(location, string.length))
+        
+        self.setCursor(clamped)
+        textView.scrollRangeToVisible(NSRange(location: clamped, length: 0))
+    }
+    
+    
+    /// `*` / `#`: searches for the word under the caret.
+    private func searchWordUnderCursor(forward: Bool) {
+        
+        guard let textView else { return }
+        let string = textView.string as NSString
+        guard string.length > 0 else { return }
+        
+        let caret = min(textView.selectedRange().location, string.length - 1)
+        var start = caret
+        while start > 0, !self.isWordSeparator(string.character(at: start - 1)) { start -= 1 }
+        var end = caret
+        while end < string.length, !self.isWordSeparator(string.character(at: end)) { end += 1 }
+        guard end > start else { return }
+        
+        self.lastSearch = string.substring(with: NSRange(location: start, length: end - start))
+        self.findSearch(backward: !forward)
+    }
+    
+    
+    /// `%`: jumps to the matching bracket.
+    private func jumpToMatchingBracket() {
+        
+        guard let textView else { return }
+        let string = textView.string as NSString
+        guard string.length > 0 else { return }
+        
+        let opens: Set<unichar> = [40, 91, 123]   // ( [ {
+        let lineRange = self.lineRange(at: textView.selectedRange().location) ?? NSRange(location: 0, length: 0)
+        let caret = min(textView.selectedRange().location, string.length - 1)
+        
+        var start: Int?
+        var index = caret
+        while index < NSMaxRange(lineRange) {
+            let character = string.character(at: index)
+            if opens.contains(character) || [41, 93, 125].contains(character) { start = index; break }
+            index += 1
+        }
+        if start == nil {
+            index = caret - 1
+            while index >= lineRange.location {
+                let character = string.character(at: index)
+                if opens.contains(character) || [41, 93, 125].contains(character) { start = index; break }
+                index -= 1
+            }
+        }
+        guard let start else { return }
+        
+        let pairs: [unichar: unichar] = [40: 41, 91: 93, 123: 125, 41: 40, 93: 91, 125: 123]
+        let character = string.character(at: start)
+        guard let mate = pairs[character] else { return }
+        let forward = opens.contains(character)
+        
+        var depth = 0
+        var cursor = start
+        while cursor >= 0, cursor < string.length {
+            let current = string.character(at: cursor)
+            if current == character {
+                depth += 1
+            } else if current == mate {
+                depth -= 1
+                if depth == 0 { self.setCursor(cursor); return }
+            }
+            cursor += forward ? 1 : -1
+        }
+    }
+    
+    
+    /// `J`: joins the current line with the next one.
+    private func joinLines() {
+        
+        guard let textView else { return }
+        let string = textView.string as NSString
+        let lineRange = self.lineRange(at: textView.selectedRange().location) ?? NSRange(location: 0, length: 0)
+        let end = NSMaxRange(lineRange)
+        guard end < string.length, string.character(at: max(0, end - 1)) == 10 else { return }
+        
+        var next = end
+        while next < string.length,
+              string.character(at: next) == 32 || string.character(at: next) == 9
+        {
+            next += 1
+        }
+        
+        let range = NSRange(location: end - 1, length: next - (end - 1))
+        self.replace(range, with: " ")
+        self.setCursor(end - 1)
+    }
+    
+    
+    /// `>>` / `<<`: shifts the current line by one indent level.
+    private func indentLines(outdent: Bool) {
+        
+        guard let textView else { return }
+        let string = textView.string as NSString
+        let lineRange = self.lineRange(at: textView.selectedRange().location) ?? NSRange(location: 0, length: 0)
+        
+        if outdent {
+            var index = lineRange.location
+            var removed = 0
+            while index < NSMaxRange(lineRange), removed < 4 {
+                let character = string.character(at: index)
+                if character == 32 {
+                    index += 1
+                    removed += 1
+                } else if character == 9 {
+                    index += 1
+                    removed = 4
+                } else {
+                    break
+                }
+            }
+            guard removed > 0 else { return }
+            self.replace(NSRange(location: lineRange.location, length: removed), with: "")
+        } else {
+            self.replace(NSRange(location: lineRange.location, length: 0), with: "    ")
+        }
+    }
+    
+    
+    private func replace(_ range: NSRange, with string: String) {
+        
+        guard let textView, textView.shouldChangeText(in: range, replacementString: string) else { return }
+        
+        textView.textStorage?.replaceCharacters(in: range, with: string)
+        textView.didChangeText()
+    }
+    
+    
+    /// The caret location of the given 1-based line number.
+    private func lineLocation(number: Int) -> Int {
+        
+        guard let textView else { return 0 }
+        let string = textView.string as NSString
+        var index = 0
+        var line = 1
+        while line < number, index < string.length {
+            index = NSMaxRange(string.lineRange(for: NSRange(location: index, length: 0)))
+            line += 1
+        }
+        
+        return min(index, max(0, string.length - 1))
     }
     
     

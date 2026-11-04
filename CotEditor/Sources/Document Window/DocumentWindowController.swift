@@ -492,7 +492,7 @@ private extension NSViewController {
 
 private extension NSToolbar.Identifier {
     
-    static let document = Self("Document")
+    static let document = Self("Document.personal.2")
     static let directoryDocument = Self("DirectoryDocument")
 }
 
@@ -505,6 +505,9 @@ private extension NSToolbarItem.Identifier {
     static let syntax = Self(Self.prefix + "syntaxStyle")
     static let splitRight = Self(Self.prefix + "splitRight")
     static let splitBelow = Self(Self.prefix + "splitBelow")
+    static let quickEmoji = Self(Self.prefix + "quickEmoji")
+    static let textScale = Self(Self.prefix + "textScale")
+    static let more = Self(Self.prefix + "more")
     static let inspector = Self(Self.prefix + "inspector")
     
     static let textSize = Self(Self.prefix + "textSize")
@@ -556,8 +559,11 @@ extension DocumentWindowController: NSToolbarDelegate {
     func toolbarImmovableItemIdentifiers(_ toolbar: NSToolbar) -> Set<NSToolbarItem.Identifier> {
         
         Set(self.directoryIdentifiers).union([
+            .editable,
+            .quickEmoji,
+            .splitRight,
+            .splitBelow,
             .flexibleSpace,
-            .emojiAndSymbols,
         ])
     }
     
@@ -565,10 +571,15 @@ extension DocumentWindowController: NSToolbarDelegate {
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         
         self.directoryIdentifiers + [
-            .flexibleSpace,
+            .editable,
+            .quickEmoji,
+            .syntax,
+            .textScale,
             .splitRight,
             .splitBelow,
-            .emojiAndSymbols,
+            .inspector,
+            .flexibleSpace,
+            .more,
         ]
     }
     
@@ -577,9 +588,15 @@ extension DocumentWindowController: NSToolbarDelegate {
         
         // Personal build: keep the toolbar minimal; Emoji & Symbols stays.
         var identifiers = self.directoryIdentifiers + [
+            .editable,
+            .quickEmoji,
+            .syntax,
+            .textScale,
+            .textSize,
             .splitRight,
             .splitBelow,
-            .emojiAndSymbols,
+            .inspector,
+            .more,
             .space,
             .flexibleSpace,
         ]
@@ -624,6 +641,44 @@ extension DocumentWindowController: NSToolbarDelegate {
                 menuItem.title = item.label
                 item.menuFormRepresentation = menuItem
                 
+                return item
+                
+            case .textScale:
+                let slider = NSSlider(value: 1.0, minValue: 0.6, maxValue: 3.0,
+                                      target: nil,
+                                      action: #selector(DocumentViewController.changeTextScale(_:)))
+                slider.isContinuous = true
+                slider.controlSize = .small
+                slider.toolTip = "文字大小（无极）"
+                slider.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([slider.widthAnchor.constraint(equalToConstant: 96)])
+                
+                let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+                item.label = "文字大小"
+                item.toolTip = "拖动调整文字大小"
+                item.view = slider
+                item.visibilityPriority = .high
+                return item
+                
+            case .quickEmoji:
+                let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
+                item.isBordered = true
+                item.showsIndicator = false
+                item.label = "Emoji"
+                item.toolTip = "常用 Emoji"
+                item.image = NSImage(systemSymbolName: "face.smiling.inverse", accessibilityDescription: item.label)
+                    ?? NSImage(systemSymbolName: "face.smiling", accessibilityDescription: item.label)
+                item.menu = Self.quickEmojiMenu()
+                return item
+                
+            case .more:
+                let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
+                item.isBordered = true
+                item.showsIndicator = false
+                item.label = "更多"
+                item.toolTip = "更多操作"
+                item.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: item.label)
+                item.menu = Self.moreMenu()
                 return item
                 
             case .splitRight, .splitBelow:
@@ -983,5 +1038,61 @@ private struct EditedIndicator: View {
             .help(String(localized: "Document has unsaved changes",
                          table: "Document",
                          comment: "tooltip for the “edited” indicator in the window tab"))
+    }
+}
+
+
+// MARK: - Personal toolbar menus
+
+extension DocumentWindowController {
+    
+    /// Curated emoji for day-to-day note taking. Faces are intentionally left out.
+    private static let quickEmoji: [String] = [
+        "✅", "❌", "✔️", "✖️", "☐", "☑",
+        "⏳", "⏰", "🔥", "⭐", "📌", "📝",
+        "💡", "🎯", "🚧", "🐛", "🔖", "📚",
+        "⚠️", "❓", "❗", "🚀", "🔧", "📦",
+        "🔴", "🟡", "🟢", "🔵", "⚪", "⚫",
+    ]
+    
+    
+    static func quickEmojiMenu() -> NSMenu {
+        
+        let menu = NSMenu()
+        for emoji in Self.quickEmoji {
+            let item = NSMenuItem(title: emoji,
+                                  action: #selector(DocumentViewController.insertQuickEmoji(_:)),
+                                  keyEquivalent: "")
+            item.target = nil
+            menu.addItem(item)
+        }
+        
+        return menu
+    }
+    
+    
+    static func moreMenu() -> NSMenu {
+        
+        let menu = NSMenu()
+        
+        func add(_ title: String, _ action: Selector) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = nil
+            menu.addItem(item)
+        }
+        
+        add("折行", #selector(DocumentViewController.toggleLineWrap(_:)))
+        add("不可见字符", #selector(DocumentViewController.toggleInvisibleChars(_:)))
+        add("缩进参考线", #selector(DocumentViewController.toggleIndentGuides(_:)))
+        add("页面参考线", #selector(DocumentViewController.togglePageGuide(_:)))
+        menu.addItem(.separator())
+        add("切换分割方向", #selector(DocumentViewController.toggleSplitOrientation(_:)))
+        add("关闭分割", #selector(DocumentViewController.closeSplitTextView(_:)))
+        menu.addItem(.separator())
+        add("重置文字大小", #selector(EditorTextView.resetFont(_:)))
+        add("打印…", #selector(NSDocument.printDocument(_:)))
+        add("进入全屏", #selector(NSWindow.toggleFullScreen(_:)))
+        
+        return menu
     }
 }

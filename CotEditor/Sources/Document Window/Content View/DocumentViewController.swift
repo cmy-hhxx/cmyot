@@ -660,6 +660,26 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
+    /// Sets the text size from the continuous slider in the toolbar.
+    ///
+    /// - Parameter sender: The slider whose value is the new scale (0.6–3.0).
+    @IBAction func changeTextScale(_ sender: NSSlider) {
+        
+        self.focusedChild?.textView?.setScaleKeepingVisibleArea(CGFloat(sender.doubleValue))
+    }
+    
+    
+    /// Inserts one of the curated emoji used by the toolbar's quick emoji menu.
+    ///
+    /// - Parameter sender: The menu item whose title is the emoji to insert.
+    @IBAction func insertQuickEmoji(_ sender: NSMenuItem) {
+        
+        guard let textView = self.focusedChild?.textView else { return }
+        
+        textView.insertText(sender.title, replacementRange: textView.selectedRange())
+    }
+    
+    
     /// Toggles the visibility of the line number views.
     @IBAction func toggleLineNumber(_ sender: Any?) {
         
