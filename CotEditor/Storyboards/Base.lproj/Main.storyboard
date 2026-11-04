@@ -615,6 +615,18 @@ Gw
                                                 <action selector="openSplitTextView:" target="Ady-hI-5gd" id="PUY-re-c9S"/>
                                             </connections>
                                         </menuItem>
+                                        <menuItem title="向下分割" secondaryImage="rectangle.split.1x2" catalog="system" id="cmy-sp-down">
+                                            <modifierMask key="keyEquivalentModifierMask"/>
+                                            <connections>
+                                                <action selector="splitEditorHorizontally:" target="Ady-hI-5gd" id="cmy-sp-down-action"/>
+                                            </connections>
+                                        </menuItem>
+                                        <menuItem title="向右分割" secondaryImage="rectangle.split.2x1" catalog="system" id="cmy-sp-right">
+                                            <modifierMask key="keyEquivalentModifierMask"/>
+                                            <connections>
+                                                <action selector="splitEditorVertically:" target="Ady-hI-5gd" id="cmy-sp-right-action"/>
+                                            </connections>
+                                        </menuItem>
                                         <menuItem title="Close Split Editor" secondaryImage="rectangle" catalog="system" id="796">
                                             <modifierMask key="keyEquivalentModifierMask"/>
                                             <connections>

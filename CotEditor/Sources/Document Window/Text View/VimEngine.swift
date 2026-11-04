@@ -174,8 +174,10 @@ final class VimEngine {
         guard let textView = self.textView else { return false }
         
         // Digit prefixes build up the count ("0" alone is a motion).
-        if character.isNumber, character != "0" || self.count != nil {
-            self.count = (self.count ?? 0) * 10 + Int(String(character))!
+        if let digit = character.wholeNumberValue, digit >= 0, digit <= 9,
+           character != "0" || self.count != nil
+        {
+            self.count = (self.count ?? 0) * 10 + digit
             return true
         }
         
@@ -340,8 +342,16 @@ final class VimEngine {
             return true
         }
         if event.keyCode == 51 {  // Delete
-            self.commandBuffer?.removeLast()
+            guard let buffer = self.commandBuffer, !buffer.isEmpty else {
+                // deleting past the colon leaves command mode
+                self.commandBuffer = nil
+                state.commandLine = nil
+                self.updateStatus()
+                return true
+            }
+            self.commandBuffer = String(buffer.dropLast())
             state.commandLine = ":" + (self.commandBuffer ?? "")
+            self.updateStatus()
             return true
         }
         self.commandBuffer?.append(characters)

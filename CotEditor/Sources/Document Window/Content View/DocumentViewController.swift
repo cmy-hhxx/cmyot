@@ -32,6 +32,40 @@ import Defaults
 import StringUtils
 import TextEditing
 
+/// A split container that can hold editors *and* other split containers,
+/// which is what makes tmux-like nested pane layouts possible.
+final class SplitGroupViewController: NSSplitViewController {
+    
+    private let isVertical: Bool
+    
+    
+    init(isVertical: Bool) {
+        
+        self.isVertical = isVertical
+        
+        super.init(nibName: nil, bundle: nil)
+    }
+    
+    
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    
+    override func viewDidLoad() {
+        
+        super.viewDidLoad()
+        
+        // Configure after the split view exists; touching `splitView` inside `init`
+        // would force the view to load before the controller is fully initialised.
+        self.splitView.isVertical = self.isVertical
+        self.splitView.dividerStyle = .thin
+    }
+}
+
+
 @Observable final class SplitState {
     
     var isVertical: Bool
@@ -116,7 +150,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.splitState.isVertical = self.splitView.isVertical
         
         // set first editor view
-        self.addEditorView()
+        let initialViewController = self.makeEditorViewController(copying: nil)
+        self.insertSplitViewItem(self.makeSplitViewItem(for: initialViewController), at: 0)
         
         // set theme
         let isDark = NSApp.effectiveAppearance.isDark
@@ -769,10 +804,13 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     /// Toggles divider orientation.
     @IBAction func toggleSplitOrientation(_ sender: Any?) {
         
-        self.splitView.isVertical.toggle()
-        self.splitState.isVertical = self.splitView.isVertical
+        // Only the container of the focused pane flips, so other rows/columns keep
+        // their own direction (tmux-style nested layouts).
+        let group = self.focusedChild.flatMap { self.splitGroup(containing: $0) } ?? self
+        group.splitView.isVertical.toggle()
         
-        UserDefaults.standard[.splitViewVertical] = self.splitView.isVertical
+        self.splitState.isVertical = group.splitView.isVertical
+        UserDefaults.standard[.splitViewVertical] = group.splitView.isVertical
     }
     
     
@@ -790,38 +828,90 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Splits editor view.
+    /// Splits the focused editor.
+    ///
+    /// The new pane is added along the current split direction. When the focused pane lives
+    /// in a container with the other direction, the pane is wrapped into a nested container
+    /// instead — that is what gives tmux-like layouts (e.g. a column of two stacked panes
+    /// next to a full-height pane).
     @IBAction func openSplitTextView(_ sender: Any?) {
         
-        guard self.splitViewItems.count < Self.maximumNumberOfSplitEditors else { return NSSound.beep() }
+        self.openSplitEditor(for: sender, isVertical: self.splitState.isVertical)
+    }
+    
+    
+    /// Splits the focused pane to the right (panes side by side).
+    @IBAction func splitEditorVertically(_ sender: Any?) {
         
-        guard let currentEditorViewController = self.baseEditorViewController(for: sender) else { return assertionFailure() }
+        self.openSplitEditor(for: sender, isVertical: true)
+    }
+    
+    
+    /// Splits the focused pane downwards (panes stacked vertically).
+    @IBAction func splitEditorHorizontally(_ sender: Any?) {
         
-        let newEditorViewController = self.addEditorView(below: currentEditorViewController)
+        self.openSplitEditor(for: sender, isVertical: false)
+    }
+    
+    
+    /// Splits the focused pane in the given direction, nesting a container when needed.
+    ///
+    /// - Parameters:
+    ///   - sender: The action sender.
+    ///   - isVertical: `true` to place the new pane to the right, `false` to place it below.
+    private func openSplitEditor(for sender: Any?, isVertical: Bool) {
+        
+        guard self.editorViewControllers.count < Self.maximumNumberOfSplitEditors else { return NSSound.beep() }
+        
+        guard let currentViewController = self.baseEditorViewController(for: sender) else { return assertionFailure() }
+        
+        let newEditorViewController = self.makeEditorViewController(copying: currentViewController)
+        let parentGroup = self.splitGroup(containing: currentViewController) ?? self
+        
+        guard let index = parentGroup.splitViewItems.firstIndex(where: { $0.viewController === currentViewController }) else {
+            return assertionFailure()
+        }
+        
+        if parentGroup.splitViewItems.count == 1 {
+            // a lone pane simply adopts the requested direction
+            parentGroup.splitView.isVertical = isVertical
+            parentGroup.insertSplitViewItem(self.makeSplitViewItem(for: newEditorViewController), at: index + 1)
+        } else if parentGroup.splitView.isVertical == isVertical {
+            // same direction: put the new pane beside the current one
+            parentGroup.insertSplitViewItem(self.makeSplitViewItem(for: newEditorViewController), at: index + 1)
+        } else {
+            // other direction: wrap the current pane and the new one in a nested container
+            let group = SplitGroupViewController(isVertical: isVertical)
+            self.removeItem(for: currentViewController, from: parentGroup)
+            parentGroup.insertSplitViewItem(self.makeSplitViewItem(for: group), at: index)
+            group.addSplitViewItem(self.makeSplitViewItem(for: currentViewController))
+            group.addSplitViewItem(self.makeSplitViewItem(for: newEditorViewController))
+        }
         
         // adjust visible areas
-        if let selectedRange = currentEditorViewController.textView?.selectedRange {
+        if let selectedRange = currentViewController.textView?.selectedRange {
             newEditorViewController.textView?.selectedRange = selectedRange
-            currentEditorViewController.textView?.scrollRangeToVisible(selectedRange)
+            currentViewController.textView?.scrollRangeToVisible(selectedRange)
             newEditorViewController.textView?.scrollRangeToVisible(selectedRange)
         }
         
-        self.splitState.canClose = true
+        self.splitState.isVertical = isVertical
+        self.updateSplitState()
         
         // move focus to the new editor
         self.view.window?.makeFirstResponderDiscardingMarkedText(newEditorViewController.textView)
     }
     
     
-    /// Closes one of the split editors.
+    /// Closes one of the split editors, collapsing any container left with a single child.
     @IBAction func closeSplitTextView(_ sender: Any?) {
         
         guard
-            self.splitViewItems.count > 1,
-            let currentEditorViewController = self.baseEditorViewController(for: sender)
+            self.editorViewControllers.count > 1,
+            let currentViewController = self.baseEditorViewController(for: sender)
         else { return }
         
-        if let textView = currentEditorViewController.textView {
+        if let textView = currentViewController.textView {
             NotificationCenter.default.removeObserver(self, name: EditorTextView.DidLiveChangeSelectionMessage.name, object: textView)
             textView.undoManager?.removeAllActions(withTarget: textView)
         }
@@ -830,44 +920,131 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         NSTextInputContext.current?.discardMarkedText()
         
         // move focus to the next text view if the view to close has a focus
-        if self.focusedChild == currentEditorViewController {
+        if self.focusedChild == currentViewController {
             let children = self.editorViewControllers
-            let deleteIndex = children.firstIndex(of: currentEditorViewController) ?? 0
+            let deleteIndex = children.firstIndex(of: currentViewController) ?? 0
             let newFocusEditorViewController = children[safe: deleteIndex - 1] ?? children.last!
             
             self.view.window?.makeFirstResponder(newFocusEditorViewController.textView)
         }
         
-        // close
-        currentEditorViewController.removeFromParent()
+        guard
+            let parentGroup = self.splitGroup(containing: currentViewController),
+            let index = parentGroup.splitViewItems.firstIndex(where: { $0.viewController === currentViewController })
+        else { return }
         
-        self.splitState.canClose = self.splitViewItems.count > 1
+        self.removeItem(for: currentViewController, from: parentGroup)
+        self.collapseSingleChildGroups(from: parentGroup)
+        self.updateSplitState()
     }
     
     
     // MARK: Private Methods
     
-    /// The array of all child editor view controllers.
+    /// All editors in visual order, flattened across nested containers.
     private var editorViewControllers: [EditorViewController] {
         
-        self.children.compactMap { $0 as? EditorViewController }
+        var editors: [EditorViewController] = []
+        
+        func collect(_ group: NSSplitViewController) {
+            for item in group.splitViewItems {
+                if let editor = item.viewController as? EditorViewController {
+                    editors.append(editor)
+                } else if let nested = item.viewController as? NSSplitViewController {
+                    collect(nested)
+                }
+            }
+        }
+        
+        collect(self)
+        
+        return editors
     }
     
     
-    /// Creates a new split editor.
+    /// Returns the split container that holds the given view controller.
     ///
-    /// - Parameter otherViewController: The view controller of the reference editor located above the editor to add.
-    /// - Returns: The editor view controller created.
-    @discardableResult private func addEditorView(below otherViewController: EditorViewController? = nil) -> sending EditorViewController {
+    /// - Parameter viewController: The view controller whose container is searched.
+    /// - Returns: The nearest enclosing split view controller.
+    private func splitGroup(containing viewController: NSViewController) -> NSSplitViewController? {
         
-        let viewController = EditorViewController(document: self.document, splitState: self.splitState)
+        var current = viewController.parent
+        while let parent = current {
+            if let group = parent as? NSSplitViewController { return group }
+            current = parent.parent
+        }
+        
+        return nil
+    }
+    
+    
+    /// Removes the split view item that hosts the given view controller.
+    ///
+    /// - Parameters:
+    ///   - viewController: The hosted view controller.
+    ///   - group: The split view controller to remove it from.
+    private func removeItem(for viewController: NSViewController, from group: NSSplitViewController) {
+        
+        guard let item = group.splitViewItems.first(where: { $0.viewController === viewController }) else { return }
+        
+        group.removeSplitViewItem(item)
+    }
+    
+    
+    /// Creates a split view item for an editor or a nested container.
+    ///
+    /// - Parameter viewController: The view controller to place in the split view.
+    /// - Returns: The configured split view item.
+    private func makeSplitViewItem(for viewController: NSViewController) -> NSSplitViewItem {
         
         let splitViewItem = NSSplitViewItem(viewController: viewController)
         splitViewItem.minimumThickness = 100
         
-        // add to the split view
-        let index = otherViewController.flatMap(self.children.firstIndex(of:))?.advanced(by: 1) ?? 0
-        self.insertSplitViewItem(splitViewItem, at: index)
+        return splitViewItem
+    }
+    
+    
+    /// Moves lone children up while a container is left with a single pane.
+    ///
+    /// - Parameter group: The container to start from.
+    private func collapseSingleChildGroups(from group: NSSplitViewController) {
+        
+        var group = group
+        while group !== self, group.splitViewItems.count == 1 {
+            let remaining = group.splitViewItems[0].viewController
+            
+            guard
+                let parentGroup = group.parent as? NSSplitViewController,
+                let index = parentGroup.splitViewItems.firstIndex(where: { $0.viewController === group })
+            else { break }
+            
+            group.removeSplitViewItem(group.splitViewItems[0])
+            self.removeItem(for: group, from: parentGroup)
+            parentGroup.insertSplitViewItem(self.makeSplitViewItem(for: remaining), at: index)
+            
+            group = parentGroup
+        }
+    }
+    
+    
+    /// Syncs the shared state observed by the navigation bar with the actual layout.
+    private func updateSplitState() {
+        
+        self.splitState.canClose = self.editorViewControllers.count > 1
+        
+        if let focusedChild = self.focusedChild, let group = self.splitGroup(containing: focusedChild) {
+            self.splitState.isVertical = group.splitView.isVertical
+        }
+    }
+    
+    
+    /// Creates a new editor view for a pane.
+    ///
+    /// - Parameter otherViewController: The editor whose state is copied.
+    /// - Returns: The editor view controller created.
+    @discardableResult private func makeEditorViewController(copying otherViewController: EditorViewController?) -> sending EditorViewController {
+        
+        let viewController = EditorViewController(document: self.document, splitState: self.splitState)
         
         // observe cursor
         NotificationCenter.default.addObserver(self, selector: #selector(textViewDidLiveChangeSelection),
