@@ -503,6 +503,8 @@ private extension NSToolbarItem.Identifier {
     
     
     static let syntax = Self(Self.prefix + "syntaxStyle")
+    static let splitRight = Self(Self.prefix + "splitRight")
+    static let splitBelow = Self(Self.prefix + "splitBelow")
     static let inspector = Self(Self.prefix + "inspector")
     
     static let textSize = Self(Self.prefix + "textSize")
@@ -564,6 +566,8 @@ extension DocumentWindowController: NSToolbarDelegate {
         
         self.directoryIdentifiers + [
             .flexibleSpace,
+            .splitRight,
+            .splitBelow,
             .emojiAndSymbols,
         ]
     }
@@ -573,6 +577,8 @@ extension DocumentWindowController: NSToolbarDelegate {
         
         // Personal build: keep the toolbar minimal; Emoji & Symbols stays.
         var identifiers = self.directoryIdentifiers + [
+            .splitRight,
+            .splitBelow,
             .emojiAndSymbols,
             .space,
             .flexibleSpace,
@@ -618,6 +624,21 @@ extension DocumentWindowController: NSToolbarDelegate {
                 menuItem.title = item.label
                 item.menuFormRepresentation = menuItem
                 
+                return item
+                
+            case .splitRight, .splitBelow:
+                let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+                item.isBordered = true
+                item.label = itemIdentifier == .splitRight ? "向右分割" : "向下分割"
+                item.toolTip = item.label
+                item.image = NSImage(systemSymbolName: itemIdentifier == .splitRight
+                                     ? "rectangle.split.2x1"
+                                     : "rectangle.split.1x2",
+                                     accessibilityDescription: item.label)
+                item.action = itemIdentifier == .splitRight
+                    ? #selector(DocumentViewController.splitEditorVertically(_:))
+                    : #selector(DocumentViewController.splitEditorHorizontally(_:))
+                item.visibilityPriority = .high
                 return item
                 
             case .inspector:

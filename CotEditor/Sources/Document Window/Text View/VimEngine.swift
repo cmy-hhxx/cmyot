@@ -65,6 +65,10 @@ final class VimEngine {
         case whitespace, word, punctuation
     }
     
+    private enum FindKind {
+        case forward, backward, tillForward, tillBackward
+    }
+    
     weak var textView: NSTextView?
     
     private var count: Int?
@@ -74,6 +78,12 @@ final class VimEngine {
     private var register: String = ""
     private var registerIsLinewise = false
     private var commandBuffer: String?
+    private var searchBuffer: String?
+    private var lastSearch: String?
+    private var pendingFindKind: FindKind?
+    private var lastFind: (character: Character, kind: FindKind)?
+    private var pendingTextObject: (operator: OperatorKind, inner: Bool)?
+    private var visualLinewise = false
     private var lastStatus: String?
     
     init(textView: NSTextView) {
@@ -99,6 +109,12 @@ final class VimEngine {
         if self.commandBuffer != nil {
             let characters = event.characters ?? ""
             return self.handleCommandKey(characters, event: event)
+        }
+
+        // The `/` search line behaves the same way.
+        if self.searchBuffer != nil {
+            let characters = event.characters ?? ""
+            return self.handleSearchKey(characters, event: event)
         }
         
         switch state.mode {
@@ -181,8 +197,30 @@ final class VimEngine {
             return true
         }
         
+        // Resolve a pending f / t with the next character.
+        if let findKind = self.pendingFindKind {
+            self.pendingFindKind = nil
+            self.lastFind = (character, findKind)
+            self.performFind(findKind, character: character)
+            return true
+        }
+        
+        // Resolve a pending text object (iw, a", i( …).
+        if let textObject = self.pendingTextObject {
+            self.pendingTextObject = nil
+            if let range = self.textObjectRange(inner: textObject.inner, character: character) {
+                self.apply(textObject.operator, range: range)
+            }
+            self.count = nil
+            return true
+        }
+        
         // Resolve a pending operator with the next motion.
         if let op = self.pendingOperator {
+            if character == "i" || character == "a" {
+                self.pendingTextObject = (op, character == "i")
+                return true
+            }
             if let doubled = self.operatorKey(character), doubled == op {
                 self.pendingOperator = nil
                 self.applyLinewiseOperator(op)
@@ -224,6 +262,20 @@ final class VimEngine {
             case "$": self.move(.lineEnd)
             case "g": self.pendingPrefix = "g"
             case "G": self.move(.documentEnd)
+                
+            case "f": self.pendingFindKind = .forward
+            case "F": self.pendingFindKind = .backward
+            case "t": self.pendingFindKind = .tillForward
+            case "T": self.pendingFindKind = .tillBackward
+            case ";": if let last = self.lastFind { self.performFind(last.kind, character: last.character) }
+            case ",": if let last = self.lastFind { self.performFind(Self.reversed(last.kind), character: last.character) }
+                
+            case "/":
+                self.searchBuffer = ""
+                VimState.shared.commandLine = "/"
+                self.updateStatus()
+            case "n": self.findSearch(backward: false)
+            case "N": self.findSearch(backward: true)
                 
             case "d", "c", "y":
                 self.pendingOperator = OperatorKind(rawValue: character)
@@ -423,7 +475,14 @@ final class VimEngine {
         guard let textView else { return }
         let count = self.takeCount()
         let string = textView.string as NSString
-        var location = textView.selectedRange().location
+        // In visual mode the motion must continue from the active end of the
+        // selection, not from its start — otherwise `v` followed by `w` jumps around.
+        var location: Int
+        if VimState.shared.mode == .visual, let activeLocation = VimState.shared.visualActiveLocation {
+            location = activeLocation
+        } else {
+            location = textView.selectedRange().location
+        }
         
         switch motion {
             case .left:
@@ -639,6 +698,290 @@ final class VimEngine {
         textView.didChangeText()
         self.setCursor(below ? insertAt + 1 : insertAt)
         self.enter(mode: .insert)
+    }
+    
+    
+    // MARK: f / t, text objects, search
+    
+    private static func reversed(_ kind: FindKind) -> FindKind {
+        
+        switch kind {
+            case .forward: .backward
+            case .backward: .forward
+            case .tillForward: .tillBackward
+            case .tillBackward: .tillForward
+        }
+    }
+    
+    
+    /// Moves to the next/previous occurrence of a character (`f F t T`).
+    private func performFind(_ kind: FindKind, character: Character) {
+        
+        guard let textView, let target = character.utf16.first else { return }
+        let string = textView.string as NSString
+        guard string.length > 0 else { return }
+        
+        let count = self.takeCount()
+        var location = textView.selectedRange().location
+        
+        for _ in 0..<count {
+            switch kind {
+                case .forward, .tillForward:
+                    var index = location + 1
+                    var found = -1
+                    while index < string.length {
+                        if string.character(at: index) == target { found = index; break }
+                        index += 1
+                    }
+                    guard found >= 0 else { self.count = nil; return }
+                    location = kind == .tillForward ? max(0, found - 1) : found
+                case .backward, .tillBackward:
+                    var index = location - 1
+                    var found = -1
+                    while index >= 0 {
+                        if string.character(at: index) == target { found = index; break }
+                        index -= 1
+                    }
+                    guard found >= 0 else { self.count = nil; return }
+                    location = kind == .tillBackward ? min(string.length - 1, found + 1) : found
+            }
+        }
+        
+        self.setCursor(location)
+        self.count = nil
+    }
+    
+    
+    /// Resolves `iw`, `aw`, `i"`, `a(`, … to a range.
+    private func textObjectRange(inner: Bool, character: Character) -> NSRange? {
+        
+        guard let textView else { return nil }
+        let string = textView.string as NSString
+        guard string.length > 0 else { return nil }
+        let caret = textView.selectedRange().location
+        
+        switch character {
+            case "w", "W":
+                return self.wordTextObject(inner: inner, at: caret, string: string)
+            case "\"", "'", "`":
+                return self.quoteTextObject(quote: character, inner: inner, at: caret, string: string)
+            case "(", ")", "b":
+                return self.bracketTextObject(open: "(", close: ")", inner: inner, at: caret, string: string)
+            case "[", "]":
+                return self.bracketTextObject(open: "[", close: "]", inner: inner, at: caret, string: string)
+            case "{", "}", "B":
+                return self.bracketTextObject(open: "{", close: "}", inner: inner, at: caret, string: string)
+            default:
+                return nil
+        }
+    }
+    
+    
+    private func wordTextObject(inner: Bool, at caret: Int, string: NSString) -> NSRange? {
+        
+        var index = min(caret, string.length - 1)
+        while index > 0, self.isWordSeparator(string.character(at: index)) { index -= 1 }
+        guard !self.isWordSeparator(string.character(at: index)) else { return nil }
+        
+        var start = index
+        while start > 0, !self.isWordSeparator(string.character(at: start - 1)) { start -= 1 }
+        
+        var end = index + 1
+        while end < string.length, !self.isWordSeparator(string.character(at: end)) { end += 1 }
+        
+        guard !inner else { return NSRange(location: start, length: end - start) }
+        
+        var trailing = end
+        while trailing < string.length,
+              self.isWordSeparator(string.character(at: trailing)),
+              string.character(at: trailing) != 10
+        {
+            trailing += 1
+        }
+        
+        return NSRange(location: start, length: trailing - start)
+    }
+    
+    
+    private func quoteTextObject(quote: Character, inner: Bool, at caret: Int, string: NSString) -> NSRange? {
+        
+        guard let unit = quote.utf16.first else { return nil }
+        let lineRange = self.lineRange(at: min(caret, string.length - 1)) ?? NSRange(location: 0, length: 0)
+        
+        var positions: [Int] = []
+        var index = lineRange.location
+        while index < NSMaxRange(lineRange) {
+            if string.character(at: index) == unit { positions.append(index) }
+            index += 1
+        }
+        
+        var openIndex: Int?
+        var positionIndex = 0
+        while positionIndex + 1 < positions.count {
+            if caret >= positions[positionIndex], caret <= positions[positionIndex + 1] {
+                openIndex = positions[positionIndex]
+                break
+            }
+            positionIndex += 2
+        }
+        
+        if openIndex == nil {
+            positionIndex = 0
+            while positionIndex + 1 < positions.count {
+                if positions[positionIndex] > caret {
+                    openIndex = positions[positionIndex]
+                    break
+                }
+                positionIndex += 2
+            }
+        }
+        
+        guard let open = openIndex, let close = positions[safe: (positions.firstIndex(of: open) ?? 0) + 1] else { return nil }
+        
+        return inner
+            ? NSRange(location: open + 1, length: max(0, close - open - 1))
+            : NSRange(location: open, length: close - open + 1)
+    }
+    
+    
+    private func bracketTextObject(open: Character, close: Character, inner: Bool, at caret: Int, string: NSString) -> NSRange? {
+        
+        guard let openUnit = open.utf16.first, let closeUnit = close.utf16.first else { return nil }
+        
+        var depth = 0
+        var openIndex: Int?
+        var index = min(caret, string.length - 1)
+        while index >= 0 {
+            let character = string.character(at: index)
+            if character == closeUnit { depth += 1 }
+            if character == openUnit {
+                if depth == 0 { openIndex = index; break }
+                depth -= 1
+            }
+            index -= 1
+        }
+        guard let openIndex else { return nil }
+        
+        depth = 0
+        var closeIndex: Int?
+        index = openIndex + 1
+        while index < string.length {
+            let character = string.character(at: index)
+            if character == openUnit { depth += 1 }
+            if character == closeUnit {
+                if depth == 0 { closeIndex = index; break }
+                depth -= 1
+            }
+            index += 1
+        }
+        guard let closeIndex else { return nil }
+        
+        return inner
+            ? NSRange(location: openIndex + 1, length: max(0, closeIndex - openIndex - 1))
+            : NSRange(location: openIndex, length: closeIndex - openIndex + 1)
+    }
+    
+    
+    /// Applies an operator to an explicit range (used by text objects).
+    private func apply(_ op: OperatorKind, range: NSRange) {
+        
+        guard let textView else { return }
+        guard range.length > 0 else {
+            if op == .change { self.enter(mode: .insert) }
+            return
+        }
+        
+        switch op {
+            case .delete:
+                self.delete(range)
+            case .change:
+                self.delete(range)
+                self.enter(mode: .insert)
+            case .yank:
+                self.register = (textView.string as NSString).substring(with: range)
+                self.registerIsLinewise = false
+                self.setCursor(range.location)
+        }
+    }
+    
+    
+    private func isWordSeparator(_ character: unichar) -> Bool {
+        
+        character == 32 || character == 9 || character == 10 || character == 13
+    }
+    
+    
+    // MARK: Search
+    
+    private func handleSearchKey(_ characters: String, event: NSEvent) -> Bool {
+        
+        let state = VimState.shared
+        
+        if self.isEscape(event) {
+            self.searchBuffer = nil
+            state.commandLine = nil
+            self.updateStatus()
+            return true
+        }
+        if event.keyCode == 36 {  // Return
+            let query = self.searchBuffer ?? ""
+            self.searchBuffer = nil
+            state.commandLine = nil
+            self.updateStatus()
+            if !query.isEmpty {
+                self.lastSearch = query
+                self.findSearch(backward: false)
+            }
+            return true
+        }
+        if event.keyCode == 51 {  // Delete
+            guard let buffer = self.searchBuffer, !buffer.isEmpty else {
+                self.searchBuffer = nil
+                state.commandLine = nil
+                self.updateStatus()
+                return true
+            }
+            self.searchBuffer = String(buffer.dropLast())
+            state.commandLine = "/" + (self.searchBuffer ?? "")
+            self.updateStatus()
+            return true
+        }
+        
+        self.searchBuffer?.append(characters)
+        state.commandLine = "/" + (self.searchBuffer ?? "")
+        self.updateStatus()
+        
+        return true
+    }
+    
+    
+    /// Finds the next/previous occurrence of the last search pattern.
+    private func findSearch(backward: Bool) {
+        
+        guard let query = self.lastSearch, !query.isEmpty, let textView else { return }
+        let string = textView.string as NSString
+        guard string.length > 0 else { return }
+        
+        let caret = textView.selectedRange().location
+        var found = NSRange(location: NSNotFound, length: 0)
+        
+        if backward {
+            found = string.range(of: query, options: [.backwards],
+                                 range: NSRange(location: 0, length: min(caret, string.length)))
+            if found.location == NSNotFound {
+                found = string.range(of: query, options: [.backwards],
+                                     range: NSRange(location: 0, length: string.length))
+            }
+        } else {
+            let start = min(caret + 1, string.length)
+            found = string.range(of: query, range: NSRange(location: start, length: string.length - start))
+            if found.location == NSNotFound {
+                found = string.range(of: query, range: NSRange(location: 0, length: string.length))
+            }
+        }
+        
+        guard found.location != NSNotFound else { return }
+        self.setCursor(found.location)
     }
     
     
