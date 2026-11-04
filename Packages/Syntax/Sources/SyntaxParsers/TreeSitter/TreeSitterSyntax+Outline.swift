@@ -32,54 +32,16 @@ extension TreeSitterSyntax {
     var outlinePolicy: OutlinePolicy {
         
         switch self {
-            case .c:
-                .init(ignoredDepthNodeTypes: [
-                    "pointer_declarator",
-                    "array_declarator",
-                ])
-            case .cpp:
-                .init(ignoredDepthNodeTypes: [
-                    "template_declaration",
-                    "field_declaration",
-                    "function_declarator",
-                    "pointer_declarator",
-                    "reference_declarator",
-                    "array_declarator",
-                ])
-            case .go:
-                .init(ignoredDepthNodeTypes: ["type_spec"])
-            case .java:
-                .init(ignoredDepthNodeTypes: ["variable_declarator"])
             case .javaScript:
                 .init(ignoredDepthNodeTypes: [
                     "export_statement",
                     "variable_declarator",
-                ])
-            case .kotlin:
-                .init(ignoredDepthNodeTypes: ["variable_declaration"])
-            case .lua:
-                .init(ignoredDepthNodeTypes: [
-                    "identifier",
-                    "dot_index_expression",
-                    "method_index_expression",
-                    "function_declaration",
-                    "variable_list",
-                    "expression_list",
-                    "assignment_statement",
-                    "table_constructor",
-                    "field",
                 ])
             case .python:
                 .init(ignoredDepthNodeTypes: [
                     "decorated_definition",
                     "expression_statement",
                 ])
-            case .php:
-                .init(ignoredDepthNodeTypes: ["property_element"])
-            case .sql:
-                .init(normalization: .init(flattenLevels: true))
-            case .swift:
-                .init(normalization: .init(sectionMarkerKinds: [.separator, .mark], adjustSectionMarkerDepth: true))
             case .typeScript:
                 .init(ignoredDepthNodeTypes: [
                     "ambient_declaration",
@@ -98,44 +60,12 @@ extension TreeSitterSyntax {
         switch self {
             case .bash:
                 BashOutlineFormatter.self
-            case .c:
-                COutlineFormatter.self
-            case .cpp:
-                CPPOutlineFormatter.self
-            case .cSharp:
-                CSharpOutlineFormatter.self
-            case .css:
-                CSSOutlineFormatter.self
-            case .go:
-                GoOutlineFormatter.self
-            case .html:
-                HTMLOutlineFormatter.self
-            case .java:
-                JavaOutlineFormatter.self
             case .javaScript:
                 JavaScriptOutlineFormatter.self
-            case .kotlin:
-                KotlinOutlineFormatter.self
-            case .latex:
-                LaTeXOutlineFormatter.self
-            case .lua:
-                LuaOutlineFormatter.self
             case .markdown:
                 MarkdownOutlineFormatter.self
-            case .php:
-                PHPOutlineFormatter.self
             case .python:
                 PythonOutlineFormatter.self
-            case .ruby:
-                RubyOutlineFormatter.self
-            case .rust:
-                RustOutlineFormatter.self
-            case .scala:
-                ScalaOutlineFormatter.self
-            case .sql:
-                SQLOutlineFormatter.self
-            case .swift:
-                SwiftOutlineFormatter.self
             case .typeScript:
                 TypeScriptOutlineFormatter.self
             default:

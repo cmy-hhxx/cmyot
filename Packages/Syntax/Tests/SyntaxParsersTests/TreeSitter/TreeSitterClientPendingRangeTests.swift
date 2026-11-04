@@ -57,10 +57,10 @@ struct TreeSitterClientPendingRangeTests {
     
     @Test func highlightCapableParserPreservesPendingRangesUntilHighlightParse() async throws {
         
-        let initialSource = "struct Foo {}\n"
-        let editedSource = "struct Bar {}\n"
-        let config = try self.registry.configuration(for: .swift)
-        let client = try TreeSitterClient(languageConfig: config, languageProvider: self.registry.languageProvider, syntax: .swift)
+        let initialSource = "class Foo:\n    pass\n"
+        let editedSource = "class Bar:\n    pass\n"
+        let config = try self.registry.configuration(for: .python)
+        let client = try TreeSitterClient(languageConfig: config, languageProvider: self.registry.languageProvider, syntax: .python)
         
         await client.update(content: initialSource)
         _ = try #require(await client.parseHighlights(in: initialSource, range: initialSource.nsRange))

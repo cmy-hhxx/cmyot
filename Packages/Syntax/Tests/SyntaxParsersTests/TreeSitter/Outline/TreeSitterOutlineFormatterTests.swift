@@ -31,15 +31,6 @@ import SyntaxFormat
 
 struct TreeSitterOutlineFormatterTests {
     
-    @Test func formatCSS() {
-        
-        #expect(CSSOutlineFormatter.formatTitle("@media (prefers-color-scheme: dark) { .item { color: white; } }", kind: .container) == "@media (prefers-color-scheme: dark)")
-        #expect(CSSOutlineFormatter.formatTitle("@layer utilities { .m-1 { margin: 1rem; } }", kind: .container) == "@layer utilities")
-        #expect(CSSOutlineFormatter.formatTitle("@supports  ( display: grid )\n{ .item { display: grid; } }", kind: .container) == "@supports ( display: grid )")
-        #expect(CSSOutlineFormatter.formatTitle("   ;", kind: .container) == nil)
-    }
-    
-    
     @Test func formatMarkdown() {
         
         #expect(MarkdownOutlineFormatter.formatTitle("Setext H1\n========", kind: .heading(nil)) == "Setext H1")
@@ -47,27 +38,5 @@ struct TreeSitterOutlineFormatterTests {
         #expect(MarkdownOutlineFormatter.formatTitle("ATX H1", kind: .heading(nil)) == "ATX H1")
         #expect(MarkdownOutlineFormatter.formatTitle("### ATX Closed ###", kind: .heading(nil)) == "ATX Closed")
         #expect(MarkdownOutlineFormatter.formatTitle("###   ", kind: .heading(nil)) == nil)
-    }
-    
-    
-    @Test func formatSwiftMarks() {
-        
-        #expect(SwiftOutlineFormatter.formatTitle("SomeFunction", kind: .function) == "SomeFunction")
-        #expect(SwiftOutlineFormatter.formatTitle("// MARK: Swift", kind: .mark) == "Swift")
-        #expect(SwiftOutlineFormatter.formatTitle("//MARK: Swift", kind: .mark) == "Swift")
-        #expect(SwiftOutlineFormatter.formatTitle("// MARK: - Swift", kind: .mark) == "Swift")
-        #expect(SwiftOutlineFormatter.formatTitle("//MARK: - Swift", kind: .mark) == "Swift")
-        #expect(SwiftOutlineFormatter.formatTitle("/* MARK: Swift */", kind: .mark) == "Swift")
-        #expect(SwiftOutlineFormatter.formatTitle("/*MARK: Swift */", kind: .mark) == "Swift")
-        #expect(SwiftOutlineFormatter.formatTitle("// MARK:", kind: .mark) == nil)
-    }
-    
-    
-    @Test func formatSwiftCommentMarkersWithoutSpaceAfterDelimiter() {
-        
-        #expect(SwiftOutlineFormatter.formatTitle("//TODO: Swift", kind: .mark) == "TODO: Swift")
-        #expect(SwiftOutlineFormatter.formatTitle("//FIXME: Swift", kind: .mark) == "FIXME: Swift")
-        #expect(SwiftOutlineFormatter.formatTitle("/*TODO: Swift */", kind: .mark) == "TODO: Swift")
-        #expect(SwiftOutlineFormatter.formatTitle("/*FIXME: Swift */", kind: .mark) == "FIXME: Swift")
     }
 }

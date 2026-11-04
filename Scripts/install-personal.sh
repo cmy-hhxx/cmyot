@@ -20,7 +20,9 @@ BUNDLE_IDS=("local.cmy.Cot" "com.coteditor.CotEditor")
 MODE="${1:-install}"
 
 find_installs() {
-    mdfind "kMDItemKind == 'Application'" 2>/dev/null \
+    # kMDItemKind is localized ("应用程序" on a Chinese system), so query the
+    # locale-independent content type instead.
+    mdfind "kMDItemContentTypeTree == 'com.apple.application-bundle'" 2>/dev/null \
         | grep -Ei "/(cot|coteditor)[^/]*\.app$" \
         | sort -u
 }

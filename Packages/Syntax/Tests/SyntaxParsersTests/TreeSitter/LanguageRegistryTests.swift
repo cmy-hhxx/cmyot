@@ -43,22 +43,22 @@ actor LanguageRegistryTests {
     }
     
     
-    @Test func parserBuildsWorkingSwiftParser() async throws {
+    @Test func parserBuildsWorkingJavaScriptParser() async throws {
         
         let source = #"""
             class Foo {
                 
-                func bar() { }
+                bar() { }
             }
         """#
         let nsSource = source as NSString
         
-        let parser = try self.registry.parser(syntax: .swift)
+        let parser = try self.registry.parser(syntax: .javaScript)
         let highlights = try #require(await parser.parseHighlights(in: source, range: source.nsRange))
         let outline = try await parser.parseOutline(in: source)
         
         #expect(highlights.highlights.contains {
-            $0.value == .keywords && nsSource.substring(with: $0.range) == "func"
+            $0.value == .keywords && nsSource.substring(with: $0.range) == "class"
         })
         #expect(outline.map(\.title) == ["Foo", "bar()"])
         #expect(outline.map(\.kind) == [.container, .function])

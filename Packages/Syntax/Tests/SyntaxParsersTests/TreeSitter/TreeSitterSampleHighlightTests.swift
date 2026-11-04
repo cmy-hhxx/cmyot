@@ -65,26 +65,9 @@ struct TreeSitterSampleHighlightTests {
         
         switch syntax {
             case .bash: "test.sh"
-            case .c: "test.c"
-            case .cpp: "test.cpp"
-            case .cSharp: "test.cs"
-            case .css: "test.css"
-            case .go: "test.go"
-            case .html: "test.html"
-            case .java: "test.java"
             case .javaScript: "test.js"
-            case .kotlin: "test.kt"
-            case .latex: "test.tex"
-            case .lua: "test.lua"
-            case .makefile: "Makefile"
             case .markdown: "test.md"
-            case .php: "test.php"
             case .python: "test.py"
-            case .ruby: "test.rb"
-            case .rust: "test.rs"
-            case .scala: "test.scala"
-            case .sql: "test.sql"
-            case .swift: "test.swift"
             case .typeScript: "test.ts"
         }
     }

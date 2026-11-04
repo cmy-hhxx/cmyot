@@ -81,6 +81,20 @@ small. For parity, run an OS-level vim layer
 [KindaVim](https://kindavim.app), which the CotEditor maintainer recommends) and turn
 `vimMode` off (`defaults write local.cmy.Cot vimMode 0`).
 
+## Build slimming
+
+The bundled syntax list was trimmed to five, but the package graph still pulled every
+upstream tree-sitter grammar. The unused grammars are gone from `Packages/Syntax` now:
+only Bash, JavaScript, Markdown, Python and TypeScript remain (`tree-sitter-bash`,
+`-javascript`, `-markdown`, `-python`, `-typescript`), together with their parser enum
+cases, outline formatters, queries, samples and tests. Bash is kept although no Shell
+Script syntax ships, so the grammar stays ready for a user-installed one.
+
+Measured after clearing DerivedData and the SwiftPM cache and doing a clean build:
+SwiftPM checkouts 2.8 GB → 0.8 GB (SwiftPM cache 2.2 GB → 0.5 GB), app bundle
+99 MB → 51 MB, binary 80 MB → 33 MB (tree-sitter symbols 112 → 30), `Package.resolved`
+30 → 13 pins. The clean build installs and launches as before.
+
 ## Build & install
 
 ```sh

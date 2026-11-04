@@ -38,9 +38,9 @@ struct TreeSitterClientCapTests {
     
     @Test func limitsHighlightingToParseCap() async throws {
         
-        let cappedSource = "func inside() {}\n"
-        let source = cappedSource + "func outside() {}\n"
-        let client = try self.swiftClient(maximumParseLength: cappedSource.length)
+        let cappedSource = "def inside():\n    pass\n"
+        let source = cappedSource + "def outside():\n    pass\n"
+        let client = try self.pythonClient(maximumParseLength: cappedSource.length)
         
         let result = try #require(await client.parseHighlights(in: source, range: source.nsRange))
         let highlightedTexts = self.highlightedTexts(in: result, source: source)
@@ -53,9 +53,9 @@ struct TreeSitterClientCapTests {
     
     @Test func ignoresEditsAfterParseCap() async throws {
         
-        let cappedSource = "func inside() {}\n"
-        let source = cappedSource + "func outside() {}\n"
-        let client = try self.swiftClient(maximumParseLength: cappedSource.length)
+        let cappedSource = "def inside():\n    pass\n"
+        let source = cappedSource + "def outside():\n    pass\n"
+        let client = try self.pythonClient(maximumParseLength: cappedSource.length)
         
         _ = try #require(await client.parseHighlights(in: source, range: source.nsRange))
         
@@ -80,9 +80,9 @@ struct TreeSitterClientCapTests {
     
     @Test func resetsParserForEditsCrossingParseCap() async throws {
         
-        let cappedSource = "func inside() {}\n"
-        let source = cappedSource + "func outside() {}\n"
-        let client = try self.swiftClient(maximumParseLength: cappedSource.length)
+        let cappedSource = "def inside():\n    pass\n"
+        let source = cappedSource + "def outside():\n    pass\n"
+        let client = try self.pythonClient(maximumParseLength: cappedSource.length)
         
         _ = try #require(await client.parseHighlights(in: source, range: source.nsRange))
         
@@ -100,18 +100,18 @@ struct TreeSitterClientCapTests {
     
     // MARK: Private Methods
     
-    /// Returns a Swift tree-sitter client with the given parse length cap.
+    /// Returns a Python tree-sitter client with the given parse length cap.
     ///
     /// - Parameters:
     ///   - maximumParseLength: The maximum UTF-16 length to parse.
-    /// - Returns: A Swift parser client.
-    private func swiftClient(maximumParseLength: Int) throws -> TreeSitterClient {
+    /// - Returns: A Python parser client.
+    private func pythonClient(maximumParseLength: Int) throws -> TreeSitterClient {
         
-        let config = try self.registry.configuration(for: .swift)
+        let config = try self.registry.configuration(for: .python)
         
         return try TreeSitterClient(languageConfig: config,
                                     languageProvider: self.registry.languageProvider,
-                                    syntax: .swift,
+                                    syntax: .python,
                                     maximumParseLength: maximumParseLength)
     }
     
