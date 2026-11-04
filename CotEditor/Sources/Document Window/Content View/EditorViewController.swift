@@ -76,7 +76,7 @@ final class EditorViewController: NSSplitViewController {
         self.outlineNavigator.textView = self.textView
         let navigationBar = NavigationBar(outlineNavigator: self.outlineNavigator, splitState: self.splitState)
         self.navigationBarItem = NSSplitViewItem(viewController: NSHostingController(rootView: navigationBar))
-        self.navigationBarItem.isCollapsed = !UserDefaults.standard[.showNavigationBar]
+        self.navigationBarItem.isCollapsed = true  // reconsidered below
         self.addSplitViewItem(self.navigationBarItem)
         
         // setup text view controller
@@ -94,12 +94,17 @@ final class EditorViewController: NSSplitViewController {
         super.viewWillAppear()
         
         self.outlineObserver = self.document.syntaxController.$outlineItems
-                .removeDuplicates()
-                .assign(to: \.items, on: self.outlineNavigator)
+            .removeDuplicates()
+            .sink { [weak self] items in
+                self?.outlineNavigator.items = items
+                self?.updateNavigationBarVisibility(animated: true)
+            }
         self.defaultObservers = [
             UserDefaults.standard.publisher(for: .showNavigationBar)
-                .sink { [weak self] in self?.navigationBarItem.animator().isCollapsed = !$0 },
+                .sink { [weak self] _ in self?.updateNavigationBarVisibility() },
         ]
+        
+        self.updateNavigationBarVisibility()
     }
     
     
@@ -109,6 +114,25 @@ final class EditorViewController: NSSplitViewController {
         
         self.outlineObserver?.cancel()
         self.defaultObservers.removeAll()
+    }
+    
+    
+    /// Shows the navigation bar only when it has something to offer: a close button
+    /// (split editors) or outline navigation. An empty bar is pure visual noise.
+    func updateNavigationBarVisibility(animated: Bool = false) {
+        
+        guard self.isViewLoaded else { return }
+        
+        let hasContent = self.splitState.canClose || self.outlineNavigator.items?.isEmpty == false
+        let shouldShow = UserDefaults.standard[.showNavigationBar] && hasContent
+        
+        guard shouldShow != !self.navigationBarItem.isCollapsed else { return }
+        
+        if animated {
+            self.navigationBarItem.animator().isCollapsed = !shouldShow
+        } else {
+            self.navigationBarItem.isCollapsed = !shouldShow
+        }
     }
     
     

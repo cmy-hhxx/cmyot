@@ -1077,6 +1077,11 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         if let focusedChild = self.focusedChild, let group = self.splitGroup(containing: focusedChild) {
             self.splitState.isVertical = group.splitView.isVertical
         }
+        
+        // an empty navigation bar is noise: let each pane decide whether to show it
+        for editorViewController in self.editorViewControllers {
+            editorViewController.updateNavigationBarVisibility(animated: true)
+        }
     }
     
     
