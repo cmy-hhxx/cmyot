@@ -42,9 +42,12 @@ small. For parity, run an OS-level vim layer
 ## Build & install
 
 ```sh
-./Scripts/install-personal.sh          # build, install, clean, relaunch
-./Scripts/install-personal.sh --check  # report only
+./install.command            # build, install, clean, relaunch
+./install.command --check    # report only
 ```
+
+`install.command` can also be double-clicked in Finder: it runs in Terminal and keeps the
+window open with the result. `Scripts/install-personal.sh` holds the implementation.
 
 **One copy only.** `Scripts/install-personal.sh` is the supported way to build and install:
 it builds into Xcode's default DerivedData (`~/Library/Developer/Xcode/DerivedData`, outside

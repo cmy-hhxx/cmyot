@@ -2,8 +2,10 @@
 #
 # Rebuild, install and — crucially — leave exactly ONE copy of the editor on the system.
 #
-#   ./Scripts/install-personal.sh            # build + install + clean + relaunch
-#   ./Scripts/install-personal.sh --check    # report only, change nothing
+# Double-click this file in Finder, or run either of:
+#
+#   ./install.command            # build + install + clean + relaunch
+#   ./install.command --check    # report only, change nothing
 #
 # Build products go to Xcode's default DerivedData (~/Library/Developer/Xcode/DerivedData),
 # which Spotlight does not index. Never build into the repository: a .app inside the
@@ -55,6 +57,11 @@ ditto "$PRODUCT" "$TARGET"
 codesign --verify --deep --strict "$TARGET"
 echo "签名 OK"
 
+# Delete the build product: a .app left in DerivedData is indexed by Spotlight and
+# shows up in Spotlight/Launchpad as a second, stale copy of the editor.
+rm -rf "$PRODUCT"
+echo "已删除构建产物副本"
+
 echo
 echo "== 3/4 清理其它副本（移到废纸篓，可恢复） =="
 mkdir -p "$HOME/.Trash"
@@ -73,11 +80,20 @@ done <<< "$CURRENT"
 
 echo
 echo "== 4/4 验证 =="
-FINAL="$(find_installs || true)"
-echo "$FINAL"
+FINAL=""
+for _ in $(seq 1 20); do
+    FINAL="$(find_installs || true)"
+    [[ "$FINAL" == "$TARGET" ]] && break
+    sleep 1
+done
+
 COUNT=$(printf "%s\n" "$FINAL" | grep -c "\.app$" || true)
-if [[ "$COUNT" == "1" && -d "$TARGET" ]]; then
+echo "${FINAL:-(无)}"
+
+if [[ "$COUNT" == "1" && "$FINAL" == "$TARGET" ]]; then
     echo "✅ 现在系统里只有一个编辑器：$TARGET"
+elif [[ "$COUNT" == "1" && -d "$TARGET" ]]; then
+    echo "⚠️  磁盘上只有 $TARGET，但 Spotlight 仍报另一个路径（索引尚未刷新，稍等即可）"
 else
     echo "⚠️  仍有 $COUNT 个副本，请检查上面的列表"
     exit 1
