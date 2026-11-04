@@ -387,7 +387,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         else { return }
         
         let syntaxNames = SyntaxManager.shared.settingNames
-        let recentSyntaxNames = UserDefaults.standard[.recentSyntaxNames]
         let action = #selector((any SyntaxChanging).changeSyntax)
         
         menu.removeAllItems()
@@ -397,20 +396,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         
         menu.addItem(noneItem)
         menu.addItem(.separator())
-        
-        if !recentSyntaxNames.isEmpty {
-            let title = String(localized: "Toolbar.syntax.menu.recentlyUsed.label",
-                               defaultValue: "Recently Used", table: "Document", comment: "menu item header")
-            menu.addItem(.sectionHeader(title: title))
-            
-            menu.items += recentSyntaxNames.reversed()
-                .map { name in
-                    let item = NSMenuItem(title: name, action: action, keyEquivalent: "")
-                    item.representedObject = name
-                    return item
-                }
-            menu.addItem(.separator())
-        }
         
         menu.items += syntaxNames
             .map { name in
@@ -578,8 +563,8 @@ extension DocumentWindowController: NSToolbarDelegate {
             .splitRight,
             .splitBelow,
             .inspector,
-            .flexibleSpace,
             .more,
+            .flexibleSpace,
         ]
     }
     
