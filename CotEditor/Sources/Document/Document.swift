@@ -302,7 +302,10 @@ extension NSTextView: EditorCounter.Source { }
     
     override var windowForSheet: NSWindow? {
         
+        // A document that is shown inside another document's window has no window
+        // controller of its own, so fall back to the window the user is looking at.
         super.windowForSheet ?? self.windowController?.window
+            ?? ((self.windowController == nil) ? NSApp.keyWindow : nil)
     }
     
     

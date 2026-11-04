@@ -101,8 +101,11 @@ final class DocumentController: NSDocumentController {
         }
         
         // obtain transient document if exists
+        // -> Not when the document is opened into a pane of an existing window:
+        //    reusing the placeholder window would show the file twice.
         let transientDocument: Document?
-        if let document = self.transientDocument,
+        if !self.opensDocumentInPane,
+           let document = self.transientDocument,
            document.windowForSheet?.attachedSheet == nil
         {
             document.isTransient = false
@@ -407,6 +410,13 @@ final class DocumentController: NSDocumentController {
         second.setFrame(NSRect(x: frame.minX + half, y: frame.minY, width: frame.width - half, height: frame.height),
                         display: true, animate: true)
     }
+    
+    
+    // MARK: Internal Properties
+    
+    /// Whether the document being opened is placed in a pane of an existing window
+    /// rather than in a window of its own.
+    var opensDocumentInPane = false
     
     
     // MARK: Private Methods

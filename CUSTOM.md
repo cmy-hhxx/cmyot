@@ -26,7 +26,7 @@ opens in Xcode 26; upstream `main` already requires Xcode 27.2 + macOS 27).
 | Encodings | Default encoding list trimmed from ~70 entries to five: UTF-8, GB18030 (covers GBK/GB2312), Big 5, UTF-16, Windows Latin 1. This is the list behind the encoding menu at the bottom of the window and the encoding candidates used when opening files. | `DefaultSettings+Encodings.swift` |
 | Toolbar placement | Back to the single-row `.unifiedCompact` style (`.expanded` added an ugly second row). The six leading controls are flagged `isNavigational`, which is the documented way to have the system place them outside the normal (trailing) item run. | `DocumentWindowController.swift` |
 | Emoji menu | Curated emoji are laid out as five category rows of six buttons (grid) instead of one long column. | `DocumentWindowController.swift`, `DocumentViewController.swift` |
-| Windows | 更多 ▸ 并排两个窗口 tiles the two frontmost document windows side by side — the way to edit two *different* files next to each other, since split panes are views of one document by design. | `DocumentController.swift` |
+| Windows | 更多 ▸ 并排两个窗口 tiles the two frontmost document windows side by side. | `DocumentController.swift` |
 | Appearance | 更多 ▸ 外观 submenu (跟随系统 / 浅色 / 深色) writes the existing `documentAppearance` default; CotEditor already swaps the theme's light/dark variant live, so no new theme code was needed. Checkmark state is kept in sync. | `DocumentWindowController.swift`, `DocumentViewController.swift` |
 | Vim motions (2) | `.` repeat, `%`, `J`, `>>` / `<<`, `*` / `#`, `⌃d` / `⌃u`, and counts for `5G` / `5gg`. | `VimEngine.swift` |
 | Toolbar | 向右分割 / 向下分割 buttons added to the window toolbar. | `DocumentWindowController.swift` |
@@ -41,6 +41,23 @@ opens in Xcode 26; upstream `main` already requires Xcode 27.2 + macOS 27).
 | Title rename | Window now publishes `representedURL`, so the title bar offers the proxy icon and rename-on-double-click; added File ▸ 重命名… wired to the native `moveDocument:` panel. | `DocumentWindowController.swift`, `Main.storyboard` |
 | Inspector | Single pane (document only); file attributes, tags and per-character sections removed, keeping encoding / line ending / counts. | `InspectorViewController.swift`, `DocumentInspectorView.swift` |
 | Language | App pinned to Simplified Chinese via `AppleLanguages` in the app's own defaults (`defaults write local.cmy.Cot AppleLanguages -array zh-Hans`). No translations were added — the shipped `zh-Hans` string catalogs are used. | user defaults |
+
+## Third round: panes with their own documents
+
+| Area | Change | Files |
+|---|---|---|
+| Split panes | 向右分割 / 向下分割 now ask for a file and open it in the new pane with its own `Document`. Before, every pane was a second view of the same text storage, so all panes always showed the same content. | `DocumentViewController.swift`, `EditorViewController.swift` |
+| Split ratios | Every structural change rebalances each container in proportion to the number of panes in its branches, so nested layouts also end up with panes of equal size. | `DocumentViewController.swift` |
+| Focus routing | `save:` / `saveAs:` / `changeSyntax:` are implemented on `EditorViewController`, so ⌘S, ⌘⇧S, the syntax menu and the toolbar popup act on the **focused** pane's document. The status bar follows the focused pane as well. | `EditorViewController.swift`, `DocumentWindowController.swift`, `WindowContentViewController.swift` |
+| Document lifecycle | The extra document is opened with `display: false`, i.e. it never gets a window controller of its own; it is closed when its pane closes and when the window closes. `windowForSheet` falls back to the key window so save/revert sheets still have an anchor. Untitled-document reuse is suppressed while a document is being opened into a pane, otherwise the empty placeholder window would be repurposed and the file would appear twice in one window. | `DocumentViewController.swift`, `Document.swift`, `DocumentController.swift` |
+| Parsing | Each pane document gets its own `setupParser()` call, theme, and edit observer; the syntax invalidation in `textStorageDidProcessEditing` is resolved by text storage instead of assuming the window's primary document. | `DocumentViewController.swift` |
+
+Known limits of the independent panes:
+
+- The window still has *one* title, one dirty dot and one tab group, because the window's primary document is still the only one AppKit associates with the window. A dirty secondary pane shows no modified indicator.
+- Closing the window saves a dirty secondary pane through the standard autosave-in-place path (`enablesAutosaveInPlace` defaults to `true`). With autosave turned off, `NSDocument` falls back to its save prompt anchored at the key window.
+- Saving the *same* file twice in one window is impossible: `NSDocumentController` returns the already-open document, and the split command then just brings that window forward.
+- Toolbar text size, wrap, appearance and the read-only toggle stay window-wide; they are applied to every pane.
 
 Known limits of the vim layer: single register, no macros/marks/text objects/visual block,
 no `/` search, no `.` repeat, no `f t %`. Registers/undo go through the standard

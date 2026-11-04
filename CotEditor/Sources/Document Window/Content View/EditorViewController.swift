@@ -38,7 +38,9 @@ final class EditorViewController: NSSplitViewController {
     
     // MARK: Private Properties
     
-    private let document: Document
+    /// The document this pane edits. Panes only share a document when they were
+    /// split from the same file; a pane opened on another file owns its own.
+    let document: Document
     private let splitState: SplitState
     
     private lazy var outlineNavigator = OutlineNavigator()
@@ -148,6 +150,10 @@ final class EditorViewController: NSSplitViewController {
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         
         switch item.action {
+            case #selector(save), #selector(saveAs):
+                // this pane forwards the action to its own document
+                return true
+                
             case #selector(toggleNavigationBar):
                 (item as? NSMenuItem)?.title = !self.navigationBarItem.isCollapsed
                     ? String(localized: "Hide Navigation Bar", table: "MainMenu")
@@ -180,6 +186,27 @@ final class EditorViewController: NSSplitViewController {
     
     
     // MARK: Action Messages
+    
+    /// Saves the document this pane edits, whatever window it is shown in.
+    @IBAction func save(_ sender: Any?) {
+        
+        self.document.save(sender)
+    }
+    
+    
+    /// Saves the document this pane edits under a new name.
+    @IBAction func saveAs(_ sender: Any?) {
+        
+        self.document.saveAs(sender)
+    }
+    
+    
+    /// Changes the syntax of the document this pane edits.
+    @IBAction func changeSyntax(_ sender: NSMenuItem) {
+        
+        self.document.changeSyntax(sender)
+    }
+    
     
     /// Toggles visibility of navigation bar with fancy animation (sync all documents).
     @IBAction func toggleNavigationBar(_ sender: Any?) {

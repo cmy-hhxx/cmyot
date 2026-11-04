@@ -95,6 +95,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     // MARK: Private Properties
     
+    /// Posted when the pane that has the focus starts editing another document.
+    static let focusedDocumentDidChangeNotification = Notification.Name("DocumentViewControllerFocusedDocumentDidChange")
+    
     private static let maximumNumberOfSplitEditors = 4
     
     private let splitState = SplitState()
@@ -104,8 +107,11 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     private var themeName: String?
     private var theme: Theme?  { self.focusedTextView?.theme }
     
+    private var needsRatioRebalance = false
+    
     private var observers: Set<AnyCancellable> = []
     private var defaultsObservers: Set<AnyCancellable> = []
+    private var windowCloseObserver: AnyCancellable?
     
     
     // MARK: Lifecycle
@@ -150,7 +156,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.splitState.isVertical = self.splitView.isVertical
         
         // set first editor view
-        let initialViewController = self.makeEditorViewController(copying: nil)
+        let initialViewController = self.makeEditorViewController(document: self.document, copying: nil)
         self.insertSplitViewItem(self.makeSplitViewItem(for: initialViewController), at: 0)
         
         // set theme
@@ -212,8 +218,22 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             NotificationCenter.default.publisher(for: EditorTextView.DidBecomeFirstResponderMessage.name)
                 .map { $0.object as! EditorTextView }
                 .compactMap { [weak self] textView in self?.editorViewControllers.first { $0.textView == textView } }
-                .sink { [weak self] in self?.focusedChild = $0 },
+                .sink { [weak self] in
+                    self?.focusedChild = $0
+                    NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
+                },
         ]
+    }
+    
+    
+    override func viewDidLayout() {
+        
+        super.viewDidLayout()
+        
+        // dividers can only be moved once the split views have a size
+        guard self.needsRatioRebalance, self.view.bounds.width > 0, self.view.bounds.height > 0 else { return }
+        self.needsRatioRebalance = false
+        self.rebalancePanes(in: self)
     }
     
     
@@ -234,6 +254,20 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             UserDefaults.standard.publisher(for: .showIndentGuides, initial: true)
                 .sink { [weak self] in self?.showsIndentGuides = $0 },
         ]
+    }
+    
+    
+    override func viewDidAppear() {
+        
+        super.viewDidAppear()
+        
+        // release the extra documents when the window goes away, so they never
+        // linger invisible and unsavable in the document controller
+        if self.windowCloseObserver == nil, let window = self.view.window {
+            self.windowCloseObserver = NotificationCenter.default
+                .publisher(for: NSWindow.willCloseNotification, object: window)
+                .sink { [weak self] _ in self?.closeSecondaryDocuments() }
+        }
     }
     
     
@@ -484,13 +518,15 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         guard textStorage.editedMask.contains(.editedCharacters) else { return }
         
         MainActor.assumeIsolated { [range = textStorage.editedRange, length = textStorage.changeInLength] in
+            guard let document = self.document(for: textStorage) else { return }
+            
             // tell the parser that text was changed
-            self.document.syntaxController.invalidate(in: range, changeInLength: length)
+            document.syntaxController.invalidate(in: range, changeInLength: length)
             
             guard self.focusedTextView?.hasMarkedText() != true else { return }
             
-            self.document.counter.invalidateContent()
-            self.document.syntaxController.parseIfNeeded()
+            document.counter.invalidateContent()
+            document.syntaxController.parseIfNeeded()
         }
     }
     
@@ -498,7 +534,10 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     /// Invoked when the selection did change.
     @objc private func textViewDidLiveChangeSelection(_ notification: Notification) {
         
-        self.document.counter.invalidateSelection()
+        let textView = notification.object as? NSTextView
+        let document = textView.flatMap { self.document(for: $0) } ?? self.document
+        
+        document.counter.invalidateSelection()
     }
     
     
@@ -911,7 +950,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Splits the focused pane in the given direction, nesting a container when needed.
+    /// Splits the focused pane in the given direction and opens another file in the new pane.
     ///
     /// - Parameters:
     ///   - sender: The action sender.
@@ -920,10 +959,84 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         guard self.editorViewControllers.count < Self.maximumNumberOfSplitEditors else { return NSSound.beep() }
         
-        guard let currentViewController = self.baseEditorViewController(for: sender) else { return assertionFailure() }
+        guard
+            let currentViewController = self.baseEditorViewController(for: sender),
+            let window = self.view.window
+        else { return assertionFailure() }
         
-        let newEditorViewController = self.makeEditorViewController(copying: currentViewController)
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            
+            Task { @MainActor [weak self] in
+                await self?.openSplitEditor(at: url, beside: currentViewController, isVertical: isVertical)
+            }
+        }
+    }
+    
+    
+    /// Opens the file at the given URL in a new pane beside the given one.
+    ///
+    /// - Parameters:
+    ///   - url: The file to edit in the new pane.
+    ///   - currentViewController: The pane the new one is placed next to.
+    ///   - isVertical: `true` to place the new pane to the right, `false` to place it below.
+    private func openSplitEditor(at url: URL, beside currentViewController: EditorViewController, isVertical: Bool) async {
+        
+        let opened: NSDocument
+        let wasAlreadyOpen: Bool
+        let controller = NSDocumentController.shared
+        let documentController = controller as? DocumentController
+        documentController?.opensDocumentInPane = true
+        do {
+            (opened, wasAlreadyOpen) = try await controller.openDocument(withContentsOf: url, display: false)
+            documentController?.opensDocumentInPane = false
+        } catch {
+            documentController?.opensDocumentInPane = false
+            NSApp.presentError(error)
+            return
+        }
+        
+        guard let document = opened as? Document else { return assertionFailure() }
+        
+        guard !wasAlreadyOpen else {
+            // the file already lives in its own window: showing it there is the honest thing to do
+            document.showWindows()
+            NSApp.activate()
+            return
+        }
+        
+        guard
+            self.editorViewControllers.count < Self.maximumNumberOfSplitEditors,
+            let window = self.view.window
+        else { return NSSound.beep() }
+        
+        // a document without a window never gets its parser started
+        document.syntaxController.setupParser()
+        
+        let newEditorViewController = self.makeEditorViewController(document: document, copying: currentViewController)
+        self.insertPane(newEditorViewController, beside: currentViewController, isVertical: isVertical)
+        
+        self.splitState.isVertical = isVertical
+        self.updateSplitState()
+        self.scheduleRatioRebalance()
+        
+        window.makeFirstResponderDiscardingMarkedText(newEditorViewController.textView)
+    }
+    
+    
+    /// Places a pane next to another one, nesting a container when the directions differ.
+    ///
+    /// - Parameters:
+    ///   - newViewController: The pane to insert.
+    ///   - currentViewController: The pane it is placed next to.
+    ///   - isVertical: `true` to place it to the right, `false` to place it below.
+    private func insertPane(_ newViewController: EditorViewController, beside currentViewController: EditorViewController, isVertical: Bool) {
+        
         let parentGroup = self.splitGroup(containing: currentViewController) ?? self
+        let item = self.makeSplitViewItem(for: newViewController)
         
         guard let index = parentGroup.splitViewItems.firstIndex(where: { $0.viewController === currentViewController }) else {
             return assertionFailure()
@@ -932,31 +1045,18 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         if parentGroup.splitViewItems.count == 1 {
             // a lone pane simply adopts the requested direction
             parentGroup.splitView.isVertical = isVertical
-            parentGroup.insertSplitViewItem(self.makeSplitViewItem(for: newEditorViewController), at: index + 1)
+            parentGroup.insertSplitViewItem(item, at: index + 1)
         } else if parentGroup.splitView.isVertical == isVertical {
             // same direction: put the new pane beside the current one
-            parentGroup.insertSplitViewItem(self.makeSplitViewItem(for: newEditorViewController), at: index + 1)
+            parentGroup.insertSplitViewItem(item, at: index + 1)
         } else {
             // other direction: wrap the current pane and the new one in a nested container
             let group = SplitGroupViewController(isVertical: isVertical)
             self.removeItem(for: currentViewController, from: parentGroup)
             parentGroup.insertSplitViewItem(self.makeSplitViewItem(for: group), at: index)
             group.addSplitViewItem(self.makeSplitViewItem(for: currentViewController))
-            group.addSplitViewItem(self.makeSplitViewItem(for: newEditorViewController))
+            group.addSplitViewItem(item)
         }
-        
-        // adjust visible areas
-        if let selectedRange = currentViewController.textView?.selectedRange {
-            newEditorViewController.textView?.selectedRange = selectedRange
-            currentViewController.textView?.scrollRangeToVisible(selectedRange)
-            newEditorViewController.textView?.scrollRangeToVisible(selectedRange)
-        }
-        
-        self.splitState.isVertical = isVertical
-        self.updateSplitState()
-        
-        // move focus to the new editor
-        self.view.window?.makeFirstResponderDiscardingMarkedText(newEditorViewController.textView)
     }
     
     
@@ -993,10 +1093,80 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.removeItem(for: currentViewController, from: parentGroup)
         self.collapseSingleChildGroups(from: parentGroup)
         self.updateSplitState()
+        self.scheduleRatioRebalance()
+        
+        // a pane that edits another file owns a window-less document: let it go
+        if currentViewController.document !== self.document {
+            currentViewController.document.close()
+        }
     }
     
     
     // MARK: Private Methods
+    
+    /// Gives every editor pane the same share of its container.
+    ///
+    /// Containers distribute their thickness in proportion to the number of panes
+    /// in each branch, so nested containers end up with equal panes as well.
+    ///
+    /// - Parameter group: The container to rebalance, including its nested containers.
+    private func rebalancePanes(in group: NSSplitViewController) {
+        
+        for item in group.splitViewItems {
+            if let nested = item.viewController as? SplitGroupViewController {
+                self.rebalancePanes(in: nested)
+            }
+        }
+        
+        let items = group.splitViewItems
+        guard items.count > 1 else { return }
+        
+        let splitView = group.splitView
+        let weights = items.map { CGFloat(self.paneCount(of: $0.viewController)) }
+        let totalWeight = weights.reduce(0, +)
+        let available = (splitView.isVertical ? splitView.bounds.width : splitView.bounds.height)
+            - splitView.dividerThickness * CGFloat(items.count - 1)
+        
+        guard totalWeight > 0, available > 0 else { return }
+        
+        var offset: CGFloat = 0
+        for (index, weight) in weights.dropLast().enumerated() {
+            offset += available * weight / totalWeight
+            splitView.setPosition(offset, ofDividerAt: index)
+        }
+    }
+    
+    
+    /// The number of editor panes a view controller contributes to the layout.
+    ///
+    /// - Parameter viewController: The pane or container to count.
+    /// - Returns: `1` for an editor pane, the sum for a container, otherwise `0`.
+    private func paneCount(of viewController: NSViewController) -> Int {
+        
+        if let group = viewController as? SplitGroupViewController {
+            return group.splitViewItems.reduce(0) { $0 + self.paneCount(of: $1.viewController) }
+        }
+        
+        return viewController is EditorViewController ? 1 : 0
+    }
+    
+    
+    /// Closes the documents that exist only because a pane shows them.
+    private func closeSecondaryDocuments() {
+        
+        for editorViewController in self.editorViewControllers where editorViewController.document !== self.document {
+            editorViewController.document.close()
+        }
+    }
+    
+    
+    /// Requests equal shares for all panes after the next layout pass.
+    private func scheduleRatioRebalance() {
+        
+        self.needsRatioRebalance = true
+        self.view.needsLayout = true
+    }
+    
     
     /// All editors in visual order, flattened across nested containers.
     private var editorViewControllers: [EditorViewController] {
@@ -1016,6 +1186,33 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         collect(self)
         
         return editors
+    }
+    
+    
+    /// The document the focused pane edits.
+    var focusedDocument: Document {
+        
+        self.focusedChild?.document ?? self.document
+    }
+    
+    
+    /// Returns the document that owns the given text storage.
+    ///
+    /// - Parameter textStorage: A text storage shown in one of the panes.
+    /// - Returns: The document owning it, or `nil` if the text storage is foreign.
+    func document(for textStorage: NSTextStorage) -> Document? {
+        
+        self.editorViewControllers.first { $0.document.textStorage === textStorage }?.document
+    }
+    
+    
+    /// Returns the document the given text view belongs to.
+    ///
+    /// - Parameter textView: A text view in one of the panes.
+    /// - Returns: The document the pane edits, or `nil` if the text view is foreign.
+    func document(for textView: NSTextView) -> Document? {
+        
+        self.editorViewControllers.first { $0.textView === textView }?.document
     }
     
     
@@ -1102,20 +1299,29 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     /// Creates a new editor view for a pane.
     ///
-    /// - Parameter otherViewController: The editor whose state is copied.
+    /// - Parameters:
+    ///   - document: The document the pane edits.
+    ///   - otherViewController: The editor whose state is copied.
     /// - Returns: The editor view controller created.
-    @discardableResult private func makeEditorViewController(copying otherViewController: EditorViewController?) -> sending EditorViewController {
+    @discardableResult private func makeEditorViewController(document: Document, copying otherViewController: EditorViewController?) -> sending EditorViewController {
         
-        let viewController = EditorViewController(document: self.document, splitState: self.splitState)
+        let viewController = EditorViewController(document: document, splitState: self.splitState)
         
         // observe cursor
         NotificationCenter.default.addObserver(self, selector: #selector(textViewDidLiveChangeSelection),
                                                name: EditorTextView.DidLiveChangeSelectionMessage.name,
                                                object: viewController.textView)
         
+        // observe edits so each document keeps its own syntax parse up to date
+        if document !== self.document {
+            NotificationCenter.default.addObserver(self, selector: #selector(textStorageDidProcessEditing),
+                                                   name: NSTextStorage.didProcessEditingNotification,
+                                                   object: document.textStorage)
+        }
+        
         // setup textView
         let textView = viewController.textView!
-        textView.isEditable = self.document.isEditable
+        textView.isEditable = document.isEditable
         textView.wrapsLines = self.wrapsLines
         textView.showsInvisibles = self.showsInvisibles
         textView.setLayoutOrientation(self.verticalLayoutOrientation ? .vertical : .horizontal)
@@ -1140,6 +1346,11 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         if textView.baseWritingDirection != self.writingDirection {
             textView.baseWritingDirection = self.writingDirection
+        }
+        
+        // the syntax controller belongs to the document, so give it the pane's theme
+        if document !== self.document {
+            document.syntaxController.theme = textView.theme
         }
         
         return viewController

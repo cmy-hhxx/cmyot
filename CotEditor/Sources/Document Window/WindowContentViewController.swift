@@ -50,6 +50,7 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
     private var versionBrowserObservers: [any NSObjectProtocol] = []
     
     private var defaultsObserver: AnyCancellable?
+    private var focusObservers: Set<AnyCancellable> = []
     
     
     // MARK: Split View Controller Methods
@@ -195,6 +196,16 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
         //    when keyboard navigation is enabled in system settings. (2025-11, macOS 26)
         self.focusEditor()
         
+        // let the status bar describe the pane the user is typing in
+        self.focusObservers = [
+            NotificationCenter.default.publisher(for: EditorTextView.DidBecomeFirstResponderMessage.name)
+                .map { $0.object as! EditorTextView }
+                .filter { [weak self] textView in textView.window === self?.view.window }
+                .compactMap { [weak self] textView in self?.documentViewController?.document(for: textView) }
+                .removeDuplicates { $0 === $1 }
+                .sink { [weak self] in self?.statusBarModel.document = $0 },
+        ]
+        
         // observe user defaults for status bar
         if #available(macOS 26, *) {
             let statusBarController = self.contentViewItem.bottomAlignedAccessoryViewControllers.first
@@ -212,6 +223,7 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
         
         super.viewDidDisappear()
         
+        self.focusObservers.removeAll()
         self.versionBrowserObservers.forEach(NotificationCenter.default.removeObserver)
         self.versionBrowserObservers.removeAll()
         

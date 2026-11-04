@@ -72,6 +72,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     private var documentsObserver: AnyCancellable?
     
     private var documentSyntaxObserver: AnyCancellable?
+    private var focusObserver: AnyCancellable?
     private var syntaxListObserver: AnyCancellable?
     private weak var syntaxPopUpButton: NSPopUpButton?
     
@@ -162,6 +163,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         )
         .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
         .sink { [weak self] _ in self?.invalidateUniqueDirectory() }
+        
+        // follow the pane the user is typing in
+        self.focusObserver = NotificationCenter.default
+            .publisher(for: DocumentViewController.focusedDocumentDidChangeNotification)
+            .compactMap { $0.object as? DocumentViewController }
+            .filter { [weak self] in $0 === self?.documentViewController }
+            .sink { [weak self] in self?.followFocusedDocument($0.focusedDocument) }
     }
     
     
@@ -332,9 +340,30 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         
         self.syntaxPopUpButton?.isEnabled = (document is Document)
         
-        // observe document's syntax change for toolbar
-        self.documentSyntaxObserver = (document as? Document)?.$syntaxName
+        // let the toolbar follow whichever pane has the focus
+        if let document = document as? Document {
+            self.followFocusedDocument(document)
+        } else {
+            self.documentSyntaxObserver = nil
+        }
+    }
+    
+    
+    /// The document view controller of this window, if the window shows one.
+    private var documentViewController: DocumentViewController? {
+        
+        (self.contentViewController as? WindowContentViewController)?.documentViewController
+    }
+    
+    
+    /// Makes the toolbar reflect the document of the focused pane.
+    ///
+    /// - Parameter document: The document the focused pane edits.
+    private func followFocusedDocument(_ document: Document) {
+        
+        self.documentSyntaxObserver = document.$syntaxName
             .sink { [weak self] in self?.selectSyntaxPopUpItem(with: $0) }
+        self.selectSyntaxPopUpItem(with: document.syntaxName)
     }
     
     
