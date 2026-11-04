@@ -649,10 +649,12 @@ final class FileBrowserViewController: NSViewController, NSMenuItemValidation {
         
         guard let item = outlineView.item(atRow: outlineView.clickedRow) else { return }
         
-        if outlineView.isItemExpanded(item) {
-            outlineView.animator().collapseItem(item)
-        } else {
-            outlineView.animator().expandItem(item)
+        NSAnimationContext.withStandardTiming {
+            if outlineView.isItemExpanded(item) {
+                outlineView.animator().collapseItem(item)
+            } else {
+                outlineView.animator().expandItem(item)
+            }
         }
     }
     
@@ -941,7 +943,9 @@ final class FileBrowserViewController: NSViewController, NSMenuItemValidation {
         
         let showsSeparator = (clipView.documentVisibleRect.maxY < clipView.documentRect.maxY)
         
-        self.bottomSeparator.animator().alphaValue = showsSeparator ? 1 : 0
+        NSAnimationContext.withTiming(duration: AnimationConstants.fast, timingFunction: AnimationConstants.easeOut) {
+            self.bottomSeparator.animator().alphaValue = showsSeparator ? 1 : 0
+        }
     }
 }
 

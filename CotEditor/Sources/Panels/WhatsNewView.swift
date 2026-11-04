@@ -266,7 +266,7 @@ private struct MigrationReportView: View {
                 .lineLimit(nil)
                 .fixedSize(horizontal: false, vertical: true)
                 .opacity(self.isVisible ? 1 : 0)
-                .animation(.easeIn(duration: 0.2).delay(0.1), value: self.isVisible)
+                .cotAnimation(.cotFast.delay(0.1), value: self.isVisible)
         } icon: {
             Image(systemName: "checkmark")
                 .symbolRenderingMode(.hierarchical)

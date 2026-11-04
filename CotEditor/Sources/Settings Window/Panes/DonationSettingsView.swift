@@ -300,7 +300,7 @@ private struct OnetimeProductViewStyle: ProductViewStyle {
                 .fixedSize()
                 .padding(.top, 6)
                 .contentTransition(.numericText())
-                .animation(.default, value: self.quantity)
+                .cotAnimation(.cotStandard, value: self.quantity)
             }
             .accessibilityElement(children: .contain)
         }

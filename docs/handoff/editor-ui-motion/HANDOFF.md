@@ -5,10 +5,11 @@
 ## 1. 状态（Opus 写，P2 / P3 更新门状态）
 
 - 模式：Full
-- 当前阶段：P1
-- 下一步是谁：DeepSeek
+- 当前阶段：P2 完成（待 P3 短审）
+- 下一步是谁：Opus（P3）
 - baseline tag：`baseline/editor-ui-motion`
 - 门状态：G1 ✅（build ✅ · DESIGN.md ✅ · HANDOFF.md ✅）；截图 / console error / 两帧差 / reduced-motion 由 gate 跳过（STILLS_URL 为空，原生 app），**需人工截图 + 录屏确认**
+- 门状态：G2 ✅（10/10 TODO done · build ✅ · FROZEN 未被触碰 · 无新依赖 · 无裸值 · 工作区干净；截图门同 G1 仍跳过）
 - 已跑通命令：`xcodebuild -project CotEditor.xcodeproj -scheme CotEditor -configuration Debug -derivedDataPath /tmp/cmyot-dd build -quiet -skipPackagePluginValidation -skipMacroValidation`
 - Opus 花费：（待从 CC Switch 用量面板读取）
 
@@ -36,16 +37,16 @@
 
 | ID | 目标 | 文件 | 验收 | 预估 | 状态 |
 |---|---|---|---|---|---|
-| T01 | 迁移 FindPanelContentViewController 的动画 | `Text Finder/Views/FindPanelContentViewController.swift:202` | animator() 包在 withStandardTiming 里 | S | todo |
-| T02 | 迁移 SynchronizedScrollView 的三处 magnification 动画 | `Text Finder/Text View/SynchronizedScrollView.swift:100,109,118` | 同上 | S | todo |
-| T03 | 迁移 FileBrowserViewController 的 collapse/expand 动画 | `Sidebar/FileBrowserViewController.swift:653,655` | 同上 | S | todo |
-| T04 | 迁移 FileBrowserViewController 的 separator alpha 动画 | `Sidebar/FileBrowserViewController.swift:944` | 用 withTiming(duration: .fast, easeOut) | S | todo |
-| T05 | 迁移 AboutView 的 Picker 动画 | `Panels/AboutView.swift:93` | `.cotAnimation(.cotStandard)` | S | todo |
-| T06 | 迁移 WhatsNewView 的延迟淡入动画 | `Panels/WhatsNewView.swift:269` | `.cotAnimation(.cotFast)` + delay 0.1s | S | todo |
-| T07 | 迁移 DonationSettingsView 的数量动画 | `Settings Window/Panes/DonationSettingsView.swift:303` | `.cotAnimation(.cotStandard)` | S | todo |
-| T08 | 迁移 EncodingListView 的列表动画 | `Settings Window/Other Views/EncodingListView.swift:103` | `.cotAnimation(.cotSlow)` | S | todo |
-| T09 | 迁移 PatternSortView 的 Picker 动画 | `Accessory Views/PatternSortView.swift:98` | `.cotAnimation(.cotStandard)` | S | todo |
-| T10 | 迁移 CharacterCountOptionsView 的 Picker 动画 | `Accessory Views/Advanced Character Count/CharacterCountOptionsView.swift:83` | `.cotAnimation(.cotStandard)` | S | todo |
+| T01 | 迁移 FindPanelContentViewController 的动画 | `Text Finder/Views/FindPanelContentViewController.swift:202` | animator() 包在 withStandardTiming 里 | S | done |
+| T02 | 迁移 SynchronizedScrollView 的三处 magnification 动画 | `Text Finder/Text View/SynchronizedScrollView.swift:100,109,118` | 同上 | S | done |
+| T03 | 迁移 FileBrowserViewController 的 collapse/expand 动画 | `Sidebar/FileBrowserViewController.swift:653,655` | 同上 | S | done |
+| T04 | 迁移 FileBrowserViewController 的 separator alpha 动画 | `Sidebar/FileBrowserViewController.swift:944` | 用 withTiming(duration: .fast, easeOut) | S | done |
+| T05 | 迁移 AboutView 的 Picker 动画 | `Panels/AboutView.swift:93` | `.cotAnimation(.cotStandard)` | S | done |
+| T06 | 迁移 WhatsNewView 的延迟淡入动画 | `Panels/WhatsNewView.swift:269` | `.cotAnimation(.cotFast)` + delay 0.1s | S | done |
+| T07 | 迁移 DonationSettingsView 的数量动画 | `Settings Window/Panes/DonationSettingsView.swift:303` | `.cotAnimation(.cotStandard)` | S | done |
+| T08 | 迁移 EncodingListView 的列表动画 | `Settings Window/Other Views/EncodingListView.swift:103` | `.cotAnimation(.cotSlow)` | S | done |
+| T09 | 迁移 PatternSortView 的 Picker 动画 | `Accessory Views/PatternSortView.swift:98` | `.cotAnimation(.cotStandard)` | S | done |
+| T10 | 迁移 CharacterCountOptionsView 的 Picker 动画 | `Accessory Views/Advanced Character Count/CharacterCountOptionsView.swift:83` | `.cotAnimation(.cotStandard)` | S | done |
 
 **预估**：S = Small（1 处修改，≤5 分钟） | M = Medium（2~5 处修改，≤15 分钟） | L = Large（>5 处或需重构，≤30 分钟）
 
@@ -53,7 +54,9 @@
 
 | 位置 | 我卡在 | DeepSeek 的假设 | Opus 裁决 |
 |---|---|---|---|
-| — | — | — | — |
+| `Panels/AboutView.swift:93`（T05） | `$pane.animation()` 是 Binding 动画，DESIGN 点名的 `.cotAnimation(.cotStandard)` 是 View modifier，两者语义不同 | 改用 `$pane.animation(.cotStandard)`：保留 binding 动画，只把默认曲线换成令牌 | — |
+| `Accessory Views/PatternSortView.swift:98`（T09） | 同上（`$sortKey.animation()`） | 同上，改用 `$sortKey.animation(.cotStandard)` | — |
+| `Accessory Views/Advanced Character Count/CharacterCountOptionsView.swift:83`（T10） | 同上（`$unit.animation()`） | 同上，改用 `$unit.animation(.cotStandard)` | — |
 
 ## 6. 禁止的简化（含原因）
 
