@@ -14,13 +14,30 @@ opens in Xcode 26; upstream `main` already requires Xcode 27.2 + macOS 27).
 | Identity | Bundle id `local.cmy.Cot` (coexists with the App Store CotEditor), `CFBundleDisplayName = Cot`, new app icon generated from `~/Desktop/avata1.jpg` as a classic `AppIcon.appiconset` (the upstream Icon Composer `AppIcon.icon` bundle was removed). | `project.pbxproj`, `Info.plist`, `Assets.xcassets/AppIcon.appiconset` |
 | Distribution | Ad-hoc code signing (`CodeSigning-AdHoc.xcconfig`); the non-Sparkle `CotEditor` scheme/config is used, so auto-update is absent and cannot replace this build. | `Configurations/CodeSigning.xcconfig` |
 
+## Second round: minimal editing experience
+
+| Area | Change | Files |
+|---|---|---|
+| Vim mode | New minimal modal editing layer, **on by default** (`vimMode` default). Normal/insert/visual modes, motions `h j k l w b e W B E 0 ^ $ gg G`, operators `d c y` (incl. `dd cc yy`), `x X D C p P u ⌃R`, insert entries `i a I A o O`, visual `v` + `d y c`. A `:` command line is shown in the status bar and supports `set number` / `set nonumber`, `w`, `q`, `wq`. | `Sources/Document Window/Text View/VimEngine.swift`, `EditorTextView.swift`, `StatusBar.swift`, `DefaultKeys.swift`, `DefaultSettings.swift` |
+| Spell checking | Removed the whole *Spelling and Grammar* and *Substitutions* menu groups (plus *Speech*); spell-check toolbar item dropped. | `Main.storyboard`, toolbar identifiers |
+| Top bar | Toolbar style `.unifiedCompact`, allowed/default items reduced to just *Emoji & Symbols*. | `DocumentWindowController.swift` |
+| Title rename | Window now publishes `representedURL`, so the title bar offers the proxy icon and rename-on-double-click; added File ▸ 重命名… wired to the native `moveDocument:` panel. | `DocumentWindowController.swift`, `Main.storyboard` |
+| Inspector | Single pane (document only); file attributes, tags and per-character sections removed, keeping encoding / line ending / counts. | `InspectorViewController.swift`, `DocumentInspectorView.swift` |
+| Language | App pinned to Simplified Chinese via `AppleLanguages` in the app's own defaults (`defaults write local.cmy.Cot AppleLanguages -array zh-Hans`). No translations were added — the shipped `zh-Hans` string catalogs are used. | user defaults |
+
+Known limits of the vim layer: single register, no macros/marks/text objects/visual block,
+no `/` search, no `.` repeat, no `f t %`. Registers/undo go through the standard
+`NSTextView` editing path, so undo works but interleaves with CotEditor's own undo steps.
+
 ## Not implemented
 
-Vim mode. Upstream has rejected it four times
-([#574](https://github.com/coteditor/CotEditor/issues/574) et al.) and there is no
-reusable NSTextView-based vim engine in Swift. Use an OS-level vim layer instead
+Full Vim fidelity. Upstream has rejected vim support four times
+([#574](https://github.com/coteditor/CotEditor/issues/574) et al.), and no reusable
+NSTextView-based vim engine exists in Swift, so the in-app layer above is deliberately
+small. For parity, run an OS-level vim layer
 ([VimMode.spoon](https://github.com/dbalatero/VimMode.spoon), or
-[KindaVim](https://kindavim.app), which the CotEditor maintainer recommends).
+[KindaVim](https://kindavim.app), which the CotEditor maintainer recommends) and turn
+`vimMode` off (`defaults write local.cmy.Cot vimMode 0`).
 
 ## Build
 

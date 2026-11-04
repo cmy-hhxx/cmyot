@@ -55,11 +55,26 @@ struct StatusBar: View {
     @AppStorage(.donationBadgeType) private var badgeType
     
     @State private var hasDonated: Bool = false
+    @State private var vim = VimState.shared
     
     
     var body: some View {
         
         HStack {
+            // Vim mode indicator, or the `:` command line while it is being typed.
+            if let commandLine = self.vim.commandLine {
+                Text(commandLine)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(self.vim.mode.label)
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(self.vim.mode == .insert ? Color.secondary : Color.primary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 3).fill(.quaternary))
+            }
+            
             if self.hasDonated, self.badgeType != .invisible {
                 CoffeeBadge(type: self.badgeType)
             }

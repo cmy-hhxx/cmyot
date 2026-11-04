@@ -141,8 +141,6 @@ struct DocumentInspectorView: View, HostedPaneView {
         
         ScrollView(.vertical) {
             VStack(spacing: 8) {
-                DocumentFileView(attributes: self.model.attributes, fileURL: self.model.fileURL)
-                
                 if let textSettings = self.model.textSettings {
                     if !isLiquidGlass { Divider() }
                     TextSettingsView(value: textSettings)
@@ -151,9 +149,6 @@ struct DocumentInspectorView: View, HostedPaneView {
                 if let countResult = self.model.countResult {
                     if !isLiquidGlass { Divider() }
                     EditorCountView(result: countResult)
-                    
-                    if !isLiquidGlass { Divider() }
-                    CharacterPaneView(character: countResult.character)
                 }
             }
             .padding(EdgeInsets(top: isLiquidGlass ? 12 : 4, leading: 12, bottom: 12, trailing: 12))

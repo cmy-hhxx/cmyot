@@ -129,7 +129,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         toolbar.allowsUserCustomization = true
         toolbar.autosavesConfiguration = true
         toolbar.delegate = self
-        window.toolbarStyle = .unified
+        window.toolbarStyle = .unifiedCompact
         window.toolbar = toolbar
         
         // observe opacity setting change
@@ -204,6 +204,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     override func synchronizeWindowTitleWithDocumentName() {
         
         super.synchronizeWindowTitleWithDocumentName()
+        
+        // Lets the title bar offer the proxy icon and rename-on-double-click.
+        self.window?.representedURL = self.fileDocument?.fileURL
         
         if self.isDirectoryDocument {
             // display current document title as window subtitle
@@ -551,9 +554,8 @@ extension DocumentWindowController: NSToolbarDelegate {
     func toolbarImmovableItemIdentifiers(_ toolbar: NSToolbar) -> Set<NSToolbarItem.Identifier> {
         
         Set(self.directoryIdentifiers).union([
-            .inspectorTrackingSeparator,
             .flexibleSpace,
-            .inspector,
+            .emojiAndSymbols,
         ])
     }
     
@@ -561,36 +563,17 @@ extension DocumentWindowController: NSToolbarDelegate {
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         
         self.directoryIdentifiers + [
-            .syntax,
-            .inspectorTrackingSeparator,
             .flexibleSpace,
-            .inspector,
+            .emojiAndSymbols,
         ]
     }
     
     
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         
+        // Personal build: keep the toolbar minimal; Emoji & Symbols stays.
         var identifiers = self.directoryIdentifiers + [
-            .syntax,
-            .inspector,
-            .textSize,
-            .writingDirection,
-            .textOrientation,
-            .indent,
-            .comment,
-            .tabStyle,
-            .wrapLines,
-            .invisibles,
-            .indentGuides,
-            .keepOnTop,
-            .editable,
-            .spellCheck,
             .emojiAndSymbols,
-            .fonts,
-            .find,
-            .print,
-            .share,
             .space,
             .flexibleSpace,
         ]

@@ -44,6 +44,7 @@ extension DefaultKeys {
     static let monospacedFont = DefaultKey<Data?>("monospacedFont")
     static let monospacedShouldAntialias = DefaultKey<Bool>("monospacedShouldAntialias")
     static let monospacedLigature = DefaultKey<Bool>("monospacedLigature")
+    static let vimMode = DefaultKey<Bool>("vimMode")
     static let lineHeight = DefaultKey<Double>("lineHeight")
     static let documentAppearance = RawRepresentableDefaultKey<AppearanceMode>("appearance")
     static let windowAlpha = DefaultKey<Double>("windowAlpha")

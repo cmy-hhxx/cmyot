@@ -384,7 +384,7 @@ final class DocumentController: NSDocumentController {
         self.newDocument(sender)
         DocumentWindow.tabbingPreference = nil
     }
-    
+
     
     // MARK: Private Methods
     

@@ -466,6 +466,18 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    /// Modal (Vim-style) editing layer, active while the `vimMode` default is on.
+    private(set) lazy var vimEngine = VimEngine(textView: self)
+    
+    
+    override func keyDown(with event: NSEvent) {
+        
+        if UserDefaults.standard[.vimMode], self.vimEngine.handleKeyDown(event) { return }
+        
+        super.keyDown(with: event)
+    }
+    
+    
     override func insertText(_ string: Any, replacementRange: NSRange) {
         
         // do not use this method for programmatic insertion.

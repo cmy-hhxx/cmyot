@@ -81,7 +81,8 @@ final class InspectorViewController: NSTabViewController {
         // set identifier for pane restoration
         self.tabView.identifier = NSUserInterfaceItemIdentifier("InspectorTabView")
         
-        self.tabViewItems = InspectorPane.allCases.map { pane in
+        // Personal build: a single, trimmed-down pane.
+        self.tabViewItems = [InspectorPane.document].map { pane in
             let item = NSTabViewItem(viewController: pane.viewController(document: self.document))
             item.image = NSImage(systemSymbolName: pane.systemImage, accessibilityDescription: pane.label)
             item.label = pane.label
