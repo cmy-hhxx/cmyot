@@ -74,6 +74,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     private var documentSyntaxObserver: AnyCancellable?
     private var focusObserver: AnyCancellable?
     private var editedStateObserver: AnyCancellable?
+    private var isReviewingPaneDocuments = false
     private var syntaxListObserver: AnyCancellable?
     private weak var syntaxPopUpButton: NSPopUpButton?
     
@@ -205,6 +206,32 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         self.window?.tab.accessoryView = dirtyFlag ? self.editedIndicator : nil
         
         super.setDocumentEdited(self.isWhitePaper ? false : dirtyFlag)
+    }
+    
+    
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        
+        guard let viewController = self.documentViewController else { return true }
+        
+        let extraDocuments = viewController.paneDocuments
+            .filter { $0 !== viewController.document && $0.isDocumentEdited }
+        
+        guard !self.isReviewingPaneDocuments, !extraDocuments.isEmpty else { return true }
+        
+        // A pane's document has no window, so AppKit would close the window without ever
+        // asking about it. Review them first; only close the window if all of them are fine.
+        self.isReviewingPaneDocuments = true
+        viewController.reviewDocuments(extraDocuments) { [weak self, weak sender] canClose in
+            guard let self else { return }
+            
+            self.isReviewingPaneDocuments = false
+            
+            if canClose {
+                sender?.close()
+            }
+        }
+        
+        return false
     }
     
     

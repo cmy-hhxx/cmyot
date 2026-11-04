@@ -32,6 +32,10 @@ import SyntaxParsers
     
     var name: String
     
+    /// Whether this pane may be closed. The pane showing the window's own document cannot,
+    /// because the window has no way to display any other document.
+    var isClosable = true
+    
     
     init(name: String) {
         
@@ -48,6 +52,8 @@ struct NavigationBar: View {
     
     
     var body: some View {
+        
+        let canClose = self.splitState.canClose && self.identity.isClosable
         
         HStack(alignment: .center, spacing: 0) {
             Text(self.identity.name)
@@ -67,17 +73,17 @@ struct NavigationBar: View {
             }
             .labelStyle(.iconOnly)
             .help(String(localized: "Close split editor", table: "Document", comment: "tooltip for button"))
-            .symbolEffect(.disappear, isActive: !self.splitState.canClose)
-            .opacity(self.splitState.canClose ? 1 : 0)
-            .disabled(!self.splitState.canClose)
-            .allowsHitTesting(self.splitState.canClose)
-            .accessibilityHidden(!self.splitState.canClose)
+            .symbolEffect(.disappear, isActive: !canClose)
+            .opacity(canClose ? 1 : 0)
+            .disabled(!canClose)
+            .allowsHitTesting(canClose)
+            .accessibilityHidden(!canClose)
             
             Divider()
                 .padding(.vertical, 4)
                 .padding(.horizontal, 3)
-                .opacity(self.splitState.canClose && self.outlineNavigator.items?.isEmpty == false ? 1 : 0)
-                .accessibilityHidden(!self.splitState.canClose)
+                .opacity(canClose && self.outlineNavigator.items?.isEmpty == false ? 1 : 0)
+                .accessibilityHidden(!canClose)
             
             OutlineNavigationView(navigator: $outlineNavigator)
             

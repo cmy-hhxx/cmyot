@@ -126,6 +126,18 @@ final class EditorViewController: NSSplitViewController {
     }
     
     
+    /// Tells the pane whether it may be closed.
+    ///
+    /// - Parameter isClosable: `false` for the pane that shows the window's own document.
+    func setClosable(_ isClosable: Bool) {
+        
+        guard self.identity.isClosable != isClosable else { return }
+        
+        self.identity.isClosable = isClosable
+        self.updateNavigationBarVisibility()
+    }
+    
+    
     /// Updates the pane label to the current document name.
     private func refreshIdentity() {
         
@@ -139,7 +151,8 @@ final class EditorViewController: NSSplitViewController {
         
         guard self.isViewLoaded else { return }
         
-        let hasContent = self.splitState.canClose || self.outlineNavigator.items?.isEmpty == false
+        let canClose = self.splitState.canClose && self.identity.isClosable
+        let hasContent = canClose || self.outlineNavigator.items?.isEmpty == false
         let shouldShow = UserDefaults.standard[.showNavigationBar] && hasContent
         
         guard shouldShow != !self.navigationBarItem.isCollapsed else { return }

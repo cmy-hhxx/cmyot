@@ -203,6 +203,12 @@ final class DocumentController: NSDocumentController {
             // set default syntax
             document.setSyntax(name: UserDefaults.standard[.syntax])
             
+            // give it a name of its own instead of numbering "Untitled 2", "Untitled 3", …
+            document.displayName = GeneratedDocumentName.next(
+                avoiding: self.documents.filter { $0 !== document }.map(\.displayName)
+            )
+            document.windowControllers.forEach { $0.synchronizeWindowTitleWithDocumentName() }
+            
             // make document transient when it is an open or reopen event
             if self.documents.count == 1, NSAppleEventManager.shared().isOpenEvent {
                 document.isTransient = true
@@ -406,9 +412,6 @@ final class DocumentController: NSDocumentController {
 
     
     /// Tiles the two frontmost document windows side by side.
-    ///
-    /// Split panes show several views of the *same* document; to work on two different
-    /// files next to each other, open each in its own window and use this.
     @IBAction func tileDocumentWindows(_ sender: Any?) {
         
         let windows = NSApp.orderedWindows.filter { $0.windowController?.document != nil && $0.isVisible }

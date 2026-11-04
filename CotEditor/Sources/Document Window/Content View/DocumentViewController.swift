@@ -112,6 +112,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     private var defaultsObservers: Set<AnyCancellable> = []
     private var windowCloseObserver: AnyCancellable?
     
+    private var pendingReviewDocuments: [Document] = []
+    private var reviewCompletion: ((Bool) -> Void)?
+    
     
     // MARK: Lifecycle
     
@@ -485,7 +488,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 }
                 
             case #selector(closeSplitTextView):
-                return self.splitViewItems.count > 1
+                // the pane showing the window's own document has to stay
+                return self.splitViewItems.count > 1 && (self.focusedChild?.document ?? self.document) !== self.document
                 
             default: break
         }
@@ -1052,7 +1056,26 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             let currentViewController = self.baseEditorViewController(for: sender)
         else { return }
         
-        if let textView = currentViewController.textView {
+        // The window can only ever show its own document, so that pane has to stay.
+        guard currentViewController.document !== self.document else { return NSSound.beep() }
+        
+        // Ask about unsaved changes *before* taking the pane away: otherwise a cancelled
+        // save prompt would leave an invisible document behind that can never be saved.
+        self.reviewDocuments([currentViewController.document]) { [weak self, weak currentViewController] canClose in
+            guard canClose, let self, let currentViewController else { return }
+            
+            currentViewController.document.close()
+            self.removePane(currentViewController)
+        }
+    }
+    
+    
+    /// Removes a pane from the layout and gives the freed space to its siblings.
+    ///
+    /// - Parameter viewController: The pane to remove.
+    private func removePane(_ viewController: EditorViewController) {
+        
+        if let textView = viewController.textView {
             NotificationCenter.default.removeObserver(self, name: EditorTextView.DidLiveChangeSelectionMessage.name, object: textView)
             textView.undoManager?.removeAllActions(withTarget: textView)
         }
@@ -1061,28 +1084,47 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         NSTextInputContext.current?.discardMarkedText()
         
         // move focus to the next text view if the view to close has a focus
-        if self.focusedChild == currentViewController {
+        if self.focusedChild == viewController {
             let children = self.editorViewControllers
-            let deleteIndex = children.firstIndex(of: currentViewController) ?? 0
+            let deleteIndex = children.firstIndex(of: viewController) ?? 0
             let newFocusEditorViewController = children[safe: deleteIndex - 1] ?? children.last!
             
-            self.view.window?.makeFirstResponder(newFocusEditorViewController.textView)
+            self.view.window?.makeFirstResponderDiscardingMarkedText(newFocusEditorViewController.textView)
         }
         
         guard
-            let parentGroup = self.splitGroup(containing: currentViewController),
-            parentGroup.splitViewItems.contains(where: { $0.viewController === currentViewController })
+            let parentGroup = self.splitGroup(containing: viewController),
+            parentGroup.splitViewItems.contains(where: { $0.viewController === viewController })
         else { return }
         
-        self.removeItem(for: currentViewController, from: parentGroup)
+        self.removeItem(for: viewController, from: parentGroup)
         self.collapseSingleChildGroups(from: parentGroup)
         self.updateSplitState()
         self.scheduleRatioRebalance()
+    }
+    
+    
+    // MARK: Public Methods
+    
+    /// Asks the user what to do with the given documents, one after another.
+    ///
+    /// A pane's document has no window of its own, so AppKit never gets the chance to
+    /// review it; it has to be reviewed here, before the pane or the window goes away.
+    ///
+    /// - Parameters:
+    ///   - documents: The documents to review.
+    ///   - completion: Called with `true` when every one of them may be closed.
+    func reviewDocuments(_ documents: [Document], completion: @escaping (Bool) -> Void) {
         
-        // a pane that edits another file owns a window-less document: let it go
-        if currentViewController.document !== self.document {
-            currentViewController.document.close()
+        let pending = documents.filter(\.isDocumentEdited)
+        guard !pending.isEmpty else {
+            completion(true)
+            return
         }
+        
+        self.pendingReviewDocuments = pending
+        self.reviewCompletion = completion
+        self.reviewNextDocument()
     }
     
     
@@ -1124,6 +1166,40 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 self.rebalancePanes(in: nested)
             }
         }
+    }
+    
+    
+    /// Presents the next pending review, or reports success.
+    private func reviewNextDocument() {
+        
+        guard let document = self.pendingReviewDocuments.popLast() else {
+            let completion = self.reviewCompletion
+            self.reviewCompletion = nil
+            completion?(true)
+            return
+        }
+        
+        document.canClose(withDelegate: self,
+                          shouldClose: #selector(document(_:shouldClose:contextInfo:)),
+                          contextInfo: nil)
+    }
+    
+    
+    /// Callback for the review of a pane document.
+    @objc private func document(_ document: NSDocument, shouldClose: Bool, contextInfo: UnsafeMutableRawPointer?) {
+        
+        guard shouldClose else {
+            self.pendingReviewDocuments = []
+            let completion = self.reviewCompletion
+            self.reviewCompletion = nil
+            completion?(false)
+            return
+        }
+        
+        // the user has been asked already; closing must not ask a second time
+        document.updateChangeCount(.changeCleared)
+        
+        self.reviewNextDocument()
     }
     
     
@@ -1316,6 +1392,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         // an empty navigation bar is noise: let each pane decide whether to show it
         for editorViewController in self.editorViewControllers {
+            editorViewController.setClosable(editorViewController.document !== self.document)
             editorViewController.updateNavigationBarVisibility(animated: true)
         }
     }
