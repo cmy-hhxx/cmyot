@@ -386,6 +386,29 @@ final class DocumentController: NSDocumentController {
     }
 
     
+    /// Tiles the two frontmost document windows side by side.
+    ///
+    /// Split panes show several views of the *same* document; to work on two different
+    /// files next to each other, open each in its own window and use this.
+    @IBAction func tileDocumentWindows(_ sender: Any?) {
+        
+        let windows = NSApp.orderedWindows.filter { $0.windowController?.document != nil && $0.isVisible }
+        guard windows.count >= 2 else { return NSSound.beep() }
+        
+        let first = windows[0]
+        let second = windows[1]
+        guard let screen = first.screen ?? second.screen else { return }
+        
+        let frame = screen.visibleFrame
+        let half = (frame.width / 2).rounded(.down)
+        
+        first.setFrame(NSRect(x: frame.minX, y: frame.minY, width: half, height: frame.height),
+                       display: true, animate: true)
+        second.setFrame(NSRect(x: frame.minX + half, y: frame.minY, width: frame.width - half, height: frame.height),
+                        display: true, animate: true)
+    }
+    
+    
     // MARK: Private Methods
     
     /// Transient document to be replaced or `nil`.

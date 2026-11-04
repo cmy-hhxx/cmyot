@@ -691,14 +691,29 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
+    /// Inserts one of the curated emoji from the toolbar's emoji grid.
+    ///
+    /// - Parameter sender: The emoji button that was pressed.
+    @IBAction func insertQuickEmojiFromButton(_ sender: NSButton) {
+        
+        self.insert(emoji: sender.title)
+    }
+    
+    
     /// Inserts one of the curated emoji used by the toolbar's quick emoji menu.
     ///
     /// - Parameter sender: The menu item whose title is the emoji to insert.
     @IBAction func insertQuickEmoji(_ sender: NSMenuItem) {
         
-        guard let textView = self.focusedChild?.textView else { return }
+        self.insert(emoji: sender.title)
+    }
+    
+    
+    private func insert(emoji: String) {
         
-        textView.insertText(sender.title, replacementRange: textView.selectedRange())
+        guard let textView = self.focusedChild?.textView, !emoji.isEmpty else { return }
+        
+        textView.insertText(emoji, replacementRange: textView.selectedRange())
     }
     
     

@@ -1031,24 +1031,26 @@ private struct EditedIndicator: View {
 
 extension DocumentWindowController {
     
-    /// Curated emoji for day-to-day note taking. Faces are intentionally left out.
-    private static let quickEmoji: [String] = [
-        "✅", "❌", "✔️", "✖️", "☐", "☑",
-        "⏳", "⏰", "🔥", "⭐", "📌", "📝",
-        "💡", "🎯", "🚧", "🐛", "🔖", "📚",
-        "⚠️", "❓", "❗", "🚀", "🔧", "📦",
-        "🔴", "🟡", "🟢", "🔵", "⚪", "⚫",
+    /// Curated emoji grouped by purpose, laid out as compact rows instead of one long column.
+    private static let quickEmojiRows: [[String]] = [
+        ["✅", "❌", "✔️", "✖️", "☐", "☑"],
+        ["⭐", "🔥", "📌", "📝", "💡", "🎯"],
+        ["⚠️", "❓", "❗", "🚧", "🐛", "🔖"],
+        ["⏳", "⏰", "📚", "🔧", "🚀", "📦"],
+        ["🔴", "🟡", "🟢", "🔵", "🟣", "⚪"],
     ]
     
     
     static func quickEmojiMenu() -> NSMenu {
         
         let menu = NSMenu()
-        for emoji in Self.quickEmoji {
-            let item = NSMenuItem(title: emoji,
-                                  action: #selector(DocumentViewController.insertQuickEmoji(_:)),
-                                  keyEquivalent: "")
-            item.target = nil
+        for (index, emojis) in Self.quickEmojiRows.enumerated() {
+            if index > 0 {
+                menu.addItem(.separator())
+            }
+            
+            let item = NSMenuItem()
+            item.view = EmojiMenuRowView(emojis: emojis)
             menu.addItem(item)
         }
         
@@ -1084,6 +1086,7 @@ extension DocumentWindowController {
         add("缩进参考线", #selector(DocumentViewController.toggleIndentGuides(_:)))
         add("页面参考线", #selector(DocumentViewController.togglePageGuide(_:)))
         menu.addItem(.separator())
+        add("并排两个窗口", #selector(DocumentController.tileDocumentWindows(_:)))
         add("切换分割方向", #selector(DocumentViewController.toggleSplitOrientation(_:)))
         add("关闭分割", #selector(DocumentViewController.closeSplitTextView(_:)))
         menu.addItem(.separator())
@@ -1092,5 +1095,51 @@ extension DocumentWindowController {
         add("进入全屏", #selector(NSWindow.toggleFullScreen(_:)))
         
         return menu
+    }
+}
+
+
+/// One compact horizontal row of emoji buttons, used by the toolbar's emoji menu.
+final class EmojiMenuRowView: NSView {
+    
+    init(emojis: [String]) {
+        
+        let buttonSize: CGFloat = 30
+        super.init(frame: NSRect(x: 0, y: 0,
+                                 width: CGFloat(emojis.count) * (buttonSize + 2),
+                                 height: buttonSize))
+        
+        let stack = NSStackView(views: emojis.map { emoji in
+            let button = NSButton(title: emoji, target: nil,
+                                  action: #selector(DocumentViewController.insertQuickEmojiFromButton(_:)))
+            button.isBordered = false
+            button.setButtonType(.momentaryPushIn)
+            button.font = .systemFont(ofSize: 17)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(equalToConstant: buttonSize),
+                button.heightAnchor.constraint(equalToConstant: buttonSize),
+            ])
+            return button
+        })
+        
+        stack.orientation = .horizontal
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        self.addSubview(stack)
+        
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: self.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: self.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: self.bottomAnchor),
+        ])
+    }
+    
+    
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        
+        fatalError("init(coder:) has not been implemented")
     }
 }
