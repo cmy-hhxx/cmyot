@@ -39,12 +39,25 @@ small. For parity, run an OS-level vim layer
 [KindaVim](https://kindavim.app), which the CotEditor maintainer recommends) and turn
 `vimMode` off (`defaults write local.cmy.Cot vimMode 0`).
 
-## Build
+## Build & install
 
 ```sh
-xcodebuild -project CotEditor.xcodeproj -scheme CotEditor -configuration Release \
-  -destination 'platform=macOS' -derivedDataPath build/DerivedData build
+./Scripts/install-personal.sh          # build, install, clean, relaunch
+./Scripts/install-personal.sh --check  # report only
 ```
+
+**One copy only.** `Scripts/install-personal.sh` is the supported way to build and install:
+it builds into Xcode's default DerivedData (`~/Library/Developer/Xcode/DerivedData`, outside
+Spotlight's index), installs to `/Applications/Cot.app`, moves any other bundle with the same
+bundle id (`local.cmy.Cot`, `com.coteditor.CotEditor`) to the Trash, and fails unless exactly
+one copy is left. Do **not** build with `-derivedDataPath` inside the repo — an `.app` under
+`~/Desktop` is indexed by Spotlight and shows up as a second, stale editor.
 
 The ad-hoc signature means macOS re-asks for formerly granted permissions
 (Automation, Full Disk Access, …) after each rebuild.
+
+## Installed state
+
+- `/Applications/Cot.app` — the single installed build (`local.cmy.Cot`, display name `Cot`).
+- The App Store CotEditor (version 7.1.3) was moved to the Trash; it can be restored from
+  there or re-downloaded from the App Store if ever needed.
