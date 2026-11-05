@@ -100,7 +100,7 @@ struct EncodingListView: View {
             .onDeleteCommand {
                 self.model.remove(ids: self.selection)
             }
-            .animation(.default, value: self.model.items)
+            .cotAnimation(.cotSlow, value: self.model.items)
             .scrollContentBackground(.hidden)
             .modifier { content in
                 if #available(macOS 26, *) {

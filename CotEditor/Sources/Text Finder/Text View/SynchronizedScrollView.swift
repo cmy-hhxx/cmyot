@@ -97,7 +97,9 @@ extension SynchronizedScrollView: NSUserInterfaceValidations, TextSizeChanging {
     @IBAction func biggerFont(_ sender: Any?) {
         
         for scrollView in self.siblings {
-            scrollView.animator().magnification += 0.2
+            NSAnimationContext.withStandardTiming {
+                scrollView.animator().magnification += 0.2
+            }
         }
     }
     
@@ -106,7 +108,9 @@ extension SynchronizedScrollView: NSUserInterfaceValidations, TextSizeChanging {
     @IBAction func smallerFont(_ sender: Any?) {
         
         for scrollView in self.siblings {
-            scrollView.animator().magnification -= 0.2
+            NSAnimationContext.withStandardTiming {
+                scrollView.animator().magnification -= 0.2
+            }
         }
     }
     
@@ -115,7 +119,9 @@ extension SynchronizedScrollView: NSUserInterfaceValidations, TextSizeChanging {
     @IBAction func resetFont(_ sender: Any?) {
         
         for scrollView in self.siblings {
-            scrollView.animator().magnification = 1.0
+            NSAnimationContext.withStandardTiming {
+                scrollView.animator().magnification = 1.0
+            }
         }
     }
 }

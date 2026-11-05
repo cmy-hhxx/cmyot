@@ -90,7 +90,7 @@ struct AboutView: View {
                 if #available(macOS 26, *) {
                     content
                         .safeAreaBar(edge: .top) {
-                            Picker(selection: $pane.animation()) {
+                            Picker(selection: $pane.animation(.cotStandard)) {
                                 ForEach(Pane.allCases, id: \.self) {
                                     Text($0.label)
                                 }

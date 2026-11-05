@@ -199,7 +199,9 @@ final class FindPanelContentViewController: NSSplitViewController {
         if shown {
             item.viewController.view.frame.size.height.clamp(to: Self.defaultResultViewHeight...(.infinity))
         }
-        item.animator().isCollapsed = !shown
+        NSAnimationContext.withStandardTiming {
+            item.animator().isCollapsed = !shown
+        }
     }
 }
 

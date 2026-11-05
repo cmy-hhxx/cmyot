@@ -95,7 +95,7 @@ struct PatternSortView: View {
                         .gridColumnAlignment(.trailing)
                     
                     VStack(alignment: .leading, spacing: isLiquidGlass ? nil : 6) {
-                        Picker(selection: $sortKey.animation()) {
+                        Picker(selection: $sortKey.animation(.cotStandard)) {
                             ForEach(SortKey.allCases, id: \.self) {
                                 Text($0.label)
                             }

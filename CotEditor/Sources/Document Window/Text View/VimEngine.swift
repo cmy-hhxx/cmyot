@@ -553,8 +553,12 @@ final class VimEngine {
         }
         
         if VimState.shared.mode == .visual, let anchor = self.visualAnchor {
-            textView.setSelectedRange(NSRange(location: min(anchor, location),
-                                              length: abs(location - anchor)))
+            // Vim's visual selection includes the character under the cursor. Without it
+            // the block cursor is drawn one character outside the highlighted range,
+            // which reads as a stray highlight below the selection.
+            let lower = min(anchor, location)
+            let upper = min(max(anchor, location) + 1, string.length)
+            textView.setSelectedRange(NSRange(location: lower, length: upper - lower))
             VimState.shared.visualActiveLocation = location
             self.refreshCursor()
         } else {
@@ -1419,11 +1423,13 @@ final class VimEngine {
     private func visualRange() -> NSRange {
         
         guard let textView, let anchor = self.visualAnchor else { return NSRange(location: 0, length: 0) }
-        let current = NSMaxRange(textView.selectedRange())
-        let start = min(anchor, current)
-        let end = max(anchor, current)
+        // The active end is the caret, not the selection's upper bound: the selection is
+        // built upwards when moving with `k`, so NSMaxRange would be the fixed end.
+        let active = VimState.shared.visualActiveLocation ?? textView.selectedRange().location
         let length = (textView.string as NSString).length
-        return NSRange(location: start, length: min(end, length) - start)
+        let lower = min(anchor, active)
+        let upper = min(max(anchor, active) + 1, length)
+        return NSRange(location: lower, length: upper - lower)
     }
     
     

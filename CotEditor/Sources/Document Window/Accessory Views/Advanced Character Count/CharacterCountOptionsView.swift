@@ -80,7 +80,7 @@ struct CharacterCountOptionsView: View {
                     .accessibilityLabeledPair(role: .label, id: "unit", in: self.accessibility)
                 
                 VStack(alignment: .leading) {
-                    Picker(selection: $unit.animation()) {
+                    Picker(selection: $unit.animation(.cotStandard)) {
                         ForEach(CharacterCountOptions.CharacterUnit.allCases, id: \.self) {
                             Text($0.label)
                         }

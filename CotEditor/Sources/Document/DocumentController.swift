@@ -195,20 +195,29 @@ final class DocumentController: NSDocumentController {
     }
     
     
-    override func openUntitledDocumentAndDisplay(_ displayDocument: Bool) throws -> NSDocument {
+    override func makeUntitledDocument(ofType typeName: String) throws -> NSDocument {
         
-        let document = try super.openUntitledDocumentAndDisplay(displayDocument)
+        let document = try super.makeUntitledDocument(ofType: typeName)
         
         if let document = document as? Document {
             // set default syntax
             document.setSyntax(name: UserDefaults.standard[.syntax])
             
-            // give it a name of its own instead of numbering "Untitled 2", "Untitled 3", …
-            document.displayName = GeneratedDocumentName.next(
-                avoiding: self.documents.filter { $0 !== document }.map(\.displayName)
-            )
-            document.windowControllers.forEach { $0.synchronizeWindowTitleWithDocumentName() }
-            
+            // Give it a name of its own instead of numbering "Untitled 2", "Untitled 3", …
+            // The name is assigned here, before the document gets a window, so the pane
+            // labels are created with the final name instead of a stale "未命名".
+            document.displayName = GeneratedDocumentName.next(avoiding: self.documents.map(\.displayName))
+        }
+        
+        return document
+    }
+    
+    
+    override func openUntitledDocumentAndDisplay(_ displayDocument: Bool) throws -> NSDocument {
+        
+        let document = try super.openUntitledDocumentAndDisplay(displayDocument)
+        
+        if let document = document as? Document {
             // make document transient when it is an open or reopen event
             if self.documents.count == 1, NSAppleEventManager.shared().isOpenEvent {
                 document.isTransient = true
