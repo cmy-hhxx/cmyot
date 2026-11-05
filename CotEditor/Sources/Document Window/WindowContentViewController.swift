@@ -53,6 +53,20 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
     private var focusObservers: Set<AnyCancellable> = []
     
     
+    /// The height of the status bar drawn over the bottom of the content area, 0 when hidden.
+    var statusBarHeight: CGFloat {
+        
+        if #available(macOS 26, *) {
+            guard let view = self.contentViewItem.bottomAlignedAccessoryViewControllers.first?.view,
+                  !view.isHidden else { return 0 }
+            return view.frame.height
+        } else {
+            guard let item = self.contentViewController.splitViewItems.last, !item.isCollapsed else { return 0 }
+            return item.viewController.view.frame.height
+        }
+    }
+    
+    
     // MARK: Split View Controller Methods
     
     init(document: DataDocument?, directoryDocument: DirectoryDocument?) {

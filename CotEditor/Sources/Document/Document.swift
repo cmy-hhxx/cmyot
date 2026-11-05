@@ -66,6 +66,7 @@ extension NSTextView: EditorCounter.Source { }
         static let syntax = "syntax"
         static let originalContentString = "originalContentString"
         static let encoding = "encoding"
+        static let displayName = "displayName"
     }
     
     
@@ -170,6 +171,13 @@ extension NSTextView: EditorCounter.Source { }
         coder.encode(self.suppressesInconsistentLineEndingAlert, forKey: SerializationKey.suppressesInconsistentLineEndingAlert)
         coder.encode(self.syntaxName, forKey: SerializationKey.syntax)
         
+        // An untitled document's name is made up, not derived from a file name, so it has
+        // to travel with the restorable state; otherwise restored documents come back as
+        // "未命名 2", "未命名 3", … and lose the name they were given.
+        if self.fileURL == nil {
+            coder.encode(self.displayName, forKey: SerializationKey.displayName)
+        }
+        
         // store unencoded string but only when incompatible
         if !self.canBeConverted() {
             coder.encode(self.textStorage.string, forKey: SerializationKey.originalContentString)
@@ -181,6 +189,21 @@ extension NSTextView: EditorCounter.Source { }
     override func restoreState(with coder: NSCoder) {
         
         super.restoreState(with: coder)
+        
+        // untitled documents are not named after a file, so restore the name they had;
+        // older restorable states have none, so give them one of their own
+        if self.fileURL == nil {
+            if let displayName = coder.decodeObject(of: NSString.self, forKey: SerializationKey.displayName) as? String,
+               !displayName.isEmpty
+            {
+                self.displayName = displayName
+            } else {
+                self.displayName = GeneratedDocumentName.next(
+                    avoiding: NSDocumentController.shared.documents.compactMap(\.displayName)
+                )
+            }
+            self.windowControllers.forEach { $0.synchronizeWindowTitleWithDocumentName() }
+        }
         
         if coder.containsValue(forKey: SerializationKey.allowsLossySaving) {
             self.allowsLossySaving = coder.decodeBool(forKey: SerializationKey.allowsLossySaving)
@@ -469,6 +492,14 @@ extension NSTextView: EditorCounter.Source { }
     
     
     override func autosave(withImplicitCancellability autosavingIsImplicitlyCancellable: Bool, completionHandler: @escaping ((any Error)?) -> Void) {
+        
+        // An empty scratch document has nothing worth restoring; autosaving it would only
+        // leave an empty window behind that AppKit resurrects — and tabs together with the
+        // other restored windows — on the next launch.
+        if self.fileURL == nil, !self.isDocumentEdited, self.textStorage.length == 0 {
+            completionHandler(nil)
+            return
+        }
         
         // adopt the file modification date to avoid the false alert about the external modification
         if Self.autosavesInPlace {

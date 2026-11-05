@@ -113,6 +113,7 @@ final class EditorViewController: NSSplitViewController {
                 .sink { [weak self] _ in self?.refreshIdentity() },
         ]
         
+        self.refreshIdentity()
         self.updateNavigationBarVisibility()
     }
     
@@ -145,14 +146,17 @@ final class EditorViewController: NSSplitViewController {
     }
     
     
-    /// Shows the navigation bar only when it has something to offer: a close button
-    /// (split editors) or outline navigation. An empty bar is pure visual noise.
+    /// Shows the navigation bar only when it has something to offer: pane identity and
+    /// its close button while split, or outline navigation. An empty bar is pure visual noise.
+    ///
+    /// Every pane uses the same rule, so panes in one split always start their text at the
+    /// same height. The pane showing the window's own document gets a bar too; it simply
+    /// has no close button.
     func updateNavigationBarVisibility(animated: Bool = false) {
         
         guard self.isViewLoaded else { return }
         
-        let canClose = self.splitState.canClose && self.identity.isClosable
-        let hasContent = canClose || self.outlineNavigator.items?.isEmpty == false
+        let hasContent = self.splitState.canClose || self.outlineNavigator.items?.isEmpty == false
         let shouldShow = UserDefaults.standard[.showNavigationBar] && hasContent
         
         guard shouldShow != !self.navigationBarItem.isCollapsed else { return }

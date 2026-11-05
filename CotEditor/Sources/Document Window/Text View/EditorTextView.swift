@@ -500,6 +500,13 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             ? string.substring(with: NSRange(location: location, length: 1))
             : " "
         let font = self.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
+        let spaceWidth = (" " as NSString).size(withAttributes: [.font: font]).width
+        
+        // A line break has no width of its own, so the block collapsed to the 2pt minimum and
+        // the cursor looked like a thin caret on empty lines. Use one space instead.
+        if sample == "\n" || sample == "\r" {
+            return spaceWidth
+        }
         
         return max((sample as NSString).size(withAttributes: [.font: font]).width, 2)
     }
@@ -1060,7 +1067,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     private func vimCursorRect(at location: Int) -> NSRect? {
         
         guard let layoutManager, let textContainer else { return nil }
-        let length = (self.string as NSString).length
+        let string = self.string as NSString
+        let length = string.length
         guard length > 0 else { return nil }
         
         let index = min(max(0, location), length - 1)
@@ -1070,10 +1078,22 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         rect.origin.x += self.textContainerOrigin.x
         rect.origin.y += self.textContainerOrigin.y
         
-        if rect.width < 2 {
-            // newline or an empty line: use a space-wide block
-            let font = self.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
-            rect.size.width = (" " as NSString).size(withAttributes: [.font: font]).width
+        // A line break has no glyph of its own; TextKit reports the whole line fragment as its
+        // bounding rect — sometimes two line fragments high — which painted a full-width block
+        // across the active line. Draw a one-line-high, space-wide block after the line's last
+        // character instead (at the line start when the line is empty), the way Vim does.
+        let character = string.substring(with: NSRange(location: index, length: 1))
+        let isLineBreak = (character == "\n" || character == "\r")
+        let font = self.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
+        let spaceWidth = (" " as NSString).size(withAttributes: [.font: font]).width
+        
+        if isLineBreak {
+            let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphRange.location, effectiveRange: nil)
+            rect.origin.x = usedRect.maxX + self.textContainerOrigin.x
+            rect.origin.y = usedRect.minY + self.textContainerOrigin.y
+            rect.size = NSSize(width: spaceWidth, height: usedRect.height)
+        } else if rect.width < 2 {
+            rect.size.width = spaceWidth
         }
         
         return rect

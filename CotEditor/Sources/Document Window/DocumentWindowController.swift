@@ -179,7 +179,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
             .publisher(for: Document.DidUpdateChangeMessage.name)
             .compactMap { $0.object as? Document }
             .filter { [weak self] in self?.documentViewController?.paneDocuments.contains($0) == true }
-            .sink { [weak self] _ in self?.updateEditedState() }
+            .sink { [weak self] _ in
+                self?.updateEditedState()
+                self?.updateRestorability()
+            }
     }
     
     
@@ -237,8 +240,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     
     override func windowTitle(forDocumentDisplayName displayName: String) -> String {
         
-        // the title always names the file the user is actually editing
-        let name = self.documentViewController?.focusedDocument.displayName ?? displayName
+        // The window — and therefore its tab in the tab bar — stands for the window's own
+        // document. Panes name themselves in their navigation bars, so the title must not
+        // follow the focused pane; that made the tab label flip between the documents of a
+        // split window.
+        let name = self.fileDocument?.displayName ?? displayName
         
         if let uniqueDirectory {
             return name + " \u{2014} " + uniqueDirectory  // EM DASH
@@ -253,7 +259,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         super.synchronizeWindowTitleWithDocumentName()
         
         // Lets the title bar offer the proxy icon and rename-on-double-click.
-        self.window?.representedURL = self.documentViewController?.focusedDocument.fileURL ?? self.fileDocument?.fileURL
+        self.window?.representedURL = self.fileDocument?.fileURL
         
         if self.isDirectoryDocument {
             // display current document title as window subtitle
@@ -385,6 +391,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         } else {
             self.documentSyntaxObserver = nil
         }
+        
+        self.updateRestorability()
     }
     
     
@@ -401,6 +409,21 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         let isEdited = self.documentViewController?.paneDocuments.contains { $0.isDocumentEdited } ?? false
         
         self.setDocumentEdited(isEdited)
+    }
+    
+    
+    /// Keeps an empty scratch document out of the restorable state.
+    ///
+    /// Restoration brings back a window for every window that was open at quit time, which
+    /// otherwise made empty "未命名" documents pile up on every launch. A window with a file
+    /// or with text in it stays restorable, so autosaved work still comes back.
+    private func updateRestorability() {
+        
+        let document = self.fileDocument as? Document
+        let hasContent = (document?.textStorage.length ?? 0) > 0
+            || self.documentViewController?.paneDocuments.contains { $0.textStorage.length > 0 } == true
+        
+        self.window?.isRestorable = document?.fileURL != nil || hasContent || (self.window?.isDocumentEdited == true)
     }
     
     

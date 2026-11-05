@@ -1146,13 +1146,25 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             let splitView = group.splitView
             let thickness = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
             let dividerThickness = splitView.dividerThickness
-            let available = thickness - dividerThickness * CGFloat(items.count - 1)
+            
+            // The toolbar, tab bar and status bar are laid out over the top and bottom of the
+            // window, so the panes at those edges show less than their split item's height.
+            // Balance the visible areas instead of the raw split item frames.
+            var leadingInset: CGFloat = 0
+            var trailingInset: CGFloat = 0
+            if !splitView.isVertical, group === self, let window = self.view.window {
+                let content = self.view.convert(window.contentLayoutRect, from: nil)
+                leadingInset = max(0, self.view.bounds.maxY - content.maxY)
+                trailingInset = (window.windowController?.contentViewController as? WindowContentViewController)?.statusBarHeight ?? 0
+            }
+            
+            let available = thickness - dividerThickness * CGFloat(items.count - 1) - leadingInset - trailingInset
             
             if available > 0 {
                 let share = available / CGFloat(items.count)
                 
                 for index in 0..<(items.count - 1) {
-                    let position = share * CGFloat(index + 1) + dividerThickness * CGFloat(index)
+                    let position = leadingInset + share * CGFloat(index + 1) + dividerThickness * CGFloat(index)
                     splitView.setPosition(position, ofDividerAt: index)
                 }
             }
@@ -1225,6 +1237,14 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 
                 try? await Task.sleep(for: .milliseconds(16))
             }
+            
+            // The navigation bar animates in after a split, which changes the pane's inner
+            // layout; balance once more after it settled so nested splits end up even, too.
+            try? await Task.sleep(for: .milliseconds(300))
+            
+            guard let self else { return }
+            self.view.layoutSubtreeIfNeeded()
+            self.rebalancePanes(in: self)
         }
     }
     
