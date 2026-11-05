@@ -414,6 +414,17 @@ final class DocumentController: NSDocumentController {
     /// Opens a new document as a tab in the existing frontmost window.
     @IBAction func newDocumentAsTab(_ sender: Any?) {
         
+        // A document window grows the focused pane with a new tab. The window itself
+        // already exists, so no AppKit window tab is needed here.
+        if
+            let windowController = (NSApp.keyWindow ?? NSApp.mainWindow)?.windowController as? DocumentWindowController,
+            let documentViewController = windowController.documentViewController,
+            documentViewController.newTabInFocusedPane()
+        {
+            return
+        }
+        
+        // Fall back to an AppKit window tab when there is no document window to grow.
         DocumentWindow.tabbingPreference = .always
         self.newDocument(sender)
         DocumentWindow.tabbingPreference = nil

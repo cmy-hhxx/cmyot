@@ -80,6 +80,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     // MARK: Public Properties
     
+    /// Whether the ⌃A prefix has been pressed and the next key is part of its sequence.
+    private var isAwaitingControlAPrefix = false
+    
     var lineEnding: LineEnding = .lf
     var defaultFontType: FontType = .standard
     
@@ -514,9 +517,52 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     override func keyDown(with event: NSEvent) {
         
+        // tmux-style prefix: ⌃A then Z / % / " works on the focused pane
+        if self.handleControlAPrefix(event) { return }
+        
         if UserDefaults.standard[.vimMode], self.vimEngine.handleKeyDown(event) { return }
         
         super.keyDown(with: event)
+    }
+    
+    
+    /// Handles the ⌃A prefix sequences that work on the focused pane:
+    /// ⌃A Z toggles the zoom, ⌃A % splits to the right, ⌃A " splits downwards.
+    ///
+    /// - Parameter event: The key event.
+    /// - Returns: `true` when the event was consumed by the prefix sequence.
+    private func handleControlAPrefix(_ event: NSEvent) -> Bool {
+        
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let character = event.charactersIgnoringModifiers
+        
+        if self.isAwaitingControlAPrefix {
+            self.isAwaitingControlAPrefix = false
+            
+            guard !flags.contains(.command), !flags.contains(.control) else { return false }
+            
+            switch character {
+                case "z", "Z":
+                    self.documentViewController?.togglePaneZoom(event)
+                    return true
+                    
+                case "%":
+                    self.documentViewController?.splitEditorVertically(self)
+                    return true
+                    
+                case "\"", "\u{201D}":
+                    self.documentViewController?.splitEditorHorizontally(self)
+                    return true
+                    
+                default:
+                    return false
+            }
+        }
+        
+        guard flags.contains(.control), !flags.contains(.command), character?.lowercased() == "a" else { return false }
+        
+        self.isAwaitingControlAPrefix = true
+        return true
     }
     
     
@@ -874,49 +920,116 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     override func menu(for event: NSEvent) -> NSMenu? {
         
-        guard let menu = super.menu(for: event) else { return nil }
+        self.makeContextMenu()
+    }
+    
+    
+    /// Builds the text view's context menu.
+    ///
+    /// The system's look-up, translate, share, spelling, substitution, auto-fill and
+    /// services items are deliberately absent: the menu carries only what this editor
+    /// actually offers — copy / paste / select all and the highlight colors.
+    func makeContextMenu() -> NSMenu {
         
-        // remove unwanted menu items
-        menu.items.removeAll { item in
-            item.submenu?.items.contains {
-                $0.action == #selector(changeLayoutOrientation) ||  // Layout Orientation submenu
-                $0.action == #selector(NSFontManager.orderFrontFontPanel)  // Font submenu
-            } ?? false
+        let menu = NSMenu()
+        // The menu manages its own enabled states below; AppKit's responder-chain
+        // auto-validation would otherwise leave the standard items unusable whenever the
+        // menu is opened without a focused text view.
+        menu.autoenablesItems = false
+        
+        let hasSelection = !self.selectedRange().isEmpty
+        
+        // AI actions on the selection. They need a selection; when the AI is not configured
+        // yet the action explains that instead of failing silently.
+        if let documentViewController = self.documentViewController {
+            let aiActions: [(title: String, action: Selector)] = [
+                ("翻译", #selector(DocumentViewController.translateSelection(_:))),
+                ("总结", #selector(DocumentViewController.summarizeSelection(_:))),
+                ("说人话", #selector(DocumentViewController.explainSelection(_:))),
+            ]
+            for (title, action) in aiActions {
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                item.target = documentViewController
+                item.isEnabled = hasSelection
+                menu.addItem(item)
+            }
+            
+            menu.addItem(.separator())
         }
         
-        // add "Copy as Rich Text" menu item
-        let copyIndex = menu.indexOfItem(withTarget: nil, andAction: #selector(copy(_:)))
-        if copyIndex >= 0 {  // -1 == not found
-            menu.insertItem(withTitle: String(localized: "Copy as Rich Text", table: "MainMenu"),
-                            action: #selector(copyWithStyle),
-                            keyEquivalent: "",
-                            at: copyIndex + 1)
-        }
+        let copyItem = NSMenuItem(title: "拷贝", action: #selector(copy(_:)), keyEquivalent: "c")
+        copyItem.keyEquivalentModifierMask = .command
+        copyItem.isEnabled = hasSelection
+        menu.addItem(copyItem)
         
-        // add "Select All" menu item
-        let pasteIndex = menu.indexOfItem(withTarget: nil, andAction: #selector(paste))
-        if pasteIndex >= 0 {  // -1 == not found
-            menu.insertItem(withTitle: String(localized: "Select All", table: "MainMenu"),
-                            action: #selector(selectAll),
-                            keyEquivalent: "",
-                            at: pasteIndex + 1)
-        }
+        let pasteItem = NSMenuItem(title: "粘贴", action: #selector(paste(_:)), keyEquivalent: "v")
+        pasteItem.keyEquivalentModifierMask = .command
+        pasteItem.isEnabled = NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil)
+        menu.addItem(pasteItem)
         
-        // add "Straighten Quotes" menu item in Substitutions submenu
-        for item in menu.items {
-            guard let submenu = item.submenu else { continue }
+        let selectAllItem = NSMenuItem(title: "全部选择", action: #selector(selectAll(_:)), keyEquivalent: "a")
+        selectAllItem.keyEquivalentModifierMask = .command
+        selectAllItem.isEnabled = !self.string.isEmpty
+        menu.addItem(selectAllItem)
+        
+        if let documentViewController = self.documentViewController, hasSelection {
+            menu.addItem(.separator())
             
-            let index = submenu.indexOfItem(withTarget: nil, andAction: Selector(("replaceQuotesInSelection:")))
+            // The five colors are direct menu items, not a submenu: one click paints.
+            for (index, color) in HighlightColor.allCases.enumerated() {
+                let item = NSMenuItem(title: color.localizedName,
+                                      action: #selector(DocumentViewController.applyHighlight(_:)),
+                                      keyEquivalent: "")
+                item.tag = index
+                item.target = documentViewController
+                item.image = Self.swatchImage(for: color)
+                menu.addItem(item)
+            }
             
-            guard index >= 0 else { continue }  // -1 == not found
+            menu.addItem(.separator())
             
-            submenu.insertItem(withTitle: String(localized: "Straighten Quotes", table: "MainMenu"),
-                               action: #selector(straightenQuotesInSelection),
-                               keyEquivalent: "",
-                               at: index + 1)
+            let clearItem = NSMenuItem(title: "清除高亮",
+                                       action: #selector(DocumentViewController.removeHighlight(_:)),
+                                       keyEquivalent: "")
+            clearItem.target = documentViewController
+            menu.addItem(clearItem)
         }
         
         return menu
+    }
+    
+    
+    /// Draws a small round swatch for a highlight color menu item.
+    ///
+    /// - Parameter color: The color to draw.
+    /// - Returns: A non-template image so the menu keeps the color.
+    private static func swatchImage(for color: HighlightColor) -> NSImage {
+        
+        let size = NSSize(width: 12, height: 12)
+        let image = NSImage(size: size, flipped: false) { rect in
+            color.swatchColor.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
+        image.isTemplate = false
+        
+        return image
+    }
+    
+    
+    /// The document view controller this text view belongs to, found through the responder chain.
+    private var documentViewController: DocumentViewController? {
+        
+        var responder: NSResponder? = self
+        
+        while let current = responder {
+            if let viewController = current as? DocumentViewController {
+                return viewController
+            }
+            responder = current.nextResponder
+        }
+        
+        return nil
     }
     
     

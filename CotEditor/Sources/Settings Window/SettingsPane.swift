@@ -36,6 +36,7 @@ enum SettingsPane: String, ControlUI.SettingsPane {
     case format
     case snippets
     case keyBindings
+    case ai
     case donation
     
     
@@ -75,6 +76,8 @@ enum SettingsPane: String, ControlUI.SettingsPane {
                 String(localized: "SettingsPane.keyBindings.label",
                        defaultValue: "Key Bindings",
                        table: "Settings")
+            case .ai:
+                "AI"
             case .donation:
                 String(localized: "SettingsPane.donation.label",
                        defaultValue: "Donation",
@@ -95,6 +98,7 @@ enum SettingsPane: String, ControlUI.SettingsPane {
             case .format: "text.document"
             case .snippets: "text.viewfinder"
             case .keyBindings: "keyboard"
+            case .ai: "sparkles"
             case .donation: "mug"
         }
     }
@@ -112,6 +116,7 @@ enum SettingsPane: String, ControlUI.SettingsPane {
             case .format: FormatSettingsView()
             case .snippets: SnippetsSettingsView()
             case .keyBindings: KeyBindingsSettingsView()
+            case .ai: AISettingsView()
             case .donation: DonationSettingsView()
         }
     }

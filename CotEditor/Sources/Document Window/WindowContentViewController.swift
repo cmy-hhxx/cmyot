@@ -37,6 +37,17 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
     
     var documentViewController: DocumentViewController? { self.contentViewController.documentViewController }
     
+    #if DEBUG
+    /// The shell process of the terminal panel, for the debug self-test.
+    var terminalShellPID: pid_t? { self.contentViewController.terminalShellProcessIdentifier }
+    #endif
+    
+    /// Shows or hides the terminal panel.
+    func toggleTerminal() {
+        
+        self.contentViewController.toggleTerminal(nil)
+    }
+    
     
     // MARK: Private Properties
     

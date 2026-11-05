@@ -115,6 +115,11 @@ extension NSTextView: EditorCounter.Source { }
     
     private var urlDetector: URLDetector?
     
+    /// Highlights painted on this document, kept in a sidecar file so the document
+    /// itself stays plain text.
+    var textHighlights: [TextHighlight] = []
+    var highlightSaveTask: Task<Void, Never>?
+    
     private var syntaxUpdateObserver: AnyCancellable?
     private var textStorageObserver: AnyCancellable?
     private var defaultObservers: Set<AnyCancellable> = []
@@ -291,6 +296,7 @@ extension NSTextView: EditorCounter.Source { }
         }
         
         self.applyContentToWindow()
+        self.applyHighlightRendering()
     }
     
     
@@ -446,6 +452,7 @@ extension NSTextView: EditorCounter.Source { }
                 self.isInitialized.withLock { $0 = true }
             }
             
+            self.loadHighlights()
             self.viewController?.invalidateStyleInTextStorage()
         }
     }

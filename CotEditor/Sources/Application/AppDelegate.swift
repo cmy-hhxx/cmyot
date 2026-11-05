@@ -134,6 +134,10 @@ extension Logger {
     
     func applicationWillFinishLaunching(_ notification: Notification) {
         
+        // The app used to be sandboxed; pull the old settings out of the container first,
+        // so everything else here already sees the migrated values.
+        LegacyContainerMigrator.migrateIfNeeded()
+        
         // -> Setting `automaticTerminationSupportEnabled` programmatically doesn't appear to be working.
         //    (2024-11, macOS 15.1, FB15979536)
         ProcessInfo.processInfo.automaticTerminationSupportEnabled = true
@@ -167,6 +171,11 @@ extension Logger {
         NSApp.servicesProvider = ServicesProvider()
         NSApp.registerServicesMenuSendTypes([.fileURL], returnTypes: [])
         NSTouchBar.isAutomaticCustomizeTouchBarMenuItemEnabled = true
+        
+        #if DEBUG
+        self.scheduleTerminalDemoIfRequested()
+        self.scheduleAISettingsDemoIfRequested()
+        #endif
         
         let lastVersion = UserDefaults.standard[.lastVersion].flatMap(Int.init)
         
@@ -331,6 +340,15 @@ extension Logger {
     }
     
     
+    /// Opens the settings window at the AI pane.
+    ///
+    /// - Parameter sender: The action sender.
+    @IBAction func showAIPreferences(_ sender: Any?) {
+        
+        self.settingsWindowController.openPane(.ai)
+    }
+    
+    
     /// Opens the Export Settings panel.
     @IBAction func exportSettings(_ sender: Any?) {
         
@@ -467,6 +485,40 @@ extension Logger {
             NSApp.presentError(error)
         }
     }
+    
+    
+    #if DEBUG
+    /// Opens the AI settings pane on launch, for screenshot and crash verification.
+    ///
+    /// Enabled by launching with `--ai-settings`; inert otherwise.
+    private func scheduleAISettingsDemoIfRequested() {
+        
+        guard ProcessInfo.processInfo.arguments.contains("--ai-settings") else { return }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            self.settingsWindowController.openPane(.ai)
+        }
+    }
+    
+    
+    /// Opens the terminal panel in the front document window when launched with
+    /// `--show-terminal`, for screenshot verification.
+    private func scheduleTerminalDemoIfRequested() {
+        
+        guard ProcessInfo.processInfo.arguments.contains("--show-terminal") else { return }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            NSApp.activate(ignoringOtherApps: true)
+            
+            let windowControllers = NSApp.orderedWindows.compactMap { $0.windowController as? DocumentWindowController }
+            
+            guard let windowController = windowControllers.first else { return }
+            
+            windowController.window?.makeKeyAndOrderFront(nil)
+            windowController.toggleTerminalForDemo()
+        }
+    }
+    #endif
     
     
     // MARK: Private Methods

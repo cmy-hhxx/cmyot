@@ -172,6 +172,13 @@ struct DefaultSettings {
             // file browser
             .fileBrowserShowsHiddenFiles: false,
             
+            // AI
+            // Every key needs a registered value: `DefaultKey<String>` force-unwraps on read,
+            // so a missing key would crash the settings pane before the user typed anything.
+            .aiEndpoint: AIEndpoint.openAIChatCompletions.rawValue,
+            .aiBaseURL: "",
+            .aiModel: "",
+            
             // Outline inspector
             .outlineViewWrapsLines: false,
             .outlineViewFontSize: NSFont.smallSystemFontSize,

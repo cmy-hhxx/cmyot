@@ -19,6 +19,7 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		A1B2C3D42F90AA0100000003 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D42F90AA0100000002 /* SwiftTerm */; };
 		2A1380092C22E9B500093BF3 /* EditorCore in Frameworks */ = {isa = PBXBuildFile; productRef = 2A1380082C22E9B500093BF3 /* EditorCore */; };
 		2A644BC92F0665A700E1975F /* Syntax in Frameworks */ = {isa = PBXBuildFile; productRef = 2A644BC82F0665A700E1975F /* Syntax */; };
 		2ABB27D22C38268300AFCD0B /* Numerics in Frameworks */ = {isa = PBXBuildFile; productRef = 2ABB27CD2C3824DE00AFCD0B /* Numerics */; };
@@ -136,6 +137,7 @@
 		2A6F0DFD1B5500E100C2D03C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				A1B2C3D42F90AA0100000003 /* SwiftTerm in Frameworks */,
 				2ACD02BF22A87F0400893051 /* ColorCode in Frameworks */,
 				2A1380092C22E9B500093BF3 /* EditorCore in Frameworks */,
 				2ABB27D62C382AD400AFCD0B /* MacUI in Frameworks */,
@@ -225,6 +227,7 @@
 			);
 			name = CotEditor;
 			packageProductDependencies = (
+				A1B2C3D42F90AA0100000002 /* SwiftTerm */,
 				2ACD02BE22A87F0400893051 /* ColorCode */,
 				2A1380082C22E9B500093BF3 /* EditorCore */,
 				2ABB27D52C382AD400AFCD0B /* MacUI */,
@@ -328,6 +331,7 @@
 			mainGroup = 2A37F4AAFDCFA73011CA2CEA /* CotEditor */;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				A1B2C3D42F90AA0100000001 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				2ACD02BB22A87CED00893051 /* XCRemoteSwiftPackageReference "WFColorCode" */,
 				2AAAE6E326DB82F800C5F0AC /* XCRemoteSwiftPackageReference "Sparkle" */,
 				2AB756AF2C25BBA4005E04C3 /* XCRemoteSwiftPackageReference "SwiftLintPlugins" */,
@@ -1029,6 +1033,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		A1B2C3D42F90AA0100000001 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
+			requirement = {
+				kind = exactVersion;
+				version = 1.11.0;
+			};
+		};
 		2AAAE6E326DB82F800C5F0AC /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
@@ -1064,6 +1076,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		A1B2C3D42F90AA0100000002 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D42F90AA0100000001 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
 		2A1380082C22E9B500093BF3 /* EditorCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = EditorCore;

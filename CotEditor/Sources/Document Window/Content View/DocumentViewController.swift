@@ -98,19 +98,45 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     /// Posted when the pane that has the focus starts editing another document.
     static let focusedDocumentDidChangeNotification = Notification.Name("DocumentViewControllerFocusedDocumentDidChange")
     
+    /// Posted when the window is split or un-split, or when a pane changes its tabs.
+    static let splitLayoutDidChangeNotification = Notification.Name("DocumentViewControllerSplitLayoutDidChange")
+    
     private static let maximumNumberOfSplitEditors = 4
+    private static let maximumNumberOfTabsPerPane = 8
     
     private let splitState = SplitState()
     
     private weak var focusedChild: EditorViewController?
     
+    /// The pane that currently fills the window while zoomed, if any.
+    private var zoomedPane: EditorViewController?
+    
+    /// The split view items hidden by the zoom, restored when zooming out.
+    private var itemsCollapsedByZoom: [NSSplitViewItem] = []
+    private var aiResultPanel: AIResultPanelController?
+    
     private var themeName: String?
     private var theme: Theme?  { self.focusedTextView?.theme }
+    
+    /// The theme applied to the editor, for views that should match its look.
+    var currentTheme: Theme?  { self.theme }
     
     
     private var observers: Set<AnyCancellable> = []
     private var defaultsObservers: Set<AnyCancellable> = []
     private var windowCloseObserver: AnyCancellable?
+    
+    #if DEBUG
+    private var didRunDemo = false
+    
+    /// Whether this launch was started for visual verification.
+    private static var isDemoLaunchRequested: Bool {
+        
+        ProcessInfo.processInfo.arguments.contains("--ui-demo")
+            || ProcessInfo.processInfo.environment["COT_UI_DEMO"] == "1"
+            || UserDefaults.standard.bool(forKey: "COTUIDemo")
+    }
+    #endif
     
     private var pendingReviewDocuments: [Document] = []
     private var reviewCompletion: ((Bool) -> Void)?
@@ -219,12 +245,15 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             // observe focus change
             NotificationCenter.default.publisher(for: EditorTextView.DidBecomeFirstResponderMessage.name)
                 .map { $0.object as! EditorTextView }
-                .compactMap { [weak self] textView in self?.editorViewControllers.first { $0.textView == textView } }
+                .compactMap { [weak self] textView in self?.editorViewControllers.first { $0.contains(textView) } }
                 .sink { [weak self] in
-                    self?.focusedChild = $0
+                    guard let self, self.focusedChild !== $0 else { return }
+                    self.focusedChild = $0
                     NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
                 },
         ]
+        
+        self.updateSplitState()
     }
     
     
@@ -259,6 +288,47 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 .publisher(for: NSWindow.willCloseNotification, object: window)
                 .sink { [weak self] _ in self?.closeSecondaryDocuments() }
         }
+        
+        #if DEBUG
+        if !self.didRunDemo, UserDefaults.standard.bool(forKey: "COTUIDemoTabs") {
+            self.didRunDemo = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.setUpDemoTabsOnly()
+            }
+        }
+        
+        if !self.didRunDemo, let zoomMode = UserDefaults.standard.string(forKey: "COTUIDemoZoom"), !zoomMode.isEmpty {
+            self.didRunDemo = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self else { return }
+                self.setUpDemoLayout()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                    guard let self, self.editorViewControllers.count > 1 else { return }
+                    self.view.window?.makeFirstResponder(self.editorViewControllers[1].textView)
+                    self.togglePaneZoom(nil)
+                    if zoomMode == "2" {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                            self?.togglePaneZoom(nil)
+                        }
+                    }
+                }
+            }
+        }
+        
+        if !self.didRunDemo, UserDefaults.standard.bool(forKey: "COTUIDemoMenu") {
+            self.didRunDemo = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.setUpDemoMenu()
+            }
+        }
+        
+        if !self.didRunDemo, Self.isDemoLaunchRequested {
+            self.didRunDemo = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.setUpDemoLayout()
+            }
+        }
+        #endif
     }
     
     
@@ -515,6 +585,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             // tell the parser that text was changed
             document.syntaxController.invalidate(in: range, changeInLength: length)
             
+            // keep painted highlights attached to the text they were drawn on
+            document.adjustHighlights(forEditIn: range, changeInLength: length)
+            
             guard self.focusedTextView?.hasMarkedText() != true else { return }
             
             document.counter.invalidateContent()
@@ -535,16 +608,16 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     // MARK: Public Methods
     
-    /// The array of all child text views.
+    /// The array of all child text views, including the ones of the tabs not shown.
     var textViews: [EditorTextView] {
         
-        self.editorViewControllers.compactMap(\.textView)
+        self.editorViewControllers.flatMap(\.allTextViews)
     }
     
     /// The text view currently focused on.
     var focusedTextView: EditorTextView? {
         
-        self.focusedChild?.textView ?? self.textViews.first
+        self.focusedChild?.textView ?? self.editorViewControllers.first?.textView
     }
     
     
@@ -745,6 +818,258 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         guard let textView = self.focusedChild?.textView, !emoji.isEmpty else { return }
         
         textView.insertText(emoji, replacementRange: textView.selectedRange())
+    }
+    
+    
+    // MARK: Text Highlight
+    
+    /// Paints the selection with the highlight color carried by the sender's tag.
+    @IBAction func applyHighlight(_ sender: NSMenuItem) {
+        
+        let colors = HighlightColor.allCases
+        guard colors.indices.contains(sender.tag) else { return }
+        
+        self.highlightSelection { document, range in
+            document.addHighlight(range: range, color: colors[sender.tag])
+        }
+    }
+    
+    
+    /// Removes the highlights touching the selection.
+    @IBAction func removeHighlight(_ sender: Any?) {
+        
+        self.highlightSelection { document, range in
+            document.removeHighlights(in: range)
+        }
+    }
+    
+    
+    private func highlightSelection(_ action: (Document, NSRange) -> Void) {
+        
+        guard let textView = self.focusedChild?.textView else { return }
+        
+        let range = textView.selectedRange()
+        guard range.length > 0 else { return }
+        
+        guard let document = self.document(for: textView) else { return }
+        
+        action(document, range)
+    }
+    
+    
+    // MARK: Pane Zoom
+
+    /// Toggles the focused pane between filling the window and the usual split layout.
+    ///
+    /// Bound to the tmux-style ⌃A, Z sequence in the text view; there is deliberately no
+    /// toolbar item or menu entry.
+    @IBAction func togglePaneZoom(_ sender: Any?) {
+        
+        if self.zoomedPane != nil {
+            self.unzoomPane()
+        } else {
+            self.zoomFocusedPane()
+        }
+    }
+    
+    
+    /// Expands the focused pane to the whole editing area by collapsing its siblings.
+    private func zoomFocusedPane() {
+        
+        guard self.editorViewControllers.count > 1 else { return NSSound.beep() }
+        guard let pane = self.focusedChild ?? self.editorViewControllers.first else { return }
+        
+        // The path from the pane up to this split view controller, so that nested
+        // containers on the way are reduced to the one child the pane lives in.
+        var path: [(group: NSSplitViewController, item: NSSplitViewItem)] = []
+        var child: NSViewController = pane
+        while let parent = child.parent as? NSSplitViewController {
+            guard let item = parent.splitViewItems.first(where: { $0.viewController === child }) else { break }
+            path.append((parent, item))
+            if parent === self { break }
+            child = parent
+        }
+        
+        guard !path.isEmpty else { return }
+        
+        var collapsed: [NSSplitViewItem] = []
+        NSAnimationContext.withStandardTiming {
+            for (group, pathItem) in path {
+                for item in group.splitViewItems where item !== pathItem && !item.isCollapsed {
+                    item.animator().isCollapsed = true
+                    collapsed.append(item)
+                }
+            }
+        }
+        
+        self.zoomedPane = pane
+        self.itemsCollapsedByZoom = collapsed
+        self.view.window?.makeFirstResponderDiscardingMarkedText(pane.textView)
+    }
+    
+    
+    /// Restores the split layout hidden by the zoom.
+    private func unzoomPane() {
+        
+        guard let pane = self.zoomedPane else { return }
+        
+        let items = self.itemsCollapsedByZoom
+        self.itemsCollapsedByZoom = []
+        self.zoomedPane = nil
+        
+        NSAnimationContext.withStandardTiming {
+            items.forEach { $0.animator().isCollapsed = false }
+        }
+        
+        self.view.window?.makeFirstResponderDiscardingMarkedText(pane.textView)
+    }
+    
+    
+    /// Forgets the zoom without touching the layout, for when the zoomed pane goes away.
+    private func resetZoomState() {
+        
+        self.zoomedPane = nil
+        self.itemsCollapsedByZoom = []
+    }
+    
+    
+    // MARK: Window Actions
+
+    /// Closes only the focused pane while the window is split.
+    ///
+    /// ⌘W used to close the whole window, taking every other pane and tab with it. With
+    /// panes this destructive, the shortcut now closes just the pane the user is in; an
+    /// unsplit window keeps the usual close-the-window behaviour.
+    @IBAction func performClose(_ sender: Any?) {
+        
+        guard let pane = self.focusedChild ?? self.editorViewControllers.first else {
+            self.view.window?.performClose(sender)
+            return
+        }
+        
+        let tab = pane.selectedTab
+        
+        // ⌘W always closes one document at a time — the focused tab. A pane goes away
+        // with its last tab, so this never throws away the other documents of a pane or
+        // the other panes of the window.
+        guard tab.isClosable, !tab.isPinned else {
+            // The window's own document tab cannot be closed. Once it is the only tab left,
+            // ⌘W closes the window; otherwise there is nothing for it to close here.
+            if self.editorViewControllers.count == 1, pane.tabs.count == 1, !tab.isPinned {
+                self.view.window?.performClose(sender)
+            } else {
+                NSSound.beep()
+            }
+            return
+        }
+        
+        self.closeTab(tab, in: pane)
+    }
+    
+    
+    // MARK: AI Actions
+    
+    /// Translates the selected text.
+    ///
+    /// - Parameter sender: The action sender.
+    @IBAction func translateSelection(_ sender: Any?) {
+        
+        self.runAIAction(.translate)
+    }
+    
+    
+    /// Summarizes the selected text.
+    ///
+    /// - Parameter sender: The action sender.
+    @IBAction func summarizeSelection(_ sender: Any?) {
+        
+        self.runAIAction(.summarize)
+    }
+    
+    
+    /// Rewrites the selected text in plain language.
+    ///
+    /// - Parameter sender: The action sender.
+    @IBAction func explainSelection(_ sender: Any?) {
+        
+        self.runAIAction(.explain)
+    }
+    
+    
+    /// Runs one AI action on the selection and shows the answer in a sheet.
+    ///
+    /// - Parameter action: The action to run.
+    private func runAIAction(_ action: AIAction) {
+        
+        guard let textView = self.focusedTextView, let window = textView.window else {
+            NSSound.beep()
+            return
+        }
+        
+        let text = textView.selectedString
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            NSSound.beep()
+            return
+        }
+        
+        guard AIService.shared.isConfigured else {
+            self.presentAIConfigurationAlert(on: window)
+            return
+        }
+        
+        let panel = AIResultPanelController(action: action)
+        panel.onReplace = { [weak self] result in self?.applyAIResult(result, replacingSelection: true) }
+        panel.onInsert = { [weak self] result in self?.applyAIResult(result, replacingSelection: false) }
+        self.aiResultPanel = panel
+        
+        panel.present(on: window)
+        
+        Task {
+            do {
+                let result = try await AIService.shared.run(action, on: text)
+                panel.present(result: result)
+            } catch {
+                panel.present(error: error)
+            }
+        }
+    }
+    
+    
+    /// Puts the answer into the focused text view.
+    ///
+    /// The insertion goes through `insertText(_:replacementRange:)` so the change is undoable
+    /// and the text view keeps handling its own editing state.
+    ///
+    /// - Parameters:
+    ///   - result: The answer text.
+    ///   - replacingSelection: Whether to replace the selection instead of inserting at the caret.
+    private func applyAIResult(_ result: String, replacingSelection: Bool) {
+        
+        guard let textView = self.focusedTextView else { return }
+        
+        let range = replacingSelection ? textView.selectedRange() : NSRange(location: textView.selectedRange().upperBound, length: 0)
+        
+        textView.insertText(result, replacementRange: range)
+        textView.window?.makeFirstResponder(textView)
+    }
+    
+    
+    /// Explains that the AI has not been configured yet.
+    ///
+    /// - Parameter window: The window to attach the alert to.
+    private func presentAIConfigurationAlert(on window: NSWindow) {
+        
+        let alert = NSAlert()
+        alert.messageText = "还没有配置 AI"
+        alert.informativeText = "请先在设置里填写接口地址、模型和 API Key，再使用翻译、总结和说人话。"
+        alert.addButton(withTitle: "打开 AI 设置")
+        alert.addButton(withTitle: "取消")
+        
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            
+            (NSApp.delegate as? AppDelegate)?.showAIPreferences(nil)
+        }
     }
     
     
@@ -956,19 +1281,15 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             let window = self.view.window
         else { return assertionFailure() }
         
-        let opened: NSDocument
+        self.unzoomPane()
+        
+        let document: Document
         do {
-            opened = try NSDocumentController.shared.openUntitledDocumentAndDisplay(false)
+            document = try self.makePaneDocument()
         } catch {
             NSApp.presentError(error)
             return
         }
-        
-        guard let document = opened as? Document else { return assertionFailure() }
-        
-        // the new document belongs to this pane, never to a window of its own
-        document.isTransient = false
-        document.syntaxController.setupParser()
         
         let newEditorViewController = self.makeEditorViewController(document: document, copying: currentViewController)
         self.insertPane(newEditorViewController, beside: currentViewController, isVertical: isVertical)
@@ -981,36 +1302,162 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Gives a pane another document without touching the layout.
+    /// Creates a document that belongs to a pane rather than to a window of its own.
     ///
-    /// - Parameters:
-    ///   - viewController: The pane to refill.
-    ///   - document: The document it should show from now on.
-    private func replaceDocument(of viewController: EditorViewController, with document: Document) {
+    /// - Returns: The new untitled document.
+    private func makePaneDocument() throws -> Document {
         
-        guard
-            let parentGroup = self.splitGroup(containing: viewController),
-            let index = parentGroup.splitViewItems.firstIndex(where: { $0.viewController === viewController })
-        else { return assertionFailure() }
+        let opened = try NSDocumentController.shared.openUntitledDocumentAndDisplay(false)
         
-        let previousDocument = viewController.document
+        guard let document = opened as? Document else {
+            throw CocoaError(.featureUnsupported)
+        }
         
+        // the new document belongs to this pane, never to a window of its own
+        document.isTransient = false
         document.syntaxController.setupParser()
         
-        let newViewController = self.makeEditorViewController(document: document, copying: viewController)
-        self.removeItem(for: viewController, from: parentGroup)
-        parentGroup.insertSplitViewItem(self.makeSplitViewItem(for: newViewController), at: index)
+        return document
+    }
+    
+    
+    /// Adds a new tab showing the given document to the given pane.
+    ///
+    /// - Parameters:
+    ///   - document: The document the new tab shows.
+    ///   - pane: The pane to add the tab to.
+    ///   - copying: The text view whose editor preferences are copied to the new one.
+    private func addTab(_ document: Document, to pane: EditorViewController, copying sourceTextView: EditorTextView?) {
         
-        self.focusedChild = newViewController
+        document.isTransient = false
+        document.syntaxController.setupParser()
+        
+        self.observeTextStorage(of: document)
+        
+        let tab = pane.addTab(document: document)
+        tab.isClosable = (document !== self.document)
+        
+        if let textView = pane.textView {
+            self.configureTextView(textView, copying: sourceTextView)
+            pane.showsLineNumber = self.showsLineNumber
+            
+            // observe cursor
+            NotificationCenter.default.addObserver(self, selector: #selector(textViewDidLiveChangeSelection),
+                                                   name: EditorTextView.DidLiveChangeSelectionMessage.name,
+                                                   object: textView)
+        }
+        
+        self.focusedChild = pane
         self.updateSplitState()
-        self.scheduleRatioRebalance()
-        self.view.window?.makeFirstResponderDiscardingMarkedText(newViewController.textView)
+        self.view.window?.makeFirstResponderDiscardingMarkedText(pane.textView)
         
         NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
+    }
+    
+    
+    /// Creates a new document and adds it as a tab to the given pane.
+    ///
+    /// - Parameter pane: The pane to add the tab to.
+    /// - Returns: `false` when the pane already holds as many tabs as it may.
+    @discardableResult
+    private func newTab(in pane: EditorViewController) -> Bool {
         
-        // the empty placeholder document has no reason to live on
-        if previousDocument !== self.document {
-            previousDocument.close()
+        guard pane.tabs.count < Self.maximumNumberOfTabsPerPane else {
+            NSSound.beep()
+            return false
+        }
+        
+        let sourceTextView = pane.textView
+        
+        let document: Document
+        do {
+            document = try self.makePaneDocument()
+        } catch {
+            NSApp.presentError(error)
+            return false
+        }
+        
+        self.addTab(document, to: pane, copying: sourceTextView)
+        
+        return true
+    }
+    
+    
+    /// Closes one tab of a pane, closing the pane when its last tab goes away.
+    ///
+    /// - Parameters:
+    ///   - tab: The tab to close.
+    ///   - pane: The pane that hosts the tab.
+    private func closeTab(_ tab: PaneTab, in pane: EditorViewController) {
+        
+        guard tab.isClosable, !tab.isPinned else { return NSSound.beep() }
+        
+        // Ask about unsaved changes *before* taking the tab away: otherwise a cancelled
+        // save prompt would leave an invisible document behind that can never be saved.
+        if pane === self.zoomedPane, pane.tabs.count == 1 {
+            self.unzoomPane()
+        }
+        
+        self.reviewDocuments([tab.document]) { [weak self, weak pane] canClose in
+            guard canClose, let self, let pane else { return }
+            
+            self.stopObservingTextStorage(of: tab.document)
+            
+            if let textView = pane.textView(for: tab) {
+                NotificationCenter.default.removeObserver(self, name: EditorTextView.DidLiveChangeSelectionMessage.name, object: textView)
+                textView.undoManager?.removeAllActions(withTarget: textView)
+            }
+            
+            tab.document.close()
+            
+            let wasLastTab = (pane.tabs.count == 1)
+            pane.removeTab(tab)
+            
+            if wasLastTab {
+                self.removePane(pane)
+            } else {
+                self.view.window?.makeFirstResponderDiscardingMarkedText(pane.textView)
+            }
+            
+            self.updateSplitState()
+            NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
+        }
+    }
+    
+    
+    /// Closes a whole pane of a split window.
+    ///
+    /// - Parameter pane: The pane to close.
+    private func closePane(_ pane: EditorViewController) {
+        
+        guard self.editorViewControllers.count > 1 else { return NSSound.beep() }
+        
+        // The pane that shows the window's own document cannot be closed at all.
+        guard !pane.tabs.contains(where: { $0.document === self.document }) else { return NSSound.beep() }
+        
+        guard !pane.tabs.contains(where: \.isPinned) else {
+            NSSound.beep()
+            let alert = NSAlert()
+            alert.messageText = "标签页已固定"
+            alert.informativeText = "这个窗格里有固定的标签页。请先取消固定，再关闭窗格。"
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+            return
+        }
+        
+        let documents = pane.tabs.map(\.document)
+        
+        self.reviewDocuments(documents) { [weak self, weak pane] canClose in
+            guard canClose, let self, let pane else { return }
+            
+            for tab in pane.tabs {
+                self.stopObservingTextStorage(of: tab.document)
+                tab.document.close()
+            }
+            
+            self.removePane(pane)
+            self.updateSplitState()
         }
     }
     
@@ -1056,26 +1503,22 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             let currentViewController = self.baseEditorViewController(for: sender)
         else { return }
         
-        // The window can only ever show its own document, so that pane has to stay.
-        guard currentViewController.document !== self.document else { return NSSound.beep() }
-        
-        // Ask about unsaved changes *before* taking the pane away: otherwise a cancelled
-        // save prompt would leave an invisible document behind that can never be saved.
-        self.reviewDocuments([currentViewController.document]) { [weak self, weak currentViewController] canClose in
-            guard canClose, let self, let currentViewController else { return }
-            
-            currentViewController.document.close()
-            self.removePane(currentViewController)
-        }
+        self.closePane(currentViewController)
     }
     
     
     /// Removes a pane from the layout and gives the freed space to its siblings.
     ///
+    /// The pane's documents have already been reviewed and closed by the caller.
+    ///
     /// - Parameter viewController: The pane to remove.
     private func removePane(_ viewController: EditorViewController) {
         
-        if let textView = viewController.textView {
+        if viewController === self.zoomedPane {
+            self.resetZoomState()
+        }
+        
+        for textView in viewController.allTextViews {
             NotificationCenter.default.removeObserver(self, name: EditorTextView.DidLiveChangeSelectionMessage.name, object: textView)
             textView.undoManager?.removeAllActions(withTarget: textView)
         }
@@ -1218,8 +1661,10 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     /// Closes the documents that exist only because a pane shows them.
     private func closeSecondaryDocuments() {
         
-        for editorViewController in self.editorViewControllers where editorViewController.document !== self.document {
-            editorViewController.document.close()
+        for editorViewController in self.editorViewControllers {
+            for tab in editorViewController.tabs where tab.document !== self.document {
+                tab.document.close()
+            }
         }
     }
     
@@ -1278,7 +1723,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         guard
             self.editorViewControllers.count > 1,
-            let focusedChild
+            let focusedChild,
+            focusedChild.tabs.count == 1
         else { return nil }
         
         let document = focusedChild.document
@@ -1296,17 +1742,136 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         guard let viewController = self.focusedBlankEditor else { return false }
         
-        self.replaceDocument(of: viewController, with: document)
+        let placeholderTab = viewController.selectedTab
+        let sourceTextView = viewController.textView
+        
+        self.stopObservingTextStorage(of: placeholderTab.document)
+        viewController.removeTab(placeholderTab)
+        
+        self.addTab(document, to: viewController, copying: sourceTextView)
+        
+        // the empty placeholder document has no reason to live on
+        placeholderTab.document.close()
         
         return true
     }
     
     
-    /// The documents this window shows, in pane order.
+    /// Whether the window is split into more than one pane.
+    var isSplit: Bool {
+        
+        self.editorViewControllers.count > 1
+    }
+    
+    
+    /// Whether any tab in the window is pinned.
+    var hasPinnedTabs: Bool {
+        
+        self.editorViewControllers.contains(where: \.hasPinnedTab)
+    }
+    
+    
+    /// Opens a new document as a tab in the focused pane.
+    ///
+    /// - Returns: `false` when there is no pane to add the tab to.
+    @discardableResult
+    func newTabInFocusedPane() -> Bool {
+        
+        guard let pane = self.focusedChild ?? self.editorViewControllers.first else { return false }
+        
+        return self.newTab(in: pane)
+    }
+    
+    
+    /// The documents this window shows, in pane and tab order.
     var paneDocuments: [Document] {
         
-        self.editorViewControllers.map(\.document)
+        self.editorViewControllers.flatMap { $0.tabs.map(\.document) }
     }
+    
+    
+    #if DEBUG
+    /// Builds a representative three-pane layout with extra tabs and a pinned tab.
+    ///
+    /// Only used for visual verification (see the `COT_UI_DEMO` environment flag).
+    func setUpDemoLayout() {
+        
+        guard
+            let window = self.view.window,
+            let topPane = self.editorViewControllers.first,
+            self.editorViewControllers.count == 1
+        else { return }
+        
+        window.setFrame(NSRect(x: 200, y: 140, width: 1200, height: 820), display: true)
+        
+        do {
+            // two more tabs in the top pane
+            self.newTab(in: topPane)
+            self.newTab(in: topPane)
+            
+            // bottom pane: two panes side by side below the top one
+            let bottomDocument = try self.makePaneDocument()
+            let bottomPane = self.makeEditorViewController(document: bottomDocument, copying: topPane)
+            self.insertPane(bottomPane, beside: topPane, isVertical: false)
+            self.addTab(try self.makePaneDocument(), to: bottomPane, copying: bottomPane.textView)
+            
+            let rightDocument = try self.makePaneDocument()
+            let rightPane = self.makeEditorViewController(document: rightDocument, copying: bottomPane)
+            self.insertPane(rightPane, beside: bottomPane, isVertical: true)
+            
+            // a pinned tab in the right pane
+            self.addTab(try self.makePaneDocument(), to: rightPane, copying: rightPane.textView)
+            if let pinnedTab = rightPane.tabs.last {
+                rightPane.debugTogglePin(pinnedTab)  // pins it and moves it to the front
+            }
+            if let firstTab = rightPane.tabs.first {
+                rightPane.select(tab: firstTab)
+            }
+            
+            topPane.select(tab: topPane.tabs[0])
+        } catch {
+            NSApp.presentError(error)
+        }
+        
+        self.updateSplitState()
+        self.scheduleRatioRebalance()
+        self.view.window?.makeFirstResponder(topPane.textView)
+    }
+    
+    
+    /// Adds two more tabs to the single pane, for a screenshot of an un-split window.
+    func setUpDemoTabsOnly() {
+        
+        guard let pane = self.editorViewControllers.first else { return }
+        
+        self.newTab(in: pane)
+        self.newTab(in: pane)
+        
+        if let first = pane.tabs.first {
+            pane.select(tab: first)
+        }
+    }
+    
+    
+    /// Pops up the text view's context menu for a screenshot, closing it again afterwards.
+    func setUpDemoMenu() {
+        
+        guard let textView = self.focusedTextView else { return }
+        
+        NSApp.activate(ignoringOtherApps: true)
+        self.view.window?.makeKeyAndOrderFront(nil)
+        self.view.window?.makeFirstResponder(textView)
+        
+        let menu = textView.makeContextMenu()
+        
+        // Menu tracking runs in the event-tracking run loop mode, so the timer has to
+        // live there to fire while the menu is open.
+        let timer = Timer(timeInterval: 3, repeats: false) { _ in menu.cancelTracking() }
+        RunLoop.main.add(timer, forMode: .eventTracking)
+        
+        menu.popUp(positioning: nil, at: NSPoint(x: 60, y: 120), in: textView)
+    }
+    #endif
     
     
     /// The document the focused pane edits.
@@ -1322,7 +1887,13 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     /// - Returns: The document owning it, or `nil` if the text storage is foreign.
     func document(for textStorage: NSTextStorage) -> Document? {
         
-        self.editorViewControllers.first { $0.document.textStorage === textStorage }?.document
+        for pane in self.editorViewControllers {
+            for tab in pane.tabs where tab.document.textStorage === textStorage {
+                return tab.document
+            }
+        }
+        
+        return nil
     }
     
     
@@ -1332,7 +1903,13 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     /// - Returns: The document the pane edits, or `nil` if the text view is foreign.
     func document(for textView: NSTextView) -> Document? {
         
-        self.editorViewControllers.first { $0.textView === textView }?.document
+        for pane in self.editorViewControllers {
+            if let document = pane.document(for: textView) {
+                return document
+            }
+        }
+        
+        return nil
     }
     
     
@@ -1401,24 +1978,32 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Syncs the shared state observed by the navigation bar with the actual layout.
+    /// Syncs the shared state observed by the tab bars with the actual layout.
     private func updateSplitState() {
         
-        self.splitState.canClose = self.editorViewControllers.count > 1
+        let isSplit = self.editorViewControllers.count > 1
+        self.splitState.canClose = isSplit
         
         if let focusedChild = self.focusedChild, let group = self.splitGroup(containing: focusedChild) {
             self.splitState.isVertical = group.splitView.isVertical
         }
         
-        // an empty navigation bar is noise: let each pane decide whether to show it
         for editorViewController in self.editorViewControllers {
-            editorViewController.setClosable(editorViewController.document !== self.document)
+            for tab in editorViewController.tabs {
+                tab.isClosable = (tab.document !== self.document)
+            }
+            
+            let containsWindowDocument = editorViewController.tabs.contains { $0.document === self.document }
+            editorViewController.setCanClosePane(isSplit && !containsWindowDocument)
+            editorViewController.updateTabState()
             editorViewController.updateNavigationBarVisibility(animated: true)
         }
+        
+        NotificationCenter.default.post(name: Self.splitLayoutDidChangeNotification, object: self)
     }
     
     
-    /// Creates a new editor view for a pane.
+    /// Creates a new editor (tab group) for a pane.
     ///
     /// - Parameters:
     ///   - document: The document the pane edits.
@@ -1428,30 +2013,61 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         let viewController = EditorViewController(document: document, splitState: self.splitState)
         
+        // wire the tab bar commands to this document view controller
+        viewController.requestNewTab = { [weak self, weak viewController] in
+            guard let self, let viewController else { return }
+            self.newTab(in: viewController)
+        }
+        viewController.requestCloseTab = { [weak self, weak viewController] tab in
+            guard let self, let viewController else { return }
+            self.closeTab(tab, in: viewController)
+        }
+        viewController.requestClosePane = { [weak self, weak viewController] in
+            guard let self, let viewController else { return }
+            self.closePane(viewController)
+        }
+        viewController.didSelectTab = { [weak self, weak viewController] _ in
+            guard let self, let viewController else { return }
+            self.focusedChild = viewController
+            self.view.window?.makeFirstResponderDiscardingMarkedText(viewController.textView)
+            NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
+        }
+        
+        // observe edits so each document keeps its own syntax parse up to date
+        self.observeTextStorage(of: document)
+        
+        // setup textView
+        if let textView = viewController.textView {
+            self.configureTextView(textView, copying: otherViewController?.textView)
+            viewController.showsLineNumber = self.showsLineNumber  // need to be set after setting text orientation
+        }
+        
         // observe cursor
         NotificationCenter.default.addObserver(self, selector: #selector(textViewDidLiveChangeSelection),
                                                name: EditorTextView.DidLiveChangeSelectionMessage.name,
                                                object: viewController.textView)
         
-        // observe edits so each document keeps its own syntax parse up to date
-        if document !== self.document {
-            NotificationCenter.default.addObserver(self, selector: #selector(textStorageDidProcessEditing),
-                                                   name: NSTextStorage.didProcessEditingNotification,
-                                                   object: document.textStorage)
-        }
+        return viewController
+    }
+    
+    
+    /// Applies the window-wide editor settings to a text view of a pane or a tab.
+    ///
+    /// - Parameters:
+    ///   - textView: The text view to configure.
+    ///   - baseTextView: The text view whose states are copied, or `nil` for a fresh one.
+    private func configureTextView(_ textView: EditorTextView, copying baseTextView: EditorTextView?) {
         
-        // setup textView
-        let textView = viewController.textView!
+        let document = textView.textStorage.flatMap { self.document(for: $0) } ?? self.document
         textView.isEditable = document.isEditable
         textView.wrapsLines = self.wrapsLines
         textView.showsInvisibles = self.showsInvisibles
         textView.setLayoutOrientation(self.verticalLayoutOrientation ? .vertical : .horizontal)
         textView.showsPageGuide = self.showsPageGuide
         textView.showsIndentGuides = self.showsIndentGuides
-        viewController.showsLineNumber = self.showsLineNumber  // need to be set after setting text orientation
         
         // copy base textView states
-        if let baseTextView = otherViewController?.textView {
+        if let baseTextView {
             textView.font = baseTextView.font
             textView.usesAntialias = baseTextView.usesAntialias
             textView.ligature = baseTextView.ligature
@@ -1463,6 +2079,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             if let highlights = baseTextView.layoutManager?.syntaxHighlights(), !highlights.isEmpty {
                 textView.layoutManager?.apply(highlights: highlights, theme: self.theme, in: textView.string.range)
             }
+        } else if let theme = self.theme {
+            textView.theme = theme
         }
         
         if textView.baseWritingDirection != self.writingDirection {
@@ -1470,11 +2088,34 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         }
         
         // the syntax controller belongs to the document, so give it the pane's theme
-        if document !== self.document {
-            document.syntaxController.theme = textView.theme
+        if let theme = textView.theme {
+            document.syntaxController.theme = theme
         }
+    }
+    
+    
+    /// Observes the text storage of a document that lives only in a pane.
+    ///
+    /// - Parameter document: The document to observe.
+    private func observeTextStorage(of document: Document) {
         
-        return viewController
+        guard document !== self.document else { return }
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(textStorageDidProcessEditing),
+                                               name: NSTextStorage.didProcessEditingNotification,
+                                               object: document.textStorage)
+    }
+    
+    
+    /// Stops observing the text storage of a document that leaves the window.
+    ///
+    /// - Parameter document: The document to stop observing.
+    private func stopObservingTextStorage(of document: Document) {
+        
+        guard document !== self.document else { return }
+        
+        NotificationCenter.default.removeObserver(self, name: NSTextStorage.didProcessEditingNotification,
+                                                  object: document.textStorage)
     }
     
     

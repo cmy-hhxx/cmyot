@@ -61,6 +61,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     private var isDirectoryDocument: Bool
     
     private var windowAutosaveName: NSWindow.FrameAutosaveName
+    
+    /// The frame taken from the autosaved value, before AppKit's window restoration can replace it.
+    private var autosavedFrame: NSRect?
     private var needsManualOnAppear = false
     private var uniqueDirectory: String?
     
@@ -75,6 +78,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     private var focusObserver: AnyCancellable?
     private var editedStateObserver: AnyCancellable?
     private var isReviewingPaneDocuments = false
+    private var splitLayoutObserver: AnyCancellable?
+    private var pendingTitleVisibility: NSWindow.TitleVisibility?
     private var syntaxListObserver: AnyCancellable?
     private weak var syntaxPopUpButton: NSPopUpButton?
     
@@ -99,15 +104,23 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         window.styleMask.update(with: .fullSizeContentView)
         window.animationBehavior = .documentWindow
         window.setFrameAutosaveName(self.windowAutosaveName)
+        let autosavedFrame = window.frame
+        
         
         if self.isDirectoryDocument {
             window.tabbingMode = .disallowed
         }
         
+        
         // set window size
         if let frameSize = Self.userFrameSize(for: window) {
             window.setFrame(NSRect(origin: window.frame.origin, size: frameSize), display: false)
         }
+        
+        // AppKit's window restoration runs after this initializer and happily replaces the
+        // frame with the one recorded in its own state, which can be older than the autosaved
+        // frame and therefore smaller. Keep the autosaved frame and restore it in `showWindow`.
+        self.autosavedFrame = (Self.userFrameSize(for: window) == nil) ? autosavedFrame : window.frame
         
         // cascade window position
         // -> Don't use `NSApp.mainWindow` since it returns `nil` when the app is inactive. (2025-04)
@@ -120,7 +133,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
             window.cascadeTopLeft(from: cascadingPoint)
         }
         
+        
         super.init(window: window)
+        
         
         self.updateDocument(document)
         
@@ -183,6 +198,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
                 self?.updateEditedState()
                 self?.updateRestorability()
             }
+        
+        // follow the pane layout to hide the window title while the window is split
+        self.splitLayoutObserver = NotificationCenter.default
+            .publisher(for: DocumentViewController.splitLayoutDidChangeNotification)
+            .compactMap { $0.object as? DocumentViewController }
+            .filter { [weak self] in $0 === self?.documentViewController }
+            .sink { [weak self] _ in self?.updateTitleVisibility() }
     }
     
     
@@ -204,15 +226,78 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     }
     
     
+    override func windowDidLoad() {
+        
+        super.windowDidLoad()
+        
+        // Let the window be moved by dragging the chrome-like background areas (the tab
+        // bar's empty space, the gap under the toolbar), not just the toolbar itself.
+        self.window?.isMovableByWindowBackground = true
+        
+        // the split state may have been set before the window finished loading
+        if let titleVisibility = self.pendingTitleVisibility {
+            self.pendingTitleVisibility = nil
+            self.window?.titleVisibility = titleVisibility
+        }
+    }
+    
+    
+    override func showWindow(_ sender: Any?) {
+        
+        // Put the autosaved frame back once: window restoration may have replaced it with a
+        // stale size between `init` and here, which made windows open small.
+        if
+            let autosavedFrame = self.autosavedFrame,
+            let window = self.window,
+            window.frame != autosavedFrame,
+            !window.styleMask.contains(.fullScreen)
+        {
+            self.autosavedFrame = nil
+            window.setFrame(autosavedFrame, display: false)
+        }
+        
+        super.showWindow(sender)
+        
+        #if DEBUG
+        self.scheduleDemoLayoutIfNeeded()
+        #endif
+    }
+    
+    
     override func setDocumentEdited(_ dirtyFlag: Bool) {
         
-        self.window?.tab.accessoryView = dirtyFlag ? self.editedIndicator : nil
+        self.updateTabAccessoryView(isEdited: dirtyFlag)
         
         super.setDocumentEdited(self.isWhitePaper ? false : dirtyFlag)
     }
     
     
+    /// Updates the badge shown on the window tab.
+    func updateTabAccessoryView(isEdited: Bool? = nil) {
+        
+        guard let window = self.window else { return }
+        
+        let isEdited = isEdited ?? (self.document?.isDocumentEdited == true)
+        window.tab.accessoryView = (self.isWhitePaper || !isEdited) ? nil : self.editedIndicator
+    }
+    
+    
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        
+        // A pinned pane tab refuses every user-initiated close: the close button, ⌘W and
+        // the window tab's close button all end up here.
+        if self.documentViewController?.hasPinnedTabs == true {
+            NSSound.beep()
+            
+            let alert = NSAlert()
+            alert.messageText = "有固定的标签页，不能关闭窗口"
+            alert.informativeText = "请先取消固定。"
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+            
+            return false
+        }
         
         guard let viewController = self.documentViewController else { return true }
         
@@ -393,6 +478,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         }
         
         self.updateRestorability()
+        self.updateTitleVisibility()
     }
     
     
@@ -425,6 +511,52 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         
         self.window?.isRestorable = document?.fileURL != nil || hasContent || (self.window?.isDocumentEdited == true)
     }
+    
+    
+    /// Hides the window title while the window is split into panes.
+    ///
+    /// Every pane names its document in its own navigation bar, so a window title would
+    /// only duplicate one of them. The subtitle (the vim mode indicator) is left alone.
+    private func updateTitleVisibility() {
+        
+        let titleVisibility: NSWindow.TitleVisibility = (self.documentViewController?.isSplit == true) ? .hidden : .visible
+        
+        guard let window = self.window else {
+            // the split state can change before the window finishes loading
+            self.pendingTitleVisibility = titleVisibility
+            return
+        }
+        
+        window.titleVisibility = titleVisibility
+    }
+    
+    
+    #if DEBUG
+    /// Builds the scripted demo layout used for screenshot verification.
+    ///
+    /// Enabled by launching the app with `COT_UI_DEMO=1`. The delay lets the window and
+    /// its pane tabs finish their first layout pass before the demo state is built.
+    private func scheduleDemoLayoutIfNeeded() {
+        
+        // `open --args --ui-demo` is the reliable way to reach a sandboxed app
+        guard ProcessInfo.processInfo.arguments.contains("--ui-demo")
+            || ProcessInfo.processInfo.environment["COT_UI_DEMO"] == "1"
+        else { return }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.documentViewController?.setUpDemoLayout()
+        }
+    }
+    #endif
+    
+    
+    #if DEBUG
+    /// Toggles the terminal panel, for the `--show-terminal` screenshot hook.
+    func toggleTerminalForDemo()  {
+        
+        (self.contentViewController as? WindowContentViewController)?.toggleTerminal()
+    }
+    #endif
     
     
     /// Makes the toolbar reflect the document of the focused pane.
@@ -578,7 +710,7 @@ private extension NSViewController {
 
 private extension NSToolbar.Identifier {
     
-    static let document = Self("Document.personal.2")
+    static let document = Self("Document.personal.6")
     static let directoryDocument = Self("DirectoryDocument")
 }
 
@@ -589,8 +721,6 @@ private extension NSToolbarItem.Identifier {
     
     
     static let syntax = Self(Self.prefix + "syntaxStyle")
-    static let splitRight = Self(Self.prefix + "splitRight")
-    static let splitBelow = Self(Self.prefix + "splitBelow")
     static let quickEmoji = Self(Self.prefix + "quickEmoji")
     static let textScale = Self(Self.prefix + "textScale")
     static let more = Self(Self.prefix + "more")
@@ -620,6 +750,8 @@ private extension NSToolbarItem.Identifier {
     static let indentGuides = Self(Self.prefix + "indentGuides")
     
     static let keepOnTop = Self(Self.prefix + "keepOnTop")
+    static let terminal = Self(Self.prefix + "terminal")
+    static let aiSettings = Self(Self.prefix + "aiSettings")
     static let editable = Self(Self.prefix + "editable")
     static let spellCheck = Self(Self.prefix + "spellCheck")
     static let emojiAndSymbols = Self(Self.prefix + "emojiAndSymbols")
@@ -647,8 +779,6 @@ extension DocumentWindowController: NSToolbarDelegate {
         Set(self.directoryIdentifiers).union([
             .editable,
             .quickEmoji,
-            .splitRight,
-            .splitBelow,
             .flexibleSpace,
         ])
     }
@@ -661,8 +791,8 @@ extension DocumentWindowController: NSToolbarDelegate {
             .quickEmoji,
             .syntax,
             .textScale,
-            .splitRight,
-            .splitBelow,
+            .terminal,
+            .aiSettings,
             .inspector,
             .more,
             .flexibleSpace,
@@ -679,9 +809,9 @@ extension DocumentWindowController: NSToolbarDelegate {
             .syntax,
             .textScale,
             .textSize,
-            .splitRight,
-            .splitBelow,
             .inspector,
+            .terminal,
+            .aiSettings,
             .more,
             .space,
             .flexibleSpace,
@@ -770,18 +900,26 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.menu = Self.moreMenu()
                 return item
                 
-            case .splitRight, .splitBelow:
+            case .aiSettings:
                 let item = NSToolbarItem(itemIdentifier: itemIdentifier)
                 item.isBordered = true
-                item.label = itemIdentifier == .splitRight ? "向右分割" : "向下分割"
-                item.toolTip = item.label
-                item.image = NSImage(systemSymbolName: itemIdentifier == .splitRight
-                                     ? "rectangle.split.2x1"
-                                     : "rectangle.split.1x2",
-                                     accessibilityDescription: item.label)
-                item.action = itemIdentifier == .splitRight
-                    ? #selector(DocumentViewController.splitEditorVertically(_:))
-                    : #selector(DocumentViewController.splitEditorHorizontally(_:))
+                item.label = "AI"
+                item.toolTip = "配置 AI：接口地址、模型、API Key"
+                item.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: item.label)
+                item.target = NSApp.delegate
+                item.action = #selector(AppDelegate.showAIPreferences(_:))
+                item.isNavigational = true
+                item.visibilityPriority = .high
+                return item
+                
+            case .terminal:
+                let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+                item.isBordered = true
+                item.label = "终端"
+                item.toolTip = "在当前窗口显示或隐藏终端"
+                item.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: item.label)
+                item.action = #selector(ContentViewController.toggleTerminal(_:))
+                // keep it next to the other leading controls, and out of the overflow menu
                 item.isNavigational = true
                 item.visibilityPriority = .high
                 return item
@@ -1137,27 +1275,55 @@ private struct EditedIndicator: View {
 
 extension DocumentWindowController {
     
+    /// A titled group of curated emoji in the toolbar's quick-insert menu.
+    ///
+    /// Groups carry a heading so the menu reads as sections rather than one long
+    /// undifferentiated wall of rows.
+    private struct QuickEmojiSection {
+        
+        let title: String
+        let rows: [[String]]
+    }
+    
+    
     /// Curated emoji grouped by purpose, laid out as compact rows instead of one long column.
-    private static let quickEmojiRows: [[String]] = [
-        ["✅", "❌", "✔️", "✖️", "☐", "☑"],
-        ["⭐", "🔥", "📌", "📝", "💡", "🎯"],
-        ["⚠️", "❓", "❗", "🚧", "🐛", "🔖"],
-        ["⏳", "⏰", "📚", "🔧", "🚀", "📦"],
-        ["🔴", "🟡", "🟢", "🔵", "🟣", "⚪"],
+    ///
+    /// Ordered from the palettes used most often while writing notes — progress and
+    /// priority first — down to the general-purpose markers.
+    private static let quickEmojiSections: [QuickEmojiSection] = [
+        QuickEmojiSection(title: "进度", rows: [
+            ["○", "◔", "◑", "◕", "●", "◌"],
+        ]),
+        QuickEmojiSection(title: "优先级", rows: [
+            ["🔴", "🟠", "🟡", "🟢", "🔵", "⚪"],
+        ]),
+        QuickEmojiSection(title: "状态", rows: [
+            ["✅", "❌", "✔️", "✖️", "☐", "☑"],
+        ]),
+        QuickEmojiSection(title: "标记", rows: [
+            ["⭐", "🔥", "📌", "📝", "💡"],
+            ["⚠️", "❓", "❗", "🚧", "🐛", "🔖"],
+        ]),
+        QuickEmojiSection(title: "流程", rows: [
+            ["⏳", "⏰", "📚", "🔧", "🚀", "📦"],
+        ]),
     ]
     
     
     static func quickEmojiMenu() -> NSMenu {
         
         let menu = NSMenu()
-        for (index, emojis) in Self.quickEmojiRows.enumerated() {
+        for (index, section) in Self.quickEmojiSections.enumerated() {
             if index > 0 {
                 menu.addItem(.separator())
             }
+            menu.addItem(EmojiMenuSectionHeaderView.makeItem(title: section.title))
             
-            let item = NSMenuItem()
-            item.view = EmojiMenuRowView(emojis: emojis)
-            menu.addItem(item)
+            for emojis in section.rows {
+                let item = NSMenuItem()
+                item.view = EmojiMenuRowView(emojis: emojis)
+                menu.addItem(item)
+            }
         }
         
         return menu
@@ -1205,6 +1371,43 @@ extension DocumentWindowController {
 }
 
 
+/// Section heading shown above each group in the toolbar's emoji menu.
+final class EmojiMenuSectionHeaderView: NSView {
+    
+    static func makeItem(title: String) -> NSMenuItem {
+        
+        let item = NSMenuItem()
+        item.view = EmojiMenuSectionHeaderView(title: title)
+        return item
+    }
+    
+    
+    private init(title: String) {
+        
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 11, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        
+        super.init(frame: .zero)
+        
+        self.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: 10),
+            label.topAnchor.constraint(equalTo: self.topAnchor, constant: 2),
+            label.bottomAnchor.constraint(equalTo: self.bottomAnchor, constant: -4),
+        ])
+    }
+    
+    
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
+
 /// One compact horizontal row of emoji buttons, used by the toolbar's emoji menu.
 final class EmojiMenuRowView: NSView {
     
@@ -1220,7 +1423,7 @@ final class EmojiMenuRowView: NSView {
                                   action: #selector(DocumentViewController.insertQuickEmojiFromButton(_:)))
             button.isBordered = false
             button.setButtonType(.momentaryPushIn)
-            button.font = .systemFont(ofSize: 17)
+            button.font = Self.font(for: emoji)
             button.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
                 button.widthAnchor.constraint(equalToConstant: buttonSize),
@@ -1240,6 +1443,23 @@ final class EmojiMenuRowView: NSView {
             stack.topAnchor.constraint(equalTo: self.topAnchor),
             stack.bottomAnchor.constraint(equalTo: self.bottomAnchor),
         ])
+    }
+    
+    
+    /// Font for one emoji button.
+    ///
+    /// The geometric progress glyphs (`◔` `◑` `◕`) are not in the system font and
+    /// render noticeably smaller and thinner than the emoji beside them, so they get a
+    /// monospaced font at a larger size to match the emoji's visual weight.
+    private static func font(for emoji: String) -> NSFont {
+        
+        guard let scalar = emoji.unicodeScalars.first, scalar.value < 0x2B00 else {
+            return .systemFont(ofSize: 17)
+        }
+        
+        let size: CGFloat = 22
+        return NSFont(name: "Menlo", size: size)
+            ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
     
     

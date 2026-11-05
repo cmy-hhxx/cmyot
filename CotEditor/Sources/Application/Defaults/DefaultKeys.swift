@@ -156,6 +156,11 @@ extension DefaultKeys {
     // file browser
     static let fileBrowserShowsHiddenFiles = DefaultKey<Bool>("fileBrowserShowsHiddenFiles")
     
+    // AI
+    static let aiEndpoint = RawRepresentableDefaultKey<AIEndpoint>("aiEndpoint")
+    static let aiBaseURL = DefaultKey<String>("aiBaseURL")
+    static let aiModel = DefaultKey<String>("aiModel")
+    
     // Outline inspector
     static let outlineViewWrapsLines = DefaultKey<Bool>("outlineViewWrapsLines")
     static let outlineViewFontSize = DefaultKey<Double>("outlineViewFontSize")
