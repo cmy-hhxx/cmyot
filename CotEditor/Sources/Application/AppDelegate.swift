@@ -175,6 +175,8 @@ extension Logger {
         #if DEBUG
         self.scheduleTerminalDemoIfRequested()
         self.scheduleAISettingsDemoIfRequested()
+        self.scheduleSettingsPaneDemoIfRequested()
+        self.scheduleInspectorDemoIfRequested()
         #endif
         
         let lastVersion = UserDefaults.standard[.lastVersion].flatMap(Int.init)
@@ -501,6 +503,69 @@ extension Logger {
     }
     
     
+    /// Opens one specific settings pane on launch, for screenshot verification.
+    ///
+    /// Enabled by launching with `--settings-pane <pane>`, where `<pane>` is the raw value of
+    /// ``SettingsPane`` (for example `general` or `ai`); inert otherwise.
+    private func scheduleSettingsPaneDemoIfRequested() {
+        
+        let arguments = ProcessInfo.processInfo.arguments
+        guard
+            let index = arguments.firstIndex(of: "--settings-pane"),
+            arguments.indices.contains(index + 1),
+            let pane = SettingsPane(rawValue: arguments[index + 1])
+        else { return }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            self.settingsWindowController.openPane(pane)
+        }
+    }
+    
+    
+    /// Opens the inspector in the front document window on launch, for screenshot verification.
+    ///
+    /// Enabled by launching with `--show-inspector [file]`; an optional file path is opened
+    /// first so the inspector has file attributes to show. Inert otherwise.
+    private func scheduleInspectorDemoIfRequested() {
+        
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--show-inspector") else { return }
+        let path = arguments.indices.contains(index + 1) ? arguments[index + 1] : nil
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            NSApp.activate(ignoringOtherApps: true)
+            
+            guard let path else {
+                self.showInspectorInFrontWindow()
+                return
+            }
+            
+            NSDocumentController.shared.openDocument(withContentsOf: URL(filePath: path), display: true) { _, _, _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    self.showInspectorInFrontWindow()
+                }
+            }
+        }
+    }
+    
+    
+    /// Toggles the inspector of the front document window.
+    private func showInspectorInFrontWindow() {
+        
+        let windowControllers = NSApp.orderedWindows.compactMap { $0.windowController as? DocumentWindowController }
+        guard let windowController = windowControllers.first(where: { $0.window?.isVisible == true }) else { return assertionFailure() }
+        
+        windowController.window?.makeKeyAndOrderFront(nil)
+        
+        guard let splitViewController = windowController.contentViewController as? NSSplitViewController,
+              let inspectorItem = splitViewController.splitViewItems.first(where: { $0.behavior == .inspector }),
+              inspectorItem.isCollapsed
+        else { return }
+        
+        splitViewController.toggleInspector(nil)
+    }
+    
+    
     /// Opens the terminal panel in the front document window when launched with
     /// `--show-terminal`, for screenshot verification.
     private func scheduleTerminalDemoIfRequested() {
@@ -527,6 +592,8 @@ extension Logger {
     private func prepareMainMenu() {
         
         assert(NSApp.mainMenu != nil)
+        
+        self.localizeCustomMenuItems()
         
         guard self.menuUpdateObservers.isEmpty else { return assertionFailure() }
         
@@ -604,6 +671,40 @@ extension Logger {
                 ]
             }
             .store(in: &self.menuUpdateObservers)
+    }
+    
+    
+    /// Retitles the menu items this fork added to the storyboard.
+    ///
+    /// The storyboard's Base localization is English, but these three items were added with
+    /// Chinese titles, so a Chinese title would leak into the English UI. Their titles are
+    /// therefore set at launch from the `Chrome` string catalog instead. The storyboard and
+    /// its catalog are left untouched.
+    private func localizeCustomMenuItems() {
+        
+        guard let mainMenu = NSApp.mainMenu else { return assertionFailure() }
+        
+        let titles: [Selector: String] = [
+            #selector(NSDocument.move(_:)):
+                String(localized: "chrome.menu.rename", defaultValue: "Rename…", table: "Chrome"),
+            #selector(DocumentViewController.splitEditorHorizontally(_:)):
+                String(localized: "chrome.menu.splitDown", defaultValue: "Split Down", table: "Chrome"),
+            #selector(DocumentViewController.splitEditorVertically(_:)):
+                String(localized: "chrome.menu.splitRight", defaultValue: "Split Right", table: "Chrome"),
+        ]
+        
+        func retitle(in menu: NSMenu) {
+            for item in menu.items {
+                if let action = item.action, let title = titles[action] {
+                    item.title = title
+                }
+                if let submenu = item.submenu {
+                    retitle(in: submenu)
+                }
+            }
+        }
+        
+        retitle(in: mainMenu)
     }
 }
 

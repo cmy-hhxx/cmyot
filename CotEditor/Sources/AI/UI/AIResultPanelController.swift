@@ -48,10 +48,22 @@ final class AIResultPanelController: NSWindowController {
     private let textView = NSTextView()
     private let scrollView = NSScrollView()
     private let progressIndicator = NSProgressIndicator()
-    private let replaceButton = NSButton(title: "替换选中", target: nil, action: nil)
-    private let insertButton = NSButton(title: "插入", target: nil, action: nil)
-    private let copyButton = NSButton(title: "拷贝", target: nil, action: nil)
-    private let cancelButton = NSButton(title: "取消", target: nil, action: nil)
+    private let replaceButton = NSButton(title: String(localized: "ai.result.replace",
+                                                       defaultValue: "Replace Selection",
+                                                       table: "AI"),
+                                         target: nil, action: nil)
+    private let insertButton = NSButton(title: String(localized: "ai.result.insert",
+                                                      defaultValue: "Insert",
+                                                      table: "AI"),
+                                        target: nil, action: nil)
+    private let copyButton = NSButton(title: String(localized: "ai.result.copy",
+                                                    defaultValue: "Copy",
+                                                    table: "AI"),
+                                      target: nil, action: nil)
+    private let cancelButton = NSButton(title: String(localized: "ai.result.cancel",
+                                                      defaultValue: "Cancel",
+                                                      table: "AI"),
+                                        target: nil, action: nil)
     
     
     // MARK: Lifecycle
@@ -93,7 +105,10 @@ final class AIResultPanelController: NSWindowController {
         
         guard let window else { return }
         
-        self.titleLabel.stringValue = "正在请求「\(self.action.title)」…"
+        self.titleLabel.stringValue = String(format: String(localized: "ai.result.requesting",
+                                                            defaultValue: "Requesting “%@”…",
+                                                            table: "AI"),
+                                             self.action.title)
         self.statusLabel.stringValue = ""
         self.progressIndicator.startAnimation(nil)
         self.progressIndicator.isHidden = false
@@ -123,7 +138,10 @@ final class AIResultPanelController: NSWindowController {
         
         self.progressIndicator.stopAnimation(nil)
         self.progressIndicator.isHidden = true
-        self.titleLabel.stringValue = "「\(self.action.title)」没有完成"
+        self.titleLabel.stringValue = String(format: String(localized: "ai.result.failed",
+                                                            defaultValue: "“%@” did not finish",
+                                                            table: "AI"),
+                                             self.action.title)
         self.statusLabel.stringValue = error.localizedDescription
         self.textView.string = ""
         self.updateButtons(canApply: false)

@@ -942,13 +942,13 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         // AI actions on the selection. They need a selection; when the AI is not configured
         // yet the action explains that instead of failing silently.
         if let documentViewController = self.documentViewController {
-            let aiActions: [(title: String, action: Selector)] = [
-                ("翻译", #selector(DocumentViewController.translateSelection(_:))),
-                ("总结", #selector(DocumentViewController.summarizeSelection(_:))),
-                ("说人话", #selector(DocumentViewController.explainSelection(_:))),
+            let aiActions: [(action: AIAction, selector: Selector)] = [
+                (.translate, #selector(DocumentViewController.translateSelection(_:))),
+                (.summarize, #selector(DocumentViewController.summarizeSelection(_:))),
+                (.explain, #selector(DocumentViewController.explainSelection(_:))),
             ]
-            for (title, action) in aiActions {
-                let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            for (action, selector) in aiActions {
+                let item = NSMenuItem(title: action.title, action: selector, keyEquivalent: "")
                 item.target = documentViewController
                 item.isEnabled = hasSelection
                 menu.addItem(item)
@@ -957,17 +957,23 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             menu.addItem(.separator())
         }
         
-        let copyItem = NSMenuItem(title: "拷贝", action: #selector(copy(_:)), keyEquivalent: "c")
+        let copyItem = NSMenuItem(title: String(localized: "chrome.contextMenu.copy",
+                                                defaultValue: "Copy", table: "Chrome"),
+                                  action: #selector(copy(_:)), keyEquivalent: "c")
         copyItem.keyEquivalentModifierMask = .command
         copyItem.isEnabled = hasSelection
         menu.addItem(copyItem)
         
-        let pasteItem = NSMenuItem(title: "粘贴", action: #selector(paste(_:)), keyEquivalent: "v")
+        let pasteItem = NSMenuItem(title: String(localized: "chrome.contextMenu.paste",
+                                                 defaultValue: "Paste", table: "Chrome"),
+                                   action: #selector(paste(_:)), keyEquivalent: "v")
         pasteItem.keyEquivalentModifierMask = .command
         pasteItem.isEnabled = NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil)
         menu.addItem(pasteItem)
         
-        let selectAllItem = NSMenuItem(title: "全部选择", action: #selector(selectAll(_:)), keyEquivalent: "a")
+        let selectAllItem = NSMenuItem(title: String(localized: "chrome.contextMenu.selectAll",
+                                                     defaultValue: "Select All", table: "Chrome"),
+                                       action: #selector(selectAll(_:)), keyEquivalent: "a")
         selectAllItem.keyEquivalentModifierMask = .command
         selectAllItem.isEnabled = !self.string.isEmpty
         menu.addItem(selectAllItem)
@@ -988,7 +994,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             
             menu.addItem(.separator())
             
-            let clearItem = NSMenuItem(title: "清除高亮",
+            let clearItem = NSMenuItem(title: String(localized: "chrome.contextMenu.clearHighlight",
+                                                     defaultValue: "Clear Highlight", table: "Chrome"),
                                        action: #selector(DocumentViewController.removeHighlight(_:)),
                                        keyEquivalent: "")
             clearItem.target = documentViewController

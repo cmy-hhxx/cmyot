@@ -1060,10 +1060,15 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     private func presentAIConfigurationAlert(on window: NSWindow) {
         
         let alert = NSAlert()
-        alert.messageText = "还没有配置 AI"
-        alert.informativeText = "请先在设置里填写接口地址、模型和 API Key，再使用翻译、总结和说人话。"
-        alert.addButton(withTitle: "打开 AI 设置")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = String(localized: "chrome.aiAlert.title",
+                                   defaultValue: "AI Is Not Configured", table: "Chrome")
+        alert.informativeText = String(localized: "chrome.aiAlert.message",
+                                       defaultValue: "Set the endpoint, model, and API key in Settings before using Translate, Summarize, or Explain.",
+                                       table: "Chrome")
+        alert.addButton(withTitle: String(localized: "chrome.aiAlert.openSettings",
+                                          defaultValue: "Open AI Settings", table: "Chrome"))
+        alert.addButton(withTitle: String(localized: "chrome.alert.cancel",
+                                          defaultValue: "Cancel", table: "Chrome"))
         
         alert.beginSheetModal(for: window) { response in
             guard response == .alertFirstButtonReturn else { return }
@@ -1438,10 +1443,14 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         guard !pane.tabs.contains(where: \.isPinned) else {
             NSSound.beep()
             let alert = NSAlert()
-            alert.messageText = "标签页已固定"
-            alert.informativeText = "这个窗格里有固定的标签页。请先取消固定，再关闭窗格。"
+            alert.messageText = String(localized: "chrome.pinnedPaneAlert.title",
+                                       defaultValue: "Pinned Tabs", table: "Chrome")
+            alert.informativeText = String(localized: "chrome.pinnedPaneAlert.message",
+                                           defaultValue: "This pane contains pinned tabs. Unpin them before closing the pane.",
+                                           table: "Chrome")
             alert.alertStyle = .informational
-            alert.addButton(withTitle: "好")
+            alert.addButton(withTitle: String(localized: "chrome.alert.ok",
+                                              defaultValue: "OK", table: "Chrome"))
             alert.runModal()
             return
         }

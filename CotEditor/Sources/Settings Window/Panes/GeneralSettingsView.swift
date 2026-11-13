@@ -47,7 +47,10 @@ struct GeneralSettingsView: View {
     
     @State private var initialEnablesAutosaveInPlace: Bool = false
     
+    @State private var language: AppLanguage = .current
+    
     @State private var isAutosaveChangeConfirmationPresented = false
+    @State private var isLanguageChangeConfirmationPresented = false
     @State private var suppressesQuitAlwaysKeepsWindowsChangeConfirmation = false
     @State private var isQuitAlwaysKeepsWindowsChangeConfirmationPresented = false
     @State private var isWarningsSettingPresented = false
@@ -61,6 +64,37 @@ struct GeneralSettingsView: View {
     var body: some View {
         
         Grid(alignment: .leadingFirstTextBaseline, verticalSpacing: isLiquidGlass ? 18 : 14) {
+            GridRow {
+                Text("settings.language.label", tableName: "Personal")
+                    .gridColumnAlignment(.trailing)
+                
+                Picker(selection: $language) {
+                    ForEach(AppLanguage.allCases, id: \.self) {
+                        Text(verbatim: $0.displayName)
+                    }
+                } label: {
+                    EmptyView()
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+                .onChange(of: self.language) { _, newValue in
+                    newValue.apply()
+                    self.isLanguageChangeConfirmationPresented = true
+                }
+                .confirmationDialog(String(localized: "settings.language.restart.title", defaultValue: "Restart Required", table: "Personal"), isPresented: $isLanguageChangeConfirmationPresented) {
+                    Button(String(localized: "Restart Now", table: "GeneralSettings", comment: "button label")) {
+                        (NSApp.delegate as? AppDelegate)?.needsRelaunch = true
+                        NSApp.terminate(nil)
+                    }
+                    Button(String(localized: "Later", table: "GeneralSettings", comment: "button label")) {
+                        // do nothing
+                    }
+                } message: {
+                    Text(String(localized: "settings.language.restart.message", defaultValue: "The language change will be applied after CotEditor restarts. Do you want to restart now?", table: "Personal"))
+                }
+            }
+            
             GridRow {
                 Text("On startup:", tableName: "GeneralSettings")
                     .gridColumnAlignment(.trailing)

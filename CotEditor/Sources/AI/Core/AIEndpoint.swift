@@ -53,11 +53,26 @@ nonisolated enum AIEndpoint: String, CaseIterable, Sendable, Codable {
     var label: String {
         
         switch self {
-            case .openAIResponses: "OpenAI Responses"
-            case .openAIChatCompletions: "OpenAI Chat Completions"
-            case .anthropicMessages: "Anthropic Messages"
-            case .googleGemini: "Google Gemini"
-            case .ollama: "Ollama (本地)"
+            case .openAIResponses:
+                String(localized: "ai.endpoint.openAIResponses.label",
+                       defaultValue: "OpenAI Responses",
+                       table: "AI")
+            case .openAIChatCompletions:
+                String(localized: "ai.endpoint.openAIChatCompletions.label",
+                       defaultValue: "OpenAI Chat Completions",
+                       table: "AI")
+            case .anthropicMessages:
+                String(localized: "ai.endpoint.anthropicMessages.label",
+                       defaultValue: "Anthropic Messages",
+                       table: "AI")
+            case .googleGemini:
+                String(localized: "ai.endpoint.googleGemini.label",
+                       defaultValue: "Google Gemini",
+                       table: "AI")
+            case .ollama:
+                String(localized: "ai.endpoint.ollama.label",
+                       defaultValue: "Ollama (Local)",
+                       table: "AI")
         }
     }
     
@@ -66,11 +81,26 @@ nonisolated enum AIEndpoint: String, CaseIterable, Sendable, Codable {
     var hint: String {
         
         switch self {
-            case .openAIResponses: "OpenAI 官方的新版接口，也兼容部分第三方实现。"
-            case .openAIChatCompletions: "兼容面最广：OpenAI、DeepSeek、Moonshot、通义、OpenRouter、LM Studio 等。"
-            case .anthropicMessages: "Claude 系列模型。"
-            case .googleGemini: "Gemini 系列模型。"
-            case .ollama: "本机运行的 Ollama，默认无需 API Key。"
+            case .openAIResponses:
+                String(localized: "ai.endpoint.openAIResponses.hint",
+                       defaultValue: "OpenAI's newer API; some compatible services implement it too.",
+                       table: "AI")
+            case .openAIChatCompletions:
+                String(localized: "ai.endpoint.openAIChatCompletions.hint",
+                       defaultValue: "The most widely supported protocol: OpenAI, DeepSeek, Moonshot, Qwen, OpenRouter, LM Studio and others.",
+                       table: "AI")
+            case .anthropicMessages:
+                String(localized: "ai.endpoint.anthropicMessages.hint",
+                       defaultValue: "Claude models.",
+                       table: "AI")
+            case .googleGemini:
+                String(localized: "ai.endpoint.googleGemini.hint",
+                       defaultValue: "Gemini models.",
+                       table: "AI")
+            case .ollama:
+                String(localized: "ai.endpoint.ollama.hint",
+                       defaultValue: "Ollama running on this Mac; no API key is needed by default.",
+                       table: "AI")
         }
     }
     

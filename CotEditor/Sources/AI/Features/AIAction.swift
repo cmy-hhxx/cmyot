@@ -1,5 +1,5 @@
 //
-//  AIService.swift
+//  AIAction.swift
 //
 //  CotEditor
 //  https://coteditor.com
@@ -24,7 +24,6 @@
 //
 
 import Foundation
-import Observation
 
 /// One thing the editor can ask the AI to do.
 ///
@@ -47,9 +46,18 @@ nonisolated enum AIAction: Sendable {
     var title: String {
         
         switch self {
-            case .translate: "翻译"
-            case .summarize: "总结"
-            case .explain: "说人话"
+            case .translate:
+                String(localized: "ai.action.translate",
+                       defaultValue: "Translate",
+                       table: "AI")
+            case .summarize:
+                String(localized: "ai.action.summarize",
+                       defaultValue: "Summarize",
+                       table: "AI")
+            case .explain:
+                String(localized: "ai.action.explain",
+                       defaultValue: "Explain",
+                       table: "AI")
         }
     }
     
@@ -107,78 +115,5 @@ nonisolated enum AIAction: Sendable {
         }
         
         return prompt
-    }
-}
-
-
-/// The entry point the rest of the app uses to talk to AI.
-@MainActor @Observable final class AIService {
-    
-    // MARK: Public Properties
-    
-    /// The shared service.
-    static let shared = AIService()
-    
-    /// Whether a request is currently running.
-    private(set) var isRunning = false
-    
-    /// Whether the stored configuration is complete enough to make a request.
-    var isConfigured: Bool {
-        
-        AIConfiguration.current.isUsable
-    }
-    
-    
-    // MARK: Public Methods
-    
-    /// Runs one action on the given text.
-    ///
-    /// - Parameters:
-    ///   - action: What to do.
-    ///   - text: The text to work on.
-    ///   - context: Extra context, when the feature has some.
-    ///   - images: Pictures to add, for the features that look at the screen or at a file.
-    /// - Returns: The answer text.
-    /// - Throws: ``AIError`` when the request fails.
-    func run(_ action: AIAction, on text: String, context: String? = nil, images: [AIImage] = []) async throws -> String {
-        
-        let messages: [AIMessage] = [
-            .system(action.systemPrompt),
-            .user(action.prompt(for: text, context: context), images: images),
-        ]
-        
-        return try await self.send(messages)
-    }
-    
-    
-    /// Checks that the configuration actually reaches the service.
-    ///
-    /// - Returns: The short reply from the model.
-    /// - Throws: ``AIError`` when the request fails.
-    func testConnection() async throws -> String {
-        
-        try await self.send([
-            .system("你是一个连通性测试。无论收到什么，都只回复两个字：可用。"),
-            .user("测试"),
-        ])
-    }
-    
-    
-    // MARK: Private Methods
-    
-    /// Sends messages, keeping the running flag in sync.
-    ///
-    /// - Parameter messages: The conversation to send.
-    /// - Returns: The answer text.
-    /// - Throws: ``AIError`` when the request fails.
-    private func send(_ messages: [AIMessage]) async throws -> String {
-        
-        let configuration = AIConfiguration.current
-        guard configuration.isUsable else { throw AIError.notConfigured }
-        
-        self.isRunning = true
-        defer { self.isRunning = false }
-        
-        return try await AIClient(configuration: configuration).send(messages)
     }
 }

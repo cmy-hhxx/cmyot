@@ -27,9 +27,6 @@ import SwiftUI
 import Combine
 import CharacterInfo
 import DocumentFile
-import FileEncoding
-import LineEnding
-import SyntaxFormat
 
 @MainActor @Observable private final class DocumentInspectorViewModel: DocumentInspectorView.ModelProtocol {
     
@@ -38,11 +35,9 @@ import SyntaxFormat
     
     var attributes: FileAttributes?  { self.document?.fileAttributes }
     var fileURL: URL?
-    var textSettings: TextSettings?
     var countResult: EditorCounter.Result?  { (self.document as? Document)?.counter.result }
     
     private var urlObserver: AnyCancellable?
-    private var observers: Set<AnyCancellable> = []
     
     
     // MARK: Private Methods
@@ -51,12 +46,6 @@ import SyntaxFormat
     private func didUpdateDocument() {
         
         self.fileURL = self.document?.fileURL
-        
-        self.textSettings = if let document = self.document as? Document {
-            TextSettings(encoding: document.fileEncoding, lineEnding: document.lineEnding, mode: document.mode)
-        } else {
-            nil
-        }
         
         if self.isPresented {
             self.startObservation()
@@ -83,17 +72,6 @@ import SyntaxFormat
         self.urlObserver = document?.publisher(for: \.fileURL, options: .initial)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.fileURL = $0 }
-        
-        if let document = document as? Document {
-            self.observers = [
-                document.$fileEncoding
-                    .sink { [weak self] in self?.textSettings?.encoding = $0 },
-                document.$lineEnding
-                    .sink { [weak self] in self?.textSettings?.lineEnding = $0 },
-                document.$mode
-                    .sink { [weak self] in self?.textSettings?.mode = $0 },
-            ]
-        }
     }
     
     
@@ -102,20 +80,11 @@ import SyntaxFormat
         
         (self.document as? Document)?.counter.updatesAll = false
         self.urlObserver = nil
-        self.observers.removeAll()
     }
 }
 
 
 // MARK: - View
-
-struct TextSettings {
-    
-    var encoding: FileEncoding
-    var lineEnding: LineEnding
-    var mode: Mode
-}
-
 
 struct DocumentInspectorView: View, HostedPaneView {
     
@@ -126,7 +95,6 @@ struct DocumentInspectorView: View, HostedPaneView {
         
         var attributes: FileAttributes? { get }
         var fileURL: URL? { get }
-        var textSettings: TextSettings? { get }
         var countResult: EditorCounter.Result? { get }
     }
     
@@ -141,10 +109,7 @@ struct DocumentInspectorView: View, HostedPaneView {
         
         ScrollView(.vertical) {
             VStack(spacing: 8) {
-                if let textSettings = self.model.textSettings {
-                    if !isLiquidGlass { Divider() }
-                    TextSettingsView(value: textSettings)
-                }
+                DocumentFileView(attributes: self.model.attributes, fileURL: self.model.fileURL)
                 
                 if let countResult = self.model.countResult {
                     if !isLiquidGlass { Divider() }
@@ -184,92 +149,65 @@ private struct DocumentFileView: View {
     var fileURL: URL?
     
     @State private var isExpanded = true
+    @State private var isCopied = false
+    @State private var copyFeedbackTask: Task<Void, Never>?
     
     
     var body: some View {
         
-        DisclosureGroup(String(localized: "File", table: "Document", comment: "section title in inspector"), isExpanded: $isExpanded) {
+        DisclosureGroup(String(localized: "inspector.file.section", defaultValue: "File", table: "Personal", comment: "section title in inspector"), isExpanded: $isExpanded) {
             Form {
-                LabeledContent(String(localized: "Created", table: "Document", comment: "label in document inspector"),
+                LabeledContent(String(localized: "inspector.file.created", defaultValue: "Created", table: "Personal", comment: "label in document inspector"),
                                optional: self.attributes?.creationDate?.formatted(date: .abbreviated, time: .shortened))
-                LabeledContent(String(localized: "Modified", table: "Document", comment: "label in document inspector"),
+                LabeledContent(String(localized: "inspector.file.modified", defaultValue: "Last Modified", table: "Personal", comment: "label in document inspector"),
                                optional: self.attributes?.modificationDate?.formatted(date: .abbreviated, time: .shortened))
-                LabeledContent(String(localized: "Size", table: "Document", comment: "label in document inspector"),
-                               optional: self.attributes?.size.formatted(.byteCount(style: .file, includesActualByteCount: true)))
                 
-                LabeledContent(String(localized: "Tags", table: "Document", comment: "label in document inspector")) {
-                    if let tags = self.attributes?.tags, !tags.isEmpty {
-                        WrappingHStack(alignment: isLiquidGlass ? .trailing : .leading, horizontalSpacing: 7) {
-                            ForEach(Array(tags.enumerated()), id: \.offset) { _, tag in
-                                HStack(spacing: 4) {
-                                    TagColorView(color: tag.color)
-                                        .frame(height: 9)
-                                    Text(tag.name)
-                                }.accessibilityLabel(tag.name)
-                            }
+                LabeledContent(String(localized: "inspector.file.copyPath", defaultValue: "Copy File Path", table: "Personal", comment: "label in document inspector")) {
+                    Button {
+                        self.copyFilePath()
+                    } label: {
+                        if self.isCopied {
+                            Label(String(localized: "inspector.file.copied", defaultValue: "Copied", table: "Personal", comment: "feedback after copying the file path"),
+                                  systemImage: "checkmark")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Label(String(localized: "inspector.file.copyPath", defaultValue: "Copy File Path", table: "Personal", comment: "label in document inspector"),
+                                  systemImage: "document.on.document")
+                                .labelStyle(.iconOnly)
                         }
-                    } else {
-                        Text.none
                     }
+                    .buttonStyle(.borderless)
+                    .disabled(self.fileURL == nil)
+                    .help(self.fileURL?.path ?? "")
                 }
-                LabeledContent(String(localized: "Permissions", table: "Document", comment: "label in document inspector"),
-                               optional: self.attributes?.permissions.formatted())
-                LabeledContent(String(localized: "Owner", table: "Document", comment: "label in document inspector"),
+                
+                LabeledContent(String(localized: "inspector.file.author", defaultValue: "File Author", table: "Personal", comment: "label in document inspector"),
                                optional: self.attributes?.owner)
-                
-                LabeledContent(String(localized: "Full Path", table: "Document", comment: "label in document inspector")) {
-                    if let fileURL = self.fileURL {
-                        HStack(alignment: .lastTextBaseline, spacing: 4) {
-                            Text(fileURL, format: .url.scheme(.never))
-                                .lineLimit(5)
-                                .truncationMode(.middle)
-                                .textSelection(.enabled)
-                                .modifier { content in
-                                    if #available(macOS 26, *) {
-                                        content
-                                    } else {
-                                        content
-                                            .foregroundStyle(.primary)
-                                    }
-                                }
-                                .help(fileURL.formatted(.url.scheme(.never)))
-                            Button(String(localized: "Show in Finder", table: "Document"), systemImage: "arrow.forward") {
-                                NSWorkspace.shared.activateFileViewerSelecting([fileURL])
-                            }
-                            .symbolVariant(.circle.fill)
-                            .fontWeight(.bold)
-                            .labelStyle(.iconOnly)
-                            .controlSize(.mini)
-                            .buttonStyle(.borderless)
-                        }
-                    } else {
-                        Text.none
-                    }
-                }
             }
         }
+        .onDisappear {
+            self.copyFeedbackTask?.cancel()
+        }
     }
-}
-
-
-private struct TextSettingsView: View {
-    
-    var value: TextSettings
-    
-    @State private var isExpanded = true
     
     
-    var body: some View {
+    // MARK: Private Methods
+    
+    /// Copies the document file path to the pasteboard and shows a brief confirmation.
+    @MainActor
+    private func copyFilePath() {
         
-        DisclosureGroup(String(localized: "Text Settings", table: "Document", comment: "section title in inspector"), isExpanded: $isExpanded) {
-            Form {
-                LabeledContent(String(localized: "Encoding", table: "Document", comment: "label in document inspector"),
-                               value: self.value.encoding.localizedName)
-                LabeledContent(String(localized: "Line Endings", table: "Document", comment: "label in document inspector"),
-                               value: self.value.lineEnding.label)
-                LabeledContent(String(localized: "Mode", table: "Document", comment: "label in document inspector"),
-                               value: self.value.mode.label)
-            }
+        guard let path = self.fileURL?.path else { return }
+        
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+        
+        self.isCopied = true
+        self.copyFeedbackTask?.cancel()
+        self.copyFeedbackTask = Task {
+            // a cancelled sleep falls through to the reset, so the feedback cannot stick
+            try? await Task.sleep(for: .seconds(1.5))
+            self.isCopied = false
         }
     }
 }
@@ -288,20 +226,6 @@ private struct EditorCountView: View {
             Form {
                 Section {
                     ForEach(CountType.countCases, id: \.self) { type in
-                        LabeledContent(type.label, optional: self.result.formattedValue(type: type))
-                            .accessibilityAddTraits(.updatesFrequently)
-                            .modifier { content in
-                                if !isLiquidGlass, type == CountType.countCases.last {
-                                    content
-                                        .padding(.bottom, 8)
-                                } else {
-                                    content
-                                }
-                            }
-                    }
-                }
-                Section {
-                    ForEach(CountType.positionCases, id: \.self) { type in
                         LabeledContent(type.label, optional: self.result.formattedValue(type: type))
                             .accessibilityAddTraits(.updatesFrequently)
                     }
@@ -460,7 +384,6 @@ private struct LegacyInspectorLabeledContentStyle: LabeledContentStyle {
     
     var attributes: FileAttributes?
     var fileURL: URL?
-    var textSettings: TextSettings?
     var countResult: EditorCounter.Result?
 }
 
@@ -478,11 +401,6 @@ private struct LegacyInspectorLabeledContentStyle: LabeledContentStyle {
                    FinderTag(name: "None")]
         ),
         fileURL: URL(filePath: "/Users/clarus/Desktop/My Script.py"),
-        textSettings: .init(
-            encoding: .init(encoding: .utf8, withUTF8BOM: true),
-            lineEnding: .lf,
-            mode: .kind(.general)
-        ),
         countResult: .init())
     model.countResult?.characters = .init(entire: 1024, selected: 4)
     model.countResult?.lines = .init(entire: 10, selected: 1)

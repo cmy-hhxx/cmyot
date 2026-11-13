@@ -25,46 +25,14 @@
 
 import Foundation
 
-/// Errors the AI features can run into, with messages meant for the user.
-nonisolated enum AIError: LocalizedError {
-    
-    case notConfigured
-    case invalidURL(String)
-    case http(status: Int, message: String?)
-    case emptyResponse
-    case decoding(String)
-    case transport(any Error)
-    
-    
-    var errorDescription: String? {
-        
-        switch self {
-            case .notConfigured:
-                "还没有配置 AI。请先在“设置 › AI”里填写接口地址、模型和 API Key。"
-            case .invalidURL(let url):
-                "接口地址无效：\(url)"
-            case .http(let status, let message):
-                if let message, !message.isEmpty {
-                    "请求失败（HTTP \(status)）：\(message)"
-                } else {
-                    "请求失败（HTTP \(status)）"
-                }
-            case .emptyResponse:
-                "AI 没有返回内容。"
-            case .decoding(let detail):
-                "无法解析 AI 的返回：\(detail)"
-            case .transport(let error):
-                "网络请求失败：\(error.localizedDescription)"
-        }
-    }
-}
-
-
 /// Talks to the configured AI service.
 ///
-/// The client only knows how to turn a list of messages into one request and how to pull the
-/// answer out of the reply. Everything above it (which prompt to send, where the result goes)
-/// lives in `AIService`, so adding a feature never means touching the protocol code again.
+/// This is the `Wire` layer: the client only knows how to turn a list of messages into one
+/// request and how to pull the answer out of the reply. Which prompt to send and what happens
+/// to the result belong to `Features`, so adding a feature never means touching the protocol
+/// code. The service presets, the configuration and the error type it works with live in
+/// `Core`, and the authentication headers come from `AIConfiguration.requestHeaders` so the
+/// model list can use exactly the same ones.
 nonisolated struct AIClient: Sendable {
     
     var configuration: AIConfiguration
@@ -85,7 +53,7 @@ nonisolated struct AIClient: Sendable {
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        for (field, value) in self.headers {
+        for (field, value) in self.configuration.requestHeaders {
             request.setValue(value, forHTTPHeaderField: field)
         }
         
@@ -108,27 +76,6 @@ nonisolated struct AIClient: Sendable {
     
     
     // MARK: Private Methods
-    
-    /// The authentication and protocol headers.
-    private var headers: [String: String] {
-        
-        let key = self.configuration.apiKey
-        
-        switch self.configuration.endpoint {
-            case .openAIResponses, .openAIChatCompletions:
-                return key.isEmpty ? [:] : ["Authorization": "Bearer \(key)"]
-            case .anthropicMessages:
-                return [
-                    "x-api-key": key,
-                    "anthropic-version": "2023-06-01",
-                ]
-            case .googleGemini:
-                return key.isEmpty ? [:] : ["x-goog-api-key": key]
-            case .ollama:
-                return [:]
-        }
-    }
-    
     
     /// The JSON body for the protocol in use.
     ///
@@ -349,9 +296,11 @@ nonisolated struct AIClient: Sendable {
     
     /// Extracts a readable error message from an error reply.
     ///
+    /// Shared with ``AIModelCatalog``, since an error reply looks the same for both calls.
+    ///
     /// - Parameter data: The raw response body.
     /// - Returns: The message, when one can be found.
-    private static func errorMessage(from data: Data) -> String? {
+    static func errorMessage(from data: Data) -> String? {
         
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return String(data: data, encoding: .utf8)

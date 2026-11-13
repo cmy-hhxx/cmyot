@@ -61,6 +61,13 @@ nonisolated struct AIConfiguration: Sendable {
     }
     
     
+    /// The service preset the stored protocol and base URL add up to.
+    var provider: AIProvider {
+        
+        AIProvider.detect(endpoint: self.endpoint, baseURL: self.baseURL)
+    }
+    
+    
     /// The base URL to show as a placeholder in the settings window.
     var defaultBaseURL: String {
         
@@ -107,6 +114,63 @@ nonisolated struct AIConfiguration: Sendable {
         }
         
         return URL(string: "\(base)/\(path)")
+    }
+    
+    
+    /// The URL that lists the models the service offers.
+    ///
+    /// The same URL is used by every provider; only the path and the paging query differ per
+    /// protocol. A base URL that was pasted with a full operation path is trimmed back to the
+    /// service root first.
+    ///
+    /// - Returns: The model list URL, or `nil` when the base URL is malformed.
+    var modelsRequestURL: URL? {
+        
+        var base = self.resolvedBaseURL
+        
+        for operation in ["chat/completions", "responses", "messages"] {
+            let suffix = "/" + operation
+            if base.hasSuffix(suffix) {
+                base.removeLast(suffix.count)
+                break
+            }
+        }
+        
+        let path = switch self.endpoint {
+            case .openAIResponses, .openAIChatCompletions, .anthropicMessages, .googleGemini: "models"
+            case .ollama: "api/tags"
+        }
+        let query = switch self.endpoint {
+            case .anthropicMessages: "?limit=1000"
+            case .googleGemini: "?pageSize=1000"
+            default: ""
+        }
+        
+        return URL(string: "\(base)/\(path)\(query)")
+    }
+    
+    
+    /// The authentication and protocol headers.
+    ///
+    /// Shared by the chat client and the model list so a new protocol only needs one place
+    /// to describe how it authenticates.
+    var requestHeaders: [String: String] {
+        
+        let key = self.apiKey
+        
+        switch self.endpoint {
+            case .openAIResponses, .openAIChatCompletions:
+                return key.isEmpty ? [:] : ["Authorization": "Bearer \(key)"]
+            case .anthropicMessages:
+                return [
+                    "x-api-key": key,
+                    "anthropic-version": "2023-06-01",
+                ]
+            case .googleGemini:
+                return key.isEmpty ? [:] : ["x-goog-api-key": key]
+            case .ollama:
+                return [:]
+        }
     }
     
     

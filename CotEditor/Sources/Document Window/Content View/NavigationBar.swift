@@ -141,11 +141,13 @@ private struct TabItem: View {
                 }
             }
             .contextMenu {
-                Button(self.tab.isPinned ? "取消固定" : "固定标签页") {
+                Button(self.tab.isPinned
+                       ? String(localized: "chrome.tab.unpin", defaultValue: "Unpin Tab", table: "Chrome")
+                       : String(localized: "chrome.tab.pin", defaultValue: "Pin Tab", table: "Chrome")) {
                     self.onTogglePin()
                 }
                 Divider()
-                Button("关闭标签页") {
+                Button(String(localized: "chrome.tab.close", defaultValue: "Close Tab", table: "Chrome")) {
                     self.onClose()
                 }
                 .disabled(self.tab.isPinned || !self.tab.isClosable)
@@ -199,7 +201,8 @@ private struct TabItem: View {
                         .foregroundStyle(Color.accentColor)
                 }
                 .buttonStyle(.plain)
-                .help("已固定，点击取消固定")
+                .help(String(localized: "chrome.tab.pinnedHelp",
+                             defaultValue: "Pinned; click to unpin", table: "Chrome"))
             }
             
             Button(action: self.onSelect) {
@@ -223,7 +226,7 @@ private struct TabItem: View {
                         .frame(width: 14, height: 14)
                 }
                 .buttonStyle(.plain)
-                .help("关闭标签页")
+                .help(String(localized: "chrome.tab.close", defaultValue: "Close Tab", table: "Chrome"))
             }
         }
         .padding(.leading, self.tab.isPinned ? 4 : 0)
@@ -261,7 +264,8 @@ private struct NewTabButton: View {
         }
         .buttonStyle(.plain)
         .onHover { self.isHovering = $0 }
-        .help("新建标签页")
+        .help(String(localized: "chrome.tab.newTabHelp",
+                     defaultValue: "New Tab", table: "Chrome"))
     }
 }
 

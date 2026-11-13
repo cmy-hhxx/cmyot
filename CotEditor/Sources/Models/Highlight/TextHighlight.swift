@@ -35,11 +35,11 @@ enum HighlightColor: String, CaseIterable, Codable, Sendable {
     var localizedName: String {
         
         switch self {
-            case .yellow: "黄色"
-            case .green: "绿色"
-            case .blue: "蓝色"
-            case .pink: "粉色"
-            case .orange: "橙色"
+            case .yellow: String(localized: "chrome.highlight.yellow", defaultValue: "Yellow", table: "Chrome")
+            case .green: String(localized: "chrome.highlight.green", defaultValue: "Green", table: "Chrome")
+            case .blue: String(localized: "chrome.highlight.blue", defaultValue: "Blue", table: "Chrome")
+            case .pink: String(localized: "chrome.highlight.pink", defaultValue: "Pink", table: "Chrome")
+            case .orange: String(localized: "chrome.highlight.orange", defaultValue: "Orange", table: "Chrome")
         }
     }
 }
