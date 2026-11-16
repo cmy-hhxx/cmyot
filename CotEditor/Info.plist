@@ -136,6 +136,20 @@
 	<string>${PRODUCT_NAME} needs your approval to control other applications with AppleScript.</string>
 	<key>NSAppleScriptEnabled</key>
 	<true/>
+	<!--
+		An AI endpoint is whatever address the user types, and a good share of them are plain
+		HTTP: a gateway on the local network, a container on another machine, or an Ollama
+		instance reached by address instead of localhost. App Transport Security cannot be
+		told about them, because its exception domains only accept domain names and not IP
+		addresses, so the only way to reach such a service is to turn the policy off here.
+		This build contacts nothing by itself: every request goes to an address the user
+		entered, with the key the user stored.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2005-2009 nakamuxu
 © 2011, 2014 usami-k

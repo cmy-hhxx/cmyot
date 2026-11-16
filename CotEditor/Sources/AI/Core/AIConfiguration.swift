@@ -40,13 +40,14 @@ nonisolated struct AIConfiguration: Sendable {
     
     // MARK: Lifecycle
     
-    /// The configuration currently stored in the preferences and the keychain.
+    /// A configuration that cannot be used, for when no endpoint is configured yet.
+    static let empty = AIConfiguration(endpoint: .openAIChatCompletions, baseURL: "", model: "", apiKey: "")
+    
+    
+    /// The configuration of the endpoint currently in use.
     static var current: AIConfiguration {
         
-        AIConfiguration(endpoint: UserDefaults.standard[.aiEndpoint] ?? .openAIChatCompletions,
-                        baseURL: UserDefaults.standard[.aiBaseURL],
-                        model: UserDefaults.standard[.aiModel],
-                        apiKey: AIKeychain.apiKey)
+        AIEndpointStore.activeConfiguration
     }
     
     
@@ -171,19 +172,5 @@ nonisolated struct AIConfiguration: Sendable {
             case .ollama:
                 return [:]
         }
-    }
-    
-    
-    // MARK: Public Methods
-    
-    /// Stores the non-secret part of the configuration.
-    ///
-    /// The API key is written separately, because it belongs in the keychain.
-    func save() {
-        
-        UserDefaults.standard[.aiEndpoint] = self.endpoint
-        UserDefaults.standard[.aiBaseURL] = self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        UserDefaults.standard[.aiModel] = self.model.trimmingCharacters(in: .whitespacesAndNewlines)
-        AIKeychain.apiKey = self.apiKey
     }
 }

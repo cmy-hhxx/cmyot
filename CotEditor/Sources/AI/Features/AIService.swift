@@ -87,10 +87,24 @@ import Observation
     /// - Throws: ``AIError`` when the request fails.
     func testConnection() async throws -> String {
         
+        try await self.testConnection(configuration: .current)
+    }
+    
+    
+    /// Checks one configuration, without it having to be the one in use.
+    ///
+    /// The settings pane tests the values on screen before saving them, so a new endpoint can
+    /// prove itself while the endpoint actually in use keeps working.
+    ///
+    /// - Parameter configuration: The configuration to try.
+    /// - Returns: The short reply from the model.
+    /// - Throws: ``AIError`` when the request fails.
+    func testConnection(configuration: AIConfiguration) async throws -> String {
+        
         try await self.send([
             .system("You are a connectivity test. Whatever you receive, reply with exactly one word: OK."),
             .user("Ping"),
-        ])
+        ], configuration: configuration)
     }
     
     
@@ -103,7 +117,18 @@ import Observation
     /// - Throws: ``AIError`` when the list cannot be fetched or is empty.
     func fetchModels() async throws -> [AIModel] {
         
-        try await AIModelCatalog.fetch(configuration: AIConfiguration.current)
+        try await self.fetchModels(configuration: .current)
+    }
+    
+    
+    /// Fetches the models one configuration offers, without it having to be the one in use.
+    ///
+    /// - Parameter configuration: The configuration to ask.
+    /// - Returns: The models, in the order the service returned them.
+    /// - Throws: ``AIError`` when the list cannot be fetched or is empty.
+    func fetchModels(configuration: AIConfiguration) async throws -> [AIModel] {
+        
+        try await AIModelCatalog.fetch(configuration: configuration)
     }
     
     
@@ -111,12 +136,14 @@ import Observation
     
     /// Sends messages, keeping the running flag in sync.
     ///
-    /// - Parameter messages: The conversation to send.
+    /// - Parameters:
+    ///   - messages: The conversation to send.
+    ///   - configuration: The service to talk to; the one in use when `nil`.
     /// - Returns: The answer text.
     /// - Throws: ``AIError`` when the request fails.
-    private func send(_ messages: [AIMessage]) async throws -> String {
+    private func send(_ messages: [AIMessage], configuration: AIConfiguration? = nil) async throws -> String {
         
-        let configuration = AIConfiguration.current
+        let configuration = configuration ?? .current
         guard configuration.isUsable else { throw AIError.notConfigured }
         
         self.isRunning = true

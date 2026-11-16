@@ -157,6 +157,10 @@ extension DefaultKeys {
     static let fileBrowserShowsHiddenFiles = DefaultKey<Bool>("fileBrowserShowsHiddenFiles")
     
     // AI
+    static let aiProfiles = DefaultKey<Data?>("aiProfiles")
+    static let aiActiveProfileID = DefaultKey<String?>("aiActiveProfileID")
+    
+    // AI, stored by the version that supported a single endpoint (read once for migration)
     static let aiEndpoint = RawRepresentableDefaultKey<AIEndpoint>("aiEndpoint")
     static let aiBaseURL = DefaultKey<String>("aiBaseURL")
     static let aiModel = DefaultKey<String>("aiModel")

@@ -139,6 +139,23 @@ Known limits of the vim layer: a single unnamed register, no macros, no marks an
 visual block. Registers/undo go through the standard `NSTextView` editing path, so undo
 works but interleaves with CotEditor's own undo steps.
 
+## Ninth round: several AI endpoints
+
+| Area | Change | Files |
+|---|---|---|
+| AI endpoints | The AI pane is a **list of endpoints** instead of one form, so a hosted service, a gateway on the local network and a fallback can sit side by side and the one in use is picked by clicking its row (the selection *is* the setting). A row shows the name (or the service/host when unnamed), the address and the model, an 使用中 badge, and buttons to test, edit and delete it. Editing happens in a sheet — one sheet for both adding and editing — because the list has to stay a list inside a fixed-width settings pane. | `AISettingsView.swift`, `AIEndpointEditorView.swift` (new) |
+| AI endpoint storage | The single `aiEndpoint` / `aiBaseURL` / `aiModel` triple is replaced by one JSON blob under `aiProfiles` plus `aiActiveProfileID`, so any number of endpoints fits. Each profile's API key lives in its own keychain item keyed by the profile id, so switching endpoints switches secrets and deleting an endpoint deletes its secret; no key enters the preferences file or a settings export. The old single configuration is imported once on first read (with an empty name, so it shows as the service or the host), keeping the endpoint that was already set up. | `Sources/AI/Core/AIEndpointProfile.swift` (new), `AIEndpointStore.swift` (new), `Wire/AIKeychain.swift`, `AIConfiguration.swift`, `Application/Defaults/DefaultKeys.swift` |
+| Testing without switching | `AIService` grew `testConnection(configuration:)` and `fetchModels(configuration:)`, so the sheet tests the values on screen instead of the stored ones: an endpoint proves itself (model list + a one-word reply) before it replaces the one in use. The list can test any row in place; the result shows as a ✓ or an orange warning whose tooltip carries the message. | `Sources/AI/Features/AIService.swift`, `AISettingsView.swift`, `AIEndpointEditorView.swift` |
+| Model field | The model is a text field with the fetched list in a menu beside it, instead of a picker that only a successful fetch could fill. A service that answers `/models` badly or not at all (a gateway with a fixed model, a proxy) is usable by typing the id, which used to be a dead end: without a fetched list the field stayed empty and the test button stayed disabled. | `AIEndpointEditorView.swift` |
+| Plain-HTTP endpoints | App Transport Security is off for this app (`NSAllowsArbitraryLoads`), because an endpoint is whatever address the user types and a good share of them are plain HTTP — a gateway on the local network, a container on another machine. ATS exception domains only accept domain names, never the IP addresses those gateways are reached by, so there was no narrower switch. Nothing is contacted by itself: every request goes to the address and the key the user entered. | `CotEditor/Info.plist` |
+| AI localization | 17 new strings — list rows, buttons, sheet titles, the empty state, the delete confirmation and the model field — in en and zh-Hans. | `Localizables/AI/AI.xcstrings` |
+
+Known limits of the endpoint list:
+
+- The list lives in the preferences file, so it is not carried by a `.cotsettings` archive.
+- There is no reordering and no per-endpoint temperature yet; rows stay in the order they were added.
+- Switching endpoints does not cancel a request that is already running.
+
 ## Not implemented
 
 Full Vim fidelity. Upstream has rejected vim support four times

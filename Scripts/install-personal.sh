@@ -36,7 +36,7 @@ if [[ "$MODE" == "--check" ]]; then
     if [[ "$COUNT" == "1" && -d "$TARGET" ]]; then
         echo "✅ 只有一个副本：$TARGET"
     else
-        echo "⚠️  副本数量：$COUNT（应为 1，且位于 $TARGET）"
+        echo "⚠️  副本数量：${COUNT}（应为 1，且位于 $TARGET）"
     fi
     exit 0
 fi
