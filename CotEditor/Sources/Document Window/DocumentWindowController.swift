@@ -559,6 +559,17 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         
         (self.contentViewController as? WindowContentViewController)?.toggleTerminal()
     }
+    
+    
+    /// Presents the quick emoji menu, for the `--emoji-menu` screenshot hook.
+    func showEmojiMenuForDemo() {
+        
+        guard let contentView = self.window?.contentView else { return }
+        
+        Self.quickEmojiMenu().popUp(positioning: nil,
+                                    at: NSPoint(x: 40, y: contentView.bounds.maxY - 120),
+                                    in: contentView)
+    }
     #endif
     
     
@@ -1289,60 +1300,28 @@ private struct EditedIndicator: View {
 
 extension DocumentWindowController {
     
-    /// A titled group of curated emoji in the toolbar's quick-insert menu.
+    /// The curated emoji, laid out as three compact rows instead of one long column.
     ///
-    /// Groups carry a heading so the menu reads as sections rather than one long
-    /// undifferentiated wall of rows.
-    private struct QuickEmojiSection {
-        
-        let title: String
-        let rows: [[String]]
-    }
-    
-    
-    /// Curated emoji grouped by purpose, laid out as compact rows instead of one long column.
+    /// Only color emoji are used: mixing them with text glyphs (`◔` `◑` `●`) makes the rows
+    /// look uneven, because those come from a different font at a different optical size. One
+    /// family also means one font size fits all of them.
     ///
-    /// Ordered from the palettes used most often while writing notes — progress and
-    /// priority first — down to the general-purpose markers.
-    private static let quickEmojiSections: [QuickEmojiSection] = [
-        QuickEmojiSection(title: String(localized: "chrome.emoji.section.progress",
-                                        defaultValue: "Progress", table: "Chrome"), rows: [
-            ["○", "◔", "◑", "◕", "●", "◌"],
-        ]),
-        QuickEmojiSection(title: String(localized: "chrome.emoji.section.priority",
-                                        defaultValue: "Priority", table: "Chrome"), rows: [
-            ["🔴", "🟠", "🟡", "🟢", "🔵", "⚪"],
-        ]),
-        QuickEmojiSection(title: String(localized: "chrome.emoji.section.status",
-                                        defaultValue: "Status", table: "Chrome"), rows: [
-            ["✅", "❌", "✔️", "✖️", "☐", "☑"],
-        ]),
-        QuickEmojiSection(title: String(localized: "chrome.emoji.section.marker",
-                                        defaultValue: "Markers", table: "Chrome"), rows: [
-            ["⭐", "🔥", "📌", "📝", "💡"],
-            ["⚠️", "❓", "❗", "🚧", "🐛", "🔖"],
-        ]),
-        QuickEmojiSection(title: String(localized: "chrome.emoji.section.workflow",
-                                        defaultValue: "Workflow", table: "Chrome"), rows: [
-            ["⏳", "⏰", "📚", "🔧", "🚀", "📦"],
-        ]),
+    /// The rows answer the three questions a note usually asks — how far along, how important,
+    /// what kind — and stop there.
+    private static let quickEmojiRows: [[String]] = [
+        ["✅", "⏳", "⚠️", "❌", "❓", "❗"],
+        ["🔴", "🟠", "🟡", "🟢", "🔵", "⚪️"],
+        ["⭐️", "📌", "📝", "💡", "🎯", "🔖"],
     ]
     
     
     static func quickEmojiMenu() -> NSMenu {
         
         let menu = NSMenu()
-        for (index, section) in Self.quickEmojiSections.enumerated() {
-            if index > 0 {
-                menu.addItem(.separator())
-            }
-            menu.addItem(EmojiMenuSectionHeaderView.makeItem(title: section.title))
-            
-            for emojis in section.rows {
-                let item = NSMenuItem()
-                item.view = EmojiMenuRowView(emojis: emojis)
-                menu.addItem(item)
-            }
+        for emojis in Self.quickEmojiRows {
+            let item = NSMenuItem()
+            item.view = EmojiMenuRowView(emojis: emojis)
+            menu.addItem(item)
         }
         
         return menu
@@ -1420,43 +1399,6 @@ extension DocumentWindowController {
 }
 
 
-/// Section heading shown above each group in the toolbar's emoji menu.
-final class EmojiMenuSectionHeaderView: NSView {
-    
-    static func makeItem(title: String) -> NSMenuItem {
-        
-        let item = NSMenuItem()
-        item.view = EmojiMenuSectionHeaderView(title: title)
-        return item
-    }
-    
-    
-    private init(title: String) {
-        
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 11, weight: .semibold)
-        label.textColor = .secondaryLabelColor
-        label.translatesAutoresizingMaskIntoConstraints = false
-        
-        super.init(frame: .zero)
-        
-        self.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: 10),
-            label.topAnchor.constraint(equalTo: self.topAnchor, constant: 2),
-            label.bottomAnchor.constraint(equalTo: self.bottomAnchor, constant: -4),
-        ])
-    }
-    
-    
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        
-        fatalError("init(coder:) has not been implemented")
-    }
-}
-
-
 /// One compact horizontal row of emoji buttons, used by the toolbar's emoji menu.
 final class EmojiMenuRowView: NSView {
     
@@ -1472,7 +1414,7 @@ final class EmojiMenuRowView: NSView {
                                   action: #selector(DocumentViewController.insertQuickEmojiFromButton(_:)))
             button.isBordered = false
             button.setButtonType(.momentaryPushIn)
-            button.font = Self.font(for: emoji)
+            button.font = Self.buttonFont
             button.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
                 button.widthAnchor.constraint(equalToConstant: buttonSize),
@@ -1495,20 +1437,13 @@ final class EmojiMenuRowView: NSView {
     }
     
     
-    /// Font for one emoji button.
+    /// The one font every button uses.
     ///
-    /// The geometric progress glyphs (`◔` `◑` `◕`) are not in the system font and
-    /// render noticeably smaller and thinner than the emoji beside them, so they get a
-    /// monospaced font at a larger size to match the emoji's visual weight.
-    private static func font(for emoji: String) -> NSFont {
+    /// Color emoji are drawn by the system emoji font whatever font is set here, so the point
+    /// size is what makes them line up: one size for all of them keeps the grid even.
+    private static var buttonFont: NSFont {
         
-        guard let scalar = emoji.unicodeScalars.first, scalar.value < 0x2B00 else {
-            return .systemFont(ofSize: 17)
-        }
-        
-        let size: CGFloat = 22
-        return NSFont(name: "Menlo", size: size)
-            ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        .systemFont(ofSize: 17)
     }
     
     

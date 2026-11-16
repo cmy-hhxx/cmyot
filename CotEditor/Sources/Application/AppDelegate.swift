@@ -177,6 +177,9 @@ extension Logger {
         self.scheduleAISettingsDemoIfRequested()
         self.scheduleSettingsPaneDemoIfRequested()
         self.scheduleInspectorDemoIfRequested()
+        self.scheduleAIResultDemoIfRequested()
+        self.scheduleEmojiMenuDemoIfRequested()
+        self.scheduleContextMenuDemoIfRequested()
         #endif
         
         let lastVersion = UserDefaults.standard[.lastVersion].flatMap(Int.init)
@@ -581,6 +584,104 @@ extension Logger {
             
             windowController.window?.makeKeyAndOrderFront(nil)
             windowController.toggleTerminalForDemo()
+        }
+    }
+    
+    
+    /// Shows the AI result sheet with a sample answer, for screenshot verification.
+    ///
+    /// Enabled by launching with `--ai-result-demo`; inert otherwise.
+    private func scheduleAIResultDemoIfRequested() {
+        
+        guard ProcessInfo.processInfo.arguments.contains("--ai-result-demo") else { return }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            NSApp.activate(ignoringOtherApps: true)
+            
+            guard let window = NSApp.orderedWindows.first(where: { $0.isVisible && $0.sheetParent == nil }) else {
+                return assertionFailure()
+            }
+            
+            let panel = AIResultPanelController(action: .summarize)
+            panel.present(on: window)
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                panel.present(result: """
+                ## 总结
+                
+                评测工作分为三块，互相依赖：
+                
+                - **评测复核**：模型给出的结论需要人工抽样确认。
+                - **样式规整**：AIME 与问财数据看板统一按同一套规范排版。
+                - **数据治理**：评测的输入端与输出端都纳入治理范围，而不是只管输出。
+                
+                需要复核的字段：
+                
+                ```python
+                def review(row):
+                    return row["score"] is None
+                ```
+                
+                > 下一步是把三块的验收标准写进同一份检查表。
+                """)
+            }
+        }
+    }
+    
+    
+    /// Shows the toolbar's emoji menu, for screenshot verification.
+    ///
+    /// Enabled by launching with `--emoji-menu`; inert otherwise.
+    private func scheduleEmojiMenuDemoIfRequested() {
+        
+        guard ProcessInfo.processInfo.arguments.contains("--emoji-menu") else { return }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            NSApp.activate(ignoringOtherApps: true)
+            
+            let windowControllers = NSApp.orderedWindows.compactMap { $0.windowController as? DocumentWindowController }
+            guard let windowController = windowControllers.first(where: { $0.window?.isVisible == true }) else { return }
+            
+            windowController.showEmojiMenuForDemo()
+        }
+    }
+    
+    
+    /// Shows the text view's context menu, for screenshot verification.
+    ///
+    /// Enabled by launching with `--context-menu-demo`; inert otherwise. Used to confirm that
+    /// AppKit's auto-fill and services items stay out of the menu.
+    private func scheduleContextMenuDemoIfRequested() {
+        
+        guard ProcessInfo.processInfo.arguments.contains("--context-menu-demo") else { return }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            NSApp.activate(ignoringOtherApps: true)
+            
+            let windowControllers = NSApp.orderedWindows.compactMap { $0.windowController as? DocumentWindowController }
+            guard let windowController = windowControllers.first(where: { $0.window?.isVisible == true }),
+                  let window = windowController.window,
+                  let viewController = windowController.documentViewController,
+                  let textView = viewController.focusedTextView
+            else { return }
+            
+            let selection = NSRange(location: 0, length: min(12, (textView.string as NSString).length))
+            textView.setSelectedRange(selection)
+            
+            let point = textView.convert(NSPoint(x: 40, y: textView.bounds.height - 80), to: nil)
+            
+            guard let event = NSEvent.mouseEvent(with: .rightMouseDown,
+                                                 location: point,
+                                                 modifierFlags: [],
+                                                 timestamp: ProcessInfo.processInfo.systemUptime,
+                                                 windowNumber: window.windowNumber,
+                                                 context: nil,
+                                                 eventNumber: 0,
+                                                 clickCount: 1,
+                                                 pressure: 1)
+            else { return }
+            
+            textView.rightMouseDown(with: event)
         }
     }
     #endif

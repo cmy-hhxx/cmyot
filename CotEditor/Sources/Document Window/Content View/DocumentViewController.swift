@@ -85,6 +85,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     private enum SerializationKey {
         
         static let theme = "theme"
+        static let showsLineNumber = "showsLineNumber"
     }
     
     
@@ -107,6 +108,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     private let splitState = SplitState()
     
     private weak var focusedChild: EditorViewController?
+    
+    /// The line-number value to give the first pane of a restored window.
+    private var rememberedShowsLineNumber: Bool?
     
     /// The pane that currently fills the window while zoomed, if any.
     private var zoomedPane: EditorViewController?
@@ -265,8 +269,6 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.defaultsObservers = [
             UserDefaults.standard.publisher(for: .showInvisibles, initial: true)
                 .sink { [weak self] in self?.showsInvisibles = $0 },
-            UserDefaults.standard.publisher(for: .showLineNumbers, initial: true)
-                .sink { [weak self] in self?.showsLineNumber = $0 },
             UserDefaults.standard.publisher(for: .wrapLines, initial: true)
                 .sink { [weak self] in self?.wrapsLines = $0 },
             UserDefaults.standard.publisher(for: .showPageGuide, initial: true)
@@ -343,7 +345,6 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     override static var restorableStateKeyPaths: [String] {
         
         super.restorableStateKeyPaths + [
-            #keyPath(showsLineNumber),
             #keyPath(showsPageGuide),
             #keyPath(showsIndentGuides),
             #keyPath(showsInvisibles),
@@ -358,8 +359,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     override static func allowedClasses(forRestorableStateKeyPath keyPath: String) -> [AnyClass] {
         
         switch keyPath {
-            case #keyPath(showsLineNumber),
-                #keyPath(showsPageGuide),
+            case #keyPath(showsPageGuide),
                 #keyPath(showsIndentGuides),
                 #keyPath(showsInvisibles),
                 #keyPath(wrapsLines),
@@ -381,12 +381,23 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         if let themeName = self.themeName {
             coder.encode(themeName, forKey: SerializationKey.theme)
         }
+        
+        coder.encode(self.showsLineNumber, forKey: SerializationKey.showsLineNumber)
     }
     
     
     override func restoreState(with coder: NSCoder) {
         
         super.restoreState(with: coder)
+        
+        if coder.containsValue(forKey: SerializationKey.showsLineNumber) {
+            let showsLineNumbers = coder.decodeBool(forKey: SerializationKey.showsLineNumber)
+            self.rememberedShowsLineNumber = showsLineNumbers
+            
+            // the panes usually exist by now; otherwise the first one picks the value up when
+            // it is created and reads `showsLineNumber`
+            self.editorViewControllers.first?.showsLineNumber = showsLineNumbers
+        }
         
         if let storedThemeName = coder.decodeObject(of: NSString.self, forKey: SerializationKey.theme) as? String {
             let themeName = UserDefaults.standard[.pinsThemeAppearance]
@@ -628,18 +639,27 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// The visibility of line numbers views.
-    @objc dynamic var showsLineNumber = false {
+    /// Whether the focused pane shows line numbers.
+    ///
+    /// The setting belongs to a pane (see `EditorViewController.showsLineNumber`), so this is a
+    /// view onto the focused one: `:set number`, the View menu item and the print settings all
+    /// act on that pane and leave its siblings alone. A window keeps only a remembered value,
+    /// for the moment before its first pane exists (state restoration).
+    var showsLineNumber: Bool {
         
-        didSet {
-            for viewController in self.editorViewControllers {
-                viewController.showsLineNumber = showsLineNumber
+        get {
+            self.focusedChild?.showsLineNumber
+                ?? self.editorViewControllers.first?.showsLineNumber
+                ?? self.rememberedShowsLineNumber
+                ?? UserDefaults.standard[.showLineNumbers]
+        }
+        set {
+            guard let pane = self.focusedChild ?? self.editorViewControllers.first else {
+                self.rememberedShowsLineNumber = newValue
+                return
             }
-            // Store the toggle in the shared default so that the `Show Line Numbers`
-            // menu item keeps in sync with the Settings pane and survives relaunch.
-            if UserDefaults.standard[.showLineNumbers] != self.showsLineNumber {
-                UserDefaults.standard[.showLineNumbers] = self.showsLineNumber
-            }
+            
+            pane.showsLineNumber = newValue
         }
     }
     
@@ -1078,10 +1098,26 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Toggles the visibility of the line number views.
+    /// Toggles the visibility of the line number views of the focused pane.
     @IBAction func toggleLineNumber(_ sender: Any?) {
         
         self.showsLineNumber.toggle()
+    }
+    
+    
+    /// Shows or hides the line numbers of the pane that holds a given text view.
+    ///
+    /// Used by the vim command line: `:set number` changes the pane it was typed in, not the
+    /// window and not the app.
+    ///
+    /// - Parameters:
+    ///   - shows: Whether line numbers should be visible.
+    ///   - textView: A text view of the pane to change.
+    func setShowsLineNumber(_ shows: Bool, inPaneContaining textView: NSTextView) {
+        
+        self.editorViewControllers
+            .first { $0.contains(textView) }?
+            .showsLineNumber = shows
     }
     
     
@@ -1339,12 +1375,14 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         self.observeTextStorage(of: document)
         
+        let showsLineNumbers = pane.showsLineNumber
         let tab = pane.addTab(document: document)
         tab.isClosable = (document !== self.document)
         
         if let textView = pane.textView {
             self.configureTextView(textView, copying: sourceTextView)
-            pane.showsLineNumber = self.showsLineNumber
+            // the new tab joins the pane as it is, rather than with the focused pane's setting
+            pane.showsLineNumber = showsLineNumbers
             
             // observe cursor
             NotificationCenter.default.addObserver(self, selector: #selector(textViewDidLiveChangeSelection),
@@ -2048,7 +2086,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         // setup textView
         if let textView = viewController.textView {
             self.configureTextView(textView, copying: otherViewController?.textView)
-            viewController.showsLineNumber = self.showsLineNumber  // need to be set after setting text orientation
+            // the value of the pane this one was split from, or the window's default
+            viewController.showsLineNumber = otherViewController?.showsLineNumber ?? self.showsLineNumber  // need to be set after setting text orientation
         }
         
         // observe cursor

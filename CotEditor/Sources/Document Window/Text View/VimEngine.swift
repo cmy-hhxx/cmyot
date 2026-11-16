@@ -453,9 +453,9 @@ final class VimEngine {
                 for argument in parts.dropFirst() {
                     switch argument {
                         case "number", "nu", "rnu", "relativenumber":
-                            UserDefaults.standard[.showLineNumbers] = true
+                            self.setShowsLineNumbers(true)
                         case "nonumber", "nonu", "nornu", "norelativenumber":
-                            UserDefaults.standard[.showLineNumbers] = false
+                            self.setShowsLineNumbers(false)
                         default:
                             break
                     }
@@ -471,6 +471,28 @@ final class VimEngine {
                 break
             default:
                 break
+        }
+    }
+    
+    
+    /// Shows or hides the line numbers of the pane this command runs in.
+    ///
+    /// The value belongs to the pane (see `EditorViewController.showsLineNumber`), which is what
+    /// makes `:set nu` in one pane leave the panes and windows beside it as they are.
+    ///
+    /// - Parameter shows: Whether line numbers should be visible.
+    private func setShowsLineNumbers(_ shows: Bool) {
+        
+        guard let textView = self.textView else { return }
+        
+        var responder: NSResponder? = textView
+        
+        while let current = responder {
+            if let documentViewController = current as? DocumentViewController {
+                documentViewController.setShowsLineNumber(shows, inPaneContaining: textView)
+                return
+            }
+            responder = current.nextResponder
         }
     }
     

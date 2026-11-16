@@ -363,13 +363,21 @@ final class EditorViewController: NSSplitViewController {
     
     // MARK: Public Methods
     
-    /// Whether line number view is visible.
+    /// Whether line number view is visible in this pane.
+    ///
+    /// Line numbers belong to the pane, so `:set number` in one pane leaves the panes beside it
+    /// alone. The most recent choice is also written back to the shared default, which is what
+    /// a new window (and a new pane) starts with.
     var showsLineNumber: Bool {
         
         get { self.textViewController(for: self.selectedTab)?.showsLineNumber ?? false }
         set {
             // every tab gets the toggle, so switching tabs does not flip the setting
             self.textViewControllers.values.forEach { $0.showsLineNumber = newValue }
+            
+            if UserDefaults.standard[.showLineNumbers] != newValue {
+                UserDefaults.standard[.showLineNumbers] = newValue
+            }
         }
     }
     

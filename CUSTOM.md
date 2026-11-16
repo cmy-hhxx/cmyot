@@ -156,6 +156,23 @@ Known limits of the endpoint list:
 - There is no reordering and no per-endpoint temperature yet; rows stay in the order they were added.
 - Switching endpoints does not cancel a request that is already running.
 
+## Tenth round: menu and sheet polish
+
+| Area | Change | Files |
+|---|---|---|
+| Context menu | The right-click menu no longer carries AppKit's own additions. *Auto-Fill* and the *Services* submenu (and the Continuity Camera services 拍照 / 扫描文稿 / 添加速绘 that this fork used to advertise) are inserted by AppKit into any menu a text view opens, after the menu was built and before it is shown. The view now answers the two questions AppKit asks on the way — `inputContext` for auto-fill, `validRequestor(forSendType:returnType:)` for services — with “no” for exactly that moment, so typing, input methods and the Services menu everywhere else are untouched. The flag is cleared again in `menuWillOpen`, with a main-queue safety net for a menu AppKit builds but never shows. | `EditorTextView.swift` |
+| AI result sheet | Rebuilt as a reply rather than a text dump. A header names the action and the service that answered (`profile · model`), the answer sits on a rounded card with a hairline border, and it is rendered Markdown: headings, paragraphs, hanging-indent lists, quotes and fenced code with its own monospaced band. Inline bold / italic / code / links come from Foundation's parser, and links open in the browser. The button row follows macOS order and sits against the trailing edge — 取消 · 拷贝 · 插入 · 替换选中 — at `large` control size, with the default action accented and tooltips on the two that are easy to misread (拷贝 flashes ✓ for 1.5 s instead of closing). | `AIResultPanelController.swift`, `AI/UI/AIAnswerFormatter.swift` (new), `AI.xcstrings` |
+| Line numbers | `Show Line Numbers` (and vim's `:set nu` / `:set nonu`) now acts on **one pane**: the value lives on `EditorViewController`, so a split window can show them in one pane and not the others, and `:set nu` typed in a pane changes exactly that pane. `DocumentViewController.showsLineNumber` became a view onto the focused pane (the View menu item and the print settings follow it), a new pane inherits the pane it was split from, and the shared default is only the seed — written back by the most recent choice, so it keeps working as the default for new windows. Window state restoration remembers the focused pane's value (`encodeRestorableState`), since panes themselves are not restored. | `EditorViewController.swift`, `DocumentViewController.swift`, `VimEngine.swift` |
+| Highlight colors | Two palettes instead of one color at a changed brightness. Light appearance paints saturated highlighter pastels (they read against white without swallowing dark text, ≈10:1), dark appearance paints the same hues as translucent bands (0.30–0.32 over the theme background, ≈5–7:1 against light text) so the theme still shows through. The context-menu swatch stays a full-saturation dot in dark mode, where the fill itself is too dim to read. | `HighlightColor+AppKit.swift` |
+| Emoji menu | Five headed sections became **three rows of six**, color emoji only: the geometric progress glyphs (`◔` `◑` `●`) came from a different font at a different optical size, which is what made the grid look uneven. One font size now fits all of them, the section headings and separators are gone, and the list drops the decorative extras (📚 🔧 📦 ⏰ 🐛 🚧). | `DocumentWindowController.swift`, `Chrome.xcstrings` |
+| Verify hooks | `--ai-result-demo` shows the result sheet with a sample Markdown answer, `--emoji-menu` presents the toolbar's emoji menu and `--context-menu-demo` opens the text view's context menu on a selection — all for screenshots, all inert in Release. | `AppDelegate.swift`, `DocumentWindowController.swift` |
+
+Known limits of this round:
+
+- The answer renderer covers the block shapes a chat answer uses (paragraphs, headings, lists, quotes, fenced code) and falls back to plain text for tables and images.
+- Line numbers are per pane, but a pane's tabs share one setting: switching tabs in a pane does not flip it (the toggle applies to every tab of that pane).
+- The highlight palette follows the light/dark appearance, not the editor theme's own colors; a colored theme keeps its colors and gets the same bands.
+
 ## Not implemented
 
 Full Vim fidelity. Upstream has rejected vim support four times

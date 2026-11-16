@@ -83,6 +83,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     /// Whether the ⌃A prefix has been pressed and the next key is part of its sequence.
     private var isAwaitingControlAPrefix = false
     
+    /// Whether AppKit is currently assembling the context menu for this view.
+    ///
+    /// While it is, the view reports that it offers neither auto-fill nor services, which is
+    /// what keeps those items out of the menu (see ``menu(for:)``).
+    private var isPreparingContextMenu = false
+    
     var lineEnding: LineEnding = .lf
     var defaultFontType: FontType = .standard
     
@@ -920,7 +926,23 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     override func menu(for event: NSEvent) -> NSMenu? {
         
-        self.makeContextMenu()
+        // AppKit asks the view whether it can offer auto-fill and services while it prepares
+        // a context menu, and inserts those items into the menu it is about to show. The
+        // window goes through that preparation right here, before the menu opens, so both
+        // questions are answered with “no” for the length of the preparation.
+        self.isPreparingContextMenu = true
+        
+        let menu = self.makeContextMenu()
+        menu.delegate = self
+        
+        // Safety net for a menu AppKit builds but never shows: the flag would otherwise keep
+        // the input context switched off. All the questions this suppresses are asked before
+        // the main queue gets a turn, so this can only clear the flag too late, never too early.
+        DispatchQueue.main.async { [weak self] in
+            self?.isPreparingContextMenu = false
+        }
+        
+        return menu
     }
     
     
@@ -1037,6 +1059,33 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         return nil
+    }
+    
+    
+    // MARK: Context Menu System Items
+    
+    /// Reports no input context while the context menu is being assembled.
+    ///
+    /// AppKit asks for the input context to decide whether to insert its *AutoFill* item, so
+    /// answering `nil` for that moment keeps the item out of the menu. Typing is unaffected:
+    /// the menu is built before it opens, and the flag is cleared again by then.
+    override var inputContext: NSTextInputContext? {
+        
+        self.isPreparingContextMenu ? nil : super.inputContext
+    }
+    
+    
+    /// Reports no services requestor while the context menu is being assembled.
+    ///
+    /// AppKit asks for one to decide which services to list, so answering `nil` for that
+    /// moment drops the promoted services and the *Services* submenu from the menu.
+    override func validRequestor(
+        forSendType sendType: NSPasteboard.PasteboardType?,
+        returnType: NSPasteboard.PasteboardType?
+    ) -> Any? {
+        self.isPreparingContextMenu
+            ? nil
+            : super.validRequestor(forSendType: sendType, returnType: returnType)
     }
     
     
@@ -1879,6 +1928,27 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.instanceHighlightTask = nil
             self.layoutManager?.removeTemporaryAttribute(.roundedBackgroundColor, forCharacterRange: self.string.range)
         }
+    }
+}
+
+
+// MARK: - Context Menu
+
+extension EditorTextView: NSMenuDelegate {
+    
+    /// Ends the suppression window as soon as the menu is about to open.
+    ///
+    /// Everything AppKit asks on the way to opening the menu happens before this call, so the
+    /// view can offer auto-fill and services again while the menu is on screen.
+    func menuWillOpen(_ menu: NSMenu) {
+        
+        self.isPreparingContextMenu = false
+    }
+    
+    
+    func menuDidClose(_ menu: NSMenu) {
+        
+        self.isPreparingContextMenu = false
     }
 }
 
