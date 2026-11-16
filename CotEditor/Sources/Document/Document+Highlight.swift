@@ -29,7 +29,7 @@ extension ExtendedFileAttributeName {
     ///
     /// An extended attribute keeps the document itself pure plain text and travels with
     /// the file when it is moved or renamed. A sidecar file cannot be used instead: the
-    /// app is sandboxed and only gets access to the file the user opened.
+    /// distribution build is sandboxed and only gets access to the file the user opened.
     static let textHighlights = "local.cmy.CotEditor.TextHighlights"
 }
 

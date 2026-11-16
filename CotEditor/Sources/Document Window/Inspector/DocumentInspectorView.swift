@@ -237,53 +237,6 @@ private struct EditorCountView: View {
 }
 
 
-private struct CharacterPaneView: View {
-    
-    var character: Character?
-    
-    @State private var isExpanded = true
-    
-    
-    var body: some View {
-        
-        DisclosureGroup(String(localized: "Character", table: "Document", comment: "section title in inspector"), isExpanded: $isExpanded) {
-            Form {
-                if let scalars = self.character?.unicodeScalars {
-                    let label = (scalars.count == 1)
-                        ? String(localized: "Code Point", table: "Document", comment: "label in document inspector")
-                        : String(localized: "Code Points", table: "Document", comment: "label in document inspector")
-                    LabeledContent(label) {
-                        WrappingHStack(alignment: isLiquidGlass ? .trailing : .leading) {
-                            ForEach(Array(scalars.enumerated()), id: \.offset) { _, scalar in
-                                Text(scalar.codePoint)
-                                    .monospacedDigit()
-                                    .textSelection(.enabled)
-                                    .padding(.horizontal, 2)
-                                    .overlay(RoundedRectangle(cornerRadius: 3.5)
-                                        .strokeBorder(.tertiary))
-                            }
-                        }
-                    }
-                    if scalars.count == 1, let scalar = scalars.first {
-                        LabeledContent(String(localized: "Name", table: "Document", comment: "label in document inspector"),
-                                       optional: scalar.name)
-                        LabeledContent(String(localized: "Block", table: "Document", comment: "label in document inspector"),
-                                       optional: scalar.localizedBlockName)
-                        let category = scalar.properties.generalCategory
-                        LabeledContent(String(localized: "Category", table: "Document", comment: "label in document inspector"),
-                                       value: "\(category.longName) (\(category.shortName))")
-                    }
-                } else {
-                    Text("Not selected", tableName: "Document", comment: "placeholder")
-                        .foregroundStyle(.tertiary)
-                        .help(String(localized: "Select a single character to show Unicode information.", table: "Document", comment: "tooltip"))
-                }
-            }
-        }
-    }
-}
-
-
 @available(macOS 26, *)
 private struct InspectorDisclosureGroupStyle: DisclosureGroupStyle {
     
@@ -404,7 +357,6 @@ private struct LegacyInspectorLabeledContentStyle: LabeledContentStyle {
         countResult: .init())
     model.countResult?.characters = .init(entire: 1024, selected: 4)
     model.countResult?.lines = .init(entire: 10, selected: 1)
-    model.countResult?.character = "🐈‍⬛"
     
     return DocumentInspectorView(model: model)
 }

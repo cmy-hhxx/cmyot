@@ -541,7 +541,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     /// its pane tabs finish their first layout pass before the demo state is built.
     private func scheduleDemoLayoutIfNeeded() {
         
-        // `open --args --ui-demo` is the reliable way to reach a sandboxed app
+        // `open --args --ui-demo` reaches the running app without going through a terminal
         guard ProcessInfo.processInfo.arguments.contains("--ui-demo")
             || ProcessInfo.processInfo.environment["COT_UI_DEMO"] == "1"
         else { return }

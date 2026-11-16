@@ -183,18 +183,20 @@
 	</array>
 	<key>NSSupportsAutomaticTermination</key>
 	<true/>
-	<key>NSUbiquitousContainers</key>
-	<dict>
-		<key>iCloud.com.coteditor.CotEditor</key>
-		<dict>
-			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
-			<true/>
-			<key>NSUbiquitousContainerName</key>
-			<string>CotEditor</string>
-			<key>NSUbiquitousContainerSupportedFolderLevels</key>
-			<string>Any</string>
-		</dict>
-	</dict>
+	<!--
+		No NSUbiquitousContainers on purpose.
+
+		Declaring a public iCloud document scope made AppKit autosave every untitled
+		document into the iCloud Drive folder, and a document that gains a file URL is
+		renamed after it: the made-up name (see GeneratedDocumentName) was replaced with
+		"Untitled", and editing a brand-new document silently created a file the user
+		never asked to save.
+
+		The container could never work here anyway: this build is not sandboxed and has no
+		ubiquity-container entitlement, so nothing ever synced. Without the declaration,
+		untitled documents stay untitled and are autosaved to the app's own local
+		autosave location, which is what the editor did before the sandbox was removed.
+	-->
 	<key>OSAScriptingDefinition</key>
 	<string>$(PRODUCT_NAME).sdef</string>
 	<key>SUEnableInstallerLauncherService</key>

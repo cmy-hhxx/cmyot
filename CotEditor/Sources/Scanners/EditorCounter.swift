@@ -43,9 +43,6 @@ import StringUtils
         
         /// Cursor location from the beginning of the line.
         var column: Int?
-        
-        /// The first selected character (only when selection is a single character).
-        var character: Character?
     }
     
     
@@ -66,9 +63,8 @@ import StringUtils
         static let location   = Self(rawValue: 1 << 3)
         static let line       = Self(rawValue: 1 << 4)
         static let column     = Self(rawValue: 1 << 5)
-        static let character  = Self(rawValue: 1 << 6)
         
-        static let all: Self = [.characters, .lines, .words, .location, .line, .column, .character]
+        static let all: Self = [.characters, .lines, .words, .location, .line, .column]
         static let count: Self = [.characters, .lines, .words]
     }
     
@@ -164,12 +160,6 @@ import StringUtils
             let selectedRanges = selectedNSRanges.compactMap { Range($0, in: string) }
             let selectedStrings = selectedRanges.map { string[$0] }
             let location = selectedRanges.first?.lowerBound ?? string.startIndex
-            
-            if self.types.contains(.character) {
-                self.result.character = (selectedStrings.first?.compareCount(with: 1) == .equal)
-                    ? selectedStrings.first?.first
-                    : nil
-            }
             
             if self.types.contains(.characters) {
                 try Task.checkCancellation()
