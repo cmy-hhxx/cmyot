@@ -49,11 +49,13 @@ extension Document {
             store.sourceLength == self.textStorage.length  // the text changed while closed
         else {
             self.textHighlights = []
+            self.syncHighlightAttributesToTextStorage()
             self.applyHighlightRendering()
             return
         }
         
         self.textHighlights = store.marks
+        self.syncHighlightAttributesToTextStorage()
         self.applyHighlightRendering()
     }
     
@@ -70,6 +72,7 @@ extension Document {
         self.textHighlights.append(TextHighlight(range: range, color: color))
         self.textHighlights.sort { $0.location < $1.location }
         
+        self.syncHighlightAttributesToTextStorage()
         self.applyHighlightRendering()
         self.saveHighlightsSoon()
     }
@@ -83,6 +86,7 @@ extension Document {
         
         guard self.textHighlights.count != count else { return }
         
+        self.syncHighlightAttributesToTextStorage()
         self.applyHighlightRendering()
         self.saveHighlightsSoon()
     }
@@ -95,17 +99,69 @@ extension Document {
     ///   - changeInLength: The length delta the edit introduced.
     func adjustHighlights(forEditIn editedRange: NSRange, changeInLength delta: Int) {
         
-        guard !self.textHighlights.isEmpty, delta != 0 else { return }
+        guard !self.textHighlights.isEmpty || self.hasHighlightAttributeInTextStorage else { return }
         
-        // `NSTextStorage` reports the edited range after the change has been applied, so
-        // the replaced range is the same location with the delta removed again.
-        let replacedRange = NSRange(location: editedRange.location,
-                                    length: max(0, editedRange.length - delta))
+        let textStorage = self.textStorage
+        let wholeRange = NSRange(location: 0, length: textStorage.length)
         
-        self.textHighlights = self.textHighlights.adjusting(forEditIn: replacedRange,
-                                                            changeInLength: delta)
+        // If typing inserted text at the boundary of a highlight, NSTextView's typingAttributes
+        // may have inherited `.cotTextHighlight` unless we strip it from newly typed characters
+        // outside the original mark. Reconcile using the authoritative `adjusting` math when
+        // delta != 0, then sync both ways so `NSTextStorage` and `textHighlights` never drift.
+        if delta != 0 {
+            let replacedRange = NSRange(location: editedRange.location,
+                                        length: max(0, editedRange.length - delta))
+            self.textHighlights = self.textHighlights.adjusting(forEditIn: replacedRange,
+                                                                changeInLength: delta)
+            self.syncHighlightAttributesToTextStorage()
+        } else {
+            // Attribute-only or undo pass: read back from textStorage if present
+            var marks: [TextHighlight] = []
+            textStorage.enumerateAttribute(.cotTextHighlight, in: wholeRange) { value, range, _ in
+                if let raw = value as? String, let color = HighlightColor(rawValue: raw), range.length > 0 {
+                    marks.append(TextHighlight(range: range, color: color))
+                }
+            }
+            if !marks.isEmpty {
+                self.textHighlights = marks
+            }
+        }
+        
         self.applyHighlightRendering()
         self.saveHighlightsSoon()
+    }
+    
+    
+    /// Synchronizes `textHighlights` into `.cotTextHighlight` on `textStorage` without dirtying undo.
+    private func syncHighlightAttributesToTextStorage() {
+        
+        let textStorage = self.textStorage
+        let wholeRange = NSRange(location: 0, length: textStorage.length)
+        guard wholeRange.length > 0 else { return }
+        
+        textStorage.removeAttribute(.cotTextHighlight, range: wholeRange)
+        for highlight in self.textHighlights {
+            let range = NSIntersectionRange(highlight.range, wholeRange)
+            guard range.length > 0 else { continue }
+            textStorage.addAttribute(.cotTextHighlight, value: highlight.color.rawValue, range: range)
+        }
+    }
+    
+    
+    /// Whether `textStorage` currently carries any `.cotTextHighlight` attribute.
+    private var hasHighlightAttributeInTextStorage: Bool {
+        
+        let textStorage = self.textStorage
+        let wholeRange = NSRange(location: 0, length: textStorage.length)
+        guard wholeRange.length > 0 else { return false }
+        var found = false
+        textStorage.enumerateAttribute(.cotTextHighlight, in: wholeRange) { value, _, stop in
+            if value != nil {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
     }
     
     
@@ -146,7 +202,39 @@ extension Document {
             guard !Task.isCancelled else { return }
             
             self?.saveHighlights()
+            self?.syncToLocalDatabase()
         }
+    }
+    
+    
+    /// Schedules a debounced snapshot write of this document to `CotLocalDatabase`.
+    func scheduleDatabaseSync() {
+        
+        self.databaseSyncTask?.cancel()
+        self.databaseSyncTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(1200))
+            guard !Task.isCancelled else { return }
+            
+            self?.syncToLocalDatabase()
+        }
+    }
+    
+    
+    /// Writes the current document content and metadata into `CotLocalDatabase`.
+    func syncToLocalDatabase() {
+        
+        let content = self.textStorage.string
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        
+        let recordID = self.fileURL?.path(percentEncoded: false) ?? "doc:\(self.databaseDocumentID)"
+        CotLocalDatabase.shared.saveDocument(
+            id: recordID,
+            title: self.displayName,
+            filePath: self.fileURL?.path(percentEncoded: false),
+            syntax: self.syntaxName,
+            content: content,
+            highlights: self.textHighlights
+        )
     }
     
     

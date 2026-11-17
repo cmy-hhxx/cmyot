@@ -27,6 +27,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 import ControlUI
 import Defaults
 import StringUtils
@@ -144,6 +145,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     private var pendingReviewDocuments: [Document] = []
     private var reviewCompletion: ((Bool) -> Void)?
+    private var didRestorePersistedPaneTabs = false
+    private var isRestoringPersistedPaneTabs = false
+    private static var didRestoreAppPaneTabsThisLaunch = false
     
     
     // MARK: Lifecycle
@@ -209,9 +213,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         // start parsing
         self.document.syntaxController.setupParser()
         
-        NotificationCenter.default.addObserver(self, selector: #selector(textStorageDidProcessEditing),
-                                               name: NSTextStorage.didProcessEditingNotification,
-                                               object: self.document.textStorage)
+        self.observeTextStorage(of: self.document)
         
         // observe
         self.observers = [
@@ -290,6 +292,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 .publisher(for: NSWindow.willCloseNotification, object: window)
                 .sink { [weak self] _ in self?.closeSecondaryDocuments() }
         }
+        
+        self.restorePersistedPaneTabsIfNeeded()
         
         #if DEBUG
         if !self.didRunDemo, UserDefaults.standard.bool(forKey: "COTUIDemoTabs") {
@@ -598,6 +602,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             
             // keep painted highlights attached to the text they were drawn on
             document.adjustHighlights(forEditIn: range, changeInLength: length)
+            document.scheduleDatabaseSync()
+            self.savePaneTabsSessionToDatabase()
             
             guard self.focusedTextView?.hasMarkedText() != true else { return }
             
@@ -1016,17 +1022,200 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Runs one AI action on the selection and shows the answer in a sheet.
-    ///
-    /// - Parameter action: The action to run.
-    private func runAIAction(_ action: AIAction) {
+    /// Generates a structured weekly report from the selection (or the entire document when nothing is selected).
+    @IBAction func generateWeeklyReport(_ sender: Any?) {
+        
+        self.runAIAction(.weeklyReport, allowFullDocumentFallback: true)
+    }
+    
+    
+    /// Condenses the selected text into a weekly report bullet item and saves it to the weekly report accumulator.
+    @IBAction func generateWeeklyReportItem(_ sender: Any?) {
+        
+        self.runAIAction(.weeklyReportItem)
+    }
+    
+    
+    /// One-click aligns Markdown tables in the selection (or throughout the whole document if nothing is selected).
+    @IBAction func alignMarkdownTable(_ sender: Any?) {
+        
+        guard let textView = self.focusedTextView else {
+            NSSound.beep()
+            return
+        }
+        
+        let selectedRange = textView.selectedRange()
+        let targetRange = selectedRange.length > 0 ? selectedRange : NSRange(location: 0, length: (textView.string as NSString).length)
+        guard targetRange.length > 0 else {
+            NSSound.beep()
+            return
+        }
+        
+        let original = (textView.string as NSString).substring(with: targetRange)
+        let aligned = MarkdownTableFormatter.formatTables(in: original)
+        guard aligned != original else { return }
+        
+        textView.insertText(aligned, replacementRange: targetRange)
+        textView.window?.makeFirstResponder(textView)
+    }
+    
+    
+    /// Renders an interactive HTML chart from the selected Markdown table (or document table) and asks AI for insights.
+    @IBAction func generateInteractiveChart(_ sender: Any?) {
         
         guard let textView = self.focusedTextView, let window = textView.window else {
             NSSound.beep()
             return
         }
         
-        let text = textView.selectedString
+        let sourceText = textView.selectedRange().length > 0 ? textView.selectedString : textView.string
+        guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            NSSound.beep()
+            return
+        }
+        
+        let panel = AIResultPanelController(action: .interactiveChart)
+        panel.onReplace = { [weak self] result in self?.applyAIResult(result, replacingSelection: true) }
+        panel.onInsert = { [weak self] result in self?.applyAIResult(result, replacingSelection: false) }
+        self.aiResultPanel = panel
+        
+        panel.present(on: window)
+        // Render an immediate interactive chart from the table data right away so the user doesn't wait
+        let instantHTML = MarkdownTableFormatter.generateInstantChartHTML(from: sourceText)
+        panel.presentChart(html: instantHTML)
+        
+        if AIService.shared.isConfigured {
+            Task {
+                do {
+                    let result = try await AIService.shared.run(.interactiveChart, on: sourceText) { partial in
+                        panel.presentPartial(result: partial)
+                    }
+                    panel.present(result: result)
+                } catch {
+                    // Keep the instant interactive chart usable and show the aligned table below
+                    panel.present(result: MarkdownTableFormatter.formatTables(in: sourceText))
+                }
+            }
+        } else {
+            panel.present(result: MarkdownTableFormatter.formatTables(in: sourceText))
+        }
+    }
+    
+    
+    /// Runs the embedded Vision OCR model on a clipboard or chosen image, then connects to AI for smart structuring.
+    @IBAction func runOCRAndAI(_ sender: Any?) {
+        
+        guard let textView = self.focusedTextView, let window = textView.window else {
+            NSSound.beep()
+            return
+        }
+        
+        if let clipboardImage = NSImage(pasteboard: .general) {
+            self.processOCR(image: clipboardImage, on: window)
+            return
+        }
+        
+        let openPanel = NSOpenPanel()
+        openPanel.allowedContentTypes = [.image, .png, .jpeg, .tiff]
+        openPanel.allowsMultipleSelection = false
+        openPanel.message = String(localized: "ai.ocr.openPanel.message",
+                                   defaultValue: "Choose an image to run local OCR + AI recognition",
+                                   table: "AI")
+        openPanel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = openPanel.url, let image = NSImage(contentsOf: url) else { return }
+            Task { @MainActor in
+                self?.processOCR(image: image, on: window)
+            }
+        }
+    }
+    
+    
+    /// Inserts an image into a Plain Text document as an inline `⟦🖼 ...⟧` card.
+    @IBAction func insertPlainTextImage(_ sender: Any?) {
+        
+        guard let textView = self.focusedTextView, let window = textView.window else {
+            NSSound.beep()
+            return
+        }
+        
+        let docURL = self.document(for: textView)?.fileURL
+        if let clipboardImage = NSImage(pasteboard: .general),
+           NSPasteboard.general.string(forType: .string) == nil,
+           let stored = PlainTextInlineImageStore.shared.store(image: clipboardImage, for: docURL)
+        {
+            textView.insertText(stored.token, replacementRange: textView.selectedRange())
+            textView.layoutManager?.invalidateLayout(forCharacterRange: textView.string.range, actualCharacterRange: nil)
+            textView.needsDisplay = true
+            return
+        }
+        
+        let openPanel = NSOpenPanel()
+        openPanel.allowedContentTypes = [.image, .png, .jpeg]
+        openPanel.allowsMultipleSelection = false
+        openPanel.beginSheetModal(for: window) { [weak textView] response in
+            guard response == .OK, let url = openPanel.url else { return }
+            Task { @MainActor in
+                guard let textView, let stored = PlainTextInlineImageStore.shared.storeImageFile(at: url, for: docURL) else { return }
+                textView.insertText(stored.token, replacementRange: textView.selectedRange())
+                textView.layoutManager?.invalidateLayout(forCharacterRange: textView.string.range, actualCharacterRange: nil)
+                textView.needsDisplay = true
+            }
+        }
+    }
+    
+    
+    /// Executes local Vision OCR followed by AI polishing in the result sheet.
+    private func processOCR(image: NSImage, on window: NSWindow) {
+        
+        let panel = AIResultPanelController(action: .ocrPolish)
+        panel.onReplace = { [weak self] result in self?.applyAIResult(result, replacingSelection: true) }
+        panel.onInsert = { [weak self] result in self?.applyAIResult(result, replacingSelection: false) }
+        self.aiResultPanel = panel
+        panel.present(on: window)
+        
+        Task {
+            do {
+                let ocr = try await LocalVisionOCR.recognizeText(in: image)
+                let rawText = ocr.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                
+                if !rawText.isEmpty {
+                    panel.presentPartial(result: rawText)
+                }
+                
+                guard AIService.shared.isConfigured else {
+                    panel.present(result: rawText.isEmpty ? "（未检测到文字）" : rawText)
+                    return
+                }
+                
+                let aiImages: [AIImage] = ocr.pngData.map { [AIImage(data: $0, mimeType: "image/png")] } ?? []
+                let promptInput = rawText.isEmpty ? "请识别并整理图片中的文字与表格内容。" : "本地 OCR 初步识别结果如下，请校对并结构化整理：\n\n\(rawText)"
+                let polished = try await AIService.shared.run(.ocrPolish, on: promptInput, images: aiImages) { partial in
+                    panel.presentPartial(result: partial)
+                }
+                panel.present(result: polished)
+            } catch {
+                panel.present(error: error)
+            }
+        }
+    }
+    
+    
+    /// Runs one AI action on the selection and shows the answer in a sheet.
+    ///
+    /// - Parameters:
+    ///   - action: The action to run.
+    ///   - allowFullDocumentFallback: Whether to use the whole document when the selection is empty.
+    private func runAIAction(_ action: AIAction, allowFullDocumentFallback: Bool = false) {
+        
+        guard let textView = self.focusedTextView, let window = textView.window else {
+            NSSound.beep()
+            return
+        }
+        
+        let selected = textView.selectedString
+        let text = (!selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !allowFullDocumentFallback)
+            ? selected
+            : textView.string
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             NSSound.beep()
             return
@@ -1046,7 +1235,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         Task {
             do {
-                let result = try await AIService.shared.run(action, on: text)
+                let result = try await AIService.shared.run(action, on: text) { partial in
+                    panel.presentPartial(result: partial)
+                }
                 panel.present(result: result)
             } catch {
                 panel.present(error: error)
@@ -2047,6 +2238,82 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         }
         
         NotificationCenter.default.post(name: Self.splitLayoutDidChangeNotification, object: self)
+        self.savePaneTabsSessionToDatabase()
+    }
+    
+    
+    /// Snapshots all secondary pane tabs of this window into `CotLocalDatabase` so they survive restarts.
+    func savePaneTabsSessionToDatabase() {
+        
+        guard !self.isRestoringPersistedPaneTabs, self.view.window != nil else { return }
+        
+        var items: [PersistedPaneTabItem] = []
+        for (paneIndex, pane) in self.editorViewControllers.enumerated() {
+            for tab in pane.tabs where tab.document !== self.document {
+                let doc = tab.document
+                let content = doc.textStorage.string
+                guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || doc.fileURL != nil else { continue }
+                items.append(PersistedPaneTabItem(
+                    title: doc.displayName,
+                    filePath: doc.fileURL?.path(percentEncoded: false),
+                    syntax: doc.syntaxName,
+                    content: content,
+                    isPinned: tab.isPinned,
+                    paneIndex: paneIndex
+                ))
+            }
+        }
+        
+        // Only overwrite the session when we actually have secondary tabs, or when the user explicitly closed a tab
+        guard !items.isEmpty || self.didRestorePersistedPaneTabs else { return }
+        if let data = try? JSONEncoder().encode(items),
+           let json = String(data: data, encoding: .utf8)
+        {
+            CotLocalDatabase.shared.set(json, forKey: CotLocalDatabase.ConfigKey.activePaneTabsSession)
+        }
+    }
+    
+    
+    /// Restores secondary pane tabs saved in `CotLocalDatabase` once when the primary document window opens.
+    private func restorePersistedPaneTabsIfNeeded() {
+        
+        guard !self.didRestorePersistedPaneTabs, !Self.didRestoreAppPaneTabsThisLaunch else { return }
+        self.didRestorePersistedPaneTabs = true
+        Self.didRestoreAppPaneTabsThisLaunch = true
+        
+        let raw = CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.activePaneTabsSession)
+        guard
+            !raw.isEmpty,
+            let data = raw.data(using: .utf8),
+            let items = try? JSONDecoder().decode([PersistedPaneTabItem].self, from: data),
+            !items.isEmpty,
+            let firstPane = self.editorViewControllers.first
+        else { return }
+        
+        self.isRestoringPersistedPaneTabs = true
+        defer { self.isRestoringPersistedPaneTabs = false }
+        
+        let openTitles = Set(NSDocumentController.shared.documents.map(\.displayName))
+        for item in items where !openTitles.contains(item.title) {
+            if let path = item.filePath, FileManager.default.fileExists(atPath: path) {
+                continue
+            }
+            guard let doc = try? self.makePaneDocument() else { continue }
+            doc.displayName = item.title
+            doc.setSyntax(name: item.syntax)
+            if !item.content.isEmpty {
+                doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: item.content)
+                doc.updateChangeCount(.changeCleared)
+            }
+            self.addTab(doc, to: firstPane, copying: firstPane.textView)
+            if item.isPinned, let addedTab = firstPane.tabs.last {
+                firstPane.togglePinForRestoration(of: addedTab)
+            }
+        }
+        
+        if let primaryTab = firstPane.tabs.first {
+            firstPane.select(tab: primaryTab)
+        }
     }
     
     
@@ -2142,13 +2409,16 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Observes the text storage of a document that lives only in a pane.
+    /// Observes the text storage of a document shown in a pane.
+    ///
+    /// Remove before adding so calling this for a second tab/pane on the same document never
+    /// registers a duplicate observer (which would shift `textHighlights` twice per edit).
     ///
     /// - Parameter document: The document to observe.
     private func observeTextStorage(of document: Document) {
         
-        guard document !== self.document else { return }
-        
+        NotificationCenter.default.removeObserver(self, name: NSTextStorage.didProcessEditingNotification,
+                                                  object: document.textStorage)
         NotificationCenter.default.addObserver(self, selector: #selector(textStorageDidProcessEditing),
                                                name: NSTextStorage.didProcessEditingNotification,
                                                object: document.textStorage)
@@ -2161,6 +2431,10 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     private func stopObservingTextStorage(of document: Document) {
         
         guard document !== self.document else { return }
+        
+        // Keep observing if another tab in this window still displays the same document.
+        let remainingTabs = self.editorViewControllers.flatMap(\.tabs).filter { $0.document === document }
+        guard remainingTabs.count <= 1 else { return }
         
         NotificationCenter.default.removeObserver(self, name: NSTextStorage.didProcessEditingNotification,
                                                   object: document.textStorage)
@@ -2198,6 +2472,90 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         else { return assertionFailure() }
         
         self.view.window?.makeFirstResponderDiscardingMarkedText(nextChild.textView)
+    }
+    
+    
+    /// Direction for spatial pane navigation (`⌃A` + arrows / `h j k l`).
+    enum PaneNavigationDirection {
+        
+        case left
+        case right
+        case up
+        case down
+    }
+    
+    
+    /// Moves focus to the adjacent pane in the given spatial direction.
+    ///
+    /// - Parameter direction: The spatial direction to jump towards.
+    func focusPane(direction: PaneNavigationDirection) {
+        
+        let panes = self.editorViewControllers
+        guard panes.count > 1, let window = self.view.window else {
+            NSSound.beep()
+            return
+        }
+        
+        if self.zoomedPane != nil {
+            self.unzoomPane()
+        }
+        
+        guard let current = self.focusedChild ?? panes.first else { return }
+        let currentRect = current.view.convert(current.view.bounds, to: nil)
+        let currentCenter = NSPoint(x: currentRect.midX, y: currentRect.midY)
+        
+        var bestCandidate: EditorViewController?
+        var bestScore = CGFloat.greatestFiniteMagnitude
+        
+        for candidate in panes where candidate !== current {
+            let rect = candidate.view.convert(candidate.view.bounds, to: nil)
+            let center = NSPoint(x: rect.midX, y: rect.midY)
+            let dx = center.x - currentCenter.x
+            let dy = center.y - currentCenter.y  // window coordinates: +y is up, -y is down
+            
+            let primaryDistance: CGFloat
+            let secondaryDistance: CGFloat
+            let overlapsPerpendicularly: Bool
+            
+            switch direction {
+                case .left:
+                    guard dx < -4 else { continue }
+                    primaryDistance = -dx
+                    secondaryDistance = abs(dy)
+                    overlapsPerpendicularly = min(currentRect.maxY, rect.maxY) > max(currentRect.minY, rect.minY)
+                case .right:
+                    guard dx > 4 else { continue }
+                    primaryDistance = dx
+                    secondaryDistance = abs(dy)
+                    overlapsPerpendicularly = min(currentRect.maxY, rect.maxY) > max(currentRect.minY, rect.minY)
+                case .up:
+                    guard dy > 4 else { continue }
+                    primaryDistance = dy
+                    secondaryDistance = abs(dx)
+                    overlapsPerpendicularly = min(currentRect.maxX, rect.maxX) > max(currentRect.minX, rect.minX)
+                case .down:
+                    guard dy < -4 else { continue }
+                    primaryDistance = -dy
+                    secondaryDistance = abs(dx)
+                    overlapsPerpendicularly = min(currentRect.maxX, rect.maxX) > max(currentRect.minX, rect.minX)
+            }
+            
+            let penalty: CGFloat = overlapsPerpendicularly ? 0 : 1000
+            let score = primaryDistance + secondaryDistance * 0.5 + penalty
+            if score < bestScore {
+                bestScore = score
+                bestCandidate = candidate
+            }
+        }
+        
+        guard let target = bestCandidate else {
+            NSSound.beep()
+            return
+        }
+        
+        self.focusedChild = target
+        window.makeFirstResponderDiscardingMarkedText(target.textView)
+        NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
     }
     
     

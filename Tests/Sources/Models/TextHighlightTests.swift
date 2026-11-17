@@ -171,4 +171,60 @@ struct TextHighlightTests {
         #expect(decoded == store)
         #expect(decoded.version == TextHighlightStore.currentVersion)
     }
+    
+    
+    // MARK: Markdown Table Formatter
+    
+    @Test func markdownTableAlignmentWithCJK() {
+        
+        let raw = """
+        | 模块 | 状态 | 耗时(ms) |
+        |---|---|---:|
+        | 登录鉴权 | 已完成 | 12 |
+        | AI流式生成 | 进行中 | 185 |
+        """
+        let aligned = MarkdownTableFormatter.formatTables(in: raw)
+        let lines = aligned.components(separatedBy: "\n")
+        #expect(lines.count == 4)
+        // Every row should have identical monospace display width
+        let widths = Set(lines.map { MarkdownTableFormatter.displayWidth(of: $0) })
+        #expect(widths.count == 1)
+    }
+    
+    
+    // MARK: Fun Document Names
+    
+    @Test func generatedDocumentNamesAvoidDuplicates() {
+        
+        var generated: [String] = []
+        for _ in 0..<40 {
+            let next = GeneratedDocumentName.next(avoiding: generated)
+            #expect(!generated.contains(next))
+            generated.append(next)
+        }
+    }
+    
+    
+    // MARK: Local SQLite Database Round Trip
+    
+    @Test @MainActor func localDatabaseConfigAndDocumentRoundTrip() throws {
+        
+        let tempURL = FileManager.default.temporaryDirectory
+            .appending(path: "test_cot_\(UUID().uuidString).sqlite3")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        
+        let db = CotLocalDatabase(customURL: tempURL)
+        db.aiPersona = "测试架构师"
+        #expect(db.aiPersona == "测试架构师")
+        
+        db.saveDocument(id: "doc-1", title: "测试周报", filePath: nil, syntax: "Markdown", content: "# 本周进展")
+        #expect(db.documents.contains { $0.id == "doc-1" && $0.title == "测试周报" })
+        
+        let exportURL = FileManager.default.temporaryDirectory
+            .appending(path: "export_cot_\(UUID().uuidString).sqlite3")
+        defer { try? FileManager.default.removeItem(at: exportURL) }
+        
+        try db.exportDatabase(to: exportURL)
+        #expect(FileManager.default.fileExists(atPath: exportURL.path))
+    }
 }

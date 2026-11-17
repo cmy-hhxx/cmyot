@@ -24,6 +24,7 @@
 //
 
 import AppKit
+import WebKit
 
 /// The sheet that shows an AI answer and lets the user apply it.
 ///
@@ -32,7 +33,8 @@ import AppKit
 ///
 /// The sheet reads like a reply rather than like a log: a header names the action and the
 /// service that answered, the body is rendered Markdown on a card, and the only buttons are the
-/// four things the user can do with the text.
+/// four things the user can do with the text. When the reply or source carries an interactive
+/// HTML chart, a live WebView chart sits above the text card.
 final class AIResultPanelController: NSWindowController {
     
     // MARK: Public Properties
@@ -55,6 +57,9 @@ final class AIResultPanelController: NSWindowController {
     private let textView = NSTextView()
     private let scrollView = NSScrollView()
     private let cardView = AIResultCardView()
+    private let chartCardView = AIResultCardView()
+    private let webView = WKWebView(frame: .zero)
+    private var chartHeightConstraint: NSLayoutConstraint?
     private let replaceButton = NSButton(title: "", target: nil, action: nil)
     private let insertButton = NSButton(title: "", target: nil, action: nil)
     private let copyButton = NSButton(title: "", target: nil, action: nil)
@@ -70,7 +75,8 @@ final class AIResultPanelController: NSWindowController {
         
         self.action = action
         
-        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
+        let isChart = (action == .interactiveChart)
+        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: isChart ? 680 : 560, height: isChart ? 560 : 420),
                              styleMask: [.titled, .resizable],
                              backing: .buffered,
                              defer: false)
@@ -113,14 +119,49 @@ final class AIResultPanelController: NSWindowController {
     }
     
     
+    /// Updates the panel with a progressive streaming chunk while the request is still running.
+    ///
+    /// - Parameter partial: The accumulated answer text so far.
+    func presentPartial(result partial: String) {
+        
+        let trimmed = partial.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        
+        self.answer = trimmed
+        self.setText(AIAnswerFormatter.attributedString(from: trimmed))
+        self.updateButtons(canApply: true)
+    }
+    
+    
+    /// Displays an interactive HTML chart inside the top chart card.
+    ///
+    /// - Parameter html: Complete HTML document string.
+    func presentChart(html: String) {
+        
+        self.chartCardView.isHidden = false
+        self.chartHeightConstraint?.constant = 290
+        self.webView.loadHTMLString(html, baseURL: nil)
+    }
+    
+    
     /// Fills in the answer.
     ///
     /// - Parameter result: The answer text.
     func present(result: String) {
         
-        self.answer = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = result.trimmingCharacters(in: .whitespacesAndNewlines)
         self.spinner.stopAnimation(nil)
         self.spinner.isHidden = true
+        
+        // If the AI returned a fenced ```html block, render it in the interactive chart WebView
+        if let extractedHTML = Self.extractHTMLBlock(from: raw) {
+            self.presentChart(html: extractedHTML.html)
+            let cleanedText = extractedHTML.remainingMarkdown.isEmpty ? raw : extractedHTML.remainingMarkdown
+            self.answer = MarkdownTableFormatter.formatTables(in: cleanedText)
+        } else {
+            self.answer = MarkdownTableFormatter.formatTables(in: raw)
+        }
+        
         self.setText(AIAnswerFormatter.attributedString(from: self.answer))
         self.updateButtons(canApply: !self.answer.isEmpty)
         self.scrollView.contentView.scroll(to: .zero)
@@ -245,8 +286,23 @@ final class AIResultPanelController: NSWindowController {
         buttons.spacing = 10
         buttons.translatesAutoresizingMaskIntoConstraints = false
         
+        self.webView.translatesAutoresizingMaskIntoConstraints = false
+        self.webView.setValue(false, forKey: "drawsBackground")
+        self.chartCardView.translatesAutoresizingMaskIntoConstraints = false
+        self.chartCardView.isHidden = true
+        self.chartCardView.addSubview(self.webView)
+        
+        let chartHeight = self.chartCardView.heightAnchor.constraint(equalToConstant: 0)
+        self.chartHeightConstraint = chartHeight
+        
+        let bodyStack = NSStackView(views: [self.chartCardView, self.cardView])
+        bodyStack.orientation = .vertical
+        bodyStack.spacing = 10
+        bodyStack.alignment = .width
+        bodyStack.translatesAutoresizingMaskIntoConstraints = false
+        
         contentView.addSubview(header)
-        contentView.addSubview(self.cardView)
+        contentView.addSubview(bodyStack)
         contentView.addSubview(buttons)
         
         NSLayoutConstraint.activate([
@@ -254,10 +310,16 @@ final class AIResultPanelController: NSWindowController {
             header.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             header.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
             
-            self.cardView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12),
-            self.cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            self.cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            self.cardView.bottomAnchor.constraint(equalTo: buttons.topAnchor, constant: -12),
+            bodyStack.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12),
+            bodyStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            bodyStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            bodyStack.bottomAnchor.constraint(equalTo: buttons.topAnchor, constant: -12),
+            
+            chartHeight,
+            self.webView.topAnchor.constraint(equalTo: self.chartCardView.topAnchor, constant: 1),
+            self.webView.leadingAnchor.constraint(equalTo: self.chartCardView.leadingAnchor, constant: 1),
+            self.webView.trailingAnchor.constraint(equalTo: self.chartCardView.trailingAnchor, constant: -1),
+            self.webView.bottomAnchor.constraint(equalTo: self.chartCardView.bottomAnchor, constant: -1),
             
             self.scrollView.topAnchor.constraint(equalTo: self.cardView.topAnchor, constant: 1),
             self.scrollView.leadingAnchor.constraint(equalTo: self.cardView.leadingAnchor, constant: 1),
@@ -267,6 +329,26 @@ final class AIResultPanelController: NSWindowController {
             buttons.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
             buttons.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
         ])
+    }
+    
+    
+    /// Extracts a fenced `html` code block from a Markdown response, if present.
+    private static func extractHTMLBlock(from markdown: String) -> (html: String, remainingMarkdown: String)? {
+        
+        let pattern = "```(?:html|HTML)\\s*\\n([\\s\\S]*?)```"
+        guard
+            let regex = try? NSRegularExpression(pattern: pattern),
+            let match = regex.firstMatch(in: markdown, range: NSRange(location: 0, length: (markdown as NSString).length)),
+            match.numberOfRanges >= 2
+        else { return nil }
+        
+        let nsString = markdown as NSString
+        let html = nsString.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard html.contains("<") else { return nil }
+        
+        let remaining = nsString.replacingCharacters(in: match.range, with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (html, remaining)
     }
     
     

@@ -53,19 +53,26 @@ nonisolated struct AIEndpointProfile: Identifiable, Sendable, Codable, Equatable
     var model: String
     
     
+    /// Reasoning effort level (`"low"` by default for fast responses, `"none"`, `"medium"`, `"high"`).
+    var reasoningEffort: String?
+    
+    
     // MARK: Lifecycle
     
-    init(id: UUID = UUID(),
-         name: String = "",
-         endpoint: AIEndpoint = .openAIChatCompletions,
-         baseURL: String = "",
-         model: String = "") {
-        
+    init(
+        id: UUID = UUID(),
+        name: String = "",
+        endpoint: AIEndpoint = .openAIChatCompletions,
+        baseURL: String = AIProvider.deepSeek.defaultBaseURL,
+        model: String = AIProvider.deepSeek.defaultModel,
+        reasoningEffort: String? = "low"
+    ) {
         self.id = id
         self.name = name
         self.endpoint = endpoint
         self.baseURL = baseURL
         self.model = model
+        self.reasoningEffort = reasoningEffort
     }
     
     
@@ -132,6 +139,13 @@ nonisolated struct AIEndpointProfile: Identifiable, Sendable, Codable, Equatable
     /// - Returns: The configuration to hand to the client.
     func configuration(apiKey: String) -> AIConfiguration {
         
-        AIConfiguration(endpoint: self.endpoint, baseURL: self.baseURL, model: self.model, apiKey: apiKey)
+        AIConfiguration(
+            endpoint: self.endpoint,
+            baseURL: self.baseURL,
+            model: self.model,
+            apiKey: apiKey,
+            temperature: 0.3,
+            reasoningEffort: self.reasoningEffort ?? "low"
+        )
     }
 }

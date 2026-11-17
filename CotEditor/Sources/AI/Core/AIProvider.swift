@@ -142,6 +142,23 @@ nonisolated enum AIProvider: String, CaseIterable, Sendable, Codable {
     }
     
     
+    /// The fast, low-latency default model for this provider when newly selected.
+    var defaultModel: String {
+        
+        switch self {
+            case .deepSeek: "deepseek-chat"
+            case .openAI: "gpt-4o-mini"
+            case .moonshot: "moonshot-v1-8k"
+            case .qwen: "qwen-turbo"
+            case .openRouter: "deepseek/deepseek-chat"
+            case .anthropic: "claude-3-5-haiku-latest"
+            case .google: "gemini-2.5-flash"
+            case .ollama: "qwen2.5:7b"
+            case .custom: ""
+        }
+    }
+    
+    
     /// Derives the provider from the stored protocol and base URL.
     ///
     /// An empty base URL means "the protocol default", so a clean configuration detects as

@@ -61,23 +61,51 @@ import Observation
     
     // MARK: Public Methods
     
-    /// Runs one action on the given text.
+    /// Runs one action on the given text, streaming partial updates when `onPartial` is provided.
     ///
     /// - Parameters:
     ///   - action: What to do.
     ///   - text: The text to work on.
     ///   - context: Extra context, when the feature has some.
     ///   - images: Pictures to add, for the features that look at the screen or at a file.
+    ///   - onPartial: Optional callback receiving progressive text on the MainActor.
     /// - Returns: The answer text.
     /// - Throws: ``AIError`` when the request fails.
-    func run(_ action: AIAction, on text: String, context: String? = nil, images: [AIImage] = []) async throws -> String {
+    func run(
+        _ action: AIAction,
+        on text: String,
+        context: String? = nil,
+        images: [AIImage] = [],
+        onPartial: (@MainActor @Sendable (String) -> Void)? = nil
+    ) async throws -> String {
+        
+        let db = CotLocalDatabase.shared
+        let persona = db.aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stagePrompt = db.customStagePrompt(forKey: action.databaseConfigKey) ?? action.defaultSystemPrompt
+        let fullSystemPrompt = persona.isEmpty ? stagePrompt : "\(persona)\n\n\(stagePrompt)"
+        
+        var effectiveContext = context
+        if action == .weeklyReport {
+            let savedFragments = db.string(forKey: CotLocalDatabase.ConfigKey.weeklyReportFragments)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !savedFragments.isEmpty {
+                let note = "已积累的周报片段（请一并整合进周报）：\n\(savedFragments)"
+                effectiveContext = effectiveContext.map { "\($0)\n\n\(note)" } ?? note
+            }
+        }
         
         let messages: [AIMessage] = [
-            .system(action.systemPrompt),
-            .user(action.prompt(for: text, context: context), images: images),
+            .system(fullSystemPrompt),
+            .user(action.prompt(for: text, context: effectiveContext), images: images),
         ]
         
-        return try await self.send(messages)
+        let result = try await self.send(messages, onPartial: onPartial)
+        
+        if action == .weeklyReportItem {
+            db.appendWeeklyReportFragment(result)
+        }
+        
+        return result
     }
     
     
@@ -139,9 +167,14 @@ import Observation
     /// - Parameters:
     ///   - messages: The conversation to send.
     ///   - configuration: The service to talk to; the one in use when `nil`.
+    ///   - onPartial: Optional progressive streaming callback.
     /// - Returns: The answer text.
     /// - Throws: ``AIError`` when the request fails.
-    private func send(_ messages: [AIMessage], configuration: AIConfiguration? = nil) async throws -> String {
+    private func send(
+        _ messages: [AIMessage],
+        configuration: AIConfiguration? = nil,
+        onPartial: (@MainActor @Sendable (String) -> Void)? = nil
+    ) async throws -> String {
         
         let configuration = configuration ?? .current
         guard configuration.isUsable else { throw AIError.notConfigured }
@@ -149,6 +182,14 @@ import Observation
         self.isRunning = true
         defer { self.isRunning = false }
         
-        return try await AIClient(configuration: configuration).send(messages)
+        let nonisolatedPartial: (@Sendable (String) -> Void)? = onPartial.map { callback in
+            { partial in
+                Task { @MainActor in
+                    callback(partial)
+                }
+            }
+        }
+        
+        return try await AIClient(configuration: configuration).send(messages, onPartial: nonisolatedPartial)
     }
 }

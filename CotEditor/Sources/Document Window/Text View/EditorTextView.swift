@@ -483,6 +483,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     /// Modal (Vim-style) editing layer, active while the `vimMode` default is on.
     private(set) lazy var vimEngine = VimEngine(textView: self)
     
+    /// Built-in CoreAnimation effects controller for typewriter burst and Neovide-style Vim cursor trails.
+    private(set) lazy var funEffects = EditorFunEffectsController(textView: self)
+    
     
     override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
         
@@ -533,7 +536,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     
     /// Handles the ⌃A prefix sequences that work on the focused pane:
-    /// ⌃A Z toggles the zoom, ⌃A % splits to the right, ⌃A " splits downwards.
+    /// ⌃A Z toggles the zoom, ⌃A % splits to the right, ⌃A " splits downwards,
+    /// ⌃A + arrows (or h/j/k/l) jumps between panes.
     ///
     /// - Parameter event: The key event.
     /// - Returns: `true` when the event was consumed by the prefix sequence.
@@ -547,6 +551,23 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             
             guard !flags.contains(.command), !flags.contains(.control) else { return false }
             
+            switch event.keyCode {
+                case 123:  // ←
+                    self.documentViewController?.focusPane(direction: .left)
+                    return true
+                case 124:  // →
+                    self.documentViewController?.focusPane(direction: .right)
+                    return true
+                case 125:  // ↓
+                    self.documentViewController?.focusPane(direction: .down)
+                    return true
+                case 126:  // ↑
+                    self.documentViewController?.focusPane(direction: .up)
+                    return true
+                default:
+                    break
+            }
+            
             switch character {
                 case "z", "Z":
                     self.documentViewController?.togglePaneZoom(event)
@@ -558,6 +579,22 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     
                 case "\"", "\u{201D}":
                     self.documentViewController?.splitEditorHorizontally(self)
+                    return true
+                    
+                case "h":
+                    self.documentViewController?.focusPane(direction: .left)
+                    return true
+                    
+                case "l":
+                    self.documentViewController?.focusPane(direction: .right)
+                    return true
+                    
+                case "j":
+                    self.documentViewController?.focusPane(direction: .down)
+                    return true
+                    
+                case "k":
+                    self.documentViewController?.focusPane(direction: .up)
                     return true
                     
                 default:
@@ -641,6 +678,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         super.insertText(plainString, replacementRange: replacementRange)
+        
+        if let caretRect = self.boundingRect(for: self.selectedRange) {
+            self.funEffects.triggerTypewriterBurst(at: caretRect)
+        }
         
         // auto completion
         if self.isAutomaticCompletionEnabled {
@@ -750,6 +791,26 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         self.selectedRanges = set.selectedRanges
         self.insertionLocations = set.insertionLocations
+    }
+    
+    
+    override func paste(_ sender: Any?) {
+        
+        let pboard = NSPasteboard.general
+        if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true,
+           pboard.string(forType: .string) == nil,
+           let image = NSImage(pasteboard: pboard)
+        {
+            let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
+            if let stored = PlainTextInlineImageStore.shared.store(image: image, for: docURL) {
+                self.insertText(stored.token, replacementRange: self.selectedRange())
+                self.layoutManager?.invalidateLayout(forCharacterRange: self.string.range, actualCharacterRange: nil)
+                self.needsDisplay = true
+                return
+            }
+        }
+        
+        super.paste(sender)
     }
     
     
@@ -968,12 +1029,52 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 (.translate, #selector(DocumentViewController.translateSelection(_:))),
                 (.summarize, #selector(DocumentViewController.summarizeSelection(_:))),
                 (.explain, #selector(DocumentViewController.explainSelection(_:))),
+                (.weeklyReport, #selector(DocumentViewController.generateWeeklyReport(_:))),
+                (.weeklyReportItem, #selector(DocumentViewController.generateWeeklyReportItem(_:))),
             ]
             for (action, selector) in aiActions {
                 let item = NSMenuItem(title: action.title, action: selector, keyEquivalent: "")
                 item.target = documentViewController
-                item.isEnabled = hasSelection
+                item.isEnabled = hasSelection || (action == .weeklyReport && !self.string.isEmpty)
                 menu.addItem(item)
+            }
+            
+            let alignTableItem = NSMenuItem(
+                title: String(localized: "chrome.contextMenu.alignTable", defaultValue: "Align Markdown Table", table: "Chrome"),
+                action: #selector(DocumentViewController.alignMarkdownTable(_:)),
+                keyEquivalent: ""
+            )
+            alignTableItem.target = documentViewController
+            alignTableItem.isEnabled = !self.string.isEmpty
+            menu.addItem(alignTableItem)
+            
+            let chartItem = NSMenuItem(
+                title: AIAction.interactiveChart.title,
+                action: #selector(DocumentViewController.generateInteractiveChart(_:)),
+                keyEquivalent: ""
+            )
+            chartItem.target = documentViewController
+            chartItem.isEnabled = hasSelection || MarkdownTableFormatter.containsMarkdownTable(self.string)
+            menu.addItem(chartItem)
+            
+            let ocrItem = NSMenuItem(
+                title: AIAction.ocrPolish.title,
+                action: #selector(DocumentViewController.runOCRAndAI(_:)),
+                keyEquivalent: ""
+            )
+            ocrItem.target = documentViewController
+            ocrItem.isEnabled = true
+            menu.addItem(ocrItem)
+            
+            if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true {
+                let insertImageItem = NSMenuItem(
+                    title: String(localized: "chrome.contextMenu.insertInlineImage", defaultValue: "Insert Image (Plain Text)…", table: "Chrome"),
+                    action: #selector(DocumentViewController.insertPlainTextImage(_:)),
+                    keyEquivalent: ""
+                )
+                insertImageItem.target = documentViewController
+                insertImageItem.isEnabled = self.isEditable
+                menu.addItem(insertImageItem)
             }
             
             menu.addItem(.separator())
@@ -990,7 +1091,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                                                  defaultValue: "Paste", table: "Chrome"),
                                    action: #selector(paste(_:)), keyEquivalent: "v")
         pasteItem.keyEquivalentModifierMask = .command
-        pasteItem.isEnabled = NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil)
+        pasteItem.isEnabled = NSPasteboard.general.canReadObject(forClasses: [NSString.self, NSImage.self], options: nil)
         menu.addItem(pasteItem)
         
         let selectAllItem = NSMenuItem(title: String(localized: "chrome.contextMenu.selectAll",
@@ -1229,11 +1330,76 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.centerScanRect(rect).intersection(dirtyRect).fill()
             NSGraphicsContext.restoreGraphicsState()
         }
+        
+        // Draw Plain Text inline image cards below lines containing `⟦🖼 ...⟧` tokens
+        if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true {
+            self.drawPlainTextInlineImages(in: dirtyRect)
+        }
+    }
+    
+    
+    /// Renders inline image preview cards inside Plain Text documents for `⟦🖼 filename⟧` tokens.
+    private func drawPlainTextInlineImages(in dirtyRect: NSRect) {
+        
+        guard
+            let layoutManager = self.layoutManager as? LayoutManager,
+            let textContainer = self.textContainer,
+            let visibleCharRange = self.range(for: dirtyRect, withoutAdditionalLayout: true)
+        else { return }
+        
+        let nsString = self.string as NSString
+        let expandedRange = nsString.lineRange(for: visibleCharRange)
+        let tokens = PlainTextInlineImageStore.shared.findTokens(in: nsString, range: expandedRange)
+        guard !tokens.isEmpty else { return }
+        
+        let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
+        let singleLineHeight = layoutManager.lineHeight
+        
+        for token in tokens {
+            guard let image = PlainTextInlineImageStore.shared.image(for: token.identifier, documentURL: docURL) else { continue }
+            
+            let glyphIndex = layoutManager.glyphIndexForCharacter(at: token.range.location)
+            guard layoutManager.isValidGlyphIndex(glyphIndex) else { continue }
+            
+            let fragmentRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
+            let tokenBounding = layoutManager.boundingRect(
+                forGlyphRange: layoutManager.glyphRange(forCharacterRange: token.range, actualCharacterRange: nil),
+                in: textContainer
+            )
+            
+            let cardTopY = fragmentRect.minY + self.textContainerOrigin.y + singleLineHeight + 4
+            let cardX = max(self.textContainerOrigin.x + 8, tokenBounding.minX + self.textContainerOrigin.x)
+            let maxCardHeight: CGFloat = 136
+            let maxCardWidth: CGFloat = min(360, max(160, self.bounds.width - cardX - 24))
+            
+            let imgSize = image.size
+            guard imgSize.width > 0, imgSize.height > 0 else { continue }
+            let scale = min(maxCardWidth / imgSize.width, maxCardHeight / imgSize.height, 1.0)
+            let drawWidth = max(48, round(imgSize.width * scale))
+            let drawHeight = max(36, round(imgSize.height * scale))
+            
+            let cardRect = NSRect(x: cardX, y: cardTopY, width: drawWidth + 12, height: drawHeight + 12)
+            guard cardRect.intersects(dirtyRect) else { continue }
+            
+            NSGraphicsContext.saveGraphicsState()
+            let cardPath = NSBezierPath(roundedRect: cardRect, xRadius: 8, yRadius: 8)
+            NSColor.controlBackgroundColor.withAlphaComponent(0.92).setFill()
+            cardPath.fill()
+            NSColor.separatorColor.setStroke()
+            cardPath.lineWidth = 1
+            cardPath.stroke()
+            
+            let imageRect = cardRect.insetBy(dx: 6, dy: 6)
+            let clipPath = NSBezierPath(roundedRect: imageRect, xRadius: 5, yRadius: 5)
+            clipPath.addClip()
+            image.draw(in: imageRect, from: .zero, operation: .sourceOver, fraction: 1.0, respectFlipped: true, hints: nil)
+            NSGraphicsContext.restoreGraphicsState()
+        }
     }
     
     
     /// The rectangle of the character at the given location, used for the Vim block cursor.
-    private func vimCursorRect(at location: Int) -> NSRect? {
+    func vimCursorRect(at location: Int) -> NSRect? {
         
         guard let layoutManager, let textContainer else { return nil }
         let string = self.string as NSString

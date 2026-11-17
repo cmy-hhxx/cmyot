@@ -279,7 +279,7 @@ struct AIEndpointEditorView: View {
             
             self.draft.endpoint = provider.endpoint
             self.draft.baseURL = (provider.defaultBaseURL == provider.endpoint.defaultBaseURL) ? "" : provider.defaultBaseURL
-            self.draft.model = ""
+            self.draft.model = provider.defaultModel
             self.models = []
             self.fetchError = nil
             self.testMessage = nil

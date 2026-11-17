@@ -42,6 +42,14 @@ import URLUtils
 extension NSTextView: EditorCounter.Source { }
 
 
+/// An attribute placed on user-painted text highlights so `NSTextStorage` keeps their ranges
+/// anchored across edits, undo/redo, IME composition, and paste.
+extension NSAttributedString.Key {
+    
+    static let cotTextHighlight = NSAttributedString.Key("local.cmy.CotEditor.TextHighlight")
+}
+
+
 @Observable final class Document: DataDocument, AdditionalDocumentPreparing, EncodingChanging {
     
     // MARK: Notification Messages
@@ -115,10 +123,14 @@ extension NSTextView: EditorCounter.Source { }
     
     private var urlDetector: URLDetector?
     
+    /// Unique persistent identifier for syncing this document into `CotLocalDatabase`.
+    let databaseDocumentID = UUID().uuidString
+    
     /// Highlights painted on this document, kept in a sidecar file so the document
     /// itself stays plain text.
     var textHighlights: [TextHighlight] = []
     var highlightSaveTask: Task<Void, Never>?
+    var databaseSyncTask: Task<Void, Never>?
     
     private var syntaxUpdateObserver: AnyCancellable?
     private var textStorageObserver: AnyCancellable?

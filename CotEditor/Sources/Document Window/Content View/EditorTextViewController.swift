@@ -294,6 +294,14 @@ final class EditorTextViewController: NSViewController, NSServicesMenuRequestor,
     }
     
     
+    func textView(_ textView: NSTextView, shouldChangeTypingAttributes oldTypingAttributes: [String: Any] = [:], toAttributes newTypingAttributes: [NSAttributedString.Key: Any] = [:]) -> [NSAttributedString.Key: Any] {
+        
+        var attributes = newTypingAttributes
+        attributes.removeValue(forKey: .cotTextHighlight)
+        return attributes
+    }
+    
+    
     func textView(_ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
         
         // add "Inspect Character" menu item if single character is selected
@@ -444,6 +452,13 @@ final class EditorTextViewController: NSViewController, NSServicesMenuRequestor,
         }
         self.textView.quoteDelimiters = syntax.stringDelimiters + syntax.characterDelimiters
         self.textView.syntaxCompletionWords = syntax.completionWords
+        
+        let isPlainText = (self.document.syntaxName == SyntaxName.none || self.document.syntaxName == "Plain Text")
+        let inlineImagesPref = UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+        (self.textView.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages = isPlainText && inlineImagesPref
+        self.textView.needsDisplay = true
     }
     
     
@@ -549,9 +564,24 @@ extension EditorTextViewController: EditorTextView.Delegate {
         
         guard !fileDropItems.isEmpty else { return false }
         
+        let isPlainText = (self.document.syntaxName == SyntaxName.none || self.document.syntaxName == "Plain Text")
+        let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"]
+        
         let replacementString = urls.reduce(into: "") { string, url in
             if url.pathExtension == TextClipping.pathExtension, let textClipping = try? TextClipping(contentsOf: url) {
                 string += textClipping.string
+                return
+            }
+            
+            // In Plain Text mode, embed dropped images seamlessly as inline image tokens
+            if isPlainText,
+               imageExtensions.contains(url.pathExtension.lowercased()),
+               let stored = PlainTextInlineImageStore.shared.storeImageFile(at: url, for: self.document.fileURL)
+            {
+                if !string.isEmpty {
+                    string += textView.lineEnding.string
+                }
+                string += stored.token
                 return
             }
             

@@ -97,6 +97,38 @@
         }
       }
     },
+    "chrome.contextMenu.alignTable" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Align Markdown Table"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一键对齐表格"
+          }
+        }
+      }
+    },
+    "chrome.contextMenu.insertInlineImage" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Insert Image (Plain Text)…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "嵌入图片（纯文本卡片）…"
+          }
+        }
+      }
+    },
     "chrome.contextMenu.copy" : {
       "localizations" : {
         "en" : {

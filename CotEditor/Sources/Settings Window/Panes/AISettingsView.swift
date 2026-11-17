@@ -39,7 +39,7 @@ struct AISettingsView: View {
     
     // MARK: Private Properties
     
-    private static let listHeight: CGFloat = 240
+    private static let listHeight: CGFloat = 170
     
     @State private var profiles: [AIEndpointProfile] = []
     @State private var activeID: UUID?
@@ -47,12 +47,21 @@ struct AISettingsView: View {
     @State private var pendingDeletion: AIEndpointProfile?
     @State private var status: [UUID: EndpointStatus] = [:]
     
+    @State private var personaText: String = ""
+    @State private var selectedStageAction: AIAction = .weeklyReport
+    @State private var stagePromptText: String = ""
+    @State private var typewriterEnabled: Bool = false
+    @State private var vimCursorTrailEnabled: Bool = true
+    @State private var plainTextImagesEnabled: Bool = true
+    @State private var dbStatusMessage: String?
+    @State private var isShowingStoredDocs = false
+    
     
     // MARK: View Methods
     
     var body: some View {
         
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             if self.profiles.isEmpty {
                 self.emptyState
             } else {
@@ -90,6 +99,10 @@ struct AISettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            
+            Divider()
+            
+            self.databaseAndPersonaSection
         }
         .frame(width: 620)
         .scenePadding()
@@ -98,6 +111,9 @@ struct AISettingsView: View {
             AIEndpointEditorView(profile: target.profile, apiKey: target.apiKey, isNew: target.isNew) { profile, apiKey in
                 self.save(profile, apiKey: apiKey)
             }
+        }
+        .sheet(isPresented: self.$isShowingStoredDocs) {
+            StoredDocumentsSheetView()
         }
         .alert(Text("ai.settings.endpoint.delete.confirm", tableName: "AI"),
                isPresented: self.isDeleteAlertPresented) {
@@ -112,6 +128,125 @@ struct AISettingsView: View {
             }
         } message: {
             Text("ai.settings.endpoint.delete.caption", tableName: "AI")
+        }
+    }
+    
+    
+    // MARK: Database, Persona & Stage Prompts Section
+    
+    private var databaseAndPersonaSection: some View {
+        
+        VStack(alignment: .leading, spacing: 10) {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 8) {
+                GridRow {
+                    Text("AI Persona:")
+                        .gridColumnAlignment(.trailing)
+                        .frame(minWidth: 90, alignment: .trailing)
+                    
+                    TextField("自定义 AI 角色人设（如：严谨资深架构师 / 简练周报秘书）", text: self.$personaText)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: self.personaText) { _, newValue in
+                            CotLocalDatabase.shared.aiPersona = newValue
+                        }
+                }
+                
+                GridRow {
+                    Text("阶段提示词:")
+                        .gridColumnAlignment(.trailing)
+                        .frame(minWidth: 90, alignment: .trailing)
+                    
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Picker("", selection: self.$selectedStageAction) {
+                                ForEach(AIAction.allCases, id: \.self) { action in
+                                    Text(action.title).tag(action)
+                                }
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                            .onChange(of: self.selectedStageAction) { _, newAction in
+                                self.loadStagePrompt(for: newAction)
+                            }
+                            
+                            Button("恢复默认") {
+                                let defaultPrompt = self.selectedStageAction.defaultSystemPrompt
+                                self.stagePromptText = defaultPrompt
+                                CotLocalDatabase.shared.set(defaultPrompt, forKey: self.selectedStageAction.databaseConfigKey)
+                            }
+                            .controlSize(.small)
+                            
+                            Spacer()
+                        }
+                        
+                        TextEditor(text: self.$stagePromptText)
+                            .font(.system(size: 11, design: .monospaced))
+                            .frame(height: 68)
+                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.25), lineWidth: 1))
+                            .onChange(of: self.stagePromptText) { _, newValue in
+                                CotLocalDatabase.shared.set(newValue, forKey: self.selectedStageAction.databaseConfigKey)
+                            }
+                    }
+                }
+                
+                GridRow {
+                    Text("趣味与扩展:")
+                        .gridColumnAlignment(.trailing)
+                        .frame(minWidth: 90, alignment: .trailing)
+                    
+                    HStack(spacing: 16) {
+                        Toggle("打字机效果 (音效+粒子)", isOn: self.$typewriterEnabled)
+                            .onChange(of: self.typewriterEnabled) { _, val in
+                                CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
+                                UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
+                            }
+                        Toggle("Vim 炫酷光标拖尾", isOn: self.$vimCursorTrailEnabled)
+                            .onChange(of: self.vimCursorTrailEnabled) { _, val in
+                                CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
+                                UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
+                            }
+                        Toggle("纯文本内嵌图片预览", isOn: self.$plainTextImagesEnabled)
+                            .onChange(of: self.plainTextImagesEnabled) { _, val in
+                                CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+                                UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+                            }
+                    }
+                    .controlSize(.small)
+                }
+                
+                GridRow {
+                    Text("本地数据库:")
+                        .gridColumnAlignment(.trailing)
+                        .frame(minWidth: 90, alignment: .trailing)
+                    
+                    HStack(spacing: 8) {
+                        Button {
+                            self.isShowingStoredDocs = true
+                        } label: {
+                            Label("文档与配置库 (\(CotLocalDatabase.shared.documents.count))", systemImage: "cylinder.split.1x2")
+                        }
+                        
+                        Button {
+                            self.exportLocalDatabase()
+                        } label: {
+                            Label("导出 DB…", systemImage: "square.and.arrow.up")
+                        }
+                        
+                        Button {
+                            self.importLocalDatabase()
+                        } label: {
+                            Label("导入 DB…", systemImage: "square.and.arrow.down")
+                        }
+                        
+                        if let dbStatusMessage {
+                            Text(dbStatusMessage)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .controlSize(.small)
+                }
+            }
         }
     }
     
@@ -172,6 +307,58 @@ struct AISettingsView: View {
         self.activeID = activeID
         if let activeID, AIEndpointStore.activeID != activeID {
             AIEndpointStore.activeID = activeID
+        }
+        
+        let db = CotLocalDatabase.shared
+        self.personaText = db.aiPersona
+        self.loadStagePrompt(for: self.selectedStageAction)
+        self.typewriterEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled, default: false)
+        self.vimCursorTrailEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled, default: true)
+        self.plainTextImagesEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled, default: true)
+    }
+    
+    
+    private func loadStagePrompt(for action: AIAction) {
+        
+        self.stagePromptText = CotLocalDatabase.shared.customStagePrompt(forKey: action.databaseConfigKey)
+            ?? action.defaultSystemPrompt
+    }
+    
+    
+    private func exportLocalDatabase() {
+        
+        let savePanel = NSSavePanel()
+        savePanel.nameFieldStringValue = "cot-backup.sqlite3"
+        savePanel.canCreateDirectories = true
+        savePanel.begin { response in
+            guard response == .OK, let url = savePanel.url else { return }
+            Task { @MainActor in
+                do {
+                    try CotLocalDatabase.shared.exportDatabase(to: url)
+                    self.dbStatusMessage = "✓ 已导出到 \(url.lastPathComponent)"
+                } catch {
+                    self.dbStatusMessage = "导出失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    
+    private func importLocalDatabase() {
+        
+        let openPanel = NSOpenPanel()
+        openPanel.allowsMultipleSelection = false
+        openPanel.begin { response in
+            guard response == .OK, let url = openPanel.url else { return }
+            Task { @MainActor in
+                do {
+                    try CotLocalDatabase.shared.importDatabase(from: url)
+                    self.reload()
+                    self.dbStatusMessage = "✓ 已从 \(url.lastPathComponent) 同步配置与文档"
+                } catch {
+                    self.dbStatusMessage = "导入失败：\(error.localizedDescription)"
+                }
+            }
         }
     }
     
@@ -372,6 +559,118 @@ private struct AIEndpointRow: View {
             case .none:
                 EmptyView()
         }
+    }
+}
+
+
+// MARK: - Stored Documents & Custom Config Sheet
+
+private struct StoredDocumentsSheetView: View {
+    
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedTab = 0
+    @State private var newConfigKey = ""
+    @State private var newConfigValue = ""
+    
+    var body: some View {
+        
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("本地 SQLite 数据库管理")
+                    .font(.headline)
+                Spacer()
+                Picker("", selection: self.$selectedTab) {
+                    Text("已存文档 (\(CotLocalDatabase.shared.documents.count))").tag(0)
+                    Text("键值配置接口 (\(CotLocalDatabase.shared.configEntries.count))").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 280)
+            }
+            
+            if self.selectedTab == 0 {
+                List {
+                    ForEach(CotLocalDatabase.shared.documents) { record in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(record.title)
+                                    .fontWeight(.medium)
+                                Text("\(record.syntax) · \(record.content.count) 字 · \(record.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("打开为新标签") {
+                                _ = try? (NSDocumentController.shared as? DocumentController)?
+                                    .openUntitledDocument(content: record.content, title: record.title, display: true)
+                                self.dismiss()
+                            }
+                            .controlSize(.small)
+                            
+                            Button(role: .destructive) {
+                                CotLocalDatabase.shared.deleteDocument(id: record.id)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+                .frame(height: 280)
+            } else {
+                List {
+                    ForEach(CotLocalDatabase.shared.configEntries) { entry in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(entry.key)
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .frame(width: 180, alignment: .leading)
+                            Text(entry.value)
+                                .font(.system(size: 11, design: .monospaced))
+                                .lineLimit(2)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button(role: .destructive) {
+                                CotLocalDatabase.shared.removeConfig(forKey: entry.key)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+                .frame(height: 240)
+                
+                HStack(spacing: 8) {
+                    TextField("配置 Key (如 custom.signature)", text: self.$newConfigKey)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 190)
+                    TextField("配置 Value", text: self.$newConfigValue)
+                        .textFieldStyle(.roundedBorder)
+                    Button("写入 DB") {
+                        let key = self.newConfigKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !key.isEmpty else { return }
+                        CotLocalDatabase.shared.set(self.newConfigValue, forKey: key)
+                        self.newConfigKey = ""
+                        self.newConfigValue = ""
+                    }
+                    .disabled(self.newConfigKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            
+            HStack {
+                Text(CotLocalDatabase.shared.databaseURL.path)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button("完成") {
+                    self.dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 600)
     }
 }
 

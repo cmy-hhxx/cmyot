@@ -98,6 +98,17 @@ enum AIAnswerFormatter {
                 continue
             }
             
+            if trimmed.contains("|"), index + 1 < lines.count, lines[index + 1].contains("|") {
+                var tableLines: [String] = []
+                while index < lines.count, lines[index].trimmingCharacters(in: .whitespaces).contains("|") {
+                    tableLines.append(lines[index])
+                    index += 1
+                }
+                let aligned = MarkdownTableFormatter.formatTables(in: tableLines.joined(separator: "\n"))
+                output.append(self.codeBlock(aligned))
+                continue
+            }
+            
             var paragraph = [trimmed]
             index += 1
             while index < lines.count, !self.startsBlock(lines[index]) {

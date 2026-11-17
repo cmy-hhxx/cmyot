@@ -74,6 +74,7 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
     var showsIndentGuides = false  { didSet { self.invalidateDisplay(forCharacterRange: self.attributedString().range) } }
     var tabWidth = 0
     var lineHeightMultiple: CGFloat = 1.0
+    var rendersPlainTextInlineImages = false  { didSet { self.invalidateLayout(forCharacterRange: self.attributedString().range, actualCharacterRange: nil) } }
     
     
     // MARK: Private Properties
@@ -243,7 +244,7 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
 
 extension LayoutManager: NSLayoutManagerDelegate {
     
-    /// Adjusts line height to be all the same.
+    /// Adjusts line height to be all the same (or taller when a Plain Text inline image token sits on the line).
     func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>, lineFragmentUsedRect: UnsafeMutablePointer<NSRect>, baselineOffset: UnsafeMutablePointer<CGFloat>, in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
         
         // avoid inconsistent line height by a composite font
@@ -251,10 +252,23 @@ extension LayoutManager: NSLayoutManagerDelegate {
         //    but then, the drawing won't be update properly when the font or line height is changed.
         // -> NSParagraphStyle's `.lineHeightMultiple` can also control the line height,
         //    but it causes an issue when the first character of the string uses a fallback font.
-        lineFragmentRect.pointee.size.height = self.lineHeight
-        lineFragmentUsedRect.pointee.size.height = self.lineHeight
+        var extraImageHeight: CGFloat = 0
+        if self.rendersPlainTextInlineImages, textContainer.layoutOrientation == .horizontal {
+            let charRange = self.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+            let string = self.attributedString().string as NSString
+            let safeRange = NSIntersectionRange(charRange, NSRange(location: 0, length: string.length))
+            if safeRange.length > 0 {
+                let lineSubstring = string.substring(with: safeRange)
+                if lineSubstring.contains("⟦🖼"), lineSubstring.contains("⟧") {
+                    extraImageHeight = 148
+                }
+            }
+        }
         
-        // vertically center the glyphs in the line fragment
+        lineFragmentRect.pointee.size.height = self.lineHeight + extraImageHeight
+        lineFragmentUsedRect.pointee.size.height = self.lineHeight + extraImageHeight
+        
+        // vertically center the glyphs in the top text line of the fragment
         baselineOffset.pointee = self.baselineOffset(for: textContainer.layoutOrientation)
         
         return true

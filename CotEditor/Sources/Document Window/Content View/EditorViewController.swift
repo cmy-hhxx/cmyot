@@ -583,6 +583,13 @@ final class EditorViewController: NSSplitViewController {
     }
     
     
+    /// Pins or unpins the given tab during session restoration.
+    func togglePinForRestoration(of tab: PaneTab) {
+        
+        self.togglePin(of: tab)
+    }
+    
+    
     /// Pins or unpins the given tab.
     ///
     /// Pinning just marks the tab and moves it to the front of the bar; the tab keeps its

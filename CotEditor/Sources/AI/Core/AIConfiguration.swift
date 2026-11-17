@@ -36,6 +36,7 @@ nonisolated struct AIConfiguration: Sendable {
     var model: String
     var apiKey: String
     var temperature: Double?
+    var reasoningEffort: String? = "low"
     
     
     // MARK: Lifecycle

@@ -24,11 +24,36 @@ enum GeneratedDocumentName {
     
     // MARK: Private Properties
     
-    private static let modifiers: [String] = [
+    private static let recentHistoryKey = "GeneratedDocumentNameRecentHistory"
+    private static let maxRecentHistory = 300
+    
+    private static let moods: [String] = [
         "打盹的", "加班的", "会飞的", "摸鱼的", "偷偷发光的", "假装严肃的",
         "刚睡醒的", "值夜班的", "走神的", "蹦蹦跳跳的", "佛系的", "秃头的",
         "迷路的", "会写诗的", "打嗝的", "藏在抽屉里的", "戴墨镜的", "慢半拍的",
-        "半夜emo的", "爱吃香菜的", "不睡觉的", "会讲冷笑话的",
+        "半夜emo的", "爱吃香菜的", "不睡觉的", "会讲冷笑话的", "正在充电的", "穿格子衫的",
+        "想休假的", "喝冰美式的", "在天台吹风的", "倒立洗头的", "忘记带钥匙的", "数星星的",
+        "追赶落日的", "揣着明白装糊涂的", "在云端散步的", "刚理完发的", "泡枸杞的", "翘二郎腿的",
+        "听爵士乐的", "写不出周报的", "试图减肥的", "满脑子问号的", "刚中五块钱的", "踩着滑板的",
+        "躲雨的", "晒太阳的", "吹泡泡的", "在宇宙漂流的", "偷偷记笔记的", "一本正经的",
+        "灵魂出窍的", "假装在开会的", "找不到的", "会后空翻的", "爱吃宵夜的", "不按套路出牌的",
+        "带着小板凳的", "顺路买菜的", "在地铁看书的", "刚充完会员的", "等待周末的", "满血复活的",
+    ]
+    
+    private static let scenes: [String] = [
+        "凌晨三点", "咖啡馆角落", "天台边缘", "末班地铁上", "会议室后排", "老式收音机里",
+        "秋名山顶", "便利店门口", "工位底下", "旧书摊旁", "太平洋底", "平行宇宙里",
+        "键盘缝隙中", "阳台花盆旁", "南极冰川上", "下午茶时间", "周日傍晚", "梅雨季节",
+        "太空舱里", "街角面包店", "落叶堆里", "服务器机房", "晚高峰路口", "图书馆三楼",
+        "深海潜艇里", "旋转木马上", "云层上方", "篝火晚会旁", "自动售货机前", "复古列车上",
+    ]
+    
+    private static let actions: [String] = [
+        "思考人生的", "偷吃薯片的", "重构代码的", "练习太空步的", "等待投喂的", "研究量子力学的",
+        "画圈圈的", "弹尤克里里的", "背单词的", "数羊毛的", "织毛衣的", "看夕阳的",
+        "找眼镜的", "调参数的", "修bug的", "写散文的", "煮螺蛳粉的", "剥橘子的",
+        "算命的", "看云的", "记账的", "发呆的", "捉迷藏的", "熬夜看球的",
+        "拍月亮的", "攒机票的", "听播客的", "拼乐高的", "吹口哨的", "盘核桃的",
     ]
     
     private static let nouns: [String] = [
@@ -37,40 +62,93 @@ enum GeneratedDocumentName {
         "泡芙", "榛果", "台灯", "拖鞋", "云朵", "螺蛳粉",
         "熊猫", "布丁", "键盘", "萤火虫", "充电宝", "睡袋",
         "红薯", "电风扇", "闹钟", "糖果", "南瓜", "章鱼",
+        "卡皮巴拉", "小浣熊", "树懒", "猫头鹰", "海豹", "刺猬",
+        "袋鼠", "柯基", "土拨鼠", "变色龙", "寄居蟹", "水母",
+        "北极熊", "松鼠", "羊驼", "乌鸦", "信天翁", "独角兽",
+        "菠萝包", "烤冷面", "冰糖葫芦", "鸡蛋仔", "铜锣烧", "小笼包",
+        "抹茶拿铁", "冻柠茶", "可颂", "年糕", "煎饼果子", "烤红薯",
+        "留声机", "望远镜", "八音盒", "万花筒", "手电筒", "指南针",
+        "纸飞机", "竹蜻蜓", "玻璃弹珠", "磁带", "胶片机", "打字机",
+        "宇航员", "外星人", "机器人", "魔法师", "炼金术士", "旅行家",
     ]
     
     
     // MARK: Public Methods
     
-    /// Returns a name that none of the given documents uses yet.
+    /// Returns a name that none of the given documents or recent history uses yet.
     ///
     /// - Parameter usedNames: The display names of the documents already open.
-    /// - Returns: A made-up name, e.g. `打盹的橘猫`.
+    /// - Returns: A made-up name, e.g. `打盹的橘猫` or `凌晨三点思考人生的卡皮巴拉`.
     static func next(avoiding usedNames: [String]) -> String {
         
-        let used = Set(usedNames)
-        let combinations = self.modifiers.count * self.nouns.count
+        let recent = UserDefaults.standard.stringArray(forKey: self.recentHistoryKey) ?? []
+        let used = Set(usedNames).union(recent)
         
-        for _ in 0..<20 where combinations > used.count {
+        for _ in 0..<60 {
             let name = self.randomName()
             
             if !used.contains(name) {
+                self.record(name, in: recent)
                 return name
             }
         }
         
-        return self.randomName() + " " + String(used.count + 1)
+        let openOnly = Set(usedNames)
+        for _ in 0..<40 {
+            let name = self.randomName()
+            if !openOnly.contains(name) {
+                self.record(name, in: recent)
+                return name
+            }
+        }
+        
+        let fallback = self.randomName() + " " + String(usedNames.count + 1)
+        self.record(fallback, in: recent)
+        return fallback
     }
     
     
     // MARK: Private Methods
     
-    /// Returns a random combination of a modifier and a noun.
+    /// Returns a random combination across several playful templates.
     private static func randomName() -> String {
         
-        let modifier = self.modifiers.randomElement() ?? ""
-        let noun = self.nouns.randomElement() ?? ""
+        let roll = Int.random(in: 0..<100)
+        let noun = self.nouns.randomElement() ?? "橘猫"
         
-        return modifier + noun
+        if roll < 45 {
+            // Classic: 摸鱼的卡皮巴拉
+            let mood = self.moods.randomElement() ?? ""
+            return mood + noun
+        } else if roll < 75 {
+            // Scene + Action + Noun: 凌晨三点思考人生的卡皮巴拉
+            let scene = self.scenes.randomElement() ?? ""
+            let action = self.actions.randomElement() ?? ""
+            return scene + action + noun
+        } else if roll < 90 {
+            // Scene + Mood + Noun: 便利店门口刚睡醒的企鹅
+            let scene = self.scenes.randomElement() ?? ""
+            let mood = self.moods.randomElement() ?? ""
+            return scene + mood + noun
+        } else {
+            // Mood + Action + Noun: 戴墨镜的弹尤克里里的树懒
+            let mood = self.moods.randomElement() ?? ""
+            let action = self.actions.randomElement() ?? ""
+            let cleanMood = mood.hasSuffix("的") ? String(mood.dropLast()) : mood
+            return cleanMood + "又" + action + noun
+        }
+    }
+    
+    
+    /// Remembers a generated name so consecutive new documents do not repeat across sessions.
+    private static func record(_ name: String, in currentHistory: [String]) {
+        
+        var updated = currentHistory
+        updated.removeAll { $0 == name }
+        updated.append(name)
+        if updated.count > self.maxRecentHistory {
+            updated.removeFirst(updated.count - self.maxRecentHistory)
+        }
+        UserDefaults.standard.set(updated, forKey: self.recentHistoryKey)
     }
 }

@@ -18,12 +18,14 @@ enum VimMode: Equatable {
     
     case normal
     case insert
+    case replace
     case visual
     
     var label: String {
         switch self {
             case .normal: "NORMAL"
             case .insert: "INSERT"
+            case .replace: "REPLACE"
             case .visual: "VISUAL"
         }
     }
@@ -58,7 +60,16 @@ final class VimEngine {
         case bigWordForward, bigWordBackward, bigWordEnd
         case lineStart, firstNonBlank, lineEnd
         case documentStart, documentEnd
+        case paragraphBackward, paragraphForward
         case lineDown, lineUp  // linewise counterparts of j / k
+    }
+    
+    private enum CaseTransformMode {
+        case toggle, lower, upper
+    }
+    
+    private enum ScreenLinePosition {
+        case top, middle, bottom
     }
     
     private enum CharacterClass {
@@ -83,8 +94,12 @@ final class VimEngine {
     private var pendingFindKind: FindKind?
     private var lastFind: (character: Character, kind: FindKind)?
     private var pendingTextObject: (operator: OperatorKind, inner: Bool)?
+    private var pendingReplaceChar = false
+    private var pendingMarkAction: Character?  // 'm', "'", or "`"
+    private var marks: [Character: Int] = [:]
     private var visualLinewise = false
     private var lastChange: (op: OperatorKind, motion: Motion, count: Int)?
+    private var lastReplaceChar: (character: Character, count: Int)?
     private var lastStatus: String?
     
     init(textView: NSTextView) {
@@ -130,6 +145,16 @@ final class VimEngine {
                 }
                 return false  // normal typing, IME and shortcuts keep working
                 
+            case .replace:
+                if self.isEscape(event) || self.isControlC(event) {
+                    if textView.hasMarkedText() {
+                        textView.unmarkText()
+                    }
+                    self.enter(mode: .normal)
+                    return true
+                }
+                return self.handleReplaceModeKey(event)
+                
             case .normal, .visual:
                 // Let the IME compose when it is active (Chinese input).
                 if textView.hasMarkedText() { return false }
@@ -153,7 +178,7 @@ final class VimEngine {
             return true
         }
         
-        // Control combinations: only ⌃R (redo) is claimed.
+        // Control combinations: ⌃R (redo), ⌃D / ⌃U (half-page), ⌃F / ⌃B (full-page).
         if flags.contains(.control) {
             switch event.charactersIgnoringModifiers?.lowercased() {
                 case "r":
@@ -164,6 +189,12 @@ final class VimEngine {
                     return true
                 case "u":
                     self.moveHalfPage(down: false)
+                    return true
+                case "f":
+                    self.moveFullPage(down: true)
+                    return true
+                case "b":
+                    self.moveFullPage(down: false)
                     return true
                 default:
                     return false
@@ -199,6 +230,37 @@ final class VimEngine {
         
         let state = VimState.shared
         guard let textView = self.textView else { return false }
+        
+        // Resolve a pending `r<char>` single-character replacement (in normal or visual mode).
+        if self.pendingReplaceChar {
+            self.pendingReplaceChar = false
+            if state.mode == .visual {
+                self.replaceVisualSelection(with: character)
+            } else {
+                let count = self.takeCount()
+                self.replaceCharactersUnderCursor(with: character, count: count)
+                self.lastReplaceChar = (character, count)
+                self.lastChange = nil
+            }
+            return true
+        }
+        
+        // Resolve a pending mark operation (`ma`, `'a`, `` `a ``).
+        if let markAction = self.pendingMarkAction {
+            self.pendingMarkAction = nil
+            if markAction == "m" {
+                self.marks[character] = textView.selectedRange().location
+            } else if let target = self.marks[character] {
+                if markAction == "'" {
+                    let nsString = textView.string as NSString
+                    let lineLoc = self.firstNonBlank(in: self.lineRange(at: target), string: nsString)
+                    self.setCursor(lineLoc)
+                } else {
+                    self.setCursor(target)
+                }
+            }
+            return true
+        }
         
         // Digit prefixes build up the count ("0" alone is a motion).
         if let digit = character.wholeNumberValue, digit >= 0, digit <= 9,
@@ -246,10 +308,34 @@ final class VimEngine {
             return true
         }
         
-        // Resolve the `g` prefix (`gg`).
+        // Resolve the `g` prefix (`gg`, `ge`, `gE`, `g_`, `gi`).
         if self.pendingPrefix == "g" {
             self.pendingPrefix = nil
-            if character == "g" { self.move(.documentStart) }
+            switch character {
+                case "g": self.move(.documentStart)
+                case "e": self.moveBackwardWordEnd(big: false)
+                case "E": self.moveBackwardWordEnd(big: true)
+                case "_": self.moveLastNonBlankOfLine()
+                case "i": self.enter(mode: .insert)
+                default: break
+            }
+            return true
+        }
+        
+        // Resolve `z` prefix (`zz`, `zt`, `zb`) and `Z` prefix (`ZZ`, `ZQ`).
+        if self.pendingPrefix == "z" {
+            self.pendingPrefix = nil
+            self.scrollCursorLine(mode: character)
+            return true
+        }
+        if self.pendingPrefix == "Z" {
+            self.pendingPrefix = nil
+            if character == "Z" {
+                self.saveDocument()
+                self.textView?.window?.performClose(nil)
+            } else if character == "Q" {
+                self.textView?.window?.performClose(nil)
+            }
             return true
         }
         
@@ -276,10 +362,25 @@ final class VimEngine {
             case "B": self.move(.bigWordBackward)
             case "E": self.move(.bigWordEnd)
             case "0": self.move(.lineStart)
-            case "^": self.move(.firstNonBlank)
+            case "^", "_": self.move(.firstNonBlank)
             case "$": self.move(.lineEnd)
+            case "+":
+                self.move(.lineDown)
+                self.move(.firstNonBlank)
+            case "-":
+                self.move(.lineUp)
+                self.move(.firstNonBlank)
+            case "{": self.moveParagraph(forward: false)
+            case "}": self.moveParagraph(forward: true)
+            case "H": self.moveToScreenLine(position: .top)
+            case "M": self.moveToScreenLine(position: .middle)
+            case "L": self.moveToScreenLine(position: .bottom)
             case "g": self.pendingPrefix = "g"
+            case "z": self.pendingPrefix = "z"
+            case "Z": self.pendingPrefix = "Z"
             case "G": self.move(.documentEnd)
+            case "m", "'", "`":
+                self.pendingMarkAction = character
                 
             case "f": self.pendingFindKind = .forward
             case "F": self.pendingFindKind = .backward
@@ -298,16 +399,32 @@ final class VimEngine {
             case "#": self.searchWordUnderCursor(forward: false)
             case "%": self.jumpToMatchingBracket()
             case "J": self.joinLines()
+            case "~": self.toggleCaseUnderCursor(count: self.takeCount())
             case ">": self.pendingPrefix = ">"
             case "<": self.pendingPrefix = "<"
             case ".":
-                if let lastChange = self.lastChange {
+                if let lastReplace = self.lastReplaceChar {
+                    self.replaceCharactersUnderCursor(with: lastReplace.character, count: lastReplace.count)
+                } else if let lastChange = self.lastChange {
                     self.count = lastChange.count
                     self.apply(lastChange.op, motion: lastChange.motion)
                 }
                 
+            case "r":
+                self.pendingReplaceChar = true
+                return true
+            case "R":
+                self.enter(mode: .replace)
+                
             case "d", "c", "y":
                 self.pendingOperator = OperatorKind(rawValue: character)
+                
+            case "s":
+                let range = self.characterRange(count: self.takeCount())
+                self.delete(range)
+                self.enter(mode: .insert)
+            case "S":
+                self.substituteWholeLine()
                 
             case "x":
                 let range = self.characterRange(count: self.takeCount())
@@ -327,6 +444,9 @@ final class VimEngine {
                 self.delete(range)
                 self.enter(mode: .insert)
                 
+            case "Y":
+                self.applyLinewiseOperator(.yank)
+                
             case "p":
                 self.paste(after: true)
             case "P":
@@ -334,23 +454,40 @@ final class VimEngine {
                 
             case "u":
                 self.textView?.undoManager?.undo()
+            case "U":
+                self.textView?.undoManager?.undo()
             case "v":
                 let location = textView.selectedRange().location
                 self.visualAnchor = location
+                self.visualLinewise = false
                 VimState.shared.visualActiveLocation = location
+                self.enter(mode: .visual)
+            case "V":
+                let location = textView.selectedRange().location
+                let lineRange = self.lineRange(at: location) ?? NSRange(location: location, length: 0)
+                self.visualAnchor = lineRange.location
+                self.visualLinewise = true
+                VimState.shared.visualActiveLocation = max(lineRange.location, NSMaxRange(lineRange) - 1)
+                textView.setSelectedRange(lineRange)
                 self.enter(mode: .visual)
                 
             case "i":
                 self.enter(mode: .insert)
             case "a":
-                let end = NSMaxRange(textView.selectedRange())
-                self.setCursor(end)
+                let string = textView.string as NSString
+                let loc = textView.selectedRange().location
+                let next = (loc < string.length && string.character(at: loc) != 10) ? loc + 1 : loc
+                self.setCursor(next)
                 self.enter(mode: .insert)
             case "I":
                 self.move(.firstNonBlank)
                 self.enter(mode: .insert)
             case "A":
-                self.move(.lineEnd)
+                let lineRange = self.lineRange(at: textView.selectedRange().location) ?? NSRange(location: 0, length: 0)
+                let string = textView.string as NSString
+                var end = NSMaxRange(lineRange)
+                if end > lineRange.location, string.character(at: end - 1) == 10 { end -= 1 }
+                self.setCursor(end)
                 self.enter(mode: .insert)
             case "o":
                 self.openLine(below: true)
@@ -365,7 +502,7 @@ final class VimEngine {
                 break
         }
         
-        self.count = self.pendingOperator == nil ? nil : self.count
+        self.count = (self.pendingOperator == nil && !self.pendingReplaceChar) ? nil : self.count
         return true
     }
     
@@ -373,6 +510,17 @@ final class VimEngine {
     private func handleVisual(character: Character) -> Bool {
         
         guard let textView else { return false }
+        if let pendingTextObj = self.pendingTextObject {
+            self.pendingTextObject = nil
+            if let range = self.textObjectRange(inner: pendingTextObj.inner, character: character), range.length > 0 {
+                self.visualAnchor = range.location
+                VimState.shared.visualActiveLocation = NSMaxRange(range) - 1
+                textView.setSelectedRange(range)
+                self.refreshCursor()
+            }
+            return true
+        }
+        
         switch character {
             case "h": self.move(.left)
             case "j": self.move(.lineDown)
@@ -381,21 +529,67 @@ final class VimEngine {
             case "w": self.move(.wordForward)
             case "b": self.move(.wordBackward)
             case "e": self.move(.wordEnd)
+            case "W": self.move(.bigWordForward)
+            case "B": self.move(.bigWordBackward)
+            case "E": self.move(.bigWordEnd)
             case "0": self.move(.lineStart)
+            case "^", "_": self.move(.firstNonBlank)
             case "$": self.move(.lineEnd)
-            case "y":
+            case "{": self.move(.paragraphBackward)
+            case "}": self.move(.paragraphForward)
+            case "g": self.pendingPrefix = "g"
+            case "G": self.move(.documentEnd)
+            case "%": self.jumpToMatchingBracket()
+            case "i", "a":
+                self.pendingTextObject = (.yank, character == "i")
+                return true
+            case "o", "O":
+                if let anchor = self.visualAnchor, let active = VimState.shared.visualActiveLocation {
+                    self.visualAnchor = active
+                    VimState.shared.visualActiveLocation = anchor
+                    self.refreshCursor()
+                }
+            case "r":
+                self.pendingReplaceChar = true
+                return true
+            case "~":
+                self.transformVisualCase(mode: .toggle)
+            case "u":
+                self.transformVisualCase(mode: .lower)
+            case "U":
+                self.transformVisualCase(mode: .upper)
+            case ">":
+                self.indentVisualSelection(outdent: false)
+            case "<":
+                self.indentVisualSelection(outdent: true)
+            case "J":
+                self.joinLines()
+                self.endVisual()
+            case "y", "Y":
                 let range = self.visualRange()
                 self.register = (textView.string as NSString).substring(with: range)
-                self.registerIsLinewise = false
+                self.registerIsLinewise = self.visualLinewise
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(self.register, forType: .string)
                 self.endVisual()
-            case "d", "x":
-                self.delete(self.visualRange())
+            case "d", "D", "x", "X":
+                let range = self.visualRange()
+                self.register = (textView.string as NSString).substring(with: range)
+                self.registerIsLinewise = self.visualLinewise
+                self.delete(range)
                 self.endVisual()
-            case "c":
-                self.delete(self.visualRange())
+            case "c", "C", "s", "S":
+                let range = self.visualRange()
+                self.register = (textView.string as NSString).substring(with: range)
+                self.registerIsLinewise = self.visualLinewise
+                self.delete(range)
                 self.endVisual()
                 self.enter(mode: .insert)
-            case "v":
+            case "p", "P":
+                let range = self.visualRange()
+                self.replace(range, with: self.register)
+                self.endVisual()
+            case "v", "V":
                 self.endVisual()
             default:
                 break
@@ -445,7 +639,20 @@ final class VimEngine {
     
     private func execute(command: String) {
         
-        let parts = command.trimmingCharacters(in: .whitespaces).split(separator: " ").map(String.init)
+        let trimmed = command.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        
+        if let lineNumber = Int(trimmed), lineNumber > 0 {
+            self.setCursor(self.lineLocation(number: lineNumber))
+            return
+        }
+        
+        if trimmed.hasPrefix("s/") || trimmed.hasPrefix("%s/") {
+            self.executeSubstitute(command: trimmed)
+            return
+        }
+        
+        let parts = trimmed.split(separator: " ").map(String.init)
         guard let head = parts.first else { return }
         
         switch head {
@@ -460,11 +667,11 @@ final class VimEngine {
                             break
                     }
                 }
-            case "w":
+            case "w", "w!":
                 self.saveDocument()
-            case "q":
+            case "q", "q!":
                 if let window = self.textView?.window { window.performClose(nil) }
-            case "wq":
+            case "wq", "wq!", "x":
                 self.saveDocument()
                 if let window = self.textView?.window { window.performClose(nil) }
             case "noh", "nohlsearch":
@@ -472,6 +679,50 @@ final class VimEngine {
             default:
                 break
         }
+    }
+    
+    
+    /// Executes `:s/pattern/replacement/[g]` or `:%s/pattern/replacement/[g]`.
+    private func executeSubstitute(command: String) {
+        
+        guard let textView else { return }
+        let isGlobalFile = command.hasPrefix("%s/")
+        let body = String(command.dropFirst(isGlobalFile ? 3 : 2))
+        let segments = body.components(separatedBy: "/")
+        guard segments.count >= 2 else { return }
+        
+        let pattern = segments[0]
+        guard !pattern.isEmpty else { return }
+        let replacement = segments[1]
+        let flags = segments.count >= 3 ? segments[2] : ""
+        let replaceAllInLine = flags.contains("g")
+        let caseInsensitive = flags.contains("i")
+        
+        let nsString = textView.string as NSString
+        let targetRange: NSRange
+        if isGlobalFile {
+            targetRange = NSRange(location: 0, length: nsString.length)
+        } else {
+            targetRange = self.lineRange(at: textView.selectedRange().location) ?? NSRange(location: 0, length: 0)
+        }
+        guard targetRange.length > 0 else { return }
+        
+        let subText = nsString.substring(with: targetRange)
+        let updated: String
+        if replaceAllInLine {
+            var options: String.CompareOptions = []
+            if caseInsensitive { options.insert(.caseInsensitive) }
+            updated = subText.replacingOccurrences(of: pattern, with: replacement, options: options)
+        } else {
+            var options: NSString.CompareOptions = []
+            if caseInsensitive { options.insert(.caseInsensitive) }
+            let firstRange = (subText as NSString).range(of: pattern, options: options)
+            guard firstRange.location != NSNotFound else { return }
+            updated = (subText as NSString).replacingCharacters(in: firstRange, with: replacement)
+        }
+        
+        guard updated != subText else { return }
+        self.replace(targetRange, with: updated)
     }
     
     
@@ -513,8 +764,10 @@ final class VimEngine {
             case "B": .bigWordBackward
             case "E": .bigWordEnd
             case "0": .lineStart
-            case "^": .firstNonBlank
+            case "^", "_": .firstNonBlank
             case "$": .lineEnd
+            case "{": .paragraphBackward
+            case "}": .paragraphForward
             case "G": .documentEnd
             default: nil
         }
@@ -563,6 +816,10 @@ final class VimEngine {
             case .lineEnd:
                 let range = self.lineRange(at: location)
                 location = max(range?.location ?? 0, NSMaxRange(range ?? NSRange(location: 0, length: 0)) - 1)
+            case .paragraphBackward:
+                for _ in 0..<count { location = self.paragraphLocation(from: location, forward: false, string: string) }
+            case .paragraphForward:
+                for _ in 0..<count { location = self.paragraphLocation(from: location, forward: true, string: string) }
             case .documentStart:
                 location = count > 1 ? self.lineLocation(number: count) : 0
             case .documentEnd:
@@ -578,11 +835,31 @@ final class VimEngine {
             // Vim's visual selection includes the character under the cursor. Without it
             // the block cursor is drawn one character outside the highlighted range,
             // which reads as a stray highlight below the selection.
-            let lower = min(anchor, location)
-            let upper = min(max(anchor, location) + 1, string.length)
-            textView.setSelectedRange(NSRange(location: lower, length: upper - lower))
+            let oldRect = VimState.shared.visualActiveLocation.flatMap { (textView as? EditorTextView)?.vimCursorRect(at: $0) }
+            let selectionRange: NSRange
+            if self.visualLinewise {
+                let anchorLine = self.lineRange(at: anchor) ?? NSRange(location: anchor, length: 0)
+                let activeLine = self.lineRange(at: location) ?? NSRange(location: location, length: 0)
+                let lower = min(anchorLine.location, activeLine.location)
+                let upper = min(max(NSMaxRange(anchorLine), NSMaxRange(activeLine)), string.length)
+                selectionRange = NSRange(location: lower, length: max(0, upper - lower))
+            } else {
+                let lower = min(anchor, location)
+                let upper = min(max(anchor, location) + 1, string.length)
+                selectionRange = NSRange(location: lower, length: max(0, upper - lower))
+            }
+            textView.setSelectedRange(selectionRange)
             VimState.shared.visualActiveLocation = location
             self.refreshCursor()
+            if let editorTextView = textView as? EditorTextView,
+               let newRect = editorTextView.vimCursorRect(at: location)
+            {
+                editorTextView.funEffects.animateVimCursorTransition(
+                    from: oldRect,
+                    to: newRect,
+                    color: editorTextView.insertionPointColor
+                )
+            }
         } else {
             self.setCursor(location)
         }
@@ -642,6 +919,12 @@ final class VimEngine {
             case .lineEnd:
                 end = NSMaxRange(self.lineRange(at: start) ?? NSRange(location: 0, length: 0))
                 if end > 0, string.character(at: end - 1) == 10 { end -= 1 }
+            case .paragraphBackward:
+                end = start
+                for _ in 0..<count { end = self.paragraphLocation(from: end, forward: false, string: string) }
+            case .paragraphForward:
+                end = start
+                for _ in 0..<count { end = self.paragraphLocation(from: end, forward: true, string: string) }
             case .documentStart:
                 end = 0
                 linewise = true
@@ -667,11 +950,17 @@ final class VimEngine {
         
         switch op {
             case .delete:
+                self.register = string.substring(with: range)
+                self.registerIsLinewise = linewise
                 self.delete(range)
                 self.lastChange = (op, motion, count)
+                self.lastReplaceChar = nil
             case .change:
+                self.register = string.substring(with: range)
+                self.registerIsLinewise = linewise
                 self.delete(range)
                 self.lastChange = (op, motion, count)
+                self.lastReplaceChar = nil
                 self.enter(mode: .insert)
             case .yank:
                 self.register = string.substring(with: range)
@@ -824,6 +1113,8 @@ final class VimEngine {
         switch character {
             case "w", "W":
                 return self.wordTextObject(inner: inner, at: caret, string: string)
+            case "p":
+                return self.paragraphTextObject(inner: inner, at: caret, string: string)
             case "\"", "'", "`":
                 return self.quoteTextObject(quote: character, inner: inner, at: caret, string: string)
             case "(", ")", "b":
@@ -832,9 +1123,37 @@ final class VimEngine {
                 return self.bracketTextObject(open: "[", close: "]", inner: inner, at: caret, string: string)
             case "{", "}", "B":
                 return self.bracketTextObject(open: "{", close: "}", inner: inner, at: caret, string: string)
+            case "<", ">":
+                return self.bracketTextObject(open: "<", close: ">", inner: inner, at: caret, string: string)
             default:
                 return nil
         }
+    }
+    
+    
+    private func paragraphTextObject(inner: Bool, at caret: Int, string: NSString) -> NSRange? {
+        
+        guard string.length > 0 else { return nil }
+        let currentLine = self.lineRange(at: min(caret, string.length - 1)) ?? NSRange(location: 0, length: 0)
+        var start = currentLine.location
+        while start > 0 {
+            let prevLine = self.lineRange(at: start - 1) ?? NSRange(location: 0, length: 0)
+            if self.isBlankLine(prevLine, string: string) { break }
+            start = prevLine.location
+        }
+        
+        var end = NSMaxRange(currentLine)
+        while end < string.length {
+            let nextLine = self.lineRange(at: end) ?? NSRange(location: end, length: 0)
+            if self.isBlankLine(nextLine, string: string) {
+                if !inner {
+                    end = NSMaxRange(nextLine)
+                }
+                break
+            }
+            end = NSMaxRange(nextLine)
+        }
+        return NSRange(location: start, length: max(0, end - start))
     }
     
     
@@ -1048,6 +1367,226 @@ final class VimEngine {
     
     // MARK: Practical extras
     
+    /// Handles keystrokes while in `.replace` (`R`) mode: printable characters overwrite in-place.
+    private func handleReplaceModeKey(_ event: NSEvent) -> Bool {
+        
+        guard let textView else { return false }
+        switch event.keyCode {
+            case 123, 124, 125, 126:  // Arrow keys
+                return false
+            case 51:  // Backspace moves cursor left in Replace mode
+                let current = textView.selectedRange().location
+                if current > 0 {
+                    self.setCursor(current - 1)
+                }
+                return true
+            case 36:  // Return inserts a newline
+                return false
+            default:
+                break
+        }
+        
+        guard let characters = event.characters, !characters.isEmpty else { return false }
+        let nsString = textView.string as NSString
+        var cursor = textView.selectedRange().location
+        
+        for character in characters {
+            let charString = String(character)
+            if cursor < nsString.length, (textView.string as NSString).character(at: cursor) != 10 {
+                self.replace(NSRange(location: cursor, length: 1), with: charString)
+            } else {
+                self.replace(NSRange(location: cursor, length: 0), with: charString)
+            }
+            cursor += (charString as NSString).length
+        }
+        self.setCursor(cursor)
+        return true
+    }
+    
+    
+    /// `r<char>`: replaces `count` characters starting at the cursor on the current line with `character`.
+    private func replaceCharactersUnderCursor(with character: Character, count: Int) {
+        
+        guard let textView else { return }
+        let nsString = textView.string as NSString
+        let cursor = textView.selectedRange().location
+        guard cursor < nsString.length else { return }
+        
+        if character == "\r" || character == "\n" {
+            let replaceLen = min(count, max(1, nsString.length - cursor))
+            self.replace(NSRange(location: cursor, length: replaceLen), with: "\n")
+            let nextLoc = self.firstNonBlank(in: self.lineRange(at: cursor + 1), string: textView.string as NSString)
+            self.setCursor(nextLoc)
+            return
+        }
+        
+        guard let lineRange = self.lineRange(at: cursor) else { return }
+        var lineEnd = NSMaxRange(lineRange)
+        if lineEnd > lineRange.location, nsString.character(at: lineEnd - 1) == 10 {
+            lineEnd -= 1
+        }
+        let available = lineEnd - cursor
+        guard available >= count, count > 0 else { return }
+        
+        let replacement = String(repeating: String(character), count: count)
+        let targetRange = NSRange(location: cursor, length: count)
+        self.replace(targetRange, with: replacement)
+        let finalOffset = cursor + max(0, (replacement as NSString).length - (String(character) as NSString).length)
+        self.setCursor(finalOffset)
+    }
+    
+    
+    /// Visual `r<char>`: replaces every non-newline character in the visual selection with `character`.
+    private func replaceVisualSelection(with character: Character) {
+        
+        guard let textView else { return }
+        let range = self.visualRange()
+        guard range.length > 0 else {
+            self.endVisual()
+            return
+        }
+        let selected = (textView.string as NSString).substring(with: range)
+        let transformed = String(selected.map { existing in
+            (existing == "\n" || existing == "\r") ? existing : character
+        })
+        self.replace(range, with: transformed)
+        self.endVisual()
+        self.setCursor(range.location)
+    }
+    
+    
+    /// `S`: deletes the contents of the current line (preserving indentation) and enters insert mode.
+    private func substituteWholeLine() {
+        
+        guard let textView else { return }
+        let nsString = textView.string as NSString
+        guard let lineRange = self.lineRange(at: textView.selectedRange().location) else {
+            self.enter(mode: .insert)
+            return
+        }
+        let nonBlankStart = self.firstNonBlank(in: lineRange, string: nsString)
+        var lineEnd = NSMaxRange(lineRange)
+        if lineEnd > lineRange.location, nsString.character(at: lineEnd - 1) == 10 {
+            lineEnd -= 1
+        }
+        let targetRange = NSRange(location: nonBlankStart, length: max(0, lineEnd - nonBlankStart))
+        if targetRange.length > 0 {
+            self.register = nsString.substring(with: targetRange)
+            self.registerIsLinewise = false
+            self.delete(targetRange)
+        } else {
+            self.setCursor(nonBlankStart)
+        }
+        self.enter(mode: .insert)
+    }
+    
+    
+    /// `~`: toggles the case of `count` characters starting at the cursor and advances the cursor.
+    private func toggleCaseUnderCursor(count: Int) {
+        
+        guard let textView else { return }
+        let nsString = textView.string as NSString
+        let cursor = textView.selectedRange().location
+        guard cursor < nsString.length else { return }
+        
+        guard let lineRange = self.lineRange(at: cursor) else { return }
+        var lineEnd = NSMaxRange(lineRange)
+        if lineEnd > lineRange.location, nsString.character(at: lineEnd - 1) == 10 {
+            lineEnd -= 1
+        }
+        let length = min(count, max(0, lineEnd - cursor))
+        guard length > 0 else { return }
+        
+        let range = NSRange(location: cursor, length: length)
+        let original = nsString.substring(with: range)
+        let toggled = Self.transformCase(original, mode: .toggle)
+        self.replace(range, with: toggled)
+        let nextCursor = min(max(lineRange.location, lineEnd - 1), cursor + length)
+        self.setCursor(nextCursor)
+    }
+    
+    
+    /// Visual `~`, `u`, `U`: transforms the case of the visual selection.
+    private func transformVisualCase(mode: CaseTransformMode) {
+        
+        guard let textView else { return }
+        let range = self.visualRange()
+        guard range.length > 0 else {
+            self.endVisual()
+            return
+        }
+        let original = (textView.string as NSString).substring(with: range)
+        let transformed = Self.transformCase(original, mode: mode)
+        self.replace(range, with: transformed)
+        self.endVisual()
+        self.setCursor(range.location)
+    }
+    
+    
+    private static func transformCase(_ text: String, mode: CaseTransformMode) -> String {
+        
+        switch mode {
+            case .lower:
+                return text.lowercased()
+            case .upper:
+                return text.uppercased()
+            case .toggle:
+                return String(text.map { char in
+                    let str = String(char)
+                    let upper = str.uppercased()
+                    let lower = str.lowercased()
+                    if str == upper && str != lower {
+                        return Character(lower)
+                    } else if str == lower && str != upper {
+                        return Character(upper)
+                    }
+                    return char
+                })
+        }
+    }
+    
+    
+    /// Visual `>` / `<`: indents or outdents all lines covered by the visual selection.
+    private func indentVisualSelection(outdent: Bool) {
+        
+        guard let textView else { return }
+        let range = self.visualRange()
+        let nsString = textView.string as NSString
+        guard range.length > 0, nsString.length > 0 else {
+            self.endVisual()
+            return
+        }
+        let fullLineRange = nsString.lineRange(for: range)
+        let block = nsString.substring(with: fullLineRange)
+        let lines = block.components(separatedBy: "\n")
+        
+        let transformedLines = lines.enumerated().map { idx, line -> String in
+            if idx == lines.count - 1 && line.isEmpty { return line }
+            if outdent {
+                var dropCount = 0
+                for char in line {
+                    if char == " " && dropCount < 4 {
+                        dropCount += 1
+                    } else if char == "\t" && dropCount == 0 {
+                        dropCount = 1
+                        break
+                    } else {
+                        break
+                    }
+                }
+                return String(line.dropFirst(dropCount))
+            } else {
+                return line.isEmpty ? line : "    " + line
+            }
+        }
+        let replacement = transformedLines.joined(separator: "\n")
+        self.replace(fullLineRange, with: replacement)
+        self.endVisual()
+        let newCaret = self.firstNonBlank(in: self.lineRange(at: fullLineRange.location), string: textView.string as NSString)
+        self.setCursor(newCaret)
+    }
+    
+    
     /// Half-page jump used by ⌃D / ⌃U.
     private func moveHalfPage(down: Bool) {
         
@@ -1061,6 +1600,195 @@ final class VimEngine {
         
         self.setCursor(clamped)
         textView.scrollRangeToVisible(NSRange(location: clamped, length: 0))
+    }
+    
+    
+    /// Full-page jump used by ⌃F / ⌃B.
+    private func moveFullPage(down: Bool) {
+        
+        guard let textView else { return }
+        let lineHeight = max(1, (textView.font?.pointSize ?? 13) * 1.3)
+        let lines = max(1, Int(textView.visibleRect.height / lineHeight) - 2)
+        let string = textView.string as NSString
+        let location = self.verticalLocation(from: textView.selectedRange().location,
+                                             direction: down ? lines : -lines)
+        let clamped = max(0, min(location, string.length))
+        
+        self.setCursor(clamped)
+        textView.scrollRangeToVisible(NSRange(location: clamped, length: 0))
+    }
+    
+    
+    /// `{` / `}`: jumps to the previous or next blank-line paragraph boundary.
+    private func moveParagraph(forward: Bool) {
+        
+        guard let textView else { return }
+        let count = self.takeCount()
+        let nsString = textView.string as NSString
+        var location = textView.selectedRange().location
+        for _ in 0..<count {
+            location = self.paragraphLocation(from: location, forward: forward, string: nsString)
+        }
+        self.setCursor(location)
+    }
+    
+    
+    private func paragraphLocation(from location: Int, forward: Bool, string: NSString) -> Int {
+        
+        guard string.length > 0 else { return 0 }
+        var current = min(max(0, location), string.length - 1)
+        if forward {
+            var lineRange = self.lineRange(at: current) ?? NSRange(location: current, length: 0)
+            // Skip any initial blank lines
+            while NSMaxRange(lineRange) < string.length, self.isBlankLine(lineRange, string: string) {
+                current = NSMaxRange(lineRange)
+                lineRange = self.lineRange(at: current) ?? NSRange(location: current, length: 0)
+            }
+            // Advance until the next blank line or end of document
+            while NSMaxRange(lineRange) < string.length {
+                current = NSMaxRange(lineRange)
+                lineRange = self.lineRange(at: current) ?? NSRange(location: current, length: 0)
+                if self.isBlankLine(lineRange, string: string) {
+                    return lineRange.location
+                }
+            }
+            return string.length
+        } else {
+            var lineRange = self.lineRange(at: current) ?? NSRange(location: current, length: 0)
+            if lineRange.location == 0 { return 0 }
+            current = max(0, lineRange.location - 1)
+            lineRange = self.lineRange(at: current) ?? NSRange(location: current, length: 0)
+            while lineRange.location > 0, self.isBlankLine(lineRange, string: string) {
+                current = lineRange.location - 1
+                lineRange = self.lineRange(at: current) ?? NSRange(location: current, length: 0)
+            }
+            while lineRange.location > 0 {
+                let prev = lineRange.location - 1
+                let prevRange = self.lineRange(at: prev) ?? NSRange(location: prev, length: 0)
+                if self.isBlankLine(prevRange, string: string) {
+                    return prevRange.location
+                }
+                lineRange = prevRange
+            }
+            return 0
+        }
+    }
+    
+    
+    private func isBlankLine(_ range: NSRange, string: NSString) -> Bool {
+        
+        var idx = range.location
+        let end = NSMaxRange(range)
+        while idx < end {
+            let char = string.character(at: idx)
+            if char != 32 && char != 9 && char != 10 && char != 13 {
+                return false
+            }
+            idx += 1
+        }
+        return true
+    }
+    
+    
+    /// `H`, `M`, `L`: jumps to the top, middle, or bottom visible line on screen.
+    private func moveToScreenLine(position: ScreenLinePosition) {
+        
+        guard let textView,
+              let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer
+        else { return }
+        
+        let visible = textView.visibleRect
+        let origin = textView.textContainerOrigin
+        let targetY: CGFloat
+        switch position {
+            case .top:
+                targetY = visible.minY + 8 - origin.y
+            case .middle:
+                targetY = visible.midY - origin.y
+            case .bottom:
+                targetY = max(visible.minY, visible.maxY - 20) - origin.y
+        }
+        let point = NSPoint(x: max(0, visible.minX - origin.x + 4), y: max(0, targetY))
+        let glyphIndex = layoutManager.glyphIndex(for: point, in: textContainer)
+        let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+        let nsString = textView.string as NSString
+        let target = self.firstNonBlank(in: self.lineRange(at: charIndex), string: nsString)
+        self.setCursor(target)
+    }
+    
+    
+    /// `zz`, `zt`, `zb`: scrolls the viewport so the cursor line is centered, at top, or at bottom.
+    private func scrollCursorLine(mode: Character) {
+        
+        guard let textView,
+              let scrollView = textView.enclosingScrollView,
+              let editorTextView = textView as? EditorTextView,
+              let cursorRect = editorTextView.vimCursorRect(at: textView.selectedRange().location)
+        else { return }
+        
+        let visibleHeight = scrollView.contentView.bounds.height
+        let targetOriginY: CGFloat
+        switch mode {
+            case "z", ".":
+                targetOriginY = max(0, cursorRect.midY - visibleHeight / 2)
+            case "t":
+                targetOriginY = max(0, cursorRect.minY - 8)
+            case "b":
+                targetOriginY = max(0, cursorRect.maxY - visibleHeight + 8)
+            default:
+                return
+        }
+        scrollView.contentView.scroll(to: NSPoint(x: scrollView.contentView.bounds.origin.x, y: targetOriginY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+    
+    
+    /// `ge` / `gE`: moves backward to the end of the previous word.
+    private func moveBackwardWordEnd(big: Bool) {
+        
+        guard let textView else { return }
+        let count = self.takeCount()
+        let string = textView.string as NSString
+        guard string.length > 0 else { return }
+        var index = textView.selectedRange().location
+        
+        func classAt(_ pos: Int) -> CharacterClass {
+            big ? (self.isWhitespace(string.character(at: pos)) ? .whitespace : .word)
+                : self.characterClass(string.character(at: pos))
+        }
+        
+        for _ in 0..<count {
+            guard index > 0 else { break }
+            let startClass = classAt(min(index, string.length - 1))
+            if startClass != .whitespace {
+                while index > 0, classAt(index) == startClass {
+                    index -= 1
+                }
+            }
+            while index > 0, classAt(index) == .whitespace {
+                index -= 1
+            }
+        }
+        self.setCursor(index)
+    }
+    
+    
+    /// `g_`: moves to the last non-blank character on the current line.
+    private func moveLastNonBlankOfLine() {
+        
+        guard let textView else { return }
+        let nsString = textView.string as NSString
+        guard let lineRange = self.lineRange(at: textView.selectedRange().location) else { return }
+        var index = NSMaxRange(lineRange) - 1
+        while index > lineRange.location {
+            let char = nsString.character(at: index)
+            if char != 32 && char != 9 && char != 10 && char != 13 {
+                break
+            }
+            index -= 1
+        }
+        self.setCursor(max(lineRange.location, index))
     }
     
     
@@ -1259,6 +1987,7 @@ final class VimEngine {
     private func endVisual() {
         
         self.visualAnchor = nil
+        self.visualLinewise = false
         VimState.shared.visualActiveLocation = nil
         self.enter(mode: .normal)
     }
@@ -1268,6 +1997,10 @@ final class VimEngine {
         
         self.pendingOperator = nil
         self.pendingPrefix = nil
+        self.pendingReplaceChar = false
+        self.pendingMarkAction = nil
+        self.pendingFindKind = nil
+        self.pendingTextObject = nil
         if !keepCount { self.count = nil }
     }
     
@@ -1290,10 +2023,22 @@ final class VimEngine {
     private func setCursor(_ location: Int) {
         
         guard let textView else { return }
+        let oldLocation = textView.selectedRange().location
+        let oldRect = (textView as? EditorTextView)?.vimCursorRect(at: oldLocation)
         let length = (textView.string as NSString).length
         let clamped = max(0, min(location, length))
         textView.setSelectedRange(NSRange(location: clamped, length: 0))
         textView.scrollRangeToVisible(NSRange(location: clamped, length: 0))
+        
+        if let editorTextView = textView as? EditorTextView,
+           let newRect = editorTextView.vimCursorRect(at: clamped)
+        {
+            editorTextView.funEffects.animateVimCursorTransition(
+                from: oldRect,
+                to: newRect,
+                color: editorTextView.insertionPointColor
+            )
+        }
     }
     
     
@@ -1449,6 +2194,13 @@ final class VimEngine {
         // built upwards when moving with `k`, so NSMaxRange would be the fixed end.
         let active = VimState.shared.visualActiveLocation ?? textView.selectedRange().location
         let length = (textView.string as NSString).length
+        if self.visualLinewise {
+            let anchorLine = self.lineRange(at: anchor) ?? NSRange(location: anchor, length: 0)
+            let activeLine = self.lineRange(at: active) ?? NSRange(location: active, length: 0)
+            let lower = min(anchorLine.location, activeLine.location)
+            let upper = min(max(NSMaxRange(anchorLine), NSMaxRange(activeLine)), length)
+            return NSRange(location: lower, length: max(0, upper - lower))
+        }
         let lower = min(anchor, active)
         let upper = min(max(anchor, active) + 1, length)
         return NSRange(location: lower, length: upper - lower)

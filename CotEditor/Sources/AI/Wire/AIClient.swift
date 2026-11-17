@@ -38,14 +38,29 @@ nonisolated struct AIClient: Sendable {
     var configuration: AIConfiguration
     
     
-    /// Sends the messages and returns the answer text.
+    /// Sends the messages and streams partial text chunks as they arrive, returning the final answer.
     ///
-    /// - Parameter messages: The conversation so far.
+    /// - Parameters:
+    ///   - messages: The conversation so far.
+    ///   - onPartial: Optional callback invoked with the accumulated answer text as tokens arrive.
     /// - Returns: The answer as plain text.
     /// - Throws: ``AIError`` when the request cannot be made or the reply cannot be read.
-    func send(_ messages: [AIMessage]) async throws -> String {
+    func send(_ messages: [AIMessage], onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
         
         guard self.configuration.isUsable else { throw AIError.notConfigured }
+        
+        if let onPartial, self.supportsSSEStreaming {
+            do {
+                let streamed = try await self.sendStreaming(messages, onPartial: onPartial)
+                if !streamed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return streamed.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            } catch {
+                // Fall back to standard non-streaming request if the gateway rejects SSE
+                // or reasoning_effort parameters.
+            }
+        }
+        
         guard let url = self.configuration.requestURL else { throw AIError.invalidURL(self.configuration.resolvedBaseURL) }
         
         var request = URLRequest(url: url)
@@ -57,7 +72,7 @@ nonisolated struct AIClient: Sendable {
             request.setValue(value, forHTTPHeaderField: field)
         }
         
-        request.httpBody = try JSONSerialization.data(withJSONObject: self.body(for: messages))
+        request.httpBody = try JSONSerialization.data(withJSONObject: self.body(for: messages, stream: false))
         
         let data: Data
         let response: URLResponse
@@ -71,7 +86,119 @@ nonisolated struct AIClient: Sendable {
             throw AIError.http(status: httpResponse.statusCode, message: Self.errorMessage(from: data))
         }
         
-        return try self.answer(from: data)
+        let finalAnswer = try self.answer(from: data)
+        onPartial?(finalAnswer)
+        return finalAnswer
+    }
+    
+    
+    // MARK: Private Streaming Methods
+    
+    private var supportsSSEStreaming: Bool {
+        
+        switch self.configuration.endpoint {
+            case .openAIChatCompletions, .anthropicMessages, .ollama:
+                true
+            case .openAIResponses, .googleGemini:
+                false
+        }
+    }
+    
+    
+    private func sendStreaming(_ messages: [AIMessage], onPartial: @Sendable (String) -> Void) async throws -> String {
+        
+        guard let url = self.configuration.requestURL else { throw AIError.invalidURL(self.configuration.resolvedBaseURL) }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 120
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        for (field, value) in self.configuration.requestHeaders {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: self.body(for: messages, stream: true))
+        
+        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+        do {
+            (bytes, response) = try await URLSession.shared.bytes(for: request)
+        } catch {
+            throw AIError.transport(error)
+        }
+        
+        if let httpResponse = response as? HTTPURLResponse, !(200..<300).contains(httpResponse.statusCode) {
+            var errorData = Data()
+            for try await byte in bytes {
+                errorData.append(byte)
+                if errorData.count > 4096 { break }
+            }
+            throw AIError.http(status: httpResponse.statusCode, message: Self.errorMessage(from: errorData))
+        }
+        
+        var accumulated = ""
+        for try await line in bytes.lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            
+            if self.configuration.endpoint == .ollama {
+                if let data = trimmed.data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let msg = obj["message"] as? [String: Any],
+                   let delta = msg["content"] as? String,
+                   !delta.isEmpty
+                {
+                    accumulated += delta
+                    onPartial(accumulated)
+                }
+                continue
+            }
+            
+            guard trimmed.hasPrefix("data:") else { continue }
+            let payload = String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            if payload == "[DONE]" { break }
+            
+            guard
+                let data = payload.data(using: .utf8),
+                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+            
+            switch self.configuration.endpoint {
+                case .openAIChatCompletions:
+                    if let choices = obj["choices"] as? [[String: Any]],
+                       let delta = choices.first?["delta"] as? [String: Any],
+                       let text = delta["content"] as? String,
+                       !text.isEmpty
+                    {
+                        accumulated += text
+                        onPartial(accumulated)
+                    } else if let choices = obj["choices"] as? [[String: Any]],
+                              let message = choices.first?["message"] as? [String: Any],
+                              let text = Self.text(fromContent: message["content"]),
+                              !text.isEmpty
+                    {
+                        accumulated += text
+                        onPartial(accumulated)
+                    }
+                case .anthropicMessages:
+                    if obj["type"] as? String == "content_block_delta",
+                       let delta = obj["delta"] as? [String: Any],
+                       let text = delta["text"] as? String,
+                       !text.isEmpty
+                    {
+                        accumulated += text
+                        onPartial(accumulated)
+                    }
+                default:
+                    break
+            }
+        }
+        
+        guard !accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AIError.emptyResponse
+        }
+        
+        return accumulated
     }
     
     
@@ -79,9 +206,11 @@ nonisolated struct AIClient: Sendable {
     
     /// The JSON body for the protocol in use.
     ///
-    /// - Parameter messages: The conversation to send.
+    /// - Parameters:
+    ///   - messages: The conversation to send.
+    ///   - stream: Whether to request Server-Sent Events streaming.
     /// - Returns: A JSON-serializable body.
-    private func body(for messages: [AIMessage]) -> [String: Any] {
+    private func body(for messages: [AIMessage], stream: Bool = false) -> [String: Any] {
         
         let model = self.configuration.model
         let system = messages.first { $0.role == .system }?.text ?? ""
@@ -101,12 +230,16 @@ nonisolated struct AIClient: Sendable {
                 if !system.isEmpty {
                     body["instructions"] = system
                 }
+                if let effort = self.configuration.reasoningEffort, !effort.isEmpty {
+                    body["reasoning"] = ["effort": effort]
+                }
                 
                 return body
                 
             case .openAIChatCompletions:
                 var body: [String: Any] = [
                     "model": model,
+                    "stream": stream,
                     "messages": messages.map { message in
                         [
                             "role": message.role.rawValue,
@@ -117,6 +250,13 @@ nonisolated struct AIClient: Sendable {
                 if let temperature = self.configuration.temperature {
                     body["temperature"] = temperature
                 }
+                // For reasoning models (o1/o3/deepseek-reasoner), pass low reasoning effort to accelerate generation.
+                let lowerModel = model.lowercased()
+                if lowerModel.contains("reasoner") || lowerModel.hasPrefix("o1") || lowerModel.hasPrefix("o3") || lowerModel.hasPrefix("o4"),
+                   let effort = self.configuration.reasoningEffort, !effort.isEmpty
+                {
+                    body["reasoning_effort"] = effort
+                }
                 
                 return body
                 
@@ -124,6 +264,7 @@ nonisolated struct AIClient: Sendable {
                 var body: [String: Any] = [
                     "model": model,
                     "max_tokens": 4096,
+                    "stream": stream,
                     "messages": conversation.map { message in
                         [
                             "role": message.role.rawValue,
@@ -174,7 +315,7 @@ nonisolated struct AIClient: Sendable {
             case .ollama:
                 return [
                     "model": model,
-                    "stream": false,
+                    "stream": stream,
                     "messages": messages.map { message in
                         [
                             "role": message.role.rawValue,

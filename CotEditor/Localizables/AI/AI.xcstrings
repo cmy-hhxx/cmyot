@@ -17,6 +17,86 @@
         }
       }
     },
+    "ai.action.interactiveChart" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI Interactive Chart"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "绘制交互图表"
+          }
+        }
+      }
+    },
+    "ai.action.ocrPolish" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OCR + AI Smart Extract"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OCR 识别并接入 AI"
+          }
+        }
+      }
+    },
+    "ai.action.weeklyReport" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Generate Weekly Report"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "变成周报"
+          }
+        }
+      }
+    },
+    "ai.action.weeklyReportItem" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Turn Into Weekly Report Item"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一键变成周报的一部分"
+          }
+        }
+      }
+    },
+    "ai.ocr.openPanel.message" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose an image to run local OCR + AI recognition"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择图片进行本地 OCR 识别并交由 AI 整理"
+          }
+        }
+      }
+    },
     "ai.action.summarize" : {
       "localizations" : {
         "en" : {

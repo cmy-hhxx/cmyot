@@ -137,6 +137,7 @@ extension Logger {
         // The app used to be sandboxed; pull the old settings out of the container first,
         // so everything else here already sees the migrated values.
         LegacyContainerMigrator.migrateIfNeeded()
+        _ = CotLocalDatabase.shared
         
         // -> Setting `automaticTerminationSupportEnabled` programmatically doesn't appear to be working.
         //    (2024-11, macOS 15.1, FB15979536)
@@ -199,6 +200,16 @@ extension Logger {
     
     
     func applicationWillTerminate(_ notification: Notification) {
+        
+        // Snapshot every open document and window pane/tab session into CotLocalDatabase before termination
+        for window in NSApp.windows {
+            if let docVC = (window.windowController as? DocumentWindowController)?.documentViewController {
+                docVC.savePaneTabsSessionToDatabase()
+            }
+        }
+        for case let document as Document in NSDocumentController.shared.documents {
+            document.syncToLocalDatabase()
+        }
         
         if self.needsRelaunch {
             NSApp.relaunch()
