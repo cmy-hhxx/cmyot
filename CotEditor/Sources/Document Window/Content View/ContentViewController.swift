@@ -24,7 +24,16 @@
 //
 
 import AppKit
+import ControlUI
 import SwiftUI
+
+enum WorkspaceCenterKind: String, CaseIterable, Identifiable {
+    case weeklyReports = "周报中心"
+    case documents = "文档中心"
+    
+    var id: String { self.rawValue }
+}
+
 
 final class ContentViewController: NSSplitViewController {
     
@@ -34,6 +43,9 @@ final class ContentViewController: NSSplitViewController {
     
     /// Whether the terminal panel is currently part of the window.
     var isTerminalVisible: Bool  { self.terminalItem != nil }
+    
+    /// Which in-window workspace center (if any) is currently open.
+    private(set) var activeCenter: WorkspaceCenterKind?
     
     var documentViewController: DocumentViewController? {
         
@@ -46,6 +58,10 @@ final class ContentViewController: NSSplitViewController {
     private var terminalItem: NSSplitViewItem?
     private var terminalViewController: TerminalViewController?
     private var windowCloseObserver: NSObjectProtocol?
+    private var centerEscMonitor: Any?
+    private var centerHostView: NSHostingView<WorkspaceCenterHostView>?
+    private let weeklyReportState = WeeklyReportCenterState()
+    private let documentCenterState = DocumentCenterState()
     
     
     // MARK: Lifecycle
@@ -65,6 +81,16 @@ final class ContentViewController: NSSplitViewController {
     required init?(coder: NSCoder) {
         
         fatalError("init(coder:) has not been implemented")
+    }
+    
+    
+    override func loadView() {
+        
+        let container = NSView()
+        container.frame.size = NSSize(width: 640, height: 600)
+        self.splitView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(self.splitView)
+        self.view = container
     }
     
     
@@ -102,6 +128,7 @@ final class ContentViewController: NSSplitViewController {
         
         // never leave a shell alive behind a closed or replaced window
         self.hideTerminal()
+        self.removeCenterEscMonitor()
     }
     
     
@@ -109,6 +136,214 @@ final class ContentViewController: NSSplitViewController {
         
         if let observer = self.windowCloseObserver {
             NotificationCenter.default.removeObserver(observer)
+        }
+        if let monitor = self.centerEscMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+    
+    
+    // MARK: Toolbar & UI Validation
+    
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        
+        if let toolbarItem = item as? NSToolbarItem,
+           (toolbarItem.action == #selector(toggleWeeklyReportCenter(_:)) || toolbarItem.action == #selector(toggleDocumentCenter(_:)))
+        {
+            return self.validateCenterToolbarItem(toolbarItem)
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+    
+    
+    /// Updates the toggle state of the in-window Weekly Report Center and Document Center toolbar items.
+    func validateCenterToolbarItem(_ item: NSToolbarItem) -> Bool {
+        
+        switch item.action {
+            case #selector(toggleWeeklyReportCenter(_:)):
+                (item as? StatableToolbarItem)?.state = (self.activeCenter == .weeklyReports) ? .on : .off
+                return true
+            case #selector(toggleDocumentCenter(_:)):
+                (item as? StatableToolbarItem)?.state = (self.activeCenter == .documents) ? .on : .off
+                return true
+            default:
+                return true
+        }
+    }
+    
+    
+    // MARK: In-Window Workspace Centers (Weekly Reports & Documents)
+    
+    @IBAction func toggleWeeklyReportCenter(_ sender: Any?) {
+        
+        if self.activeCenter == .weeklyReports {
+            self.hideInWindowCenter()
+        } else {
+            self.showInWindowCenter(.weeklyReports)
+        }
+    }
+    
+    
+    @IBAction func toggleDocumentCenter(_ sender: Any?) {
+        
+        if self.activeCenter == .documents {
+            self.hideInWindowCenter()
+        } else {
+            self.showInWindowCenter(.documents)
+        }
+    }
+    
+    
+    /// Opens Weekly Report Center or Document Center directly inside this window (no separate window).
+    func showInWindowCenter(
+        _ kind: WorkspaceCenterKind,
+        weeklyMode: WeeklyReportWindowController.InitialMode = .history,
+        selectingReportID: String? = nil
+    ) {
+        self.activeCenter = kind
+        
+        switch kind {
+            case .weeklyReports:
+                CotLocalDatabase.shared.reloadWeeklyReports()
+                self.weeklyReportState.isGeneratorActive = (weeklyMode == .generator)
+                if let selectingReportID {
+                    self.weeklyReportState.selectedReportID = selectingReportID
+                } else if self.weeklyReportState.selectedReportID == nil {
+                    self.weeklyReportState.selectedReportID = CotLocalDatabase.shared.weeklyReports.first?.id
+                }
+                self.weeklyReportState.refreshOpenSources()
+            case .documents:
+                self.documentCenterState.refresh()
+        }
+        
+        let rootView = self.makeCenterHostView(selectedKind: kind)
+        if let existing = self.centerHostView {
+            existing.rootView = rootView
+            existing.isHidden = false
+        } else {
+            let hostingView = NSHostingView(rootView: rootView)
+            hostingView.translatesAutoresizingMaskIntoConstraints = false
+            self.view.addSubview(hostingView, positioned: .above, relativeTo: self.splitView)
+            NSLayoutConstraint.activate([
+                hostingView.leadingAnchor.constraint(equalTo: self.view.leadingAnchor),
+                hostingView.trailingAnchor.constraint(equalTo: self.view.trailingAnchor),
+                hostingView.topAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.topAnchor),
+                hostingView.bottomAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.bottomAnchor),
+            ])
+            hostingView.alphaValue = 0
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.14
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                hostingView.animator().alphaValue = 1
+            }
+            self.centerHostView = hostingView
+        }
+        
+        self.installCenterEscMonitor()
+        self.view.window?.toolbar?.validateVisibleItems()
+    }
+    
+    
+    /// Closes any open in-window center and returns focus to the active editor pane.
+    func hideInWindowCenter() {
+        
+        self.activeCenter = nil
+        self.removeCenterEscMonitor()
+        
+        if let hostingView = self.centerHostView {
+            self.centerHostView = nil
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.12
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                hostingView.animator().alphaValue = 0
+            } completionHandler: { [weak hostingView] in
+                Task { @MainActor in
+                    hostingView?.removeFromSuperview()
+                }
+            }
+        }
+        
+        self.view.window?.toolbar?.validateVisibleItems()
+        if let textView = self.documentViewController?.focusedTextView {
+            self.view.window?.makeFirstResponderDiscardingMarkedText(textView)
+        }
+    }
+    
+    
+    private func makeCenterHostView(selectedKind: WorkspaceCenterKind) -> WorkspaceCenterHostView {
+        
+        WorkspaceCenterHostView(
+            selectedKind: selectedKind,
+            weeklyReportState: self.weeklyReportState,
+            documentCenterState: self.documentCenterState,
+            onSwitchKind: { [weak self] newKind in
+                self?.showInWindowCenter(newKind)
+            },
+            onDismiss: { [weak self] in
+                self?.hideInWindowCenter()
+            },
+            onOpenWeeklyReport: { [weak self] report in
+                guard let self else { return }
+                self.documentViewController?.openStoredWeeklyReport(report)
+                self.hideInWindowCenter()
+            },
+            onOpenManagedDocument: { [weak self] liveDoc, record, splitRight in
+                guard let self, let docVC = self.documentViewController else { return }
+                if let liveDoc {
+                    docVC.openOrFocusDocument(liveDoc, splitRight: splitRight)
+                } else if let record {
+                    docVC.openStoredDocumentRecord(record, splitRight: splitRight)
+                }
+                self.hideInWindowCenter()
+            },
+            onCreateNewDocument: { [weak self] in
+                guard let self, let docVC = self.documentViewController else { return }
+                if let created = try? (NSDocumentController.shared as? DocumentController)?.openUntitledDocumentAndDisplay(false) as? Document {
+                    docVC.openOrFocusDocument(created, splitRight: false)
+                }
+                self.hideInWindowCenter()
+            },
+            onOpenDiskURLs: { [weak self] urls in
+                guard let self, let docVC = self.documentViewController else { return }
+                for url in urls {
+                    if let existing = NSDocumentController.shared.document(for: url) as? Document {
+                        docVC.openOrFocusDocument(existing, splitRight: false)
+                    } else if let doc = try? Document(contentsOf: url, ofType: "public.plain-text") {
+                        NSDocumentController.shared.addDocument(doc)
+                        docVC.openOrFocusDocument(doc, splitRight: false)
+                    }
+                }
+                self.hideInWindowCenter()
+            }
+        )
+    }
+    
+    
+    private func installCenterEscMonitor() {
+        
+        self.removeCenterEscMonitor()
+        self.centerEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard
+                let self,
+                self.activeCenter != nil,
+                event.window === self.view.window,
+                event.keyCode == 53  // Escape
+            else { return event }
+            
+            if let responder = event.window?.firstResponder as? NSTextView, responder.hasMarkedText() {
+                return event
+            }
+            self.hideInWindowCenter()
+            return nil
+        }
+    }
+    
+    
+    private func removeCenterEscMonitor() {
+        
+        if let monitor = self.centerEscMonitor {
+            NSEvent.removeMonitor(monitor)
+            self.centerEscMonitor = nil
         }
     }
     
@@ -284,5 +519,83 @@ private extension NSViewController {
             default:
                 preconditionFailure()
         }
+    }
+}
+
+
+private struct WorkspaceCenterHostView: View {
+    
+    let selectedKind: WorkspaceCenterKind
+    let weeklyReportState: WeeklyReportCenterState
+    let documentCenterState: DocumentCenterState
+    
+    var onSwitchKind: (WorkspaceCenterKind) -> Void
+    var onDismiss: () -> Void
+    var onOpenWeeklyReport: (StoredWeeklyReport) -> Void
+    var onOpenManagedDocument: (Document?, StoredDocumentRecord?, _ splitRight: Bool) -> Void
+    var onCreateNewDocument: () -> Void
+    var onOpenDiskURLs: ([URL]) -> Void
+    
+    var body: some View {
+        
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button {
+                    self.onDismiss()
+                } label: {
+                    Label("返回编辑器", systemImage: "chevron.left")
+                }
+                .controlSize(.small)
+                .keyboardShortcut(.cancelAction)
+                
+                Spacer()
+                
+                Picker("", selection: Binding(
+                    get: { self.selectedKind },
+                    set: { newKind in
+                        if newKind != self.selectedKind {
+                            self.onSwitchKind(newKind)
+                        }
+                    }
+                )) {
+                    ForEach(WorkspaceCenterKind.allCases) { kind in
+                        Text(kind.rawValue).tag(kind)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 220)
+                
+                Spacer()
+                
+                Text("Esc 返回编辑")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .background(.bar)
+            
+            Divider()
+            
+            Group {
+                switch self.selectedKind {
+                    case .weeklyReports:
+                        WeeklyReportCenterView(
+                            state: self.weeklyReportState,
+                            onOpenReport: self.onOpenWeeklyReport
+                        )
+                    case .documents:
+                        DocumentCenterView(
+                            state: self.documentCenterState,
+                            onOpenDocument: self.onOpenManagedDocument,
+                            onCreateNewDocument: self.onCreateNewDocument,
+                            onOpenDiskURLs: self.onOpenDiskURLs
+                        )
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }

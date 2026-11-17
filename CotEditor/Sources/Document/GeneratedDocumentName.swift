@@ -26,6 +26,7 @@ enum GeneratedDocumentName {
     
     private static let recentHistoryKey = "GeneratedDocumentNameRecentHistory"
     private static let maxRecentHistory = 300
+    private static let maxNameLength = 8
     
     private static let moods: [String] = [
         "打盹的", "加班的", "会飞的", "摸鱼的", "偷偷发光的", "假装严肃的",
@@ -102,7 +103,10 @@ enum GeneratedDocumentName {
             }
         }
         
-        let fallback = self.randomName() + " " + String(usedNames.count + 1)
+        let shortFallbacks = ["发呆橘猫", "摸鱼水獭", "偷懒企鹅", "烤肠咸鱼", "值班小熊", "喝茶布丁"]
+        let base = self.randomName()
+        let clippedBase = base.count <= 6 ? base : (shortFallbacks.randomElement() ?? "打盹橘猫")
+        let fallback = clippedBase + String(usedNames.count + 1)
         self.record(fallback, in: recent)
         return fallback
     }
@@ -110,33 +114,45 @@ enum GeneratedDocumentName {
     
     // MARK: Private Methods
     
-    /// Returns a random combination across several playful templates.
+    /// Returns a random combination across playful templates kept strictly within `maxNameLength`
+    /// characters so tab titles display in full without ugly `...` truncation.
     private static func randomName() -> String {
         
-        let roll = Int.random(in: 0..<100)
-        let noun = self.nouns.randomElement() ?? "橘猫"
+        let shortNouns = self.nouns.filter { $0.count <= 4 }
+        let shortMoods = self.moods.filter { $0.count <= 4 }
+        let shortScenes = self.scenes.filter { $0.count <= 4 }
+        let shortActions = self.actions.filter { $0.count <= 4 }
         
-        if roll < 45 {
-            // Classic: 摸鱼的卡皮巴拉
-            let mood = self.moods.randomElement() ?? ""
-            return mood + noun
-        } else if roll < 75 {
-            // Scene + Action + Noun: 凌晨三点思考人生的卡皮巴拉
-            let scene = self.scenes.randomElement() ?? ""
-            let action = self.actions.randomElement() ?? ""
-            return scene + action + noun
-        } else if roll < 90 {
-            // Scene + Mood + Noun: 便利店门口刚睡醒的企鹅
-            let scene = self.scenes.randomElement() ?? ""
-            let mood = self.moods.randomElement() ?? ""
-            return scene + mood + noun
-        } else {
-            // Mood + Action + Noun: 戴墨镜的弹尤克里里的树懒
-            let mood = self.moods.randomElement() ?? ""
-            let action = self.actions.randomElement() ?? ""
-            let cleanMood = mood.hasSuffix("的") ? String(mood.dropLast()) : mood
-            return cleanMood + "又" + action + noun
+        for _ in 0..<24 {
+            let noun = shortNouns.randomElement() ?? "橘猫"
+            let roll = Int.random(in: 0..<100)
+            let candidate: String
+            
+            if roll < 50 {
+                // Classic: 摸鱼的橘猫 / 加班的小恐龙
+                let prefixPool = shortMoods.filter { $0.count + noun.count <= Self.maxNameLength }
+                let mood = prefixPool.randomElement() ?? "打盹的"
+                candidate = mood + noun
+            } else if roll < 80 {
+                // Action + Noun: 修bug的橘猫 / 发呆的水獭
+                let prefixPool = shortActions.filter { $0.count + noun.count <= Self.maxNameLength }
+                let action = prefixPool.randomElement() ?? "发呆的"
+                candidate = action + noun
+            } else {
+                // Scene + Noun: 机房里的企鹅 / 天台的橘猫
+                let prefixPool = shortScenes.filter { $0.count + 1 + noun.count <= Self.maxNameLength }
+                let scene = prefixPool.randomElement() ?? "天台"
+                let connector = scene.hasSuffix("里") || scene.hasSuffix("上") || scene.hasSuffix("中") || scene.hasSuffix("旁") ? "的" : "里的"
+                let joined = scene + connector + noun
+                candidate = joined.count <= Self.maxNameLength ? joined : (scene + "的" + noun)
+            }
+            
+            if candidate.count <= Self.maxNameLength {
+                return candidate
+            }
         }
+        
+        return "打盹的橘猫"
     }
     
     

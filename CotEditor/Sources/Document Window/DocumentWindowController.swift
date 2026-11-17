@@ -492,6 +492,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     }
     
     
+    /// The workspace content controller hosting in-window panels and overlays.
+    var workspaceContentViewController: ContentViewController? {
+        
+        (self.contentViewController as? WindowContentViewController)?.workspaceContentViewController
+    }
+    
+    
     /// Reflects the unsaved state of every pane in the window's close button.
     private func updateEditedState() {
         
@@ -724,7 +731,7 @@ private extension NSViewController {
 
 private extension NSToolbar.Identifier {
     
-    static let document = Self("Document.personal.6")
+    static let document = Self("Document.personal.7")
     static let directoryDocument = Self("DirectoryDocument")
 }
 
@@ -736,6 +743,8 @@ private extension NSToolbarItem.Identifier {
     
     static let syntax = Self(Self.prefix + "syntaxStyle")
     static let quickEmoji = Self(Self.prefix + "quickEmoji")
+    static let weeklyReportCenter = Self(Self.prefix + "weeklyReportCenter")
+    static let documentCenter = Self(Self.prefix + "documentCenter")
     static let textScale = Self(Self.prefix + "textScale")
     static let more = Self(Self.prefix + "more")
     static let inspector = Self(Self.prefix + "inspector")
@@ -793,6 +802,8 @@ extension DocumentWindowController: NSToolbarDelegate {
         Set(self.directoryIdentifiers).union([
             .editable,
             .quickEmoji,
+            .weeklyReportCenter,
+            .documentCenter,
             .flexibleSpace,
         ])
     }
@@ -803,6 +814,8 @@ extension DocumentWindowController: NSToolbarDelegate {
         self.directoryIdentifiers + [
             .editable,
             .quickEmoji,
+            .weeklyReportCenter,
+            .documentCenter,
             .syntax,
             .textScale,
             .terminal,
@@ -816,10 +829,12 @@ extension DocumentWindowController: NSToolbarDelegate {
     
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         
-        // Personal build: keep the toolbar minimal; Emoji & Symbols stays.
+        // Personal build: keep the toolbar minimal; Emoji, Weekly Report Center, and Document Center stay side-by-side.
         var identifiers = self.directoryIdentifiers + [
             .editable,
             .quickEmoji,
+            .weeklyReportCenter,
+            .documentCenter,
             .syntax,
             .textScale,
             .textSize,
@@ -906,6 +921,36 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.image = NSImage(systemSymbolName: "face.smiling.inverse", accessibilityDescription: item.label)
                     ?? NSImage(systemSymbolName: "face.smiling", accessibilityDescription: item.label)
                 item.menu = Self.quickEmojiMenu()
+                return item
+                
+            case .weeklyReportCenter:
+                let item = StatableToolbarItem(itemIdentifier: itemIdentifier)
+                item.isBordered = true
+                item.label = String(localized: "chrome.toolbar.weeklyReportCenter.label",
+                                    defaultValue: "周报中心", table: "Chrome")
+                item.toolTip = String(localized: "chrome.toolbar.weeklyReportCenter.tooltip",
+                                      defaultValue: "在当前窗口打开/关闭周报中心", table: "Chrome")
+                let baseImage = NSImage(systemSymbolName: "calendar.badge.clock", accessibilityDescription: item.label)
+                item.stateImages[.off] = baseImage
+                item.stateImages[.on] = baseImage?.withSymbolConfiguration(.init(paletteColors: [.controlAccentColor, .labelColor])) ?? baseImage
+                item.action = #selector(ContentViewController.toggleWeeklyReportCenter(_:))
+                item.isNavigational = true
+                item.visibilityPriority = .high
+                return item
+                
+            case .documentCenter:
+                let item = StatableToolbarItem(itemIdentifier: itemIdentifier)
+                item.isBordered = true
+                item.label = String(localized: "chrome.toolbar.documentCenter.label",
+                                    defaultValue: "文档中心", table: "Chrome")
+                item.toolTip = String(localized: "chrome.toolbar.documentCenter.tooltip",
+                                      defaultValue: "在当前窗口管理与打开所有文档", table: "Chrome")
+                let baseImage = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: item.label)
+                item.stateImages[.off] = baseImage
+                item.stateImages[.on] = baseImage?.withSymbolConfiguration(.init(paletteColors: [.controlAccentColor])) ?? baseImage
+                item.action = #selector(ContentViewController.toggleDocumentCenter(_:))
+                item.isNavigational = true
+                item.visibilityPriority = .high
                 return item
                 
             case .more:
@@ -1374,9 +1419,6 @@ extension DocumentWindowController {
                    defaultValue: "Show Page Guide", table: "Chrome"),
             #selector(DocumentViewController.togglePageGuide(_:)))
         menu.addItem(.separator())
-        add(String(localized: "chrome.menu.openWeeklyReportCenter",
-                   defaultValue: "打开周报中心（历史与生成）…", table: "Chrome"),
-            #selector(AppDelegate.showWeeklyReportCenter(_:)))
         add(String(localized: "chrome.menu.organizeAndMergeAll",
                    defaultValue: "AI 一键整理合并所有文档…", table: "Chrome"),
             #selector(AppDelegate.organizeAndMergeAllDocumentsFromMenu(_:)))

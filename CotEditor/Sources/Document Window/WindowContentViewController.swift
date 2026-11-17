@@ -37,6 +37,8 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
     
     var documentViewController: DocumentViewController? { self.contentViewController.documentViewController }
     
+    var workspaceContentViewController: ContentViewController { self.contentViewController }
+    
     #if DEBUG
     /// The shell process of the terminal panel, for the debug self-test.
     var terminalShellPID: pid_t? { self.contentViewController.terminalShellProcessIdentifier }
@@ -222,13 +224,36 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
         self.focusEditor()
         
         // let the status bar describe the pane the user is typing in
+        if let focusedDoc = self.documentViewController?.focusedDocument {
+            self.statusBarModel.document = focusedDoc
+            focusedDoc.counter.refreshNow()
+        }
         self.focusObservers = [
             NotificationCenter.default.publisher(for: EditorTextView.DidBecomeFirstResponderMessage.name)
                 .map { $0.object as! EditorTextView }
                 .filter { [weak self] textView in textView.window === self?.view.window }
                 .compactMap { [weak self] textView in self?.documentViewController?.document(for: textView) }
                 .removeDuplicates { $0 === $1 }
-                .sink { [weak self] in self?.statusBarModel.document = $0 },
+                .sink { [weak self] in
+                    self?.statusBarModel.document = $0
+                    $0.counter.refreshNow()
+                },
+            NotificationCenter.default.publisher(for: DocumentViewController.focusedDocumentDidChangeNotification)
+                .compactMap { $0.object as? DocumentViewController }
+                .filter { [weak self] in $0 === self?.documentViewController }
+                .map(\.focusedDocument)
+                .sink { [weak self] in
+                    self?.statusBarModel.document = $0
+                    $0.counter.refreshNow()
+                },
+            NotificationCenter.default.publisher(for: DocumentViewController.splitLayoutDidChangeNotification)
+                .compactMap { $0.object as? DocumentViewController }
+                .filter { [weak self] in $0 === self?.documentViewController }
+                .map(\.focusedDocument)
+                .sink { [weak self] in
+                    self?.statusBarModel.document = $0
+                    $0.counter.refreshNow()
+                },
         ]
         
         // observe user defaults for status bar
@@ -289,6 +314,9 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
             case #selector(toggleSidebar):
                 // validation of `toggleSidebar` is implemented in `validateToolbarItem`
                 return self.canToggleSidebar
+            case #selector(ContentViewController.toggleWeeklyReportCenter(_:)),
+                 #selector(ContentViewController.toggleDocumentCenter(_:)):
+                return self.contentViewController.validateCenterToolbarItem(item)
             default:
                 break
         }

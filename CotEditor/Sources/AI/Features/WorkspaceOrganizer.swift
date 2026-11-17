@@ -131,6 +131,7 @@ enum WorkspaceOrganizer {
             document.displayName = trimmed
             NotificationCenter.default.post(name: NSDocument.DidChangeFileURLMessage.name, object: document)
             CotLocalDatabase.shared.renameDocument(oldID: rawDocID, newID: rawDocID, newTitle: trimmed, newFilePath: nil)
+            document.syncToLocalDatabase()
             return trimmed
         }
     }

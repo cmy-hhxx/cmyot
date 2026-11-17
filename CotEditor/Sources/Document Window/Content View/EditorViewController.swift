@@ -333,6 +333,19 @@ final class EditorViewController: NSSplitViewController {
     }
     
     
+    /// Starts inline tab renaming for the tab displaying `document` in this pane.
+    @discardableResult
+    func beginInlineRename(for document: Document) -> Bool {
+        
+        guard let tab = self.tabs.first(where: { $0.document === document }) else { return false }
+        self.select(tab: tab)
+        DispatchQueue.main.async { [weak self] in
+            self?.tabState.onRequestInlineRename?(tab)
+        }
+        return true
+    }
+    
+    
     /// Tells whether the given text view belongs to this pane.
     ///
     /// - Parameter textView: The text view to test.
@@ -465,7 +478,8 @@ final class EditorViewController: NSSplitViewController {
     /// Saves the document this pane edits, whatever window it is shown in.
     @IBAction func save(_ sender: Any?) {
         
-        self.document.save(sender)
+        self.document.performQuickSave(sender)
+        self.updateTabState()
     }
     
     

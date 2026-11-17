@@ -1009,6 +1009,38 @@
         }
       }
     },
+    "chrome.toolbar.documentCenter.label" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Documents"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文档中心"
+          }
+        }
+      }
+    },
+    "chrome.toolbar.documentCenter.tooltip" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open or manage all documents in this window"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在当前窗口管理与打开所有文档"
+          }
+        }
+      }
+    },
     "chrome.toolbar.textScale.tooltip" : {
       "localizations" : {
         "en" : {
@@ -1021,6 +1053,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "文字大小（无极）"
+          }
+        }
+      }
+    },
+    "chrome.toolbar.weeklyReportCenter.label" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reports"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "周报中心"
+          }
+        }
+      }
+    },
+    "chrome.toolbar.weeklyReportCenter.tooltip" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toggle Weekly Report Center in this window"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在当前窗口打开/关闭周报中心"
           }
         }
       }

@@ -33,6 +33,9 @@ struct PaneTabStripView: NSViewRepresentable {
         
         let view = PaneTabStripNSView()
         view.state = self.state
+        self.state.onRequestInlineRename = { [weak view] tab in
+            view?.beginInlineRename(for: tab)
+        }
         return view
     }
     
@@ -45,6 +48,9 @@ struct PaneTabStripView: NSViewRepresentable {
         _ = self.state.refreshRevision
         
         nsView.state = self.state
+        self.state.onRequestInlineRename = { [weak nsView] tab in
+            nsView?.beginInlineRename(for: tab)
+        }
         nsView.reloadTabs()
     }
 }
@@ -68,6 +74,8 @@ struct PaneTabStripView: NSViewRepresentable {
     // Inline rename state
     private var renamingTabID: UUID?
     private weak var renameField: NSTextField?
+    private var isEndingRename = false
+    private var suppressControlEndEditing = false
     
     // Drag state
     private var draggingTab: PaneTab?
@@ -77,7 +85,7 @@ struct PaneTabStripView: NSViewRepresentable {
     private static let tabHeight: CGFloat = 20
     private static let tabSpacing: CGFloat = 3
     private static let minTabWidth: CGFloat = 68
-    private static let maxTabWidth: CGFloat = 176
+    private static let maxTabWidth: CGFloat = 188
     
     
     override init(frame frameRect: NSRect) {
@@ -242,71 +250,122 @@ struct PaneTabStripView: NSViewRepresentable {
     
     func selectTab(_ tab: PaneTab) {
         
-        self.commitInlineRenameIfNeeded()
+        guard self.renamingTabID != tab.id else { return }
+        self.commitInlineRenameIfNeeded(restoreEditorFocus: false)
         self.state?.onSelect(tab)
     }
     
     
     func closeTab(_ tab: PaneTab) {
         
-        self.commitInlineRenameIfNeeded()
+        self.commitInlineRenameIfNeeded(restoreEditorFocus: false)
         self.state?.onClose(tab)
     }
     
     
     func togglePin(_ tab: PaneTab) {
         
-        self.commitInlineRenameIfNeeded()
+        self.commitInlineRenameIfNeeded(restoreEditorFocus: false)
         self.state?.onTogglePin(tab)
     }
     
     
     func beginInlineRename(for tab: PaneTab) {
         
-        self.commitInlineRenameIfNeeded()
+        if self.renamingTabID == tab.id, let existingField = self.renameField {
+            self.window?.makeFirstResponder(existingField)
+            existingField.selectText(nil)
+            return
+        }
+        
+        self.commitInlineRenameIfNeeded(restoreEditorFocus: false)
         guard let itemView = self.tabViews[tab.id] else { return }
         
         self.renamingTabID = tab.id
         let field = itemView.enterRenameMode(initialTitle: tab.title, delegate: self)
         self.renameField = field
+        
         self.layoutTabViews(animated: false)
+        self.documentContainer.layoutSubtreeIfNeeded()
+        itemView.layoutSubtreeIfNeeded()
+        self.documentContainer.scrollToVisible(itemView.frame.insetBy(dx: -8, dy: 0))
         
         self.window?.makeFirstResponder(field)
         field.selectText(nil)
     }
     
     
-    private func commitInlineRenameIfNeeded() {
+    private func commitInlineRenameIfNeeded(restoreEditorFocus: Bool = false) {
+        
+        guard !self.isEndingRename else { return }
+        self.isEndingRename = true
+        defer { self.isEndingRename = false }
         
         guard
             let tabID = self.renamingTabID,
             let field = self.renameField,
             let tab = self.state?.tabs.first(where: { $0.id == tabID })
         else {
-            self.cancelInlineRename()
+            self.cancelInlineRename(restoreEditorFocus: restoreEditorFocus)
             return
         }
         
-        let proposed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Read active field editor string when available so uncommitted IME/editor text is never dropped.
+        let editedString = (field.currentEditor()?.string ?? field.stringValue)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        self.suppressControlEndEditing = true
         self.renamingTabID = nil
         self.renameField = nil
+        if self.window?.firstResponder === field || self.window?.firstResponder === field.currentEditor() {
+            self.window?.endEditing(for: field)
+        }
         self.tabViews[tabID]?.exitRenameMode()
         self.layoutTabViews(animated: false)
+        self.suppressControlEndEditing = false
         
-        if !proposed.isEmpty, proposed != tab.title {
-            self.state?.onRename(tab, proposed)
+        if !editedString.isEmpty, editedString != tab.title {
+            self.state?.onRename(tab, editedString)
+        }
+        
+        if restoreEditorFocus {
+            self.restoreFocusedEditorResponder()
         }
     }
     
     
-    private func cancelInlineRename() {
+    private func cancelInlineRename(restoreEditorFocus: Bool = false) {
         
-        if let tabID = self.renamingTabID {
+        let hadActiveRename = (self.renamingTabID != nil || self.renameField != nil)
+        self.suppressControlEndEditing = true
+        if let tabID = self.renamingTabID, let field = self.renameField {
+            if self.window?.firstResponder === field || self.window?.firstResponder === field.currentEditor() {
+                self.window?.endEditing(for: field)
+            }
+            self.tabViews[tabID]?.exitRenameMode()
+        } else if let tabID = self.renamingTabID {
             self.tabViews[tabID]?.exitRenameMode()
         }
         self.renamingTabID = nil
         self.renameField = nil
-        self.layoutTabViews(animated: false)
+        if hadActiveRename {
+            self.layoutTabViews(animated: false)
+        }
+        self.suppressControlEndEditing = false
+        
+        if restoreEditorFocus, hadActiveRename {
+            self.restoreFocusedEditorResponder()
+        }
+    }
+    
+    
+    private func restoreFocusedEditorResponder() {
+        
+        if let docVC = (self.window?.windowController as? DocumentWindowController)?.documentViewController,
+           let textView = docVC.focusedTextView
+        {
+            self.window?.makeFirstResponderDiscardingMarkedText(textView)
+        }
     }
     
     
@@ -314,12 +373,15 @@ struct PaneTabStripView: NSViewRepresentable {
     
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         
+        if textView.hasMarkedText() {
+            return false
+        }
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-            self.commitInlineRenameIfNeeded()
+            self.commitInlineRenameIfNeeded(restoreEditorFocus: true)
             return true
         }
         if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
-            self.cancelInlineRename()
+            self.cancelInlineRename(restoreEditorFocus: true)
             return true
         }
         return false
@@ -328,7 +390,8 @@ struct PaneTabStripView: NSViewRepresentable {
     
     func controlTextDidEndEditing(_ obj: Notification) {
         
-        self.commitInlineRenameIfNeeded()
+        guard !self.suppressControlEndEditing, !self.isEndingRename else { return }
+        self.commitInlineRenameIfNeeded(restoreEditorFocus: false)
     }
     
     
@@ -375,7 +438,10 @@ struct PaneTabStripView: NSViewRepresentable {
     @objc private func contextMenuRename(_ sender: NSMenuItem) {
         
         guard let tab = sender.representedObject as? PaneTab else { return }
-        self.beginInlineRename(for: tab)
+        // Defer one turn so AppKit finishes closing the popup menu before focusing the field editor.
+        DispatchQueue.main.async { [weak self] in
+            self?.beginInlineRename(for: tab)
+        }
     }
     
     
@@ -614,8 +680,8 @@ private final class TabStripContainerView: NSView {
         self.addSubview(self.titleLabel)
         
         self.editedDot.wantsLayer = true
-        self.editedDot.layer?.cornerRadius = 2
-        self.editedDot.layer?.backgroundColor = NSColor.tertiaryLabelColor.cgColor
+        self.editedDot.layer?.cornerRadius = 2.5
+        self.editedDot.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.75).cgColor
         self.addSubview(self.editedDot)
         
         self.closeButton.bezelStyle = .inline
@@ -638,10 +704,15 @@ private final class TabStripContainerView: NSView {
         
         self.titleLabel.stringValue = tab.title
         self.titleLabel.textColor = isSelected ? .labelColor : .secondaryLabelColor
-        self.toolTip = tab.document.fileURL?.path(percentEncoded: false) ?? tab.title
+        let baseTip = tab.document.fileURL?.path(percentEncoded: false) ?? tab.title
+        self.toolTip = tab.isEdited ? "\(baseTip) · 未保存 (按 ⌘S 保存)" : "\(baseTip) · 已保存"
         
         self.pinButton.isHidden = !tab.isPinned
-        self.editedDot.isHidden = !tab.isEdited || tab.isPinned
+        self.editedDot.isHidden = isRenaming
+        self.editedDot.layer?.backgroundColor = tab.isEdited
+            ? NSColor.systemOrange.cgColor
+            : NSColor.systemGreen.withAlphaComponent(0.75).cgColor
+        self.editedDot.toolTip = tab.isEdited ? "未保存（按 ⌘S 保存）" : "已保存 (⌘S)"
         self.closeButton.isHidden = tab.isPinned || !tab.isClosable || isRenaming
         self.titleLabel.isHidden = isRenaming
         
@@ -653,12 +724,11 @@ private final class TabStripContainerView: NSView {
     func preferredWidth(minWidth: CGFloat, maxWidth: CGFloat) -> CGFloat {
         
         if self.isRenaming {
-            return max(120, min(maxWidth, 160))
+            return max(136, min(maxWidth, 188))
         }
         let titleSize = (self.titleLabel.stringValue as NSString).size(withAttributes: [.font: self.titleLabel.font ?? .systemFont(ofSize: 11)])
-        var extra: CGFloat = 12  // horizontal padding
+        var extra: CGFloat = 20  // horizontal padding + persistent save status dot
         if self.tab?.isPinned == true { extra += 14 }
-        if self.tab?.isEdited == true && self.tab?.isPinned == false { extra += 7 }
         if self.tab?.isPinned == false && self.tab?.isClosable == true { extra += 16 }
         return min(maxWidth, max(minWidth, ceil(titleSize.width) + extra))
     }
@@ -684,15 +754,15 @@ private final class TabStripContainerView: NSView {
         }
         
         if !self.editedDot.isHidden {
-            trailingX -= 6
-            self.editedDot.frame = NSRect(x: trailingX, y: (h - 4) / 2, width: 4, height: 4)
+            trailingX -= 7
+            self.editedDot.frame = NSRect(x: trailingX, y: (h - 5) / 2, width: 5, height: 5)
             trailingX -= 3
         }
         
         let titleWidth = max(20, trailingX - x)
         let titleFrame = NSRect(x: x, y: 2, width: titleWidth, height: h - 4)
         self.titleLabel.frame = titleFrame
-        self.inlineTextField?.frame = NSRect(x: x - 1, y: 1, width: max(70, self.bounds.width - x - 3), height: h - 2)
+        self.inlineTextField?.frame = NSRect(x: max(2, x - 2), y: 0, width: max(84, self.bounds.width - x), height: h)
     }
     
     
@@ -729,8 +799,13 @@ private final class TabStripContainerView: NSView {
         self.didStartDrag = false
         
         if event.clickCount == 2 {
-            self.stripView?.selectTab(tab)
-            self.stripView?.beginInlineRename(for: tab)
+            // Select only if needed, then defer inline rename past mouse tracking so selection doesn't fight the field editor.
+            if self.stripView?.state?.selectedTab !== tab {
+                self.stripView?.selectTab(tab)
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.stripView?.beginInlineRename(for: tab)
+            }
             return
         }
         
@@ -766,16 +841,27 @@ private final class TabStripContainerView: NSView {
         
         self.isRenaming = true
         self.titleLabel.isHidden = true
+        self.editedDot.isHidden = true
         self.closeButton.isHidden = true
+        self.inlineTextField?.removeFromSuperview()
         
         let field = NSTextField(string: initialTitle)
         field.font = .systemFont(ofSize: 11)
+        field.isEditable = true
+        field.isSelectable = true
+        field.usesSingleLineMode = true
+        field.maximumNumberOfLines = 1
+        field.lineBreakMode = .byTruncatingTail
+        if let cell = field.cell as? NSTextFieldCell {
+            cell.wraps = false
+            cell.isScrollable = true
+        }
         field.isBezeled = false
         field.drawsBackground = true
         field.backgroundColor = .textBackgroundColor
         field.wantsLayer = true
         field.layer?.cornerRadius = 3
-        field.layer?.borderWidth = 1
+        field.layer?.borderWidth = 1.2
         field.layer?.borderColor = NSColor.controlAccentColor.cgColor
         field.focusRingType = .none
         field.delegate = delegate
@@ -789,9 +875,11 @@ private final class TabStripContainerView: NSView {
     func exitRenameMode() {
         
         self.isRenaming = false
+        self.inlineTextField?.delegate = nil
         self.inlineTextField?.removeFromSuperview()
         self.inlineTextField = nil
         self.titleLabel.isHidden = false
+        self.editedDot.isHidden = false
         if let tab = self.tab {
             self.closeButton.isHidden = tab.isPinned || !tab.isClosable
         }

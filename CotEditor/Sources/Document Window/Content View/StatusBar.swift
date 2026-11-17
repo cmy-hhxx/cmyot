@@ -38,7 +38,7 @@ struct StatusBar: View {
         
         var document: DataDocument?  { willSet { self.invalidateObservation(document: newValue) } }
         
-        private var isActive: Bool = false
+        private var isActive: Bool = true
         private var defaultsObserver: AnyCancellable?
         
         
@@ -65,24 +65,28 @@ struct StatusBar: View {
             if let commandLine = self.vim.commandLine {
                 Text(commandLine)
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.14)))
             } else {
                 Text(self.vim.mode.label)
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(self.vim.mode == .insert ? Color.secondary : Color.primary)
-                    .padding(.horizontal, 5)
+                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(self.vimModeColor)
+                    .padding(.horizontal, 6)
                     .padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 3).fill(.quaternary))
+                    .background(RoundedRectangle(cornerRadius: 4).fill(self.vimModeColor.opacity(0.14)))
+            }
+            
+            if let document = self.model.document as? Document {
+                DocumentSaveStatusBadge(document: document)
+                NotEditableBadge(document: document)
+                EditorCountView(result: document.counter.result)
+                    .layoutPriority(-1)
             }
             
             if self.hasDonated, self.badgeType != .invisible {
                 CoffeeBadge(type: self.badgeType)
-            }
-            
-            if let document = self.model.document as? Document {
-                NotEditableBadge(document: document)
-                EditorCountView(result: document.counter.result)
-                    .layoutPriority(-1)
             }
             
             Spacer()
@@ -139,6 +143,16 @@ struct StatusBar: View {
         }
         .background(.windowBackground)
     }
+    
+    
+    private var vimModeColor: Color {
+        switch self.vim.mode {
+            case .normal: .blue
+            case .insert: .green
+            case .visual: .purple
+            case .replace: .orange
+        }
+    }
 }
 
 
@@ -188,6 +202,7 @@ private extension StatusBar.Model {
         
         if let document = document as? Document, self.isActive {
             document.counter.statusBarRequirements = UserDefaults.standard.statusBarEditorInfo
+            document.counter.refreshNow()
         }
     }
 }
@@ -213,6 +228,72 @@ private struct CoffeeBadge: View {
                     .padding(.vertical, 8)
                     .padding(.horizontal)
             }
+    }
+}
+
+
+private struct DocumentSaveStatusBadge: View {
+    
+    var document: Document
+    
+    @State private var isDirty: Bool = false
+    @State private var justSavedPulse: Bool = false
+    
+    
+    var body: some View {
+        
+        Button {
+            self.document.performQuickSave(nil)
+        } label: {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(self.isDirty ? Color.orange : Color.green)
+                    .frame(width: 5.5, height: 5.5)
+                Text(self.isDirty ? "未保存 · ⌘S" : "已保存")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(self.isDirty ? Color.orange : Color.secondary)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(
+                Capsule()
+                    .fill(self.isDirty ? Color.orange.opacity(0.14) : Color.green.opacity(self.justSavedPulse ? 0.22 : 0.10))
+            )
+            .scaleEffect(self.justSavedPulse ? 1.06 : 1.0)
+        }
+        .buttonStyle(.plain)
+        .help(self.isDirty ? "当前文档有未保存修改，按 ⌘S 或点击保存" : "文档已保存 (⌘S)")
+        .onAppear {
+            self.syncDirtyState()
+        }
+        .onChange(of: ObjectIdentifier(self.document)) { _, _ in
+            self.syncDirtyState()
+        }
+        .onReceive(self.document.$hasUncommittedChanges) { _ in
+            self.syncDirtyState()
+        }
+        .onReceive(self.document.$lastManualSaveDate) { date in
+            self.syncDirtyState()
+            if date != nil {
+                withAnimation(.easeOut(duration: 0.16)) {
+                    self.justSavedPulse = true
+                }
+                Task {
+                    try? await Task.sleep(for: .milliseconds(450))
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        self.justSavedPulse = false
+                    }
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Document.DidUpdateChangeMessage.name, object: self.document)) { _ in
+            self.syncDirtyState()
+        }
+    }
+    
+    
+    private func syncDirtyState() {
+        self.isDirty = self.document.hasUncommittedChanges || self.document.isDocumentEdited
     }
 }
 

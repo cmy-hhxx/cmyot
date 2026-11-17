@@ -125,10 +125,12 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         static let weeklyReportFragments = "ai.weeklyReport.fragments"
         static let weeklyReportAuthor = "weeklyReport.authorName"
         static let typewriterEffectEnabled = "fun.typewriterEffect"
+        static let typewriterEffectV2Migrated = "fun.typewriterEffect.v2Enabled"
         static let vimCursorEffectEnabled = "fun.vimCursorEffect"
         static let plainTextInlineImagesEnabled = "editor.plainTextInlineImages"
         static let usesCustomCursorColor = "editor.usesCustomCursorColor"
         static let customCursorColorHex = "editor.customCursorColorHex"
+        static let userHabitModelJSON = "editor.userHabitModelJSON"
         static let userPreferencesSnapshot = "sync.userPreferences"
         static let activePaneTabsSession = "session.activePaneTabs"
         static let windowLayoutTree = "session.windowLayoutTree"
@@ -181,10 +183,14 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         self.createTablesIfNeeded()
         self.seedDefaultConfigsIfNeeded()
         self.migrateLegacyPromptsIfNeeded()
+        self.migrateTypewriterV2IfNeeded()
+        self.purgeEnhancedAndNormalizeWeeklyReports()
         self.reloadAll()
         
         if customURL == nil {
             self.seedDefaultWeeklyReportsIfNeeded()
+            self.purgeEnhancedAndNormalizeWeeklyReports()
+            self.reloadWeeklyReports()
             self.observeUserDefaultsForSync()
         }
     }
@@ -510,16 +516,20 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { path in
-                !path.isEmpty
+                let lower = path.lowercased()
+                return !path.isEmpty
                     && !path.hasPrefix("__MACOSX/")
                     && !URL(filePath: path).lastPathComponent.hasPrefix("._")
-                    && path.lowercased().hasSuffix(".md")
+                    && !lower.contains("_enhanced")
+                    && !path.contains("增强版")
+                    && lower.hasSuffix(".md")
             }
         
         var importedCount = 0
         self.executeSQL("BEGIN TRANSACTION;")
         defer {
             self.executeSQL("COMMIT;")
+            self.purgeEnhancedAndNormalizeWeeklyReports()
             self.reloadWeeklyReports()
         }
         
@@ -574,7 +584,12 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
                     var files: [URL] = []
                     for case let fileURL as URL in enumerator {
                         let name = fileURL.lastPathComponent
-                        if !name.hasPrefix("._"), ["md", "txt", "markdown"].contains(fileURL.pathExtension.lowercased()) {
+                        let lower = name.lowercased()
+                        if !name.hasPrefix("._"),
+                           !lower.contains("_enhanced"),
+                           !name.contains("增强版"),
+                           ["md", "txt", "markdown"].contains(fileURL.pathExtension.lowercased())
+                        {
                             files.append(fileURL)
                         }
                     }
@@ -594,11 +609,16 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         self.executeSQL("BEGIN TRANSACTION;")
         defer {
             self.executeSQL("COMMIT;")
+            self.purgeEnhancedAndNormalizeWeeklyReports()
             self.reloadWeeklyReports()
         }
         
         let basePath = baseFolder.path
         for fileURL in urls {
+            let name = fileURL.lastPathComponent
+            if name.lowercased().contains("_enhanced") || name.contains("增强版") {
+                continue
+            }
             guard let content = try? String(contentsOf: fileURL, encoding: .utf8),
                   !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { continue }
@@ -706,6 +726,9 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             .trimmingCharacters(in: .whitespaces)
         
         let title = (headingTitle?.isEmpty == false ? headingTitle! : stem)
+            .replacingOccurrences(of: "（增强版）", with: "")
+            .replacingOccurrences(of: "(增强版)", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         if yearMonth.isEmpty {
             // Try extracting YYYYMM from title like `陈明扬-周报-20261012-1016`
             if let range = title.range(of: #"(20\d{2})(0[1-9]|1[0-2])"#, options: .regularExpression) {
@@ -717,9 +740,70 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             }
         }
         
-        let periodLabel = isEnhanced ? "\(basePeriod) (增强版)" : basePeriod
+        let periodLabel: String = if let range = basePeriod.range(of: #"20\d{6}-\d{4}"#, options: .regularExpression) {
+            String(basePeriod[range])
+        } else if let range = title.range(of: #"20\d{6}-\d{4}"#, options: .regularExpression) {
+            String(title[range])
+        } else {
+            basePeriod
+        }
         let stableID = cleanPath.hasSuffix(".md") ? String(cleanPath.dropLast(3)) : cleanPath
-        return (stableID, periodLabel, yearMonth, title, isEnhanced)
+        return (stableID, periodLabel, yearMonth, title, false)
+    }
+    
+    
+    /// Removes all enhanced (`增强版` / `_enhanced`) weekly reports and normalizes remaining report titles/periods.
+    func purgeEnhancedAndNormalizeWeeklyReports() {
+        
+        self.executeSQL("""
+        DELETE FROM weekly_reports
+        WHERE is_enhanced != 0
+           OR lower(id) LIKE '%_enhanced%'
+           OR lower(COALESCE(source_path, '')) LIKE '%_enhanced%'
+           OR period_label LIKE '%增强版%'
+           OR title LIKE '%增强版%';
+        """)
+        
+        self.reloadWeeklyReports()
+        let author = self.weeklyReportAuthor
+        var needsReload = false
+        for report in self.weeklyReports {
+            var normalizedPeriod = report.periodLabel
+                .replacingOccurrences(of: "（增强版）", with: "")
+                .replacingOccurrences(of: "(增强版)", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let match = normalizedPeriod.range(of: #"20\d{6}-\d{4}"#, options: .regularExpression) {
+                normalizedPeriod = String(normalizedPeriod[match])
+            } else if let match = report.title.range(of: #"20\d{6}-\d{4}"#, options: .regularExpression) {
+                normalizedPeriod = String(report.title[match])
+            }
+            
+            var normalizedTitle = report.title
+                .replacingOccurrences(of: "（增强版）", with: "")
+                .replacingOccurrences(of: "(增强版)", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalizedPeriod.range(of: #"^20\d{6}-\d{4}$"#, options: .regularExpression) != nil {
+                normalizedTitle = "\(author)-周报-\(normalizedPeriod)"
+            }
+            
+            if normalizedPeriod != report.periodLabel || normalizedTitle != report.title || report.isEnhanced {
+                self.saveWeeklyReport(
+                    id: report.id,
+                    periodLabel: normalizedPeriod,
+                    yearMonth: report.yearMonth,
+                    title: normalizedTitle,
+                    content: report.content,
+                    sourcePath: report.sourcePath,
+                    isEnhanced: false,
+                    createdAt: report.createdAt,
+                    reloadAfter: false
+                )
+                needsReload = true
+            }
+        }
+        if needsReload {
+            self.reloadWeeklyReports()
+        }
     }
     
     
@@ -876,7 +960,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         defer { self.isApplyingSyncedDefaults = false }
         
         let defaults = UserDefaults.standard
-        defaults.set(self.bool(forKey: ConfigKey.typewriterEffectEnabled, default: false), forKey: ConfigKey.typewriterEffectEnabled)
+        defaults.set(self.bool(forKey: ConfigKey.typewriterEffectEnabled, default: true), forKey: ConfigKey.typewriterEffectEnabled)
         defaults.set(self.bool(forKey: ConfigKey.vimCursorEffectEnabled, default: true), forKey: ConfigKey.vimCursorEffectEnabled)
         defaults.set(self.bool(forKey: ConfigKey.plainTextInlineImagesEnabled, default: true), forKey: ConfigKey.plainTextInlineImagesEnabled)
         
@@ -972,7 +1056,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             (ConfigKey.promptOCR, AIAction.ocrPolish.defaultSystemPrompt),
             (ConfigKey.promptOrganizeMerge, AIAction.organizeAndMerge.defaultSystemPrompt),
             (ConfigKey.weeklyReportAuthor, "陈明扬"),
-            (ConfigKey.typewriterEffectEnabled, "false"),
+            (ConfigKey.typewriterEffectEnabled, "true"),
             (ConfigKey.vimCursorEffectEnabled, "true"),
             (ConfigKey.plainTextInlineImagesEnabled, "true"),
             (ConfigKey.usesCustomCursorColor, "false"),
@@ -1007,6 +1091,15 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
                 self.set(action.defaultSystemPrompt, forKey: action.databaseConfigKey)
             }
         }
+    }
+    
+    
+    /// Enables the upgraded visual-only typing effects once for existing profiles.
+    private func migrateTypewriterV2IfNeeded() {
+        
+        guard self.queryConfigValue(forKey: ConfigKey.typewriterEffectV2Migrated) == nil else { return }
+        self.set("true", forKey: ConfigKey.typewriterEffectEnabled)
+        self.set("true", forKey: ConfigKey.typewriterEffectV2Migrated)
     }
     
     

@@ -74,11 +74,11 @@ nonisolated enum AIAction: Sendable, CaseIterable {
                        table: "AI")
             case .weeklyReport:
                 String(localized: "ai.action.weeklyReport",
-                       defaultValue: "Generate Weekly Report",
+                       defaultValue: "Summarize All to Weekly Report",
                        table: "AI")
             case .weeklyReportItem:
                 String(localized: "ai.action.weeklyReportItem",
-                       defaultValue: "Turn Into Weekly Report Item",
+                       defaultValue: "Summarize Selection to Weekly Report",
                        table: "AI")
             case .interactiveChart:
                 String(localized: "ai.action.interactiveChart",

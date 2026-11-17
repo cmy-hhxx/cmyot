@@ -11,6 +11,7 @@
 
 import AppKit
 import Defaults
+import LineEnding
 import Observation
 
 /// The editing mode shared with the status bar.
@@ -71,10 +72,6 @@ final class VimEngine {
     
     private enum ScreenLinePosition {
         case top, middle, bottom
-    }
-    
-    private enum CharacterClass {
-        case whitespace, word, punctuation
     }
     
     private enum FindKind {
@@ -817,8 +814,18 @@ final class VimEngine {
             case .firstNonBlank:
                 location = self.firstNonBlank(in: self.lineRange(at: location), string: string)
             case .lineEnd:
-                let range = self.lineRange(at: location)
-                location = max(range?.location ?? 0, NSMaxRange(range ?? NSRange(location: 0, length: 0)) - 1)
+                if let range = self.lineRange(at: location) {
+                    var end = NSMaxRange(range)
+                    if end > range.location, string.character(at: end - 1) == 10 {
+                        end -= 1
+                        if end > range.location, string.character(at: end - 1) == 13 {
+                            end -= 1
+                        }
+                    }
+                    location = max(range.location, end - 1)
+                } else {
+                    location = 0
+                }
             case .paragraphBackward:
                 for _ in 0..<count { location = self.paragraphLocation(from: location, forward: false, string: string) }
             case .paragraphForward:
@@ -902,20 +909,30 @@ final class VimEngine {
                 linewise = true
             case .wordForward:
                 end = start
-                for _ in 0..<count { end = self.forwardWord(from: end, big: false) }
+                for _ in 0..<count { end = Self.forwardWordLocation(in: string, from: end, big: false, forOperator: true) }
             case .wordBackward:
                 end = start
-                for _ in 0..<count { end = self.backwardWord(from: end, big: false) }
+                for _ in 0..<count { end = Self.backwardWordLocation(in: string, from: end, big: false) }
             case .wordEnd:
-                end = self.wordEnd(from: start, big: false) + 1
+                end = start
+                for _ in 0..<count { end = Self.wordEndLocation(in: string, from: end, big: false) }
+                if end < string.length {
+                    let seq = string.rangeOfComposedCharacterSequence(at: end)
+                    end = NSMaxRange(seq)
+                }
             case .bigWordForward:
                 end = start
-                for _ in 0..<count { end = self.forwardWord(from: end, big: true) }
+                for _ in 0..<count { end = Self.forwardWordLocation(in: string, from: end, big: true, forOperator: true) }
             case .bigWordBackward:
                 end = start
-                for _ in 0..<count { end = self.backwardWord(from: end, big: true) }
+                for _ in 0..<count { end = Self.backwardWordLocation(in: string, from: end, big: true) }
             case .bigWordEnd:
-                end = self.wordEnd(from: start, big: true) + 1
+                end = start
+                for _ in 0..<count { end = Self.wordEndLocation(in: string, from: end, big: true) }
+                if end < string.length {
+                    let seq = string.rangeOfComposedCharacterSequence(at: end)
+                    end = NSMaxRange(seq)
+                }
             case .lineStart:
                 end = self.lineRange(at: start)?.location ?? 0
             case .firstNonBlank:
@@ -1043,15 +1060,35 @@ final class VimEngine {
     private func openLine(below: Bool) {
         
         guard let textView else { return }
-        let lineRange = self.lineRange(at: textView.selectedRange().location) ?? NSRange(location: 0, length: 0)
-        let insertAt = below ? NSMaxRange(lineRange) : lineRange.location
-        let text = "\n"
-        let range = NSRange(location: insertAt, length: 0)
-        guard textView.shouldChangeText(in: range, replacementString: text) else { return }
-        textView.textStorage?.replaceCharacters(in: range, with: text)
-        textView.didChangeText()
-        self.setCursor(below ? insertAt + 1 : insertAt)
-        self.enter(mode: .insert)
+        let nsString = textView.string as NSString
+        let caret = textView.selectedRange().location
+        let lineRange = self.lineRange(at: caret) ?? NSRange(location: 0, length: 0)
+        let newline = (textView as? EditorTextView)?.lineEnding.string ?? "\n"
+        let newlineLen = (newline as NSString).length
+        
+        if below {
+            var lineEnd = NSMaxRange(lineRange)
+            if lineEnd > lineRange.location, nsString.character(at: lineEnd - 1) == 10 {
+                lineEnd -= 1
+                if lineEnd > lineRange.location, nsString.character(at: lineEnd - 1) == 13 {
+                    lineEnd -= 1
+                }
+            }
+            let range = NSRange(location: lineEnd, length: 0)
+            guard textView.shouldChangeText(in: range, replacementString: newline) else { return }
+            textView.textStorage?.replaceCharacters(in: range, with: newline)
+            textView.didChangeText()
+            self.setCursor(lineEnd + newlineLen)
+            self.enter(mode: .insert)
+        } else {
+            let insertAt = lineRange.location
+            let range = NSRange(location: insertAt, length: 0)
+            guard textView.shouldChangeText(in: range, replacementString: newline) else { return }
+            textView.textStorage?.replaceCharacters(in: range, with: newline)
+            textView.didChangeText()
+            self.setCursor(insertAt)
+            self.enter(mode: .insert)
+        }
     }
     
     
@@ -1163,27 +1200,24 @@ final class VimEngine {
     
     private func wordTextObject(inner: Bool, at caret: Int, string: NSString) -> NSRange? {
         
-        var index = min(caret, string.length - 1)
-        while index > 0, self.isWordSeparator(string.character(at: index)) { index -= 1 }
-        guard !self.isWordSeparator(string.character(at: index)) else { return nil }
+        guard string.length > 0 else { return nil }
+        let lineRange = string.lineRange(for: NSRange(location: min(max(0, caret), string.length), length: 0))
+        let contentRange = Self.lineContentRange(in: string, lineRange: lineRange)
+        let tokens = Self.vimTokens(in: string, range: contentRange, big: false)
+        guard !tokens.isEmpty else { return nil }
         
-        var start = index
-        while start > 0, !self.isWordSeparator(string.character(at: start - 1)) { start -= 1 }
+        let targetToken = tokens.first(where: { caret >= $0.location && caret < NSMaxRange($0) })
+            ?? tokens.first(where: { $0.location >= caret })
+            ?? tokens.last
+        guard let token = targetToken else { return nil }
         
-        var end = index + 1
-        while end < string.length, !self.isWordSeparator(string.character(at: end)) { end += 1 }
+        guard !inner else { return token }
         
-        guard !inner else { return NSRange(location: start, length: end - start) }
-        
-        var trailing = end
-        while trailing < string.length,
-              self.isWordSeparator(string.character(at: trailing)),
-              string.character(at: trailing) != 10
-        {
+        var trailing = NSMaxRange(token)
+        while trailing < NSMaxRange(contentRange), Self.isHorizontalWhitespace(string.character(at: trailing)) {
             trailing += 1
         }
-        
-        return NSRange(location: start, length: trailing - start)
+        return NSRange(location: token.location, length: trailing - token.location)
     }
     
     
@@ -1757,22 +1791,36 @@ final class VimEngine {
         guard string.length > 0 else { return }
         var index = textView.selectedRange().location
         
-        func classAt(_ pos: Int) -> CharacterClass {
-            big ? (self.isWhitespace(string.character(at: pos)) ? .whitespace : .word)
-                : self.characterClass(string.character(at: pos))
-        }
-        
         for _ in 0..<count {
             guard index > 0 else { break }
-            let startClass = classAt(min(index, string.length - 1))
-            if startClass != .whitespace {
-                while index > 0, classAt(index) == startClass {
-                    index -= 1
+            let loc = min(max(0, index), string.length)
+            let currentLine = string.lineRange(for: NSRange(location: loc, length: 0))
+            let contentRange = Self.lineContentRange(in: string, lineRange: currentLine)
+            let tokens = Self.vimTokens(in: string, range: contentRange, big: big)
+            
+            if let currentToken = tokens.first(where: { loc > $0.location && loc < NSMaxRange($0) }) {
+                if let prev = tokens.last(where: { NSMaxRange($0) <= currentToken.location }) {
+                    index = string.rangeOfComposedCharacterSequence(at: NSMaxRange(prev) - 1).location
+                    continue
                 }
+            } else if let prev = tokens.last(where: { NSMaxRange($0) <= loc }) {
+                index = string.rangeOfComposedCharacterSequence(at: NSMaxRange(prev) - 1).location
+                continue
             }
-            while index > 0, classAt(index) == .whitespace {
-                index -= 1
+            
+            var searchPos = currentLine.location - 1
+            var found = 0
+            while searchPos >= 0 {
+                let prevLine = string.lineRange(for: NSRange(location: searchPos, length: 0))
+                let prevContent = Self.lineContentRange(in: string, lineRange: prevLine)
+                let prevTokens = Self.vimTokens(in: string, range: prevContent, big: big)
+                if let last = prevTokens.last {
+                    found = string.rangeOfComposedCharacterSequence(at: NSMaxRange(last) - 1).location
+                    break
+                }
+                searchPos = prevLine.location - 1
             }
+            index = found
         }
         self.setCursor(index)
     }
@@ -1944,7 +1992,17 @@ final class VimEngine {
     
     private func saveDocument() {
         
-        (self.textView?.window?.windowController?.document as? NSDocument)?.save(nil)
+        if let textView = self.textView,
+           let doc = NSDocumentController.shared.documents
+            .compactMap({ $0 as? Document })
+            .first(where: { $0.textStorage === textView.textStorage })
+        {
+            doc.performQuickSave(nil)
+        } else if let doc = self.textView?.window?.windowController?.document as? Document {
+            doc.performQuickSave(nil)
+        } else {
+            (self.textView?.window?.windowController?.document as? NSDocument)?.save(nil)
+        }
     }
     
     
@@ -2077,7 +2135,7 @@ final class VimEngine {
         guard let textView else { return nil }
         let string = textView.string as NSString
         guard string.length > 0 else { return NSRange(location: 0, length: 0) }
-        return string.lineRange(for: NSRange(location: min(max(0, location), string.length - 1), length: 0))
+        return string.lineRange(for: NSRange(location: min(max(0, location), string.length), length: 0))
     }
     
     
@@ -2085,13 +2143,19 @@ final class VimEngine {
         
         guard let range else { return 0 }
         var location = range.location
-        let end = NSMaxRange(range)
+        var end = NSMaxRange(range)
+        if end > range.location, string.character(at: end - 1) == 10 {
+            end -= 1
+            if end > range.location, string.character(at: end - 1) == 13 {
+                end -= 1
+            }
+        }
         while location < end {
             let character = string.character(at: location)
             if character != 32 && character != 9 { break }
             location += 1
         }
-        return min(location, max(0, end - 1))
+        return min(location, max(range.location, end - 1))
     }
     
     
@@ -2107,93 +2171,335 @@ final class VimEngine {
         var target = currentLine
         for _ in 0..<abs(direction) {
             let next: Int = direction > 0 ? NSMaxRange(target) : target.location - 1
-            guard next >= 0, next < max(1, string.length) else { return location }
+            guard next >= 0, next <= string.length else { return location }
+            if direction > 0, next == string.length {
+                let endsWithNewline = target.length > 0 && string.character(at: target.location + target.length - 1) == 10
+                if !endsWithNewline { return location }
+            }
             target = self.lineRange(at: next) ?? target
         }
         
-        let maxOffset = max(0, target.length - (target.length > 0 && string.character(at: NSMaxRange(target) - 1) == 10 ? 1 : 0))
-        return min(target.location + column, target.location + maxOffset)
-    }
-    
-    
-    private func characterClass(_ character: unichar) -> CharacterClass {
-        
-        if character == 32 || character == 9 || character == 10 || character == 13 {
-            return .whitespace
+        var contentLength = target.length
+        if contentLength > 0, string.character(at: target.location + contentLength - 1) == 10 {
+            contentLength -= 1
+            if contentLength > 0, string.character(at: target.location + contentLength - 1) == 13 {
+                contentLength -= 1
+            }
         }
-        guard let scalar = Unicode.Scalar(character) else { return .punctuation }
-        let isWord = CharacterSet.alphanumerics.contains(scalar) || character == 95
-        return isWord ? .word : .punctuation
+        let maxOffset = max(0, contentLength - 1)
+        return min(target.location + column, target.location + maxOffset)
     }
     
     
     private func forwardWord(from location: Int, big: Bool) -> Int {
         
         guard let textView else { return location }
-        let string = textView.string as NSString
-        guard string.length > 0, location < string.length else { return string.length }
-        
-        var index = location
-        let startClass = big ? (self.isWhitespace(string.character(at: index)) ? CharacterClass.whitespace : .word)
-                             : self.characterClass(string.character(at: index))
-        
-        while index < string.length {
-            let category = big
-                ? (self.isWhitespace(string.character(at: index)) ? CharacterClass.whitespace : .word)
-                : self.characterClass(string.character(at: index))
-            if category != startClass { break }
-            index += 1
-        }
-        while index < string.length {
-            let category = big
-                ? (self.isWhitespace(string.character(at: index)) ? CharacterClass.whitespace : .word)
-                : self.characterClass(string.character(at: index))
-            if category != .whitespace { break }
-            index += 1
-        }
-        return index
+        return Self.forwardWordLocation(in: textView.string as NSString, from: location, big: big, forOperator: false)
     }
     
     
     private func backwardWord(from location: Int, big: Bool) -> Int {
         
         guard let textView else { return location }
-        let string = textView.string as NSString
-        guard string.length > 0, location > 0 else { return 0 }
-        
-        var index = location - 1
-        func classAt(_ i: Int) -> CharacterClass {
-            big ? (self.isWhitespace(string.character(at: i)) ? .whitespace : .word)
-                : self.characterClass(string.character(at: i))
-        }
-        while index > 0, classAt(index) == .whitespace { index -= 1 }
-        let target = classAt(index)
-        while index > 0, classAt(index - 1) == target { index -= 1 }
-        return index
+        return Self.backwardWordLocation(in: textView.string as NSString, from: location, big: big)
     }
     
     
     private func wordEnd(from location: Int, big: Bool) -> Int {
         
         guard let textView else { return location }
-        let string = textView.string as NSString
-        guard string.length > 0 else { return 0 }
-        
-        var index = min(location + 1, string.length - 1)
-        func classAt(_ i: Int) -> CharacterClass {
-            big ? (self.isWhitespace(string.character(at: i)) ? .whitespace : .word)
-                : self.characterClass(string.character(at: i))
-        }
-        while index < string.length - 1, classAt(index) == .whitespace { index += 1 }
-        let target = classAt(index)
-        while index < string.length - 1, classAt(index + 1) == target { index += 1 }
-        return index
+        return Self.wordEndLocation(in: textView.string as NSString, from: location, big: big)
     }
     
     
-    private func isWhitespace(_ character: unichar) -> Bool {
+    // MARK: Word Segmentation Helpers (CJK + ASCII + Punctuation)
+    
+    static func lineContentRange(in string: NSString, lineRange: NSRange) -> NSRange {
         
-        character == 32 || character == 9 || character == 10 || character == 13
+        var end = NSMaxRange(lineRange)
+        while end > lineRange.location {
+            let ch = string.character(at: end - 1)
+            if ch == 10 || ch == 13 {
+                end -= 1
+            } else {
+                break
+            }
+        }
+        return NSRange(location: lineRange.location, length: max(0, end - lineRange.location))
+    }
+    
+    
+    private static func isHorizontalWhitespace(_ ch: unichar) -> Bool {
+        
+        ch == 32 || ch == 9 || ch == 0x3000 || ch == 0x00A0
+    }
+    
+    
+    private static func isCJKCharacter(at index: Int, in string: NSString) -> Bool {
+        
+        let seq = string.rangeOfComposedCharacterSequence(at: index)
+        let sub = string.substring(with: seq)
+        guard let scalar = sub.unicodeScalars.first else { return false }
+        let v = scalar.value
+        return (0x4E00...0x9FFF).contains(v)
+            || (0x3400...0x4DBF).contains(v)
+            || (0x20000...0x2EBEF).contains(v)
+            || (0xF900...0xFAFF).contains(v)
+            || (0x3040...0x309F).contains(v)
+            || (0x30A0...0x30FF).contains(v)
+            || (0xAC00...0xD7AF).contains(v)
+    }
+    
+    
+    private static func isASCIIWordUnit(_ ch: unichar) -> Bool {
+        
+        (ch >= 48 && ch <= 57)     // 0-9
+            || (ch >= 65 && ch <= 90)  // A-Z
+            || (ch >= 97 && ch <= 122) // a-z
+            || ch == 95                // _
+    }
+    
+    
+    private static func isCJKSymbolOrPunctuation(_ ch: unichar) -> Bool {
+        
+        (0x3001...0x303F).contains(ch) || (0xFF01...0xFF65).contains(ch)
+    }
+    
+    
+    /// Splits `range` (a single line without trailing newline) into Vim word tokens.
+    static func vimTokens(in string: NSString, range: NSRange, big: Bool) -> [NSRange] {
+        
+        let upper = NSMaxRange(range)
+        guard range.length > 0, upper <= string.length else { return [] }
+        
+        var tokens: [NSRange] = []
+        var idx = range.location
+        
+        if big {
+            while idx < upper {
+                let seq = string.rangeOfComposedCharacterSequence(at: idx)
+                let ch = string.character(at: idx)
+                if ch == 10 || ch == 13 || self.isHorizontalWhitespace(ch) {
+                    idx = NSMaxRange(seq)
+                    continue
+                }
+                let tokenStart = idx
+                while idx < upper {
+                    let cSeq = string.rangeOfComposedCharacterSequence(at: idx)
+                    let cCh = string.character(at: idx)
+                    if cCh == 10 || cCh == 13 || self.isHorizontalWhitespace(cCh) { break }
+                    idx = NSMaxRange(cSeq)
+                }
+                tokens.append(NSRange(location: tokenStart, length: idx - tokenStart))
+            }
+            return tokens
+        }
+        
+        while idx < upper {
+            let seq = string.rangeOfComposedCharacterSequence(at: idx)
+            let ch = string.character(at: idx)
+            
+            if ch == 10 || ch == 13 || self.isHorizontalWhitespace(ch) {
+                idx = NSMaxRange(seq)
+                continue
+            }
+            
+            if self.isASCIIWordUnit(ch) {
+                let start = idx
+                idx = NSMaxRange(seq)
+                while idx < upper {
+                    let nextSeq = string.rangeOfComposedCharacterSequence(at: idx)
+                    let nextCh = string.character(at: idx)
+                    guard nextSeq.length == 1, self.isASCIIWordUnit(nextCh) else { break }
+                    idx = NSMaxRange(nextSeq)
+                }
+                tokens.append(NSRange(location: start, length: idx - start))
+                continue
+            }
+            
+            if self.isCJKCharacter(at: idx, in: string) {
+                let runStart = idx
+                idx = NSMaxRange(seq)
+                while idx < upper, self.isCJKCharacter(at: idx, in: string) {
+                    let nextSeq = string.rangeOfComposedCharacterSequence(at: idx)
+                    idx = NSMaxRange(nextSeq)
+                }
+                let runRange = NSRange(location: runStart, length: idx - runStart)
+                var wordRanges: [NSRange] = []
+                string.enumerateSubstrings(in: runRange, options: [.byWords, .substringNotRequired]) { _, subRange, _, _ in
+                    if subRange.length > 0 {
+                        wordRanges.append(subRange)
+                    }
+                }
+                if wordRanges.isEmpty {
+                    var cursor = runRange.location
+                    while cursor < NSMaxRange(runRange) {
+                        let cSeq = string.rangeOfComposedCharacterSequence(at: cursor)
+                        wordRanges.append(cSeq)
+                        cursor = NSMaxRange(cSeq)
+                    }
+                }
+                tokens.append(contentsOf: wordRanges)
+                continue
+            }
+            
+            if self.isCJKSymbolOrPunctuation(ch) {
+                tokens.append(seq)
+                idx = NSMaxRange(seq)
+                continue
+            }
+            
+            // Group contiguous ASCII punctuation / symbols (e.g. `->`, `==`, `...`)
+            let start = idx
+            idx = NSMaxRange(seq)
+            while idx < upper {
+                let nextSeq = string.rangeOfComposedCharacterSequence(at: idx)
+                let nextCh = string.character(at: idx)
+                if nextCh == 10 || nextCh == 13
+                    || self.isHorizontalWhitespace(nextCh)
+                    || self.isASCIIWordUnit(nextCh)
+                    || self.isCJKCharacter(at: idx, in: string)
+                    || self.isCJKSymbolOrPunctuation(nextCh)
+                {
+                    break
+                }
+                idx = NSMaxRange(nextSeq)
+            }
+            tokens.append(NSRange(location: start, length: idx - start))
+        }
+        
+        return tokens
+    }
+    
+    
+    /// Computes the target location of Vim `w` / `W`.
+    static func forwardWordLocation(in string: NSString, from location: Int, big: Bool, forOperator: Bool = false) -> Int {
+        
+        guard string.length > 0 else { return 0 }
+        let loc = min(max(0, location), string.length)
+        let currentLine = string.lineRange(for: NSRange(location: loc, length: 0))
+        let contentRange = self.lineContentRange(in: string, lineRange: currentLine)
+        let tokens = self.vimTokens(in: string, range: contentRange, big: big)
+        
+        if let nextToken = tokens.first(where: { $0.location > loc }) {
+            return nextToken.location
+        }
+        
+        // No further token on the current line: advance to the next line if one exists.
+        var nextLineStart = NSMaxRange(currentLine)
+        let hasTrailingLine = (currentLine.length > 0 && string.character(at: NSMaxRange(currentLine) - 1) == 10)
+        if nextLineStart < string.length || (nextLineStart == string.length && hasTrailingLine && !forOperator) {
+            if forOperator {
+                if let currentToken = tokens.first(where: { loc >= $0.location && loc < NSMaxRange($0) }) {
+                    return NSMaxRange(currentToken)
+                }
+                if NSMaxRange(contentRange) > loc {
+                    return NSMaxRange(contentRange)
+                }
+            }
+            while nextLineStart < string.length {
+                let nextLine = string.lineRange(for: NSRange(location: nextLineStart, length: 0))
+                let nextContent = self.lineContentRange(in: string, lineRange: nextLine)
+                let nextTokens = self.vimTokens(in: string, range: nextContent, big: big)
+                if let first = nextTokens.first {
+                    return first.location
+                }
+                if nextContent.length == 0 {
+                    // Blank lines are valid `w` stops in Vim
+                    return nextLine.location
+                }
+                nextLineStart = NSMaxRange(nextLine)
+            }
+            if hasTrailingLine && nextLineStart == string.length {
+                return string.length
+            }
+        }
+        
+        // Last word on the last line of the document
+        if forOperator {
+            return NSMaxRange(contentRange)
+        }
+        guard contentRange.length > 0 else { return contentRange.location }
+        if let lastToken = tokens.last {
+            let lastCharStart = string.rangeOfComposedCharacterSequence(at: NSMaxRange(lastToken) - 1).location
+            if loc < lastToken.location {
+                return lastToken.location
+            }
+            return max(loc, lastCharStart)
+        }
+        return contentRange.location
+    }
+    
+    
+    /// Computes the target location of Vim `b` / `B`.
+    static func backwardWordLocation(in string: NSString, from location: Int, big: Bool) -> Int {
+        
+        guard string.length > 0, location > 0 else { return 0 }
+        let loc = min(max(0, location), string.length)
+        let currentLine = string.lineRange(for: NSRange(location: loc, length: 0))
+        let contentRange = self.lineContentRange(in: string, lineRange: currentLine)
+        let tokens = self.vimTokens(in: string, range: contentRange, big: big)
+        
+        if let inside = tokens.first(where: { loc > $0.location && loc < NSMaxRange($0) }) {
+            return inside.location
+        }
+        if let prevToken = tokens.last(where: { $0.location < loc }) {
+            return prevToken.location
+        }
+        
+        // Search previous lines
+        var searchPos = currentLine.location - 1
+        while searchPos >= 0 {
+            let prevLine = string.lineRange(for: NSRange(location: searchPos, length: 0))
+            let prevContent = self.lineContentRange(in: string, lineRange: prevLine)
+            let prevTokens = self.vimTokens(in: string, range: prevContent, big: big)
+            if let last = prevTokens.last {
+                return last.location
+            }
+            if prevContent.length == 0 {
+                return prevLine.location
+            }
+            searchPos = prevLine.location - 1
+        }
+        
+        return 0
+    }
+    
+    
+    /// Computes the target location of Vim `e` / `E`.
+    static func wordEndLocation(in string: NSString, from location: Int, big: Bool) -> Int {
+        
+        guard string.length > 0 else { return 0 }
+        let loc = min(max(0, location), string.length - 1)
+        let currentLine = string.lineRange(for: NSRange(location: loc, length: 0))
+        let contentRange = self.lineContentRange(in: string, lineRange: currentLine)
+        let tokens = self.vimTokens(in: string, range: contentRange, big: big)
+        
+        if let current = tokens.first(where: { loc >= $0.location && loc < NSMaxRange($0) }) {
+            let endLoc = string.rangeOfComposedCharacterSequence(at: NSMaxRange(current) - 1).location
+            if loc < endLoc {
+                return endLoc
+            }
+        }
+        if let next = tokens.first(where: { $0.location > loc }) {
+            return string.rangeOfComposedCharacterSequence(at: NSMaxRange(next) - 1).location
+        }
+        
+        var nextLineStart = NSMaxRange(currentLine)
+        while nextLineStart < string.length {
+            let nextLine = string.lineRange(for: NSRange(location: nextLineStart, length: 0))
+            let nextContent = self.lineContentRange(in: string, lineRange: nextLine)
+            let nextTokens = self.vimTokens(in: string, range: nextContent, big: big)
+            if let first = nextTokens.first {
+                return string.rangeOfComposedCharacterSequence(at: NSMaxRange(first) - 1).location
+            }
+            nextLineStart = NSMaxRange(nextLine)
+        }
+        
+        if let last = tokens.last {
+            return string.rangeOfComposedCharacterSequence(at: NSMaxRange(last) - 1).location
+        }
+        return loc
     }
     
     

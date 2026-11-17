@@ -75,9 +75,9 @@ struct Round12FeatureTests {
         
         let db = CotLocalDatabase(customURL: tempDir.appending(path: "test.sqlite3"))
         let importedCount = try db.importWeeklyReports(fromZipURL: zipURL)
-        #expect(importedCount == 2)
-        #expect(db.weeklyReports.count == 2)
-        #expect(db.weeklyReports.allSatisfy { $0.yearMonth == "202610" })
+        #expect(importedCount == 1)
+        #expect(db.weeklyReports.count == 1)
+        #expect(db.weeklyReports.allSatisfy { $0.yearMonth == "202610" && !$0.isEnhanced })
         
         let refs = db.styleReferenceWeeklyReports(limit: 2)
         #expect(refs.count == 1)
@@ -87,7 +87,7 @@ struct Round12FeatureTests {
         let generated = db.saveGeneratedWeeklyReport(content: "# 陈明扬-周报-20261116-1120\n\n本周主要干了以下几件事：\n1. 修好光标漂移。\n")
         #expect(generated.yearMonth == "202611")
         #expect(generated.periodLabel == "20261116-1120")
-        #expect(db.weeklyReports.count == 3)
+        #expect(db.weeklyReports.count == 2)
     }
     
     

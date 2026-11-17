@@ -173,6 +173,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     private var isShowingCompletion = false
     private var partialCompletionWord: String?
     private lazy var completionDebouncer = Debouncer { [weak self] in self?.performCompletion() }
+    private(set) var activeGhostSuggestion: String?
+    private var isUpdatingGhostSuggestion = false
     
     private lazy var trimTrailingWhitespaceTask = Debouncer { [weak self] in
         guard let self, !self.hasMarkedText() else { return }
@@ -326,6 +328,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         guard super.resignFirstResponder() else { return false }
         
+        self.clearGhostSuggestion(animated: false)
         self.funEffects.resetCursorTracking()
         self.vimEngine.clearVisualSelectionIfNeeded()
         
@@ -504,6 +507,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     /// The Esc key is pressed.
     override func cancelOperation(_ sender: Any?) {
         
+        if self.activeGhostSuggestion != nil {
+            self.clearGhostSuggestion(animated: true)
+            return
+        }
+        
         // exit multi-cursor mode
         if self.hasMultipleInsertions {
             self.selectedRange = self.insertionRanges.first!
@@ -633,6 +641,20 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     
     override func keyDown(with event: NSEvent) {
+        
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if !self.hasMarkedText(),
+           flags.isEmpty,
+           event.keyCode == 48,  // Tab accepts inline habit completion when active
+           self.acceptGhostSuggestionIfPresent()
+        {
+            return
+        }
+        
+        // Clear stale ghost suggestion when leaving Vim insert mode via Esc
+        if event.keyCode == 53, self.activeGhostSuggestion != nil {
+            self.clearGhostSuggestion(animated: true)
+        }
         
         // tmux-style prefix: ⌃A then Z / % / " works on the focused pane
         if self.handleControlAPrefix(event) { return }
@@ -785,15 +807,21 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             }
         }
         
+        self.isUpdatingGhostSuggestion = true
         super.insertText(plainString, replacementRange: replacementRange)
+        self.isUpdatingGhostSuggestion = false
         
         if !self.hasMarkedText(),
-           plainString.count <= 4,
+           !plainString.isEmpty,
+           plainString.count <= 24,
+           !plainString.contains("\n"),
            var caretRect = self.boundingRect(for: self.selectedRange)
         {
             caretRect.size.height = min(caretRect.height, self.singleLineHeight)
             self.funEffects.triggerTypewriterBurst(at: caretRect, color: self.effectiveCursorColor)
         }
+        
+        self.refreshHabitGhostSuggestion()
         
         // auto completion
         if self.isAutomaticCompletionEnabled {
@@ -809,6 +837,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     
     override func insertTab(_ sender: Any?) {
+        
+        if !self.hasMarkedText(), self.acceptGhostSuggestionIfPresent() {
+            return
+        }
         
         // indent with the Tab key
         if self.indentsWithTabKey, !self.rangeForUserTextChange.isEmpty {
@@ -846,12 +878,26 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         guard self.isEditable else { return super.insertNewline(sender) }
         
+        self.clearGhostSuggestion(animated: false)
+        
         // insert newline
         self.insertText(self.lineEnding.string, replacementRange: self.rangeForUserTextChange)
         
         // apply auto indentation
         if self.isAutomaticIndentEnabled {
             self.smartIndent()
+        }
+        
+        if !self.hasMarkedText(),
+           var caretRect = self.boundingRect(for: self.selectedRange)
+        {
+            caretRect.size.height = min(caretRect.height, self.singleLineHeight)
+            self.funEffects.triggerTypewriterBurst(at: caretRect, color: self.effectiveCursorColor, intensityScale: 0.9)
+        }
+        
+        // Learn completed phrases lazily from the document
+        if self.string.count <= 40_000 {
+            UserHabitPredictor.shared.learn(from: self.string, persist: true)
         }
     }
     
@@ -881,7 +927,17 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.selectedRange = NSRange(location: self.rangeForUserTextChange.location - 1, length: 2)
         }
         
+        self.isUpdatingGhostSuggestion = true
         super.deleteBackward(sender)
+        self.isUpdatingGhostSuggestion = false
+        
+        if !self.hasMarkedText(),
+           var caretRect = self.boundingRect(for: self.selectedRange)
+        {
+            caretRect.size.height = min(caretRect.height, self.singleLineHeight)
+            self.funEffects.triggerTypewriterBurst(at: caretRect, color: self.effectiveCursorColor, intensityScale: 0.65)
+        }
+        self.refreshHabitGhostSuggestion()
     }
     
     
@@ -1016,6 +1072,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         self.needsUpdateLineHighlight = true
+        
+        if !self.isUpdatingGhostSuggestion {
+            self.clearGhostSuggestion(animated: false)
+        }
         
         // invalidate current instance highlights
         if self.highlightsSelectionInstance {
@@ -1157,7 +1217,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             for (action, selector) in aiActions {
                 let item = NSMenuItem(title: action.title, action: selector, keyEquivalent: "")
                 item.target = documentViewController
-                item.isEnabled = hasSelection || (action == .weeklyReport && !self.string.isEmpty)
+                item.isEnabled = hasSelection || (action == .weeklyReport)
                 menu.addItem(item)
             }
             
@@ -2194,6 +2254,86 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    // MARK: Inline Habit Ghost Completion
+    
+    /// Recomputes and displays or hides the inline habit ghost candidate for the current caret position.
+    func refreshHabitGhostSuggestion() {
+        
+        guard
+            self.isEditable,
+            self.window?.isKeyWindow == true,
+            !self.hasMarkedText(),
+            !self.hasMultipleInsertions,
+            self.selectedRange.isEmpty,
+            (!UserDefaults.standard[.vimMode] || VimState.shared.mode == .insert)
+        else {
+            self.clearGhostSuggestion(animated: false)
+            return
+        }
+        
+        let caretLocation = self.selectedRange.location
+        guard let candidate = UserHabitPredictor.shared.predictNextPhrase(in: self.string, caretLocation: caretLocation),
+              !candidate.isEmpty,
+              var caretRect = self.boundingRect(for: self.selectedRange)
+        else {
+            self.clearGhostSuggestion(animated: false)
+            return
+        }
+        
+        caretRect.size.height = min(caretRect.height > 0 ? caretRect.height : self.singleLineHeight, self.singleLineHeight)
+        let font = self.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
+        
+        self.activeGhostSuggestion = candidate
+        self.funEffects.showGhostSuggestion(candidate, at: caretRect, font: font, lineHeight: self.singleLineHeight)
+    }
+    
+    
+    /// Clears any visible inline ghost suggestion.
+    func clearGhostSuggestion(animated: Bool = false) {
+        
+        self.activeGhostSuggestion = nil
+        self.funEffects.hideGhostSuggestion(animated: animated)
+    }
+    
+    
+    /// Accepts the visible inline ghost suggestion with a subtle completion sweep micro-animation.
+    @discardableResult
+    func acceptGhostSuggestionIfPresent() -> Bool {
+        
+        guard
+            self.isEditable,
+            !self.hasMarkedText(),
+            self.selectedRange.isEmpty,
+            let suggestion = self.activeGhostSuggestion,
+            !suggestion.isEmpty
+        else { return false }
+        
+        let caretLocation = self.selectedRange.location
+        let nsText = self.string as NSString
+        let lineRange = nsText.lineRange(for: NSRange(location: min(caretLocation, nsText.length), length: 0))
+        let prefixContext = nsText.substring(with: NSRange(location: lineRange.location, length: max(0, caretLocation - lineRange.location)))
+        
+        var startRect = self.boundingRect(for: self.selectedRange) ?? .zero
+        startRect.size.height = min(startRect.height > 0 ? startRect.height : self.singleLineHeight, self.singleLineHeight)
+        
+        self.activeGhostSuggestion = nil
+        self.funEffects.hideGhostSuggestion(animated: false)
+        
+        self.isUpdatingGhostSuggestion = true
+        super.insertText(suggestion, replacementRange: self.selectedRange)
+        self.isUpdatingGhostSuggestion = false
+        
+        UserHabitPredictor.shared.recordAcceptedCompletion(prefixContext: prefixContext, acceptedPhrase: suggestion)
+        
+        var endRect = self.boundingRect(for: self.selectedRange) ?? startRect
+        endRect.size.height = min(endRect.height > 0 ? endRect.height : self.singleLineHeight, self.singleLineHeight)
+        self.funEffects.animateGhostCompletionAccept(from: startRect, to: endRect, color: self.effectiveCursorColor)
+        
+        self.refreshHabitGhostSuggestion()
+        return true
+    }
+    
+    
     // MARK: Private Methods
     
     /// Updates single-character quote pairs from syntax delimiters.
@@ -2616,8 +2756,6 @@ extension EditorTextView {
         }
     }
     
-    
-    // MARK: Private Methods
     
     /// Displays the word completion candidates list.
     private func performCompletion() {

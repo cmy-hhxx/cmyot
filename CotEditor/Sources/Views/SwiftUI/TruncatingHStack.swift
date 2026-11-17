@@ -34,7 +34,7 @@ struct TruncatingHStack: Layout {
         
         guard !subviews.isEmpty else { return .zero }
         
-        let maxWidth = proposal.replacingUnspecifiedDimensions().width
+        let maxWidth = proposal.width ?? .infinity
         let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
         let totalWidth = sizes.map(\.width).reduce(0, +) + Double(subviews.count - 1) * self.spacing
         let maxHeight = sizes.map(\.height).reduce(0, max)

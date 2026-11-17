@@ -195,7 +195,7 @@ struct AISettingsView: View {
                     
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 16) {
-                            Toggle("打字机效果 (音效+粒子)", isOn: self.$typewriterEnabled)
+                            Toggle("动感打字特效 (律动+粒子)", isOn: self.$typewriterEnabled)
                                 .onChange(of: self.typewriterEnabled) { _, val in
                                     CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
                                     UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
@@ -322,7 +322,7 @@ struct AISettingsView: View {
         let db = CotLocalDatabase.shared
         self.personaText = db.aiPersona
         self.loadStagePrompt(for: self.selectedStageAction)
-        self.typewriterEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled, default: false)
+        self.typewriterEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled, default: true)
         self.vimCursorTrailEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled, default: true)
         self.plainTextImagesEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled, default: true)
     }

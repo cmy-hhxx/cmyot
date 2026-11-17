@@ -932,7 +932,7 @@ extension Logger {
                 if lhs.periodLabel != rhs.periodLabel {
                     return lhs.periodLabel > rhs.periodLabel
                 }
-                return lhs.isEnhanced && !rhs.isEnhanced
+                return lhs.updatedAt > rhs.updatedAt
             }
             
             let monthItem = NSMenuItem(title: "\(yearMonth)（\(monthReports.count) 篇）", action: nil, keyEquivalent: "")

@@ -40,6 +40,7 @@ import SyntaxFormat
 import URLUtils
 
 extension NSTextView: EditorCounter.Source { }
+extension Document: EditorCounter.Source { }
 
 
 /// An attribute placed on user-painted text highlights so `NSTextStorage` keeps their ranges
@@ -83,6 +84,8 @@ extension NSAttributedString.Key {
     
     @ObservationIgnored @Published @objc var isEditable = true  { didSet { self.invalidateRestorableState() } }  // @objc for AppleScript support
     var isTransient = false  // untitled & empty document that was created automatically
+    @ObservationIgnored @Published var hasUncommittedChanges = false
+    @ObservationIgnored @Published var lastManualSaveDate: Date?
     
     nonisolated var isVerticalText: Bool {
         
@@ -116,7 +119,7 @@ extension NSAttributedString.Key {
     private var suppressesInconsistentLineEndingAlert = false
     private var allowsLossySaving = false
     private var saveOptions: SaveOptions?
-    private let selectedRanges: Mutex<[NSRange]> = .init([])
+    private let storedSelectedRanges: Mutex<[NSRange]> = .init([])
     
     // temporal data used only within saving process
     private let pendingFileData: Mutex<Data?> = .init(nil)
@@ -157,7 +160,7 @@ extension NSAttributedString.Key {
         
         super.init()
         
-        self.counter.source = { [weak self] in self?.textView }
+        self.counter.source = { [weak self] in self }
         self.counter.lineRangeCalculator = self.lineEndingScanner
         
         self.defaultObservers = [
@@ -472,7 +475,9 @@ extension NSAttributedString.Key {
             }
             
             self.loadHighlights()
+            self.hasUncommittedChanges = false
             self.viewController?.invalidateStyleInTextStorage()
+            self.syncToLocalDatabase()
         }
     }
     
@@ -505,6 +510,28 @@ extension NSAttributedString.Key {
         self.pendingFileData.withLock { $0 = data }
         
         return data
+    }
+    
+    
+    @IBAction override func save(_ sender: Any?) {
+        
+        self.syncToLocalDatabase()
+        self.viewController?.savePaneTabsSessionToDatabase()
+        
+        if self.fileURL == nil {
+            self.hasUncommittedChanges = false
+            self.lastManualSaveDate = .now
+            self.updateChangeCount(.changeCleared)
+            return
+        }
+        
+        let wasEdited = self.isDocumentEdited
+        super.save(sender)
+        if !wasEdited {
+            self.hasUncommittedChanges = false
+            self.lastManualSaveDate = .now
+            NotificationCenter.default.post(name: DidUpdateChangeMessage.name, object: self)
+        }
     }
     
     
@@ -593,7 +620,12 @@ extension NSAttributedString.Key {
                 
                 Task { @MainActor in
                     PlainTextInlineImageStore.shared.migrateGlobalAssetsIfNeeded(in: self.textStorage.string, to: url)
+                    self.hasUncommittedChanges = false
+                    if !saveOperation.isAutosave {
+                        self.lastManualSaveDate = .now
+                    }
                     self.syncToLocalDatabase()
+                    NotificationCenter.default.post(name: DidUpdateChangeMessage.name, object: self)
                 }
             }
             
@@ -849,6 +881,14 @@ extension NSAttributedString.Key {
     override func updateChangeCount(_ change: NSDocument.ChangeType) {
         
         self.isTransient = false
+        switch change {
+            case .changeCleared, .changeReadOtherContents:
+                self.hasUncommittedChanges = false
+            case .changeDone:
+                self.hasUncommittedChanges = true
+            default:
+                break
+        }
         
         super.updateChangeCount(change)
         
@@ -869,7 +909,7 @@ extension NSAttributedString.Key {
         
         super.updateUserActivityState(userActivity)
         
-        let selectedRanges = self.selectedRanges.withLock(\.self)
+        let selectedRanges = self.storedSelectedRanges.withLock(\.self)
         
         if !selectedRanges.isEmpty {
             userActivity.addUserInfoEntries(from: [
@@ -1014,10 +1054,22 @@ extension NSAttributedString.Key {
                     item.state = self.isEditable ? .off : .on
                 }
                 
+            case #selector(NSDocument.move(_:)):
+                if self.fileURL == nil { return true }
+                
             default: break
         }
         
         return super.validateUserInterfaceItem(item)
+    }
+    
+    
+    @objc override func move(_ sender: Any?) {
+        
+        if self.fileURL == nil, self.viewController?.beginInlineRename(for: self) == true {
+            return
+        }
+        super.move(sender)
     }
     
     
@@ -1040,14 +1092,40 @@ extension NSAttributedString.Key {
     /// The view controller represents document.
     var viewController: DocumentViewController? {
         
-        (self.windowController?.contentViewController as? WindowContentViewController)?.documentViewController
+        if let controller = (self.windowController?.contentViewController as? WindowContentViewController)?.documentViewController {
+            return controller
+        }
+        for window in NSApp.windows {
+            if let docVC = (window.windowController as? DocumentWindowController)?.documentViewController,
+               docVC.document === self || docVC.paneDocuments.contains(where: { $0 === self })
+            {
+                return docVC
+            }
+        }
+        return nil
+    }
+    
+    
+    /// The active text view displaying this document, preferring the focused responder.
+    var activeTextView: EditorTextView? {
+        
+        let layoutTextViews = self.textStorage.layoutManagers.compactMap { $0.firstTextView as? EditorTextView }
+        if let focused = self.viewController?.focusedTextView,
+           focused.textStorage === self.textStorage
+        {
+            return focused
+        }
+        if let responder = layoutTextViews.first(where: { $0.window?.firstResponder === $0 }) {
+            return responder
+        }
+        return layoutTextViews.first
     }
     
     
     /// The text view currently focused.
     var textView: NSTextView? {
         
-        self.viewController?.focusedTextView
+        self.activeTextView ?? self.viewController?.focusedTextView
     }
     
     
@@ -1058,12 +1136,48 @@ extension NSAttributedString.Key {
     }
     
     
+    // MARK: EditorCounter.Source
+    
+    var string: String {
+        
+        self.activeTextView?.string ?? self.textStorage.string
+    }
+    
+    
+    var selectedRanges: [NSValue] {
+        
+        if let activeTextView = self.activeTextView {
+            return activeTextView.selectedRanges
+        }
+        let stored = self.storedSelectedRanges.withLock(\.self)
+        return stored.isEmpty
+            ? [NSValue(range: NSRange(location: 0, length: 0))]
+            : stored.map(NSValue.init(range:))
+    }
+    
+    
+    /// Marks the document as having uncommitted user edits and notifies observers (tab dots, status bar).
+    func markEditedByUser() {
+        
+        guard !self.hasUncommittedChanges else { return }
+        self.hasUncommittedChanges = true
+        NotificationCenter.default.post(name: DidUpdateChangeMessage.name, object: self)
+    }
+    
+    
+    /// Saves the document immediately (`⌘S`), persisting file-backed docs to disk and untitled docs to local DB.
+    func performQuickSave(_ sender: Any? = nil) {
+        
+        self.save(sender)
+    }
+    
+    
     /// Updates the current selection ranges without touching AppKit views off the main thread.
     ///
     /// - Parameter ranges: The selected ranges.
     func updateSelectedRanges(_ ranges: [NSRange]) {
         
-        self.selectedRanges.withLock { $0 = ranges }
+        self.storedSelectedRanges.withLock { $0 = ranges }
         
         self.userActivity?.needsSave = true
     }

@@ -115,7 +115,7 @@ import StringUtils
         guard !self.types.isDisjoint(with: .count) else { return }
         
         self.contentTask = Task {
-            try await Task.sleep(for: .milliseconds(20), tolerance: .milliseconds(20))  // debounce
+            try await Task.sleep(for: .milliseconds(10), tolerance: .milliseconds(5))  // debounce
             
             guard let source = self.source() else { return }
             
@@ -143,6 +143,59 @@ import StringUtils
     }
     
     
+    /// Updates content and selection counts immediately (e.g. when a tab or window becomes active).
+    func refreshNow() {
+        
+        guard !self.types.isEmpty, let source = self.source() else { return }
+        
+        let string = source.string.immutable
+        let selectedNSRanges = source.selectedRanges.map(\.rangeValue)
+        let utf16Length = (string as NSString).length
+        
+        if utf16Length <= 100_000 {
+            if self.types.contains(.characters) {
+                self.result.characters.entire = string.count
+            }
+            if self.types.contains(.lines) {
+                self.result.lines.entire = self.lineRangeCalculator?.numberOfLines ?? string.numberOfLines
+            }
+            if self.types.contains(.words) {
+                self.result.words.entire = string.numberOfWords
+            }
+            
+            let safeSelectedRanges = selectedNSRanges.compactMap { Range($0, in: string) }
+            let selectedStrings = safeSelectedRanges.map { string[$0] }
+            let location = safeSelectedRanges.first?.lowerBound ?? string.startIndex
+            
+            if self.types.contains(.characters) {
+                self.result.characters.selected = selectedStrings.map(\.count).reduce(0, +)
+            }
+            if self.types.contains(.lines) {
+                self.result.lines.selected = string.numberOfLines(in: safeSelectedRanges)
+            }
+            if self.types.contains(.words) {
+                self.result.words.selected = selectedStrings.map(\.numberOfWords).reduce(0, +)
+            }
+            if self.types.contains(.location) {
+                self.result.location = string.distance(from: string.startIndex, to: location)
+            }
+            if self.types.contains(.line) {
+                self.result.line = if let lineRangeCalculator, let nsLocation = selectedNSRanges.first?.location {
+                    lineRangeCalculator.lineNumber(at: nsLocation)
+                } else {
+                    string.lineNumber(at: location)
+                }
+            }
+            if self.types.contains(.column) {
+                self.result.column = string.columnNumber(at: location)
+            }
+        } else {
+            self.invalidateContent()
+            self.invalidateSelection()
+        }
+    }
+    
+    
     /// Updates selection-related values.
     func invalidateSelection() {
         
@@ -151,7 +204,7 @@ import StringUtils
         guard !self.types.isEmpty else { return }
         
         self.selectionTask = Task {
-            try await Task.sleep(for: .milliseconds(200), tolerance: .milliseconds(40))  // debounce
+            try await Task.sleep(for: .milliseconds(180), tolerance: .milliseconds(20))  // debounce
             
             guard let source = self.source() else { return }
             

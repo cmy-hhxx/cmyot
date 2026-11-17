@@ -29,3 +29,6 @@
 // Code signing may need to override any predefined values.
 // Therefore, it should be included at the end.
 #include "CodeSigning.xcconfig"
+
+// Test bundles do not ship an app entitlements file under Ad-Hoc signing.
+CODE_SIGN_ENTITLEMENTS =

@@ -614,12 +614,18 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             
             // keep painted highlights attached to the text they were drawn on
             document.adjustHighlights(forEditIn: range, changeInLength: length)
+            if !self.isRestoringPersistedPaneTabs {
+                document.markEditedByUser()
+            }
             document.scheduleDatabaseSync()
             self.schedulePaneTabsSessionSave()
             
             guard self.focusedTextView?.hasMarkedText() != true else { return }
             
             document.counter.invalidateContent()
+            if document.textStorage.length <= 100_000 {
+                document.counter.refreshNow()
+            }
             document.syntaxController.parseIfNeeded()
         }
     }
@@ -631,7 +637,11 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         let textView = notification.object as? NSTextView
         let document = textView.flatMap { self.document(for: $0) } ?? self.document
         
-        document.counter.invalidateSelection()
+        if document.textStorage.length <= 100_000 {
+            document.counter.refreshNow()
+        } else {
+            document.counter.invalidateSelection()
+        }
     }
     
     
@@ -1025,10 +1035,10 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Generates a structured weekly report from the selection (or the entire document when nothing is selected).
+    /// Aggregates weekly-report-relevant work across all open windows and documents.
     @IBAction func generateWeeklyReport(_ sender: Any?) {
         
-        self.runAIAction(.weeklyReport, allowFullDocumentFallback: true)
+        self.runAllWindowsWeeklyReportSummary()
     }
     
     
@@ -1242,14 +1252,119 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         panel.present(on: window)
         
-        Task {
+        Task { [weak panel, weak self] in
             do {
                 let result = try await AIService.shared.run(action, on: text) { partial in
-                    panel.presentPartial(result: partial)
+                    panel?.presentPartial(result: partial)
                 }
-                panel.present(result: result)
+                panel?.present(result: result)
             } catch {
-                panel.present(error: error)
+                panel?.present(error: error)
+            }
+        }
+    }
+    
+    
+    /// Aggregates weekly-report-relevant material across every open window, pane, and tab (plus recent DB notes if needed).
+    private func runAllWindowsWeeklyReportSummary() {
+        
+        guard let window = self.view.window else {
+            NSSound.beep()
+            return
+        }
+        
+        guard AIService.shared.isConfigured else {
+            self.presentAIConfigurationAlert(on: window)
+            return
+        }
+        
+        var seenDocIDs = Set<ObjectIdentifier>()
+        var sections: [String] = []
+        var totalChars = 0
+        let maxTotalChars = 55_000
+        
+        if let focusedSelection = self.focusedTextView?.selectedString.trimmingCharacters(in: .whitespacesAndNewlines),
+           !focusedSelection.isEmpty
+        {
+            sections.append("【当前光标重点选中内容】\n\(String(focusedSelection.prefix(8_000)))")
+            totalChars += min(focusedSelection.count, 8_000)
+        }
+        
+        let windowControllers = NSApp.orderedWindows
+            .compactMap { $0.windowController as? DocumentWindowController }
+        
+        for (winIndex, wc) in windowControllers.enumerated() {
+            guard let docVC = wc.documentViewController else { continue }
+            for (paneIndex, pane) in docVC.editorViewControllers.enumerated() {
+                for tab in pane.tabs {
+                    let doc = tab.document
+                    guard !doc.databaseDocumentID.hasPrefix("weekly:") else { continue }
+                    guard seenDocIDs.insert(ObjectIdentifier(doc)).inserted else { continue }
+                    let trimmed = doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { continue }
+                    
+                    let remaining = maxTotalChars - totalChars
+                    guard remaining > 200 else { break }
+                    let clipped = String(trimmed.prefix(min(12_000, remaining)))
+                    totalChars += clipped.count
+                    
+                    let pathNote = doc.fileURL?.path(percentEncoded: false) ?? "未落盘笔记"
+                    sections.append("""
+                    【窗口 \(winIndex + 1) · 分栏 \(paneIndex + 1) · 文档：\(doc.displayName)（\(doc.syntaxName) | \(pathNote)）】
+                    \(clipped)
+                    """)
+                }
+            }
+        }
+        
+        for case let doc as Document in NSDocumentController.shared.documents {
+            guard seenDocIDs.insert(ObjectIdentifier(doc)).inserted else { continue }
+            let trimmed = doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let remaining = maxTotalChars - totalChars
+            guard remaining > 200 else { break }
+            let clipped = String(trimmed.prefix(min(10_000, remaining)))
+            totalChars += clipped.count
+            sections.append("【已打开文档：\(doc.displayName)（\(doc.syntaxName)）】\n\(clipped)")
+        }
+        
+        let savedFragments = CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.weeklyReportFragments)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if sections.isEmpty, savedFragments.isEmpty {
+            for record in CotLocalDatabase.shared.documents.prefix(6) {
+                let trimmed = record.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                let clipped = String(trimmed.prefix(6_000))
+                sections.append("【历史文档记录：\(record.title)】\n\(clipped)")
+            }
+        }
+        
+        let rawInput: String
+        if !sections.isEmpty {
+            rawInput = "以下是当前所有窗口与打开文档的内容，请筛选出与本周工作/周报相关的要点并汇总成一份完整的周报：\n\n"
+                + sections.joined(separator: "\n\n---\n\n")
+        } else if !savedFragments.isEmpty {
+            rawInput = "【本周积累的周报片段】\n\(savedFragments)"
+        } else {
+            NSSound.beep()
+            return
+        }
+        
+        let panel = AIResultPanelController(action: .weeklyReport)
+        panel.onReplace = { [weak self] result in self?.applyAIResult(result, replacingSelection: true) }
+        panel.onInsert = { [weak self] result in self?.applyAIResult(result, replacingSelection: false) }
+        self.aiResultPanel = panel
+        panel.present(on: window)
+        
+        Task { [weak panel] in
+            do {
+                let result = try await AIService.shared.run(.weeklyReport, on: rawInput) { partial in
+                    panel?.presentPartial(result: partial)
+                }
+                panel?.present(result: result)
+            } catch {
+                panel?.present(error: error)
             }
         }
     }
@@ -1577,6 +1692,10 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         document.syntaxController.setupParser()
         
         self.observeTextStorage(of: document)
+        if !self.isRestoringPersistedPaneTabs {
+            document.syncToLocalDatabase()
+        }
+        document.counter.refreshNow()
         
         let showsLineNumbers = pane.showsLineNumber
         let tab = pane.addTab(document: document, at: index)
@@ -1614,8 +1733,11 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         if let windowController = self.view.window?.windowController as? DocumentWindowController {
             oldPrimary.removeWindowController(windowController)
             replacement.addWindowController(windowController)
+            windowController.fileDocument = replacement
             windowController.synchronizeWindowTitleWithDocumentName()
         }
+        replacement.syncToLocalDatabase()
+        NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
     }
     
     
@@ -2328,6 +2450,20 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
+    /// Starts inline tab renaming for the pane tab hosting `document`.
+    @discardableResult
+    func beginInlineRename(for document: Document) -> Bool {
+        
+        for pane in self.editorViewControllers {
+            if pane.beginInlineRename(for: document) {
+                self.focusedChild = pane
+                return true
+            }
+        }
+        return false
+    }
+    
+    
     /// Renames either an untitled document or a saved file behind `tab` and keeps tabs/DB/window title synchronized.
     func renameTab(_ tab: PaneTab, to newName: String, in pane: EditorViewController) {
         
@@ -2756,6 +2892,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         defer {
             self.isRestoringPersistedPaneTabs = false
             self.updateSplitState()
+            self.focusedDocument.counter.refreshNow()
+            NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
         }
         
         // 1. Prefer full recursive window layout tree (`session.windowLayoutTree`)
@@ -3333,5 +3471,149 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         }
         
         self.invalidateRestorableState()
+    }
+    
+    
+    // MARK: In-Window Document & Report Opening
+    
+    /// Opens or focuses a live `Document` directly inside this window (new tab or optional right split).
+    func openOrFocusDocument(_ document: Document, splitRight: Bool = false) {
+        
+        // Check if already hosted as a tab in this window
+        for pane in self.editorViewControllers {
+            if let existingTab = pane.tabs.first(where: { $0.document === document }) {
+                pane.select(tab: existingTab)
+                self.focusedChild = pane
+                self.view.window?.makeKeyAndOrderFront(nil)
+                self.view.window?.makeFirstResponderDiscardingMarkedText(pane.textView)
+                NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
+                document.counter.refreshNow()
+                return
+            }
+        }
+        
+        guard let targetPane = self.focusedChild ?? self.editorViewControllers.first else { return }
+        
+        if splitRight, self.editorViewControllers.count < Self.maximumNumberOfSplitEditors {
+            self.unzoomPane()
+            document.isTransient = false
+            document.syntaxController.setupParser()
+            document.counter.refreshNow()
+            
+            let newPane = self.makeEditorViewController(document: document, copying: targetPane)
+            self.insertPane(newPane, beside: targetPane, isVertical: true)
+            self.splitState.isVertical = true
+            self.focusedChild = newPane
+            self.updateSplitState()
+            self.scheduleRatioRebalance()
+            self.view.window?.makeFirstResponderDiscardingMarkedText(newPane.textView)
+            NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
+            return
+        }
+        
+        self.addTab(document, to: targetPane, copying: targetPane.textView)
+    }
+    
+    
+    /// Opens a document stored in `CotLocalDatabase` (or on disk) directly inside this window.
+    func openStoredDocumentRecord(_ record: StoredDocumentRecord, splitRight: Bool = false) {
+        
+        let normalizedRecordID = record.id.hasPrefix("doc:") ? String(record.id.dropFirst(4)) : record.id
+        
+        // 1. Check live open documents across all windows first
+        for wc in NSApp.orderedWindows.compactMap({ $0.windowController as? DocumentWindowController }) {
+            guard let docVC = wc.documentViewController else { continue }
+            for pane in docVC.editorViewControllers {
+                for tab in pane.tabs {
+                    let doc = tab.document
+                    let matchesPath = record.filePath.map { doc.fileURL?.path(percentEncoded: false) == $0 } ?? false
+                    let docCleanID = doc.databaseDocumentID.hasPrefix("doc:") ? String(doc.databaseDocumentID.dropFirst(4)) : doc.databaseDocumentID
+                    let matchesID = (docCleanID == normalizedRecordID) || (doc.databaseDocumentID == record.id)
+                    if matchesPath || matchesID {
+                        if docVC === self {
+                            pane.select(tab: tab)
+                            self.focusedChild = pane
+                            self.view.window?.makeFirstResponderDiscardingMarkedText(pane.textView)
+                            NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
+                            return
+                        } else if !splitRight {
+                            // Bring tab cleanly into current window if single-pane / consistent experience,
+                            // or focus it if moving would close the other window? Wait: move cleanly only if user wants it here;
+                            // if other window has >1 tab or we focus the window, let's check: bringing it in-window is best,
+                            // or if it's disk-backed / untitled in another window, activate that window's tab if moving isn't needed.
+                            // Better yet: switch focus cleanly if it's already live there, unless it's single-click from Document Center:
+                            pane.select(tab: tab)
+                            docVC.focusedChild = pane
+                            wc.window?.makeKeyAndOrderFront(nil)
+                            wc.window?.makeFirstResponderDiscardingMarkedText(pane.textView)
+                            return
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 2. If backed by a file on disk, open via Document(contentsOf:)
+        if let filePath = record.filePath, FileManager.default.fileExists(atPath: filePath) {
+            let fileURL = URL(filePath: filePath)
+            if let existing = NSDocumentController.shared.document(for: fileURL) as? Document {
+                self.openOrFocusDocument(existing, splitRight: splitRight)
+                return
+            }
+            if let fileDoc = try? Document(contentsOf: fileURL, ofType: "public.plain-text") {
+                NSDocumentController.shared.addDocument(fileDoc)
+                self.openOrFocusDocument(fileDoc, splitRight: splitRight)
+                return
+            }
+        }
+        
+        // 3. Otherwise recreate untitled/snapshot document from database inside this window
+        guard let doc = try? self.makePaneDocument() else { return NSSound.beep() }
+        doc.databaseDocumentID = record.id
+        doc.displayName = record.title
+        doc.setSyntax(name: record.syntax)
+        if !record.content.isEmpty {
+            doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: record.content)
+        }
+        doc.updateChangeCount(.changeCleared)
+        doc.hasUncommittedChanges = false
+        
+        if let highlightsData = record.highlightsJSON.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([TextHighlight].self, from: highlightsData),
+           !decoded.isEmpty
+        {
+            doc.restoreHighlightsFromDatabase(decoded)
+        }
+        
+        self.openOrFocusDocument(doc, splitRight: splitRight)
+    }
+    
+    
+    /// Opens a historical or newly generated weekly report directly inside this window.
+    func openStoredWeeklyReport(_ report: StoredWeeklyReport, splitRight: Bool = false) {
+        
+        let reportDocID = "weekly:\(report.id)"
+        
+        for pane in self.editorViewControllers {
+            if let existingTab = pane.tabs.first(where: { $0.document.databaseDocumentID == reportDocID }) {
+                pane.select(tab: existingTab)
+                self.focusedChild = pane
+                self.view.window?.makeFirstResponderDiscardingMarkedText(pane.textView)
+                NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
+                return
+            }
+        }
+        
+        guard let doc = try? self.makePaneDocument() else { return NSSound.beep() }
+        doc.databaseDocumentID = reportDocID
+        doc.displayName = report.title.hasSuffix(".md") ? report.title : "\(report.title).md"
+        doc.setSyntax(name: SyntaxName.markdown)
+        if !report.content.isEmpty {
+            doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: report.content)
+        }
+        doc.updateChangeCount(.changeCleared)
+        doc.hasUncommittedChanges = false
+        
+        self.openOrFocusDocument(doc, splitRight: splitRight)
     }
 }

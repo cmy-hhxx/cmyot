@@ -64,8 +64,18 @@ import UniformTypeIdentifiers
     }
     
     
-    /// Brings the Weekly Report Center window forward in either history browser or generator mode.
+    /// Brings the Weekly Report Center forward inside the current document window when available
+    /// (falling back to the standalone window only when no document window is open).
     func showWindow(mode: InitialMode = .history, selectingReportID: String? = nil) {
+        
+        if let activeWC = (NSApp.mainWindow?.windowController as? DocumentWindowController)
+            ?? NSApp.orderedWindows.compactMap({ $0.windowController as? DocumentWindowController }).first,
+           let contentVC = activeWC.workspaceContentViewController
+        {
+            contentVC.showInWindowCenter(.weeklyReports, weeklyMode: mode, selectingReportID: selectingReportID)
+            activeWC.window?.makeKeyAndOrderFront(nil)
+            return
+        }
         
         CotLocalDatabase.shared.reloadWeeklyReports()
         self.state.isGeneratorActive = (mode == .generator)
@@ -83,8 +93,18 @@ import UniformTypeIdentifiers
     }
     
     
-    /// Opens a stored historical weekly report cleanly in a Markdown editor tab (without marking it edited).
+    /// Opens a stored historical weekly report cleanly in the active window's Markdown tab (or a standalone window if needed).
     func openReportInEditor(_ report: StoredWeeklyReport) {
+        
+        if let activeWC = (NSApp.mainWindow?.windowController as? DocumentWindowController)
+            ?? NSApp.orderedWindows.compactMap({ $0.windowController as? DocumentWindowController }).first,
+           let docVC = activeWC.documentViewController
+        {
+            activeWC.workspaceContentViewController?.hideInWindowCenter()
+            docVC.openStoredWeeklyReport(report)
+            activeWC.window?.makeKeyAndOrderFront(nil)
+            return
+        }
         
         guard let controller = NSDocumentController.shared as? DocumentController else { return }
         
@@ -165,6 +185,7 @@ import UniformTypeIdentifiers
 struct WeeklyReportCenterView: View {
     
     @Bindable var state: WeeklyReportCenterState
+    var onOpenReport: ((StoredWeeklyReport) -> Void)? = nil
     @State private var db = CotLocalDatabase.shared
     @State private var isEditingSelected = false
     @State private var editingDraft = ""
@@ -220,7 +241,7 @@ struct WeeklyReportCenterView: View {
                 if lhs.periodLabel != rhs.periodLabel {
                     return lhs.periodLabel > rhs.periodLabel
                 }
-                return lhs.isEnhanced && !rhs.isEnhanced
+                return lhs.updatedAt > rhs.updatedAt
             }
             return (month, sorted)
         }
@@ -287,14 +308,6 @@ struct WeeklyReportCenterView: View {
                                 HStack(spacing: 4) {
                                     Text(report.periodLabel)
                                         .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                    if report.isEnhanced {
-                                        Text("增强版")
-                                            .font(.system(size: 9, weight: .medium))
-                                            .padding(.horizontal, 4)
-                                            .padding(.vertical, 1)
-                                            .background(Color.accentColor.opacity(0.15), in: Capsule())
-                                            .foregroundStyle(Color.accentColor)
-                                    }
                                     Spacer()
                                 }
                                 Text(report.title)
@@ -361,7 +374,11 @@ struct WeeklyReportCenterView: View {
                 .controlSize(.small)
                 
                 Button("在编辑器打开") {
-                    WeeklyReportWindowController.shared.openReportInEditor(report)
+                    if let onOpenReport = self.onOpenReport {
+                        onOpenReport(report)
+                    } else {
+                        WeeklyReportWindowController.shared.openReportInEditor(report)
+                    }
                 }
                 .controlSize(.small)
                 
@@ -374,7 +391,7 @@ struct WeeklyReportCenterView: View {
                             title: report.title,
                             content: self.editingDraft,
                             sourcePath: report.sourcePath,
-                            isEnhanced: report.isEnhanced
+                            isEnhanced: false
                         )
                         self.isEditingSelected = false
                         self.state.statusBanner = "已保存对 \(report.periodLabel) 的修改"
@@ -571,7 +588,11 @@ struct WeeklyReportCenterView: View {
                                 self.state.statusBanner = "已保存并归档周报：\(saved.periodLabel)"
                                 self.state.selectedReportID = saved.id
                                 self.state.isGeneratorActive = false
-                                WeeklyReportWindowController.shared.openReportInEditor(saved)
+                                if let onOpenReport = self.onOpenReport {
+                                    onOpenReport(saved)
+                                } else {
+                                    WeeklyReportWindowController.shared.openReportInEditor(saved)
+                                }
                             }
                             
                             Button("只存周报库") {

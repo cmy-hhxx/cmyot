@@ -54,13 +54,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Generate Weekly Report"
+            "value" : "Summarize All to Weekly Report"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "变成周报"
+            "value" : "一键汇总周报"
           }
         }
       }
@@ -70,13 +70,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Turn Into Weekly Report Item"
+            "value" : "Summarize Selection to Weekly Report"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "一键变成周报的一部分"
+            "value" : "部分选中汇总周报"
           }
         }
       }

@@ -97,7 +97,7 @@ enum PaneDropZone: Equatable {
     /// Whether the document behind the tab has unsaved changes.
     var isEdited: Bool {
         
-        self.document.isDocumentEdited
+        self.document.hasUncommittedChanges || self.document.isDocumentEdited
     }
     
     
@@ -133,4 +133,5 @@ enum PaneDropZone: Equatable {
     var onDropTab: (UUID, Int?) -> Bool = { _, _ in false }
     var onDetachToNewWindow: (PaneTab, NSPoint) -> Void = { _, _ in }
     var onClosePane: () -> Void = {}
+    var onRequestInlineRename: ((PaneTab) -> Void)?
 }
