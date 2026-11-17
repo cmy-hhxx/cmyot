@@ -101,5 +101,5 @@ else
     exit 1
 fi
 
-open "$TARGET" "/Users/cmy/Desktop/打嗝的云朵.txt" 2>/dev/null || open "$TARGET"
+open "$TARGET"
 echo "已启动。"

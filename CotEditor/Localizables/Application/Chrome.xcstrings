@@ -609,6 +609,22 @@
         }
       }
     },
+    "chrome.tab.moveToNewWindow" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Move Tab to New Window"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移动到新窗口"
+          }
+        }
+      }
+    },
     "chrome.tab.newTabHelp" : {
       "localizations" : {
         "en" : {

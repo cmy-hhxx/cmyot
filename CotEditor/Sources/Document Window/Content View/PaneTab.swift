@@ -29,8 +29,26 @@ import Observation
 /// One document a pane shows, drawn as a tab in the pane's tab bar.
 @Observable final class PaneTab {
     
+    static let dragPrefix = "cot-pane-tab:"
+    
     /// A stable identity used while dragging a tab around the bar.
     let id = UUID()
+    
+    /// The string payload placed on the drag pasteboard for cross-pane and cross-window drops.
+    var dragPayload: String {
+        
+        Self.dragPrefix + self.id.uuidString
+    }
+    
+    /// Extracts a `PaneTab` UUID from a drag payload string.
+    static func tabID(from payload: String) -> UUID? {
+        
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix(Self.dragPrefix) {
+            return UUID(uuidString: String(trimmed.dropFirst(Self.dragPrefix.count)))
+        }
+        return UUID(uuidString: trimmed)
+    }
     
     /// The document this tab shows.
     let document: Document
@@ -86,5 +104,7 @@ import Observation
     var onNewTab: () -> Void = {}
     var onTogglePin: (PaneTab) -> Void = { _ in }
     var onMove: (PaneTab, PaneTab) -> Void = { _, _ in }
+    var onDropTab: (UUID, PaneTab?) -> Bool = { _, _ in false }
+    var onMoveToNewWindow: (PaneTab) -> Void = { _ in }
     var onClosePane: () -> Void = {}
 }

@@ -75,6 +75,15 @@ final class EditorViewController: NSSplitViewController {
     /// Called after the user switched the tab.
     var didSelectTab: ((PaneTab) -> Void)?
     
+    /// Requests moving a dragged tab (from any pane or window) onto this pane.
+    var requestDropTab: ((UUID, PaneTab?) -> Bool)?
+    
+    /// Requests detaching a tab into its own window.
+    var requestMoveTabToNewWindow: ((PaneTab) -> Void)?
+    
+    /// Called when tab order or pin state changes inside this pane.
+    var didChangeTabLayout: (() -> Void)?
+    
     
     // MARK: Private Properties
     
@@ -128,6 +137,20 @@ final class EditorViewController: NSSplitViewController {
         self.tabState.onTogglePin = { [weak self] tab in self?.togglePin(of: tab) }
         self.tabState.onMove = { [weak self] draggedTab, targetTab in
             self?.move(tab: draggedTab, onto: targetTab)
+        }
+        self.tabState.onDropTab = { [weak self] draggedID, targetTab in
+            guard let self else { return false }
+            if let localTab = self.tabs.first(where: { $0.id == draggedID }) {
+                if let targetTab {
+                    self.move(tab: localTab, onto: targetTab)
+                    return true
+                }
+                return false
+            }
+            return self.requestDropTab?(draggedID, targetTab) ?? false
+        }
+        self.tabState.onMoveToNewWindow = { [weak self] tab in
+            self?.requestMoveTabToNewWindow?(tab)
         }
         self.tabState.onClosePane = { [weak self] in self?.requestClosePane?() }
         
@@ -197,15 +220,21 @@ final class EditorViewController: NSSplitViewController {
     
     /// Adds a document as a new tab and selects it.
     ///
-    /// - Parameter document: The document the new tab shows.
+    /// - Parameters:
+    ///   - document: The document the new tab shows.
+    ///   - index: Optional target index to insert the tab at.
     /// - Returns: The created tab.
     @discardableResult
-    func addTab(document: Document) -> PaneTab {
+    func addTab(document: Document, at index: Int? = nil) -> PaneTab {
         
         let tab = PaneTab(document: document)
         self.makeTextViewController(for: tab).loadViewIfNeeded()
         
-        self.tabs.append(tab)
+        if let index, index >= 0, index <= self.tabs.count {
+            self.tabs.insert(tab, at: index)
+        } else {
+            self.tabs.append(tab)
+        }
         self.select(tab: tab)
         
         return tab
@@ -390,7 +419,7 @@ final class EditorViewController: NSSplitViewController {
         
         guard self.isViewLoaded else { return }
         
-        let hasContent = self.tabs.count > 1
+        let hasContent = !self.tabs.isEmpty
             || self.splitState.canClose
             || self.hasPinnedTab
             || self.outlineNavigator.items?.isEmpty == false
@@ -560,6 +589,13 @@ final class EditorViewController: NSSplitViewController {
     
     
     /// Moves a dragged tab next to the tab it was dropped on.
+    func reorderTab(_ tab: PaneTab, onto target: PaneTab) {
+        
+        self.move(tab: tab, onto: target)
+    }
+    
+    
+    /// Moves a dragged tab next to the tab it was dropped on.
     ///
     /// Dragging to the right inserts the tab after the target; dragging to the left
     /// inserts it before, which is the direction users expect from the drop position.
@@ -580,6 +616,7 @@ final class EditorViewController: NSSplitViewController {
         
         self.updateTabState()
         self.updateNavigationBarVisibility(animated: true)
+        self.didChangeTabLayout?()
     }
     
     
@@ -607,6 +644,7 @@ final class EditorViewController: NSSplitViewController {
         
         self.updateTabState()
         self.updateNavigationBarVisibility(animated: true)
+        self.didChangeTabLayout?()
     }
 }
 

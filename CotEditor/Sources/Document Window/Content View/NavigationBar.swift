@@ -33,6 +33,7 @@ struct NavigationBar: View {
     @State var outlineNavigator: OutlineNavigator
     var splitState: SplitState
     @State var tabs: PaneTabState
+    @State private var isBarDropTargeted = false
     
     
     var body: some View {
@@ -63,10 +64,27 @@ struct NavigationBar: View {
                 OutlineNavigationView(navigator: $outlineNavigator)
             }
             
-            Spacer()
+            Spacer(minLength: 16)
+                .contentShape(Rectangle())
             
             if self.tabs.canClosePane {
                 self.closePaneButton
+            }
+        }
+        .dropDestination(for: String.self) { identifiers, _ in
+            guard
+                let identifier = identifiers.first,
+                let draggedID = PaneTab.tabID(from: identifier)
+            else { return false }
+            
+            return self.tabs.onDropTab(draggedID, nil)
+        } isTargeted: { isTargeted in
+            self.isBarDropTargeted = isTargeted
+        }
+        .overlay {
+            if self.isBarDropTargeted {
+                RoundedRectangle(cornerRadius: 4)
+                    .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1)
             }
         }
         .buttonStyle(.borderless)
@@ -112,7 +130,7 @@ private struct TabItem: View {
     var body: some View {
         
         self.titleButton
-            .draggable(self.tab.id.uuidString) {
+            .draggable(self.tab.dragPayload) {
                 // A compact, self-contained preview: the default snapshot of the tab
                 // overlapped the tab under the cursor and made the titles double up.
                 self.dragPreview
@@ -120,13 +138,18 @@ private struct TabItem: View {
             .dropDestination(for: String.self) { identifiers, _ in
                 guard
                     let identifier = identifiers.first,
-                    let draggedTab = self.tabs.tabs.first(where: { $0.id.uuidString == identifier }),
-                    draggedTab !== self.tab
+                    let draggedID = PaneTab.tabID(from: identifier),
+                    draggedID != self.tab.id
                 else { return false }
                 
-                self.tabs.onMove(draggedTab, self.tab)
-                
-                return true
+                if self.tabs.onDropTab(draggedID, self.tab) {
+                    return true
+                }
+                if let draggedTab = self.tabs.tabs.first(where: { $0.id == draggedID }) {
+                    self.tabs.onMove(draggedTab, self.tab)
+                    return true
+                }
+                return false
             } isTargeted: { isTargeted in
                 self.isDropTargeted = isTargeted
             }
@@ -145,6 +168,9 @@ private struct TabItem: View {
                        ? String(localized: "chrome.tab.unpin", defaultValue: "Unpin Tab", table: "Chrome")
                        : String(localized: "chrome.tab.pin", defaultValue: "Pin Tab", table: "Chrome")) {
                     self.onTogglePin()
+                }
+                Button(String(localized: "chrome.tab.moveToNewWindow", defaultValue: "Move Tab to New Window", table: "Chrome")) {
+                    self.tabs.onMoveToNewWindow(self.tab)
                 }
                 Divider()
                 Button(String(localized: "chrome.tab.close", defaultValue: "Close Tab", table: "Chrome")) {

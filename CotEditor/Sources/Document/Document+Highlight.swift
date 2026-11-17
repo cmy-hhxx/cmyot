@@ -60,6 +60,15 @@ extension Document {
     }
     
     
+    /// Restores highlights decoded from the local SQLite database for an untitled/session document.
+    func restoreHighlightsFromDatabase(_ highlights: [TextHighlight]) {
+        
+        self.textHighlights = highlights
+        self.syncHighlightAttributesToTextStorage()
+        self.applyHighlightRendering()
+    }
+    
+    
     /// Paints the given range, replacing any highlight it touches.
     func addHighlight(range: NSRange, color: HighlightColor) {
         

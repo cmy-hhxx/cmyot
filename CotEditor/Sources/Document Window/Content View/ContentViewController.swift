@@ -254,6 +254,13 @@ final class ContentViewController: NSSplitViewController {
         
         guard oldDocument != self.document else { return }
         
+        if let existing = self.documentViewController,
+           let newDocument = self.document as? Document,
+           existing.document === newDocument || existing.paneDocuments.contains(where: { $0 === newDocument })
+        {
+            return
+        }
+        
         self.splitViewItems[0] = NSSplitViewItem(viewController: .viewController(document: self.document))
     }
 }

@@ -1482,6 +1482,17 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     /// Reads the pasted/dropped item from NSPasteboard (invoked in `performDragOperation(_:)`).
     override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
         
+        // on pane tab drop across panes or windows
+        if pboard.name == .drag,
+           let raw = pboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           raw.hasPrefix(PaneTab.dragPrefix),
+           let tabID = PaneTab.tabID(from: raw),
+           let documentViewController = self.documentViewController
+        {
+            _ = documentViewController.handleDroppedTab(id: tabID, ontoTextView: self)
+            return true
+        }
+        
         // on file drop
         if pboard.name == .drag,
            let urls = pboard.readObjects(forClasses: [NSURL.self]) as? [URL],

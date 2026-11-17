@@ -45,6 +45,31 @@ nonisolated struct PersistedPaneTabItem: Codable, Sendable, Equatable {
     var content: String
     var isPinned: Bool
     var paneIndex: Int
+    var highlightsJSON: String?
+}
+
+
+/// A recursive node representing either a split container or a leaf editor pane.
+nonisolated indirect enum PersistedLayoutNode: Codable, Sendable, Equatable {
+    
+    case split(isVertical: Bool, children: [PersistedLayoutNode], weights: [Double])
+    case pane(tabs: [PersistedPaneTabItem], selectedTabIndex: Int, showsLineNumber: Bool)
+}
+
+
+/// The full persisted layout of a single document window.
+nonisolated struct PersistedWindowLayout: Codable, Sendable, Equatable {
+    
+    var root: PersistedLayoutNode
+    var focusedPaneIndex: Int
+    var windowFrame: String?
+}
+
+
+/// The persisted workspace session across all open document windows.
+nonisolated struct PersistedWorkspaceSession: Codable, Sendable, Equatable {
+    
+    var windows: [PersistedWindowLayout]
 }
 
 
@@ -84,6 +109,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         static let vimCursorEffectEnabled = "fun.vimCursorEffect"
         static let plainTextInlineImagesEnabled = "editor.plainTextInlineImages"
         static let activePaneTabsSession = "session.activePaneTabs"
+        static let windowLayoutTree = "session.windowLayoutTree"
     }
     
     
