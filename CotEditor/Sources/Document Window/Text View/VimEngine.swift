@@ -41,6 +41,7 @@ final class VimState {
     var mode: VimMode = .normal
     var commandLine: String?  // non-nil while a `:` command is being typed
     var visualActiveLocation: Int?  // caret position to draw in visual mode
+    var visualOwnerID: ObjectIdentifier?  // text view owning `visualActiveLocation`
 }
 
 
@@ -461,6 +462,7 @@ final class VimEngine {
                 self.visualAnchor = location
                 self.visualLinewise = false
                 VimState.shared.visualActiveLocation = location
+                VimState.shared.visualOwnerID = ObjectIdentifier(textView)
                 self.enter(mode: .visual)
             case "V":
                 let location = textView.selectedRange().location
@@ -468,6 +470,7 @@ final class VimEngine {
                 self.visualAnchor = lineRange.location
                 self.visualLinewise = true
                 VimState.shared.visualActiveLocation = max(lineRange.location, NSMaxRange(lineRange) - 1)
+                VimState.shared.visualOwnerID = ObjectIdentifier(textView)
                 textView.setSelectedRange(lineRange)
                 self.enter(mode: .visual)
                 
@@ -850,6 +853,7 @@ final class VimEngine {
             }
             textView.setSelectedRange(selectionRange)
             VimState.shared.visualActiveLocation = location
+            VimState.shared.visualOwnerID = ObjectIdentifier(textView)
             self.refreshCursor()
             if let editorTextView = textView as? EditorTextView,
                let newRect = editorTextView.vimCursorRect(at: location)
@@ -857,7 +861,7 @@ final class VimEngine {
                 editorTextView.funEffects.animateVimCursorTransition(
                     from: oldRect,
                     to: newRect,
-                    color: editorTextView.insertionPointColor
+                    color: editorTextView.effectiveCursorColor
                 )
             }
         } else {
@@ -1947,10 +1951,25 @@ final class VimEngine {
     private func enter(mode: VimMode) {
         
         VimState.shared.mode = mode
-        if mode == .insert { self.visualAnchor = nil }
+        if mode != .visual {
+            self.visualAnchor = nil
+            self.visualLinewise = false
+            VimState.shared.visualActiveLocation = nil
+            VimState.shared.visualOwnerID = nil
+        }
         self.resetPending(keepCount: false)
         self.refreshCursor()
         self.updateStatus()
+    }
+    
+    
+    /// Clears visual mode cleanly when focus moves out of the owning text view.
+    func clearVisualSelectionIfNeeded() {
+        
+        guard let textView else { return }
+        if VimState.shared.visualOwnerID == ObjectIdentifier(textView), VimState.shared.mode == .visual {
+            self.endVisual()
+        }
     }
     
     
@@ -1989,6 +2008,7 @@ final class VimEngine {
         self.visualAnchor = nil
         self.visualLinewise = false
         VimState.shared.visualActiveLocation = nil
+        VimState.shared.visualOwnerID = nil
         self.enter(mode: .normal)
     }
     
@@ -2027,17 +2047,27 @@ final class VimEngine {
         let oldRect = (textView as? EditorTextView)?.vimCursorRect(at: oldLocation)
         let length = (textView.string as NSString).length
         let clamped = max(0, min(location, length))
-        textView.setSelectedRange(NSRange(location: clamped, length: 0))
-        textView.scrollRangeToVisible(NSRange(location: clamped, length: 0))
+        let targetRange = NSRange(location: clamped, length: 0)
+        textView.setSelectedRange(targetRange)
         
-        if let editorTextView = textView as? EditorTextView,
-           let newRect = editorTextView.vimCursorRect(at: clamped)
-        {
-            editorTextView.funEffects.animateVimCursorTransition(
-                from: oldRect,
-                to: newRect,
-                color: editorTextView.insertionPointColor
-            )
+        if let editorTextView = textView as? EditorTextView {
+            if let probeRect = editorTextView.vimCursorRect(at: clamped) {
+                let comfortableVisible = editorTextView.visibleRect.insetBy(dx: 0, dy: min(24, editorTextView.visibleRect.height * 0.15))
+                if !comfortableVisible.contains(probeRect) {
+                    editorTextView.scrollRangeToVisible(targetRange)
+                }
+            } else {
+                editorTextView.scrollRangeToVisible(targetRange)
+            }
+            if let newRect = editorTextView.vimCursorRect(at: clamped) {
+                editorTextView.funEffects.animateVimCursorTransition(
+                    from: oldRect,
+                    to: newRect,
+                    color: editorTextView.effectiveCursorColor
+                )
+            }
+        } else {
+            textView.scrollRangeToVisible(targetRange)
         }
     }
     

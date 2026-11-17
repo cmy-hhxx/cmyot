@@ -235,7 +235,8 @@ extension Document {
         let content = self.textStorage.string
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         
-        let recordID = self.fileURL?.path(percentEncoded: false) ?? "doc:\(self.databaseDocumentID)"
+        let rawDocID = self.databaseDocumentID.hasPrefix("doc:") ? self.databaseDocumentID : "doc:\(self.databaseDocumentID)"
+        let recordID = self.fileURL?.path(percentEncoded: false) ?? rawDocID
         CotLocalDatabase.shared.saveDocument(
             id: recordID,
             title: self.displayName,

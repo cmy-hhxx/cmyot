@@ -21,6 +21,7 @@
 
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 /// Manages images embedded inside a Plain Text document (`SyntaxName.none`).
 ///
@@ -29,28 +30,75 @@ import Foundation
 /// (or in `~/Library/Application Support/Cot/InlineImages/` for untitled documents).
 /// In the editor, `EditorTextView` and `LayoutManager` render a sleek inline thumbnail card
 /// right under the line containing the token.
-@MainActor final class PlainTextInlineImageStore {
+nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     
     static let shared = PlainTextInlineImageStore()
     
     private static let tokenRegex = try! NSRegularExpression(pattern: "⟦🖼\\s*([^⟧]+?)⟧")
+    private static let imagePasteboardTypes: [NSPasteboard.PasteboardType] = [
+        .png,
+        .tiff,
+        NSPasteboard.PasteboardType("public.jpeg"),
+        NSPasteboard.PasteboardType("public.heic"),
+        NSPasteboard.PasteboardType("com.compuserve.gif"),
+        NSPasteboard.PasteboardType("org.webmproject.webp"),
+    ]
+    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "tif", "bmp"]
     
+    private let lock = NSLock()
     private var imageCache: [String: NSImage] = [:]
+    private var imageSizeCache: [String: NSSize] = [:]
+    
+    
+    /// Extracts an image from the pasteboard for `Cmd+V` pasting, handling screenshots,
+    /// browser/chat image copies (which often also place URL/HTML strings on the pasteboard),
+    /// and copied image files from Finder.
+    func extractImage(from pasteboard: NSPasteboard) -> NSImage? {
+        
+        // 1. Check copied image files (e.g. Cmd+C on a .png in Finder puts fileURL + filename string)
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] {
+            for url in urls where Self.imageExtensions.contains(url.pathExtension.lowercased()) {
+                if let image = NSImage(contentsOf: url) {
+                    return image
+                }
+            }
+        }
+        
+        // 2. Check explicit raster image data types on the pasteboard
+        let types = pasteboard.types ?? []
+        let hasExplicitImageData = types.contains(where: { Self.imagePasteboardTypes.contains($0) })
+        guard hasExplicitImageData else { return nil }
+        
+        // If there is multi-line plain text AND no HTML <img> tag, assume the user copied rich text
+        // (e.g. a document excerpt) rather than an image.
+        if let plainText = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !plainText.isEmpty
+        {
+            let html = pasteboard.string(forType: .html) ?? ""
+            let looksLikeHTMLImage = html.localizedCaseInsensitiveContains("<img")
+            let looksLikeSingleLineURLOrFilename = !plainText.contains("\n")
+                && (plainText.hasPrefix("http://") || plainText.hasPrefix("https://") || plainText.hasPrefix("file://")
+                    || Self.imageExtensions.contains(URL(filePath: plainText).pathExtension.lowercased()))
+            
+            if !looksLikeHTMLImage && !looksLikeSingleLineURLOrFilename {
+                return nil
+            }
+        }
+        
+        for type in Self.imagePasteboardTypes {
+            if let data = pasteboard.data(forType: type), let image = NSImage(data: data) {
+                return image
+            }
+        }
+        
+        return NSImage(pasteboard: pasteboard)
+    }
     
     
     /// Stores a pasted or dropped `NSImage` for a document and returns the plain-text token to insert.
-    ///
-    /// - Parameters:
-    ///   - image: The image to store.
-    ///   - documentURL: The file URL of the document, if saved.
-    /// - Returns: The token string (e.g. `⟦🖼 img-20261117-1620.png⟧`) and its saved file URL.
     func store(image: NSImage, for documentURL: URL?) -> (token: String, fileURL: URL)? {
         
-        guard
-            let tiffData = image.tiffRepresentation,
-            let bitmap = NSBitmapImageRep(data: tiffData),
-            let pngData = bitmap.representation(using: .png, properties: [:])
-        else { return nil }
+        guard let pngData = Self.encodePNG(from: image) else { return nil }
         
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -68,8 +116,19 @@ import Foundation
             return nil
         }
         
-        self.imageCache[targetURL.path] = image
-        self.imageCache[filename] = image
+        self.lock.withLock {
+            if let normalized = NSImage(data: pngData) {
+                self.imageCache[targetURL.path] = normalized
+                self.imageCache[filename] = normalized
+                self.imageSizeCache[targetURL.path] = normalized.size
+                self.imageSizeCache[filename] = normalized.size
+            } else {
+                self.imageCache[targetURL.path] = image
+                self.imageCache[filename] = image
+                self.imageSizeCache[targetURL.path] = image.size
+                self.imageSizeCache[filename] = image.size
+            }
+        }
         
         return ("⟦🖼 \(filename)⟧", targetURL)
     }
@@ -83,12 +142,32 @@ import Foundation
     }
     
     
+    /// Copies any inline images referenced in `text` from the global untitled cache into the saved
+    /// document's `.cot-assets/` folder so the saved file stays self-contained.
+    func migrateGlobalAssetsIfNeeded(in text: String, to documentURL: URL) {
+        
+        let nsString = text as NSString
+        let tokens = self.findTokens(in: nsString, range: NSRange(location: 0, length: nsString.length))
+        guard !tokens.isEmpty else { return }
+        
+        let globalFolder = self.assetsFolder(for: nil)
+        let docFolder = self.assetsFolder(for: documentURL)
+        
+        for token in tokens {
+            let sourceURL = globalFolder.appending(path: token.identifier)
+            let destURL = docFolder.appending(path: token.identifier)
+            guard
+                FileManager.default.fileExists(atPath: sourceURL.path),
+                !FileManager.default.fileExists(atPath: destURL.path)
+            else { continue }
+            
+            try? FileManager.default.createDirectory(at: docFolder, withIntermediateDirectories: true)
+            try? FileManager.default.copyItem(at: sourceURL, to: destURL)
+        }
+    }
+    
+    
     /// Finds all inline image tokens inside the given `NSString` range.
-    ///
-    /// - Parameters:
-    ///   - string: The full document string.
-    ///   - range: The character range to scan.
-    /// - Returns: Matched token ranges and their image identifiers.
     func findTokens(in string: NSString, range: NSRange) -> [(range: NSRange, identifier: String)] {
         
         let safeRange = NSIntersectionRange(range, NSRange(location: 0, length: string.length))
@@ -105,18 +184,49 @@ import Foundation
     /// Resolves and caches the `NSImage` for a token identifier.
     func image(for identifier: String, documentURL: URL?) -> NSImage? {
         
-        if let cached = self.imageCache[identifier] {
+        let cacheKey = self.cacheKey(for: identifier, documentURL: documentURL)
+        if let cached = self.lock.withLock({ self.imageCache[cacheKey] ?? self.imageCache[identifier] }) {
             return cached
         }
         
         if let url = self.imageURL(for: identifier, documentURL: documentURL),
            let loaded = NSImage(contentsOf: url)
         {
-            self.imageCache[identifier] = loaded
+            self.lock.withLock {
+                self.imageCache[cacheKey] = loaded
+                self.imageCache[identifier] = loaded
+                self.imageSizeCache[cacheKey] = loaded.size
+                self.imageSizeCache[identifier] = loaded.size
+            }
             return loaded
         }
         
         return nil
+    }
+    
+    
+    /// Returns the scaled card size (including padding) for an inline image token, or `nil` if unresolved.
+    func cardSize(
+        for identifier: String,
+        documentURL: URL?,
+        maxImageWidth: CGFloat = 440,
+        maxImageHeight: CGFloat = 210
+    ) -> NSSize? {
+        
+        let cacheKey = self.cacheKey(for: identifier, documentURL: documentURL)
+        let naturalSize: NSSize?
+        if let cached = self.lock.withLock({ self.imageSizeCache[cacheKey] ?? self.imageSizeCache[identifier] }) {
+            naturalSize = cached
+        } else {
+            naturalSize = self.image(for: identifier, documentURL: documentURL)?.size
+        }
+        
+        guard let imgSize = naturalSize, imgSize.width > 0, imgSize.height > 0 else { return nil }
+        
+        let scale = min(maxImageWidth / imgSize.width, maxImageHeight / imgSize.height, 1.0)
+        let drawWidth = max(64, round(imgSize.width * scale))
+        let drawHeight = max(44, round(imgSize.height * scale))
+        return NSSize(width: drawWidth + 12, height: drawHeight + 12)
     }
     
     
@@ -152,6 +262,15 @@ import Foundation
     
     // MARK: Private Helpers
     
+    private func cacheKey(for identifier: String, documentURL: URL?) -> String {
+        
+        if let documentURL {
+            return "\(documentURL.path)::\(identifier)"
+        }
+        return identifier
+    }
+    
+    
     private func assetsFolder(for documentURL: URL?) -> URL {
         
         if let documentURL {
@@ -159,5 +278,30 @@ import Foundation
         }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport.appending(path: "Cot/InlineImages", directoryHint: .isDirectory)
+    }
+    
+    
+    private static func encodePNG(from image: NSImage) -> Data? {
+        
+        var proposedRect = NSRect(origin: .zero, size: image.size)
+        if let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) {
+            let bitmap = NSBitmapImageRep(cgImage: cgImage)
+            // Preserve Retina point size when pixel size is 2x so inline thumbnails don't blow up unnecessarily
+            if image.size.width > 0, image.size.height > 0 {
+                bitmap.size = image.size
+            }
+            if let png = bitmap.representation(using: .png, properties: [:]) {
+                return png
+            }
+        }
+        
+        if let tiffData = image.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiffData),
+           let png = bitmap.representation(using: .png, properties: [:])
+        {
+            return png
+        }
+        
+        return nil
     }
 }

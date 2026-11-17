@@ -63,6 +63,7 @@ final class AIResultPanelController: NSWindowController {
     private let replaceButton = NSButton(title: "", target: nil, action: nil)
     private let insertButton = NSButton(title: "", target: nil, action: nil)
     private let copyButton = NSButton(title: "", target: nil, action: nil)
+    private let saveReportButton = NSButton(title: "", target: nil, action: nil)
     private let cancelButton = NSButton(title: "", target: nil, action: nil)
     
     
@@ -272,6 +273,12 @@ final class AIResultPanelController: NSWindowController {
                                              defaultValue: "Copy the whole answer",
                                              table: "AI"),
                              action: #selector(copyResult(_:)))
+        self.configureButton(self.saveReportButton,
+                             title: String(localized: "ai.result.saveToWeeklyReports",
+                                           defaultValue: "存入周报库", table: "AI"),
+                             tooltip: "保存这篇周报到顶部「周报」菜单的历史库中",
+                             action: #selector(saveToWeeklyReports(_:)))
+        self.saveReportButton.isHidden = (self.action != .weeklyReport)
         self.configureButton(self.cancelButton,
                              title: String(localized: "ai.result.cancel",
                                            defaultValue: "Cancel", table: "AI"),
@@ -279,8 +286,8 @@ final class AIResultPanelController: NSWindowController {
                              action: #selector(cancel(_:)), keyEquivalent: "\u{1b}")
         
         // macOS reads a button row from the escape hatch to the commit, and keeps it against
-        // the trailing edge: 取消 · 拷贝 · 插入 · 替换选中.
-        let buttons = NSStackView(views: [self.cancelButton, self.copyButton,
+        // the trailing edge: 取消 · 存入周报库 · 拷贝 · 插入 · 替换选中.
+        let buttons = NSStackView(views: [self.cancelButton, self.saveReportButton, self.copyButton,
                                           self.insertButton, self.replaceButton])
         buttons.orientation = .horizontal
         buttons.spacing = 10
@@ -429,6 +436,7 @@ final class AIResultPanelController: NSWindowController {
         self.replaceButton.isEnabled = canApply
         self.insertButton.isEnabled = canApply
         self.copyButton.isEnabled = canApply
+        self.saveReportButton.isEnabled = canApply
     }
     
     
@@ -476,6 +484,17 @@ final class AIResultPanelController: NSWindowController {
             
             self?.copyButton.title = title
         }
+    }
+    
+    
+    @objc private func saveToWeeklyReports(_ sender: Any?) {
+        
+        let trimmed = self.answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        
+        CotLocalDatabase.shared.saveGeneratedWeeklyReport(content: trimmed)
+        self.saveReportButton.title = "已存入周报库 ✓"
+        self.saveReportButton.isEnabled = false
     }
     
     

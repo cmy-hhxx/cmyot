@@ -50,6 +50,8 @@ extension DefaultKeys {
     static let windowAlpha = DefaultKey<Double>("windowAlpha")
     static let theme = DefaultKey<String>("defaultTheme")
     static let pinsThemeAppearance = DefaultKey<Bool>("pinsThemeAppearance")
+    static let usesCustomCursorColor = DefaultKey<Bool>("usesCustomCursorColor")
+    static let customCursorColorHex = DefaultKey<String>("customCursorColorHex")
     
     // Window
     static let windowTabbing = DefaultKey<Int>("windowTabbing")

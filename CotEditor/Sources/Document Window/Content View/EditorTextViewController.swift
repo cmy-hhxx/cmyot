@@ -106,6 +106,10 @@ final class EditorTextViewController: NSViewController, NSServicesMenuRequestor,
         scrollView.hasVerticalScroller = true
         scrollView.documentView = textView
         scrollView.identifier = NSUserInterfaceItemIdentifier("EditorScrollView")
+        scrollView.contentView.wantsLayer = true
+        scrollView.contentView.layer?.masksToBounds = true
+        textView.wantsLayer = true
+        textView.layer?.masksToBounds = true
         
         let lineNumberView = LineNumberView(textView: textView)
         
@@ -170,6 +174,16 @@ final class EditorTextViewController: NSViewController, NSServicesMenuRequestor,
                 .assign(to: \.highlightsSelectionInstance, on: self.textView),
             defaults.publisher(for: .selectionInstanceHighlightDelay, initial: true)
                 .assign(to: \.selectionInstanceHighlightDelay, on: self.textView),
+            defaults.publisher(for: .usesCustomCursorColor, initial: true)
+                .sink { [weak self] _ in self?.textView.refreshCursorColor() },
+            defaults.publisher(for: .customCursorColorHex, initial: true)
+                .sink { [weak self] _ in self?.textView.refreshCursorColor() },
+            NotificationCenter.default.publisher(for: NSDocument.DidChangeFileURLMessage.name, object: self.document)
+                .sink { [weak self] _ in
+                    guard let self else { return }
+                    (self.textView.layoutManager as? LayoutManager)?.inlineImageDocumentURL = self.document.fileURL
+                    self.textView.needsDisplay = true
+                },
             
             // observe document setting changes
             self.document.$syntaxName
@@ -457,7 +471,9 @@ final class EditorTextViewController: NSViewController, NSServicesMenuRequestor,
         let inlineImagesPref = UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled) == nil
             ? true
             : UserDefaults.standard.bool(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
-        (self.textView.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages = isPlainText && inlineImagesPref
+        let layoutManager = self.textView.layoutManager as? LayoutManager
+        layoutManager?.inlineImageDocumentURL = self.document.fileURL
+        layoutManager?.rendersPlainTextInlineImages = isPlainText && inlineImagesPref
         self.textView.needsDisplay = true
     }
     

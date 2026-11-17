@@ -54,6 +54,8 @@ struct DefaultSettings {
             .windowAlpha: 1.0,
             .theme: "Anura",
             .pinsThemeAppearance: false,
+            .usesCustomCursorColor: false,
+            .customCursorColorHex: "#0A84FF",
             
             // Window
             .windowTabbing: 1,  // = NSWindow.UserTabbingPreference.always

@@ -47,6 +47,8 @@ extension DefaultSettings {
         .windowAlpha,
         .theme,
         .pinsThemeAppearance,
+        .usesCustomCursorColor,
+        .customCursorColorHex,
         
         // Window
         .windowTabbing,  // = Respect System Setting

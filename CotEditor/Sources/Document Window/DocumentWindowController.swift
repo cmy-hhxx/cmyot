@@ -1374,6 +1374,13 @@ extension DocumentWindowController {
                    defaultValue: "Show Page Guide", table: "Chrome"),
             #selector(DocumentViewController.togglePageGuide(_:)))
         menu.addItem(.separator())
+        add(String(localized: "chrome.menu.openWeeklyReportCenter",
+                   defaultValue: "打开周报中心（历史与生成）…", table: "Chrome"),
+            #selector(AppDelegate.showWeeklyReportCenter(_:)))
+        add(String(localized: "chrome.menu.organizeAndMergeAll",
+                   defaultValue: "AI 一键整理合并所有文档…", table: "Chrome"),
+            #selector(AppDelegate.organizeAndMergeAllDocumentsFromMenu(_:)))
+        menu.addItem(.separator())
         add(String(localized: "chrome.more.tileWindows",
                    defaultValue: "Tile Two Windows", table: "Chrome"),
             #selector(DocumentController.tileDocumentWindows(_:)))

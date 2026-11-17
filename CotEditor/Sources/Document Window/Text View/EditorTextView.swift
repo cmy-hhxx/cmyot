@@ -26,6 +26,8 @@
 
 import AppKit
 import Combine
+import SwiftUI
+import ColorCode
 import Defaults
 import Invisible
 import LineEnding
@@ -180,6 +182,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     private var fontObservers: Set<AnyCancellable> = []
     private var windowOpacityObserver: NSKeyValueObservation?
     private var keyStateObservers: [any NSObjectProtocol] = []
+    private var scrollClipObserver: NSObjectProtocol?
+    private var inlineImageCardEntries: [(rect: NSRect, identifier: String, tokenRange: NSRange)] = []
+    private weak var imagePreviewPopover: NSPopover?
     
     
     // MARK: Lifecycle
@@ -216,6 +221,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         // avoid AppKit falling back to Last Resort while fixing attributes during the initial setup
         self.typingAttributes[.font] = self.font ?? .systemFont(ofSize: 0)
+        
+        // Keep layer clipping enabled upfront so cursor/particle overlays never escape the pane
+        self.wantsLayer = true
+        self.layer?.masksToBounds = true
+        self.registerForDraggedTypes([PaneTab.dragPasteboardType])
     }
     
     
@@ -316,6 +326,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         guard super.resignFirstResponder() else { return false }
         
+        self.funEffects.resetCursorTracking()
+        self.vimEngine.clearVisualSelectionIfNeeded()
+        
         defer {
             self.invalidateInsertionIndicatorDisplayMode()
             self.invalidateAutomaticPeriodSubstitution()
@@ -339,7 +352,29 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             window.contentBackgroundColor = theme.background.color
         }
         
+        if let scrollObserver = self.scrollClipObserver {
+            NotificationCenter.default.removeObserver(scrollObserver)
+            self.scrollClipObserver = nil
+        }
+        
         if let window {
+            self.wantsLayer = true
+            self.layer?.masksToBounds = true
+            if let clipView = self.enclosingScrollView?.contentView {
+                clipView.wantsLayer = true
+                clipView.layer?.masksToBounds = true
+                clipView.postsBoundsChangedNotifications = true
+                self.scrollClipObserver = NotificationCenter.default.addObserver(
+                    forName: NSView.boundsDidChangeNotification,
+                    object: clipView,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.funEffects.resetCursorTracking()
+                    }
+                }
+            }
+            
             // apply window opacity
             self.windowOpacityObserver = window.observe(\.isOpaque, options: [.initial, .new]) { [unowned self] _, change in
                 guard let new = change.newValue else { return }
@@ -360,12 +395,14 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 },
                 NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [unowned self] _ in
                     MainActor.assumeIsolated { [unowned self] in
+                        self.funEffects.resetCursorTracking()
                         self.invalidateInsertionIndicatorDisplayMode()
                         self.invalidateAutomaticPeriodSubstitution()
                     }
                 },
             ]
         } else {
+            self.funEffects.resetCursorTracking()
             self.keyStateObservers.forEach(NotificationCenter.default.removeObserver)
             self.keyStateObservers.removeAll()
             self.windowOpacityObserver = nil
@@ -414,6 +451,20 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     override func mouseDown(with event: NSEvent) {
         
         self.mouseDownPoint = self.convert(event.locationInWindow, from: nil)
+        
+        // Clicking an inline image card in Plain Text opens an interactive preview popover
+        if !event.modifierFlags.contains(.command),
+           !event.modifierFlags.contains(.shift),
+           !event.modifierFlags.contains(.option),
+           event.clickCount == 1,
+           (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true,
+           let hit = self.inlineImageCardEntries.first(where: { $0.rect.contains(self.mouseDownPoint) })
+        {
+            self.window?.makeFirstResponder(self)
+            self.presentInlineImagePopover(for: hit)
+            return
+        }
+        
         self.isPerformingRectangularSelection = event.modifierFlags.contains(.option)
         self.needsUpdateInsertionIndicators = true  // to draw dummy indicator for proper one while selecting
         
@@ -487,19 +538,79 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     private(set) lazy var funEffects = EditorFunEffectsController(textView: self)
     
     
+    /// The active cursor color, honoring custom user cursor color when enabled.
+    var effectiveCursorColor: NSColor {
+        
+        if UserDefaults.standard[.usesCustomCursorColor],
+           let custom = NSColor(colorCode: UserDefaults.standard[.customCursorColorHex])
+        {
+            return custom
+        }
+        return self.theme?.insertionPointColor ?? .textInsertionPointColor
+    }
+    
+    
+    /// Height of a single text line (never inflated by inline image card height).
+    private var singleLineHeight: CGFloat {
+        
+        (self.layoutManager as? LayoutManager)?.lineHeight
+            ?? max(14, (self.font?.pointSize ?? 13) * 1.3)
+    }
+    
+    
+    /// Re-applies the cursor color across native insertion point, multi-cursor indicators, and Vim blocks.
+    func refreshCursorColor() {
+        
+        let color = self.effectiveCursorColor
+        self.insertionPointColor = color
+        for indicator in self.insertionIndicators {
+            indicator.color = color
+        }
+        self.setNeedsDisplay(self.visibleRect, avoidAdditionalLayout: true)
+    }
+    
+    
     override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
         
+        let cursorColor = self.effectiveCursorColor
+        var caretRect = rect
+        let maxLineHeight = self.singleLineHeight
+        if caretRect.height > maxLineHeight + 2 {
+            caretRect.size.height = maxLineHeight
+        }
+        
         guard UserDefaults.standard[.vimMode], VimState.shared.mode != .insert else {
-            super.drawInsertionPoint(in: rect, color: color, turnedOn: flag)
+            // On lines with inline image cards, AppKit's super.drawInsertionPoint can still extend
+            // or ignore height; draw a crisp 2pt single-line caret directly in that case.
+            if rect.height > maxLineHeight + 2 {
+                guard flag else { return }
+                var bar = caretRect
+                bar.size.width = 2
+                NSGraphicsContext.saveGraphicsState()
+                cursorColor.setFill()
+                NSBezierPath(roundedRect: bar, xRadius: 1, yRadius: 1).fill()
+                NSGraphicsContext.restoreGraphicsState()
+            } else {
+                super.drawInsertionPoint(in: caretRect, color: cursorColor, turnedOn: flag)
+            }
             return
         }
         
-        // Vim keeps the cursor visible in normal/visual mode: draw a solid block
-        // instead of the thin blinking bar, so the current mode is obvious.
-        var block = rect
+        var block = caretRect
         block.size.width = self.blockCursorWidth()
-        color.withAlphaComponent(VimState.shared.mode == .visual ? 0.30 : 0.55).setFill()
-        NSBezierPath(rect: block).fill()
+        
+        NSGraphicsContext.saveGraphicsState()
+        if VimState.shared.mode == .replace {
+            let barHeight = max(3, round(block.height * 0.22))
+            let underlineRect = NSRect(x: block.minX, y: block.maxY - barHeight, width: block.width, height: barHeight)
+            cursorColor.withAlphaComponent(0.85).setFill()
+            NSBezierPath(roundedRect: underlineRect, xRadius: 1, yRadius: 1).fill()
+        } else {
+            // Unified solid block cursor across Normal and Visual modes
+            cursorColor.withAlphaComponent(VimState.shared.mode == .visual ? 0.65 : 0.55).setFill()
+            NSBezierPath(roundedRect: block, xRadius: 1.5, yRadius: 1.5).fill()
+        }
+        NSGraphicsContext.restoreGraphicsState()
     }
     
     
@@ -508,18 +619,15 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         let string = self.string as NSString
         let location = self.selectedRange().location
-        let sample = location < string.length
-            ? string.substring(with: NSRange(location: location, length: 1))
-            : " "
-        let font = self.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
-        let spaceWidth = (" " as NSString).size(withAttributes: [.font: font]).width
+        let fallbackSpace = self.spaceWidth > 0 ? self.spaceWidth : 8
+        guard location < string.length else { return fallbackSpace }
         
-        // A line break has no width of its own, so the block collapsed to the 2pt minimum and
-        // the cursor looked like a thin caret on empty lines. Use one space instead.
+        let sample = string.substring(with: NSRange(location: location, length: 1))
         if sample == "\n" || sample == "\r" {
-            return spaceWidth
+            return fallbackSpace
         }
         
+        let font = self.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
         return max((sample as NSString).size(withAttributes: [.font: font]).width, 2)
     }
     
@@ -679,8 +787,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         super.insertText(plainString, replacementRange: replacementRange)
         
-        if let caretRect = self.boundingRect(for: self.selectedRange) {
-            self.funEffects.triggerTypewriterBurst(at: caretRect)
+        if !self.hasMarkedText(),
+           plainString.count <= 4,
+           var caretRect = self.boundingRect(for: self.selectedRange)
+        {
+            caretRect.size.height = min(caretRect.height, self.singleLineHeight)
+            self.funEffects.triggerTypewriterBurst(at: caretRect, color: self.effectiveCursorColor)
         }
         
         // auto completion
@@ -797,17 +909,27 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     override func paste(_ sender: Any?) {
         
         let pboard = NSPasteboard.general
-        if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true,
-           pboard.string(forType: .string) == nil,
-           let image = NSImage(pasteboard: pboard)
+        let document = self.textStorage.flatMap { self.documentViewController?.document(for: $0) }
+        let docURL = document?.fileURL
+        let rendersPlainTextImages = (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true
+        let isMarkdown = (document?.syntaxName == "Markdown")
+        
+        if (rendersPlainTextImages || isMarkdown),
+           let image = PlainTextInlineImageStore.shared.extractImage(from: pboard),
+           let stored = PlainTextInlineImageStore.shared.store(image: image, for: docURL)
         {
-            let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
-            if let stored = PlainTextInlineImageStore.shared.store(image: image, for: docURL) {
-                self.insertText(stored.token, replacementRange: self.selectedRange())
-                self.layoutManager?.invalidateLayout(forCharacterRange: self.string.range, actualCharacterRange: nil)
-                self.needsDisplay = true
-                return
+            let insertionText = rendersPlainTextImages ? stored.token : "![image](.cot-assets/\(stored.fileURL.lastPathComponent))"
+            let range = self.selectedRange()
+            if self.shouldChangeText(in: range, replacementString: insertionText) {
+                self.replaceCharacters(in: range, with: insertionText)
+                self.didChangeText()
+            } else {
+                self.insertText(insertionText, replacementRange: range)
             }
+            self.layoutManager?.invalidateLayout(forCharacterRange: self.string.range, actualCharacterRange: nil)
+            self.scrollRangeToVisible(self.selectedRange())
+            self.needsDisplay = true
+            return
         }
         
         super.paste(sender)
@@ -1066,6 +1188,15 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             ocrItem.isEnabled = true
             menu.addItem(ocrItem)
             
+            let organizeItem = NSMenuItem(
+                title: AIAction.organizeAndMerge.title,
+                action: #selector(DocumentViewController.organizeAndMergeAllDocuments(_:)),
+                keyEquivalent: ""
+            )
+            organizeItem.target = documentViewController
+            organizeItem.isEnabled = true
+            menu.addItem(organizeItem)
+            
             if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true {
                 let insertImageItem = NSMenuItem(
                     title: String(localized: "chrome.contextMenu.insertInlineImage", defaultValue: "Insert Image (Plain Text)…", table: "Chrome"),
@@ -1091,7 +1222,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                                                  defaultValue: "Paste", table: "Chrome"),
                                    action: #selector(paste(_:)), keyEquivalent: "v")
         pasteItem.keyEquivalentModifierMask = .command
-        pasteItem.isEnabled = NSPasteboard.general.canReadObject(forClasses: [NSString.self, NSImage.self], options: nil)
+        pasteItem.isEnabled = NSPasteboard.general.string(forType: .string) != nil
+            || PlainTextInlineImageStore.shared.extractImage(from: NSPasteboard.general) != nil
         menu.addItem(pasteItem)
         
         let selectAllItem = NSMenuItem(title: String(localized: "chrome.contextMenu.selectAll",
@@ -1144,6 +1276,20 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         image.isTemplate = false
         
         return image
+    }
+    
+    
+    /// The editor pane view controller owning this text view, found through the responder chain.
+    private var editorViewController: EditorViewController? {
+        
+        var responder: NSResponder? = self
+        while let current = responder {
+            if let pane = current as? EditorViewController {
+                return pane
+            }
+            responder = current.nextResponder
+        }
+        return nil
     }
     
     
@@ -1318,28 +1464,36 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         // In visual mode the selection replaces the caret, so draw the cursor block
-        // ourselves at the active end; otherwise the user loses the cursor entirely.
+        // ourselves at the active end using the same unified cursor color/shape.
         if
             UserDefaults.standard[.vimMode],
             VimState.shared.mode == .visual,
+            VimState.shared.visualOwnerID == ObjectIdentifier(self),
             let location = VimState.shared.visualActiveLocation,
             let rect = self.vimCursorRect(at: location)
         {
             NSGraphicsContext.saveGraphicsState()
-            NSColor.selectedTextBackgroundColor.blended(withFraction: 0.5, of: .controlAccentColor)?.setFill()
-            self.centerScanRect(rect).intersection(dirtyRect).fill()
+            self.effectiveCursorColor.withAlphaComponent(0.65).setFill()
+            let drawRect = self.centerScanRect(rect).intersection(dirtyRect)
+            if !drawRect.isEmpty {
+                NSBezierPath(roundedRect: drawRect, xRadius: 1.5, yRadius: 1.5).fill()
+            }
             NSGraphicsContext.restoreGraphicsState()
         }
         
         // Draw Plain Text inline image cards below lines containing `⟦🖼 ...⟧` tokens
         if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true {
             self.drawPlainTextInlineImages(in: dirtyRect)
+        } else {
+            self.inlineImageCardEntries.removeAll()
         }
     }
     
     
     /// Renders inline image preview cards inside Plain Text documents for `⟦🖼 filename⟧` tokens.
     private func drawPlainTextInlineImages(in dirtyRect: NSRect) {
+        
+        self.inlineImageCardEntries.removeAll()
         
         guard
             let layoutManager = self.layoutManager as? LayoutManager,
@@ -1369,32 +1523,94 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             
             let cardTopY = fragmentRect.minY + self.textContainerOrigin.y + singleLineHeight + 4
             let cardX = max(self.textContainerOrigin.x + 8, tokenBounding.minX + self.textContainerOrigin.x)
-            let maxCardHeight: CGFloat = 136
-            let maxCardWidth: CGFloat = min(360, max(160, self.bounds.width - cardX - 24))
+            let availableWidth = max(160, self.bounds.width - cardX - 24)
+            let maxCardWidth: CGFloat = min(440, availableWidth)
+            let maxCardHeight: CGFloat = 210
             
-            let imgSize = image.size
-            guard imgSize.width > 0, imgSize.height > 0 else { continue }
-            let scale = min(maxCardWidth / imgSize.width, maxCardHeight / imgSize.height, 1.0)
-            let drawWidth = max(48, round(imgSize.width * scale))
-            let drawHeight = max(36, round(imgSize.height * scale))
+            guard let cardSize = PlainTextInlineImageStore.shared.cardSize(
+                for: token.identifier,
+                documentURL: docURL,
+                maxImageWidth: maxCardWidth,
+                maxImageHeight: maxCardHeight
+            ) else { continue }
             
-            let cardRect = NSRect(x: cardX, y: cardTopY, width: drawWidth + 12, height: drawHeight + 12)
+            let cardRect = NSRect(x: cardX, y: cardTopY, width: cardSize.width, height: cardSize.height)
+            self.inlineImageCardEntries.append((rect: cardRect, identifier: token.identifier, tokenRange: token.range))
             guard cardRect.intersects(dirtyRect) else { continue }
             
             NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current?.imageInterpolation = .high
             let cardPath = NSBezierPath(roundedRect: cardRect, xRadius: 8, yRadius: 8)
-            NSColor.controlBackgroundColor.withAlphaComponent(0.92).setFill()
+            NSColor.controlBackgroundColor.withAlphaComponent(0.94).setFill()
             cardPath.fill()
-            NSColor.separatorColor.setStroke()
+            NSColor.separatorColor.withAlphaComponent(0.85).setStroke()
             cardPath.lineWidth = 1
             cardPath.stroke()
             
             let imageRect = cardRect.insetBy(dx: 6, dy: 6)
             let clipPath = NSBezierPath(roundedRect: imageRect, xRadius: 5, yRadius: 5)
             clipPath.addClip()
-            image.draw(in: imageRect, from: .zero, operation: .sourceOver, fraction: 1.0, respectFlipped: true, hints: nil)
+            image.draw(in: imageRect,
+                       from: NSRect(origin: .zero, size: image.size),
+                       operation: .sourceOver,
+                       fraction: 1.0,
+                       respectFlipped: true,
+                       hints: nil)
             NSGraphicsContext.restoreGraphicsState()
         }
+    }
+    
+    
+    /// Opens an interactive preview popover when clicking an inline image card.
+    private func presentInlineImagePopover(for entry: (rect: NSRect, identifier: String, tokenRange: NSRange)) {
+        
+        self.imagePreviewPopover?.performClose(nil)
+        
+        let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
+        guard let image = PlainTextInlineImageStore.shared.image(for: entry.identifier, documentURL: docURL) else { return }
+        let fileURL = PlainTextInlineImageStore.shared.imageURL(for: entry.identifier, documentURL: docURL)
+        
+        let popover = NSPopover()
+        popover.behavior = .transient
+        
+        let contentView = InlineImagePreviewPopoverView(
+            image: image,
+            filename: entry.identifier,
+            fileURL: fileURL,
+            onCopyImage: { [weak popover] in
+                let pboard = NSPasteboard.general
+                pboard.clearContents()
+                pboard.writeObjects([image])
+                popover?.performClose(nil)
+            },
+            onRunOCR: { [weak self, weak popover] in
+                popover?.performClose(nil)
+                guard let self, let window = self.window else { return }
+                self.documentViewController?.processOCR(image: image, on: window)
+            },
+            onRevealInFinder: { [weak popover] in
+                if let fileURL {
+                    NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+                }
+                popover?.performClose(nil)
+            },
+            onDeleteToken: { [weak self, weak popover] in
+                popover?.performClose(nil)
+                guard let self else { return }
+                let nsLen = (self.string as NSString).length
+                if NSMaxRange(entry.tokenRange) <= nsLen,
+                   self.shouldChangeText(in: entry.tokenRange, replacementString: "")
+                {
+                    self.replaceCharacters(in: entry.tokenRange, with: "")
+                    self.didChangeText()
+                }
+            }
+        )
+        let hostingController = NSHostingController(rootView: contentView)
+        hostingController.view.frame.size = hostingController.view.intrinsicContentSize
+        popover.contentViewController = hostingController
+        self.imagePreviewPopover = popover
+        popover.show(relativeTo: entry.rect, of: self, preferredEdge: .maxY)
     }
     
     
@@ -1404,31 +1620,61 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         guard let layoutManager, let textContainer else { return nil }
         let string = self.string as NSString
         let length = string.length
-        guard length > 0 else { return nil }
+        let lineH = self.singleLineHeight
+        let fallbackSpace = self.spaceWidth > 0 ? self.spaceWidth : 8
         
-        let index = min(max(0, location), length - 1)
-        let glyphRange = layoutManager.glyphRange(forCharacterRange: NSRange(location: index, length: 1),
-                                                  actualCharacterRange: nil)
+        guard length > 0 else {
+            var extra = layoutManager.extraLineFragmentUsedRect
+            if extra.isEmpty {
+                extra = NSRect(x: 0, y: 0, width: fallbackSpace, height: lineH)
+            }
+            return NSRect(
+                x: extra.minX + self.textContainerOrigin.x,
+                y: extra.minY + self.textContainerOrigin.y,
+                width: fallbackSpace,
+                height: min(extra.height, lineH)
+            )
+        }
+        
+        let clampedLoc = min(max(0, location), length)
+        if clampedLoc == length, string.character(at: length - 1) == 10 {
+            let extra = layoutManager.extraLineFragmentUsedRect
+            if !extra.isEmpty {
+                return NSRect(
+                    x: extra.minX + self.textContainerOrigin.x,
+                    y: extra.minY + self.textContainerOrigin.y,
+                    width: fallbackSpace,
+                    height: min(extra.height > 0 ? extra.height : lineH, lineH)
+                )
+            }
+        }
+        
+        let index = min(clampedLoc, length - 1)
+        let charRange = NSRange(location: index, length: 1)
+        layoutManager.ensureLayout(forCharacterRange: charRange)
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
+        guard glyphRange.location != NSNotFound else { return nil }
+        
         var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
         rect.origin.x += self.textContainerOrigin.x
         rect.origin.y += self.textContainerOrigin.y
         
-        // A line break has no glyph of its own; TextKit reports the whole line fragment as its
-        // bounding rect — sometimes two line fragments high — which painted a full-width block
-        // across the active line. Draw a one-line-high, space-wide block after the line's last
-        // character instead (at the line start when the line is empty), the way Vim does.
-        let character = string.substring(with: NSRange(location: index, length: 1))
+        let character = string.substring(with: charRange)
         let isLineBreak = (character == "\n" || character == "\r")
-        let font = self.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
-        let spaceWidth = (" " as NSString).size(withAttributes: [.font: font]).width
         
         if isLineBreak {
             let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphRange.location, effectiveRange: nil)
             rect.origin.x = usedRect.maxX + self.textContainerOrigin.x
             rect.origin.y = usedRect.minY + self.textContainerOrigin.y
-            rect.size = NSSize(width: spaceWidth, height: usedRect.height)
-        } else if rect.width < 2 {
-            rect.size.width = spaceWidth
+            rect.size = NSSize(width: fallbackSpace, height: min(usedRect.height > 0 ? usedRect.height : lineH, lineH))
+        } else {
+            if clampedLoc == length {
+                rect.origin.x = rect.maxX
+                rect.size.width = fallbackSpace
+            } else if rect.width < 2 {
+                rect.size.width = fallbackSpace
+            }
+            rect.size.height = min(rect.height > 0 ? rect.height : lineH, lineH)
         }
         
         return rect
@@ -1479,13 +1725,72 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        
+        if self.isDraggingPaneTab(sender.draggingPasteboard),
+           let pane = self.editorViewController
+        {
+            return pane.paneDragEntered(sender, in: self)
+        }
+        return super.draggingEntered(sender)
+    }
+    
+    
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        
+        if self.isDraggingPaneTab(sender.draggingPasteboard),
+           let pane = self.editorViewController
+        {
+            return pane.paneDragUpdated(sender, in: self)
+        }
+        return super.draggingUpdated(sender)
+    }
+    
+    
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        
+        if let sender, self.isDraggingPaneTab(sender.draggingPasteboard),
+           let pane = self.editorViewController
+        {
+            pane.paneDragExited(sender)
+            return
+        }
+        super.draggingExited(sender)
+    }
+    
+    
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        
+        if self.isDraggingPaneTab(sender.draggingPasteboard),
+           let pane = self.editorViewController
+        {
+            return pane.panePerformDragOperation(sender, in: self)
+        }
+        return super.performDragOperation(sender)
+    }
+    
+    
+    private func isDraggingPaneTab(_ pboard: NSPasteboard) -> Bool {
+        
+        if pboard.types?.contains(PaneTab.dragPasteboardType) == true {
+            return true
+        }
+        if let raw = pboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           raw.hasPrefix(PaneTab.dragPrefix)
+        {
+            return true
+        }
+        return false
+    }
+    
+    
     /// Reads the pasted/dropped item from NSPasteboard (invoked in `performDragOperation(_:)`).
     override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
         
         // on pane tab drop across panes or windows
         if pboard.name == .drag,
-           let raw = pboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           raw.hasPrefix(PaneTab.dragPrefix),
+           let raw = (pboard.string(forType: PaneTab.dragPasteboardType) ?? pboard.string(forType: .string))?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
            let tabID = PaneTab.tabID(from: raw),
            let documentViewController = self.documentViewController
         {
@@ -1578,6 +1883,15 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         
         switch item.action {
+            case #selector(paste):
+                let rendersPlainText = (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true
+                let isMarkdown = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.syntaxName } == "Markdown"
+                if self.isEditable, (rendersPlainText || isMarkdown),
+                   PlainTextInlineImageStore.shared.extractImage(from: NSPasteboard.general) != nil
+                {
+                    return true
+                }
+                
             case #selector(pasteAsIs),
                  #selector(shiftRight),
                  #selector(shiftLeft),
@@ -1930,10 +2244,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         self.backgroundColor = theme.background.color
         self.lineHighlightColor = theme.lineHighlight.color
-        self.insertionPointColor = theme.insertionPointColor
-        for indicator in self.insertionIndicators {
-            indicator.color = self.insertionPointColor
-        }
+        self.refreshCursorColor()
         self.selectedTextAttributes[.backgroundColor] = theme.selectionColor
         (self.layoutManager as? LayoutManager)?.invisiblesColor = theme.invisibles.color
         (self.layoutManager as? LayoutManager)?.unemphasizedSelectedContentBackgroundColor = theme.unemphasizedSelectionColor
@@ -2322,5 +2633,52 @@ extension EditorTextView {
         else { return }
         
         self.complete(self)
+    }
+}
+
+
+// MARK: - Inline Image Preview Popover
+
+private struct InlineImagePreviewPopoverView: View {
+    
+    let image: NSImage
+    let filename: String
+    let fileURL: URL?
+    let onCopyImage: () -> Void
+    let onRunOCR: () -> Void
+    let onRevealInFinder: () -> Void
+    let onDeleteToken: () -> Void
+    
+    var body: some View {
+        
+        VStack(alignment: .leading, spacing: 10) {
+            Image(nsImage: self.image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: 440, maxHeight: 320)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2), lineWidth: 1))
+            
+            HStack(spacing: 8) {
+                Text(self.filename)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                
+                Spacer()
+                
+                Button("OCR + AI", action: self.onRunOCR)
+                Button("拷贝图片", action: self.onCopyImage)
+                if self.fileURL != nil {
+                    Button("Finder", action: self.onRevealInFinder)
+                }
+                Button(role: .destructive, action: self.onDeleteToken) {
+                    Image(systemName: "trash")
+                }
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
     }
 }

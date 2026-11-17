@@ -75,6 +75,7 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
     var tabWidth = 0
     var lineHeightMultiple: CGFloat = 1.0
     var rendersPlainTextInlineImages = false  { didSet { self.invalidateLayout(forCharacterRange: self.attributedString().range, actualCharacterRange: nil) } }
+    var inlineImageDocumentURL: URL?
     
     
     // MARK: Private Properties
@@ -260,13 +261,27 @@ extension LayoutManager: NSLayoutManagerDelegate {
             if safeRange.length > 0 {
                 let lineSubstring = string.substring(with: safeRange)
                 if lineSubstring.contains("⟦🖼"), lineSubstring.contains("⟧") {
-                    extraImageHeight = 148
+                    let tokens = PlainTextInlineImageStore.shared.findTokens(in: string, range: safeRange)
+                    var tallestCard: CGFloat = 0
+                    for token in tokens {
+                        if let size = PlainTextInlineImageStore.shared.cardSize(
+                            for: token.identifier,
+                            documentURL: self.inlineImageDocumentURL
+                        ) {
+                            tallestCard = max(tallestCard, size.height)
+                        }
+                    }
+                    if tallestCard > 0 {
+                        extraImageHeight = tallestCard + 10
+                    } else if !tokens.isEmpty {
+                        extraImageHeight = 148
+                    }
                 }
             }
         }
         
         lineFragmentRect.pointee.size.height = self.lineHeight + extraImageHeight
-        lineFragmentUsedRect.pointee.size.height = self.lineHeight + extraImageHeight
+        lineFragmentUsedRect.pointee.size.height = self.lineHeight
         
         // vertically center the glyphs in the top text line of the fragment
         baselineOffset.pointee = self.baselineOffset(for: textContainer.layoutOrientation)

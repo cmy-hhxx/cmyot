@@ -52,6 +52,9 @@ nonisolated enum AIAction: Sendable, CaseIterable {
     /// Polish or structure OCR-extracted text (with optional multimodal image).
     case ocrPolish
     
+    /// Analyze all open documents across windows, merge similar content cleanly, rename them, and create a summary map.
+    case organizeAndMerge
+    
     
     /// The name shown while the request runs.
     var title: String {
@@ -85,6 +88,10 @@ nonisolated enum AIAction: Sendable, CaseIterable {
                 String(localized: "ai.action.ocrPolish",
                        defaultValue: "OCR + AI Smart Extract",
                        table: "AI")
+            case .organizeAndMerge:
+                String(localized: "ai.action.organizeAndMerge",
+                       defaultValue: "Organize & Merge All",
+                       table: "AI")
         }
     }
     
@@ -100,6 +107,36 @@ nonisolated enum AIAction: Sendable, CaseIterable {
             case .weeklyReportItem: CotLocalDatabase.ConfigKey.promptWeeklyReportPart
             case .interactiveChart: CotLocalDatabase.ConfigKey.promptChart
             case .ocrPolish: CotLocalDatabase.ConfigKey.promptOCR
+            case .organizeAndMerge: CotLocalDatabase.ConfigKey.promptOrganizeMerge
+        }
+    }
+    
+    
+    /// Legacy v1 built-in prompts that should be migrated automatically when untouched by the user.
+    var legacyDefaultSystemPrompts: [String] {
+        
+        switch self {
+            case .weeklyReport:
+                [
+                    """
+                    你是一名擅长整理技术与业务周报的资深专家。规则：
+                    1. 将用户提供的零散记录、TODO 或工作流水整合成一份结构清晰、重点突出的 Markdown 周报。
+                    2. 包含三个核心板块：`## 本周核心进展`、`## 关键产出与数据`、`## 下周计划与风险`。
+                    3. 用词精炼专业，突出“做了什么 → 解决了什么问题 → 带来了什么结果”，去掉口水话。
+                    4. 只输出周报 Markdown 正文，不要寒暄或额外解释。
+                    """,
+                ]
+            case .weeklyReportItem:
+                [
+                    """
+                    你是一名高效的技术周报提炼助手。规则：
+                    1. 将用户选中的这段零散记录、代码改动或笔记，提炼成 1~2 条可以直接放进周报的 Markdown 列表项（以 `- **【模块/主题】**` 开头）。
+                    2. 突出核心动作、技术价值或量化结果，控制在两行以内。
+                    3. 只输出提炼后的周报条目本身，不要任何前缀或解释。
+                    """,
+                ]
+            default:
+                []
         }
     }
     
@@ -134,18 +171,30 @@ nonisolated enum AIAction: Sendable, CaseIterable {
                 """
             case .weeklyReport:
                 """
-                你是一名擅长整理技术与业务周报的资深专家。规则：
-                1. 将用户提供的零散记录、TODO 或工作流水整合成一份结构清晰、重点突出的 Markdown 周报。
-                2. 包含三个核心板块：`## 本周核心进展`、`## 关键产出与数据`、`## 下周计划与风险`。
-                3. 用词精炼专业，突出“做了什么 → 解决了什么问题 → 带来了什么结果”，去掉口水话。
-                4. 只输出周报 Markdown 正文，不要寒暄或额外解释。
+                你正在帮用户整理每周工作周报。核心原则：**说人话，且严格符合用户的历史周报规范。**
+                规范格式如下：
+                1. 标题行：`# {姓名}-周报-{日期范围}`（例如 `# 陈明扬-周报-20261012-1016`；若上下文给出了姓名和周期请直接使用）。
+                2. 紧接一行总览：`本周主要干了以下几件事：`，下面用数字列表 `1. ...`、`2. ...` 列出 2~5 条核心结果，每条一句话说明白做了啥、结果如何。
+                3. 按项目/工作线拆分 `## 模块名称`，每个模块下固定使用：
+                   `进展：`
+                   `1. ...`
+                   `2. ...`
+                   （如果确实有阻塞、等待别人、风险或未解决的问题，再加 `卡点：` 及数字列表；没有就别硬写。）
+                4. 如果素材里明确提到下周安排，可在最后加 `## 下周计划` 与数字列表。
+
+                语言要求（说人话）：
+                - 像跟直属同事/Leader 面对面同步进度一样自然直白：做了什么、现在能不能用、跑了多少数据/耗时、还在等谁或卡在哪，直接说清楚。
+                - **严禁黑话和空话**：不要出现“赋能、抓手、闭环、沉淀、拉通、对齐颗粒度、打造生态、显著提升、全链路赋能”等套话。
+                - 保留素材里的真实人名（如 `@xxx`）、具体数字、仓库/项目名和日期，绝对不要编造素材里没有的事实或数据。
+                - 如果上下文附带了历史周报示例，严格对齐它的语气、分点习惯和简洁程度。
+                - 只输出周报 Markdown 正文，不要额外前言或解释。
                 """
             case .weeklyReportItem:
                 """
-                你是一名高效的技术周报提炼助手。规则：
-                1. 将用户选中的这段零散记录、代码改动或笔记，提炼成 1~2 条可以直接放进周报的 Markdown 列表项（以 `- **【模块/主题】**` 开头）。
-                2. 突出核心动作、技术价值或量化结果，控制在两行以内。
-                3. 只输出提炼后的周报条目本身，不要任何前缀或解释。
+                你是帮用户把零散工作记录整理成周报条目的助手。规则：
+                1. 用大白话（说人话）把选中内容提炼成 1~3 条可以直接放进周报“进展：”或“卡点：”下面的编号条目（例如 `1. ...`）。
+                2. 直接讲清“做了啥 → 现在啥状态 / 带来啥效果（或卡在哪）”，保留真实数字、日期、模块名和 `@相关同事`，禁止空洞黑话（赋能、抓手、闭环等）。
+                3. 只输出提炼后的条目本身，不要前言或解释。
                 """
             case .interactiveChart:
                 """
@@ -161,6 +210,37 @@ nonisolated enum AIAction: Sendable, CaseIterable {
                 1. 结合本地 OCR 识别出的原始文本（以及附图，如有），修正明显的识别错别字、断行错误和标点混乱。
                 2. 如果内容包含表格或列表，还原为整洁对齐的 Markdown 表格或列表；如果是代码片段，还原为带语法标记的代码块。
                 3. 只输出整理后的纯净文本/Markdown，不要添加多余的客套话。
+                """
+            case .organizeAndMerge:
+                """
+                你是一名顶尖的信息架构师与文档整理专家。用户当前在多个编辑器窗口和标签页里散落了若干文档/笔记，很多临时文档还带着随机名字。
+                你的任务：
+                1. 识别所有文档中相似、重叠或同属一个主题的内容，将同类内容整理合并到一起。
+                2. 为每个整理后的文档起一个**清晰、简洁、见名知意**的新标题（例如“评测框架与指标整理”、“CotEditor 待办清单”），彻底取代杂乱或无意义的随机名。
+                3. 整理后的正文（`mergedContent`）必须：**清晰简洁、去掉重复与废话、排版极其工整**（合理使用 `#` / `##` 层级标题、对齐的 Markdown 表格、有序/无序列表、代码块）。
+                4. **严格保真**：保留原文所有重要事实、数字、代码、链接、人名和待办事项，不得凭空捏造或遗漏关键信息。
+                5. 严格输出一个合法的 JSON 对象（不要输出 JSON 之外的多余解释），格式如下：
+                {
+                  "overview": "一句话概括本次整理结果",
+                  "groups": [
+                    {
+                      "newTitle": "新文档标题",
+                      "syntax": "Markdown 或 Plain Text",
+                      "summary": "一句话核心摘要",
+                      "sourceIDs": ["doc_id_1", "doc_id_2"],
+                      "mergedContent": "整理合并后排版工整的完整正文"
+                    }
+                  ],
+                  "mapping": [
+                    {
+                      "sourceID": "doc_id_1",
+                      "sourceTitle": "原文档名",
+                      "action": "合并 / 重命名 / 整理保留",
+                      "targetTitle": "新文档标题",
+                      "note": "简短说明合并或改动点"
+                    }
+                  ]
+                }
                 """
         }
     }

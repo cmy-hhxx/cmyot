@@ -193,24 +193,28 @@ struct AISettingsView: View {
                         .gridColumnAlignment(.trailing)
                         .frame(minWidth: 90, alignment: .trailing)
                     
-                    HStack(spacing: 16) {
-                        Toggle("打字机效果 (音效+粒子)", isOn: self.$typewriterEnabled)
-                            .onChange(of: self.typewriterEnabled) { _, val in
-                                CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
-                                UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
-                            }
-                        Toggle("Vim 炫酷光标拖尾", isOn: self.$vimCursorTrailEnabled)
-                            .onChange(of: self.vimCursorTrailEnabled) { _, val in
-                                CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
-                                UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
-                            }
-                        Toggle("纯文本内嵌图片预览", isOn: self.$plainTextImagesEnabled)
-                            .onChange(of: self.plainTextImagesEnabled) { _, val in
-                                CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
-                                UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
-                            }
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 16) {
+                            Toggle("打字机效果 (音效+粒子)", isOn: self.$typewriterEnabled)
+                                .onChange(of: self.typewriterEnabled) { _, val in
+                                    CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
+                                    UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
+                                }
+                            Toggle("Vim 炫酷光标拖尾", isOn: self.$vimCursorTrailEnabled)
+                                .onChange(of: self.vimCursorTrailEnabled) { _, val in
+                                    CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
+                                    UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
+                                }
+                            Toggle("纯文本内嵌图片预览", isOn: self.$plainTextImagesEnabled)
+                                .onChange(of: self.plainTextImagesEnabled) { _, val in
+                                    CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+                                    UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+                                }
+                        }
+                        .controlSize(.small)
+                        
+                        CustomCursorColorControl()
                     }
-                    .controlSize(.small)
                 }
                 
                 GridRow {
@@ -222,7 +226,13 @@ struct AISettingsView: View {
                         Button {
                             self.isShowingStoredDocs = true
                         } label: {
-                            Label("文档与配置库 (\(CotLocalDatabase.shared.documents.count))", systemImage: "cylinder.split.1x2")
+                            Label("文档与配置 (\(CotLocalDatabase.shared.documents.count))", systemImage: "cylinder.split.1x2")
+                        }
+                        
+                        Button {
+                            WeeklyReportWindowController.shared.showWindow(mode: .history)
+                        } label: {
+                            Label("周报库 (\(CotLocalDatabase.shared.weeklyReports.count))", systemImage: "calendar.badge.clock")
                         }
                         
                         Button {

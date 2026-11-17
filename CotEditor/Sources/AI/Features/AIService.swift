@@ -86,12 +86,33 @@ import Observation
         
         var effectiveContext = context
         if action == .weeklyReport {
+            var contextBlocks: [String] = []
+            if let context, !context.isEmpty {
+                contextBlocks.append(context)
+            }
+            
+            let author = db.weeklyReportAuthor
+            let periodHint = Self.currentWeekPeriodLabel()
+            contextBlocks.append("周报署名与周期：# \(author)-周报-\(periodHint)")
+            
+            let references = db.styleReferenceWeeklyReports(limit: 2)
+            if !references.isEmpty {
+                let refText = references.map { ref in
+                    "--- 历史周报参考（\(ref.title)） ---\n\(String(ref.content.prefix(1500)))"
+                }.joined(separator: "\n\n")
+                contextBlocks.append("""
+                以下是用户真实的历史周报范例，请严格参考它的标题格式、分段方式（本周主要干了以下几件事 + ## 模块 + 进展：/ 卡点：）以及直白说人话的口吻（禁止直接照搬历史内容）：
+                \(refText)
+                """)
+            }
+            
             let savedFragments = db.string(forKey: CotLocalDatabase.ConfigKey.weeklyReportFragments)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !savedFragments.isEmpty {
-                let note = "已积累的周报片段（请一并整合进周报）：\n\(savedFragments)"
-                effectiveContext = effectiveContext.map { "\($0)\n\n\(note)" } ?? note
+                contextBlocks.append("已积累的周报片段（请一并整合进周报）：\n\(savedFragments)")
             }
+            
+            effectiveContext = contextBlocks.joined(separator: "\n\n")
         }
         
         let messages: [AIMessage] = [
@@ -106,6 +127,23 @@ import Observation
         }
         
         return result
+    }
+    
+    
+    /// Computes the current Monday–Friday date range formatted as `YYYYMMDD-MMDD` (matching historical reports).
+    static func currentWeekPeriodLabel(referenceDate: Date = .now) -> String {
+        
+        let calendar = Calendar(identifier: .gregorian)
+        let weekday = calendar.component(.weekday, from: referenceDate)  // 1 = Sun, 2 = Mon
+        let daysFromMonday = (weekday == 1) ? 6 : (weekday - 2)
+        let monday = calendar.date(byAdding: .day, value: -daysFromMonday, to: referenceDate) ?? referenceDate
+        let friday = calendar.date(byAdding: .day, value: 4, to: monday) ?? referenceDate
+        
+        let startFormatter = DateFormatter()
+        startFormatter.dateFormat = "yyyyMMdd"
+        let endFormatter = DateFormatter()
+        endFormatter.dateFormat = "MMdd"
+        return "\(startFormatter.string(from: monday))-\(endFormatter.string(from: friday))"
     }
     
     

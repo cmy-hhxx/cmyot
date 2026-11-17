@@ -28,6 +28,7 @@ import AppKit
 import SwiftUI
 import Combine
 import OSLog
+import UniformTypeIdentifiers
 import ControlUI
 import Defaults
 import FileEncoding
@@ -115,6 +116,7 @@ extension Logger {
     @IBOutlet private weak var snippetMenu: NSMenu?
     @IBOutlet private weak var multipleReplaceMenu: NSMenu?
     @IBOutlet private weak var scriptMenu: NSMenu?
+    private var weeklyReportsMenu: NSMenu?
     
     
     // MARK: Lifecycle
@@ -158,6 +160,11 @@ extension Logger {
         _ = DocumentController.shared
         
         self.prepareMainMenu()
+        
+        // Monitor weekly report DB updates so the top menu bar stays synchronized
+        NotificationCenter.default.publisher(for: CotLocalDatabase.weeklyReportsDidChangeNotification)
+            .sink { [weak self] _ in self?.rebuildWeeklyReportsMenu() }
+            .store(in: &self.menuUpdateObservers)
         
         #if SPARKLE
         UpdaterManager.shared.setup()
@@ -210,6 +217,7 @@ extension Logger {
         for case let document as Document in NSDocumentController.shared.documents {
             document.syncToLocalDatabase()
         }
+        CotLocalDatabase.shared.syncUserPreferencesToDatabase()
         
         if self.needsRelaunch {
             NSApp.relaunch()
@@ -485,6 +493,61 @@ extension Logger {
     @IBAction func reportBug(_ sender: Any?) {
         
         NSWorkspace.shared.open(AppWebURL.issueTracker.url)
+    }
+    
+    
+    /// Opens the dedicated 周报中心 (Weekly Report Center) window.
+    @IBAction func showWeeklyReportCenter(_ sender: Any?) {
+        
+        WeeklyReportWindowController.shared.showWindow(mode: .history)
+    }
+    
+    
+    /// Opens the Weekly Report Center directly in "Generate Weekly Report" mode.
+    @IBAction func openWeeklyReportGenerator(_ sender: Any?) {
+        
+        WeeklyReportWindowController.shared.showWindow(mode: .generator)
+    }
+    
+    
+    /// Triggers one-click AI organize-and-merge across all open windows.
+    @IBAction func organizeAndMergeAllDocumentsFromMenu(_ sender: Any?) {
+        
+        WorkspaceOrganizer.runOrganizeAndMerge(from: NSApp.mainWindow ?? NSApp.orderedWindows.first)
+    }
+    
+    
+    /// Lets the user import historical weekly reports from a `.zip`, folder, or `.md` files.
+    @IBAction func importWeeklyReportsFromMenu(_ sender: Any?) {
+        
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.zip, .folder, UTType(filenameExtension: "md") ?? .plainText, .plainText]
+        panel.message = "选择历史周报 .zip 压缩包、周报文件夹或 .md 文件，自动按月份收录进「周报」菜单与数据库"
+        
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        do {
+            let count = try CotLocalDatabase.shared.importWeeklyReports(fromURLs: panel.urls)
+            let alert = NSAlert()
+            alert.messageText = "历史周报导入完成"
+            alert.informativeText = "本次共收录/更新 \(count) 篇周报，可在顶部菜单栏「周报」中按月份随时查阅。"
+            alert.runModal()
+        } catch {
+            NSApp.presentError(error)
+        }
+    }
+    
+    
+    /// Opens a historical weekly report chosen from the top menu bar `周报` module.
+    @objc private func openStoredWeeklyReportFromMenu(_ sender: NSMenuItem) {
+        
+        guard let reportID = sender.representedObject as? String,
+              let report = CotLocalDatabase.shared.weeklyReports.first(where: { $0.id == reportID })
+        else { return }
+        
+        WeeklyReportWindowController.shared.openReportInEditor(report)
     }
     
     
@@ -783,6 +846,116 @@ extension Logger {
                 ]
             }
             .store(in: &self.menuUpdateObservers)
+        
+        self.installWeeklyReportTopMenu()
+    }
+    
+    
+    /// Installs the dedicated `周报` (Weekly Report) module menu in the top menu bar.
+    private func installWeeklyReportTopMenu() {
+        
+        guard let mainMenu = NSApp.mainMenu else { return }
+        if self.weeklyReportsMenu != nil {
+            self.rebuildWeeklyReportsMenu()
+            return
+        }
+        
+        let title = String(localized: "chrome.menu.weeklyReportModule", defaultValue: "周报", table: "Chrome")
+        let topItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: title)
+        submenu.autoenablesItems = false
+        topItem.submenu = submenu
+        self.weeklyReportsMenu = submenu
+        
+        // Place prominently before Script / Window / Help
+        let insertionIndex = max(1, mainMenu.items.count - 3)
+        mainMenu.insertItem(topItem, at: insertionIndex)
+        self.rebuildWeeklyReportsMenu()
+    }
+    
+    
+    /// Rebuilds the top-level `周报` menu with actions and all historical reports grouped by year-month.
+    private func rebuildWeeklyReportsMenu() {
+        
+        guard let submenu = self.weeklyReportsMenu else { return }
+        submenu.removeAllItems()
+        
+        let centerItem = NSMenuItem(
+            title: String(localized: "chrome.menu.openWeeklyReportCenter", defaultValue: "打开周报中心（历史与生成）…", table: "Chrome"),
+            action: #selector(showWeeklyReportCenter(_:)),
+            keyEquivalent: ""
+        )
+        centerItem.target = self
+        submenu.addItem(centerItem)
+        
+        let generateItem = NSMenuItem(
+            title: String(localized: "chrome.menu.generateWeeklyReportHuman", defaultValue: "生成本周周报（说人话版）…", table: "Chrome"),
+            action: #selector(openWeeklyReportGenerator(_:)),
+            keyEquivalent: ""
+        )
+        generateItem.target = self
+        submenu.addItem(generateItem)
+        
+        let organizeItem = NSMenuItem(
+            title: String(localized: "chrome.menu.organizeAndMergeAll", defaultValue: "AI 一键整理合并所有文档…", table: "Chrome"),
+            action: #selector(organizeAndMergeAllDocumentsFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        organizeItem.target = self
+        submenu.addItem(organizeItem)
+        
+        let importItem = NSMenuItem(
+            title: String(localized: "chrome.menu.importWeeklyReports", defaultValue: "导入历史周报 (.zip / 文件夹)…", table: "Chrome"),
+            action: #selector(importWeeklyReportsFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        importItem.target = self
+        submenu.addItem(importItem)
+        
+        submenu.addItem(.separator())
+        
+        let reports = CotLocalDatabase.shared.weeklyReports
+        let headerItem = NSMenuItem(title: "历史周报（共 \(reports.count) 篇）", action: nil, keyEquivalent: "")
+        headerItem.isEnabled = false
+        submenu.addItem(headerItem)
+        
+        if reports.isEmpty {
+            let emptyItem = NSMenuItem(title: "（暂无已导入周报，请点击上方“导入历史周报…”）", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            submenu.addItem(emptyItem)
+            return
+        }
+        
+        let byMonth = Dictionary(grouping: reports, by: \.yearMonth)
+        for yearMonth in byMonth.keys.sorted(by: >) {
+            let monthReports = (byMonth[yearMonth] ?? []).sorted { lhs, rhs in
+                if lhs.periodLabel != rhs.periodLabel {
+                    return lhs.periodLabel > rhs.periodLabel
+                }
+                return lhs.isEnhanced && !rhs.isEnhanced
+            }
+            
+            let monthItem = NSMenuItem(title: "\(yearMonth)（\(monthReports.count) 篇）", action: nil, keyEquivalent: "")
+            let monthMenu = NSMenu(title: yearMonth)
+            monthMenu.autoenablesItems = false
+            
+            for report in monthReports {
+                let itemTitle = report.title == report.periodLabel
+                    ? report.periodLabel
+                    : "\(report.periodLabel) · \(report.title)"
+                let reportItem = NSMenuItem(
+                    title: itemTitle,
+                    action: #selector(openStoredWeeklyReportFromMenu(_:)),
+                    keyEquivalent: ""
+                )
+                reportItem.target = self
+                reportItem.representedObject = report.id
+                monthMenu.addItem(reportItem)
+            }
+            
+            monthItem.submenu = monthMenu
+            submenu.addItem(monthItem)
+        }
     }
     
     

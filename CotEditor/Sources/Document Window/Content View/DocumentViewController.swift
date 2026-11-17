@@ -130,6 +130,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     private var observers: Set<AnyCancellable> = []
     private var defaultsObservers: Set<AnyCancellable> = []
     private var windowCloseObserver: AnyCancellable?
+    private var sessionSaveTask: Task<Void, Never>?
     
     #if DEBUG
     private var didRunDemo = false
@@ -614,7 +615,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             // keep painted highlights attached to the text they were drawn on
             document.adjustHighlights(forEditIn: range, changeInLength: length)
             document.scheduleDatabaseSync()
-            self.savePaneTabsSessionToDatabase()
+            self.schedulePaneTabsSessionSave()
             
             guard self.focusedTextView?.hasMarkedText() != true else { return }
             
@@ -1038,6 +1039,13 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
+    /// Organizes and merges similar documents across all open windows, renames tabs cleanly, and creates a Map document.
+    @IBAction func organizeAndMergeAllDocuments(_ sender: Any?) {
+        
+        WorkspaceOrganizer.runOrganizeAndMerge(from: self.view.window)
+    }
+    
+    
     /// One-click aligns Markdown tables in the selection (or throughout the whole document if nothing is selected).
     @IBAction func alignMarkdownTable(_ sender: Any?) {
         
@@ -1141,8 +1149,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         }
         
         let docURL = self.document(for: textView)?.fileURL
-        if let clipboardImage = NSImage(pasteboard: .general),
-           NSPasteboard.general.string(forType: .string) == nil,
+        if let clipboardImage = PlainTextInlineImageStore.shared.extractImage(from: .general),
            let stored = PlainTextInlineImageStore.shared.store(image: clipboardImage, for: docURL)
         {
             textView.insertText(stored.token, replacementRange: textView.selectedRange())
@@ -1167,7 +1174,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     
     /// Executes local Vision OCR followed by AI polishing in the result sheet.
-    private func processOCR(image: NSImage, on window: NSWindow) {
+    func processOCR(image: NSImage, on window: NSWindow) {
         
         let panel = AIResultPanelController(action: .ocrPolish)
         panel.onReplace = { [weak self] result in self?.applyAIResult(result, replacingSelection: true) }
@@ -1744,8 +1751,14 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     /// - Parameters:
     ///   - newViewController: The pane to insert.
     ///   - currentViewController: The pane it is placed next to.
-    ///   - isVertical: `true` to place it to the right, `false` to place it below.
-    private func insertPane(_ newViewController: EditorViewController, beside currentViewController: EditorViewController, isVertical: Bool) {
+    ///   - isVertical: `true` to split horizontally side-by-side, `false` to stack vertically.
+    ///   - insertBefore: `true` to place before `currentViewController` (left/top), `false` to place after (right/bottom).
+    private func insertPane(
+        _ newViewController: EditorViewController,
+        beside currentViewController: EditorViewController,
+        isVertical: Bool,
+        insertBefore: Bool = false
+    ) {
         
         let parentGroup = self.splitGroup(containing: currentViewController) ?? self
         let item = self.makeSplitViewItem(for: newViewController)
@@ -1754,20 +1767,27 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             return assertionFailure()
         }
         
+        let insertionIndex = insertBefore ? index : index + 1
+        
         if parentGroup.splitViewItems.count == 1 {
             // a lone pane simply adopts the requested direction
             parentGroup.splitView.isVertical = isVertical
-            parentGroup.insertSplitViewItem(item, at: index + 1)
+            parentGroup.insertSplitViewItem(item, at: insertionIndex)
         } else if parentGroup.splitView.isVertical == isVertical {
             // same direction: put the new pane beside the current one
-            parentGroup.insertSplitViewItem(item, at: index + 1)
+            parentGroup.insertSplitViewItem(item, at: insertionIndex)
         } else {
             // other direction: wrap the current pane and the new one in a nested container
             let group = SplitGroupViewController(isVertical: isVertical)
             self.removeItem(for: currentViewController, from: parentGroup)
             parentGroup.insertSplitViewItem(self.makeSplitViewItem(for: group), at: index)
-            group.addSplitViewItem(self.makeSplitViewItem(for: currentViewController))
-            group.addSplitViewItem(item)
+            if insertBefore {
+                group.addSplitViewItem(item)
+                group.addSplitViewItem(self.makeSplitViewItem(for: currentViewController))
+            } else {
+                group.addSplitViewItem(self.makeSplitViewItem(for: currentViewController))
+                group.addSplitViewItem(item)
+            }
         }
     }
     
@@ -1972,7 +1992,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     
     /// All editors in visual order, flattened across nested containers.
-    private var editorViewControllers: [EditorViewController] {
+    var editorViewControllers: [EditorViewController] {
         
         var editors: [EditorViewController] = []
         
@@ -2308,6 +2328,150 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
+    /// Renames either an untitled document or a saved file behind `tab` and keeps tabs/DB/window title synchronized.
+    func renameTab(_ tab: PaneTab, to newName: String, in pane: EditorViewController) {
+        
+        do {
+            try WorkspaceOrganizer.renameDocument(tab.document, to: newName)
+            pane.updateTabState()
+            if tab.document === self.document {
+                self.view.window?.windowController?.synchronizeWindowTitleWithDocumentName()
+            }
+            self.savePaneTabsSessionToDatabase()
+        } catch {
+            if let window = self.view.window {
+                self.presentError(error, modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil)
+            } else {
+                NSApp.presentError(error)
+            }
+        }
+    }
+    
+    
+    /// Safely closes a redundant untitled tab whose content has already been merged into another document.
+    @discardableResult
+    func closeMergedTabSafely(_ tab: PaneTab, in pane: EditorViewController) -> Bool {
+        
+        guard tab.document.fileURL == nil else { return false }
+        let totalTabs = self.editorViewControllers.reduce(0) { $0 + $1.tabs.count }
+        guard totalTabs > 1 else { return false }
+        
+        let closedDocument = tab.document
+        closedDocument.updateChangeCount(.changeCleared)
+        
+        if closedDocument === self.document {
+            let replacement = pane.tabs.first(where: { $0 !== tab })?.document
+                ?? self.editorViewControllers.first(where: { $0 !== pane })?.selectedTab.document
+            if let replacement {
+                self.promotePrimaryDocument(to: replacement)
+            }
+        }
+        
+        if let oldTextView = pane.textView(for: tab) {
+            NotificationCenter.default.removeObserver(self, name: EditorTextView.DidLiveChangeSelectionMessage.name, object: oldTextView)
+        }
+        NotificationCenter.default.removeObserver(self, name: NSTextStorage.didProcessEditingNotification, object: closedDocument.textStorage)
+        
+        pane.removeTab(tab)
+        if pane.tabs.isEmpty, self.editorViewControllers.count > 1 {
+            self.removePane(pane)
+        }
+        self.updateSplitState()
+        closedDocument.close()
+        return true
+    }
+    
+    
+    /// Moves a tab onto `targetPane` using a pre-removal insertion index (for tab strip drag-and-drop).
+    func handleDroppedTab(id tabID: UUID, onto targetPane: EditorViewController, atIndex targetIndex: Int?) -> Bool {
+        
+        let targetTab = targetIndex.flatMap { targetPane.tabs[safe: $0] }
+        return self.handleDroppedTab(id: tabID, onto: targetPane, before: targetTab)
+    }
+    
+    
+    /// Moves a dragged tab onto `targetPane`'s content area (`.center`) or creates a split (`.left`/`.right`/`.top`/`.bottom`).
+    func handleDroppedTab(id tabID: UUID, onto targetPane: EditorViewController, zone: PaneDropZone) -> Bool {
+        
+        if zone == .center {
+            return self.handleDroppedTab(id: tabID, onto: targetPane, before: nil)
+        }
+        
+        guard
+            self.editorViewControllers.count < Self.maximumNumberOfSplitEditors,
+            let source = Self.locateTab(withID: tabID)
+        else {
+            return self.handleDroppedTab(id: tabID, onto: targetPane, before: nil)
+        }
+        
+        let sourceWindowVC = source.windowVC
+        let sourcePane = source.pane
+        let sourceTab = source.tab
+        
+        if sourcePane === targetPane, targetPane.tabs.count <= 1 {
+            return false
+        }
+        
+        let movedDocument = sourceTab.document
+        let wasPinned = sourceTab.isPinned
+        
+        if sourceWindowVC === self {
+            if let oldTextView = sourcePane.textView(for: sourceTab) {
+                NotificationCenter.default.removeObserver(self, name: EditorTextView.DidLiveChangeSelectionMessage.name, object: oldTextView)
+            }
+            let wasLastInSourcePane = (sourcePane.tabs.count == 1)
+            sourcePane.removeTab(sourceTab)
+            if wasLastInSourcePane, self.editorViewControllers.count > 1 {
+                self.removePane(sourcePane)
+            }
+        } else {
+            let sourceTotalTabs = sourceWindowVC.editorViewControllers.reduce(0) { $0 + $1.tabs.count }
+            if movedDocument === sourceWindowVC.document {
+                if sourceTotalTabs > 1 {
+                    let replacement = sourcePane.tabs.first(where: { $0 !== sourceTab })?.document
+                        ?? sourceWindowVC.editorViewControllers.first(where: { $0 !== sourcePane })?.selectedTab.document
+                    if let replacement {
+                        sourceWindowVC.promotePrimaryDocument(to: replacement)
+                    }
+                } else if let sourceWC = sourceWindowVC.view.window?.windowController as? DocumentWindowController {
+                    movedDocument.removeWindowController(sourceWC)
+                }
+            }
+            
+            if let oldTextView = sourcePane.textView(for: sourceTab) {
+                NotificationCenter.default.removeObserver(sourceWindowVC, name: EditorTextView.DidLiveChangeSelectionMessage.name, object: oldTextView)
+            }
+            NotificationCenter.default.removeObserver(sourceWindowVC, name: NSTextStorage.didProcessEditingNotification, object: movedDocument.textStorage)
+            
+            let wasLastInSourcePane = (sourcePane.tabs.count == 1)
+            sourcePane.removeTab(sourceTab)
+            
+            if sourceTotalTabs <= 1 {
+                sourceWindowVC.view.window?.close()
+            } else {
+                if wasLastInSourcePane, sourceWindowVC.editorViewControllers.count > 1 {
+                    sourceWindowVC.removePane(sourcePane)
+                }
+                sourceWindowVC.updateSplitState()
+            }
+        }
+        
+        let isVertical = (zone == .left || zone == .right)
+        let insertBefore = (zone == .left || zone == .top)
+        let newPane = self.makeEditorViewController(document: movedDocument, copying: targetPane)
+        if wasPinned {
+            newPane.tabs.first?.isPinned = true
+            newPane.updateTabState()
+        }
+        self.insertPane(newPane, beside: targetPane, isVertical: isVertical, insertBefore: insertBefore)
+        self.updateSplitState()
+        self.scheduleRatioRebalance()
+        self.view.window?.makeKeyAndOrderFront(nil)
+        self.view.window?.makeFirstResponderDiscardingMarkedText(newPane.textView)
+        return true
+    }
+    
+    
     /// Moves a tab (from any pane in this window or another window) into `targetPane` before `targetTab` (or at the end if `nil`).
     func handleDroppedTab(id tabID: UUID, onto targetPane: EditorViewController, before targetTab: PaneTab?) -> Bool {
         
@@ -2400,8 +2564,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Detaches the given tab from its pane and opens it in a brand-new window.
-    private func moveTabToNewWindow(_ tab: PaneTab, from sourcePane: EditorViewController) {
+    /// Detaches the given tab from its pane and opens it in a brand-new window near `screenPoint` when provided.
+    private func detachTabToNewWindow(_ tab: PaneTab, from sourcePane: EditorViewController, atScreenPoint screenPoint: NSPoint?) {
         
         let totalTabs = self.editorViewControllers.reduce(0) { $0 + $1.tabs.count }
         guard totalTabs > 1 else {
@@ -2435,8 +2599,17 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
            let currentWindow = self.view.window
         {
             var frame = currentWindow.frame
-            frame.origin.x += 28
-            frame.origin.y -= 28
+            if let screenPoint {
+                frame.origin.x = screenPoint.x - frame.width * 0.35
+                frame.origin.y = screenPoint.y - frame.height + 36
+                if let visible = (NSScreen.screens.first { $0.frame.contains(screenPoint) } ?? currentWindow.screen ?? NSScreen.main)?.visibleFrame {
+                    frame.origin.x = min(max(frame.origin.x, visible.minX), max(visible.minX, visible.maxX - frame.width))
+                    frame.origin.y = min(max(frame.origin.y, visible.minY), max(visible.minY, visible.maxY - frame.height))
+                }
+            } else {
+                frame.origin.x += 28
+                frame.origin.y -= 28
+            }
             newWindow.setFrame(frame, display: true)
             newWindow.makeKeyAndOrderFront(nil)
         }
@@ -2473,7 +2646,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                         content: doc.textStorage.string,
                         isPinned: tab.isPinned,
                         paneIndex: currentPaneIndex,
-                        highlightsJSON: highlightsJSON
+                        highlightsJSON: highlightsJSON,
+                        databaseID: doc.databaseDocumentID
                     )
                 }
                 let selectedIdx = editor.tabs.firstIndex(where: { $0 === editor.selectedTab }) ?? 0
@@ -2493,8 +2667,23 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
+    /// Debounces session snapshots during continuous typing so SQLite JSON encoding never stalls Vim keystrokes.
+    private func schedulePaneTabsSessionSave() {
+        
+        self.sessionSaveTask?.cancel()
+        self.sessionSaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard let self, !Task.isCancelled else { return }
+            self.savePaneTabsSessionToDatabase()
+        }
+    }
+    
+    
     /// Snapshots the entire split layout tree and all open tabs across document windows into `CotLocalDatabase`.
     func savePaneTabsSessionToDatabase() {
+        
+        self.sessionSaveTask?.cancel()
+        self.sessionSaveTask = nil
         
         guard
             !self.isRestoringPersistedPaneTabs,
@@ -2534,7 +2723,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                         content: content,
                         isPinned: tab.isPinned,
                         paneIndex: paneIdx,
-                        highlightsJSON: highlightsJSON
+                        highlightsJSON: highlightsJSON,
+                        databaseID: doc.databaseDocumentID
                     ))
                 }
             }
@@ -2603,7 +2793,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 content: cloudDoc.content,
                 isPinned: false,
                 paneIndex: 0,
-                highlightsJSON: cloudDoc.highlightsJSON
+                highlightsJSON: cloudDoc.highlightsJSON,
+                databaseID: cloudDoc.id
             ), at: 0)
         }
         
@@ -2750,9 +2941,15 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         // Check if `self.document` already matches this file or title with non-empty content
         if let path = item.filePath, self.document.fileURL?.path(percentEncoded: false) == path {
+            if let dbID = item.databaseID, !dbID.isEmpty {
+                self.document.databaseDocumentID = dbID
+            }
             return self.document
         }
         if self.document.displayName == item.title, self.document.textStorage.length > 0 {
+            if let dbID = item.databaseID, !dbID.isEmpty {
+                self.document.databaseDocumentID = dbID
+            }
             return self.document
         }
         
@@ -2771,6 +2968,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         }
         
         guard let doc = try? self.makePaneDocument() else { return nil }
+        if let dbID = item.databaseID, !dbID.isEmpty {
+            doc.databaseDocumentID = dbID
+        }
         doc.displayName = item.title
         doc.setSyntax(name: item.syntax)
         if !item.content.isEmpty {
@@ -2871,13 +3071,21 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             guard let self, let viewController else { return }
             self.closePane(viewController)
         }
-        viewController.requestDropTab = { [weak self, weak viewController] draggedID, targetTab in
-            guard let self, let viewController else { return false }
-            return self.handleDroppedTab(id: draggedID, onto: viewController, before: targetTab)
-        }
-        viewController.requestMoveTabToNewWindow = { [weak self, weak viewController] tab in
+        viewController.requestRenameTab = { [weak self, weak viewController] tab, newName in
             guard let self, let viewController else { return }
-            self.moveTabToNewWindow(tab, from: viewController)
+            self.renameTab(tab, to: newName, in: viewController)
+        }
+        viewController.requestDropTabAtIndex = { [weak self, weak viewController] draggedID, targetIndex in
+            guard let self, let viewController else { return false }
+            return self.handleDroppedTab(id: draggedID, onto: viewController, atIndex: targetIndex)
+        }
+        viewController.requestDropTabInZone = { [weak self, weak viewController] draggedID, zone in
+            guard let self, let viewController else { return false }
+            return self.handleDroppedTab(id: draggedID, onto: viewController, zone: zone)
+        }
+        viewController.requestDetachTabToNewWindow = { [weak self, weak viewController] tab, screenPoint in
+            guard let self, let viewController else { return }
+            self.detachTabToNewWindow(tab, from: viewController, atScreenPoint: screenPoint)
         }
         viewController.didChangeTabLayout = { [weak self] in
             self?.savePaneTabsSessionToDatabase()

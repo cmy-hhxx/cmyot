@@ -1217,6 +1217,70 @@
         }
       }
     },
+    "ai.action.organizeAndMerge" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Organize & Merge All Documents"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一键整理合并全部文档"
+          }
+        }
+      }
+    },
+    "ai.organizeMerge.empty.message" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open or type content into your windows first, then run Organize & Merge."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先在窗口中打开或输入一些文档内容，然后再执行一键整理合并。"
+          }
+        }
+      }
+    },
+    "ai.organizeMerge.empty.title" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No Non-Empty Documents Found"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有可整理的非空文档"
+          }
+        }
+      }
+    },
+    "ai.result.saveToWeeklyReports" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save to Weekly Archive"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "存入周报库"
+          }
+        }
+      }
+    },
     "ai.settings.test.success" : {
       "localizations" : {
         "en" : {
@@ -1229,6 +1293,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "连接成功：%@"
+          }
+        }
+      }
+    },
+    "ai.weeklyCenter.windowTitle" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Weekly Report Center"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "周报中心"
           }
         }
       }

@@ -75,6 +75,7 @@ extension NSAttributedString.Key {
         static let originalContentString = "originalContentString"
         static let encoding = "encoding"
         static let displayName = "displayName"
+        static let databaseDocumentID = "databaseDocumentID"
     }
     
     
@@ -124,7 +125,7 @@ extension NSAttributedString.Key {
     private var urlDetector: URLDetector?
     
     /// Unique persistent identifier for syncing this document into `CotLocalDatabase`.
-    let databaseDocumentID = UUID().uuidString
+    var databaseDocumentID = UUID().uuidString
     
     /// Highlights painted on this document, kept in a sidecar file so the document
     /// itself stays plain text.
@@ -194,6 +195,7 @@ extension NSAttributedString.Key {
         if self.fileURL == nil {
             coder.encode(self.displayName, forKey: SerializationKey.displayName)
         }
+        coder.encode(self.databaseDocumentID, forKey: SerializationKey.databaseDocumentID)
         
         // store unencoded string but only when incompatible
         if !self.canBeConverted() {
@@ -236,6 +238,11 @@ extension NSAttributedString.Key {
         }
         if coder.containsValue(forKey: SerializationKey.suppressesInconsistentLineEndingAlert) {
             self.suppressesInconsistentLineEndingAlert = coder.decodeBool(forKey: SerializationKey.suppressesInconsistentLineEndingAlert)
+        }
+        if let storedDatabaseID = coder.decodeObject(of: NSString.self, forKey: SerializationKey.databaseDocumentID) as? String,
+           !storedDatabaseID.isEmpty
+        {
+            self.databaseDocumentID = storedDatabaseID
         }
         if let syntaxName = coder.decodeObject(of: NSString.self, forKey: SerializationKey.syntax) as? String {
             self.setSyntax(name: syntaxName)
@@ -583,6 +590,11 @@ extension NSAttributedString.Key {
                 let pendingFileData = self.pendingFileData.withLock(\.self)
                 assert(pendingFileData != nil)
                 self.fileData.withLock { $0 = pendingFileData }
+                
+                Task { @MainActor in
+                    PlainTextInlineImageStore.shared.migrateGlobalAssetsIfNeeded(in: self.textStorage.string, to: url)
+                    self.syncToLocalDatabase()
+                }
             }
             
             // apply syntax that is inferred from the filename or the shebang

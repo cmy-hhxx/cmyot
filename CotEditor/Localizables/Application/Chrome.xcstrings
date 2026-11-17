@@ -817,6 +817,198 @@
         }
       }
     },
+    "chrome.contextMenu.organizeAndMerge" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Organize & Merge All Tabs + Map…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一键整理合并全部文档 (+ Map)…"
+          }
+        }
+      }
+    },
+    "chrome.dropZone.addTab" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add to Tab Bar"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加到标签栏"
+          }
+        }
+      }
+    },
+    "chrome.dropZone.splitBottom" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Split Bottom"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "向下分屏"
+          }
+        }
+      }
+    },
+    "chrome.dropZone.splitLeft" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Split Left"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "向左分屏"
+          }
+        }
+      }
+    },
+    "chrome.dropZone.splitRight" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Split Right"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "向右分屏"
+          }
+        }
+      }
+    },
+    "chrome.dropZone.splitTop" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Split Top"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "向上分屏"
+          }
+        }
+      }
+    },
+    "chrome.menu.generateWeeklyReportHuman" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Generate Weekly Report…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成本周周报（说人话版）…"
+          }
+        }
+      }
+    },
+    "chrome.menu.importWeeklyReports" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Import Weekly Reports (.zip / Folder)…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导入历史周报 (.zip / 文件夹)…"
+          }
+        }
+      }
+    },
+    "chrome.menu.openWeeklyReportCenter" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Weekly Report Center…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开周报中心（历史与生成）…"
+          }
+        }
+      }
+    },
+    "chrome.menu.organizeAndMergeAll" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI Organize & Merge All Documents…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 一键整理合并所有文档…"
+          }
+        }
+      }
+    },
+    "chrome.menu.weeklyReportModule" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Weekly Reports"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "周报"
+          }
+        }
+      }
+    },
+    "chrome.tab.rename" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rename…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重命名…"
+          }
+        }
+      }
+    },
     "chrome.toolbar.textScale.tooltip" : {
       "localizations" : {
         "en" : {

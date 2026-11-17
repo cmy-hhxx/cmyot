@@ -75,11 +75,17 @@ final class EditorViewController: NSSplitViewController {
     /// Called after the user switched the tab.
     var didSelectTab: ((PaneTab) -> Void)?
     
-    /// Requests moving a dragged tab (from any pane or window) onto this pane.
-    var requestDropTab: ((UUID, PaneTab?) -> Bool)?
+    /// Requests renaming the document backing a tab.
+    var requestRenameTab: ((PaneTab, String) -> Void)?
     
-    /// Requests detaching a tab into its own window.
-    var requestMoveTabToNewWindow: ((PaneTab) -> Void)?
+    /// Requests moving a dragged tab (from any pane or window) onto this pane's tab bar at an optional insertion index.
+    var requestDropTabAtIndex: ((UUID, Int?) -> Bool)?
+    
+    /// Requests dropping a dragged tab (from any pane or window) onto this pane's content area or split edge.
+    var requestDropTabInZone: ((UUID, PaneDropZone) -> Bool)?
+    
+    /// Requests detaching a tab into its own window at the given screen coordinate.
+    var requestDetachTabToNewWindow: ((PaneTab, NSPoint) -> Void)?
     
     /// Called when tab order or pin state changes inside this pane.
     var didChangeTabLayout: (() -> Void)?
@@ -96,6 +102,7 @@ final class EditorViewController: NSSplitViewController {
     
     private var textViewControllers: [ObjectIdentifier: EditorTextViewController] = [:]
     private weak var contentChild: EditorTextViewController?
+    private weak var dropOverlayView: PaneDropOverlayView?
     
     private var outlineObserver: AnyCancellable?
     private var defaultObservers: Set<AnyCancellable> = []
@@ -135,22 +142,27 @@ final class EditorViewController: NSSplitViewController {
         self.tabState.onClose = { [weak self] tab in self?.requestCloseTab?(tab) }
         self.tabState.onNewTab = { [weak self] in self?.requestNewTab?() }
         self.tabState.onTogglePin = { [weak self] tab in self?.togglePin(of: tab) }
+        self.tabState.onRename = { [weak self] tab, newName in
+            self?.requestRenameTab?(tab, newName)
+        }
         self.tabState.onMove = { [weak self] draggedTab, targetTab in
             self?.move(tab: draggedTab, onto: targetTab)
         }
-        self.tabState.onDropTab = { [weak self] draggedID, targetTab in
+        self.tabState.onMoveToIndex = { [weak self] draggedTab, index in
+            self?.move(tab: draggedTab, toIndex: index)
+        }
+        self.tabState.onDropTab = { [weak self] draggedID, targetIndex in
             guard let self else { return false }
             if let localTab = self.tabs.first(where: { $0.id == draggedID }) {
-                if let targetTab {
-                    self.move(tab: localTab, onto: targetTab)
-                    return true
+                if let targetIndex {
+                    self.move(tab: localTab, toIndex: targetIndex)
                 }
-                return false
+                return true
             }
-            return self.requestDropTab?(draggedID, targetTab) ?? false
+            return self.requestDropTabAtIndex?(draggedID, targetIndex) ?? false
         }
-        self.tabState.onMoveToNewWindow = { [weak self] tab in
-            self?.requestMoveTabToNewWindow?(tab)
+        self.tabState.onDetachToNewWindow = { [weak self] tab, screenPoint in
+            self?.requestDetachTabToNewWindow?(tab, screenPoint)
         }
         self.tabState.onClosePane = { [weak self] in self?.requestClosePane?() }
         
@@ -190,8 +202,18 @@ final class EditorViewController: NSSplitViewController {
             UserDefaults.standard.publisher(for: .showNavigationBar)
                 .sink { [weak self] _ in self?.updateNavigationBarVisibility() },
             
-            // keep the tab titles in sync with the documents
+            // keep the tab titles and dirty dots in sync with the documents
             NotificationCenter.default.publisher(for: NSDocument.DidChangeFileURLMessage.name)
+                .sink { [weak self] notification in
+                    guard
+                        let self,
+                        let document = notification.object as? Document,
+                        self.tabs.contains(where: { $0.document === document })
+                    else { return }
+                    
+                    self.updateTabState()
+                },
+            NotificationCenter.default.publisher(for: Document.DidUpdateChangeMessage.name)
                 .sink { [weak self] notification in
                     guard
                         let self,
@@ -349,6 +371,7 @@ final class EditorViewController: NSSplitViewController {
         
         self.tabState.tabs = self.tabs
         self.tabState.selectedTab = self.selectedTab
+        self.tabState.refreshRevision &+= 1
         self.updateNavigationBarVisibility(animated: true)
     }
     
@@ -620,6 +643,130 @@ final class EditorViewController: NSSplitViewController {
     }
     
     
+    /// Moves a dragged tab to an insertion index captured prior to removal.
+    private func move(tab: PaneTab, toIndex insertionIndex: Int) {
+        
+        guard let from = self.tabs.firstIndex(where: { $0 === tab }) else { return }
+        var destination = max(0, min(insertionIndex, self.tabs.count))
+        if from < destination {
+            destination -= 1
+        }
+        guard from != destination, destination >= 0, destination < self.tabs.count else { return }
+        
+        self.tabs.remove(at: from)
+        self.tabs.insert(tab, at: destination)
+        
+        self.updateTabState()
+        self.updateNavigationBarVisibility(animated: true)
+        self.didChangeTabLayout?()
+    }
+    
+    
+    // MARK: Pane Content Drop Handling
+    
+    func paneDragEntered(_ sender: any NSDraggingInfo, in textView: EditorTextView) -> NSDragOperation {
+        
+        self.paneDragUpdated(sender, in: textView)
+    }
+    
+    
+    func paneDragUpdated(_ sender: any NSDraggingInfo, in textView: EditorTextView) -> NSDragOperation {
+        
+        guard let draggedID = Self.extractTabID(from: sender.draggingPasteboard) else {
+            self.hideDropOverlay()
+            return []
+        }
+        
+        let containerView = self.contentViewController.view
+        let point = containerView.convert(sender.draggingLocation, from: nil)
+        let zone = PaneDropZone.from(point: point, in: containerView.bounds)
+        
+        // Dropping onto the center of the same single-tab pane does nothing.
+        if zone == .center, self.tabs.contains(where: { $0.id == draggedID }) {
+            self.hideDropOverlay()
+            return []
+        }
+        
+        // Cannot split a 1-tab pane with its own single tab.
+        if self.tabs.count == 1, self.tabs.first?.id == draggedID {
+            self.hideDropOverlay()
+            return []
+        }
+        
+        self.showDropOverlay(for: zone)
+        return .move
+    }
+    
+    
+    func paneDragExited(_ sender: (any NSDraggingInfo)?) {
+        
+        self.hideDropOverlay()
+    }
+    
+    
+    func panePerformDragOperation(_ sender: any NSDraggingInfo, in textView: EditorTextView) -> Bool {
+        
+        defer { self.hideDropOverlay() }
+        
+        guard let draggedID = Self.extractTabID(from: sender.draggingPasteboard) else {
+            return false
+        }
+        
+        let containerView = self.contentViewController.view
+        let point = containerView.convert(sender.draggingLocation, from: nil)
+        let zone = PaneDropZone.from(point: point, in: containerView.bounds)
+        
+        if self.tabs.count == 1, self.tabs.first?.id == draggedID {
+            return false
+        }
+        
+        if zone == .center, self.tabs.contains(where: { $0.id == draggedID }) {
+            return false
+        }
+        
+        return self.requestDropTabInZone?(draggedID, zone) ?? false
+    }
+    
+    
+    private static func extractTabID(from pasteboard: NSPasteboard) -> UUID? {
+        
+        if let raw = pasteboard.string(forType: PaneTab.dragPasteboardType),
+           let id = UUID(uuidString: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        {
+            return id
+        }
+        if let raw = pasteboard.string(forType: .string) {
+            return PaneTab.tabID(from: raw)
+        }
+        return nil
+    }
+    
+    
+    private func showDropOverlay(for zone: PaneDropZone) {
+        
+        let containerView = self.contentViewController.view
+        let overlay: PaneDropOverlayView
+        if let existing = self.dropOverlayView, existing.superview === containerView {
+            overlay = existing
+        } else {
+            let created = PaneDropOverlayView(frame: containerView.bounds)
+            created.autoresizingMask = [.width, .height]
+            containerView.addSubview(created, positioned: .above, relativeTo: nil)
+            self.dropOverlayView = created
+            overlay = created
+        }
+        overlay.frame = containerView.bounds
+        overlay.zone = zone
+    }
+    
+    
+    private func hideDropOverlay() {
+        
+        self.dropOverlayView?.removeFromSuperview()
+        self.dropOverlayView = nil
+    }
+    
+    
     /// Pins or unpins the given tab during session restoration.
     func togglePinForRestoration(of tab: PaneTab) {
         
@@ -655,5 +802,78 @@ private final class PaneContentViewController: NSViewController {
     override func loadView() {
         
         self.view = NSView()
+    }
+}
+
+
+/// Translucent edge/center drop zone indicator drawn above a pane during tab drag-and-drop.
+private final class PaneDropOverlayView: NSView {
+    
+    var zone: PaneDropZone = .center {
+        didSet {
+            if self.zone != oldValue {
+                self.needsDisplay = true
+            }
+        }
+    }
+    
+    override var isOpaque: Bool { false }
+    
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    
+    override func draw(_ dirtyRect: NSRect) {
+        
+        let bounds = self.bounds.insetBy(dx: 6, dy: 6)
+        guard bounds.width > 12, bounds.height > 12 else { return }
+        
+        let highlightRect: NSRect
+        let label: String
+        switch self.zone {
+            case .center:
+                highlightRect = bounds
+                label = String(localized: "chrome.dropZone.addTab", defaultValue: "Add to Tab Bar", table: "Chrome")
+            case .left:
+                highlightRect = NSRect(x: bounds.minX, y: bounds.minY, width: bounds.width * 0.48, height: bounds.height)
+                label = String(localized: "chrome.dropZone.splitLeft", defaultValue: "Split Left", table: "Chrome")
+            case .right:
+                highlightRect = NSRect(x: bounds.minX + bounds.width * 0.52, y: bounds.minY, width: bounds.width * 0.48, height: bounds.height)
+                label = String(localized: "chrome.dropZone.splitRight", defaultValue: "Split Right", table: "Chrome")
+            case .top:
+                highlightRect = NSRect(x: bounds.minX, y: bounds.minY + bounds.height * 0.52, width: bounds.width, height: bounds.height * 0.48)
+                label = String(localized: "chrome.dropZone.splitTop", defaultValue: "Split Top", table: "Chrome")
+            case .bottom:
+                highlightRect = NSRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height * 0.48)
+                label = String(localized: "chrome.dropZone.splitBottom", defaultValue: "Split Bottom", table: "Chrome")
+        }
+        
+        let accent = NSColor.controlAccentColor
+        let path = NSBezierPath(roundedRect: highlightRect, xRadius: 10, yRadius: 10)
+        accent.withAlphaComponent(0.16).setFill()
+        path.fill()
+        
+        accent.withAlphaComponent(0.85).setStroke()
+        path.lineWidth = 2
+        path.stroke()
+        
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+            .foregroundColor: NSColor.labelColor,
+        ]
+        let attrString = NSAttributedString(string: label, attributes: attrs)
+        let textSize = attrString.size()
+        let badgeRect = NSRect(
+            x: highlightRect.midX - (textSize.width + 24) / 2,
+            y: highlightRect.midY - (textSize.height + 12) / 2,
+            width: textSize.width + 24,
+            height: textSize.height + 12
+        )
+        let badgePath = NSBezierPath(roundedRect: badgeRect, xRadius: 8, yRadius: 8)
+        NSColor.windowBackgroundColor.withAlphaComponent(0.92).setFill()
+        badgePath.fill()
+        accent.withAlphaComponent(0.45).setStroke()
+        badgePath.lineWidth = 1
+        badgePath.stroke()
+        
+        attrString.draw(at: NSPoint(x: badgeRect.minX + 12, y: badgeRect.minY + 6))
     }
 }

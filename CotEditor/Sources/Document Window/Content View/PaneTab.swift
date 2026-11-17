@@ -26,10 +26,35 @@
 import AppKit
 import Observation
 
+/// Where a dragged pane tab will land when dropped onto an editor pane.
+enum PaneDropZone: Equatable {
+    
+    case center
+    case left
+    case right
+    case top
+    case bottom
+    
+    static func from(point: NSPoint, in bounds: NSRect) -> PaneDropZone {
+        
+        let rx = bounds.width > 0 ? (point.x - bounds.minX) / bounds.width : 0.5
+        let ry = bounds.height > 0 ? (point.y - bounds.minY) / bounds.height : 0.5
+        let edgeRatio: CGFloat = 0.22
+        
+        if rx < edgeRatio { return .left }
+        if rx > 1 - edgeRatio { return .right }
+        if ry < edgeRatio { return .bottom }  // non-flipped AppKit coordinates: minY is bottom
+        if ry > 1 - edgeRatio { return .top }
+        return .center
+    }
+}
+
+
 /// One document a pane shows, drawn as a tab in the pane's tab bar.
 @Observable final class PaneTab {
     
     static let dragPrefix = "cot-pane-tab:"
+    static let dragPasteboardType = NSPasteboard.PasteboardType("local.cmy.CotEditor.paneTab")
     
     /// A stable identity used while dragging a tab around the bar.
     let id = UUID()
@@ -55,14 +80,10 @@ import Observation
     
     /// Whether the tab is pinned.
     ///
-    /// A pinned tab cannot be closed, and shrinks to an accent-colored pin so it takes
-    /// almost no width in the bar — the same way a pinned browser tab does.
+    /// A pinned tab cannot be closed, and stays anchored at the front of the tab bar.
     var isPinned = false
     
     /// Whether the tab can be closed at all.
-    ///
-    /// The tab showing the window's own document stays unclosable, because the window has
-    /// no way to display any other document.
     var isClosable = true
     
     
@@ -99,12 +120,17 @@ import Observation
     /// Whether the whole pane can be closed (i.e. the window is split).
     var canClosePane = false
     
+    /// Incremented whenever a tab's title or edited state updates so SwiftUI/AppKit views refresh cleanly.
+    var refreshRevision: Int = 0
+    
     var onSelect: (PaneTab) -> Void = { _ in }
     var onClose: (PaneTab) -> Void = { _ in }
     var onNewTab: () -> Void = {}
     var onTogglePin: (PaneTab) -> Void = { _ in }
+    var onRename: (PaneTab, String) -> Void = { _, _ in }
     var onMove: (PaneTab, PaneTab) -> Void = { _, _ in }
-    var onDropTab: (UUID, PaneTab?) -> Bool = { _, _ in false }
-    var onMoveToNewWindow: (PaneTab) -> Void = { _ in }
+    var onMoveToIndex: (PaneTab, Int) -> Void = { _, _ in }
+    var onDropTab: (UUID, Int?) -> Bool = { _, _ in false }
+    var onDetachToNewWindow: (PaneTab, NSPoint) -> Void = { _, _ in }
     var onClosePane: () -> Void = {}
 }

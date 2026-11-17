@@ -33,28 +33,14 @@ struct NavigationBar: View {
     @State var outlineNavigator: OutlineNavigator
     var splitState: SplitState
     @State var tabs: PaneTabState
-    @State private var isBarDropTargeted = false
     
     
     var body: some View {
         
         HStack(alignment: .center, spacing: 2) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 2) {
-                    ForEach(self.tabs.tabs, id: \.id) { tab in
-                        TabItem(tab: tab,
-                                tabs: self.tabs,
-                                isSelected: tab === self.tabs.selectedTab,
-                                onSelect: { self.tabs.onSelect(tab) },
-                                onClose: { self.tabs.onClose(tab) },
-                                onTogglePin: { self.tabs.onTogglePin(tab) })
-                    }
-                    
-                    NewTabButton(action: self.tabs.onNewTab)
-                }
-                .cotAnimation(.cotFast, value: self.tabs.tabs.map(\.id))
-            }
-
+            PaneTabStripView(state: self.tabs)
+                .frame(maxWidth: .infinity)
+                .frame(height: 20)
             
             if self.outlineNavigator.items?.isEmpty == false {
                 Divider()
@@ -64,27 +50,8 @@ struct NavigationBar: View {
                 OutlineNavigationView(navigator: $outlineNavigator)
             }
             
-            Spacer(minLength: 16)
-                .contentShape(Rectangle())
-            
             if self.tabs.canClosePane {
                 self.closePaneButton
-            }
-        }
-        .dropDestination(for: String.self) { identifiers, _ in
-            guard
-                let identifier = identifiers.first,
-                let draggedID = PaneTab.tabID(from: identifier)
-            else { return false }
-            
-            return self.tabs.onDropTab(draggedID, nil)
-        } isTargeted: { isTargeted in
-            self.isBarDropTargeted = isTargeted
-        }
-        .overlay {
-            if self.isBarDropTargeted {
-                RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1)
             }
         }
         .buttonStyle(.borderless)
@@ -109,189 +76,6 @@ struct NavigationBar: View {
         }
         .buttonStyle(.plain)
         .help(String(localized: "Close split editor", table: "Document", comment: "tooltip for button"))
-    }
-}
-
-
-/// One tab in the tab bar.
-private struct TabItem: View {
-    
-    var tab: PaneTab
-    var tabs: PaneTabState
-    var isSelected: Bool
-    var onSelect: () -> Void
-    var onClose: () -> Void
-    var onTogglePin: () -> Void
-    
-    @State private var isHovering = false
-    @State private var isDropTargeted = false
-    
-    
-    var body: some View {
-        
-        self.titleButton
-            .draggable(self.tab.dragPayload) {
-                // A compact, self-contained preview: the default snapshot of the tab
-                // overlapped the tab under the cursor and made the titles double up.
-                self.dragPreview
-            }
-            .dropDestination(for: String.self) { identifiers, _ in
-                guard
-                    let identifier = identifiers.first,
-                    let draggedID = PaneTab.tabID(from: identifier),
-                    draggedID != self.tab.id
-                else { return false }
-                
-                if self.tabs.onDropTab(draggedID, self.tab) {
-                    return true
-                }
-                if let draggedTab = self.tabs.tabs.first(where: { $0.id == draggedID }) {
-                    self.tabs.onMove(draggedTab, self.tab)
-                    return true
-                }
-                return false
-            } isTargeted: { isTargeted in
-                self.isDropTargeted = isTargeted
-            }
-            .overlay {
-                if self.isDropTargeted {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.accentColor.opacity(0.15))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 4)
-                                .strokeBorder(Color.accentColor, lineWidth: 1)
-                        }
-                }
-            }
-            .contextMenu {
-                Button(self.tab.isPinned
-                       ? String(localized: "chrome.tab.unpin", defaultValue: "Unpin Tab", table: "Chrome")
-                       : String(localized: "chrome.tab.pin", defaultValue: "Pin Tab", table: "Chrome")) {
-                    self.onTogglePin()
-                }
-                Button(String(localized: "chrome.tab.moveToNewWindow", defaultValue: "Move Tab to New Window", table: "Chrome")) {
-                    self.tabs.onMoveToNewWindow(self.tab)
-                }
-                Divider()
-                Button(String(localized: "chrome.tab.close", defaultValue: "Close Tab", table: "Chrome")) {
-                    self.onClose()
-                }
-                .disabled(self.tab.isPinned || !self.tab.isClosable)
-            }
-    }
-    
-    
-    // MARK: Private Views
-    
-    /// The image that follows the cursor while the tab is being dragged.
-    private var dragPreview: some View {
-        
-        HStack(spacing: 3) {
-            if self.tab.isPinned {
-                Image(systemName: "pin.fill")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-            }
-            
-            Text(self.tab.title)
-                .font(.system(size: 11))
-                .lineLimit(1)
-                .foregroundStyle(Color.primary)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background {
-            RoundedRectangle(cornerRadius: 5)
-                .fill(Color(nsColor: .windowBackgroundColor))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 5)
-                .strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
-    }
-    
-    
-    private var titleButton: some View {
-        
-        // The close button is a sibling of the title button, not nested inside it: a
-        // Button inside a Button would swallow the close click in some macOS versions.
-        HStack(spacing: 3) {
-            // A pinned tab keeps its title; it only gains an accent pin and moves to the
-            // front of the bar. The pin itself is a button so that unpinning never depends
-            // on finding the context menu.
-            if self.tab.isPinned {
-                Button(action: self.onTogglePin) {
-                    Image(systemName: "pin.fill")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                }
-                .buttonStyle(.plain)
-                .help(String(localized: "chrome.tab.pinnedHelp",
-                             defaultValue: "Pinned; click to unpin", table: "Chrome"))
-            }
-            
-            Button(action: self.onSelect) {
-                Text(self.tab.title)
-                    .font(.system(size: 11))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 160, alignment: .leading)
-                    .foregroundStyle(self.isSelected ? Color.primary : Color.secondary)
-                    .padding(.leading, self.tab.isPinned ? 0 : 4)
-                    .padding(.vertical, 1)
-            }
-            .buttonStyle(.plain)
-            .help(self.tab.title)
-            
-            if self.tab.isClosable, !self.tab.isPinned {
-                Button(action: self.onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 14, height: 14)
-                }
-                .buttonStyle(.plain)
-                .help(String(localized: "chrome.tab.close", defaultValue: "Close Tab", table: "Chrome"))
-            }
-        }
-        .padding(.leading, self.tab.isPinned ? 4 : 0)
-        .padding(.trailing, 4)
-        .background {
-            if self.isSelected {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.primary.opacity(0.10))
-            } else if self.isHovering {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.primary.opacity(0.05))
-            }
-        }
-        .onHover { self.isHovering = $0 }
-        .cotAnimation(.cotFast, value: self.isSelected)
-    }
-}
-
-
-/// The button to open a new tab at the end of the tab list.
-private struct NewTabButton: View {
-    
-    var action: () -> Void
-    
-    @State private var isHovering = false
-    
-    
-    var body: some View {
-        
-        Button(action: self.action) {
-            Image(systemName: "plus")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(self.isHovering ? Color.primary : Color.secondary)
-                .frame(width: 18, height: 16)
-        }
-        .buttonStyle(.plain)
-        .onHover { self.isHovering = $0 }
-        .help(String(localized: "chrome.tab.newTabHelp",
-                     defaultValue: "New Tab", table: "Chrome"))
     }
 }
 

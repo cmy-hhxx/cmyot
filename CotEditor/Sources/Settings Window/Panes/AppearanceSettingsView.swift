@@ -24,6 +24,8 @@
 //
 
 import SwiftUI
+import AppKit
+import ColorCode
 import Defaults
 
 struct AppearanceSettingsView: View {
@@ -186,6 +188,12 @@ struct AppearanceSettingsView: View {
             }
             .accessibilityElement(children: .contain)
             
+            GridRow(alignment: .center) {
+                Text("光标颜色:")
+                    .gridColumnAlignment(.trailing)
+                CustomCursorColorControl()
+            }
+            
             ThemeView()
                 .padding(.top, 10)
             
@@ -253,6 +261,77 @@ private extension NSFont {
     var displayNameAndSize: String {
         
         "\(self.displayName ?? self.fontName)  \(self.pointSize.formatted())"
+    }
+}
+
+
+/// Reusable control for toggling and picking a global custom editor/Vim cursor color.
+struct CustomCursorColorControl: View {
+    
+    private static let presetHexes = [
+        "#0A84FF", "#34C759", "#FF9F0A", "#FF375F", "#AF52DE", "#FFFFFF", "#1D1D1F",
+    ]
+    
+    @AppStorage(.usesCustomCursorColor) private var usesCustomCursorColor
+    @AppStorage(.customCursorColorHex) private var customCursorColorHex
+    
+    private var colorBinding: Binding<Color> {
+        Binding(
+            get: {
+                let nsColor = NSColor(colorCode: self.customCursorColorHex) ?? .systemBlue
+                return Color(nsColor: nsColor)
+            },
+            set: { newColor in
+                let converted = NSColor(newColor).usingColorSpace(.sRGB) ?? NSColor(newColor)
+                if let hex = converted.colorCode(type: .hex) {
+                    self.customCursorColorHex = hex
+                    self.usesCustomCursorColor = true
+                    CotLocalDatabase.shared.syncUserPreferencesToDatabase()
+                }
+            }
+        )
+    }
+    
+    var body: some View {
+        
+        HStack(spacing: 8) {
+            Toggle("覆盖主题默认光标色", isOn: self.$usesCustomCursorColor)
+                .controlSize(.small)
+                .onChange(of: self.usesCustomCursorColor) { _, _ in
+                    CotLocalDatabase.shared.syncUserPreferencesToDatabase()
+                }
+            
+            ColorPicker("", selection: self.colorBinding, supportsOpacity: false)
+                .labelsHidden()
+                .disabled(!self.usesCustomCursorColor)
+            
+            HStack(spacing: 4) {
+                ForEach(Self.presetHexes, id: \.self) { hex in
+                    let nsColor = NSColor(colorCode: hex) ?? .systemBlue
+                    Button {
+                        self.customCursorColorHex = hex
+                        self.usesCustomCursorColor = true
+                        CotLocalDatabase.shared.syncUserPreferencesToDatabase()
+                    } label: {
+                        Circle()
+                            .fill(Color(nsColor: nsColor))
+                            .frame(width: 13, height: 13)
+                            .overlay(
+                                Circle()
+                                    .stroke(
+                                        self.usesCustomCursorColor && self.customCursorColorHex.caseInsensitiveCompare(hex) == .orderedSame
+                                            ? Color.primary
+                                            : Color.secondary.opacity(0.35),
+                                        lineWidth: self.usesCustomCursorColor && self.customCursorColorHex.caseInsensitiveCompare(hex) == .orderedSame ? 2 : 1
+                                    )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(hex)
+                }
+            }
+            .opacity(self.usesCustomCursorColor ? 1.0 : 0.45)
+        }
     }
 }
 
