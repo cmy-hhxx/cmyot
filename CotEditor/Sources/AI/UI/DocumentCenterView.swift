@@ -686,7 +686,21 @@ struct DocumentCenterView: View {
                                 .padding(.vertical, 10)
                         } else {
                             ForEach(self.state.displayedItems) { item in
-                                self.trashRow(item: item, isSelected: activeItem?.id == item.id)
+                                TrashSidebarRow(
+                                    item: item,
+                                    isSelected: activeItem?.id == item.id,
+                                    onSelect: {
+                                        self.isRenaming = false
+                                        self.state.selectedID = item.id
+                                    },
+                                    onRestore: {
+                                        self.restore(item: item)
+                                    },
+                                    onPermanentlyDelete: {
+                                        self.permanentlyDelete(item: item)
+                                    }
+                                )
+                                .padding(.leading, 12)
                             }
                         }
                     } else {
@@ -779,46 +793,6 @@ struct DocumentCenterView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.45))
-    }
-    
-    
-    private func trashRow(item: DocumentCenterState.ManagedDocumentItem, isSelected: Bool) -> some View {
-        
-        Button {
-            self.isRenaming = false
-            self.state.selectedID = item.id
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "trash")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 14)
-                
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(item.title)
-                        .font(.system(size: 12, weight: .medium))
-                        .lineLimit(1)
-                    Text(item.updatedAt, format: .dateTime.month().day().hour().minute())
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                }
-                
-                Spacer(minLength: 4)
-                
-                Text("\(item.characterCount) 字")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background(
-                isSelected ? Color.accentColor.opacity(0.14) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 6)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
     }
     
     
@@ -983,42 +957,6 @@ struct DocumentCenterView: View {
                 .frame(height: 1)
             
             CenterPreviewTextView(text: item.previewText)
-            
-            if item.isTrashed {
-                Rectangle()
-                    .fill(Color.primary.opacity(0.06))
-                    .frame(height: 1)
-                
-                HStack(spacing: 8) {
-                    Button {
-                        self.restore(item: item)
-                    } label: {
-                        Label("恢复", systemImage: "arrow.uturn.backward")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .pointerStyle(.link)
-                    .help("把这份文档恢复到文档列表中")
-                    
-                    Button(role: .destructive) {
-                        self.permanentlyDelete(item: item)
-                    } label: {
-                        Label("彻底删除", systemImage: "trash.slash")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .pointerStyle(.link)
-                    .help("从本地数据库永久删除，无法恢复")
-                    
-                    Spacer()
-                    
-                    Text("彻底删除只移除本地快照，不会删除磁盘原文件")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.horizontal, 24)
-                .frame(height: 52)
-            }
         }
     }
     
@@ -1395,6 +1333,95 @@ private struct DocumentGroupHeaderRow: View {
                     self.onDeleteGroup()
                 }
             }
+        }
+    }
+}
+
+
+private struct TrashSidebarRow: View {
+    
+    let item: DocumentCenterState.ManagedDocumentItem
+    let isSelected: Bool
+    var onSelect: () -> Void
+    var onRestore: () -> Void
+    var onPermanentlyDelete: () -> Void
+    
+    @State private var isHovered = false
+    @State private var isRestoreHovered = false
+    @State private var isDeleteHovered = false
+    
+    var body: some View {
+        
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "trash")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.tertiary)
+                .frame(width: 10)
+            
+            Text(self.item.title)
+                .font(.system(size: 12.5, weight: self.isSelected ? .semibold : .regular))
+                .foregroundStyle(self.isSelected ? Color.primary : Color.primary.opacity(0.88))
+                .lineLimit(1)
+            
+            Spacer(minLength: 4)
+            
+            HStack(spacing: 2) {
+                Button {
+                    self.onRestore()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(self.isRestoreHovered ? Color.accentColor : Color.secondary)
+                        .frame(width: 22, height: 22)
+                        .background(
+                            self.isRestoreHovered ? Color.accentColor.opacity(0.14) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 5)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .onHover { self.isRestoreHovered = $0 }
+                .help("恢复「\(self.item.title)」")
+                
+                Button {
+                    self.onPermanentlyDelete()
+                } label: {
+                    Image(systemName: "trash.slash")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(self.isDeleteHovered ? Color.red : Color.secondary)
+                        .frame(width: 22, height: 22)
+                        .background(
+                            self.isDeleteHovered ? Color.red.opacity(0.14) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 5)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .onHover { self.isDeleteHovered = $0 }
+                .help("彻底删除「\(self.item.title)」")
+            }
+            .opacity((self.isHovered || self.isSelected) ? 1.0 : 0.0)
+            .allowsHitTesting(self.isHovered || self.isSelected)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            self.isSelected
+                ? Color.accentColor.opacity(0.14)
+                : (self.isHovered ? Color.primary.opacity(0.05) : Color.clear),
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+        .contentShape(Rectangle())
+        .pointerStyle(.link)
+        .onHover { self.isHovered = $0 }
+        .onTapGesture {
+            self.onSelect()
+        }
+        .contextMenu {
+            Button("恢复") { self.onRestore() }
+            Divider()
+            Button("彻底删除", role: .destructive) { self.onPermanentlyDelete() }
         }
     }
 }
