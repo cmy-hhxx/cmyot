@@ -2037,10 +2037,13 @@ final class VimEngine {
         if let editorTextView = self.textView as? EditorTextView {
             if VimState.shared.mode == .insert {
                 editorTextView.funEffects.hideVimCursorOnly()
+                editorTextView.syncNativeCaretVisibility()
                 editorTextView.updateInsertionPointStateAndRestartTimer(true)
             } else if editorTextView.funEffects.ownsVimCursorDrawing {
+                editorTextView.syncNativeCaretVisibility()
                 editorTextView.funEffects.syncVimCursor(animated: true)
             } else {
+                editorTextView.syncNativeCaretVisibility()
                 editorTextView.updateInsertionPointStateAndRestartTimer(true)
                 editorTextView.setNeedsDisplay(editorTextView.visibleRect)
             }

@@ -127,12 +127,16 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         didSet {
             guard self.needsUpdateLineHighlight, self.highlightsCurrentLines else { return }
-            self.lineHighlightRects.forEach { self.setNeedsDisplay($0, avoidAdditionalLayout: true) }
+            // Expand invalidation bounds slightly to cover centerScanRect / rounded corner anti-aliasing
+            // so moving between lines never leaves a 1px horizontal hairline residue.
+            self.lineHighlightRects.forEach {
+                self.setNeedsDisplay($0.insetBy(dx: -4, dy: -4), avoidAdditionalLayout: true)
+            }
             if let caretRect = self.boundingRect(for: self.selectedRange) {
                 let band = NSRect(x: self.visibleRect.minX,
-                                  y: caretRect.minY - 2,
+                                  y: caretRect.minY - 4,
                                   width: self.visibleRect.width,
-                                  height: caretRect.height + 4)
+                                  height: caretRect.height + 8)
                 self.setNeedsDisplay(band, avoidAdditionalLayout: true)
             } else {
                 self.setNeedsDisplay(self.visibleRect, avoidAdditionalLayout: true)
@@ -328,6 +332,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         defer {
             self.invalidateInsertionIndicatorDisplayMode()
             self.invalidateAutomaticPeriodSubstitution()
+            self.syncNativeCaretVisibility()
             self.funEffects.syncVimCursor(animated: false)
         }
         
@@ -405,6 +410,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     MainActor.assumeIsolated { [unowned self] in
                         self.invalidateInsertionIndicatorDisplayMode()
                         self.invalidateAutomaticPeriodSubstitution()
+                        self.syncNativeCaretVisibility()
                         self.funEffects.syncVimCursor(animated: false)
                     }
                 },
@@ -582,11 +588,29 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    /// Suppresses AppKit's native 1–2pt insertion line & internal `NSTextInsertionIndicator`
+    /// while our GPU Vim cursor owns rendering so no thin vertical caret line lingers after moves.
+    func syncNativeCaretVisibility() {
+        
+        let hideNative = self.funEffects.ownsVimCursorDrawing
+        let targetColor: NSColor = hideNative ? .clear : self.effectiveCursorColor
+        if self.insertionPointColor != targetColor {
+            self.insertionPointColor = targetColor
+        }
+        if hideNative {
+            self.updateInsertionPointStateAndRestartTimer(false)
+            for subview in self.subviews where subview is NSTextInsertionIndicator && !self.insertionIndicators.contains(where: { $0 === subview }) {
+                (subview as? NSTextInsertionIndicator)?.displayMode = .hidden
+            }
+        }
+    }
+    
+    
     /// Re-applies the cursor color across native insertion point, multi-cursor indicators, and Vim blocks.
     func refreshCursorColor() {
         
         let color = self.effectiveCursorColor
-        self.insertionPointColor = color
+        self.insertionPointColor = self.funEffects.ownsVimCursorDrawing ? .clear : color
         for indicator in self.insertionIndicators {
             indicator.color = color
         }
@@ -1139,6 +1163,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
            newLocation != previousLocation,
            let newVimRect = self.vimCursorRect(at: newLocation)
         {
+            self.syncNativeCaretVisibility()
             self.funEffects.animateVimCursorTransition(
                 from: previousVimRect,
                 to: newVimRect,
