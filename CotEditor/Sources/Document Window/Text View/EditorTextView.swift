@@ -241,7 +241,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         // Keep layer clipping enabled upfront so cursor/particle overlays never escape the pane
         self.wantsLayer = true
         self.layer?.masksToBounds = true
-        self.registerForDraggedTypes([PaneTab.dragPasteboardType])
+        self.registerForDraggedTypes(self.registeredDraggedTypes + [PaneTab.dragPasteboardType])
     }
     
     
@@ -1894,6 +1894,17 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        
+        if self.isDraggingPaneTab(sender.draggingPasteboard),
+           let pane = self.editorViewController
+        {
+            return pane.canAcceptPaneTabDrop(sender)
+        }
+        return super.prepareForDragOperation(sender)
+    }
+    
+    
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         
         if self.isDraggingPaneTab(sender.draggingPasteboard),
@@ -1902,6 +1913,15 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return pane.panePerformDragOperation(sender, in: self)
         }
         return super.performDragOperation(sender)
+    }
+    
+    
+    override func concludeDragOperation(_ sender: (any NSDraggingInfo)?) {
+        
+        if let sender, self.isDraggingPaneTab(sender.draggingPasteboard) {
+            return
+        }
+        super.concludeDragOperation(sender)
     }
     
     

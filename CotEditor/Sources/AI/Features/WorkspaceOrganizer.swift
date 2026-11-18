@@ -364,16 +364,16 @@ enum WorkspaceOrganizer {
                 
                 if let hostDocVC = (targetWindow?.windowController as? DocumentWindowController)?.documentViewController {
                     hostDocVC.openGeneratedTab(
-                        title: "整理合并 Map.md",
+                        title: "整理合并 Map",
                         content: outcome.mapMarkdown,
-                        syntaxName: SyntaxName.markdown,
+                        syntaxName: SyntaxName.none,
                         databaseID: "organize-map:latest"
                     )
                 } else {
                     let mapDoc = try (NSDocumentController.shared as? DocumentController)?
-                        .openUntitledDocument(content: outcome.mapMarkdown, title: "整理合并 Map.md", display: true)
+                        .openUntitledDocument(content: outcome.mapMarkdown, title: "整理合并 Map", display: true)
                     mapDoc?.isExplicitlyNamed = true
-                    mapDoc?.setSyntax(name: SyntaxName.markdown)
+                    mapDoc?.setSyntax(name: SyntaxName.none)
                     mapDoc?.syncToLocalDatabase(force: true)
                 }
                 
@@ -493,7 +493,7 @@ enum WorkspaceOrganizer {
         lines.append("合并前的所有非空文档快照已备份至本地 SQLite 数据库（设置 → AI → 查看已存文档），涉及的磁盘原文件不会被自动删除。")
         lines.append("")
         
-        return AIDocumentTextCleaner.clean(lines.joined(separator: "\n")) + "\n"
+        return AIDocumentTextCleaner.cleanOrganized(lines.joined(separator: "\n")) + "\n"
     }
     
     
@@ -618,7 +618,7 @@ enum WorkspaceOrganizer {
         
         for group in plan.groups {
             let resolvedSyntax = self.normalizedSyntaxName(group.syntax)
-            let formattedContent = AIDocumentTextCleaner.clean(group.mergedContent)
+            let formattedContent = AIDocumentTextCleaner.cleanOrganized(group.mergedContent)
                 .trimmingCharacters(in: .newlines) + "\n"
             
             let matchingEntries = group.sourceIDs.compactMap { entryByID[$0] }.filter { !consumedIDs.contains($0.id) }
@@ -629,6 +629,9 @@ enum WorkspaceOrganizer {
                 .replacingOccurrences(of: "/", with: "-")
                 .replacingOccurrences(of: ":", with: "-")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            if primaryEntry?.fileURL == nil {
+                finalTitle = Self.strippingMarkdownExtension(from: finalTitle)
+            }
             if finalTitle.isEmpty {
                 finalTitle = self.fallbackContentTitle(
                     from: formattedContent,
@@ -649,16 +652,16 @@ enum WorkspaceOrganizer {
                 } else {
                     doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: formattedContent)
                 }
-                doc.setSyntax(name: resolvedSyntax)
                 
                 if let renamed = try? self.renameDocument(doc, to: finalTitle) {
                     if renamed != primary.originalTitle {
                         renamedCount += 1
                     }
                     finalTitle = renamed
-                } else {
-                    doc.syncToLocalDatabase(force: true)
                 }
+                // Always keep AI-organized summaries as Plain Text rather than Markdown.
+                doc.setSyntax(name: resolvedSyntax)
+                doc.syncToLocalDatabase(force: true)
                 primary.pane?.updateTabState()
                 primary.windowVC?.view.window?.windowController?.synchronizeWindowTitleWithDocumentName()
                 
@@ -776,12 +779,20 @@ enum WorkspaceOrganizer {
     
     private static func normalizedSyntaxName(_ raw: String?) -> String {
         
-        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !raw.isEmpty else {
-            return SyntaxName.markdown
+        // One-click AI organize & merge always keeps output as Plain Text.
+        SyntaxName.none
+    }
+    
+    
+    private static func strippingMarkdownExtension(from title: String) -> String {
+        
+        let lower = title.lowercased()
+        if lower.hasSuffix(".markdown") {
+            return String(title.dropLast(".markdown".count)).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        if raw.contains("plain") || raw.contains("纯文本") {
-            return SyntaxName.none
+        if lower.hasSuffix(".md") {
+            return String(title.dropLast(".md".count)).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return SyntaxName.markdown
+        return title
     }
 }

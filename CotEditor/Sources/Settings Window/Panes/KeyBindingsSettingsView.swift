@@ -35,11 +35,14 @@ struct KeyBindingsSettingsView: View {
     
     var body: some View {
         
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(spacing: 0) {
             KeyBindingTreeView(model: $model)
-                .frame(height: 280)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(20)
             
-            HStack(alignment: .firstTextBaseline) {
+            Divider()
+            
+            HStack(alignment: .center) {
                 Button(String(localized: "Action.restoreDefaults.label", defaultValue: "Restore Defaults"), action: self.model.restore)
                     .disabled(!self.model.isRestorable)
                     .fixedSize()
@@ -52,13 +55,15 @@ struct KeyBindingsSettingsView: View {
                         .controlSize(.small)
                 }
                 HelpLink(anchor: "settings_keybindings")
-            }.frame(minHeight: 20)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background(.bar)
         }
         .onAppear {
             self.model.load()
         }
-        .scenePadding()
-        .frame(width: 620)
+        .frame(width: SettingsPaneLayout.width, height: SettingsPaneLayout.height)
     }
 }
 

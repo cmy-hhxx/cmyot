@@ -1092,7 +1092,7 @@ extension NSAttributedString.Key {
     
     @objc override func move(_ sender: Any?) {
         
-        if self.fileURL == nil, self.viewController?.beginInlineRename(for: self) == true {
+        if self.viewController?.beginInlineRename(for: self) == true {
             return
         }
         super.move(sender)

@@ -20,6 +20,7 @@
 
 import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import CotEditor
 
@@ -308,6 +309,33 @@ struct Round14FeatureTests {
         
         // Deeper headings become four-space indentation, never `#`.
         #expect(AIDocumentTextCleaner.clean("# A\n## B\n### C") == "A\n    B\n        C")
+        
+        // Organized documents keep headings flush left (no tab) and indent body content with `\t`.
+        let organized = AIDocumentTextCleaner.cleanOrganized("""
+        # 项目背景
+        本阶段已完成接口联调。
+        
+        ## 核心结论
+        - **性能提升**
+          - 启动耗时下降 40%
+        - 修复稳定性问题
+        
+        后续计划
+        \t下周继续推进回归测试。
+        """)
+        let expectedOrganized = [
+            "项目背景",
+            "\t本阶段已完成接口联调。",
+            "",
+            "核心结论",
+            "\t1. 性能提升",
+            "\t\t1. 启动耗时下降 40%",
+            "\t2. 修复稳定性问题",
+            "",
+            "后续计划",
+            "\t下周继续推进回归测试。",
+        ].joined(separator: "\n")
+        #expect(organized == expectedOrganized)
     }
     
     
@@ -453,4 +481,132 @@ struct Round14FeatureTests {
         controller.dismissSheet()
         #expect(dismissCount == 1)
     }
+    
+    
+    @Test func paneTabInlineRenameCommitsAndResistsTransientBlur() {
+        
+        let doc = Document()
+        doc.displayName = "旧标签"
+        let tab = PaneTab(document: doc)
+        let state = PaneTabState()
+        state.tabs = [tab]
+        state.selectedTab = tab
+        
+        var renamedTo: String?
+        state.onRename = { renamedTab, newName in
+            renamedTab.document.displayName = newName
+            renamedTo = newName
+        }
+        
+        let strip = PaneTabStripNSView(frame: NSRect(x: 0, y: 0, width: 400, height: 24))
+        strip.state = state
+        strip.reloadTabs()
+        
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 80),
+                              styleMask: [.titled],
+                              backing: .buffered,
+                              defer: false)
+        window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
+        window.contentView?.addSubview(strip)
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        
+        strip.beginInlineRename(for: tab)
+        let field = strip.subviews
+            .compactMap { $0 as? NSScrollView }
+            .first?.documentView?.subviews
+            .compactMap { $0 as? PaneTabItemView }
+            .first?.subviews
+            .compactMap { $0 as? NSTextField }
+            .first(where: \.isEditable)
+        #expect(field != nil)
+        
+        // Premature end-editing during the double-click / context-menu grace window must not cancel rename.
+        if let field {
+            strip.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+            #expect(field.superview != nil)
+            
+            field.stringValue = "重命名后的标签"
+            let editor = NSTextView()
+            editor.string = "重命名后的标签"
+            let handled = strip.control(field, textView: editor, doCommandBy: #selector(NSResponder.insertNewline(_:)))
+            #expect(handled == true)
+        }
+        
+        #expect(renamedTo == "重命名后的标签")
+        #expect(tab.title == "重命名后的标签")
+    }
+    
+    
+    @Test func settingsPanesShareUnifiedDimensions() {
+        
+        for pane in SettingsPane.allCases {
+            let host = NSHostingController(rootView: AnyView(pane.view))
+            host.view.layoutSubtreeIfNeeded()
+            let size = host.view.fittingSize
+            #expect(abs(size.width - SettingsPaneLayout.width) <= 1, "Pane \(pane.rawValue) width mismatch: \(size.width)")
+            #expect(abs(size.height - SettingsPaneLayout.height) <= 1, "Pane \(pane.rawValue) height mismatch: \(size.height)")
+        }
+    }
+    
+    
+    @Test func crossPaneDropAcceptedOnTargetPaneAndRejectedOnSourcePane() throws {
+        
+        let doc1 = Document()
+        let doc2 = Document()
+        let sourcePane = EditorViewController(document: doc1, splitState: SplitState())
+        let targetPane = EditorViewController(document: doc2, splitState: SplitState())
+        sourcePane.loadViewIfNeeded()
+        targetPane.loadViewIfNeeded()
+        
+        let sourceTab = try #require(sourcePane.tabs.first)
+        var droppedID: UUID?
+        targetPane.requestDropTabInZone = { id, zone in
+            droppedID = id
+            return zone == .center
+        }
+        
+        let draggingInfo = SyntheticTabDraggingInfo(tabID: sourceTab.id)
+        #expect(sourcePane.canAcceptPaneTabDrop(draggingInfo) == false)
+        #expect(targetPane.canAcceptPaneTabDrop(draggingInfo) == true)
+        #expect(targetPane.paneDragEntered(draggingInfo) == .move)
+        #expect(targetPane.panePerformDragOperation(draggingInfo) == true)
+        #expect(droppedID == sourceTab.id)
+    }
+}
+
+
+private final class SyntheticTabDraggingInfo: NSObject, NSDraggingInfo {
+    
+    private let pboard: NSPasteboard
+    
+    init(tabID: UUID) {
+        let pb = NSPasteboard.withUniqueName()
+        pb.clearContents()
+        pb.setString(tabID.uuidString, forType: PaneTab.dragPasteboardType)
+        pb.setString(PaneTab.dragPrefix + tabID.uuidString, forType: .string)
+        self.pboard = pb
+    }
+    
+    deinit {
+        self.pboard.releaseGlobally()
+    }
+    
+    var draggingDestinationWindow: NSWindow? { nil }
+    var draggingSourceOperationMask: NSDragOperation { .move }
+    var draggingLocation: NSPoint { .zero }
+    var draggedImageLocation: NSPoint { .zero }
+    var draggedImage: NSImage? { nil }
+    var draggingPasteboard: NSPasteboard { self.pboard }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 0 }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    var draggingFormation: NSDraggingFormation { get { .default } set {} }
+    var animatesToDestination: Bool { get { false } set {} }
+    var numberOfValidItemsForDrop: Int { get { 1 } set {} }
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?, classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey : Any] = [:], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
 }

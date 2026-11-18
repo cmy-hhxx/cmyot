@@ -49,21 +49,16 @@ struct GeneralSettingsView: View {
     
     var body: some View {
         
-        Grid(alignment: .leadingFirstTextBaseline, verticalSpacing: isLiquidGlass ? 18 : 14) {
-            GridRow {
-                Text("settings.language.label", tableName: "Personal")
-                    .gridColumnAlignment(.trailing)
-                
+        SettingsFormPane(helpAnchor: "settings_general") {
+            Section {
                 Picker(selection: $language) {
                     ForEach(AppLanguage.allCases, id: \.self) {
                         Text(verbatim: $0.displayName)
                     }
                 } label: {
-                    EmptyView()
+                    Text("settings.language.label", tableName: "Personal")
                 }
                 .pickerStyle(.menu)
-                .labelsHidden()
-                .fixedSize()
                 .onChange(of: self.language) { _, newValue in
                     newValue.apply()
                     self.isLanguageChangeConfirmationPresented = true
@@ -81,79 +76,61 @@ struct GeneralSettingsView: View {
                 }
             }
             
-            GridRow {
-                Text("On startup:", tableName: "GeneralSettings")
-                    .gridColumnAlignment(.trailing)
+            Section {
+                Toggle(String(localized: "Reopen windows from last session", table: "GeneralSettings"), isOn: $quitAlwaysKeepsWindows)
+                    .onChange(of: self.quitAlwaysKeepsWindows) {
+                        guard !self.suppressesQuitAlwaysKeepsWindowsChangeConfirmation else { return }
+                        
+                        self.isQuitAlwaysKeepsWindowsChangeConfirmationPresented = true
+                        self.suppressesQuitAlwaysKeepsWindowsChangeConfirmation = true
+                    }
+                    .confirmationDialog(String(localized: "NextSessionApplicationConfirmation.title", defaultValue: "The change will be applied first on the next launch.", table: "GeneralSettings"), isPresented: $isQuitAlwaysKeepsWindowsChangeConfirmationPresented) {
+                    } message: {
+                        Text(String(localized: "NextSessionApplicationConfirmation.nextAfterNext.message", defaultValue: "The app’s behavior will change from the next launch after that one.", table: "GeneralSettings"))
+                    }
                 
-                VStack(alignment: .leading, spacing: isLiquidGlass ? nil : 6) {
-                    Toggle(String(localized: "Reopen windows from last session", table: "GeneralSettings"), isOn: $quitAlwaysKeepsWindows)
-                        .onChange(of: self.quitAlwaysKeepsWindows) {
-                            guard !self.suppressesQuitAlwaysKeepsWindowsChangeConfirmation else { return }
-                            
-                            self.isQuitAlwaysKeepsWindowsChangeConfirmationPresented = true
-                            self.suppressesQuitAlwaysKeepsWindowsChangeConfirmation = true
-                        }
-                        .confirmationDialog(String(localized: "NextSessionApplicationConfirmation.title", defaultValue: "The change will be applied first on the next launch.", table: "GeneralSettings"), isPresented: $isQuitAlwaysKeepsWindowsChangeConfirmationPresented) {
-                        } message: {
-                            Text(String(localized: "NextSessionApplicationConfirmation.nextAfterNext.message", defaultValue: "The app’s behavior will change from the next launch after that one.", table: "GeneralSettings"))
-                        }
-                    
+                Picker(selection: $noDocumentOnLaunchOption) {
+                    ForEach(NoDocumentOnLaunchOption.allCases, id: \.self) {
+                        Text($0.label)
+                    }
+                } label: {
                     Text("When nothing else is open:", tableName: "GeneralSettings")
                         .accessibilityLabeledPair(role: .label, id: "noDocumentOnLaunchOption", in: self.accessibility)
-                    Picker(selection: $noDocumentOnLaunchOption) {
-                        ForEach(NoDocumentOnLaunchOption.allCases, id: \.self) {
-                            Text($0.label)
+                }
+                .pickerStyle(.menu)
+                .accessibilityLabeledPair(role: .content, id: "noDocumentOnLaunchOption", in: self.accessibility)
+            } header: {
+                Text("On startup:", tableName: "GeneralSettings")
+            }
+            
+            Section {
+                Toggle(String(localized: "Enable Auto Save with Versions", table: "GeneralSettings"), isOn: $enablesAutosaveInPlace)
+                    .onChange(of: self.enablesAutosaveInPlace) { _, newValue in
+                        if newValue != self.initialEnablesAutosaveInPlace {
+                            self.isAutosaveChangeConfirmationPresented = true
                         }
-                    } label: {
-                        EmptyView()
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .fixedSize()
-                    .accessibilityLabeledPair(role: .content, id: "noDocumentOnLaunchOption", in: self.accessibility)
-                    .padding(.leading, 20)
-                }
-            }
-            
-            GridRow {
+                    .onAppear {
+                        self.initialEnablesAutosaveInPlace = self.enablesAutosaveInPlace
+                    }
+                    .confirmationDialog(String(localized: "NextSessionApplicationConfirmation.title", defaultValue: "The change will be applied first on the next launch.", table: "GeneralSettings"), isPresented: $isAutosaveChangeConfirmationPresented) {
+                        Button(String(localized: "Restart Now", table: "GeneralSettings", comment: "button label")) {
+                            (NSApp.delegate as? AppDelegate)?.needsRelaunch = true
+                            NSApp.terminate(self)
+                        }
+                        Button(String(localized: "Later", table: "GeneralSettings", comment: "button label")) {
+                            // do nothing
+                        }
+                        Button(.cancel, role: .cancel) {
+                            self.enablesAutosaveInPlace.toggle()
+                        }
+                    } message: {
+                        Text(String(localized: "NextSessionApplicationConfirmation.message", defaultValue: "Do you want to restart CotEditor now?", table: "GeneralSettings"))
+                    }
+            } header: {
                 Text("Document save:", tableName: "GeneralSettings")
-                    .gridColumnAlignment(.trailing)
-                
-                VStack(alignment: .leading, spacing: isLiquidGlass ? 8 : 6) {
-                    Toggle(String(localized: "Enable Auto Save with Versions", table: "GeneralSettings"), isOn: $enablesAutosaveInPlace)
-                        .onChange(of: self.enablesAutosaveInPlace) { _, newValue in
-                            if newValue != self.initialEnablesAutosaveInPlace {
-                                self.isAutosaveChangeConfirmationPresented = true
-                            }
-                        }
-                        .onAppear {
-                            self.initialEnablesAutosaveInPlace = self.enablesAutosaveInPlace
-                        }
-                        .confirmationDialog(String(localized: "NextSessionApplicationConfirmation.title", defaultValue: "The change will be applied first on the next launch.", table: "GeneralSettings"), isPresented: $isAutosaveChangeConfirmationPresented) {
-                            Button(String(localized: "Restart Now", table: "GeneralSettings", comment: "button label")) {
-                                (NSApp.delegate as? AppDelegate)?.needsRelaunch = true
-                                NSApp.terminate(self)
-                            }
-                            Button(String(localized: "Later", table: "GeneralSettings", comment: "button label")) {
-                                // do nothing
-                            }
-                            Button(.cancel, role: .cancel) {
-                                self.enablesAutosaveInPlace.toggle()
-                            }
-                        } message: {
-                            Text(String(localized: "NextSessionApplicationConfirmation.message", defaultValue: "Do you want to restart CotEditor now?", table: "GeneralSettings"))
-                        }
-                }
-            }
-            
-            HStack {
-                Spacer()
-                HelpLink(anchor: "settings_general")
             }
         }
-        .fixedSize(horizontal: false, vertical: true)
-        .scenePadding()
-        .frame(width: 620)
     }
 }
 

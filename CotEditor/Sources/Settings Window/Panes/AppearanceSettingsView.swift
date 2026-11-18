@@ -54,157 +54,148 @@ struct AppearanceSettingsView: View {
     
     var body: some View {
         
-        Grid(alignment: .leadingFirstTextBaseline, verticalSpacing: isLiquidGlass ? 14 : 12) {
-            GridRow {
-                Text("Standard font:", tableName: "AppearanceSettings")
-                    .gridColumnAlignment(.trailing)
-                    .accessibilityLabeledPair(role: .label, id: "font", in: self.accessibility)
-                
-                FontSettingView(data: $font, fallback: FontType.standard.systemFont(), antialias: $shouldAntialias, ligature: $ligature)
-                    .accessibilityLabeledPair(role: .content, id: "font", in: self.accessibility)
-            }
-            
-            GridRow {
-                Text("Monospaced font:", tableName: "AppearanceSettings")
-                    .gridColumnAlignment(.trailing)
-                    .accessibilityLabeledPair(role: .label, id: "monospacedFont", in: self.accessibility)
-                
-                FontSettingView(data: $monospacedFont, fallback: FontType.monospaced.systemFont(), antialias: $monospacedShouldAntialias, ligature: $monospacedLigature)
-                    .onChange(of: self.monospacedFont) { oldValue, newValue in
-                        if self.isRestoringMonospacedFont {
-                            self.isRestoringMonospacedFont = false
-                            return
-                        }
-                        guard
-                            let newValue,
-                            let font = NSFont(archivedData: newValue),
-                            !font.isFixedPitch
-                        else { return }
-                        
-                        // ignore if only font size changed
-                        if let oldValue,
-                           let oldFont = NSFont(archivedData: oldValue),
-                           font.fontName == oldFont.fontName
-                        { return }
-                        
-                        self.selectingFont = oldValue
-                        self.isMonospacedFontAlertPresented = true
-                    }
-                    .accessibilityLabeledPair(role: .content, id: "monospacedFont", in: self.accessibility)
-                    .alert(String(localized: "MonospacedFontAlert.title", defaultValue: "The selected font doesn’t seem to be monospaced.", table: "AppearanceSettings"), isPresented: $isMonospacedFontAlertPresented, presenting: self.selectingFont) { font in
-                        Button(.ok) {
-                            self.selectingFont = nil
-                        }
-                        Button(.cancel, role: .cancel) {
-                            self.selectingFont = nil
-                            self.isRestoringMonospacedFont = true
-                            self.monospacedFont = font
-                        }
-                    } message: { _ in
-                        Text(String(localized: "MonospacedFontAlert.message", defaultValue: "Do you want to use it for the monospaced font?", table: "AppearanceSettings", comment: "“it” is the selected font in the title."))
-                    }
-            }
-            
-            GridRow {
-                Text("Line height:", tableName: "AppearanceSettings")
-                    .gridColumnAlignment(.trailing)
-                    .accessibilityLabeledPair(role: .label, id: "lineHeight", in: self.accessibility)
-                
-                HStack(alignment: .firstTextBaseline) {
-                    Stepper(value: $lineHeight, in: 0.1...10, step: 0.1, format: .number.precision(.fractionLength(1...2)).numberLocale, label: EmptyView.init)
-                        .monospacedDigit()
-                        .multilineTextAlignment(self.layoutDirection == .rightToLeft ? .leading : .trailing)
-                        .accessibilityValue(String(localized: "\(self.lineHeight, format: .number) times", table: "AppearanceSettings",
-                                                   comment: "accessibility label for line height"))
-                    
-                    Text("times", tableName: "AppearanceSettings", comment: "unit for line height")
-                        .accessibilityHidden(true)
+        SettingsFormPane(helpAnchor: "settings_appearance") {
+            Section {
+                LabeledContent {
+                    FontSettingView(data: $font, fallback: FontType.standard.systemFont(), antialias: $shouldAntialias, ligature: $ligature)
+                        .accessibilityLabeledPair(role: .content, id: "font", in: self.accessibility)
+                } label: {
+                    Text("Standard font:", tableName: "AppearanceSettings")
+                        .accessibilityLabeledPair(role: .label, id: "font", in: self.accessibility)
                 }
-                .accessibilityLabeledPair(role: .content, id: "lineHeight", in: self.accessibility)
+                
+                LabeledContent {
+                    FontSettingView(data: $monospacedFont, fallback: FontType.monospaced.systemFont(), antialias: $monospacedShouldAntialias, ligature: $monospacedLigature)
+                        .onChange(of: self.monospacedFont) { oldValue, newValue in
+                            if self.isRestoringMonospacedFont {
+                                self.isRestoringMonospacedFont = false
+                                return
+                            }
+                            guard
+                                let newValue,
+                                let font = NSFont(archivedData: newValue),
+                                !font.isFixedPitch
+                            else { return }
+                            
+                            // ignore if only font size changed
+                            if let oldValue,
+                               let oldFont = NSFont(archivedData: oldValue),
+                               font.fontName == oldFont.fontName
+                            { return }
+                            
+                            self.selectingFont = oldValue
+                            self.isMonospacedFontAlertPresented = true
+                        }
+                        .accessibilityLabeledPair(role: .content, id: "monospacedFont", in: self.accessibility)
+                        .alert(String(localized: "MonospacedFontAlert.title", defaultValue: "The selected font doesn’t seem to be monospaced.", table: "AppearanceSettings"), isPresented: $isMonospacedFontAlertPresented, presenting: self.selectingFont) { font in
+                            Button(.ok) {
+                                self.selectingFont = nil
+                            }
+                            Button(.cancel, role: .cancel) {
+                                self.selectingFont = nil
+                                self.isRestoringMonospacedFont = true
+                                self.monospacedFont = font
+                            }
+                        } message: { _ in
+                            Text(String(localized: "MonospacedFontAlert.message", defaultValue: "Do you want to use it for the monospaced font?", table: "AppearanceSettings", comment: "“it” is the selected font in the title."))
+                        }
+                } label: {
+                    Text("Monospaced font:", tableName: "AppearanceSettings")
+                        .accessibilityLabeledPair(role: .label, id: "monospacedFont", in: self.accessibility)
+                }
+                
+                LabeledContent {
+                    HStack(alignment: .firstTextBaseline) {
+                        Stepper(value: $lineHeight, in: 0.1...10, step: 0.1, format: .number.precision(.fractionLength(1...2)).numberLocale, label: EmptyView.init)
+                            .monospacedDigit()
+                            .multilineTextAlignment(self.layoutDirection == .rightToLeft ? .leading : .trailing)
+                            .accessibilityValue(String(localized: "\(self.lineHeight, format: .number) times", table: "AppearanceSettings",
+                                                       comment: "accessibility label for line height"))
+                        
+                        Text("times", tableName: "AppearanceSettings", comment: "unit for line height")
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                    }
+                    .accessibilityLabeledPair(role: .content, id: "lineHeight", in: self.accessibility)
+                } label: {
+                    Text("Line height:", tableName: "AppearanceSettings")
+                        .accessibilityLabeledPair(role: .label, id: "lineHeight", in: self.accessibility)
+                }
             }
             
-            GridRow {
-                Text("Appearance:", tableName: "AppearanceSettings")
-                    .gridColumnAlignment(.trailing)
-                    .accessibilityLabeledPair(role: .label, id: "documentAppearance", in: self.accessibility)
-                
+            Section {
                 Picker(selection: $documentAppearance) {
                     ForEach(AppearanceMode.allCases, id: \.self) {
                         Text($0.label)
                     }
                 } label: {
-                    EmptyView()
+                    Text("Appearance:", tableName: "AppearanceSettings")
+                        .accessibilityLabeledPair(role: .label, id: "documentAppearance", in: self.accessibility)
                 }
                 .accessibilityLabeledPair(role: .content, id: "documentAppearance", in: self.accessibility)
-                .pickerStyle(.radioGroup)
-                .horizontalRadioGroupLayout()
-                .labelsHidden()
-            }
-            
-            GridRow(alignment: .firstTextBaseline) {
-                Text("Editor opacity:", tableName: "AppearanceSettings")
-                    .gridColumnAlignment(.trailing)
-                    .accessibilityLabeledPair(role: .label, id: "windowAlpha", in: self.accessibility)
+                .pickerStyle(.segmented)
                 
-                HStack {
-                    if #available(macOS 26, *) {
-                        Slider(value: self.windowAlphaBinding, in: Self.windowAlphaRange) {
-                            EmptyView()
-                        } currentValueLabel: {
-                            Text(self.windowAlphaBinding.wrappedValue, format: .percent)
-                        } minimumValueLabel: {
-                            OpacitySample(opacity: 0.2)
-                                .help(String(localized: "OpacitySlider.minimumValue.label", defaultValue: "Transparent", table: "AppearanceSettings"))
-                        } maximumValueLabel: {
-                            OpacitySample(opacity: 1)
-                                .help(String(localized: "OpacitySlider.maximumValue.label", defaultValue: "Opaque", table: "AppearanceSettings"))
-                        } ticks: {
-                            SliderTickContentForEach(Array(stride(from: 0.2, through: 1, by: 0.1)), id: \.self) { value in
-                                SliderTick(value)
+                LabeledContent {
+                    HStack {
+                        if #available(macOS 26, *) {
+                            Slider(value: self.windowAlphaBinding, in: Self.windowAlphaRange) {
+                                EmptyView()
+                            } currentValueLabel: {
+                                Text(self.windowAlphaBinding.wrappedValue, format: .percent)
+                            } minimumValueLabel: {
+                                OpacitySample(opacity: 0.2)
+                                    .help(String(localized: "OpacitySlider.minimumValue.label", defaultValue: "Transparent", table: "AppearanceSettings"))
+                            } maximumValueLabel: {
+                                OpacitySample(opacity: 1)
+                                    .help(String(localized: "OpacitySlider.maximumValue.label", defaultValue: "Opaque", table: "AppearanceSettings"))
+                            } ticks: {
+                                SliderTickContentForEach(Array(stride(from: 0.2, through: 1, by: 0.1)), id: \.self) { value in
+                                    SliderTick(value)
+                                }
                             }
+                            .sensoryFeedback(.levelChange, trigger: self.windowAlpha == 1)
+                            .frame(width: 220)
+                        } else {
+                            Slider(value: self.windowAlphaBinding, in: Self.windowAlphaRange) {
+                                EmptyView()
+                            } minimumValueLabel: {
+                                OpacitySample(opacity: 0.2)
+                                    .help(String(localized: "OpacitySlider.minimumValue.label", defaultValue: "Transparent", table: "AppearanceSettings"))
+                            } maximumValueLabel: {
+                                OpacitySample(opacity: 1)
+                                    .help(String(localized: "OpacitySlider.maximumValue.label", defaultValue: "Opaque", table: "AppearanceSettings"))
+                            }
+                            .sensoryFeedback(.levelChange, trigger: self.windowAlpha == 1)
+                            .frame(width: 220)
                         }
-                        .sensoryFeedback(.levelChange, trigger: self.windowAlpha == 1)
-                        .frame(width: 240)
-                    } else {
-                        Slider(value: self.windowAlphaBinding, in: Self.windowAlphaRange) {
-                            EmptyView()
-                        } minimumValueLabel: {
-                            OpacitySample(opacity: 0.2)
-                                .help(String(localized: "OpacitySlider.minimumValue.label", defaultValue: "Transparent", table: "AppearanceSettings"))
-                        } maximumValueLabel: {
-                            OpacitySample(opacity: 1)
-                                .help(String(localized: "OpacitySlider.maximumValue.label", defaultValue: "Opaque", table: "AppearanceSettings"))
-                        }
-                        .sensoryFeedback(.levelChange, trigger: self.windowAlpha == 1)
-                        .frame(width: 240)
+                        
+                        TextField(value: self.windowAlphaBinding, format: .percent.precision(.fractionLength(0)), prompt: Text(1, format: .percent), label: EmptyView.init)
+                            .monospacedDigit()
+                            .multilineTextAlignment(self.layoutDirection == .rightToLeft ? .leading : .trailing)
+                            .frame(width: isLiquidGlass ? 60 : 48)
                     }
-                    
-                    TextField(value: self.windowAlphaBinding, format: .percent.precision(.fractionLength(0)), prompt: Text(1, format: .percent), label: EmptyView.init)
-                        .monospacedDigit()
-                        .multilineTextAlignment(self.layoutDirection == .rightToLeft ? .leading : .trailing)
-                        .frame(width: isLiquidGlass ? 64 : 48)
+                    .accessibilityLabeledPair(role: .content, id: "windowAlpha", in: self.accessibility)
+                } label: {
+                    Text("Editor opacity:", tableName: "AppearanceSettings")
+                        .accessibilityLabeledPair(role: .label, id: "windowAlpha", in: self.accessibility)
                 }
-                .accessibilityLabeledPair(role: .content, id: "windowAlpha", in: self.accessibility)
+                .accessibilityElement(children: .contain)
+                
+                LabeledContent {
+                    CustomCursorColorControl()
+                } label: {
+                    Text("光标颜色:")
+                }
             }
-            .accessibilityElement(children: .contain)
             
-            GridRow(alignment: .center) {
-                Text("光标颜色:")
-                    .gridColumnAlignment(.trailing)
-                CustomCursorColorControl()
-            }
-            
-            ThemeView()
-                .padding(.top, 10)
-            
-            HStack {
-                Spacer()
-                HelpLink(anchor: "settings_appearance")
+            Section {
+                ThemeView()
+                    .frame(height: 228)
+                    .listRowInsets(EdgeInsets())
+            } header: {
+                Text("Theme", tableName: "ThemeEditor")
             }
         }
-        .scenePadding()
-        .frame(width: 620)
-        .frame(width: 620)
     }
     
     

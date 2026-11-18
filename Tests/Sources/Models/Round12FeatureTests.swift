@@ -130,11 +130,13 @@ struct Round12FeatureTests {
                 (originalTitle: "随手记A", location: "窗口 1 · 分栏 1", action: "主合并并重命名", newTitle: "CotEditor 优化清单", note: "去重保留核心条目"),
             ],
             groups: [
-                (title: "CotEditor 优化清单", syntax: "Markdown", summary: "共 12 条待办"),
+                (title: "CotEditor 优化清单", syntax: "Plain Text", summary: "共 12 条待办"),
             ],
             untouchedEntries: []
         )
-        #expect(mapMarkdown.contains("# 文档整理合并 Map"))
+        #expect(mapMarkdown.hasPrefix("文档整理合并 Map\n\n\t"))
+        #expect(!mapMarkdown.contains("# "))
+        #expect(mapMarkdown.contains("\n一、合并前后文档映射表\n\n\t"))
         #expect(mapMarkdown.contains("CotEditor 优化清单"))
         #expect(mapMarkdown.contains("随手记A"))
     }
@@ -143,10 +145,10 @@ struct Round12FeatureTests {
     @Test func paneDropZoneAndDragPayload() {
         
         let bounds = NSRect(x: 0, y: 0, width: 1000, height: 800)
-        #expect(PaneDropZone.from(point: NSPoint(x: 50, y: 400), in: bounds) == .left)
-        #expect(PaneDropZone.from(point: NSPoint(x: 950, y: 400), in: bounds) == .right)
-        #expect(PaneDropZone.from(point: NSPoint(x: 500, y: 50), in: bounds) == .bottom)
-        #expect(PaneDropZone.from(point: NSPoint(x: 500, y: 750), in: bounds) == .top)
+        #expect(PaneDropZone.from(point: NSPoint(x: 50, y: 400), in: bounds) == .center)
+        #expect(PaneDropZone.from(point: NSPoint(x: 950, y: 400), in: bounds) == .center)
+        #expect(PaneDropZone.from(point: NSPoint(x: 500, y: 50), in: bounds) == .center)
+        #expect(PaneDropZone.from(point: NSPoint(x: 500, y: 750), in: bounds) == .center)
         #expect(PaneDropZone.from(point: NSPoint(x: 500, y: 400), in: bounds) == .center)
         
         let id = UUID()

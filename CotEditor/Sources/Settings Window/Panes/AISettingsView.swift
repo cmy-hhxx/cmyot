@@ -39,7 +39,7 @@ struct AISettingsView: View {
     
     // MARK: Private Properties
     
-    private static let listHeight: CGFloat = 170
+    private static let listHeight: CGFloat = 205
     
     @State private var profiles: [AIEndpointProfile] = []
     @State private var activeID: UUID?
@@ -55,53 +55,90 @@ struct AISettingsView: View {
     
     var body: some View {
         
-        VStack(alignment: .leading, spacing: 14) {
-            if self.profiles.isEmpty {
-                self.emptyState
-            } else {
-                List(selection: self.activeSelection) {
-                    ForEach(self.profiles) { profile in
-                        AIEndpointRow(profile: profile,
-                                      isActive: profile.id == self.activeID,
-                                      status: self.status[profile.id],
-                                      onSelectModel: { modelID in self.switchModel(modelID, on: profile) },
-                                      onTest: { Task { await self.test(profile) } },
-                                      onEdit: { self.beginEditing(profile) },
-                                      onDelete: { self.pendingDeletion = profile })
-                            .tag(profile.id)
+        SettingsFormPane {
+            Section {
+                if self.profiles.isEmpty {
+                    self.emptyState
+                } else {
+                    List(selection: self.activeSelection) {
+                        ForEach(self.profiles) { profile in
+                            AIEndpointRow(profile: profile,
+                                          isActive: profile.id == self.activeID,
+                                          status: self.status[profile.id],
+                                          onSelectModel: { modelID in self.switchModel(modelID, on: profile) },
+                                          onTest: { Task { await self.test(profile) } },
+                                          onEdit: { self.beginEditing(profile) },
+                                          onDelete: { self.pendingDeletion = profile })
+                                .tag(profile.id)
+                        }
                     }
-                }
-                .frame(height: Self.listHeight)
-                .listStyle(.inset)
-            }
-            
-            HStack(spacing: 12) {
-                Button {
-                    self.beginAdding()
-                } label: {
-                    Label {
-                        Text("ai.settings.endpoint.add", tableName: "AI")
-                    } icon: {
-                        Image(systemName: "plus")
-                    }
+                    .frame(height: Self.listHeight)
+                    .listStyle(.inset)
+                    .listRowInsets(EdgeInsets())
                 }
                 
-                Spacer()
+                HStack {
+                    Button {
+                        self.beginAdding()
+                    } label: {
+                        Label {
+                            Text("ai.settings.endpoint.add", tableName: "AI")
+                        } icon: {
+                            Image(systemName: "plus")
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    if !self.profiles.isEmpty {
+                        Text("点击列表行切换当前使用的端点")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("AI 服务端点")
+            }
+            
+            Section {
+                LabeledContent {
+                    Button("查看管理…") {
+                        self.isShowingStoredDocs = true
+                    }
+                } label: {
+                    Label("文档与配置 (\(CotLocalDatabase.shared.documents.count))", systemImage: "cylinder.split.1x2")
+                }
+                
+                LabeledContent {
+                    Button("打开周报库…") {
+                        WeeklyReportWindowController.shared.showWindow(mode: .history)
+                    }
+                } label: {
+                    Label("历史周报库 (\(CotLocalDatabase.shared.weeklyReports.count))", systemImage: "calendar.badge.clock")
+                }
+                
+                LabeledContent {
+                    HStack(spacing: 8) {
+                        Button("导出 DB…") {
+                            self.exportLocalDatabase()
+                        }
+                        Button("导入 DB…") {
+                            self.importLocalDatabase()
+                        }
+                    }
+                } label: {
+                    Label("数据备份与迁移", systemImage: "externaldrive")
+                }
                 
                 if let dbStatusMessage {
                     Text(dbStatusMessage)
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
+            } header: {
+                Text("本地数据库")
             }
-            
-            Divider()
-            
-            self.databaseSection
         }
-        .frame(width: 620)
-        .scenePadding()
         .task { self.reload() }
         .sheet(item: self.$editingTarget) { target in
             AIEndpointEditorView(profile: target.profile, apiKey: target.apiKey, isNew: target.isNew) { profile, apiKey in
@@ -124,45 +161,6 @@ struct AISettingsView: View {
             }
         } message: {
             Text("ai.settings.endpoint.delete.caption", tableName: "AI")
-        }
-    }
-    
-    
-    // MARK: Local Database Section
-    
-    private var databaseSection: some View {
-        
-        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 10) {
-            GridRow {
-                Text("本地数据库:")
-                    .gridColumnAlignment(.trailing)
-                
-                HStack(spacing: 8) {
-                    Button {
-                        self.isShowingStoredDocs = true
-                    } label: {
-                        Label("文档与配置 (\(CotLocalDatabase.shared.documents.count))", systemImage: "cylinder.split.1x2")
-                    }
-                    
-                    Button {
-                        WeeklyReportWindowController.shared.showWindow(mode: .history)
-                    } label: {
-                        Label("周报库 (\(CotLocalDatabase.shared.weeklyReports.count))", systemImage: "calendar.badge.clock")
-                    }
-                    
-                    Button {
-                        self.exportLocalDatabase()
-                    } label: {
-                        Label("导出 DB…", systemImage: "square.and.arrow.up")
-                    }
-                    
-                    Button {
-                        self.importLocalDatabase()
-                    } label: {
-                        Label("导入 DB…", systemImage: "square.and.arrow.down")
-                    }
-                }
-            }
         }
     }
     
@@ -672,41 +670,101 @@ struct AIPersonaSettingsView: View {
     
     var body: some View {
         
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .center) {
-                    Label("AI 角色人设 (Persona)", systemImage: "person.text.rectangle")
-                        .font(.headline)
-                    Spacer()
-                    if !self.personaText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Button("清空") {
-                            self.personaText = ""
-                            CotLocalDatabase.shared.aiPersona = ""
+        SettingsFormPane {
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .center, spacing: 6) {
+                        Text("快捷人设:")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        ForEach(Self.personaPresets) { preset in
+                            let isSelected = self.personaText.trimmingCharacters(in: .whitespacesAndNewlines) == preset.prompt
+                            Button(preset.title) {
+                                self.personaText = preset.prompt
+                                CotLocalDatabase.shared.aiPersona = preset.prompt
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(isSelected ? .accentColor : nil)
+                            .controlSize(.small)
                         }
-                        .controlSize(.small)
+                        Spacer()
+                        if !self.personaText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Button("清空") {
+                                self.personaText = ""
+                                CotLocalDatabase.shared.aiPersona = ""
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                    
+                    ZStack(alignment: .topLeading) {
+                        TextEditor(text: self.$personaText)
+                            .font(.system(size: 12))
+                            .frame(height: 76)
+                            .padding(3)
+                            .background(Color(nsColor: .textBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.secondary.opacity(0.28), lineWidth: 1)
+                            )
+                            .onChange(of: self.personaText) { _, newValue in
+                                guard newValue != CotLocalDatabase.shared.aiPersona else { return }
+                                CotLocalDatabase.shared.aiPersona = newValue
+                            }
+                        
+                        if self.personaText.isEmpty {
+                            Text("输入自定义 AI 人设，例如：严谨架构师，所有输出保持分点简洁，优先给出可执行结论…")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 8)
+                                .allowsHitTesting(false)
+                        }
                     }
                 }
-                
-                HStack(alignment: .center, spacing: 6) {
-                    Text("快捷人设:")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    ForEach(Self.personaPresets) { preset in
-                        let isSelected = self.personaText.trimmingCharacters(in: .whitespacesAndNewlines) == preset.prompt
-                        Button(preset.title) {
-                            self.personaText = preset.prompt
-                            CotLocalDatabase.shared.aiPersona = preset.prompt
+            } header: {
+                Label("AI 角色人设 (Persona)", systemImage: "person.text.rectangle")
+            }
+            
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Picker("", selection: self.$selectedStageAction) {
+                            ForEach(AIAction.allCases, id: \.self) { action in
+                                Text(action.title).tag(action)
+                            }
                         }
-                        .buttonStyle(.bordered)
-                        .tint(isSelected ? .accentColor : nil)
+                        .labelsHidden()
+                        .fixedSize()
+                        .onChange(of: self.selectedStageAction) { _, newAction in
+                            self.loadStagePrompt(for: newAction)
+                        }
+                        
+                        let isCustomized = self.stagePromptText != self.selectedStageAction.defaultSystemPrompt
+                        Text(isCustomized ? "已自定义" : "默认")
+                            .font(.caption2)
+                            .foregroundStyle(isCustomized ? Color.accentColor : Color.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule().fill((isCustomized ? Color.accentColor : Color.secondary).opacity(0.12))
+                            )
+                        
+                        Spacer()
+                        
+                        Button("恢复默认") {
+                            let defaultPrompt = self.selectedStageAction.defaultSystemPrompt
+                            self.stagePromptText = defaultPrompt
+                            CotLocalDatabase.shared.set(defaultPrompt, forKey: self.selectedStageAction.databaseConfigKey)
+                        }
                         .controlSize(.small)
+                        .disabled(self.stagePromptText == self.selectedStageAction.defaultSystemPrompt)
                     }
-                }
-                
-                ZStack(alignment: .topLeading) {
-                    TextEditor(text: self.$personaText)
-                        .font(.system(size: 12))
-                        .frame(height: 76)
+                    
+                    TextEditor(text: self.$stagePromptText)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .frame(height: 168)
                         .padding(3)
                         .background(Color(nsColor: .textBackgroundColor))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -714,131 +772,54 @@ struct AIPersonaSettingsView: View {
                             RoundedRectangle(cornerRadius: 6)
                                 .stroke(Color.secondary.opacity(0.28), lineWidth: 1)
                         )
-                        .onChange(of: self.personaText) { _, newValue in
-                            guard newValue != CotLocalDatabase.shared.aiPersona else { return }
-                            CotLocalDatabase.shared.aiPersona = newValue
+                        .onChange(of: self.stagePromptText) { _, newValue in
+                            let storedOrDefault = CotLocalDatabase.shared.customStagePrompt(forKey: self.selectedStageAction.databaseConfigKey)
+                                ?? self.selectedStageAction.defaultSystemPrompt
+                            guard newValue != storedOrDefault else { return }
+                            CotLocalDatabase.shared.set(newValue, forKey: self.selectedStageAction.databaseConfigKey)
                         }
-                    
-                    if self.personaText.isEmpty {
-                        Text("输入自定义 AI 人设，例如：严谨架构师，所有输出保持分点简洁，优先给出可执行结论…")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 8)
-                            .allowsHitTesting(false)
-                    }
                 }
+            } header: {
+                Label("阶段提示词 (Stage Prompt)", systemImage: "text.bubble")
             }
             
-            Divider()
-            
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Label("阶段提示词 (Stage Prompt)", systemImage: "text.bubble")
-                        .font(.headline)
-                    
-                    Picker("", selection: self.$selectedStageAction) {
-                        ForEach(AIAction.allCases, id: \.self) { action in
-                            Text(action.title).tag(action)
-                        }
+            Section {
+                Toggle("动感打字特效", isOn: self.$typewriterEnabled)
+                    .onChange(of: self.typewriterEnabled) { _, val in
+                        CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
+                        UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
                     }
-                    .labelsHidden()
-                    .fixedSize()
-                    .onChange(of: self.selectedStageAction) { _, newAction in
-                        self.loadStagePrompt(for: newAction)
+                
+                Picker("特效风格", selection: self.$typewriterStyle) {
+                    ForEach(TypingEffectPreset.allCases) { preset in
+                        Text(preset.displayName).tag(preset)
                     }
-                    
-                    let isCustomized = self.stagePromptText != self.selectedStageAction.defaultSystemPrompt
-                    Text(isCustomized ? "已自定义" : "默认")
-                        .font(.caption2)
-                        .foregroundStyle(isCustomized ? Color.accentColor : Color.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            Capsule().fill((isCustomized ? Color.accentColor : Color.secondary).opacity(0.12))
-                        )
-                    
-                    Spacer()
-                    
-                    Button("恢复默认") {
-                        let defaultPrompt = self.selectedStageAction.defaultSystemPrompt
-                        self.stagePromptText = defaultPrompt
-                        CotLocalDatabase.shared.set(defaultPrompt, forKey: self.selectedStageAction.databaseConfigKey)
-                    }
-                    .controlSize(.small)
-                    .disabled(self.stagePromptText == self.selectedStageAction.defaultSystemPrompt)
+                }
+                .disabled(!self.typewriterEnabled)
+                .onChange(of: self.typewriterStyle) { _, val in
+                    CotLocalDatabase.shared.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
+                    UserDefaults.standard.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
                 }
                 
-                TextEditor(text: self.$stagePromptText)
-                    .font(.system(size: 11.5, design: .monospaced))
-                    .frame(height: 180)
-                    .padding(3)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.secondary.opacity(0.28), lineWidth: 1)
-                    )
-                    .onChange(of: self.stagePromptText) { _, newValue in
-                        let storedOrDefault = CotLocalDatabase.shared.customStagePrompt(forKey: self.selectedStageAction.databaseConfigKey)
-                            ?? self.selectedStageAction.defaultSystemPrompt
-                        guard newValue != storedOrDefault else { return }
-                        CotLocalDatabase.shared.set(newValue, forKey: self.selectedStageAction.databaseConfigKey)
+                Toggle("Vim 流体光标特效", isOn: self.$vimCursorTrailEnabled)
+                    .onChange(of: self.vimCursorTrailEnabled) { _, val in
+                        CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
+                        UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
                     }
-            }
-            
-            Divider()
-            
-            VStack(alignment: .leading, spacing: 12) {
+                
+                Toggle("纯文本内嵌图片预览", isOn: self.$plainTextImagesEnabled)
+                    .onChange(of: self.plainTextImagesEnabled) { _, val in
+                        CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+                        UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+                    }
+                
+                LabeledContent("光标颜色") {
+                    CustomCursorColorControl()
+                }
+            } header: {
                 Label("沉浸交互与视觉反馈", systemImage: "wand.and.stars")
-                    .font(.headline)
-                
-                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 20, verticalSpacing: 12) {
-                    GridRow {
-                        Toggle("动感打字特效", isOn: self.$typewriterEnabled)
-                            .onChange(of: self.typewriterEnabled) { _, val in
-                                CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
-                                UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
-                            }
-                        
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text("特效风格:")
-                                .foregroundStyle(.secondary)
-                            Picker("", selection: self.$typewriterStyle) {
-                                ForEach(TypingEffectPreset.allCases) { preset in
-                                    Text(preset.displayName).tag(preset)
-                                }
-                            }
-                            .labelsHidden()
-                            .frame(width: 220)
-                            .disabled(!self.typewriterEnabled)
-                            .onChange(of: self.typewriterStyle) { _, val in
-                                CotLocalDatabase.shared.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
-                                UserDefaults.standard.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
-                            }
-                        }
-                    }
-                    
-                    GridRow {
-                        Toggle("Vim 流体光标特效", isOn: self.$vimCursorTrailEnabled)
-                            .onChange(of: self.vimCursorTrailEnabled) { _, val in
-                                CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
-                                UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
-                            }
-                        
-                        Toggle("纯文本内嵌图片预览", isOn: self.$plainTextImagesEnabled)
-                            .onChange(of: self.plainTextImagesEnabled) { _, val in
-                                CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
-                                UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
-                            }
-                    }
-                }
-                
-                CustomCursorColorControl()
             }
         }
-        .frame(width: 620)
-        .scenePadding()
         .task { self.reload() }
     }
     

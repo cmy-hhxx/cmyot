@@ -62,7 +62,7 @@ struct PaneTabStripView: NSViewRepresentable {
     
     var state: PaneTabState?
     
-    private let scrollView = NSScrollView()
+    private let scrollView = NonDraggableScrollView()
     private let documentContainer = TabStripContainerView()
     private let newTabButton = CenteredIconButton(symbolName: "plus", pointSize: 10.5, weight: .semibold, accessibilityDescription: "New Tab")
     private let insertionIndicator = NSView()
@@ -74,6 +74,7 @@ struct PaneTabStripView: NSViewRepresentable {
     // Inline rename state
     private var renamingTabID: UUID?
     private weak var renameField: NSTextField?
+    private var renameBeganUptime: TimeInterval = 0
     private var isEndingRename = false
     private var suppressControlEndEditing = false
     
@@ -113,6 +114,7 @@ struct PaneTabStripView: NSViewRepresentable {
         
         self.wantsLayer = true
         
+        self.scrollView.contentView = NonDraggableClipView()
         self.scrollView.drawsBackground = false
         self.scrollView.hasVerticalScroller = false
         self.scrollView.hasHorizontalScroller = false
@@ -272,7 +274,10 @@ struct PaneTabStripView: NSViewRepresentable {
     func beginInlineRename(for tab: PaneTab) {
         
         if self.renamingTabID == tab.id, let existingField = self.renameField {
-            self.window?.makeFirstResponder(existingField)
+            if self.window?.isKeyWindow == false {
+                self.window?.makeKey()
+            }
+            self.window?.makeFirstResponderDiscardingMarkedText(existingField)
             existingField.selectText(nil)
             return
         }
@@ -281,7 +286,10 @@ struct PaneTabStripView: NSViewRepresentable {
         guard let itemView = self.tabViews[tab.id] else { return }
         
         self.renamingTabID = tab.id
+        self.renameBeganUptime = ProcessInfo.processInfo.systemUptime
         let field = itemView.enterRenameMode(initialTitle: tab.title, delegate: self)
+        field.target = self
+        field.action = #selector(commitRenameFromFieldAction(_:))
         self.renameField = field
         
         self.layoutTabViews(animated: false)
@@ -289,25 +297,36 @@ struct PaneTabStripView: NSViewRepresentable {
         itemView.layoutSubtreeIfNeeded()
         self.documentContainer.scrollToVisible(itemView.frame.insetBy(dx: -8, dy: 0))
         
-        self.window?.makeFirstResponder(field)
+        if self.window?.isKeyWindow == false {
+            self.window?.makeKey()
+        }
+        self.window?.makeFirstResponderDiscardingMarkedText(field)
         field.selectText(nil)
         
-        // Re-assert first responder on the next runloop turn in case an asynchronous
-        // editor selection focus restore runs during the same event cycle.
+        // Re-assert first responder on the next runloop turns in case an asynchronous
+        // editor selection focus restore or context-menu teardown runs during the same event cycle.
         let targetTabID = tab.id
-        DispatchQueue.main.async { [weak self, weak field] in
-            guard
-                let self,
-                let field,
-                self.renamingTabID == targetTabID,
-                self.renameField === field,
-                let window = self.window,
-                window.firstResponder !== field,
-                window.firstResponder !== field.currentEditor()
-            else { return }
-            window.makeFirstResponder(field)
-            field.selectText(nil)
+        for delayMs in [0, 50] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delayMs)) { [weak self, weak field] in
+                guard
+                    let self,
+                    let field,
+                    self.renamingTabID == targetTabID,
+                    self.renameField === field,
+                    let window = self.window,
+                    window.firstResponder !== field,
+                    window.firstResponder !== field.currentEditor()
+                else { return }
+                window.makeFirstResponderDiscardingMarkedText(field)
+                field.selectText(nil)
+            }
         }
+    }
+    
+    
+    @objc private func commitRenameFromFieldAction(_ sender: Any?) {
+        
+        self.commitInlineRenameIfNeeded(restoreEditorFocus: true)
     }
     
     
@@ -342,6 +361,7 @@ struct PaneTabStripView: NSViewRepresentable {
         
         if !editedString.isEmpty, editedString != tab.title {
             self.state?.onRename(tab, editedString)
+            self.reloadTabs()
         }
         
         if restoreEditorFocus {
@@ -392,7 +412,10 @@ struct PaneTabStripView: NSViewRepresentable {
         if textView.hasMarkedText() {
             return false
         }
-        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+        if commandSelector == #selector(NSResponder.insertNewline(_:))
+            || commandSelector == #selector(NSResponder.insertTab(_:))
+            || commandSelector == #selector(NSResponder.insertBacktab(_:))
+        {
             self.commitInlineRenameIfNeeded(restoreEditorFocus: true)
             return true
         }
@@ -407,6 +430,25 @@ struct PaneTabStripView: NSViewRepresentable {
     func controlTextDidEndEditing(_ obj: Notification) {
         
         guard !self.suppressControlEndEditing, !self.isEndingRename else { return }
+        // Ignore transient focus churn immediately after starting inline rename (e.g. from double-click
+        // selection or context menu teardown) so the text field stays open for user input.
+        if ProcessInfo.processInfo.systemUptime - self.renameBeganUptime < 0.25,
+           let targetTabID = self.renamingTabID,
+           let field = self.renameField
+        {
+            DispatchQueue.main.async { [weak self, weak field] in
+                guard
+                    let self,
+                    let field,
+                    self.renamingTabID == targetTabID,
+                    self.renameField === field,
+                    let window = self.window
+                else { return }
+                window.makeFirstResponderDiscardingMarkedText(field)
+                field.selectText(nil)
+            }
+            return
+        }
         self.commitInlineRenameIfNeeded(restoreEditorFocus: false)
     }
     
@@ -682,6 +724,18 @@ private final class CenteredIconButton: NSButton {
         let local = self.convert(point, from: self.superview)
         return (!self.isHidden && self.bounds.contains(local)) ? self : nil
     }
+}
+
+
+private final class NonDraggableScrollView: NSScrollView {
+    
+    override var mouseDownCanMoveWindow: Bool { false }
+}
+
+
+private final class NonDraggableClipView: NSClipView {
+    
+    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 
@@ -961,6 +1015,7 @@ private final class TabStripContainerView: NSView {
         
         let field = NSTextField(string: initialTitle)
         field.font = .systemFont(ofSize: 12)
+        field.textColor = .labelColor
         field.isEditable = true
         field.isSelectable = true
         field.usesSingleLineMode = true
@@ -969,6 +1024,7 @@ private final class TabStripContainerView: NSView {
         if let cell = field.cell as? NSTextFieldCell {
             cell.wraps = false
             cell.isScrollable = true
+            cell.sendsActionOnEndEditing = false
         }
         field.isBezeled = false
         field.drawsBackground = true

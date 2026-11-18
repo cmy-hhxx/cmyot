@@ -26,6 +26,45 @@
 import SwiftUI
 import ControlUI
 
+enum SettingsPaneLayout {
+    
+    /// Unified content size across every settings pane (roughly 4:3, matching macOS System Settings proportions).
+    static let width: CGFloat = 660
+    static let height: CGFloat = 500
+}
+
+
+/// Shared Apple System Settings–style grouped form scaffold with a consistent frame and footer bar.
+struct SettingsFormPane<Content: View>: View {
+    
+    var helpAnchor: String?
+    @ViewBuilder var content: () -> Content
+    
+    
+    var body: some View {
+        
+        VStack(spacing: 0) {
+            Form {
+                self.content()
+            }
+            .formStyle(.grouped)
+            
+            if let helpAnchor {
+                Divider()
+                HStack {
+                    Spacer()
+                    HelpLink(anchor: helpAnchor)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(.bar)
+            }
+        }
+        .frame(width: SettingsPaneLayout.width, height: SettingsPaneLayout.height)
+    }
+}
+
+
 enum SettingsPane: String, ControlUI.SettingsPane {
     
     case general

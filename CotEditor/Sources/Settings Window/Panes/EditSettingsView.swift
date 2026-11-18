@@ -46,72 +46,49 @@ struct EditSettingsView: View {
     
     var body: some View {
         
-        Grid(alignment: .leadingFirstTextBaseline, verticalSpacing: isLiquidGlass ? 18 : 14) {
-            GridRow {
-                Text("Indentation:", tableName: "EditSettings")
-                    .gridColumnAlignment(.trailing)
+        SettingsFormPane(helpAnchor: "settings_edit") {
+            Section {
+                Picker(String(localized: "Prefer using", table: "EditSettings"), selection: $autoExpandTab) {
+                    Text("Spaces", tableName: "EditSettings", comment: "indent style").tag(true)
+                    Text("Tabs", tableName: "EditSettings", comment: "indent style").tag(false)
+                }
+                .pickerStyle(.menu)
                 
-                VStack(alignment: .leading, spacing: isLiquidGlass ? nil : 6) {
-                    Picker(String(localized: "Prefer using", table: "EditSettings"), selection: $autoExpandTab) {
-                        Text("Spaces", tableName: "EditSettings", comment: "indent style").tag(true)
-                        Text("Tabs", tableName: "EditSettings", comment: "indent style").tag(false)
-                    }
-                    .modifier { content in
-                        if #available(macOS 26, *) {
-                            content
-                        } else if Locale.current.language.languageCode == .russian {
-                            content
-                                .frame(maxWidth: 320)
-                        } else {
-                            content
-                                .fixedSize()
-                        }
-                    }
-                    
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("Indent width:", tableName: "EditSettings")
-                            .accessibilityLabeledPair(role: .label, id: "tabWidth", in: self.accessibility)
+                LabeledContent {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
                         StepperNumberField(value: $tabWidth, default: UserDefaults.standard[initial: .tabWidth], in: 1...99)
                             .accessibilityLabeledPair(role: .content, id: "tabWidth", in: self.accessibility)
                         Text("spaces", tableName: "EditSettings", comment: "unit for indentation")
+                            .foregroundStyle(.secondary)
                     }
-                    Toggle(String(localized: "Detect indent style on document opening", table: "EditSettings"), isOn: $detectsIndentStyle)
-                    Toggle(String(localized: "Automatically indent while typing", table: "EditSettings"), isOn: $autoIndent)
-                    Toggle(String(localized: "Indent selection with Tab key", table: "EditSettings"), isOn: $indentWithTabKey)
+                } label: {
+                    Text("Indent width:", tableName: "EditSettings")
+                        .accessibilityLabeledPair(role: .label, id: "tabWidth", in: self.accessibility)
                 }
+                
+                Toggle(String(localized: "Detect indent style on document opening", table: "EditSettings"), isOn: $detectsIndentStyle)
+                Toggle(String(localized: "Automatically indent while typing", table: "EditSettings"), isOn: $autoIndent)
+                Toggle(String(localized: "Indent selection with Tab key", table: "EditSettings"), isOn: $indentWithTabKey)
+            } header: {
+                Text("Indentation:", tableName: "EditSettings")
             }
             
-            GridRow {
+            Section {
+                Toggle(String(localized: "Automatically trim trailing whitespace", table: "EditSettings"), isOn: $autoTrimsTrailingWhitespace)
+                Toggle(String(localized: "Including whitespace-only lines", table: "EditSettings"), isOn: $trimsWhitespaceOnlyLines)
+                    .disabled(!self.autoTrimsTrailingWhitespace)
+            } header: {
                 Text("Whitespace:", tableName: "EditSettings")
-                    .gridColumnAlignment(.trailing)
-                
-                VStack(alignment: .leading, spacing: isLiquidGlass ? nil : 6) {
-                    Toggle(String(localized: "Automatically trim trailing whitespace", table: "EditSettings"), isOn: $autoTrimsTrailingWhitespace)
-                    Toggle(String(localized: "Including whitespace-only lines", table: "EditSettings"), isOn: $trimsWhitespaceOnlyLines)
-                        .disabled(!self.autoTrimsTrailingWhitespace)
-                        .padding(.leading, 20)
-                }
             }
             
-            GridRow {
+            Section {
+                Toggle(String(localized: "Link URLs in document", table: "EditSettings"), isOn: $autoLinkDetection)
+                Toggle(String(localized: "Highlight matching braces", table: "EditSettings"), isOn: $highlightBraces)
+                Toggle(String(localized: "Highlight instances of selected text", table: "EditSettings"), isOn: $highlightSelectionInstance)
+            } header: {
                 Text("Content parse:", tableName: "EditSettings")
-                    .gridColumnAlignment(.trailing)
-                
-                VStack(alignment: .leading, spacing: isLiquidGlass ? nil : 6) {
-                    Toggle(String(localized: "Link URLs in document", table: "EditSettings"), isOn: $autoLinkDetection)
-                    Toggle(String(localized: "Highlight matching braces", table: "EditSettings"), isOn: $highlightBraces)
-                    Toggle(String(localized: "Highlight instances of selected text", table: "EditSettings"), isOn: $highlightSelectionInstance)
-                }
-            }
-            
-            HStack {
-                Spacer()
-                HelpLink(anchor: "settings_edit")
             }
         }
-        .fixedSize(horizontal: false, vertical: true)
-        .scenePadding()
-        .frame(width: 620)
     }
 }
 

@@ -54,7 +54,7 @@ struct ThemeView: View {
             Divider()
             
             ThemeEditorView(theme: $theme, isBundled: self.isBundled)
-                .frame(width: 400)
+                .frame(minWidth: 340, maxWidth: .infinity)
                 .onChange(of: self.theme) { _, newValue in
                     do {
                         try self.manager.save(setting: newValue, name: self.selection)

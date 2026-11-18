@@ -84,38 +84,18 @@ struct FormatSettingsView: View {
     
     var body: some View {
         
-        Grid(alignment: .leadingFirstTextBaseline) {
-            GridRow {
-                Text("Default line endings:", tableName: "FormatSettings")
-                    .accessibilityLabeledPair(role: .label, id: "lineEnding", in: self.accessibility)
-                    .gridColumnAlignment(.trailing)
-                
+        SettingsFormPane(helpAnchor: "settings_format") {
+            Section {
                 Picker(selection: $lineEnding) {
                     ForEach(LineEnding.allCases.filter(\.isBasic), id: \.self) {
                         Text(verbatim: "\($0.description) (\($0.label))")
                             .tag($0.index)
                     }
                 } label: {
-                    EmptyView()
+                    Text("Default line endings:", tableName: "FormatSettings")
+                        .accessibilityLabeledPair(role: .label, id: "lineEnding", in: self.accessibility)
                 }
                 .accessibilityLabeledPair(role: .content, id: "lineEnding", in: self.accessibility)
-                .modifier { content in
-                    if #available(macOS 26, *) {
-                        content
-                    } else {
-                        content
-                            .fixedSize()
-                    }
-                }
-            }
-            
-            Divider()
-                .padding(.vertical, 6)
-            
-            GridRow {
-                Text("Default text encoding:", tableName: "FormatSettings")
-                    .accessibilityLabeledPair(role: .label, id: "fileEncoding", in: self.accessibility)
-                    .gridColumnAlignment(.trailing)
                 
                 Picker(selection: self.fileEncoding) {
                     ForEach(Array(self.encodingManager.fileEncodings.enumerated()), id: \.offset) { _, encoding in
@@ -127,49 +107,28 @@ struct FormatSettingsView: View {
                         }
                     }
                 } label: {
-                    EmptyView()
+                    Text("Default text encoding:", tableName: "FormatSettings")
+                        .accessibilityLabeledPair(role: .label, id: "fileEncoding", in: self.accessibility)
                 }
-                .modifier { content in
-                    if #available(macOS 26, *) {
-                        content
-                            .buttonSizing(.flexible)
-                    } else {
-                        content
-                    }
-                }
-                .frame(maxWidth: 260)
                 .accessibilityLabeledPair(role: .content, id: "fileEncoding", in: self.accessibility)
-            }
-            
-            GridRow {
-                Text("Encoding priorities:", tableName: "FormatSettings")
-                    .accessibilityLabeledPair(role: .label, id: "encodingPriority", in: self.accessibility)
-                    .gridColumnAlignment(.trailing)
                 
-                VStack {
-                    VStack(alignment: .leading) {
-                        Button(String(localized: "Edit List…", table: "FormatSettings")) {
-                            self.isEncodingListPresented.toggle()
-                        }
-                        .sheet(isPresented: $isEncodingListPresented) {
-                            EncodingListView(defaultEncoding: self.encodingManager.defaultEncoding)
-                        }
-                        
-                        Toggle(String(localized: "Refer to encoding declaration in document", table: "FormatSettings"), isOn: $referToEncodingTag)
-                            .fixedSize(horizontal: false, vertical: true)
+                LabeledContent {
+                    Button(String(localized: "Edit List…", table: "FormatSettings")) {
+                        self.isEncodingListPresented.toggle()
                     }
+                    .sheet(isPresented: $isEncodingListPresented) {
+                        EncodingListView(defaultEncoding: self.encodingManager.defaultEncoding)
+                    }
+                    .accessibilityLabeledPair(role: .content, id: "encodingPriority", in: self.accessibility)
+                } label: {
+                    Text("Encoding priorities:", tableName: "FormatSettings")
+                        .accessibilityLabeledPair(role: .label, id: "encodingPriority", in: self.accessibility)
                 }
-                .accessibilityLabeledPair(role: .content, id: "encodingPriority", in: self.accessibility)
+                
+                Toggle(String(localized: "Refer to encoding declaration in document", table: "FormatSettings"), isOn: $referToEncodingTag)
             }
             
-            Divider()
-                .padding(.vertical, 6)
-            
-            GridRow {
-                Text("Default syntax:", tableName: "FormatSettings")
-                    .accessibilityLabeledPair(role: .label, id: "syntax", in: self.accessibility)
-                    .gridColumnAlignment(.trailing)
-                
+            Section {
                 Picker(selection: $syntax) {
                     Text(String(localized: "SyntaxName.none", defaultValue: "None"))
                         .tag(SyntaxName.none)
@@ -187,33 +146,17 @@ struct FormatSettingsView: View {
                         Text($0).tag($0)
                     }
                 } label: {
-                    EmptyView()
+                    Text("Default syntax:", tableName: "FormatSettings")
+                        .accessibilityLabeledPair(role: .label, id: "syntax", in: self.accessibility)
                 }
-                .modifier { content in
-                    if #available(macOS 26, *) {
-                        content
-                            .buttonSizing(.flexible)
-                    } else {
-                        content
-                    }
-                }
-                .frame(maxWidth: 260)
                 .accessibilityLabeledPair(role: .content, id: "syntax", in: self.accessibility)
-            }
-            
-            GridRow(alignment: .top) {
-                Text("Available syntaxes:", tableName: "FormatSettings")
-                    .accessibilityLabeledPair(role: .label, id: "availableSyntaxes", in: self.accessibility)
-                    .gridColumnAlignment(.trailing)
                 
                 SyntaxListView(settingNames: self.syntaxNames, manager: self.syntaxManager)
-                    .frame(width: 260, height: 140)
+                    .frame(height: 170)
                     .accessibilityLabeledPair(role: .content, id: "availableSyntaxes", in: self.accessibility)
-            }
-            
-            HStack {
-                Spacer()
-                HelpLink(anchor: "settings_format")
+            } header: {
+                Text("Available syntaxes:", tableName: "FormatSettings")
+                    .accessibilityLabeledPair(role: .label, id: "availableSyntaxes", in: self.accessibility)
             }
         }
         .onReceive(self.syntaxManager.$settingNames) { self.syntaxNames = $0 }
@@ -226,8 +169,6 @@ struct FormatSettingsView: View {
             self.handledEncodingListRequestID = requestID
             self.isEncodingListPresented = true
         }
-        .scenePadding()
-        .frame(width: 620)
     }
 }
 

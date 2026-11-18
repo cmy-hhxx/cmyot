@@ -2720,9 +2720,13 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             }
             
             if wasLastInSourcePane, self.editorViewControllers.count > 1 {
+                if self.zoomedPane === sourcePane {
+                    self.unzoomPane()
+                }
                 self.removePane(sourcePane)
             }
             self.updateSplitState()
+            self.savePaneTabsSessionToDatabase()
             return true
         }
         
@@ -2752,9 +2756,13 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             sourceWindowVC.view.window?.close()
         } else {
             if wasLastInSourcePane, sourceWindowVC.editorViewControllers.count > 1 {
+                if sourceWindowVC.zoomedPane === sourcePane {
+                    sourceWindowVC.unzoomPane()
+                }
                 sourceWindowVC.removePane(sourcePane)
             }
             sourceWindowVC.updateSplitState()
+            sourceWindowVC.savePaneTabsSessionToDatabase()
         }
         
         let newTab = self.addTab(movedDocument, to: targetPane, copying: targetPane.textView, at: targetIndex)
@@ -2765,6 +2773,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.view.window?.makeKeyAndOrderFront(nil)
         self.view.window?.makeFirstResponderDiscardingMarkedText(targetPane.textView)
         self.updateSplitState()
+        self.savePaneTabsSessionToDatabase()
         return true
     }
     

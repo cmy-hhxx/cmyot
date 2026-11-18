@@ -35,11 +35,36 @@ nonisolated enum AIDocumentTextCleaner {
     private static let allowedEmoji: Set<Unicode.Scalar> = ["🔴", "✅", "❌", "⭐"]
     
     
+    private enum LayoutStyle {
+        /// Original plain-text layout: subheadings indented with 4 spaces, body flush left.
+        case indentedSubheadings
+        /// Organized document layout: headings flush left, formal body content indented with `\t`.
+        case flushHeadingsIndentedBody
+    }
+    
+    
     /// Cleans one model answer.
     ///
     /// - Parameter text: The Markdown answer.
     /// - Returns: Plain document text, without a trailing newline.
     static func clean(_ text: String) -> String {
+        
+        self.clean(text, style: .indentedSubheadings)
+    }
+    
+    
+    /// Cleans an AI-organized/merged document into plain text where headings stay flush left
+    /// and body paragraphs/lists beneath each heading are indented with a tab (`\t`).
+    ///
+    /// - Parameter text: The Markdown or plain-text answer.
+    /// - Returns: Plain document text, without a trailing newline.
+    static func cleanOrganized(_ text: String) -> String {
+        
+        self.clean(text, style: .flushHeadingsIndentedBody)
+    }
+    
+    
+    private static func clean(_ text: String, style: LayoutStyle) -> String {
         
         let lines = text
             .replacingOccurrences(of: "\r\n", with: "\n")
@@ -47,6 +72,8 @@ nonisolated enum AIDocumentTextCleaner {
             .components(separatedBy: "\n")
         var output: [String] = []
         var counters: [Int: Int] = [:]
+        var insideSection = false
+        var sectionListBaseDepth: Int?
         var index = 0
         
         while index < lines.count {
@@ -58,17 +85,24 @@ nonisolated enum AIDocumentTextCleaner {
                 index += 1
                 while index < lines.count,
                       !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                    output.append(lines[index])
+                    let codeLine = lines[index]
+                    if style == .flushHeadingsIndentedBody, insideSection, !codeLine.isEmpty {
+                        output.append("\t" + codeLine)
+                    } else {
+                        output.append(codeLine)
+                    }
                     index += 1
                 }
                 index += 1
                 counters.removeAll()
+                sectionListBaseDepth = nil
                 continue
             }
             
             if trimmed.isEmpty {
                 output.append("")
                 counters.removeAll()
+                sectionListBaseDepth = nil
                 index += 1
                 continue
             }
@@ -79,34 +113,48 @@ nonisolated enum AIDocumentTextCleaner {
             }
             
             if let heading = Self.heading(in: trimmed) {
-                // No `#` in the finished note: heading depth becomes four-space indentation.
-                let indent = String(repeating: "    ", count: min(3, heading.level - 1))
-                output.append(indent + heading.text)
+                switch style {
+                    case .indentedSubheadings:
+                        // No `#` in the finished note: heading depth becomes four-space indentation.
+                        let indent = String(repeating: "    ", count: min(3, heading.level - 1))
+                        output.append(indent + heading.text)
+                    case .flushHeadingsIndentedBody:
+                        // Headings stay flush left (no tab/space); body beneath them uses `\t`.
+                        output.append(heading.text)
+                        insideSection = true
+                        sectionListBaseDepth = nil
+                }
                 counters.removeAll()
                 index += 1
                 continue
             }
             
             if Self.isTableStart(lines: lines, at: index) {
-                output.append(Self.plainTableRow(lines[index]))
+                let prefix = (style == .flushHeadingsIndentedBody && insideSection) ? "\t" : ""
+                output.append(prefix + Self.plainTableRow(lines[index]))
                 index += 2  // header row and separator row
                 while index < lines.count, Self.isTableRow(lines[index]) {
-                    output.append(Self.plainTableRow(lines[index]))
+                    output.append(prefix + Self.plainTableRow(lines[index]))
                     index += 1
                 }
                 counters.removeAll()
+                sectionListBaseDepth = nil
                 continue
             }
             
             if Self.isTableRow(rawLine) {
-                output.append(Self.plainTableRow(rawLine))
+                let prefix = (style == .flushHeadingsIndentedBody && insideSection) ? "\t" : ""
+                output.append(prefix + Self.plainTableRow(rawLine))
                 counters.removeAll()
+                sectionListBaseDepth = nil
                 index += 1
                 continue
             }
             
             var content = trimmed
+            var isBlockquote = false
             if content.hasPrefix(">") {
+                isBlockquote = true
                 content = String(content.dropFirst()).trimmingCharacters(in: .whitespaces)
                 if content.isEmpty {
                     index += 1
@@ -114,20 +162,60 @@ nonisolated enum AIDocumentTextCleaner {
                 }
             }
             
+            // In organized plain-text mode, detect flush-left section headings (already written without `#`)
+            // when they are followed by `\t`-indented content or look like standalone section headers.
+            if style == .flushHeadingsIndentedBody,
+               !isBlockquote,
+               !Self.hasLeadingIndent(rawLine),
+               Self.listItem(in: content) == nil,
+               Self.isPlainHeading(content, lines: lines, at: index)
+            {
+                output.append(Self.inline(content))
+                insideSection = true
+                sectionListBaseDepth = nil
+                counters.removeAll()
+                index += 1
+                continue
+            }
+            
             if let item = Self.listItem(in: content) {
-                let depth = Self.indentDepth(of: rawLine)
-                for key in counters.keys where key > depth {
-                    counters[key] = nil
+                switch style {
+                    case .indentedSubheadings:
+                        let depth = Self.indentDepth(of: rawLine)
+                        for key in counters.keys where key > depth {
+                            counters[key] = nil
+                        }
+                        let number = (counters[depth] ?? 0) + 1
+                        counters[depth] = number
+                        output.append(String(repeating: "    ", count: depth) + "\(number). " + item)
+                    case .flushHeadingsIndentedBody:
+                        let rawDepth = Self.tabIndentDepth(of: rawLine)
+                        if sectionListBaseDepth == nil {
+                            sectionListBaseDepth = rawDepth
+                        }
+                        let relativeDepth = min(3, max(0, rawDepth - (sectionListBaseDepth ?? 0)))
+                        for key in counters.keys where key > relativeDepth {
+                            counters[key] = nil
+                        }
+                        let number = (counters[relativeDepth] ?? 0) + 1
+                        counters[relativeDepth] = number
+                        let baseTabs = insideSection ? 1 : (rawDepth > 0 ? 1 : 0)
+                        let indent = String(repeating: "\t", count: min(4, baseTabs + relativeDepth))
+                        output.append(indent + "\(number). " + item)
                 }
-                let number = (counters[depth] ?? 0) + 1
-                counters[depth] = number
-                output.append(String(repeating: "    ", count: depth) + "\(number). " + item)
                 index += 1
                 continue
             }
             
             counters.removeAll()
-            output.append(Self.inline(content))
+            sectionListBaseDepth = nil
+            if style == .flushHeadingsIndentedBody {
+                let rawDepth = Self.tabIndentDepth(of: rawLine)
+                let tabCount = insideSection ? max(1, min(3, rawDepth)) : min(3, rawDepth)
+                output.append(String(repeating: "\t", count: tabCount) + Self.inline(content))
+            } else {
+                output.append(Self.inline(content))
+            }
             index += 1
         }
         
@@ -193,6 +281,49 @@ nonisolated enum AIDocumentTextCleaner {
             .reduce(0) { $0 + ($1 == "\t" ? 2 : 1) }
         
         return min(3, width / 2)
+    }
+    
+    
+    /// Whether the line starts with any whitespace indentation.
+    private static func hasLeadingIndent(_ line: String) -> Bool {
+        
+        line.first == "\t" || line.first == " "
+    }
+    
+    
+    /// Tab-based indentation depth (each `\t` or 2+ spaces counts as one level).
+    private static func tabIndentDepth(of line: String) -> Int {
+        
+        let prefix = line.prefix { $0 == "\t" || $0 == " " }
+        let tabs = prefix.count { $0 == "\t" }
+        let spaces = prefix.count { $0 == " " }
+        return min(4, tabs + spaces / 2)
+    }
+    
+    
+    /// Recognizes a flush-left plain-text heading when the following content is indented beneath it.
+    private static func isPlainHeading(_ trimmedLine: String, lines: [String], at index: Int) -> Bool {
+        
+        var nextIndex = index + 1
+        while nextIndex < lines.count, lines[nextIndex].trimmingCharacters(in: .whitespaces).isEmpty {
+            nextIndex += 1
+        }
+        guard nextIndex < lines.count else { return false }
+        
+        let nextLine = lines[nextIndex]
+        if nextLine.hasPrefix("\t") || nextLine.hasPrefix("  ") {
+            return true
+        }
+        
+        // Also recognize explicit Chinese section prefixes (e.g. `一、...`) followed by a list.
+        let nextTrimmed = nextLine.trimmingCharacters(in: .whitespaces)
+        if Self.listItem(in: nextTrimmed) != nil,
+           trimmedLine.range(of: #"^[一二三四五六七八九十]+、"#, options: .regularExpression) != nil
+        {
+            return true
+        }
+        
+        return false
     }
     
     

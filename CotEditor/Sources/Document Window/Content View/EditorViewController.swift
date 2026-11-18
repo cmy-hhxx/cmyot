@@ -182,6 +182,7 @@ final class EditorViewController: NSSplitViewController {
         self.addSplitViewItem(self.navigationBarItem)
         
         // setup the content area that hosts the selected tab's text view
+        self.contentViewController.pane = self
         let contentItem = NSSplitViewItem(viewController: self.contentViewController)
         contentItem.canCollapse = false
         self.addSplitViewItem(contentItem)
@@ -417,6 +418,9 @@ final class EditorViewController: NSSplitViewController {
                 // this pane forwards the action to its own document
                 return true
                 
+            case #selector(NSDocument.move(_:)):
+                return !self.tabs.isEmpty
+                
             case #selector(toggleNavigationBar):
                 (item as? NSMenuItem)?.title = !self.navigationBarItem.isCollapsed
                     ? String(localized: "Hide Navigation Bar", table: "MainMenu")
@@ -499,6 +503,16 @@ final class EditorViewController: NSSplitViewController {
     @objc(saveDocumentAs:) @IBAction func saveAs(_ sender: Any?) {
         
         self.document.saveAs(sender)
+    }
+    
+    
+    /// Starts inline tab renaming for this pane's active document (File → Rename…).
+    @objc func move(_ sender: Any?) {
+        
+        if self.beginInlineRename(for: self.selectedTab.document) {
+            return
+        }
+        self.document.move(sender)
     }
     
     
@@ -690,21 +704,22 @@ final class EditorViewController: NSSplitViewController {
     
     // MARK: Pane Content Drop Handling
     
-    func paneDragEntered(_ sender: any NSDraggingInfo, in textView: EditorTextView) -> NSDragOperation {
+    func canAcceptPaneTabDrop(_ sender: any NSDraggingInfo) -> Bool {
+        
+        guard let draggedID = Self.extractTabID(from: sender.draggingPasteboard) else { return false }
+        return !self.tabs.contains(where: { $0.id == draggedID })
+    }
+    
+    
+    func paneDragEntered(_ sender: any NSDraggingInfo, in textView: EditorTextView? = nil) -> NSDragOperation {
         
         self.paneDragUpdated(sender, in: textView)
     }
     
     
-    func paneDragUpdated(_ sender: any NSDraggingInfo, in textView: EditorTextView) -> NSDragOperation {
+    func paneDragUpdated(_ sender: any NSDraggingInfo, in textView: EditorTextView? = nil) -> NSDragOperation {
         
-        guard let draggedID = Self.extractTabID(from: sender.draggingPasteboard) else {
-            self.hideDropOverlay()
-            return []
-        }
-        
-        // Dropping onto the same pane does nothing; cross-pane drop moves without splitting.
-        if self.tabs.contains(where: { $0.id == draggedID }) {
+        guard self.canAcceptPaneTabDrop(sender) else {
             self.hideDropOverlay()
             return []
         }
@@ -720,7 +735,7 @@ final class EditorViewController: NSSplitViewController {
     }
     
     
-    func panePerformDragOperation(_ sender: any NSDraggingInfo, in textView: EditorTextView) -> Bool {
+    func panePerformDragOperation(_ sender: any NSDraggingInfo, in textView: EditorTextView? = nil) -> Bool {
         
         defer { self.hideDropOverlay() }
         
@@ -801,12 +816,54 @@ final class EditorViewController: NSSplitViewController {
 }
 
 
-/// A plain container that fills its pane and hosts the selected tab's text view.
+/// A plain container that fills its pane, hosts the selected tab's text view,
+/// and accepts pane-tab drops across gutters and padding around the text view.
 private final class PaneContentViewController: NSViewController {
+    
+    weak var pane: EditorViewController?
     
     override func loadView() {
         
-        self.view = NSView()
+        let container = PaneDropContainerView()
+        container.paneProvider = { [weak self] in self?.pane }
+        self.view = container
+    }
+}
+
+
+private final class PaneDropContainerView: NSView {
+    
+    var paneProvider: (() -> EditorViewController?)?
+    
+    override init(frame frameRect: NSRect) {
+        
+        super.init(frame: frameRect)
+        self.registerForDraggedTypes([PaneTab.dragPasteboardType])
+    }
+    
+    required init?(coder: NSCoder) {
+        
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        self.paneProvider?()?.paneDragEntered(sender) ?? []
+    }
+    
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        self.paneProvider?()?.paneDragUpdated(sender) ?? []
+    }
+    
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        self.paneProvider?()?.paneDragExited(sender)
+    }
+    
+    override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        self.paneProvider?()?.canAcceptPaneTabDrop(sender) ?? false
+    }
+    
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        self.paneProvider?()?.panePerformDragOperation(sender) ?? false
     }
 }
 

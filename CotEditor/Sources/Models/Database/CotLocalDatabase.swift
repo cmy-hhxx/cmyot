@@ -1680,6 +1680,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     
     private func seedDefaultWeeklyReportsIfNeeded() {
         
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         guard self.weeklyReports.isEmpty else { return }
         let zipURL = URL(filePath: Self.defaultWeeklyReportsZipPath)
         guard FileManager.default.fileExists(atPath: zipURL.path) else { return }

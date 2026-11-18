@@ -53,87 +53,74 @@ struct WindowSettingsView: View {
     
     var body: some View {
         
-        Grid(alignment: .leadingFirstTextBaseline, verticalSpacing: 12) {
-            GridRow {
-                Text("Show:", tableName: "WindowSettings")
-                    .gridColumnAlignment(.trailing)
-                
-                VStack(alignment: .leading, spacing: isLiquidGlass ? nil : 6) {
-                    Toggle(String(localized: "Line numbers", table: "WindowSettings"), isOn: $showLineNumbers)
-                    if #unavailable(macOS 26) {
-                        Toggle(String(localized: "Draw separator", table: "WindowSettings"), isOn: $showLineNumberSeparator)
-                            .disabled(!self.showLineNumbers)
-                            .padding(.leading, 20)
-                    }
-                    
-                    Toggle(String(localized: "Invisible characters", table: "WindowSettings"), isOn: $showInvisibles)
-                    Toggle(String(localized: "Indent guides", table: "WindowSettings"), isOn: $showIndentGuides)
-                    HStack(alignment: .firstTextBaseline) {
-                        Toggle(String(localized: "Page guide at column:", table: "WindowSettings"), isOn: $showPageGuide)
-                        StepperNumberField(value: $pageGuideColumn, default: UserDefaults.standard[initial: .pageGuideColumn], in: 1...999)
-                            .accessibilityLabel(String(localized: "Page guide at column:", table: "WindowSettings"))
-                            .disabled(!self.showPageGuide)
-                    }
+        SettingsFormPane(helpAnchor: "settings_window") {
+            Section {
+                Toggle(String(localized: "Line numbers", table: "WindowSettings"), isOn: $showLineNumbers)
+                if #unavailable(macOS 26) {
+                    Toggle(String(localized: "Draw separator", table: "WindowSettings"), isOn: $showLineNumberSeparator)
+                        .disabled(!self.showLineNumbers)
+                        .padding(.leading, 20)
                 }
+                Toggle(String(localized: "Invisible characters", table: "WindowSettings"), isOn: $showInvisibles)
+                Toggle(String(localized: "Indent guides", table: "WindowSettings"), isOn: $showIndentGuides)
+                
+                LabeledContent {
+                    StepperNumberField(value: $pageGuideColumn, default: UserDefaults.standard[initial: .pageGuideColumn], in: 1...999)
+                        .accessibilityLabel(String(localized: "Page guide at column:", table: "WindowSettings"))
+                        .disabled(!self.showPageGuide)
+                } label: {
+                    Toggle(String(localized: "Page guide at column:", table: "WindowSettings"), isOn: $showPageGuide)
+                }
+                
+                Toggle(isOn: $highlightCurrentLine) {
+                    Text("Current line:", tableName: "WindowSettings")
+                    Text("Change background color", tableName: "WindowSettings")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Show:", tableName: "WindowSettings")
             }
             
-            GridRow {
-                Text("Current line:", tableName: "WindowSettings")
-                    .gridColumnAlignment(.trailing)
+            Section {
+                Toggle(String(localized: "Wrap lines to editor width", table: "WindowSettings"), isOn: $wrapLines)
                 
-                Toggle(String(localized: "Change background color", table: "WindowSettings"), isOn: $highlightCurrentLine)
-            }
-            
-            Divider()
-                .padding(.vertical, 6)
-            
-            GridRow {
-                Text("Line wrapping:", tableName: "WindowSettings")
-                    .gridColumnAlignment(.trailing)
-                
-                VStack(alignment: .leading, spacing: isLiquidGlass ? nil : 6) {
-                    Toggle(String(localized: "Wrap lines to editor width", table: "WindowSettings"), isOn: $wrapLines)
-                    HStack(alignment: .firstTextBaseline) {
-                        Toggle(String(localized: "Indent wrapped lines by", table: "WindowSettings"), isOn: $enablesHangingIndent)
+                LabeledContent {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
                         StepperNumberField(value: $hangingIndentWidth, default: UserDefaults.standard[initial: .hangingIndentWidth], in: 0...99)
                             .disabled(!self.enablesHangingIndent)
                             .accessibilityLabel(String(localized: "wrapped line indent spaces", table: "WindowSettings", comment: "accessibility label"))
                         Text("spaces", tableName: "WindowSettings", comment: "unit for indentation")
+                            .foregroundStyle(.secondary)
                     }
+                } label: {
+                    Toggle(String(localized: "Indent wrapped lines by", table: "WindowSettings"), isOn: $enablesHangingIndent)
                 }
+            } header: {
+                Text("Line wrapping:", tableName: "WindowSettings")
             }
             
-            Divider()
-                .padding(.vertical, 6)
-            
-            GridRow {
-                Text("Status bar shows:", tableName: "WindowSettings")
-                    .accessibilityLabeledPair(role: .label, id: "sideBarShows", in: self.accessibility)
-                    .gridColumnAlignment(.trailing)
-                
-                HStack(alignment: .firstTextBaseline, spacing: 20) {
-                    VStack(alignment: .leading, spacing: isLiquidGlass ? nil : 6) {
+            Section {
+                Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 8) {
+                    GridRow {
                         Toggle(String(localized: "Line count", table: "WindowSettings"), isOn: $showStatusBarLines)
-                        Toggle(String(localized: "Character count", table: "WindowSettings"), isOn: $showStatusBarChars)
-                        Toggle(String(localized: "Word count", table: "WindowSettings"), isOn: $showStatusBarWords)
-                    }
-                    VStack(alignment: .leading, spacing: isLiquidGlass ? nil : 6) {
                         Toggle(String(localized: "Location", table: "WindowSettings"), isOn: $showStatusBarLocation)
+                    }
+                    GridRow {
+                        Toggle(String(localized: "Character count", table: "WindowSettings"), isOn: $showStatusBarChars)
                         Toggle(String(localized: "Current line", table: "WindowSettings"), isOn: $showStatusBarLine)
+                    }
+                    GridRow {
+                        Toggle(String(localized: "Word count", table: "WindowSettings"), isOn: $showStatusBarWords)
                         Toggle(String(localized: "Current column", table: "WindowSettings"), isOn: $showStatusBarColumn)
                     }
                 }
                 .accessibilityLabeledPair(role: .content, id: "sideBarShows", in: self.accessibility)
-            }
-            .fixedSize()
-            
-            HStack {
-                Spacer()
-                HelpLink(anchor: "settings_window")
+            } header: {
+                Text("Status bar shows:", tableName: "WindowSettings")
+                    .accessibilityLabeledPair(role: .label, id: "sideBarShows", in: self.accessibility)
             }
         }
-        .scenePadding()
-        .frame(width: 620)
     }
 }
 
