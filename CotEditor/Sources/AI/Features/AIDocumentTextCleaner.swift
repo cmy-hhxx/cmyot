@@ -163,7 +163,7 @@ nonisolated enum AIDocumentTextCleaner {
     private static func listItem(in line: String) -> String? {
         
         let body: String
-        if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
+        if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") || line.hasPrefix("• ") {
             body = String(line.dropFirst(2))
         } else {
             let digits = line.prefix { $0.isNumber }
