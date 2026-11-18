@@ -49,18 +49,84 @@ nonisolated struct AIClient: Sendable {
     /// - Throws: ``AIError`` when the request cannot be made or the reply cannot be read.
     func send(_ messages: [AIMessage], onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
         
+        let shouldSendTemperature = Self.supportsTemperature(for: self.wireConfig.model)
+        do {
+            return try await self.sendAttempt(messages, allowTemperature: shouldSendTemperature, onPartial: onPartial)
+        } catch let error where shouldSendTemperature && Self.isTemperatureRejectedError(error) {
+            CotLogger.shared.info(
+                category: .ai,
+                "Model rejected temperature parameter; retrying without temperature: model=\(self.wireConfig.model)"
+            )
+            return try await self.sendAttempt(messages, allowTemperature: false, onPartial: onPartial)
+        }
+    }
+    
+    
+    /// Returns whether the model accepts a custom `temperature` sampling parameter.
+    ///
+    /// Claude 5+ and reasoning-oriented models reject `temperature` with HTTP 400.
+    static func supportsTemperature(for model: String) -> Bool {
+        
+        let normalized = model
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalized.isEmpty else { return true }
+        
+        if normalized.range(
+            of: "claude-(?:(?:haiku|sonnet|opus)-)?[5-9](?:[.-]|$)",
+            options: .regularExpression
+        ) != nil {
+            return false
+        }
+        
+        if normalized.contains("reasoner")
+            || normalized.hasPrefix("o1")
+            || normalized.hasPrefix("o3")
+            || normalized.hasPrefix("o4")
+            || normalized.hasPrefix("gpt-5")
+        {
+            return false
+        }
+        
+        return true
+    }
+    
+    
+    /// Detects provider HTTP 400 errors rejecting `temperature` so requests can retry once without it.
+    static func isTemperatureRejectedError(_ error: any Error) -> Bool {
+        
+        guard case AIError.http(let status, let message?) = error, status == 400 else {
+            return false
+        }
+        let lower = message.lowercased()
+        return lower.contains("temperature")
+            && (lower.contains("deprecated")
+                || lower.contains("unsupported")
+                || lower.contains("not allowed")
+                || lower.contains("not supported")
+                || lower.contains("cannot specify")
+                || lower.contains("invalid"))
+    }
+    
+    
+    private func sendAttempt(
+        _ messages: [AIMessage],
+        allowTemperature: Bool,
+        onPartial: (@Sendable (String) -> Void)?
+    ) async throws -> String {
+        
         let config = self.wireConfig
         guard config.isUsable else { throw AIError.notConfigured }
         
         if let onPartial, self.supportsSSEStreaming {
             do {
-                let streamed = try await self.sendStreaming(messages, onPartial: onPartial)
+                let streamed = try await self.sendStreaming(messages, allowTemperature: allowTemperature, onPartial: onPartial)
                 if !streamed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     return streamed.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             } catch let error as AIError where Self.shouldFallbackFromStreamingError(error) {
                 // Fall back to standard non-streaming request only when SSE itself is rejected
-                // or yields an empty stream; never mask auth/rate-limit/404/transport errors.
+                // or yields an empty stream; never mask auth/rate-limit/404/transport/temperature errors.
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -79,7 +145,9 @@ nonisolated struct AIClient: Sendable {
             request.setValue(value, forHTTPHeaderField: field)
         }
         
-        request.httpBody = try JSONSerialization.data(withJSONObject: self.body(for: messages, stream: false))
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: self.body(for: messages, stream: false, allowTemperature: allowTemperature)
+        )
         
         let data: Data
         let response: URLResponse
@@ -103,6 +171,9 @@ nonisolated struct AIClient: Sendable {
     
     private static func shouldFallbackFromStreamingError(_ error: AIError) -> Bool {
         
+        if self.isTemperatureRejectedError(error) {
+            return false
+        }
         switch error {
             case .emptyResponse, .decoding:
                 return true
@@ -125,7 +196,11 @@ nonisolated struct AIClient: Sendable {
     }
     
     
-    private func sendStreaming(_ messages: [AIMessage], onPartial: @Sendable (String) -> Void) async throws -> String {
+    private func sendStreaming(
+        _ messages: [AIMessage],
+        allowTemperature: Bool,
+        onPartial: @Sendable (String) -> Void
+    ) async throws -> String {
         
         let config = self.wireConfig
         guard let url = config.requestURL else { throw AIError.invalidURL(config.resolvedBaseURL) }
@@ -139,7 +214,9 @@ nonisolated struct AIClient: Sendable {
             request.setValue(value, forHTTPHeaderField: field)
         }
         
-        request.httpBody = try JSONSerialization.data(withJSONObject: self.body(for: messages, stream: true))
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: self.body(for: messages, stream: true, allowTemperature: allowTemperature)
+        )
         
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do {
@@ -235,7 +312,7 @@ nonisolated struct AIClient: Sendable {
     ///   - messages: The conversation to send.
     ///   - stream: Whether to request Server-Sent Events streaming.
     /// - Returns: A JSON-serializable body.
-    private func body(for messages: [AIMessage], stream: Bool = false) -> [String: Any] {
+    private func body(for messages: [AIMessage], stream: Bool = false, allowTemperature: Bool = true) -> [String: Any] {
         
         let config = self.wireConfig
         let model = config.model
@@ -273,7 +350,7 @@ nonisolated struct AIClient: Sendable {
                         ]
                     },
                 ]
-                if let temperature = config.temperature {
+                if allowTemperature, Self.supportsTemperature(for: model), let temperature = config.temperature {
                     body["temperature"] = temperature
                 }
                 // For reasoning models (o1/o3/deepseek-reasoner), pass low reasoning effort to accelerate generation.
@@ -310,7 +387,7 @@ nonisolated struct AIClient: Sendable {
                 if !system.isEmpty {
                     body["system"] = system
                 }
-                if let temperature = config.temperature {
+                if allowTemperature, Self.supportsTemperature(for: model), let temperature = config.temperature {
                     body["temperature"] = temperature
                 }
                 

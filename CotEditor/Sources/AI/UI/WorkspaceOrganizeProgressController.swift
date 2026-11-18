@@ -48,6 +48,7 @@ import SwiftUI
     var summaryMessage: String?
     var errorMessage: String?
     var isFinished: Bool = false
+    var canRetry: Bool = false
     
     var steps: [StepItem] = [
         StepItem(id: 0, title: "1. 备份当前文档快照", detail: "等待开始", status: .pending),
@@ -107,12 +108,19 @@ import SwiftUI
 
 
 /// Window/sheet controller displaying transparent step-by-step progress while organizing all documents.
-@MainActor final class WorkspaceOrganizeProgressController: NSWindowController {
+@MainActor final class WorkspaceOrganizeProgressController: NSWindowController, NSWindowDelegate {
     
     let state: WorkspaceOrganizeProgressState
     var onCancel: (() -> Void)?
+    var onRetry: (() -> Void)? {
+        didSet {
+            self.state.canRetry = (self.onRetry != nil)
+        }
+    }
+    var onDismiss: (() -> Void)?
     
     private var timerTask: Task<Void, Never>?
+    private var hasNotifiedDismiss = false
     
     init(totalDocumentCount: Int, endpointDescription: String) {
         let state = WorkspaceOrganizeProgressState(
@@ -124,24 +132,38 @@ import SwiftUI
         let rootView = WorkspaceOrganizeProgressView(
             state: state,
             onCancelOrClose: { },
+            onRetry: { },
             onOpenLog: {
                 (NSApp.delegate as? AppDelegate)?.openTodayErrorLog(nil)
             }
         )
         let hostingController = NSHostingController(rootView: rootView)
         let panel = NSPanel(contentViewController: hostingController)
-        panel.styleMask = [.titled]
+        panel.styleMask = [.titled, .closable]
         panel.title = "一键整合并规整全部文档"
         panel.setContentSize(NSSize(width: 500, height: 356))
         panel.isFloatingPanel = false
         panel.hidesOnDeactivate = false
+        panel.preventsApplicationTerminationWhenModal = false
         
         super.init(window: panel)
+        panel.delegate = self
         
         hostingController.rootView = WorkspaceOrganizeProgressView(
             state: state,
-            onCancelOrClose: { [weak self] in
-                self?.handleCancelOrClose()
+            onCancelOrClose: { [weak self, weak panel] in
+                if let self {
+                    self.handleCancelOrClose()
+                } else {
+                    Self.closeWindowDirectly(panel)
+                }
+            },
+            onRetry: { [weak self, weak panel] in
+                if let self {
+                    self.handleRetry()
+                } else {
+                    Self.closeWindowDirectly(panel)
+                }
             },
             onOpenLog: {
                 (NSApp.delegate as? AppDelegate)?.openTodayErrorLog(nil)
@@ -157,6 +179,7 @@ import SwiftUI
     
     func present(on parent: NSWindow?) {
         guard let window else { return }
+        self.hasNotifiedDismiss = false
         self.startElapsedTimer()
         if let parent {
             parent.beginSheet(window)
@@ -169,12 +192,53 @@ import SwiftUI
     func dismissSheet() {
         self.timerTask?.cancel()
         self.timerTask = nil
+        Self.closeWindowDirectly(self.window)
+        self.notifyDismissIfNeeded()
+    }
+    
+    
+    override func cancelOperation(_ sender: Any?) {
+        self.handleCancelOrClose()
+    }
+    
+    
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender.sheetParent != nil {
+            self.handleCancelOrClose()
+            return false
+        }
+        if !self.state.isFinished {
+            self.onCancel?()
+        }
+        self.timerTask?.cancel()
+        self.timerTask = nil
+        return true
+    }
+    
+    
+    func windowWillClose(_ notification: Notification) {
+        self.timerTask?.cancel()
+        self.timerTask = nil
+        self.notifyDismissIfNeeded()
+    }
+    
+    
+    private static func closeWindowDirectly(_ window: NSWindow?) {
         guard let window else { return }
         if let parent = window.sheetParent {
             parent.endSheet(window)
         } else {
             window.close()
         }
+    }
+    
+    
+    private func notifyDismissIfNeeded() {
+        guard !self.hasNotifiedDismiss else { return }
+        self.hasNotifiedDismiss = true
+        let callback = self.onDismiss
+        self.onDismiss = nil
+        callback?()
     }
     
     
@@ -197,6 +261,13 @@ import SwiftUI
         }
         self.dismissSheet()
     }
+    
+    
+    private func handleRetry() {
+        let retry = self.onRetry
+        self.dismissSheet()
+        retry?()
+    }
 }
 
 
@@ -204,6 +275,7 @@ private struct WorkspaceOrganizeProgressView: View {
     
     var state: WorkspaceOrganizeProgressState
     var onCancelOrClose: () -> Void
+    var onRetry: () -> Void
     var onOpenLog: () -> Void
     
     var body: some View {
@@ -290,19 +362,32 @@ private struct WorkspaceOrganizeProgressView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             
-            HStack {
+            HStack(spacing: 8) {
                 if self.state.errorMessage != nil {
                     Button("查看今日错误日志") {
                         self.onOpenLog()
                     }
+                    
+                    Spacer()
+                    
+                    if self.state.canRetry {
+                        Button("重试") {
+                            self.onRetry()
+                        }
+                    }
+                    
+                    Button("关闭") {
+                        self.onCancelOrClose()
+                    }
+                    .keyboardShortcut(.cancelAction)
+                } else {
+                    Spacer()
+                    
+                    Button(self.state.isFinished ? "完成" : "取消") {
+                        self.onCancelOrClose()
+                    }
+                    .keyboardShortcut(self.state.isFinished ? .defaultAction : .cancelAction)
                 }
-                
-                Spacer()
-                
-                Button(self.state.isFinished ? "完成" : "取消") {
-                    self.onCancelOrClose()
-                }
-                .keyboardShortcut(self.state.isFinished ? .defaultAction : .cancelAction)
             }
         }
         .padding(20)

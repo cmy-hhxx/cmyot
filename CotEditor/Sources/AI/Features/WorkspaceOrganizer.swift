@@ -223,8 +223,17 @@ enum WorkspaceOrganizer {
     }
     
     
+    private static var activeProgressController: WorkspaceOrganizeProgressController?
+    private static var activeOrganizeTask: Task<Void, Never>?
+    
+    
     /// Runs AI organize-and-merge across all open windows/documents and creates a formatted Map document.
     static func runOrganizeAndMerge(from anchorWindow: NSWindow?) {
+        
+        self.activeOrganizeTask?.cancel()
+        self.activeOrganizeTask = nil
+        self.activeProgressController?.dismissSheet()
+        self.activeProgressController = nil
         
         let entries = self.collectOpenDocuments()
         guard !entries.isEmpty else {
@@ -275,6 +284,18 @@ enum WorkspaceOrganizer {
             totalDocumentCount: entries.count,
             endpointDescription: profileDesc
         )
+        self.activeProgressController = progressController
+        progressController.onDismiss = { [weak progressController] in
+            if Self.activeProgressController === progressController {
+                Self.activeProgressController = nil
+            }
+            Self.activeOrganizeTask = nil
+        }
+        progressController.onRetry = { [weak targetWindow] in
+            Task { @MainActor in
+                Self.runOrganizeAndMerge(from: targetWindow)
+            }
+        }
         progressController.present(on: targetWindow)
         
         // Step 1: Snapshot every document into local SQLite before any modification.
@@ -377,8 +398,10 @@ enum WorkspaceOrganizer {
             }
         }
         
+        self.activeOrganizeTask = organizeTask
         progressController.onCancel = {
             organizeTask.cancel()
+            Self.activeOrganizeTask = nil
         }
     }
     

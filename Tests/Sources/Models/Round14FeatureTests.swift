@@ -318,4 +318,51 @@ struct Round14FeatureTests {
         #expect(canonical.hasPrefix("file:"))
         #expect(canonical.hasSuffix("/2026.11 周报.txt"))
     }
+    
+    
+    @Test func aiClientTemperatureCompatibilityAndErrorDetection() {
+        
+        #expect(AIClient.supportsTemperature(for: "claude-haiku-5-5") == false)
+        #expect(AIClient.supportsTemperature(for: "anthropic/claude-haiku-5-5") == false)
+        #expect(AIClient.supportsTemperature(for: "claude-sonnet-5.0") == false)
+        #expect(AIClient.supportsTemperature(for: "gpt-5") == false)
+        #expect(AIClient.supportsTemperature(for: "o3-mini") == false)
+        #expect(AIClient.supportsTemperature(for: "deepseek-reasoner") == false)
+        
+        #expect(AIClient.supportsTemperature(for: "claude-3-5-sonnet") == true)
+        #expect(AIClient.supportsTemperature(for: "deepseek-v4.1-flash") == true)
+        #expect(AIClient.supportsTemperature(for: "deepseek/deepseek-v4.1-flash") == true)
+        
+        let deprecatedError = AIError.http(
+            status: 400,
+            message: #"{"type":"error","error":{"type":"invalid_request_error","message":"`temperature` is deprecated for this model."}}"#
+        )
+        #expect(AIClient.isTemperatureRejectedError(deprecatedError) == true)
+        #expect(AIClient.isTemperatureRejectedError(AIError.http(status: 400, message: "max_tokens invalid")) == false)
+        #expect(AIClient.isTemperatureRejectedError(AIError.http(status: 401, message: "temperature deprecated")) == false)
+    }
+    
+    
+    @Test func organizeProgressControllerDismissesAndRetainsLifecycle() {
+        
+        let controller = WorkspaceOrganizeProgressController(
+            totalDocumentCount: 3,
+            endpointDescription: "cmy-command-code-1 · claude-haiku-5-5"
+        )
+        var dismissCount = 0
+        controller.onDismiss = { dismissCount += 1 }
+        controller.onRetry = { }
+        
+        #expect(controller.state.canRetry == true)
+        controller.state.markFailed(message: "temperature is deprecated")
+        #expect(controller.state.isFinished == true)
+        #expect(controller.state.errorMessage == "temperature is deprecated")
+        
+        controller.cancelOperation(nil)
+        #expect(dismissCount == 1)
+        
+        // Idempotent repeat close does not double-fire
+        controller.dismissSheet()
+        #expect(dismissCount == 1)
+    }
 }
