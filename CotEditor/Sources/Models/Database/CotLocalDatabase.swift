@@ -34,6 +34,7 @@ nonisolated struct StoredDocumentRecord: Identifiable, Codable, Sendable, Equata
     var content: String
     var highlightsJSON: String
     var updatedAt: Date
+    var groupName: String = ""
 }
 
 
@@ -135,6 +136,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         static let userPreferencesSnapshot = "sync.userPreferences"
         static let activePaneTabsSession = "session.activePaneTabs"
         static let windowLayoutTree = "session.windowLayoutTree"
+        static let documentGroups = "documentCenter.groups"
     }
     
     static let weeklyReportsDidChangeNotification = Notification.Name("CotLocalDatabaseWeeklyReportsDidChange")
@@ -147,6 +149,9 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     
     /// Recently saved/updated documents in the local database.
     private(set) var documents: [StoredDocumentRecord] = []
+    
+    /// User-defined Document Center groups (ordered, including empty groups).
+    private(set) var documentGroups: [String] = []
     
     /// All historical and generated weekly reports stored in the database (newest first).
     private(set) var weeklyReports: [StoredWeeklyReport] = []
@@ -318,21 +323,24 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         filePath: String?,
         syntax: String,
         content: String,
-        highlights: [TextHighlight] = []
+        highlights: [TextHighlight] = [],
+        groupName: String? = nil
     ) {
         let resolvedID = id ?? filePath ?? "untitled:\(title)"
         let highlightsJSON = (try? String(data: JSONEncoder().encode(highlights), encoding: .utf8)) ?? "[]"
         let now = Date().timeIntervalSince1970
+        let normalizedGroup = groupName?.trimmingCharacters(in: .whitespacesAndNewlines)
         
         let sql = """
-        INSERT INTO documents (id, title, file_path, syntax, content, highlights_json, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO documents (id, title, file_path, syntax, content, highlights_json, group_name, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, ''), ?)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             file_path = excluded.file_path,
             syntax = excluded.syntax,
             content = excluded.content,
             highlights_json = excluded.highlights_json,
+            group_name = COALESCE(?, documents.group_name),
             updated_at = excluded.updated_at;
         """
         
@@ -348,12 +356,193 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             sqlite3_bind_text(stmt, 4, syntax, -1, self.transientDestructor)
             sqlite3_bind_text(stmt, 5, content, -1, self.transientDestructor)
             sqlite3_bind_text(stmt, 6, highlightsJSON, -1, self.transientDestructor)
-            sqlite3_bind_double(stmt, 7, now)
+            if let normalizedGroup {
+                sqlite3_bind_text(stmt, 7, normalizedGroup, -1, self.transientDestructor)
+            } else {
+                sqlite3_bind_null(stmt, 7)
+            }
+            sqlite3_bind_double(stmt, 8, now)
+            if let normalizedGroup {
+                sqlite3_bind_text(stmt, 9, normalizedGroup, -1, self.transientDestructor)
+            } else {
+                sqlite3_bind_null(stmt, 9)
+            }
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+        
+        if let normalizedGroup, !normalizedGroup.isEmpty {
+            self.registerDocumentGroupIfNeeded(normalizedGroup)
+        }
+        self.reloadDocuments()
+    }
+    
+    
+    // MARK: Document Group API
+    
+    /// Creates a persistent Document Center group if it doesn't already exist.
+    @discardableResult
+    func createDocumentGroup(named rawName: String) -> String? {
+        
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "未分组" else { return nil }
+        
+        var groups = self.loadStoredGroupList()
+        if !groups.contains(trimmed) {
+            groups.append(trimmed)
+            self.saveStoredGroupList(groups)
+        }
+        self.reloadDocuments()
+        return trimmed
+    }
+    
+    
+    /// Renames a Document Center group and updates every document assigned to it.
+    @discardableResult
+    func renameDocumentGroup(from oldName: String, to rawNewName: String) -> Bool {
+        
+        let trimmed = rawNewName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "未分组", trimmed != oldName else { return false }
+        
+        var groups = self.loadStoredGroupList()
+        guard !groups.contains(trimmed) else { return false }
+        
+        if let index = groups.firstIndex(of: oldName) {
+            groups[index] = trimmed
+        } else {
+            groups.append(trimmed)
+        }
+        self.saveStoredGroupList(groups)
+        
+        let sql = "UPDATE documents SET group_name = ? WHERE group_name = ?;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, trimmed, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 2, oldName, -1, self.transientDestructor)
             sqlite3_step(stmt)
         }
         sqlite3_finalize(stmt)
         
         self.reloadDocuments()
+        return true
+    }
+    
+    
+    /// Dissolves a Document Center group while keeping all of its documents intact as ungrouped.
+    func deleteDocumentGroup(named name: String) {
+        
+        var groups = self.loadStoredGroupList()
+        groups.removeAll { $0 == name }
+        self.saveStoredGroupList(groups)
+        
+        let sql = "UPDATE documents SET group_name = '' WHERE group_name = ?;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, name, -1, self.transientDestructor)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+        
+        self.reloadDocuments()
+    }
+    
+    
+    /// Assigns a document (by ID or file path, creating the record first if needed) to `groupName`.
+    func assignDocumentGroup(
+        id: String,
+        filePath: String?,
+        groupName: String,
+        fallbackTitle: String = "",
+        fallbackSyntax: String = "Plain Text",
+        fallbackContent: String = ""
+    ) {
+        let trimmedGroup = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetGroup = (trimmedGroup == "未分组") ? "" : trimmedGroup
+        if !targetGroup.isEmpty {
+            self.registerDocumentGroupIfNeeded(targetGroup)
+        }
+        
+        let cleanID = id.hasPrefix("doc:") ? String(id.dropFirst(4)) : id
+        let prefixedID = "doc:\(cleanID)"
+        
+        var changed = 0
+        if let filePath, !filePath.isEmpty {
+            let sql = "UPDATE documents SET group_name = ? WHERE id = ? OR id = ? OR id = ? OR file_path = ? OR id = ?;"
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, targetGroup, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 2, id, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 3, cleanID, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 4, prefixedID, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 5, filePath, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 6, filePath, -1, self.transientDestructor)
+                sqlite3_step(stmt)
+                changed = Int(sqlite3_changes(self.db))
+            }
+            sqlite3_finalize(stmt)
+        } else {
+            let sql = "UPDATE documents SET group_name = ? WHERE id = ? OR id = ? OR id = ?;"
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, targetGroup, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 2, id, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 3, cleanID, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 4, prefixedID, -1, self.transientDestructor)
+                sqlite3_step(stmt)
+                changed = Int(sqlite3_changes(self.db))
+            }
+            sqlite3_finalize(stmt)
+        }
+        
+        if changed == 0, !fallbackTitle.isEmpty {
+            self.saveDocument(
+                id: id,
+                title: fallbackTitle,
+                filePath: filePath,
+                syntax: fallbackSyntax,
+                content: fallbackContent,
+                groupName: targetGroup
+            )
+            return
+        }
+        
+        self.reloadDocuments()
+    }
+    
+    
+    private func loadStoredGroupList() -> [String] {
+        
+        let raw = self.string(forKey: ConfigKey.documentGroups)
+        guard
+            !raw.isEmpty,
+            let data = raw.data(using: .utf8),
+            let decoded = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return decoded
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "未分组" }
+    }
+    
+    
+    private func saveStoredGroupList(_ groups: [String]) {
+        
+        var seen = Set<String>()
+        let unique = groups
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "未分组" && seen.insert($0).inserted }
+        guard let data = try? JSONEncoder().encode(unique),
+              let json = String(data: data, encoding: .utf8)
+        else { return }
+        self.set(json, forKey: ConfigKey.documentGroups)
+    }
+    
+    
+    private func registerDocumentGroupIfNeeded(_ groupName: String) {
+        
+        var groups = self.loadStoredGroupList()
+        guard !groups.contains(groupName) else { return }
+        groups.append(groupName)
+        self.saveStoredGroupList(groups)
     }
     
     
@@ -707,6 +896,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             isEnhanced: false,
             reloadAfter: true
         )
+        self.reloadWeeklyReports()
         return self.weeklyReports.first(where: { $0.id == reportID }) ?? StoredWeeklyReport(
             id: reportID,
             periodLabel: periodLabel,
@@ -717,6 +907,162 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             isEnhanced: false,
             createdAt: Date(),
             updatedAt: Date()
+        )
+    }
+    
+    
+    /// Period metadata for any week offset relative to `referenceDate`.
+    static func weekPeriodInfo(
+        for referenceDate: Date = .now,
+        weekOffset: Int = 0
+    ) -> (periodLabel: String, yearMonth: String, displayRange: String) {
+        
+        let calendar = Calendar(identifier: .gregorian)
+        let targetDate = calendar.date(byAdding: .weekOfYear, value: weekOffset, to: referenceDate) ?? referenceDate
+        let weekday = calendar.component(.weekday, from: targetDate)  // 1 = Sun, 2 = Mon
+        let daysFromMonday = (weekday == 1) ? 6 : (weekday - 2)
+        let monday = calendar.date(byAdding: .day, value: -daysFromMonday, to: targetDate) ?? targetDate
+        let friday = calendar.date(byAdding: .day, value: 4, to: monday) ?? monday
+        
+        let startFmt = DateFormatter()
+        startFmt.dateFormat = "yyyyMMdd"
+        let endFmt = DateFormatter()
+        endFmt.dateFormat = "MMdd"
+        let ymFmt = DateFormatter()
+        ymFmt.dateFormat = "yyyyMM"
+        let dispFmt = DateFormatter()
+        dispFmt.dateFormat = "MM/dd"
+        
+        let periodLabel = "\(startFmt.string(from: monday))-\(endFmt.string(from: friday))"
+        let yearMonth = ymFmt.string(from: monday)
+        let displayRange = "\(dispFmt.string(from: monday)) - \(dispFmt.string(from: friday))"
+        return (periodLabel, yearMonth, displayRange)
+    }
+    
+    
+    /// Builds a clean Markdown weekly report skeleton matching the user's historical specification.
+    static func makeWeeklyReportTemplate(
+        author: String,
+        periodLabel: String,
+        fragments: String = ""
+    ) -> String {
+        
+        let cleanAuthor = author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "陈明扬" : author.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanFragments = fragments.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        let fragmentLines: String = if cleanFragments.isEmpty {
+            "1. \n2. "
+        } else {
+            cleanFragments
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+                .enumerated()
+                .map { idx, line in
+                    let stripped = line.replacingOccurrences(of: #"^\d+[\.\、]\s*"#, with: "", options: .regularExpression)
+                    return "\(idx + 1). \(stripped)"
+                }
+                .joined(separator: "\n")
+        }
+        
+        return """
+        # \(cleanAuthor)-周报-\(periodLabel)
+
+        本周主要干了以下几件事：
+
+        1. 
+        2. 
+
+        ## 重点事项一
+
+        进展：
+        \(fragmentLines)
+
+        卡点：
+        1. （无卡点可删除本段）
+
+        ## 下周计划
+
+        1. 
+        """
+    }
+    
+    
+    /// Creates a new weekly report for the target cycle (`weekOffset = 0` means the current week),
+    /// or returns the existing one if that cycle already has a report so existing edits are preserved.
+    @discardableResult
+    func createWeeklyReport(
+        referenceDate: Date = .now,
+        weekOffset: Int = 0,
+        includeSavedFragments: Bool = true
+    ) -> (report: StoredWeeklyReport, alreadyExisted: Bool) {
+        
+        let info = Self.weekPeriodInfo(for: referenceDate, weekOffset: weekOffset)
+        if let existing = self.weeklyReports.first(where: {
+            $0.periodLabel == info.periodLabel || $0.id == "\(info.yearMonth)/\(info.periodLabel)"
+        }) {
+            return (existing, true)
+        }
+        
+        let author = self.weeklyReportAuthor
+        let fragments = includeSavedFragments ? self.string(forKey: ConfigKey.weeklyReportFragments) : ""
+        let content = Self.makeWeeklyReportTemplate(
+            author: author,
+            periodLabel: info.periodLabel,
+            fragments: fragments
+        )
+        let reportID = "\(info.yearMonth)/\(info.periodLabel)"
+        let title = "\(author)-周报-\(info.periodLabel)"
+        
+        self.saveWeeklyReport(
+            id: reportID,
+            periodLabel: info.periodLabel,
+            yearMonth: info.yearMonth,
+            title: title,
+            content: content,
+            sourcePath: nil,
+            isEnhanced: false,
+            reloadAfter: true
+        )
+        
+        let resolved = self.weeklyReports.first(where: { $0.id == reportID }) ?? StoredWeeklyReport(
+            id: reportID,
+            periodLabel: info.periodLabel,
+            yearMonth: info.yearMonth,
+            title: title,
+            content: content,
+            sourcePath: nil,
+            isEnhanced: false,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+        return (resolved, false)
+    }
+    
+    
+    /// Renames a stored weekly report, updating period metadata cleanly if a `YYYYMMDD-MMDD` range is present.
+    func renameWeeklyReport(id: String, newTitle rawTitle: String) {
+        
+        let trimmed = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let existing = self.weeklyReports.first(where: { $0.id == id }) else { return }
+        
+        var updatedPeriod = existing.periodLabel
+        var updatedYearMonth = existing.yearMonth
+        if let range = trimmed.range(of: #"20\d{6}-\d{4}"#, options: .regularExpression) {
+            updatedPeriod = String(trimmed[range])
+            updatedYearMonth = String(updatedPeriod.prefix(6))
+        }
+        
+        self.saveWeeklyReport(
+            id: existing.id,
+            periodLabel: updatedPeriod,
+            yearMonth: updatedYearMonth,
+            title: trimmed,
+            content: existing.content,
+            sourcePath: existing.sourcePath,
+            isEnhanced: false,
+            createdAt: existing.createdAt,
+            reloadAfter: true
         )
     }
     
@@ -1042,6 +1388,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             syntax TEXT NOT NULL DEFAULT 'Plain Text',
             content TEXT NOT NULL,
             highlights_json TEXT NOT NULL DEFAULT '[]',
+            group_name TEXT NOT NULL DEFAULT '',
             updated_at REAL NOT NULL
         );
         CREATE TABLE IF NOT EXISTS configs (
@@ -1062,6 +1409,28 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         );
         """
         self.executeSQL(sql)
+        self.ensureDocumentsGroupColumnExists()
+    }
+    
+    
+    private func ensureDocumentsGroupColumnExists() {
+        
+        var stmt: OpaquePointer?
+        var hasGroupColumn = false
+        if sqlite3_prepare_v2(self.db, "PRAGMA table_info(documents);", -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let nameCStr = sqlite3_column_text(stmt, 1),
+                   String(cString: nameCStr) == "group_name"
+                {
+                    hasGroupColumn = true
+                    break
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        if !hasGroupColumn {
+            self.executeSQL("ALTER TABLE documents ADD COLUMN group_name TEXT NOT NULL DEFAULT '';")
+        }
     }
     
     
@@ -1204,7 +1573,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     private func reloadDocuments() {
         
         let sql = """
-        SELECT id, title, file_path, syntax, content, highlights_json, updated_at
+        SELECT id, title, file_path, syntax, content, highlights_json, updated_at, COALESCE(group_name, '')
         FROM documents
         ORDER BY updated_at DESC
         LIMIT 200;
@@ -1228,6 +1597,11 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
                     nil
                 }
                 let ts = sqlite3_column_double(stmt, 6)
+                let groupName: String = if let grpCStr = sqlite3_column_text(stmt, 7) {
+                    String(cString: grpCStr).trimmingCharacters(in: .whitespacesAndNewlines)
+                } else {
+                    ""
+                }
                 
                 items.append(StoredDocumentRecord(
                     id: String(cString: idCStr),
@@ -1236,12 +1610,21 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
                     syntax: String(cString: syntaxCStr),
                     content: String(cString: contentCStr),
                     highlightsJSON: String(cString: highlightsCStr),
-                    updatedAt: Date(timeIntervalSince1970: ts)
+                    updatedAt: Date(timeIntervalSince1970: ts),
+                    groupName: groupName
                 ))
             }
         }
         sqlite3_finalize(stmt)
         self.documents = items
+        
+        var mergedGroups = self.loadStoredGroupList()
+        for item in items where !item.groupName.isEmpty && item.groupName != "未分组" {
+            if !mergedGroups.contains(item.groupName) {
+                mergedGroups.append(item.groupName)
+            }
+        }
+        self.documentGroups = mergedGroups
     }
     
     

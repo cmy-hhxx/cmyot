@@ -152,6 +152,7 @@ import UniformTypeIdentifiers
         }
     }
     var isGeneratorActive: Bool = false
+    var collapsedMonths: Set<String> = []
     var groups: [YearMonthGroup] = []
     var flatReports: [StoredWeeklyReport] = []
     
@@ -239,6 +240,8 @@ struct WeeklyReportCenterView: View {
     @State private var db = CotLocalDatabase.shared
     @State private var isEditingSelected = false
     @State private var editingDraft = ""
+    @State private var isRenamingSelected = false
+    @State private var renameDraft = ""
     @State private var copiedFlag = false
     @State private var toastMessage: String?
     @State private var toastTask: Task<Void, Never>?
@@ -385,23 +388,84 @@ struct WeeklyReportCenterView: View {
                 
                 HStack(spacing: 6) {
                     Button {
-                        self.state.isGeneratorActive = true
-                        self.state.refreshOpenSources()
+                        self.createWeeklyReport(weekOffset: 0)
                     } label: {
-                        Label("写本周周报", systemImage: "sparkles")
+                        Label("新建周报", systemImage: "doc.badge.plus")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .pointerStyle(.link)
+                    .help("按标准格式新建当周工作周报（已存在则直接定位编辑）")
                     
-                    Button("导入…") {
+                    Menu {
+                        let thisWeek = CotLocalDatabase.weekPeriodInfo(weekOffset: 0)
+                        let lastWeek = CotLocalDatabase.weekPeriodInfo(weekOffset: -1)
+                        let nextWeek = CotLocalDatabase.weekPeriodInfo(weekOffset: 1)
+                        Button("本周（\(thisWeek.displayRange)）") {
+                            self.createWeeklyReport(weekOffset: 0)
+                        }
+                        Button("上周（\(lastWeek.displayRange)）") {
+                            self.createWeeklyReport(weekOffset: -1)
+                        }
+                        Button("下周（\(nextWeek.displayRange)）") {
+                            self.createWeeklyReport(weekOffset: 1)
+                        }
+                    } label: {
+                        Image(systemName: "calendar")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 24, height: 22)
+                    .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 5))
+                    .help("选择周期新建周报")
+                    
+                    Button {
+                        self.state.isGeneratorActive = true
+                        self.state.refreshOpenSources()
+                    } label: {
+                        Label("AI 生成", systemImage: "sparkles")
+                    }
+                    .controlSize(.small)
+                    .pointerStyle(.link)
+                    .help("使用 AI 汇总本周工作并生成周报")
+                    
+                    Button {
                         self.runImportPanel()
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
                     }
                     .controlSize(.small)
                     .pointerStyle(.link)
                     .help("从 .zip 压缩包、文件夹或 .md 文件导入历史周报")
                 }
+                
+                // VS Code Explorer section header bar
+                HStack(spacing: 6) {
+                    Text("周报资源管理器 · 按周期")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    
+                    Spacer()
+                    
+                    if !groups.isEmpty {
+                        let allCollapsed = groups.allSatisfy { self.state.collapsedMonths.contains($0.month) }
+                        Button {
+                            if allCollapsed {
+                                self.state.collapsedMonths.removeAll()
+                            } else {
+                                self.state.collapsedMonths = Set(groups.map(\.month))
+                            }
+                        } label: {
+                            Image(systemName: allCollapsed ? "rectangle.expand.vertical" : "rectangle.compress.vertical")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                        .help(allCollapsed ? "展开所有月份周期" : "折叠所有月份周期")
+                    }
+                }
+                .padding(.top, 2)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 12)
@@ -412,43 +476,83 @@ struct WeeklyReportCenterView: View {
             
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
+                    let currentWeekPeriod = CotLocalDatabase.weekPeriodInfo().periodLabel
                     ForEach(groups) { group in
-                        HStack(alignment: .center, spacing: 6) {
-                            Text(group.month)
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                            Text("\(group.reports.count)")
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.tertiary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(Color.primary.opacity(0.05), in: Capsule())
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.top, 10)
-                        .padding(.bottom, 4)
+                        let isExpanded = !self.state.collapsedMonths.contains(group.month) || !self.state.searchText.isEmpty
                         
-                        ForEach(group.reports) { report in
-                            WeeklyReportSidebarRow(
-                                report: report,
-                                isSelected: !self.state.isGeneratorActive && activeReport?.id == report.id,
-                                onSelect: {
-                                    self.isEditingSelected = false
-                                    self.state.isGeneratorActive = false
-                                    self.state.selectedReportID = report.id
-                                },
-                                onOpen: {
-                                    self.open(report: report)
-                                },
-                                onDelete: {
-                                    self.delete(report: report, in: flatReports)
-                                }
-                            )
+                        Button {
+                            if self.state.collapsedMonths.contains(group.month) {
+                                self.state.collapsedMonths.remove(group.month)
+                            } else {
+                                self.state.collapsedMonths.insert(group.month)
+                            }
+                        } label: {
+                            HStack(alignment: .center, spacing: 6) {
+                                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 9.5, weight: .bold))
+                                    .foregroundStyle(.tertiary)
+                                    .frame(width: 10)
+                                
+                                Image(systemName: isExpanded ? "folder.fill" : "folder")
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(Color.accentColor.opacity(0.85))
+                                
+                                Text(Self.formatYearMonthTitle(group.month))
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(.primary.opacity(0.88))
+                                
+                                Spacer(minLength: 4)
+                                
+                                Text("\(group.reports.count)")
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Color.primary.opacity(0.05), in: Capsule())
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 6))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                        .padding(.top, 4)
+                        
+                        if isExpanded {
+                            ForEach(group.reports) { report in
+                                WeeklyReportSidebarRow(
+                                    report: report,
+                                    isCurrentWeek: report.periodLabel == currentWeekPeriod,
+                                    dateRangeLabel: Self.readablePeriodRange(report.periodLabel),
+                                    isSelected: !self.state.isGeneratorActive && activeReport?.id == report.id,
+                                    onSelect: {
+                                        self.isEditingSelected = false
+                                        self.isRenamingSelected = false
+                                        self.state.isGeneratorActive = false
+                                        self.state.selectedReportID = report.id
+                                    },
+                                    onOpen: {
+                                        self.open(report: report)
+                                    },
+                                    onRename: {
+                                        self.state.isGeneratorActive = false
+                                        self.state.selectedReportID = report.id
+                                        self.renameDraft = report.title
+                                        self.isRenamingSelected = true
+                                    },
+                                    onDelete: {
+                                        self.delete(report: report, in: flatReports)
+                                    }
+                                )
+                                .padding(.leading, 14)
+                            }
                         }
                     }
                 }
                 .padding(.horizontal, 8)
-                .padding(.bottom, 10)
+                .padding(.vertical, 8)
             }
         }
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.45))
@@ -461,16 +565,50 @@ struct WeeklyReportCenterView: View {
         
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 10) {
-                Text(report.title)
-                    .font(.system(size: 15.5, weight: .semibold))
-                    .lineLimit(1)
-                
-                Text(report.periodLabel)
-                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2.5)
-                    .background(Color.primary.opacity(0.05), in: Capsule())
+                if self.isRenamingSelected {
+                    TextField("周报标题", text: self.$renameDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 260)
+                        .onSubmit {
+                            self.commitReportRename(report)
+                        }
+                    Button("确定") {
+                        self.commitReportRename(report)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .pointerStyle(.link)
+                    Button("取消") {
+                        self.isRenamingSelected = false
+                    }
+                    .controlSize(.small)
+                    .pointerStyle(.link)
+                } else {
+                    Text(report.title)
+                        .font(.system(size: 15.5, weight: .semibold))
+                        .lineLimit(1)
+                    
+                    Button {
+                        self.renameDraft = report.title
+                        self.isRenamingSelected = true
+                    } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22, height: 22)
+                            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help("重命名周报")
+                    
+                    Text(report.periodLabel)
+                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2.5)
+                        .background(Color.primary.opacity(0.05), in: Capsule())
+                }
                 
                 Spacer(minLength: 8)
                 
@@ -570,15 +708,25 @@ struct WeeklyReportCenterView: View {
             Text("还没有历史周报")
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
-            Text("点击左侧「导入…」即可导入周报压缩包 (.zip) 或 Markdown 文件夹。")
+            Text("点击左上角「新建周报」按标准格式创建本周周报，或点「导入」批量导入历史周报。")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
-            Button("导入历史周报 (.zip / 文件夹)…") {
-                self.runImportPanel()
+            HStack(spacing: 8) {
+                Button {
+                    self.createWeeklyReport(weekOffset: 0)
+                } label: {
+                    Label("新建本周周报", systemImage: "doc.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .pointerStyle(.link)
+                
+                Button("导入历史周报 (.zip / 文件夹)…") {
+                    self.runImportPanel()
+                }
+                .controlSize(.small)
+                .pointerStyle(.link)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .pointerStyle(.link)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))
@@ -768,6 +916,62 @@ struct WeeklyReportCenterView: View {
     
     // MARK: Actions
     
+    private func createWeeklyReport(weekOffset: Int) {
+        
+        let result = self.db.createWeeklyReport(weekOffset: weekOffset, includeSavedFragments: true)
+        self.state.collapsedMonths.remove(result.report.yearMonth)
+        self.state.searchText = ""
+        self.state.rebuildGroups()
+        self.state.isGeneratorActive = false
+        self.state.selectedReportID = result.report.id
+        self.isRenamingSelected = false
+        self.editingDraft = result.report.content
+        self.isEditingSelected = true
+        
+        if result.alreadyExisted {
+            self.showToast("本周报「\(result.report.periodLabel)」已存在，已定位到编辑视图")
+        } else {
+            self.showToast("已按格式新建周报「\(result.report.periodLabel)」")
+        }
+    }
+    
+    
+    private func commitReportRename(_ report: StoredWeeklyReport) {
+        
+        let trimmed = self.renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            self.isRenamingSelected = false
+            return
+        }
+        self.db.renameWeeklyReport(id: report.id, newTitle: trimmed)
+        self.state.rebuildGroups()
+        self.isRenamingSelected = false
+        self.showToast("已重命名为「\(trimmed)」")
+    }
+    
+    
+    private static func formatYearMonthTitle(_ yearMonth: String) -> String {
+        
+        guard yearMonth.count == 6,
+              let year = Int(yearMonth.prefix(4)),
+              let month = Int(yearMonth.suffix(2))
+        else { return yearMonth }
+        return "\(year)年\(month)月"
+    }
+    
+    
+    private static func readablePeriodRange(_ periodLabel: String) -> String? {
+        
+        let parts = periodLabel.split(separator: "-")
+        guard parts.count == 2, parts[0].count == 8, parts[1].count == 4 else { return nil }
+        let startM = parts[0].dropFirst(4).prefix(2)
+        let startD = parts[0].suffix(2)
+        let endM = parts[1].prefix(2)
+        let endD = parts[1].suffix(2)
+        return "\(startM)/\(startD) - \(endM)/\(endD)"
+    }
+    
+    
     private func open(report: StoredWeeklyReport) {
         
         if let onOpenReport = self.onOpenReport {
@@ -892,9 +1096,12 @@ struct WeeklyReportCenterView: View {
 private struct WeeklyReportSidebarRow: View {
     
     let report: StoredWeeklyReport
+    let isCurrentWeek: Bool
+    let dateRangeLabel: String?
     let isSelected: Bool
     var onSelect: () -> Void
     var onOpen: () -> Void
+    var onRename: () -> Void
     var onDelete: () -> Void
     
     @State private var isHovered = false
@@ -902,14 +1109,30 @@ private struct WeeklyReportSidebarRow: View {
     
     var body: some View {
         
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .center, spacing: 7) {
+            Image(systemName: self.isSelected ? "doc.text.fill" : "doc.text")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(self.isSelected ? Color.accentColor : .secondary)
+                .frame(width: 14)
+            
             VStack(alignment: .leading, spacing: 2) {
-                Text(self.report.periodLabel)
-                    .font(.system(size: 12, weight: self.isSelected ? .semibold : .medium, design: .monospaced))
-                    .foregroundStyle(self.isSelected ? Color.primary : Color.primary.opacity(0.9))
+                HStack(spacing: 5) {
+                    Text(self.report.periodLabel)
+                        .font(.system(size: 11.5, weight: self.isSelected ? .semibold : .medium, design: .monospaced))
+                        .foregroundStyle(self.isSelected ? Color.primary : Color.primary.opacity(0.9))
+                    
+                    if self.isCurrentWeek {
+                        Text("本周")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.14), in: Capsule())
+                    }
+                }
                 
-                Text(self.report.title)
-                    .font(.system(size: 11))
+                Text(self.dateRangeLabel.map { "\($0) · \(self.report.title)" } ?? self.report.title)
+                    .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -937,14 +1160,14 @@ private struct WeeklyReportSidebarRow: View {
             }
             .help("删除「\(self.report.periodLabel)」")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             self.isSelected
                 ? Color.accentColor.opacity(0.14)
                 : (self.isHovered ? Color.primary.opacity(0.05) : Color.clear),
-            in: RoundedRectangle(cornerRadius: 7)
+            in: RoundedRectangle(cornerRadius: 6)
         )
         .contentShape(Rectangle())
         .pointerStyle(.link)
@@ -961,6 +1184,7 @@ private struct WeeklyReportSidebarRow: View {
         }
         .contextMenu {
             Button("在编辑器打开") { self.onOpen() }
+            Button("重命名") { self.onRename() }
             Divider()
             Button("删除", role: .destructive) { self.onDelete() }
         }

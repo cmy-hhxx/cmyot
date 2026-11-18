@@ -131,14 +131,13 @@ struct StatusBar: View {
         .buttonStyle(.borderless)
         .controlSize(.small)
         .lineLimit(1)
-        .padding(.leading)
-        .padding(.trailing, (ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 27) ? 4 : 0)
+        .padding(.leading, 12)
+        .padding(.trailing, 14)
         .modifier { content in
             if #available(macOS 26, *) {
                 content
                     .frame(height: 18)
                     .padding(.vertical, 6)
-                    .containerCornerOffset(.horizontal, sizeToFit: true)
             } else {
                 content
                     .frame(height: 24)

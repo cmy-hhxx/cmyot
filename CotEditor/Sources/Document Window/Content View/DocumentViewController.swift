@@ -148,6 +148,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     private var reviewCompletion: ((Bool) -> Void)?
     private var didRestorePersistedPaneTabs = false
     private var isRestoringPersistedPaneTabs = false
+    private var proportionConstraintsBySplitView: [ObjectIdentifier: [NSLayoutConstraint]] = [:]
+    private var isApplyingSplitPaneSizes = false
     private static var didRestoreAppPaneTabsThisLaunch = false
     
     
@@ -257,6 +259,19 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                     guard let self, self.focusedChild !== $0 else { return }
                     self.focusedChild = $0
                     NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
+                },
+            
+            // release programmatic split-proportion constraints as soon as the user drags a divider manually
+            NotificationCenter.default.publisher(for: NSSplitView.willResizeSubviewsNotification)
+                .compactMap { $0.object as? NSSplitView }
+                .filter { [weak self] splitView in
+                    guard let self, self.viewIfLoaded?.window != nil else { return false }
+                    guard !self.isApplyingSplitPaneSizes else { return false }
+                    guard NSEvent.pressedMouseButtons != 0, !(self.view.window?.inLiveResize ?? false) else { return false }
+                    return splitView === self.splitView || splitView.isDescendant(of: self.view)
+                }
+                .sink { [weak self] splitView in
+                    self?.clearProportionConstraints(for: splitView)
                 },
             
             // persist divider proportions when the user drags a split divider
@@ -2034,31 +2049,35 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     private func rebalancePanes(in group: NSSplitViewController) {
         
         let items = group.splitViewItems
+        let splitView = group.splitView
         
         if items.count > 1 {
-            let splitView = group.splitView
-            let thickness = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
+            let isVertical = splitView.isVertical
+            let thickness = isVertical ? splitView.bounds.width : splitView.bounds.height
             let dividerThickness = splitView.dividerThickness
             
             var leadingInset: CGFloat = 0
             var trailingInset: CGFloat = 0
-            if !splitView.isVertical, group === self {
+            if !isVertical, group === self {
                 let insets = group.view.safeAreaInsets
                 leadingInset = max(0, insets.top)
                 trailingInset = max(0, insets.bottom)
             }
             
-            let available = thickness - dividerThickness * CGFloat(items.count - 1) - leadingInset - trailingInset
+            let totalDivider = dividerThickness * CGFloat(items.count - 1)
+            let available = thickness - totalDivider - leadingInset - trailingInset
             
-            if available > 0 {
-                let share = floor(available / CGFloat(items.count))
-                
-                for index in 0..<(items.count - 1) {
-                    let position = leadingInset + share * CGFloat(index + 1) + dividerThickness * CGFloat(index)
-                    splitView.setPosition(position, ofDividerAt: index)
-                }
-                splitView.layoutSubtreeIfNeeded()
+            if available > CGFloat(items.count) * 40 {
+                let equalWeights = Array(repeating: CGFloat(1), count: items.count)
+                self.applySplitPaneSizes(
+                    weights: equalWeights,
+                    leadingInset: leadingInset,
+                    trailingInset: trailingInset,
+                    in: group
+                )
             }
+        } else {
+            self.clearProportionConstraints(for: splitView)
         }
         
         // let the containers take their new size before touching their dividers
@@ -2069,6 +2088,82 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 self.rebalancePanes(in: nested)
             }
         }
+    }
+    
+    
+    private func clearProportionConstraints(for splitView: NSSplitView) {
+        
+        let key = ObjectIdentifier(splitView)
+        guard let existing = self.proportionConstraintsBySplitView.removeValue(forKey: key), !existing.isEmpty else { return }
+        NSLayoutConstraint.deactivate(existing)
+    }
+    
+    
+    /// Enforces exact proportional thicknesses across every pane in `group` so macOS 26's
+    /// `NSSplitView.FallbackSize` cannot override divider positions while keeping window resize smooth
+    /// and releasing automatically when the user drags a divider manually.
+    private func applySplitPaneSizes(
+        weights: [CGFloat],
+        leadingInset: CGFloat = 0,
+        trailingInset: CGFloat = 0,
+        in group: NSSplitViewController
+    ) {
+        let items = group.splitViewItems
+        guard items.count > 1, weights.count == items.count else { return }
+        
+        let splitView = group.splitView
+        let isVertical = splitView.isVertical
+        let thickness = isVertical ? splitView.bounds.width : splitView.bounds.height
+        let dividerThickness = splitView.dividerThickness
+        let available = thickness - dividerThickness * CGFloat(items.count - 1) - leadingInset - trailingInset
+        guard available > CGFloat(items.count) * 20 else { return }
+        
+        let weightSum = max(0.001, weights.reduce(0, +))
+        let baseWeight = max(0.001, weights[0])
+        
+        func paneInset(at index: Int) -> CGFloat {
+            if index == 0 { return leadingInset }
+            if index == items.count - 1 { return trailingInset }
+            return 0
+        }
+        
+        let targetSizes: [CGFloat] = (0..<items.count).map { index in
+            available * (weights[index] / weightSum) + paneInset(at: index)
+        }
+        
+        self.clearProportionConstraints(for: splitView)
+        
+        // Priority 251 sits right above NSSplitView.FallbackSize (249/250) so programmatic splits
+        // divide cleanly, while remaining below required window constraints and detaching on user drag.
+        let basePaneView = items[0].viewController.view
+        let baseAnchor = isVertical ? basePaneView.widthAnchor : basePaneView.heightAnchor
+        let baseInset = paneInset(at: 0)
+        var newConstraints: [NSLayoutConstraint] = []
+        
+        for index in 1..<items.count {
+            let paneView = items[index].viewController.view
+            let anchor = isVertical ? paneView.widthAnchor : paneView.heightAnchor
+            let ratio = weights[index] / baseWeight
+            let insetOffset = paneInset(at: index) - ratio * baseInset
+            let constraint = anchor.constraint(equalTo: baseAnchor, multiplier: ratio, constant: insetOffset)
+            constraint.priority = NSLayoutConstraint.Priority(251)
+            newConstraints.append(constraint)
+        }
+        
+        self.proportionConstraintsBySplitView[ObjectIdentifier(splitView)] = newConstraints
+        self.isApplyingSplitPaneSizes = true
+        defer { self.isApplyingSplitPaneSizes = false }
+        
+        NSLayoutConstraint.activate(newConstraints)
+        splitView.layoutSubtreeIfNeeded()
+        
+        var cumulative: CGFloat = 0
+        for index in 0..<(items.count - 1) {
+            cumulative += targetSizes[index]
+            let position = cumulative + dividerThickness * CGFloat(index)
+            splitView.setPosition(position, ofDividerAt: index)
+        }
+        splitView.layoutSubtreeIfNeeded()
     }
     
     
@@ -2398,7 +2493,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         let splitViewItem = NSSplitViewItem(viewController: viewController)
         splitViewItem.minimumThickness = 80
-        splitViewItem.holdingPriority = .defaultLow
+        // Keep holdingPriority below 250 (PreferredSize's priority on macOS 26) so `setPosition(_:ofDividerAt:)`
+        // always takes precedence over AppKit's stale `FallbackSize` constraint.
+        splitViewItem.holdingPriority = NSLayoutConstraint.Priority(249)
         
         return splitViewItem
     }
@@ -3117,20 +3214,21 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         let items = group.splitViewItems
         guard items.count > 1, items.count == children.count, weights.count == items.count else { return }
         
-        let splitView = group.splitView
-        let thickness = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
-        let dividerThickness = splitView.dividerThickness
-        let available = thickness - dividerThickness * CGFloat(items.count - 1)
-        
-        if available > 10 {
-            let weightSum = max(0.001, weights.reduce(0, +))
-            var cumulative: CGFloat = 0
-            for index in 0..<(items.count - 1) {
-                let share = available * CGFloat(weights[index] / weightSum)
-                cumulative += share
-                let position = cumulative + dividerThickness * CGFloat(index)
-                splitView.setPosition(position, ofDividerAt: index)
+        if !weights.isEmpty {
+            let splitView = group.splitView
+            var leadingInset: CGFloat = 0
+            var trailingInset: CGFloat = 0
+            if !splitView.isVertical, group === self {
+                let insets = group.view.safeAreaInsets
+                leadingInset = max(0, insets.top)
+                trailingInset = max(0, insets.bottom)
             }
+            self.applySplitPaneSizes(
+                weights: weights.map { CGFloat($0) },
+                leadingInset: leadingInset,
+                trailingInset: trailingInset,
+                in: group
+            )
         }
         
         group.view.layoutSubtreeIfNeeded()

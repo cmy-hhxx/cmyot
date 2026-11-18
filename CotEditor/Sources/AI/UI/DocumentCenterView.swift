@@ -114,6 +114,7 @@ struct CenterPreviewTextView: NSViewRepresentable {
         let isOpenNow: Bool
         let isDirty: Bool
         let characterCount: Int
+        let groupName: String
         let storedRecord: StoredDocumentRecord?
         
         static func == (lhs: Self, rhs: Self) -> Bool {
@@ -122,12 +123,22 @@ struct CenterPreviewTextView: NSViewRepresentable {
                 && lhs.isOpenNow == rhs.isOpenNow
                 && lhs.isDirty == rhs.isDirty
                 && lhs.characterCount == rhs.characterCount
+                && lhs.groupName == rhs.groupName
                 && lhs.updatedAt == rhs.updatedAt
         }
     }
     
+    struct DocumentGroupSection: Identifiable {
+        let name: String
+        let items: [ManagedDocumentItem]
+        let isUngrouped: Bool
+        var id: String { self.isUngrouped ? "__ungrouped__" : "group:\(self.name)" }
+    }
+    
     var items: [ManagedDocumentItem] = []
     var displayedItems: [ManagedDocumentItem] = []
+    var groupSections: [DocumentGroupSection] = []
+    var collapsedGroups: Set<String> = []
     var selectedID: String?
     var searchText: String = "" {
         didSet {
@@ -183,6 +194,7 @@ struct CenterPreviewTextView: NSViewRepresentable {
             )
             let fallbackID = filePath ?? (doc.databaseDocumentID.hasPrefix("doc:") ? doc.databaseDocumentID : "doc:\(doc.databaseDocumentID)")
             let preview = Self.buildPreviewText(from: content)
+            let groupName = dbMatch?.groupName ?? ""
             
             merged.append(ManagedDocumentItem(
                 id: key,
@@ -197,6 +209,7 @@ struct CenterPreviewTextView: NSViewRepresentable {
                 isOpenNow: true,
                 isDirty: dirty,
                 characterCount: content.count,
+                groupName: groupName,
                 storedRecord: dbMatch ?? StoredDocumentRecord(
                     id: fallbackID,
                     title: doc.displayName,
@@ -204,7 +217,8 @@ struct CenterPreviewTextView: NSViewRepresentable {
                     syntax: doc.syntaxName,
                     content: content,
                     highlightsJSON: "[]",
-                    updatedAt: modifiedDate
+                    updatedAt: modifiedDate,
+                    groupName: groupName
                 )
             ))
         }
@@ -227,6 +241,7 @@ struct CenterPreviewTextView: NSViewRepresentable {
                 isOpenNow: false,
                 isDirty: false,
                 characterCount: record.content.count,
+                groupName: record.groupName,
                 storedRecord: record
             ))
         }
@@ -245,6 +260,7 @@ struct CenterPreviewTextView: NSViewRepresentable {
         } else {
             self.items.filter { item in
                 item.title.localizedCaseInsensitiveContains(query)
+                    || item.groupName.localizedCaseInsensitiveContains(query)
                     || (item.filePath?.localizedCaseInsensitiveContains(query) ?? false)
                     || item.content.prefix(2_000).localizedCaseInsensitiveContains(query)
             }
@@ -257,6 +273,31 @@ struct CenterPreviewTextView: NSViewRepresentable {
             return lhs.updatedAt > rhs.updatedAt
         }
         self.displayedItems = sorted
+        
+        var groupedBuckets: [String: [ManagedDocumentItem]] = [:]
+        var ungrouped: [ManagedDocumentItem] = []
+        for item in sorted {
+            if item.groupName.isEmpty {
+                ungrouped.append(item)
+            } else {
+                groupedBuckets[item.groupName, default: []].append(item)
+            }
+        }
+        
+        var sections: [DocumentGroupSection] = []
+        for groupName in CotLocalDatabase.shared.documentGroups {
+            let bucket = groupedBuckets.removeValue(forKey: groupName) ?? []
+            if query.isEmpty || !bucket.isEmpty {
+                sections.append(DocumentGroupSection(name: groupName, items: bucket, isUngrouped: false))
+            }
+        }
+        for leftoverName in groupedBuckets.keys.sorted() {
+            sections.append(DocumentGroupSection(name: leftoverName, items: groupedBuckets[leftoverName] ?? [], isUngrouped: false))
+        }
+        if !ungrouped.isEmpty || sections.isEmpty {
+            sections.append(DocumentGroupSection(name: "未分组", items: ungrouped, isUngrouped: true))
+        }
+        self.groupSections = sections
         
         if let selectedID, sorted.contains(where: { $0.id == selectedID }) {
             return
@@ -323,6 +364,11 @@ struct DocumentCenterView: View {
     @State private var db = CotLocalDatabase.shared
     @State private var isRenaming = false
     @State private var renameDraft = ""
+    @State private var isCreatingGroup = false
+    @State private var newGroupDraft = ""
+    @State private var pendingAssignAfterGroupCreate: DocumentCenterState.ManagedDocumentItem?
+    @State private var renamingGroupName: String?
+    @State private var groupRenameDraft = ""
     @State private var copiedFlag = false
     @State private var toastMessage: String?
     @State private var toastTask: Task<Void, Never>?
@@ -372,6 +418,9 @@ struct DocumentCenterView: View {
             self.state.refresh()
         }
         .onChange(of: self.db.documents.count) { _, _ in
+            self.state.refresh()
+        }
+        .onChange(of: self.db.documentGroups) { _, _ in
             self.state.refresh()
         }
     }
@@ -473,6 +522,17 @@ struct DocumentCenterView: View {
                     .pointerStyle(.link)
                     .help("一键将列表中的所有文档作为标签页在当前窗口打开")
                     
+                    Button {
+                        self.pendingAssignAfterGroupCreate = nil
+                        self.newGroupDraft = ""
+                        self.isCreatingGroup.toggle()
+                    } label: {
+                        Image(systemName: "folder.badge.plus")
+                    }
+                    .controlSize(.small)
+                    .pointerStyle(.link)
+                    .help("新建文档分组")
+                    
                     if let onCreateNewDocument = self.onCreateNewDocument {
                         Button {
                             onCreateNewDocument()
@@ -484,6 +544,30 @@ struct DocumentCenterView: View {
                         .help("新建空白文档")
                     }
                 }
+                
+                if self.isCreatingGroup {
+                    HStack(spacing: 6) {
+                        TextField("新分组名称…", text: self.$newGroupDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12))
+                            .onSubmit {
+                                self.commitCreateGroup()
+                            }
+                        Button("创建") {
+                            self.commitCreateGroup()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.mini)
+                        .pointerStyle(.link)
+                        Button("取消") {
+                            self.isCreatingGroup = false
+                            self.pendingAssignAfterGroupCreate = nil
+                        }
+                        .controlSize(.mini)
+                        .pointerStyle(.link)
+                    }
+                    .padding(.top, 2)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 12)
@@ -493,23 +577,88 @@ struct DocumentCenterView: View {
                 .frame(height: 1)
             
             ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(items) { item in
-                        DocumentSidebarRow(
-                            item: item,
-                            isSelected: activeItem?.id == item.id,
-                            statusColor: self.statusColor(for: item),
-                            onSelect: {
-                                self.isRenaming = false
-                                self.state.selectedID = item.id
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(self.state.groupSections) { section in
+                        let isExpanded = !self.state.collapsedGroups.contains(section.id) || !self.state.searchText.isEmpty
+                        
+                        DocumentGroupHeaderRow(
+                            section: section,
+                            isExpanded: isExpanded,
+                            isRenaming: self.renamingGroupName == section.name && !section.isUngrouped,
+                            renameDraft: self.$groupRenameDraft,
+                            onToggleExpand: {
+                                if self.state.collapsedGroups.contains(section.id) {
+                                    self.state.collapsedGroups.remove(section.id)
+                                } else {
+                                    self.state.collapsedGroups.insert(section.id)
+                                }
                             },
-                            onOpen: {
-                                self.open(item: item)
+                            onBeginRename: {
+                                self.groupRenameDraft = section.name
+                                self.renamingGroupName = section.name
                             },
-                            onDelete: {
-                                self.delete(item: item, in: items)
+                            onCommitRename: {
+                                self.commitGroupRename(oldName: section.name)
+                            },
+                            onCancelRename: {
+                                self.renamingGroupName = nil
+                            },
+                            onOpenAllInGroup: {
+                                self.openAll(items: section.items)
+                            },
+                            onDeleteGroup: {
+                                self.db.deleteDocumentGroup(named: section.name)
+                                self.state.refresh()
+                                self.showToast("已解散分组「\(section.name)」，文档已移至未分组")
+                            },
+                            onDropItemID: { droppedID in
+                                guard let dropped = self.state.items.first(where: { $0.id == droppedID }) else { return }
+                                self.move(item: dropped, toGroup: section.isUngrouped ? "" : section.name)
                             }
                         )
+                        
+                        if isExpanded {
+                            if section.items.isEmpty {
+                                Text("暂无文档，右键文档可移入此分组")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.leading, 26)
+                                    .padding(.vertical, 6)
+                            } else {
+                                ForEach(section.items) { item in
+                                    DocumentSidebarRow(
+                                        item: item,
+                                        isSelected: activeItem?.id == item.id,
+                                        statusColor: self.statusColor(for: item),
+                                        availableGroups: self.db.documentGroups,
+                                        onSelect: {
+                                            self.isRenaming = false
+                                            self.state.selectedID = item.id
+                                        },
+                                        onOpen: {
+                                            self.open(item: item)
+                                        },
+                                        onRename: {
+                                            self.state.selectedID = item.id
+                                            self.renameDraft = item.title
+                                            self.isRenaming = true
+                                        },
+                                        onMoveToGroup: { groupName in
+                                            self.move(item: item, toGroup: groupName)
+                                        },
+                                        onCreateGroupAndMove: {
+                                            self.pendingAssignAfterGroupCreate = item
+                                            self.newGroupDraft = ""
+                                            self.isCreatingGroup = true
+                                        },
+                                        onDelete: {
+                                            self.delete(item: item, in: items)
+                                        }
+                                    )
+                                    .padding(.leading, 12)
+                                }
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 8)
@@ -577,6 +726,53 @@ struct DocumentCenterView: View {
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
                         .background(Color.primary.opacity(0.045), in: Capsule())
+                    
+                    Menu {
+                        ForEach(self.db.documentGroups, id: \.self) { groupName in
+                            Button {
+                                self.move(item: item, toGroup: groupName)
+                            } label: {
+                                if item.groupName == groupName {
+                                    Label(groupName, systemImage: "checkmark")
+                                } else {
+                                    Text(groupName)
+                                }
+                            }
+                        }
+                        if !self.db.documentGroups.isEmpty {
+                            Divider()
+                        }
+                        Button {
+                            self.move(item: item, toGroup: "")
+                        } label: {
+                            if item.groupName.isEmpty {
+                                Label("未分组", systemImage: "checkmark")
+                            } else {
+                                Text("移至未分组")
+                            }
+                        }
+                        Divider()
+                        Button("新建分组并移入…") {
+                            self.pendingAssignAfterGroupCreate = item
+                            self.newGroupDraft = ""
+                            self.isCreatingGroup = true
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: item.groupName.isEmpty ? "tray" : "folder.fill")
+                                .font(.system(size: 10))
+                            Text(item.groupName.isEmpty ? "未分组" : item.groupName)
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundStyle(item.groupName.isEmpty ? .secondary : Color.accentColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.primary.opacity(0.045), in: Capsule())
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .pointerStyle(.link)
+                    .help("设置文档所属分组")
                 }
                 
                 Spacer(minLength: 8)
@@ -701,6 +897,54 @@ struct DocumentCenterView: View {
     }
     
     
+    private func commitCreateGroup() {
+        
+        guard let created = self.db.createDocumentGroup(named: self.newGroupDraft) else {
+            self.isCreatingGroup = false
+            return
+        }
+        self.isCreatingGroup = false
+        self.newGroupDraft = ""
+        if let pending = self.pendingAssignAfterGroupCreate {
+            self.pendingAssignAfterGroupCreate = nil
+            self.move(item: pending, toGroup: created)
+        } else {
+            self.state.refresh()
+            self.showToast("已新建分组「\(created)」")
+        }
+    }
+    
+    
+    private func commitGroupRename(oldName: String) {
+        
+        let trimmed = self.groupRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.renamingGroupName = nil
+        guard !trimmed.isEmpty, trimmed != oldName else { return }
+        if self.db.renameDocumentGroup(from: oldName, to: trimmed) {
+            self.state.refresh()
+            self.showToast("分组已重命名为「\(trimmed)」")
+        } else {
+            self.showToast("分组名称已存在或无效")
+        }
+    }
+    
+    
+    private func move(item: DocumentCenterState.ManagedDocumentItem, toGroup groupName: String) {
+        
+        let recordID = item.dbRecordID ?? item.id
+        self.db.assignDocumentGroup(
+            id: recordID,
+            filePath: item.filePath,
+            groupName: groupName,
+            fallbackTitle: item.title,
+            fallbackSyntax: item.syntax,
+            fallbackContent: item.content
+        )
+        self.state.refresh()
+        self.showToast(groupName.isEmpty ? "已移至「未分组」" : "已移动到分组「\(groupName)」")
+    }
+    
+    
     private func commitRename(for item: DocumentCenterState.ManagedDocumentItem) {
         
         let trimmed = self.renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -719,6 +963,22 @@ struct DocumentCenterView: View {
         } else if let recordID = item.dbRecordID, item.filePath == nil {
             self.db.renameDocument(oldID: recordID, newID: recordID, newTitle: trimmed, newFilePath: nil)
             self.showToast("已重命名为「\(trimmed)」")
+        } else if let filePath = item.filePath {
+            let oldURL = URL(filePath: filePath)
+            let ext = oldURL.pathExtension
+            let cleanName = (ext.isEmpty || (trimmed as NSString).pathExtension == ext) ? trimmed : "\(trimmed).\(ext)"
+            let newURL = oldURL.deletingLastPathComponent().appending(path: cleanName)
+            do {
+                if oldURL != newURL {
+                    try FileManager.default.moveItem(at: oldURL, to: newURL)
+                }
+                if let recordID = item.dbRecordID {
+                    self.db.renameDocument(oldID: recordID, newID: newURL.path(percentEncoded: false), newTitle: cleanName, newFilePath: newURL.path(percentEncoded: false))
+                }
+                self.showToast("已重命名为「\(cleanName)」")
+            } catch {
+                self.showToast("重命名失败：\(error.localizedDescription)")
+            }
         }
         self.isRenaming = false
         self.state.refresh()
@@ -742,13 +1002,141 @@ struct DocumentCenterView: View {
 }
 
 
+private struct DocumentGroupHeaderRow: View {
+    
+    let section: DocumentCenterState.DocumentGroupSection
+    let isExpanded: Bool
+    let isRenaming: Bool
+    @Binding var renameDraft: String
+    var onToggleExpand: () -> Void
+    var onBeginRename: () -> Void
+    var onCommitRename: () -> Void
+    var onCancelRename: () -> Void
+    var onOpenAllInGroup: () -> Void
+    var onDeleteGroup: () -> Void
+    var onDropItemID: (String) -> Void
+    
+    @State private var isHovered = false
+    @State private var isDropTargeted = false
+    
+    var body: some View {
+        
+        HStack(spacing: 6) {
+            if self.isRenaming {
+                TextField("分组名称", text: self.$renameDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11.5))
+                    .onSubmit {
+                        self.onCommitRename()
+                    }
+                Button("确定") {
+                    self.onCommitRename()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+                Button("取消") {
+                    self.onCancelRename()
+                }
+                .controlSize(.mini)
+            } else {
+                Button {
+                    self.onToggleExpand()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: self.isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 10)
+                        
+                        Image(systemName: self.section.isUngrouped ? "tray" : (self.isExpanded ? "folder.fill" : "folder"))
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(self.section.isUngrouped ? Color.secondary : Color.accentColor.opacity(0.88))
+                        
+                        Text(self.section.name)
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(.primary.opacity(0.88))
+                            .lineLimit(1)
+                        
+                        Spacer(minLength: 4)
+                        
+                        Text("\(self.section.items.count)")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.primary.opacity(0.05), in: Capsule())
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                
+                if !self.section.isUngrouped && self.isHovered {
+                    Button {
+                        self.onBeginRename()
+                    } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help("重命名分组")
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            (self.isDropTargeted ? Color.accentColor.opacity(0.18) : Color.primary.opacity(self.isHovered ? 0.045 : 0.025)),
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(self.isDropTargeted ? Color.accentColor : Color.clear, lineWidth: 1)
+        )
+        .padding(.top, 4)
+        .onHover { hovering in
+            self.isHovered = hovering
+        }
+        .dropDestination(for: String.self) { items, _ in
+            guard let firstID = items.first else { return false }
+            self.onDropItemID(firstID)
+            return true
+        } isTargeted: { targeted in
+            self.isDropTargeted = targeted
+        }
+        .contextMenu {
+            if !self.section.items.isEmpty {
+                Button("打开该分组全部文档 (\(self.section.items.count))") {
+                    self.onOpenAllInGroup()
+                }
+            }
+            if !self.section.isUngrouped {
+                Button("重命名分组") {
+                    self.onBeginRename()
+                }
+                Divider()
+                Button("解散分组（保留文档）", role: .destructive) {
+                    self.onDeleteGroup()
+                }
+            }
+        }
+    }
+}
+
+
 private struct DocumentSidebarRow: View {
     
     let item: DocumentCenterState.ManagedDocumentItem
     let isSelected: Bool
     let statusColor: Color
+    let availableGroups: [String]
     var onSelect: () -> Void
     var onOpen: () -> Void
+    var onRename: () -> Void
+    var onMoveToGroup: (String) -> Void
+    var onCreateGroupAndMove: () -> Void
     var onDelete: () -> Void
     
     @State private var isHovered = false
@@ -790,16 +1178,17 @@ private struct DocumentSidebarRow: View {
             .help("删除「\(self.item.title)」")
         }
         .padding(.horizontal, 10)
-        .frame(height: 32)
+        .frame(height: 30)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             self.isSelected
                 ? Color.accentColor.opacity(0.14)
                 : (self.isHovered ? Color.primary.opacity(0.05) : Color.clear),
-            in: RoundedRectangle(cornerRadius: 7)
+            in: RoundedRectangle(cornerRadius: 6)
         )
         .contentShape(Rectangle())
         .pointerStyle(.link)
+        .draggable(self.item.id)
         .onHover { hovering in
             self.isHovered = hovering
         }
@@ -813,6 +1202,30 @@ private struct DocumentSidebarRow: View {
         }
         .contextMenu {
             Button("在当前窗口打开") { self.onOpen() }
+            Button("重命名") { self.onRename() }
+            Menu("移动到分组") {
+                ForEach(self.availableGroups, id: \.self) { groupName in
+                    Button {
+                        self.onMoveToGroup(groupName)
+                    } label: {
+                        if self.item.groupName == groupName {
+                            Label(groupName, systemImage: "checkmark")
+                        } else {
+                            Text(groupName)
+                        }
+                    }
+                }
+                if !self.availableGroups.isEmpty {
+                    Divider()
+                }
+                Button("未分组") {
+                    self.onMoveToGroup("")
+                }
+                Divider()
+                Button("新建分组并移入…") {
+                    self.onCreateGroupAndMove()
+                }
+            }
             Divider()
             Button("删除", role: .destructive) { self.onDelete() }
         }
