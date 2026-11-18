@@ -21,10 +21,11 @@
 
 import Foundation
 
-/// High-confidence, non-intrusive inline completion predictor tailored to the user's typing habits.
+/// High-confidence, single-best-candidate inline completion predictor tailored to the user's typing habits
+/// and live document context.
 ///
-/// Only emits short next-word / next-phrase candidates when confidence is high (`>= 65%` across
-/// repeated user patterns or exact workflow triggers), staying completely silent otherwise.
+/// Never presents a popup menu or multiple candidates — always selects at most one highest-probability
+/// continuation when confidence is strong, staying completely silent otherwise.
 @MainActor final class UserHabitPredictor {
     
     static let shared = UserHabitPredictor()
@@ -34,7 +35,7 @@ import Foundation
         let candidate: String
     }
     
-    /// Built-in high-confidence workflow habits (short, natural next-phrase completions).
+    /// Built-in high-confidence workflow & writing habits (short, natural next-phrase completions).
     private static let builtInHabits: [HabitRule] = [
         HabitRule(
             triggers: [
@@ -46,6 +47,8 @@ import Foundation
                 "搞定以后",
                 "这些搞定了以后",
                 "全部搞定了以后",
+                "快点搞定",
+                "全部搞定",
             ],
             candidate: "进行一次commit"
         ),
@@ -64,18 +67,23 @@ import Foundation
             triggers: [
                 "进行一次commit，然后",
                 "进行一次commit,然后",
+                "进行一次commit",
                 "commit后",
                 "commit以后",
                 "commit之后",
+                "提交代码",
+                "完成commit",
             ],
             candidate: "推送到远程仓库"
         ),
         HabitRule(
             triggers: [
-                "提交代码",
-                "完成commit",
+                "推送到远程仓库，然后",
+                "推送到远程仓库,然后",
+                "推送到远程仓库",
+                "推送到远程",
             ],
-            candidate: "推送到远程仓库"
+            candidate: "本地重新编译一下"
         ),
         HabitRule(
             triggers: [
@@ -84,11 +92,27 @@ import Foundation
             ],
             candidate: "干了以下几件事："
         ),
+        HabitRule(
+            triggers: [
+                "下周计划",
+                "下周主要",
+            ],
+            candidate: "推进以下工作："
+        ),
+        HabitRule(
+            triggers: [
+                "存在的问题",
+                "风险与问题",
+                "当前风险",
+            ],
+            candidate: "及解决方案："
+        ),
     ]
     
     private struct PersistedHabitModel: Codable {
         let transitions: [String: [String: Int]]
         let compoundTransitions: [String: [String: Int]]
+        let prefixFrequencies: [String: Int]?
     }
     
     /// Single-step transition frequency table: `contextSuffix -> [nextTokenOrClause: count]`.
@@ -96,6 +120,9 @@ import Foundation
     
     /// Two-token cohesive next-phrase frequency table: `contextSuffix -> [nextTwoTokens: count]`.
     private(set) var compoundTransitions: [String: [String: Int]] = [:]
+    
+    /// Personal vocabulary / phrase frequency table learned from user documents and accepted completions.
+    private(set) var vocabularyFrequencies: [String: Int] = [:]
     
     private var persistenceKey: String?
     private var saveTask: Task<Void, Never>?
@@ -124,19 +151,23 @@ import Foundation
         for record in CotLocalDatabase.shared.documents.prefix(40) {
             self.learn(from: record.content, persist: false)
         }
+        for report in CotLocalDatabase.shared.weeklyReports.prefix(20) {
+            self.learn(from: report.content, persist: false)
+        }
         self.scheduleSave()
     }
     
     
-    /// Predicts a high-confidence short next phrase for the current caret location, or `nil` when uncertain.
-    func predictNextPhrase(in text: String, caretLocation: Int) -> String? {
+    /// Predicts the single highest-probability short continuation for the current caret location,
+    /// or `nil` when confidence is below threshold.
+    func predictNextPhrase(in text: String, caretLocation: Int, syntaxWords: [String] = []) -> String? {
         
         self.warmUpFromDatabaseIfNeeded()
         
         let nsText = text as NSString
         guard caretLocation > 0, caretLocation <= nsText.length else { return nil }
         
-        // Do not suggest inline ghost text inside the middle of an existing word.
+        // Do not suggest inline ghost text inside the middle of an existing word or identifier.
         if caretLocation < nsText.length {
             let nextChar = nsText.character(at: caretLocation)
             if !self.isBoundaryCharacter(nextChar) {
@@ -149,19 +180,33 @@ import Foundation
         guard prefixLength >= 2 else { return nil }
         
         let rawLinePrefix = nsText.substring(with: NSRange(location: lineRange.location, length: prefixLength))
-        let window = String(rawLinePrefix.suffix(48))
+        let window = String(rawLinePrefix.suffix(56))
         
         // 1. Exact or partial match against high-confidence built-in workflow habits
         if let builtInMatch = self.matchBuiltInHabits(linePrefix: window) {
             return builtInMatch
         }
         
-        // 2. Learned personal habit transitions (strictly high-confidence & short)
-        return self.matchLearnedTransition(linePrefix: window)
+        // 2. Learned personal habit transitions (n-gram & compound phrase transitions)
+        if let learnedMatch = self.matchLearnedTransition(linePrefix: window) {
+            return learnedMatch
+        }
+        
+        // 3. Live in-document contextual n-gram / repeated phrase continuation
+        if let docContextMatch = self.matchLiveDocumentContext(in: nsText, caretLocation: caretLocation, linePrefix: window) {
+            return docContextMatch
+        }
+        
+        // 4. Single best identifier / vocabulary prefix completion (replaces popup completion list)
+        if let wordCompletion = self.matchBestWordPrefix(in: nsText, caretLocation: caretLocation, linePrefix: window, syntaxWords: syntaxWords) {
+            return wordCompletion
+        }
+        
+        return nil
     }
     
     
-    /// Learns repeated short phrase transitions from user text (saved or actively edited).
+    /// Learns repeated short phrase transitions and vocabulary from user text (saved or actively edited).
     func learn(from text: String, persist: Bool = true) {
         
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -181,9 +226,12 @@ import Foundation
                 guard clause.count >= 4 else { continue }
                 
                 let tokens = self.tokenizeClause(clause)
+                for token in tokens where token.count >= 4 && token.count <= 24 {
+                    self.recordVocabulary(token, weight: 1)
+                }
                 guard tokens.count >= 2 else { continue }
                 
-                // Record bigram transitions between adjacent meaningful chunks
+                // Record bigram & trigram transitions between adjacent meaningful chunks
                 for i in 0..<(tokens.count - 1) {
                     let next = tokens[i + 1]
                     guard next.count >= 2, next.count <= 14 else { continue }
@@ -194,13 +242,13 @@ import Foundation
                     }
                     if i >= 1 {
                         let twoTokenKey = tokens[i - 1] + tokens[i]
-                        if twoTokenKey.count >= 2, twoTokenKey.count <= 10 {
+                        if twoTokenKey.count >= 2, twoTokenKey.count <= 12 {
                             contextKeys.append(twoTokenKey)
                         }
                     }
                     if i >= 2 {
                         let threeTokenKey = tokens[i - 2] + tokens[i - 1] + tokens[i]
-                        if threeTokenKey.count >= 3, threeTokenKey.count <= 10 {
+                        if threeTokenKey.count >= 3, threeTokenKey.count <= 12 {
                             contextKeys.append(threeTokenKey)
                         }
                     }
@@ -240,14 +288,29 @@ import Foundation
     }
     
     
-    /// Learns an explicitly accepted or completed phrase transition right around the caret.
+    /// Learns an explicitly accepted or completed phrase transition right around the caret with boosted weight.
     func recordAcceptedCompletion(prefixContext: String, acceptedPhrase: String) {
         
         let key = self.normalizedContextSuffix(prefixContext)
         let candidate = acceptedPhrase.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard key.count >= 2, candidate.count >= 2, candidate.count <= 14 else { return }
+        guard candidate.count >= 1, candidate.count <= 24 else { return }
         
-        self.recordTransition(from: key, to: candidate, in: \.compoundTransitions, weight: 2)
+        if key.count >= 2, candidate.count >= 2, candidate.count <= 14 {
+            self.recordTransition(from: key, to: candidate, in: \.compoundTransitions, weight: 3)
+            let tokens = self.tokenizeClause(key)
+            if let lastToken = tokens.last, lastToken.count >= 2 {
+                self.recordTransition(from: lastToken, to: candidate, in: \.transitions, weight: 2)
+            }
+        }
+        
+        // If user completed the tail of an identifier/word, boost the full word in vocabulary
+        if let partial = self.trailingIdentifierPrefix(in: prefixContext) {
+            let fullWord = partial + candidate
+            if fullWord.count >= 4, fullWord.count <= 28 {
+                self.recordVocabulary(fullWord, weight: 4)
+            }
+        }
+        
         self.scheduleSave()
     }
     
@@ -257,13 +320,14 @@ import Foundation
         
         self.transitions.removeAll()
         self.compoundTransitions.removeAll()
+        self.vocabularyFrequencies.removeAll()
         if let persistenceKey {
             CotLocalDatabase.shared.removeConfig(forKey: persistenceKey)
         }
     }
     
     
-    // MARK: Private Helpers
+    // MARK: Private Prediction Engines
     
     private func matchBuiltInHabits(linePrefix: String) -> String? {
         
@@ -334,6 +398,176 @@ import Foundation
     }
     
     
+    /// Scans the nearby document window (`±8000` chars) for repeated contextual continuations
+    /// following the exact phrase or CJK/word suffix the user just typed.
+    private func matchLiveDocumentContext(in nsText: NSString, caretLocation: Int, linePrefix: String) -> String? {
+        
+        let cleanPrefix = self.trimTrailingClausePunctuation(linePrefix)
+        guard cleanPrefix.count >= 3 else { return nil }
+        
+        // Try matching a 4-to-8 char suffix in the preceding document text
+        let anchorLen = min(6, cleanPrefix.count)
+        let anchor = String(cleanPrefix.suffix(anchorLen))
+        guard anchor.count >= 3 else { return nil }
+        
+        let windowStart = max(0, caretLocation - 8_000)
+        let precedingLength = max(0, caretLocation - anchor.count - windowStart)
+        guard precedingLength >= anchor.count else { return nil }
+        
+        let searchSpace = nsText.substring(with: NSRange(location: windowStart, length: precedingLength)) as NSString
+        var searchRange = NSRange(location: 0, length: searchSpace.length)
+        var continuations: [String: Int] = [:]
+        var lastSeenRank: [String: Int] = [:]
+        var occurrence = 0
+        
+        while searchRange.length >= anchor.count {
+            let found = searchSpace.range(of: anchor, options: [], range: searchRange)
+            if found.location == NSNotFound { break }
+            
+            let afterIdx = NSMaxRange(found)
+            let maxTake = min(14, searchSpace.length - afterIdx)
+            if maxTake >= 2 {
+                let rawFollow = searchSpace.substring(with: NSRange(location: afterIdx, length: maxTake))
+                if let cleanCont = self.extractCleanContinuation(from: rawFollow),
+                   cleanCont.count >= 2, cleanCont.count <= 12
+                {
+                    occurrence += 1
+                    continuations[cleanCont, default: 0] += 1
+                    lastSeenRank[cleanCont] = occurrence
+                }
+            }
+            
+            let nextStart = found.location + max(1, found.length)
+            searchRange = NSRange(location: nextStart, length: searchSpace.length - nextStart)
+        }
+        
+        guard !continuations.isEmpty else { return nil }
+        let total = continuations.values.reduce(0, +)
+        guard let best = continuations.max(by: { lhs, rhs in
+            if lhs.value != rhs.value { return lhs.value < rhs.value }
+            return (lastSeenRank[lhs.key] ?? 0) < (lastSeenRank[rhs.key] ?? 0)
+        }) else { return nil }
+        
+        // Require at least 2 occurrences in document with >= 65% consistency
+        let confidence = Double(best.value) / Double(max(1, total))
+        guard best.value >= 2, confidence >= 0.65 else { return nil }
+        return best.key
+    }
+    
+    
+    /// Single highest-probability identifier/word completion when the user is typing an ASCII/code token (`>= 3` chars).
+    private func matchBestWordPrefix(
+        in nsText: NSString,
+        caretLocation: Int,
+        linePrefix: String,
+        syntaxWords: [String]
+    ) -> String? {
+        
+        guard let partial = self.trailingIdentifierPrefix(in: linePrefix),
+              partial.count >= 3, partial.count <= 20
+        else { return nil }
+        
+        let lowerPartial = partial.lowercased()
+        var scores: [String: Double] = [:]
+        
+        // 1. Scan nearby document identifiers (recency + frequency weighted)
+        let scanStart = max(0, caretLocation - 12_000)
+        let scanEnd = min(nsText.length, caretLocation + 4_000)
+        let docSlice = nsText.substring(with: NSRange(location: scanStart, length: scanEnd - scanStart))
+        let caretInSlice = caretLocation - scanStart
+        
+        let nsSlice = docSlice as NSString
+        let pattern = "[A-Za-z_][A-Za-z0-9_]{3,28}"
+        if let regex = try? NSRegularExpression(pattern: pattern) {
+            let matches = regex.matches(in: docSlice, range: NSRange(location: 0, length: nsSlice.length))
+            for match in matches {
+                // Skip the token currently being typed at the caret
+                if match.range.location <= caretInSlice && NSMaxRange(match.range) >= caretInSlice {
+                    continue
+                }
+                let word = nsSlice.substring(with: match.range)
+                guard word.count > partial.count else { continue }
+                
+                if word.hasPrefix(partial) {
+                    let distance = abs(match.range.location - caretInSlice)
+                    let recencyBoost = distance < 600 ? 3.2 : (distance < 2500 ? 2.0 : 1.2)
+                    scores[word, default: 0] += recencyBoost
+                } else if word.lowercased().hasPrefix(lowerPartial) {
+                    scores[word, default: 0] += 0.9
+                }
+            }
+        }
+        
+        // 2. Personal learned vocabulary
+        for (vocabWord, freq) in self.vocabularyFrequencies where vocabWord.count > partial.count {
+            if vocabWord.hasPrefix(partial) {
+                scores[vocabWord, default: 0] += min(6.0, Double(freq) * 1.1)
+            }
+        }
+        
+        // 3. Syntax completion keywords (only exact case-prefix match)
+        for kw in syntaxWords where kw.count > partial.count && kw.count <= 24 {
+            if kw.hasPrefix(partial) {
+                scores[kw, default: 0] += 2.2
+            }
+        }
+        
+        guard !scores.isEmpty else { return nil }
+        let totalScore = scores.values.reduce(0, +)
+        guard let best = scores.max(by: { lhs, rhs in
+            if abs(lhs.value - rhs.value) > 0.01 { return lhs.value < rhs.value }
+            return lhs.key.count > rhs.key.count  // prefer more concise completion on ties
+        }) else { return nil }
+        
+        // Require clear winner score so we never guess randomly
+        let share = best.value / max(1.0, totalScore)
+        guard best.value >= 2.2, (share >= 0.45 || best.value >= 5.0) else { return nil }
+        
+        let remainder = String(best.key.dropFirst(partial.count))
+        return remainder.isEmpty ? nil : remainder
+    }
+    
+    
+    // MARK: Private Helpers
+    
+    private func extractCleanContinuation(from rawFollow: String) -> String? {
+        
+        var trimmed = rawFollow
+        while let first = trimmed.unicodeScalars.first,
+              CharacterSet(charactersIn: " ，,：:、").contains(first)
+        {
+            trimmed.removeFirst()
+        }
+        let stopSet = CharacterSet.newlines.union(CharacterSet(charactersIn: "。！？；!?;，,：:（）()[]\"'"))
+        if let stopRange = trimmed.rangeOfCharacter(from: stopSet) {
+            trimmed = String(trimmed[..<stopRange.lowerBound])
+        }
+        trimmed = trimmed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+    
+    
+    private func trailingIdentifierPrefix(in text: String) -> String? {
+        
+        var scalars: [UnicodeScalar] = []
+        for scalar in text.unicodeScalars.reversed() {
+            let isIdent = (scalar.value >= 65 && scalar.value <= 90)
+                || (scalar.value >= 97 && scalar.value <= 122)
+                || (scalar.value >= 48 && scalar.value <= 57)
+                || scalar.value == 95
+            if isIdent {
+                scalars.append(scalar)
+            } else {
+                break
+            }
+        }
+        guard !scalars.isEmpty else { return nil }
+        let ordered = scalars.reversed()
+        guard let first = ordered.first, !(first.value >= 48 && first.value <= 57) else { return nil }
+        return String(String.UnicodeScalarView(ordered))
+    }
+    
+    
     private func highConfidenceCandidate(for key: String) -> String? {
         
         if let compound = self.topConfidentEntry(in: self.compoundTransitions[key]) {
@@ -355,7 +589,7 @@ import Foundation
         }) else { return nil }
         
         let confidence = Double(best.value) / Double(total)
-        guard best.value >= 2, confidence >= 0.65, best.key.count <= 14 else { return nil }
+        guard best.value >= 2, confidence >= 0.62, best.key.count <= 14 else { return nil }
         return best.key
     }
     
@@ -364,6 +598,12 @@ import Foundation
         
         var keys: [String] = []
         let tokens = self.tokenizeClause(cleanPrefix)
+        if tokens.count >= 2 {
+            let lastTwo = tokens[tokens.count - 2] + tokens[tokens.count - 1]
+            if lastTwo.count >= 2, lastTwo.count <= 12 {
+                keys.append(lastTwo)
+            }
+        }
         if let lastToken = tokens.last, lastToken.count >= 2 {
             keys.append(lastToken)
         }
@@ -406,6 +646,16 @@ import Foundation
         
         let trimmed = self.trimTrailingClausePunctuation(string)
         return String(trimmed.suffix(10))
+    }
+    
+    
+    private func recordVocabulary(_ word: String, weight: Int) {
+        
+        self.vocabularyFrequencies[word, default: 0] += weight
+        if self.vocabularyFrequencies.count > 800 {
+            let kept = self.vocabularyFrequencies.sorted { $0.value > $1.value }.prefix(600)
+            self.vocabularyFrequencies = Dictionary(uniqueKeysWithValues: kept.map { ($0.key, $0.value) })
+        }
     }
     
     
@@ -453,6 +703,7 @@ import Foundation
         if let model = try? JSONDecoder().decode(PersistedHabitModel.self, from: data) {
             self.transitions = model.transitions
             self.compoundTransitions = model.compoundTransitions
+            self.vocabularyFrequencies = model.prefixFrequencies ?? [:]
         } else if let decoded = try? JSONDecoder().decode([String: [String: Int]].self, from: data) {
             self.transitions = decoded
         }
@@ -468,7 +719,8 @@ import Foundation
             guard let self, !Task.isCancelled else { return }
             let model = PersistedHabitModel(
                 transitions: self.transitions,
-                compoundTransitions: self.compoundTransitions
+                compoundTransitions: self.compoundTransitions,
+                prefixFrequencies: self.vocabularyFrequencies
             )
             if let data = try? JSONEncoder().encode(model),
                let json = String(data: data, encoding: .utf8)

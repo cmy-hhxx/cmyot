@@ -82,10 +82,10 @@ struct PaneTabStripView: NSViewRepresentable {
     private var dragStartScreenPoint: NSPoint?
     private var dropInsertionIndex: Int?
     
-    private static let tabHeight: CGFloat = 20
-    private static let tabSpacing: CGFloat = 3
-    private static let minTabWidth: CGFloat = 68
-    private static let maxTabWidth: CGFloat = 188
+    private static let tabHeight: CGFloat = 24
+    private static let tabSpacing: CGFloat = 4
+    private static let minTabWidth: CGFloat = 80
+    private static let maxTabWidth: CGFloat = 200
     
     
     override init(frame frameRect: NSRect) {
@@ -124,8 +124,12 @@ struct PaneTabStripView: NSViewRepresentable {
         self.newTabButton.bezelStyle = .inline
         self.newTabButton.isBordered = false
         self.newTabButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab")?
-            .withSymbolConfiguration(.init(pointSize: 10.5, weight: .medium))
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))
+        self.newTabButton.imagePosition = .imageOnly
         self.newTabButton.contentTintColor = .secondaryLabelColor
+        self.newTabButton.wantsLayer = true
+        self.newTabButton.layer?.cornerRadius = 6
+        self.newTabButton.layer?.cornerCurve = .continuous
         self.newTabButton.target = self
         self.newTabButton.action = #selector(addNewTab(_:))
         self.newTabButton.toolTip = String(localized: "chrome.tab.newTabHelp", defaultValue: "New Tab", table: "Chrome")
@@ -196,7 +200,7 @@ struct PaneTabStripView: NSViewRepresentable {
         
         guard let state = self.state else { return }
         
-        var cursorX: CGFloat = 2
+        var cursorX: CGFloat = 0
         var newFrames: [UUID: NSRect] = [:]
         
         for tab in state.tabs {
@@ -208,8 +212,8 @@ struct PaneTabStripView: NSViewRepresentable {
         }
         
         self.tabFrames = newFrames
-        self.newTabButton.frame = NSRect(x: cursorX + 1, y: 1, width: 20, height: Self.tabHeight - 2)
-        let totalWidth = max(self.scrollView.bounds.width, cursorX + 26)
+        self.newTabButton.frame = NSRect(x: cursorX, y: 1, width: 22, height: Self.tabHeight - 2)
+        let totalWidth = max(self.scrollView.bounds.width, cursorX + 28)
         self.documentContainer.frame = NSRect(x: 0, y: 0, width: totalWidth, height: Self.tabHeight)
         
         let applyFrames = {
@@ -660,19 +664,22 @@ private final class TabStripContainerView: NSView {
     private func setupViews() {
         
         self.wantsLayer = true
-        self.layer?.cornerRadius = 4
+        self.layer?.cornerRadius = 6
+        self.layer?.cornerCurve = .continuous
         
         self.pinButton.bezelStyle = .inline
         self.pinButton.isBordered = false
         self.pinButton.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: "Pinned")?
-            .withSymbolConfiguration(.init(pointSize: 8.5, weight: .semibold))
+            .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+        self.pinButton.imagePosition = .imageOnly
         self.pinButton.contentTintColor = .controlAccentColor
         self.pinButton.target = self
         self.pinButton.action = #selector(pinClicked(_:))
         self.pinButton.toolTip = String(localized: "chrome.tab.pinnedHelp", defaultValue: "Pinned; click to unpin", table: "Chrome")
         self.addSubview(self.pinButton)
         
-        self.titleLabel.font = .systemFont(ofSize: 11)
+        self.titleLabel.font = .systemFont(ofSize: 12)
+        self.titleLabel.cell?.truncatesLastVisibleLine = true
         self.titleLabel.lineBreakMode = .byTruncatingMiddle
         self.titleLabel.maximumNumberOfLines = 1
         self.titleLabel.isEditable = false
@@ -680,15 +687,18 @@ private final class TabStripContainerView: NSView {
         self.addSubview(self.titleLabel)
         
         self.editedDot.wantsLayer = true
-        self.editedDot.layer?.cornerRadius = 2.5
+        self.editedDot.layer?.cornerRadius = 3
         self.editedDot.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.75).cgColor
         self.addSubview(self.editedDot)
         
         self.closeButton.bezelStyle = .inline
         self.closeButton.isBordered = false
         self.closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")?
-            .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
+            .withSymbolConfiguration(.init(pointSize: 9, weight: .bold))
+        self.closeButton.imagePosition = .imageOnly
         self.closeButton.contentTintColor = .secondaryLabelColor
+        self.closeButton.wantsLayer = true
+        self.closeButton.layer?.cornerRadius = 4
         self.closeButton.target = self
         self.closeButton.action = #selector(closeClicked(_:))
         self.closeButton.toolTip = String(localized: "chrome.tab.close", defaultValue: "Close Tab", table: "Chrome")
@@ -704,6 +714,7 @@ private final class TabStripContainerView: NSView {
         
         self.titleLabel.stringValue = tab.title
         self.titleLabel.textColor = isSelected ? .labelColor : .secondaryLabelColor
+        self.titleLabel.font = .systemFont(ofSize: 12, weight: isSelected ? .medium : .regular)
         let baseTip = tab.document.fileURL?.path(percentEncoded: false) ?? tab.title
         self.toolTip = tab.isEdited ? "\(baseTip) · 未保存 (按 ⌘S 保存)" : "\(baseTip) · 已保存"
         
@@ -711,7 +722,7 @@ private final class TabStripContainerView: NSView {
         self.editedDot.isHidden = isRenaming
         self.editedDot.layer?.backgroundColor = tab.isEdited
             ? NSColor.systemOrange.cgColor
-            : NSColor.systemGreen.withAlphaComponent(0.75).cgColor
+            : NSColor.systemGreen.withAlphaComponent(0.6).cgColor
         self.editedDot.toolTip = tab.isEdited ? "未保存（按 ⌘S 保存）" : "已保存 (⌘S)"
         self.closeButton.isHidden = tab.isPinned || !tab.isClosable || isRenaming
         self.titleLabel.isHidden = isRenaming
@@ -726,10 +737,10 @@ private final class TabStripContainerView: NSView {
         if self.isRenaming {
             return max(136, min(maxWidth, 188))
         }
-        let titleSize = (self.titleLabel.stringValue as NSString).size(withAttributes: [.font: self.titleLabel.font ?? .systemFont(ofSize: 11)])
-        var extra: CGFloat = 20  // horizontal padding + persistent save status dot
-        if self.tab?.isPinned == true { extra += 14 }
-        if self.tab?.isPinned == false && self.tab?.isClosable == true { extra += 16 }
+        let titleSize = (self.titleLabel.stringValue as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)])
+        var extra: CGFloat = 8 + 8 + 6 + 6  // leading/trailing padding + persistent save status dot + gap
+        if self.tab?.isPinned == true { extra += 16 }
+        if self.tab?.isPinned == false && self.tab?.isClosable == true { extra += 18 }
         return min(maxWidth, max(minWidth, ceil(titleSize.width) + extra))
     }
     
@@ -738,31 +749,36 @@ private final class TabStripContainerView: NSView {
         
         super.layout()
         
-        var x: CGFloat = 5
+        var x: CGFloat = 8
         let h = self.bounds.height
         
         if !self.pinButton.isHidden {
-            self.pinButton.frame = NSRect(x: x, y: (h - 12) / 2, width: 12, height: 12)
+            self.pinButton.frame = NSRect(x: x - 2, y: ((h - 14) / 2).rounded(), width: 14, height: 14)
             x += 14
         }
         
         var trailingX = self.bounds.width - 4
         if !self.closeButton.isHidden {
-            trailingX -= 14
-            self.closeButton.frame = NSRect(x: trailingX, y: (h - 14) / 2, width: 14, height: 14)
+            trailingX -= 16
+            self.closeButton.frame = NSRect(x: trailingX, y: ((h - 16) / 2).rounded(), width: 16, height: 16)
             trailingX -= 2
+        } else {
+            trailingX -= 4
         }
         
         if !self.editedDot.isHidden {
-            trailingX -= 7
-            self.editedDot.frame = NSRect(x: trailingX, y: (h - 5) / 2, width: 5, height: 5)
-            trailingX -= 3
+            trailingX -= 6
+            self.editedDot.frame = NSRect(x: trailingX, y: ((h - 6) / 2).rounded(), width: 6, height: 6)
+            trailingX -= 6
         }
         
+        // vertically center the label by its natural line height (pixel aligned)
         let titleWidth = max(20, trailingX - x)
-        let titleFrame = NSRect(x: x, y: 2, width: titleWidth, height: h - 4)
+        let lineHeight = ceil(self.titleLabel.intrinsicContentSize.height)
+        let titleFrame = NSRect(x: x, y: ((h - lineHeight) / 2).rounded(), width: titleWidth, height: lineHeight)
         self.titleLabel.frame = titleFrame
-        self.inlineTextField?.frame = NSRect(x: max(2, x - 2), y: 0, width: max(84, self.bounds.width - x), height: h)
+        let fieldHeight = min(h - 2, lineHeight + 4)
+        self.inlineTextField?.frame = NSRect(x: max(2, x - 4), y: ((h - fieldHeight) / 2).rounded(), width: max(84, self.bounds.width - x), height: fieldHeight)
     }
     
     
@@ -846,7 +862,7 @@ private final class TabStripContainerView: NSView {
         self.inlineTextField?.removeFromSuperview()
         
         let field = NSTextField(string: initialTitle)
-        field.font = .systemFont(ofSize: 11)
+        field.font = .systemFont(ofSize: 12)
         field.isEditable = true
         field.isSelectable = true
         field.usesSingleLineMode = true
@@ -860,8 +876,8 @@ private final class TabStripContainerView: NSView {
         field.drawsBackground = true
         field.backgroundColor = .textBackgroundColor
         field.wantsLayer = true
-        field.layer?.cornerRadius = 3
-        field.layer?.borderWidth = 1.2
+        field.layer?.cornerRadius = 4
+        field.layer?.borderWidth = 1.5
         field.layer?.borderColor = NSColor.controlAccentColor.cgColor
         field.focusRingType = .none
         field.delegate = delegate
@@ -892,7 +908,7 @@ private final class TabStripContainerView: NSView {
         let size = NSSize(width: max(60, self.bounds.width), height: self.bounds.height)
         let image = NSImage(size: size, flipped: true) { rect in
             NSColor.windowBackgroundColor.withAlphaComponent(0.92).setFill()
-            let path = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5)
+            let path = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
             path.fill()
             NSColor.controlAccentColor.withAlphaComponent(0.75).setStroke()
             path.lineWidth = 1
@@ -900,10 +916,11 @@ private final class TabStripContainerView: NSView {
             
             let title = (self.tab?.title ?? "") as NSString
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .font: NSFont.systemFont(ofSize: 12, weight: .medium),
                 .foregroundColor: NSColor.labelColor,
             ]
-            let textRect = NSRect(x: 8, y: 2, width: rect.width - 16, height: rect.height - 4)
+            let lineHeight = ceil(NSFont.systemFont(ofSize: 12, weight: .medium).boundingRectForFont.height)
+            let textRect = NSRect(x: 8, y: ((rect.height - lineHeight) / 2).rounded(), width: rect.width - 16, height: lineHeight)
             title.draw(with: textRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attrs)
             return true
         }
@@ -913,13 +930,20 @@ private final class TabStripContainerView: NSView {
     
     private func updateBackground() {
         
-        if self.isSelected {
-            self.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.11).cgColor
-        } else if self.isHovered {
-            self.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.05).cgColor
-        } else {
-            self.layer?.backgroundColor = NSColor.clear.cgColor
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            if self.isSelected {
+                self.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.09).cgColor
+                self.layer?.borderColor = NSColor.separatorColor.cgColor
+                self.layer?.borderWidth = 1 / max(self.window?.backingScaleFactor ?? 2, 1)
+            } else if self.isHovered {
+                self.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.05).cgColor
+                self.layer?.borderWidth = 0
+            } else {
+                self.layer?.backgroundColor = NSColor.clear.cgColor
+                self.layer?.borderWidth = 0
+            }
         }
+        self.titleLabel.textColor = (self.isSelected || self.isHovered) ? .labelColor : .secondaryLabelColor
     }
     
     

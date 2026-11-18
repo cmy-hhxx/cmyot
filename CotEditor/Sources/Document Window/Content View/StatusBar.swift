@@ -60,22 +60,25 @@ struct StatusBar: View {
     
     var body: some View {
         
-        HStack {
+        HStack(alignment: .center, spacing: 8) {
             // Vim mode indicator, or the `:` command line while it is being typed.
             if let commandLine = self.vim.commandLine {
                 Text(commandLine)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(.primary)
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.14)))
+                    .frame(height: 17)
+                    .background(RoundedRectangle(cornerRadius: 4.5, style: .continuous).fill(Color.accentColor.opacity(0.14)))
             } else {
                 Text(self.vim.mode.label)
-                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .kerning(0.4)
                     .foregroundStyle(self.vimModeColor)
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(self.vimModeColor.opacity(0.14)))
+                    .frame(minWidth: 52, minHeight: 17, maxHeight: 17)
+                    .background(RoundedRectangle(cornerRadius: 4.5, style: .continuous).fill(self.vimModeColor.opacity(0.14)))
+                    .overlay(RoundedRectangle(cornerRadius: 4.5, style: .continuous).strokeBorder(self.vimModeColor.opacity(0.24), lineWidth: 0.5))
+                    .fixedSize()
             }
             
             if let document = self.model.document as? Document {
@@ -133,15 +136,20 @@ struct StatusBar: View {
         .modifier { content in
             if #available(macOS 26, *) {
                 content
-                    .frame(height: 16)
-                    .padding(.vertical, 8)
+                    .frame(height: 18)
+                    .padding(.vertical, 6)
                     .containerCornerOffset(.horizontal, sizeToFit: true)
             } else {
                 content
-                    .frame(height: 23)
+                    .frame(height: 24)
             }
         }
         .background(.windowBackground)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor).opacity(0.65))
+                .frame(height: 1 / max(NSScreen.main?.backingScaleFactor ?? 2, 1))
+        }
     }
     
     
@@ -245,23 +253,28 @@ private struct DocumentSaveStatusBadge: View {
         Button {
             self.document.performQuickSave(nil)
         } label: {
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(self.isDirty ? Color.orange : Color.green)
-                    .frame(width: 5.5, height: 5.5)
+            HStack(alignment: .center, spacing: 4) {
+                Image(systemName: self.isDirty ? "circle.fill" : "checkmark.circle.fill")
+                    .font(.system(size: self.isDirty ? 6 : 10, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: 10, height: 10)
+                    .foregroundStyle(self.isDirty ? Color.orange : Color.green)
                 Text(self.isDirty ? "未保存 · ⌘S" : "已保存")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(self.isDirty ? Color.orange : Color.secondary)
+                    .font(.system(size: 11, weight: .medium))
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
+            .foregroundStyle(self.isDirty ? Color.orange : Color.secondary)
+            .padding(.horizontal, 7)
+            .frame(height: 17)
             .background(
                 Capsule()
-                    .fill(self.isDirty ? Color.orange.opacity(0.14) : Color.green.opacity(self.justSavedPulse ? 0.22 : 0.10))
+                    .fill(self.isDirty ? Color.orange.opacity(0.14) : Color.green.opacity(self.justSavedPulse ? 0.22 : 0.08))
             )
-            .scaleEffect(self.justSavedPulse ? 1.06 : 1.0)
+            .contentShape(Capsule())
+            .scaleEffect(self.justSavedPulse ? 1.04 : 1.0)
+            .fixedSize()
         }
         .buttonStyle(.plain)
+        .pointerStyle(.link)
         .help(self.isDirty ? "当前文档有未保存修改，按 ⌘S 或点击保存" : "文档已保存 (⌘S)")
         .onAppear {
             self.syncDirtyState()

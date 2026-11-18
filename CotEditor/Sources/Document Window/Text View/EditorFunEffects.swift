@@ -22,20 +22,23 @@
 import AppKit
 import QuartzCore
 
-/// Minimalist, refined typing effect presets.
+/// Ready-made typing effect presets inspired by `activate-power-mode` / `vscode-power-mode`,
+/// balanced for crisp, tactile typing feedback without visual clutter.
 enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     
-    case luxeGlow
-    case silkRipple
-    case stardust
+    case powerMode = "powerMode"
+    case fireworks = "fireworks"
+    case magicStars = "magicStars"
+    case neonPop = "neonPop"
     
     var id: String { self.rawValue }
     
     var displayName: String {
         switch self {
-            case .luxeGlow: "微光粒子 (Luxe Glow)"
-            case .silkRipple: "静谧波纹 (Silk Ripple)"
-            case .stardust: "轻盈星尘 (Fine Stardust)"
+            case .powerMode: "律动粒子 + 连击 (Power Mode)"
+            case .fireworks: "灵动花火 (Fireworks)"
+            case .magicStars: "微芒星尘 (Magic Sparkles)"
+            case .neonPop: "极简波纹 (Neon Pop)"
         }
     }
     
@@ -45,35 +48,42 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             return exact
         }
         return switch raw {
-            case "neonPop": .silkRipple
-            case "magicStars": .stardust
-            default: .luxeGlow
+            case "luxeGlow": .powerMode
+            case "silkRipple": .neonPop
+            case "stardust": .magicStars
+            default: .powerMode
         }
     }
     
     @MainActor static var current: TypingEffectPreset {
         let raw = UserDefaults.standard.string(forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
-            ?? CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle, default: "luxeGlow")
+            ?? CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle, default: "powerMode")
         return Self.resolve(raw)
     }
 }
 
 
-/// Built-in CoreAnimation visual effects for refined typing feedback,
-/// inline habit ghost-completion micro-animations, and Neovide-inspired jelly Vim cursor motion.
+/// Built-in CoreAnimation visual effects for tactile typing feedback,
+/// inline habit ghost-completion micro-animations, and zero-flicker elastic Vim cursor motion.
 @MainActor final class EditorFunEffectsController {
     
     // MARK: Public State
     
-    /// `true` while the jelly Vim cursor layer is actively gliding to its destination.
-    private(set) var isVimCursorInFlight = false
+    /// Kept for API compatibility; always `false` because the static cursor draws normally
+    /// while the GPU-accelerated cursor overlay glides cleanly without full-viewport redraws.
+    var isVimCursorInFlight: Bool { false }
     
     
     // MARK: Private Properties
     
     private weak var textView: EditorTextView?
     
-    // Pooled GPU-composited typing effect layers
+    // Tactile typing combo streak state
+    private var lastKeystrokeTime: CFTimeInterval = 0
+    private var comboCount: Int = 0
+    private var comboResetTask: Task<Void, Never>?
+    
+    // Pre-allocated GPU-composited particle & ripple pools
     private weak var hostedLayer: CALayer?
     private var typewriterRootLayer: CALayer?
     private var caretPulseLayer: CALayer?
@@ -82,21 +92,25 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private var particlePool: [CALayer] = []
     private var particlePoolIndex = 0
     
+    // Subtle Combo HUD (anchored in the scroll view viewport, never scrolls with text)
+    private weak var hostedScrollLayer: CALayer?
+    private var comboHudContainer: CALayer?
+    private var comboHudBadgeLayer: CALayer?
+    private var comboHudBarTrackLayer: CALayer?
+    private var comboHudBarFillLayer: CALayer?
+    
     // Inline ghost completion layers & acceptance sweep
     private var ghostRootLayer: CALayer?
     private var ghostContainerLayer: CALayer?
     private var ghostSweepLayer: CALayer?
     
-    // Jelly Vim cursor animation state
+    // Zero-flicker GPU-composited Vim cursor glide & elastic trail layers
     private var vimRootLayer: CALayer?
-    private var jellyCursorLayer: CAShapeLayer?
+    private var cursorOverlayLayer: CALayer?
+    private var trailLayer: CAShapeLayer?
     private var lastCursorRect: NSRect?
     private var lastTargetRect: NSRect?
     private var lastTriggerTime: CFTimeInterval = 0
-    private var activeFlightStartTime: CFTimeInterval = 0
-    private var activeFlightDuration: CFTimeInterval = 0
-    private var activeFlightFromRect: NSRect = .zero
-    private var activeFlightToRect: NSRect = .zero
     private var hideOverlayTask: Task<Void, Never>?
     
     
@@ -113,22 +127,22 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         self.hideOverlayTask?.cancel()
         self.hideOverlayTask = nil
-        self.isVimCursorInFlight = false
         self.lastCursorRect = nil
         self.lastTargetRect = nil
         self.hideGhostSuggestion(animated: false)
+        self.hideComboHud(animated: false)
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        self.jellyCursorLayer?.removeAllAnimations()
-        self.jellyCursorLayer?.opacity = 0
+        self.cursorOverlayLayer?.removeAllAnimations()
+        self.cursorOverlayLayer?.opacity = 0
+        self.trailLayer?.removeAllAnimations()
+        self.trailLayer?.opacity = 0
         CATransaction.commit()
-        
-        self.textView?.needsDisplay = true
     }
     
     
-    /// Triggers the selected minimalist typing feedback at `rect`.
+    /// Triggers tactile, balanced typing visual feedback at `rect`.
     func triggerTypewriterBurst(at rect: NSRect, color: NSColor? = nil, intensityScale: CGFloat = 1.0) {
         
         let isEnabled = UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled) == nil
@@ -140,49 +154,103 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         self.ensureTypewriterLayers(in: hostLayer)
         
+        let now = CACurrentMediaTime()
+        if now - self.lastKeystrokeTime < 1.6 {
+            self.comboCount += 1
+        } else {
+            self.comboCount = 1
+        }
+        self.lastKeystrokeTime = now
+        
         let preset = TypingEffectPreset.current
         let center = CGPoint(x: rect.midX, y: rect.midY)
-        let accent = self.resolvedAccentColor(for: textView, fallback: color ?? textView.effectiveCursorColor)
+        let palette = self.resolvedPalette(for: textView, fallback: color ?? textView.effectiveCursorColor, preset: preset)
         
         switch preset {
-            case .luxeGlow:
-                self.emitLuxeGlowBurst(at: center, rect: rect, accent: accent, intensityScale: intensityScale)
-            case .silkRipple:
-                self.emitSilkRippleBurst(at: center, rect: rect, accent: accent, intensityScale: intensityScale)
-            case .stardust:
-                self.emitFineStardustBurst(at: center, accent: accent, intensityScale: intensityScale)
+            case .powerMode:
+                self.emitPowerModeBurst(at: center, rect: rect, palette: palette, intensityScale: intensityScale)
+                self.updateComboHud(in: textView, combo: self.comboCount)
+            case .fireworks:
+                self.emitFireworksBurst(at: center, rect: rect, palette: palette, intensityScale: intensityScale)
+            case .magicStars:
+                self.emitMagicStarsBurst(at: center, rect: rect, palette: palette, intensityScale: intensityScale)
+            case .neonPop:
+                self.emitNeonPopBurst(at: center, rect: rect, palette: palette, intensityScale: intensityScale)
         }
     }
     
     
-    // MARK: Minimalist Typing Presets
+    // MARK: Typing Effect Presets
     
-    /// 3–4 delicate glowing micro-motes + soft caret breath.
-    private func emitLuxeGlowBurst(at center: CGPoint, rect: NSRect, accent: NSColor, intensityScale: CGFloat) {
+    /// Balanced `powerMode` physics: crisp caret energy pop + 5–8 parabolic gravity particles + refined combo pill.
+    private func emitPowerModeBurst(at center: CGPoint, rect: NSRect, palette: [NSColor], intensityScale: CGFloat) {
         
-        self.emitSoftCaretBreath(at: center, rect: rect, color: accent)
+        let easeOut = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
         
+        // 1. Crisp caret tactile energy pop
+        if let pulse = self.caretPulseLayer {
+            let pulseSize = CGSize(width: max(8, rect.width + 7), height: max(18, rect.height + 3))
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            pulse.removeAllAnimations()
+            pulse.position = center
+            pulse.bounds = CGRect(origin: .zero, size: pulseSize)
+            pulse.backgroundColor = palette[0].withAlphaComponent(0.30).cgColor
+            pulse.cornerRadius = 3.5
+            pulse.opacity = 0
+            CATransaction.commit()
+            
+            let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
+            scaleAnim.fromValue = 0.85
+            scaleAnim.toValue = 1.28
+            let alphaAnim = CAKeyframeAnimation(keyPath: "opacity")
+            alphaAnim.values = [0.0, 0.78, 0.0]
+            alphaAnim.keyTimes = [0.0, 0.15, 1.0]
+            
+            let group = CAAnimationGroup()
+            group.animations = [scaleAnim, alphaAnim]
+            group.duration = 0.17
+            group.timingFunction = easeOut
+            group.isRemovedOnCompletion = true
+            pulse.add(group, forKey: "caretPulse")
+        }
+        
+        // 2. Subtle shockwave ring on higher rhythm streaks
+        if self.comboCount >= 5 {
+            self.emitRippleRing(
+                at: center,
+                baseRadius: max(6.0, min(9.5, rect.height * 0.36)),
+                toScale: 1.75,
+                color: palette[0].withAlphaComponent(0.65),
+                duration: 0.22
+            )
+        }
+        
+        // 3. Moderate gravity particles (5–8 particles: responsive and lively without cluttering the code)
         guard !self.particlePool.isEmpty else { return }
-        let count = max(3, min(5, Int(round(3.5 * intensityScale))))
-        let pearl = accent.blended(withFraction: 0.45, of: .white) ?? accent
-        let gravity: CGFloat = 75.0
+        let comboBoost = min(1.22, 1.0 + CGFloat(min(self.comboCount, 25)) * 0.009)
+        let count = max(5, min(8, Int(round(CGFloat.random(in: 5.5...7.5) * intensityScale))))
+        let gravity: CGFloat = 290.0  // downward in flipped coordinates (+y)
         
-        for index in 0..<count {
+        for i in 0..<count {
             let particle = self.nextParticleLayer()
-            let particleColor = index.isMultiple(of: 2) ? accent : pearl
-            let size = CGFloat.random(in: 2.2...3.2)
-            let duration = Double.random(in: 0.38...0.52)
-            let vx = CGFloat.random(in: -34...34)
-            let vy = CGFloat.random(in: -54 ... -22)
+            let pColor = palette[i % palette.count]
+            let size = CGFloat.random(in: 2.4...3.8)
+            let isSquare = (i % 3 == 0)
+            
+            let duration = Double.random(in: 0.36...0.54)
+            let vx = CGFloat.random(in: -78...78) * comboBoost
+            let vy = CGFloat.random(in: -135 ... -48) * comboBoost
             
             let samples = 10
             var positions: [NSValue] = []
             positions.reserveCapacity(samples)
             for step in 0..<samples {
                 let frac = CGFloat(step) / CGFloat(samples - 1)
-                let elapsed = CGFloat(duration) * frac
-                let px = center.x + vx * elapsed * (1.0 - 0.25 * frac)
-                let py = center.y + vy * elapsed + 0.5 * gravity * elapsed * elapsed
+                let t = CGFloat(duration) * frac
+                let drag = 1.0 - 0.20 * frac
+                let px = center.x + vx * t * drag
+                let py = center.y + vy * t + 0.5 * gravity * t * t
                 positions.append(NSValue(point: CGPoint(x: px, y: py)))
             }
             
@@ -190,11 +258,85 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             CATransaction.setDisableActions(true)
             particle.removeAllAnimations()
             particle.position = center
-            particle.bounds = CGRect(x: 0, y: 0, width: size * 2.2, height: size * 2.2)
-            particle.cornerRadius = 0
-            particle.backgroundColor = nil
-            particle.contents = Self.tintedGlowCGImage(color: particleColor)
+            particle.bounds = CGRect(x: 0, y: 0, width: size, height: size)
+            particle.cornerRadius = isSquare ? 1.0 : size / 2
+            particle.contents = isSquare ? nil : Self.tintedGlowCGImage(color: pColor)
+            particle.backgroundColor = isSquare ? pColor.cgColor : nil
             particle.transform = CATransform3DIdentity
+            particle.opacity = 0
+            CATransaction.commit()
+            
+            let posAnim = CAKeyframeAnimation(keyPath: "position")
+            posAnim.values = positions
+            posAnim.calculationMode = .linear
+            
+            let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
+            scaleAnim.fromValue = 1.08
+            scaleAnim.toValue = 0.18
+            
+            let alphaAnim = CAKeyframeAnimation(keyPath: "opacity")
+            alphaAnim.values = [0.0, 0.90, 0.68, 0.0]
+            alphaAnim.keyTimes = [0.0, 0.10, 0.60, 1.0]
+            
+            var animations: [CAAnimation] = [posAnim, scaleAnim, alphaAnim]
+            if isSquare {
+                let rotAnim = CABasicAnimation(keyPath: "transform.rotation.z")
+                rotAnim.fromValue = 0.0
+                rotAnim.toValue = Double.random(in: -2.4...2.4)
+                animations.append(rotAnim)
+            }
+            
+            let group = CAAnimationGroup()
+            group.animations = animations
+            group.duration = duration
+            group.isRemovedOnCompletion = true
+            particle.add(group, forKey: "powerModeParticle")
+        }
+    }
+    
+    
+    /// Refined Fireworks preset: radial ring + 8–10 crisp streaks and glowing embers.
+    private func emitFireworksBurst(at center: CGPoint, rect: NSRect, palette: [NSColor], intensityScale: CGFloat) {
+        
+        self.emitRippleRing(at: center, baseRadius: max(5.5, rect.height * 0.32), toScale: 1.85, color: palette[0], duration: 0.22)
+        
+        guard !self.particlePool.isEmpty else { return }
+        let count = max(7, min(11, Int(round(CGFloat.random(in: 8...10) * intensityScale))))
+        let gravity: CGFloat = 175.0
+        
+        for i in 0..<count {
+            let particle = self.nextParticleLayer()
+            let pColor = palette[i % palette.count]
+            let angle = (.pi * 2.0 / Double(count)) * Double(i) + Double.random(in: -0.20...0.20)
+            let speed = CGFloat.random(in: 58...118) * min(1.2, intensityScale)
+            let vx = cos(angle) * speed
+            let vy = sin(angle) * speed - 26
+            let duration = Double.random(in: 0.38...0.56)
+            let isStreak = (i % 2 == 0)
+            
+            let samples = 10
+            var positions: [NSValue] = []
+            positions.reserveCapacity(samples)
+            for step in 0..<samples {
+                let frac = CGFloat(step) / CGFloat(samples - 1)
+                let t = CGFloat(duration) * frac
+                let px = center.x + vx * t * (1.0 - 0.16 * frac)
+                let py = center.y + vy * t + 0.5 * gravity * t * t
+                positions.append(NSValue(point: CGPoint(x: px, y: py)))
+            }
+            
+            let w: CGFloat = isStreak ? CGFloat.random(in: 6.5...10.0) : CGFloat.random(in: 3.0...4.5)
+            let h: CGFloat = isStreak ? 1.8 : w
+            
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            particle.removeAllAnimations()
+            particle.position = center
+            particle.bounds = CGRect(x: 0, y: 0, width: w, height: h)
+            particle.cornerRadius = h / 2
+            particle.contents = isStreak ? nil : Self.tintedGlowCGImage(color: pColor)
+            particle.backgroundColor = isStreak ? pColor.cgColor : nil
+            particle.transform = isStreak ? CATransform3DMakeRotation(CGFloat(angle), 0, 0, 1) : CATransform3DIdentity
             particle.opacity = 0
             CATransaction.commit()
             
@@ -202,91 +344,45 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             posAnim.values = positions
             
             let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
-            scaleAnim.fromValue = 1.0
-            scaleAnim.toValue = 0.25
+            scaleAnim.fromValue = 1.05
+            scaleAnim.toValue = 0.14
             
             let alphaAnim = CAKeyframeAnimation(keyPath: "opacity")
-            alphaAnim.values = [0.0, 0.85, 0.45, 0.0]
-            alphaAnim.keyTimes = [0.0, 0.14, 0.62, 1.0]
+            alphaAnim.values = [0.0, 0.92, 0.68, 0.0]
+            alphaAnim.keyTimes = [0.0, 0.10, 0.58, 1.0]
             
             let group = CAAnimationGroup()
             group.animations = [posAnim, scaleAnim, alphaAnim]
             group.duration = duration
             group.isRemovedOnCompletion = true
-            particle.add(group, forKey: "luxeMote")
+            particle.add(group, forKey: "fireworkParticle")
         }
     }
     
     
-    /// Single ultra-fine translucent halo ring + subtle caret breath.
-    private func emitSilkRippleBurst(at center: CGPoint, rect: NSRect, accent: NSColor, intensityScale: CGFloat) {
-        
-        self.emitSoftCaretBreath(at: center, rect: rect, color: accent)
-        
-        guard !self.ripplePool.isEmpty else { return }
-        let ripple = self.ripplePool[self.ripplePoolIndex]
-        self.ripplePoolIndex = (self.ripplePoolIndex + 1) % self.ripplePool.count
-        
-        let baseRadius = max(5.5, min(8.5, rect.height * 0.32))
-        let ringRect = CGRect(x: -baseRadius, y: -baseRadius, width: baseRadius * 2, height: baseRadius * 2)
-        
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        ripple.removeAllAnimations()
-        ripple.position = center
-        ripple.bounds = ringRect
-        ripple.path = CGPath(ellipseIn: ringRect, transform: nil)
-        ripple.strokeColor = accent.withAlphaComponent(0.55).cgColor
-        ripple.fillColor = nil
-        ripple.lineWidth = 0.9
-        ripple.opacity = 0
-        CATransaction.commit()
-        
-        let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
-        scaleAnim.fromValue = 0.55
-        scaleAnim.toValue = 1.75 * min(1.2, intensityScale)
-        
-        let widthAnim = CABasicAnimation(keyPath: "lineWidth")
-        widthAnim.fromValue = 1.05
-        widthAnim.toValue = 0.2
-        
-        let alphaAnim = CAKeyframeAnimation(keyPath: "opacity")
-        alphaAnim.values = [0.0, 0.68, 0.0]
-        alphaAnim.keyTimes = [0.0, 0.16, 1.0]
-        
-        let group = CAAnimationGroup()
-        group.animations = [scaleAnim, widthAnim, alphaAnim]
-        group.duration = 0.30
-        group.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
-        group.isRemovedOnCompletion = true
-        ripple.add(group, forKey: "silkRipple")
-    }
-    
-    
-    /// 2–3 tiny shimmering four-point glints rising gracefully near the caret.
-    private func emitFineStardustBurst(at center: CGPoint, accent: NSColor, intensityScale: CGFloat) {
+    /// Magic Sparkles preset: 5–7 spinning 4-point twinkling star sparkles rising upward.
+    private func emitMagicStarsBurst(at center: CGPoint, rect: NSRect, palette: [NSColor], intensityScale: CGFloat) {
         
         guard !self.particlePool.isEmpty else { return }
-        let count = max(2, min(4, Int(round(2.5 * intensityScale))))
-        let champagne = accent.blended(withFraction: 0.50, of: .white) ?? accent
+        let count = max(4, min(7, Int(round(CGFloat.random(in: 5...7) * intensityScale))))
         
-        for index in 0..<count {
+        for i in 0..<count {
             let star = self.nextParticleLayer()
-            let starColor = index.isMultiple(of: 2) ? accent : champagne
-            let size = CGFloat.random(in: 5.5...8.0)
-            let duration = Double.random(in: 0.44...0.60)
-            let dx = CGFloat.random(in: -22...22)
-            let dy = CGFloat.random(in: -26 ... -10)
-            let sway = CGFloat.random(in: -5...5)
+            let pColor = palette[i % palette.count]
+            let size = CGFloat.random(in: 6.5...10.0)
+            let duration = Double.random(in: 0.44...0.68)
+            let dx = CGFloat.random(in: -32...32)
+            let dy = CGFloat.random(in: -42 ... -14)
+            let sway = CGFloat.random(in: -8...8)
             
             let samples = 10
             var positions: [NSValue] = []
             positions.reserveCapacity(samples)
             for step in 0..<samples {
-                let frac = CGFloat(step) / CGFloat(samples - 1)
-                let eased = 1.0 - pow(1.0 - frac, 2.2)
-                let px = center.x + dx * eased + sin(frac * .pi * 2.0) * sway * 0.4
-                let py = center.y + dy * eased
+                let t = CGFloat(step) / CGFloat(samples - 1)
+                let ease = 1.0 - pow(1.0 - t, 2.2)
+                let px = center.x + dx * ease + sin(t * .pi * 2.0) * sway * 0.45
+                let py = center.y + dy * ease
                 positions.append(NSValue(point: CGPoint(x: px, y: py)))
             }
             
@@ -297,7 +393,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             star.bounds = CGRect(x: 0, y: 0, width: size, height: size)
             star.cornerRadius = 0
             star.backgroundColor = nil
-            star.contents = Self.tintedStarCGImage(color: starColor)
+            star.contents = Self.tintedStarCGImage(color: pColor)
             star.transform = CATransform3DIdentity
             star.opacity = 0
             CATransaction.commit()
@@ -306,55 +402,261 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             posAnim.values = positions
             
             let scaleAnim = CAKeyframeAnimation(keyPath: "transform.scale")
-            scaleAnim.values = [0.3, 1.05, 0.72, 0.1]
-            scaleAnim.keyTimes = [0.0, 0.25, 0.65, 1.0]
+            scaleAnim.values = [0.25, 1.15, 0.80, 1.05, 0.1]
+            scaleAnim.keyTimes = [0.0, 0.22, 0.48, 0.72, 1.0]
             
             let rotAnim = CABasicAnimation(keyPath: "transform.rotation.z")
-            rotAnim.fromValue = 0.0
-            rotAnim.toValue = Double.random(in: 0.6...1.4) * (index.isMultiple(of: 2) ? 1.0 : -1.0)
+            rotAnim.fromValue = Double.random(in: -0.5...0.5)
+            rotAnim.toValue = Double.random(in: 1.4...2.8) * (i.isMultiple(of: 2) ? 1.0 : -1.0)
             
             let alphaAnim = CAKeyframeAnimation(keyPath: "opacity")
-            alphaAnim.values = [0.0, 0.78, 0.0]
-            alphaAnim.keyTimes = [0.0, 0.20, 1.0]
+            alphaAnim.values = [0.0, 0.92, 0.80, 0.0]
+            alphaAnim.keyTimes = [0.0, 0.14, 0.68, 1.0]
             
             let group = CAAnimationGroup()
             group.animations = [posAnim, scaleAnim, rotAnim, alphaAnim]
             group.duration = duration
             group.isRemovedOnCompletion = true
-            star.add(group, forKey: "fineStardust")
+            star.add(group, forKey: "magicStar")
         }
     }
     
     
-    private func emitSoftCaretBreath(at center: CGPoint, rect: NSRect, color: NSColor) {
+    /// Clean shockwave ring + subtle caret flash.
+    private func emitNeonPopBurst(at center: CGPoint, rect: NSRect, palette: [NSColor], intensityScale: CGFloat) {
         
-        guard let pulse = self.caretPulseLayer else { return }
-        let pulseSize = CGSize(width: max(6, rect.width + 6), height: max(16, rect.height + 2))
+        let baseRadius = max(6.0, min(9.5, rect.height * 0.38))
+        self.emitRippleRing(
+            at: center,
+            baseRadius: baseRadius,
+            toScale: 1.90 * min(1.25, intensityScale),
+            color: palette[0],
+            duration: 0.25
+        )
+        
+        if let pulse = self.caretPulseLayer {
+            let pulseSize = CGSize(width: max(9, rect.width + 8), height: max(18, rect.height + 4))
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            pulse.removeAllAnimations()
+            pulse.position = center
+            pulse.bounds = CGRect(origin: .zero, size: pulseSize)
+            pulse.backgroundColor = palette[1 % palette.count].withAlphaComponent(0.30).cgColor
+            pulse.cornerRadius = 4.0
+            pulse.opacity = 0
+            CATransaction.commit()
+            
+            let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
+            scaleAnim.fromValue = 0.82
+            scaleAnim.toValue = 1.38
+            let alphaAnim = CAKeyframeAnimation(keyPath: "opacity")
+            alphaAnim.values = [0.0, 0.82, 0.0]
+            alphaAnim.keyTimes = [0.0, 0.18, 1.0]
+            
+            let group = CAAnimationGroup()
+            group.animations = [scaleAnim, alphaAnim]
+            group.duration = 0.20
+            group.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+            group.isRemovedOnCompletion = true
+            pulse.add(group, forKey: "neonCaret")
+        }
+    }
+    
+    
+    private func emitRippleRing(at center: CGPoint, baseRadius: CGFloat, toScale: CGFloat, color: NSColor, duration: CFTimeInterval) {
+        
+        guard !self.ripplePool.isEmpty else { return }
+        let ripple = self.ripplePool[self.ripplePoolIndex]
+        self.ripplePoolIndex = (self.ripplePoolIndex + 1) % self.ripplePool.count
+        
+        let ringRect = CGRect(x: -baseRadius, y: -baseRadius, width: baseRadius * 2, height: baseRadius * 2)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        ripple.removeAllAnimations()
+        ripple.position = center
+        ripple.bounds = ringRect
+        ripple.path = CGPath(ellipseIn: ringRect, transform: nil)
+        ripple.strokeColor = color.withAlphaComponent(0.68).cgColor
+        ripple.fillColor = nil
+        ripple.lineWidth = 1.4
+        ripple.opacity = 0
+        CATransaction.commit()
+        
+        let ringScale = CABasicAnimation(keyPath: "transform.scale")
+        ringScale.fromValue = 0.45
+        ringScale.toValue = toScale
+        
+        let ringWidth = CABasicAnimation(keyPath: "lineWidth")
+        ringWidth.fromValue = 1.5
+        ringWidth.toValue = 0.30
+        
+        let ringAlpha = CAKeyframeAnimation(keyPath: "opacity")
+        ringAlpha.values = [0.0, 0.78, 0.0]
+        ringAlpha.keyTimes = [0.0, 0.15, 1.0]
+        
+        let group = CAAnimationGroup()
+        group.animations = [ringScale, ringWidth, ringAlpha]
+        group.duration = duration
+        group.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+        group.isRemovedOnCompletion = true
+        ripple.add(group, forKey: "rippleRing")
+    }
+    
+    
+    // MARK: Compact Combo Feedback Pill
+    
+    private func updateComboHud(in textView: EditorTextView, combo: Int) {
+        
+        guard combo >= 5 else {
+            self.hideComboHud(animated: true)
+            return
+        }
+        guard let scrollView = textView.enclosingScrollView else { return }
+        if !scrollView.wantsLayer {
+            scrollView.wantsLayer = true
+        }
+        guard let scrollLayer = scrollView.layer else { return }
+        self.ensureComboHudLayers(in: scrollLayer)
+        
+        guard
+            let container = self.comboHudContainer,
+            let badgeLayer = self.comboHudBadgeLayer,
+            let trackLayer = self.comboHudBarTrackLayer,
+            let fillLayer = self.comboHudBarFillLayer
+        else { return }
+        
+        let tierTitle: String
+        let accentColor: NSColor
+        switch combo {
+            case ..<18:
+                tierTitle = "FLOW"
+                accentColor = NSColor(srgbRed: 0.18, green: 0.68, blue: 0.96, alpha: 1.0)
+            case 18..<40:
+                tierTitle = "RHYTHM"
+                accentColor = NSColor(srgbRed: 0.08, green: 0.82, blue: 0.72, alpha: 1.0)
+            case 40..<80:
+                tierTitle = "SURGE"
+                accentColor = NSColor(srgbRed: 0.62, green: 0.44, blue: 0.96, alpha: 1.0)
+            default:
+                tierTitle = "MASTER"
+                accentColor = NSColor(srgbRed: 0.96, green: 0.48, blue: 0.32, alpha: 1.0)
+        }
+        
+        let scale = textView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        let countText = "×\(combo)"
+        let tierFont = NSFont.systemFont(ofSize: 8.5, weight: .bold)
+        let countFont = NSFont.monospacedDigitSystemFont(ofSize: 15, weight: .bold)
+        
+        let tierAttr = NSAttributedString(string: tierTitle, attributes: [
+            .font: tierFont,
+            .foregroundColor: accentColor.withAlphaComponent(0.85),
+            .kern: 0.8,
+        ])
+        let countAttr = NSAttributedString(string: countText, attributes: [
+            .font: countFont,
+            .foregroundColor: accentColor,
+        ])
+        
+        let tierSize = tierAttr.size()
+        let countSize = countAttr.size()
+        let hudWidth = max(62, ceil(tierSize.width + countSize.width) + 20)
+        let badgeHeight: CGFloat = 24
+        let totalHeight: CGFloat = 28
+        
+        let rendered = NSImage(size: NSSize(width: hudWidth, height: badgeHeight), flipped: true) { _ in
+            let pillRect = NSRect(x: 0.5, y: 0.5, width: hudWidth - 1, height: badgeHeight - 1)
+            let pillPath = NSBezierPath(roundedRect: pillRect, xRadius: 6, yRadius: 6)
+            accentColor.withAlphaComponent(0.10).setFill()
+            pillPath.fill()
+            accentColor.withAlphaComponent(0.24).setStroke()
+            pillPath.lineWidth = 0.75
+            pillPath.stroke()
+            
+            let totalTextW = tierSize.width + 5 + countSize.width
+            let startX = max(6, (hudWidth - totalTextW) / 2)
+            let tierY = (badgeHeight - tierSize.height) / 2 + 0.5
+            let countY = (badgeHeight - countSize.height) / 2
+            tierAttr.draw(at: NSPoint(x: startX, y: tierY))
+            countAttr.draw(at: NSPoint(x: startX + tierSize.width + 5, y: countY))
+            return true
+        }
+        var proposedRect = NSRect(origin: .zero, size: NSSize(width: hudWidth, height: badgeHeight))
+        let scaleTransform = NSAffineTransform()
+        scaleTransform.scale(by: scale)
+        let cgImage = rendered.cgImage(forProposedRect: &proposedRect, context: nil, hints: [.ctm: scaleTransform])
+        
+        let viewBounds = scrollView.bounds
+        let marginRight: CGFloat = 16
+        let marginTop: CGFloat = 12
+        let originX = max(12, viewBounds.width - hudWidth - marginRight)
+        let originY = scrollView.isFlipped ? marginTop : max(12, viewBounds.height - totalHeight - marginTop)
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        pulse.removeAllAnimations()
-        pulse.position = center
-        pulse.bounds = CGRect(origin: .zero, size: pulseSize)
-        pulse.backgroundColor = color.withAlphaComponent(0.22).cgColor
-        pulse.cornerRadius = 3.0
-        pulse.opacity = 0
+        container.removeAllAnimations()
+        container.bounds = CGRect(x: 0, y: 0, width: hudWidth, height: totalHeight)
+        container.position = CGPoint(x: originX + hudWidth / 2, y: originY + totalHeight / 2)
+        container.opacity = 0.92
+        
+        badgeLayer.frame = CGRect(x: 0, y: 0, width: hudWidth, height: badgeHeight)
+        badgeLayer.contents = cgImage
+        badgeLayer.contentsScale = scale
+        badgeLayer.contentsGravity = .resize
+        
+        let trackWidth = hudWidth - 10
+        let trackY = badgeHeight + 2
+        trackLayer.frame = CGRect(x: 5, y: trackY, width: trackWidth, height: 2)
+        trackLayer.backgroundColor = accentColor.withAlphaComponent(0.15).cgColor
+        trackLayer.cornerRadius = 1.0
+        
+        fillLayer.removeAllAnimations()
+        fillLayer.anchorPoint = CGPoint(x: 1.0, y: 0.5)
+        fillLayer.bounds = CGRect(x: 0, y: 0, width: trackWidth, height: 2)
+        fillLayer.position = CGPoint(x: trackWidth, y: 1.0)
+        fillLayer.backgroundColor = accentColor.withAlphaComponent(0.80).cgColor
+        fillLayer.cornerRadius = 1.0
         CATransaction.commit()
         
-        let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
-        scaleAnim.fromValue = 0.88
-        scaleAnim.toValue = 1.18
+        // Gentle spring pop on container
+        let pop = CASpringAnimation(keyPath: "transform.scale")
+        pop.fromValue = 1.08
+        pop.toValue = 1.0
+        pop.mass = 0.5
+        pop.stiffness = 500
+        pop.damping = 26
+        pop.duration = min(0.18, pop.settlingDuration)
+        container.add(pop, forKey: "comboPop")
         
-        let alphaAnim = CAKeyframeAnimation(keyPath: "opacity")
-        alphaAnim.values = [0.0, 0.52, 0.0]
-        alphaAnim.keyTimes = [0.0, 0.18, 1.0]
+        // Decaying timer bar (1.6s timeout)
+        let decay = CABasicAnimation(keyPath: "transform.scale.x")
+        decay.fromValue = 1.0
+        decay.toValue = 0.0
+        decay.duration = 1.6
+        decay.fillMode = .forwards
+        decay.isRemovedOnCompletion = false
+        fillLayer.add(decay, forKey: "comboDecay")
         
-        let group = CAAnimationGroup()
-        group.animations = [scaleAnim, alphaAnim]
-        group.duration = 0.22
-        group.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
-        group.isRemovedOnCompletion = true
-        pulse.add(group, forKey: "caretBreath")
+        self.comboResetTask?.cancel()
+        self.comboResetTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(1600))
+            guard !Task.isCancelled else { return }
+            self?.comboCount = 0
+            self?.hideComboHud(animated: true)
+        }
+    }
+    
+    
+    private func hideComboHud(animated: Bool) {
+        
+        self.comboResetTask?.cancel()
+        self.comboResetTask = nil
+        
+        guard let container = self.comboHudContainer, container.opacity > 0.01 else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(!animated)
+        CATransaction.setAnimationDuration(0.20)
+        container.opacity = 0
+        CATransaction.commit()
     }
     
     
@@ -453,16 +755,16 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         fadeIn.toValue = 1.0
         
         let slideIn = CABasicAnimation(keyPath: "transform.translation.x")
-        slideIn.fromValue = 6.0
+        slideIn.fromValue = 5.0
         slideIn.toValue = 0.0
         
         let scaleIn = CABasicAnimation(keyPath: "transform.scale")
-        scaleIn.fromValue = 0.97
+        scaleIn.fromValue = 0.98
         scaleIn.toValue = 1.0
         
         let group = CAAnimationGroup()
         group.animations = [fadeIn, slideIn, scaleIn]
-        group.duration = 0.14
+        group.duration = 0.12
         group.timingFunction = easeOut
         group.isRemovedOnCompletion = true
         container.add(group, forKey: "ghostEnter")
@@ -524,19 +826,20 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             
             let group = CAAnimationGroup()
             group.animations = [scaleAnim, opacityAnim]
-            group.duration = 0.26
+            group.duration = 0.24
             group.timingFunction = easeOut
             group.isRemovedOnCompletion = true
             sweep.add(group, forKey: "ghostSweep")
         }
         
-        self.triggerTypewriterBurst(at: endRect, color: NSColor.controlAccentColor, intensityScale: 1.0)
+        self.triggerTypewriterBurst(at: endRect, color: NSColor.controlAccentColor, intensityScale: 0.95)
     }
     
     
-    // MARK: Neovide-Style Jelly Vim Cursor
+    // MARK: Zero-Flicker Elastic Vim Cursor Glide & Trail
     
-    /// Animates a continuous, elastic jelly Vim cursor with leading/trailing lag and volume-preserving landing squash.
+    /// Animates a smooth, GPU-composited Vim cursor glide + elastic comet trail without triggering
+    /// full-viewport `needsDisplay` redraws (which previously caused screen flashes and cursor twitching).
     func animateVimCursorTransition(from oldRect: NSRect?, to newRect: NSRect, color: NSColor) {
         
         let isEnabled = UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled) == nil
@@ -550,9 +853,11 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             newRect.height < 80
         else { return }
         
+        // Deduplicate duplicate invocations within the same key event cycle
+        // (e.g. setSelectedRanges + VimEngine.setCursor calling back-to-back for the same target)
         let now = CACurrentMediaTime()
         if let lastTarget = self.lastTargetRect,
-           now - self.lastTriggerTime < 0.02,
+           now - self.lastTriggerTime < 0.035,
            abs(lastTarget.minX - newRect.minX) < 0.5,
            abs(lastTarget.minY - newRect.minY) < 0.5,
            abs(lastTarget.width - newRect.width) < 0.5
@@ -564,223 +869,127 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         guard let hostLayer = self.ensureClippedHostLayer(for: textView) else { return }
         self.ensureVimLayers(in: hostLayer)
-        guard let jellyLayer = self.jellyCursorLayer else { return }
         
-        // Determine seamless source rect: if already mid-flight, capture current interpolated rect
-        let sourceRect: NSRect
-        if self.isVimCursorInFlight, self.activeFlightDuration > 0 {
-            let elapsed = max(0, min(1, (now - self.activeFlightStartTime) / self.activeFlightDuration))
-            let eased = 1.0 - pow(1.0 - elapsed, 2.5)
-            sourceRect = Self.lerpRect(self.activeFlightFromRect, self.activeFlightToRect, fraction: eased)
+        let targetCenter = CGPoint(x: newRect.midX, y: newRect.midY)
+        
+        let inFlightCenter: CGPoint? = if let overlay = self.cursorOverlayLayer,
+                                          overlay.opacity > 0.05,
+                                          let presentation = overlay.presentation(),
+                                          presentation.position.x.isFinite, presentation.position.y.isFinite
+        {
+            presentation.position
         } else {
-            sourceRect = oldRect ?? self.lastCursorRect ?? newRect
+            nil
         }
+        
+        let rawSourceRect = oldRect ?? self.lastCursorRect ?? newRect
         self.lastCursorRect = newRect
         
-        // If source fell outside visible viewport (e.g. jump from offscreen), clamp start smoothly near destination
-        let visible = textView.visibleRect.insetBy(dx: -48, dy: -64)
-        var effectiveFrom = sourceRect
-        if !visible.intersects(effectiveFrom) || effectiveFrom.height > 80 {
-            effectiveFrom = newRect
+        let visible = textView.visibleRect.insetBy(dx: -40, dy: -60)
+        var startCenter = inFlightCenter ?? CGPoint(x: rawSourceRect.midX, y: rawSourceRect.midY)
+        var startSize = rawSourceRect.size
+        if !visible.contains(startCenter) || startSize.height > 80 {
+            startCenter = targetCenter
+            startSize = newRect.size
         }
         
-        let dx = newRect.midX - effectiveFrom.midX
-        let dy = newRect.midY - effectiveFrom.midY
+        let dx = targetCenter.x - startCenter.x
+        let dy = targetCenter.y - startCenter.y
         let distance = hypot(dx, dy)
-        guard distance >= 1.0 else { return }
+        guard distance > 1.5 else { return }
         
-        // Cap huge cross-document jumps (`gg`, `G`) so the jelly stretches cleanly into frame
-        let maxVisualJump: CGFloat = 180
-        if distance > maxVisualJump {
-            let ratio = 64.0 / distance
-            effectiveFrom = NSRect(
-                x: newRect.midX - dx * ratio - effectiveFrom.width / 2,
-                y: newRect.midY - dy * ratio - effectiveFrom.height / 2,
-                width: effectiveFrom.width,
-                height: effectiveFrom.height
-            )
+        let maxTrailDistance: CGFloat = 200
+        if distance > maxTrailDistance {
+            let ratio = 48.0 / distance
+            startCenter = CGPoint(x: targetCenter.x - dx * ratio, y: targetCenter.y - dy * ratio)
         }
         
-        let duration: CFTimeInterval = distance < 22 ? 0.145 : 0.175
-        self.activeFlightStartTime = now
-        self.activeFlightDuration = duration
-        self.activeFlightFromRect = effectiveFrom
-        self.activeFlightToRect = newRect
-        self.isVimCursorInFlight = true
+        let effectiveDistance = hypot(targetCenter.x - startCenter.x, targetCenter.y - startCenter.y)
+        if effectiveDistance > 4.5, let trail = self.trailLayer {
+            let path = Self.sweptTrailPath(
+                from: startCenter,
+                fromSize: startSize,
+                to: targetCenter,
+                toSize: newRect.size
+            )
+            
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            trail.removeAllAnimations()
+            trail.path = path
+            trail.fillColor = color.withAlphaComponent(0.26).cgColor
+            trail.opacity = 0
+            CATransaction.commit()
+            
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0.88
+            fade.toValue = 0.0
+            fade.duration = 0.12
+            fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+            fade.isRemovedOnCompletion = true
+            trail.add(fade, forKey: "trailFade")
+        }
         
-        let keyframes = Self.buildJellyPathKeyframes(from: effectiveFrom, to: newRect, steps: 16)
-        let cursorAlpha: CGFloat = (VimState.shared.mode == .visual) ? 0.68 : 0.58
-        let finalPath = keyframes.last ?? CGPath(roundedRect: newRect, cornerWidth: 2.0, cornerHeight: 2.0, transform: nil)
+        guard let cursorLayer = self.cursorOverlayLayer else { return }
+        
+        let mostlyHorizontal = abs(dx) >= abs(dy)
+        let stretchRatio = min(1.32, 1.0 + effectiveDistance / 110.0 * 0.28)
+        let squashRatio = max(0.82, 1.0 / sqrt(stretchRatio))
+        let midSize = CGSize(
+            width: newRect.width * (mostlyHorizontal ? stretchRatio : squashRatio),
+            height: newRect.height * (mostlyHorizontal ? squashRatio : stretchRatio)
+        )
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        jellyLayer.removeAllAnimations()
-        jellyLayer.fillColor = color.withAlphaComponent(cursorAlpha).cgColor
-        jellyLayer.shadowColor = color.cgColor
-        jellyLayer.shadowOpacity = 0.32
-        jellyLayer.shadowRadius = 4.0
-        jellyLayer.shadowOffset = .zero
-        jellyLayer.path = finalPath
-        jellyLayer.opacity = 1.0
+        cursorLayer.removeAllAnimations()
+        cursorLayer.backgroundColor = color.withAlphaComponent(0.52).cgColor
+        cursorLayer.shadowColor = color.cgColor
+        cursorLayer.shadowOpacity = 0.28
+        cursorLayer.shadowRadius = 3.0
+        cursorLayer.shadowOffset = .zero
+        cursorLayer.position = targetCenter
+        cursorLayer.bounds = CGRect(origin: .zero, size: newRect.size)
+        cursorLayer.opacity = 1.0
         CATransaction.commit()
         
-        let pathAnim = CAKeyframeAnimation(keyPath: "path")
-        pathAnim.values = keyframes
-        pathAnim.calculationMode = .linear
-        pathAnim.duration = duration
-        pathAnim.isRemovedOnCompletion = true
-        jellyLayer.add(pathAnim, forKey: "jellyMorph")
+        let duration: CFTimeInterval = 0.125
+        let easeOut = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
         
-        // Suppress static destination block cursor only during the flight so there is no ghosting
-        textView.needsDisplay = true
+        let posAnim = CABasicAnimation(keyPath: "position")
+        posAnim.fromValue = NSValue(point: startCenter)
+        posAnim.toValue = NSValue(point: targetCenter)
+        posAnim.duration = duration
+        posAnim.timingFunction = easeOut
         
-        let durationMs = Int(duration * 1000) + 10
+        let boundsAnim = CAKeyframeAnimation(keyPath: "bounds.size")
+        boundsAnim.values = [
+            NSValue(size: startSize),
+            NSValue(size: midSize),
+            NSValue(size: newRect.size),
+        ]
+        boundsAnim.keyTimes = [0.0, 0.38, 1.0]
+        boundsAnim.duration = duration
+        boundsAnim.timingFunctions = [easeOut, easeOut]
+        
+        let fadeOut = CAKeyframeAnimation(keyPath: "opacity")
+        fadeOut.values = [0.95, 0.80, 0.0]
+        fadeOut.keyTimes = [0.0, 0.65, 1.0]
+        fadeOut.duration = duration
+        
+        cursorLayer.add(posAnim, forKey: "glidePosition")
+        cursorLayer.add(boundsAnim, forKey: "jellyBounds")
+        cursorLayer.add(fadeOut, forKey: "glideOpacity")
+        
         self.hideOverlayTask?.cancel()
         self.hideOverlayTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(durationMs))
-            guard !Task.isCancelled, let self else { return }
-            self.isVimCursorInFlight = false
+            try? await Task.sleep(for: .milliseconds(130))
+            guard !Task.isCancelled, let overlay = self?.cursorOverlayLayer else { return }
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            self.jellyCursorLayer?.opacity = 0
+            overlay.opacity = 0
             CATransaction.commit()
-            self.textView?.needsDisplay = true
         }
-    }
-    
-    
-    // MARK: Jelly Geometry Builders
-    
-    /// Generates `steps` sequential `CGPath` keyframes:
-    /// leading corners race ahead (`0...0.70`), trailing corners catch up elastically,
-    /// followed by a volume-preserving jelly landing squash-and-rebound (`0.70...1.0`).
-    private static func buildJellyPathKeyframes(from fromRect: NSRect, to toRect: NSRect, steps: Int) -> [CGPath] {
-        
-        var paths: [CGPath] = []
-        paths.reserveCapacity(steps)
-        
-        let dx = toRect.midX - fromRect.midX
-        let dy = toRect.midY - fromRect.midY
-        let mostlyHorizontal = abs(dx) >= abs(dy)
-        let flightPhaseEnd: CGFloat = 0.70
-        
-        for step in 0..<steps {
-            let progress = CGFloat(step) / CGFloat(max(1, steps - 1))
-            
-            if progress < flightPhaseEnd {
-                let flightU = progress / flightPhaseEnd
-                let leadFraction = 1.0 - pow(1.0 - flightU, 3.2)
-                let rawTrail = max(0.0, (flightU - 0.14) / 0.86)
-                let trailFraction = 1.0 - pow(1.0 - rawTrail, 2.2)
-                
-                // Subtle mid-flight waist thinning for liquid stretch feel
-                let stretchBell = sin(flightU * .pi)
-                let thinScale = 1.0 - 0.12 * stretchBell
-                
-                var leadRect = Self.lerpRect(fromRect, toRect, fraction: leadFraction)
-                var trailRect = Self.lerpRect(fromRect, toRect, fraction: trailFraction)
-                if mostlyHorizontal {
-                    leadRect = leadRect.insetBy(dx: 0, dy: leadRect.height * (1.0 - thinScale) * 0.5)
-                    trailRect = trailRect.insetBy(dx: 0, dy: trailRect.height * (1.0 - thinScale) * 0.5)
-                } else {
-                    leadRect = leadRect.insetBy(dx: leadRect.width * (1.0 - thinScale) * 0.5, dy: 0)
-                    trailRect = trailRect.insetBy(dx: trailRect.width * (1.0 - thinScale) * 0.5, dy: 0)
-                }
-                
-                let hull = Self.roundedConvexHullPath(of: [
-                    NSPoint(x: trailRect.minX, y: trailRect.minY),
-                    NSPoint(x: trailRect.maxX, y: trailRect.minY),
-                    NSPoint(x: trailRect.maxX, y: trailRect.maxY),
-                    NSPoint(x: trailRect.minX, y: trailRect.maxY),
-                    NSPoint(x: leadRect.minX, y: leadRect.minY),
-                    NSPoint(x: leadRect.maxX, y: leadRect.minY),
-                    NSPoint(x: leadRect.maxX, y: leadRect.maxY),
-                    NSPoint(x: leadRect.minX, y: leadRect.maxY),
-                ], cornerRadius: 2.0)
-                paths.append(hull)
-            } else {
-                let bounceU = (progress - flightPhaseEnd) / (1.0 - flightPhaseEnd)
-                let wobble = sin(bounceU * .pi * 2.0) * exp(-2.6 * bounceU) * 0.20
-                
-                let scaleX = mostlyHorizontal ? (1.0 - wobble) : (1.0 + wobble * 0.65)
-                let scaleY = mostlyHorizontal ? (1.0 + wobble * 0.65) : (1.0 - wobble)
-                
-                let scaledWidth = toRect.width * scaleX
-                let scaledHeight = toRect.height * scaleY
-                let squashed = CGRect(
-                    x: toRect.midX - scaledWidth / 2,
-                    y: toRect.midY - scaledHeight / 2,
-                    width: scaledWidth,
-                    height: scaledHeight
-                )
-                paths.append(CGPath(roundedRect: squashed, cornerWidth: 2.0, cornerHeight: 2.0, transform: nil))
-            }
-        }
-        
-        return paths
-    }
-    
-    
-    private static func lerpRect(_ start: NSRect, _ end: NSRect, fraction: CGFloat) -> NSRect {
-        
-        NSRect(
-            x: start.origin.x + (end.origin.x - start.origin.x) * fraction,
-            y: start.origin.y + (end.origin.y - start.origin.y) * fraction,
-            width: start.size.width + (end.size.width - start.size.width) * fraction,
-            height: start.size.height + (end.size.height - start.size.height) * fraction
-        )
-    }
-    
-    
-    /// Computes the convex hull of `points` (Andrew's monotone chain) and rounds all corners smoothly.
-    private static func roundedConvexHullPath(of points: [NSPoint], cornerRadius: CGFloat) -> CGPath {
-        
-        let sorted = points.sorted { lhs, rhs in
-            if abs(lhs.x - rhs.x) > 0.01 { return lhs.x < rhs.x }
-            return lhs.y < rhs.y
-        }
-        guard sorted.count >= 3 else {
-            return CGPath(rect: .zero, transform: nil)
-        }
-        
-        func cross(_ origin: NSPoint, _ first: NSPoint, _ second: NSPoint) -> CGFloat {
-            (first.x - origin.x) * (second.y - origin.y) - (first.y - origin.y) * (second.x - origin.x)
-        }
-        
-        var lower: [NSPoint] = []
-        for point in sorted {
-            while lower.count >= 2 && cross(lower[lower.count - 2], lower[lower.count - 1], point) <= 0.001 {
-                lower.removeLast()
-            }
-            lower.append(point)
-        }
-        
-        var upper: [NSPoint] = []
-        for point in sorted.reversed() {
-            while upper.count >= 2 && cross(upper[upper.count - 2], upper[upper.count - 1], point) <= 0.001 {
-                upper.removeLast()
-            }
-            upper.append(point)
-        }
-        
-        let hull = Array(lower.dropLast()) + Array(upper.dropLast())
-        guard hull.count >= 3 else {
-            return CGPath(rect: .zero, transform: nil)
-        }
-        
-        let path = CGMutablePath()
-        let count = hull.count
-        let last = hull[count - 1]
-        let first = hull[0]
-        path.move(to: CGPoint(x: (last.x + first.x) * 0.5, y: (last.y + first.y) * 0.5))
-        
-        for idx in 0..<count {
-            let current = hull[idx]
-            let next = hull[(idx + 1) % count]
-            path.addArc(tangent1End: current, tangent2End: next, radius: cornerRadius)
-        }
-        path.closeSubpath()
-        return path
     }
     
     
@@ -794,8 +1003,9 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     }
     
     
-    private func resolvedAccentColor(for textView: EditorTextView, fallback: NSColor) -> NSColor {
+    private func resolvedPalette(for textView: EditorTextView, fallback: NSColor, preset: TypingEffectPreset) -> [NSColor] {
         
+        var syntaxColor: NSColor?
         let loc = textView.selectedRange().location
         if loc > 0, let lm = textView.layoutManager {
             let probeIndex = min(loc - 1, max(0, (textView.string as NSString).length - 1))
@@ -803,10 +1013,45 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
                let rgb = attrColor.usingColorSpace(.sRGB),
                rgb.saturationComponent > 0.25
             {
-                return attrColor
+                syntaxColor = attrColor
             }
         }
-        return NSColor.controlAccentColor.blended(withFraction: 0.35, of: fallback) ?? fallback
+        
+        switch preset {
+            case .powerMode:
+                let base: [NSColor] = [
+                    NSColor(srgbRed: 0.00, green: 0.73, blue: 0.98, alpha: 1.0), // #00BBF9
+                    NSColor(srgbRed: 0.00, green: 0.96, blue: 0.83, alpha: 1.0), // #00F5D4
+                    NSColor(srgbRed: 0.95, green: 0.36, blue: 0.71, alpha: 1.0), // #F15BB5
+                    NSColor(srgbRed: 0.99, green: 0.89, blue: 0.25, alpha: 1.0), // #FEE440
+                    NSColor(srgbRed: 0.61, green: 0.36, blue: 0.90, alpha: 1.0), // #9B5DE5
+                ]
+                if let syntaxColor {
+                    return [syntaxColor] + base
+                }
+                return [fallback] + base
+                
+            case .fireworks:
+                return [
+                    NSColor(srgbRed: 1.00, green: 0.35, blue: 0.37, alpha: 1.0),
+                    NSColor(srgbRed: 1.00, green: 0.79, blue: 0.23, alpha: 1.0),
+                    NSColor(srgbRed: 0.54, green: 0.79, blue: 0.15, alpha: 1.0),
+                    NSColor(srgbRed: 0.10, green: 0.51, blue: 0.77, alpha: 1.0),
+                    NSColor(srgbRed: 1.00, green: 0.57, blue: 0.30, alpha: 1.0),
+                ]
+                
+            case .magicStars:
+                return [
+                    NSColor(srgbRed: 0.75, green: 0.52, blue: 0.99, alpha: 1.0),
+                    NSColor(srgbRed: 0.30, green: 0.79, blue: 0.94, alpha: 1.0),
+                    NSColor(srgbRed: 1.00, green: 0.84, blue: 0.35, alpha: 1.0),
+                    NSColor(srgbRed: 0.98, green: 0.52, blue: 0.78, alpha: 1.0),
+                ]
+                
+            case .neonPop:
+                let accent = NSColor.controlAccentColor.blended(withFraction: 0.35, of: fallback) ?? fallback
+                return [syntaxColor ?? fallback, accent]
+        }
     }
     
     
@@ -846,7 +1091,8 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         self.vimRootLayer?.removeFromSuperlayer()
         self.vimRootLayer = nil
-        self.jellyCursorLayer = nil
+        self.cursorOverlayLayer = nil
+        self.trailLayer = nil
     }
     
     
@@ -866,8 +1112,8 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.caretPulseLayer = pulse
         
         var ripples: [CAShapeLayer] = []
-        ripples.reserveCapacity(6)
-        for _ in 0..<6 {
+        ripples.reserveCapacity(8)
+        for _ in 0..<8 {
             let ripple = CAShapeLayer()
             ripple.opacity = 0
             root.addSublayer(ripple)
@@ -876,14 +1122,47 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.ripplePool = ripples
         
         var pool: [CALayer] = []
-        pool.reserveCapacity(40)
-        for _ in 0..<40 {
+        pool.reserveCapacity(64)
+        for _ in 0..<64 {
             let particle = CALayer()
             particle.opacity = 0
             root.addSublayer(particle)
             pool.append(particle)
         }
         self.particlePool = pool
+    }
+    
+    
+    private func ensureComboHudLayers(in scrollLayer: CALayer) {
+        
+        if self.hostedScrollLayer !== scrollLayer {
+            self.comboHudContainer?.removeFromSuperlayer()
+            self.comboHudContainer = nil
+            self.comboHudBadgeLayer = nil
+            self.comboHudBarTrackLayer = nil
+            self.comboHudBarFillLayer = nil
+            self.hostedScrollLayer = scrollLayer
+        }
+        guard self.comboHudContainer == nil else { return }
+        
+        let container = CALayer()
+        container.zPosition = 240
+        container.opacity = 0
+        scrollLayer.addSublayer(container)
+        self.comboHudContainer = container
+        
+        let badge = CALayer()
+        container.addSublayer(badge)
+        self.comboHudBadgeLayer = badge
+        
+        let track = CALayer()
+        track.masksToBounds = true
+        container.addSublayer(track)
+        self.comboHudBarTrackLayer = track
+        
+        let fill = CALayer()
+        track.addSublayer(fill)
+        self.comboHudBarFillLayer = fill
     }
     
     
@@ -920,10 +1199,42 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         hostLayer.addSublayer(root)
         self.vimRootLayer = root
         
-        let jelly = CAShapeLayer()
-        jelly.opacity = 0
-        root.addSublayer(jelly)
-        self.jellyCursorLayer = jelly
+        let trail = CAShapeLayer()
+        trail.opacity = 0
+        root.addSublayer(trail)
+        self.trailLayer = trail
+        
+        let overlay = CALayer()
+        overlay.cornerRadius = 2.0
+        overlay.opacity = 0
+        root.addSublayer(overlay)
+        self.cursorOverlayLayer = overlay
+    }
+    
+    
+    private static func sweptTrailPath(
+        from startCenter: CGPoint,
+        fromSize: CGSize,
+        to endCenter: CGPoint,
+        toSize: CGSize
+    ) -> CGPath {
+        
+        let dx = endCenter.x - startCenter.x
+        let dy = endCenter.y - startCenter.y
+        let len = max(1, hypot(dx, dy))
+        let nx = -dy / len
+        let ny = dx / len
+        
+        let startHalf = max(1.5, min(fromSize.width, fromSize.height) * 0.28)
+        let endHalf = max(2.5, min(toSize.width, toSize.height) * 0.44)
+        
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: startCenter.x + nx * startHalf, y: startCenter.y + ny * startHalf))
+        path.addLine(to: CGPoint(x: endCenter.x + nx * endHalf, y: endCenter.y + ny * endHalf))
+        path.addLine(to: CGPoint(x: endCenter.x - nx * endHalf, y: endCenter.y - ny * endHalf))
+        path.addLine(to: CGPoint(x: startCenter.x - nx * startHalf, y: startCenter.y - ny * startHalf))
+        path.closeSubpath()
+        return path
     }
     
     

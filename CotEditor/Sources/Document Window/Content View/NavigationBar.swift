@@ -40,12 +40,12 @@ struct NavigationBar: View {
         HStack(alignment: .center, spacing: 2) {
             PaneTabStripView(state: self.tabs)
                 .frame(maxWidth: .infinity)
-                .frame(height: 20)
+                .frame(height: 24)
             
             if self.outlineNavigator.items?.isEmpty == false {
                 Divider()
-                    .padding(.vertical, 4)
-                    .padding(.horizontal, 3)
+                    .frame(height: 14)
+                    .padding(.horizontal, 4)
                 
                 OutlineNavigationView(navigator: $outlineNavigator)
             }
@@ -56,9 +56,14 @@ struct NavigationBar: View {
         }
         .buttonStyle(.borderless)
         .controlSize(.small)
-        .padding(.horizontal, isLiquidGlass ? 4 : 2)
+        .padding(.horizontal, isLiquidGlass ? 6 : 4)
+        .frame(height: isLiquidGlass ? 30 : 28)
         .background(.windowBackground)
-        .frame(height: isLiquidGlass ? 24 : 20)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(height: 1 / max(NSScreen.main?.backingScaleFactor ?? 2, 1))
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(String(localized: "Navigation Bar", table: "Document", comment: "accessibility label"))
     }
@@ -70,11 +75,12 @@ struct NavigationBar: View {
         
         Button(action: self.tabs.onClosePane) {
             Image(systemName: "xmark")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 18, height: 16)
+                .frame(width: 22, height: 22)
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HoverPlainButtonStyle())
         .help(String(localized: "Close split editor", table: "Document", comment: "tooltip for button"))
     }
 }
@@ -179,4 +185,38 @@ private struct OutlineNavigationView: View {
     
     return NavigationBar(outlineNavigator: navigator, splitState: SplitState(canClose: true), tabs: PaneTabState())
         .frame(width: 300)
+}
+
+
+/// A plain button style with a subtle rounded hover/pressed highlight.
+struct HoverPlainButtonStyle: ButtonStyle {
+    
+    var cornerRadius: CGFloat = 6
+    
+    
+    func makeBody(configuration: Configuration) -> some View {
+        
+        HoverPlainButtonBody(configuration: configuration, cornerRadius: self.cornerRadius)
+    }
+    
+    
+    private struct HoverPlainButtonBody: View {
+        
+        var configuration: ButtonStyleConfiguration
+        var cornerRadius: CGFloat
+        
+        @State private var isHovered = false
+        
+        
+        var body: some View {
+            
+            self.configuration.label
+                .background(
+                    RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
+                        .fill(Color.primary.opacity(self.configuration.isPressed ? 0.14 : (self.isHovered ? 0.07 : 0)))
+                )
+                .onHover { self.isHovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: self.isHovered)
+        }
+    }
 }

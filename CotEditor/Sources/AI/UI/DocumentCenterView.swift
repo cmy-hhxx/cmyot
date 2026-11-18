@@ -33,16 +33,34 @@ import SwiftUI
         let fileExists: Bool
         let syntax: String
         let content: String
+        let previewText: String
+        let searchableText: String
         let updatedAt: Date
         let isOpenNow: Bool
         let isDirty: Bool
         let characterCount: Int
         let storedRecord: StoredDocumentRecord?
+        
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.id == rhs.id
+                && lhs.title == rhs.title
+                && lhs.isOpenNow == rhs.isOpenNow
+                && lhs.isDirty == rhs.isDirty
+                && lhs.characterCount == rhs.characterCount
+                && lhs.updatedAt == rhs.updatedAt
+        }
     }
     
     var items: [ManagedDocumentItem] = []
+    var displayedItems: [ManagedDocumentItem] = []
     var selectedID: String?
-    var searchText: String = ""
+    var searchText: String = "" {
+        didSet {
+            if oldValue != self.searchText {
+                self.recomputeDisplayedItems()
+            }
+        }
+    }
     
     private var liveDocsByID: [String: Document] = [:]
     
@@ -89,15 +107,19 @@ import SwiftUI
                 dbMatch?.updatedAt ?? Date()
             )
             let fallbackID = filePath ?? (doc.databaseDocumentID.hasPrefix("doc:") ? doc.databaseDocumentID : "doc:\(doc.databaseDocumentID)")
+            let preview = Self.buildPreviewText(from: content)
+            let searchCorpus = "\(doc.displayName)\n\(filePath ?? "")\n\(content.prefix(2_000))".lowercased()
             
             merged.append(ManagedDocumentItem(
                 id: key,
                 dbRecordID: dbMatch?.id ?? fallbackID,
                 title: doc.displayName,
                 filePath: filePath,
-                fileExists: filePath.map { FileManager.default.fileExists(atPath: $0) } ?? false,
+                fileExists: filePath != nil,
                 syntax: doc.syntaxName,
                 content: content,
+                previewText: preview,
+                searchableText: searchCorpus,
                 updatedAt: modifiedDate,
                 isOpenNow: true,
                 isDirty: dirty,
@@ -118,15 +140,18 @@ import SwiftUI
             let key = Self.canonicalKey(filePath: record.filePath, rawID: record.id)
             guard usedKeys.insert(key).inserted else { continue }
             
-            let fileExists = record.filePath.map { FileManager.default.fileExists(atPath: $0) } ?? false
+            let preview = Self.buildPreviewText(from: record.content)
+            let searchCorpus = "\(record.title)\n\(record.filePath ?? "")\n\(record.content.prefix(2_000))".lowercased()
             merged.append(ManagedDocumentItem(
                 id: key,
                 dbRecordID: record.id,
                 title: record.title,
                 filePath: record.filePath,
-                fileExists: fileExists,
+                fileExists: record.filePath != nil,
                 syntax: record.syntax,
                 content: record.content,
+                previewText: preview,
+                searchableText: searchCorpus,
                 updatedAt: record.updatedAt,
                 isOpenNow: false,
                 isDirty: false,
@@ -137,11 +162,43 @@ import SwiftUI
         
         self.liveDocsByID = liveByKey
         self.items = merged
+        self.recomputeDisplayedItems()
+    }
+    
+    
+    private func recomputeDisplayedItems() {
         
-        if let selectedID, merged.contains(where: { $0.id == selectedID }) {
+        let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filtered = if query.isEmpty {
+            self.items
+        } else {
+            self.items.filter { $0.searchableText.contains(query) }
+        }
+        
+        let sorted = filtered.sorted { lhs, rhs in
+            if lhs.isOpenNow != rhs.isOpenNow {
+                return lhs.isOpenNow && !rhs.isOpenNow
+            }
+            return lhs.updatedAt > rhs.updatedAt
+        }
+        self.displayedItems = sorted
+        
+        if let selectedID, sorted.contains(where: { $0.id == selectedID }) {
             return
         }
-        self.selectedID = merged.first?.id
+        self.selectedID = sorted.first?.id
+    }
+    
+    
+    private static func buildPreviewText(from content: String) -> String {
+        
+        if content.isEmpty {
+            return "（空文档）"
+        }
+        if content.count > 4_000 {
+            return String(content.prefix(4_000)) + "\n\n……（仅预览前 4,000 字，点击右上角「打开」查看完整内容）"
+        }
+        return content
     }
     
     
@@ -196,16 +253,16 @@ struct DocumentCenterView: View {
     
     var body: some View {
         
-        let displayedItems = self.filteredItems
+        let displayedItems = self.state.displayedItems
         let activeItem = self.selectedItem(in: displayedItems)
         
         ZStack(alignment: .bottom) {
             HStack(spacing: 0) {
                 self.sidebar(items: displayedItems, activeItem: activeItem)
-                    .frame(width: 268)
+                    .frame(width: 276)
                 
                 Rectangle()
-                    .fill(Color.primary.opacity(0.06))
+                    .fill(Color.primary.opacity(0.07))
                     .frame(width: 1)
                 
                 Group {
@@ -226,7 +283,7 @@ struct DocumentCenterView: View {
                     Text(toastMessage)
                         .font(.system(size: 12, weight: .medium))
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
                 .padding(.vertical, 7)
                 .background(.regularMaterial, in: Capsule())
                 .overlay(Capsule().stroke(Color.primary.opacity(0.08), lineWidth: 1))
@@ -238,31 +295,8 @@ struct DocumentCenterView: View {
         .onAppear {
             self.state.refresh()
         }
-        .onChange(of: self.db.documents) { _, _ in
-            withAnimation(.snappy(duration: 0.22)) {
-                self.state.refresh()
-            }
-        }
-    }
-    
-    
-    // MARK: Filtering
-    
-    private var filteredItems: [DocumentCenterState.ManagedDocumentItem] {
-        
-        let query = self.state.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let filtered = self.state.items.filter { item in
-            guard !query.isEmpty else { return true }
-            return item.title.lowercased().contains(query)
-                || (item.filePath?.lowercased().contains(query) ?? false)
-                || item.content.lowercased().contains(query)
-        }
-        
-        return filtered.sorted { lhs, rhs in
-            if lhs.isOpenNow != rhs.isOpenNow {
-                return lhs.isOpenNow && !rhs.isOpenNow
-            }
-            return lhs.updatedAt > rhs.updatedAt
+        .onChange(of: self.db.documents.count) { _, _ in
+            self.state.refresh()
         }
     }
     
@@ -283,17 +317,22 @@ struct DocumentCenterView: View {
         
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 7) {
-                    Image(nsImage: WorkspaceCenterIcons.documentCenterIcon(isActive: false, size: NSSize(width: 15, height: 15)))
-                        .renderingMode(.template)
-                        .foregroundStyle(.secondary)
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: "square.stack.3d.up.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 18, height: 18)
                     
                     Text("文档中心")
                         .font(.system(size: 13.5, weight: .semibold))
                     
                     Text("\(items.count)")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1.5)
+                        .background(Color.primary.opacity(0.06), in: Capsule())
                     
                     Spacer()
                     
@@ -301,29 +340,30 @@ struct DocumentCenterView: View {
                         Button {
                             onDismiss()
                         } label: {
-                            HStack(spacing: 3) {
+                            HStack(spacing: 4) {
                                 Image(systemName: "chevron.left")
                                     .font(.system(size: 10, weight: .semibold))
                                 Text("返回")
-                                    .font(.system(size: 11.5))
+                                    .font(.system(size: 11.5, weight: .medium))
                             }
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 5))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 6))
                         }
                         .buttonStyle(.plain)
                         .pointerStyle(.link)
                         .help("返回编辑器 (Esc)")
                     }
                 }
+                .frame(height: 24)
                 
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 11.5))
+                        .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.tertiary)
                     
-                    TextField("搜索文档…", text: self.$state.searchText)
+                    TextField("搜索文档标题或内容…", text: self.$state.searchText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12.5))
                     
@@ -339,16 +379,16 @@ struct DocumentCenterView: View {
                         .pointerStyle(.link)
                     }
                 }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .frame(height: 28)
                 .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.06), lineWidth: 1))
             }
             .padding(.horizontal, 12)
-            .padding(.top, 12)
-            .padding(.bottom, 10)
+            .padding(.vertical, 12)
             
             Rectangle()
-                .fill(Color.primary.opacity(0.05))
+                .fill(Color.primary.opacity(0.06))
                 .frame(height: 1)
             
             ScrollView {
@@ -369,13 +409,14 @@ struct DocumentCenterView: View {
                                 self.delete(item: item, in: items)
                             }
                         )
+                        .equatable()
                     }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
             }
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.45))
     }
     
     
@@ -395,7 +436,7 @@ struct DocumentCenterView: View {
     ) -> some View {
         
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: 10) {
                 if self.isRenaming {
                     TextField("文档标题", text: self.$renameDraft)
                         .textFieldStyle(.roundedBorder)
@@ -416,7 +457,7 @@ struct DocumentCenterView: View {
                     .pointerStyle(.link)
                 } else {
                     Text(item.title)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: 15.5, weight: .semibold))
                         .lineLimit(1)
                     
                     Button {
@@ -424,29 +465,27 @@ struct DocumentCenterView: View {
                         self.isRenaming = true
                     } label: {
                         Image(systemName: "pencil")
-                            .font(.system(size: 11.5))
+                            .font(.system(size: 11.5, weight: .medium))
                             .foregroundStyle(.secondary)
+                            .frame(width: 22, height: 22)
+                            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 5))
                     }
                     .buttonStyle(.plain)
                     .pointerStyle(.link)
                     .help("重命名")
                     
                     Text("\(item.characterCount) 字")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Color.primary.opacity(0.045), in: Capsule())
                 }
                 
-                HStack(spacing: 6) {
+                Spacer(minLength: 8)
+                
+                HStack(spacing: 8) {
                     Button {
-                        self.open(item: item)
-                    } label: {
-                        Label("打开", systemImage: "macwindow")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .pointerStyle(.link)
-                    
-                    Button(self.copiedFlag ? "已拷贝 ✓" : "拷贝") {
                         let pboard = NSPasteboard.general
                         pboard.clearContents()
                         pboard.setString(item.content, forType: .string)
@@ -456,33 +495,37 @@ struct DocumentCenterView: View {
                             try? await Task.sleep(for: .seconds(1.5))
                             self.copiedFlag = false
                         }
+                    } label: {
+                        Label(self.copiedFlag ? "已拷贝" : "拷贝全文", systemImage: self.copiedFlag ? "checkmark" : "doc.on.doc")
                     }
                     .controlSize(.small)
                     .pointerStyle(.link)
+                    
+                    Button {
+                        self.open(item: item)
+                    } label: {
+                        Label("在编辑器打开", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .pointerStyle(.link)
                 }
-                .padding(.leading, 8)
-                
-                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 24)
+            .frame(height: 52)
             
             Rectangle()
-                .fill(Color.primary.opacity(0.05))
+                .fill(Color.primary.opacity(0.06))
                 .frame(height: 1)
             
             ScrollView {
-                let preview = item.content.count > 6_000
-                    ? String(item.content.prefix(6_000)) + "\n\n……（仅预览前 6,000 字，点击上方「打开」查看全部）"
-                    : (item.content.isEmpty ? "（空文档）" : item.content)
-                
-                Text(preview)
+                Text(item.previewText)
                     .font(.system(size: 13))
-                    .lineSpacing(3.5)
+                    .lineSpacing(4)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 18)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 20)
                     .id(item.id)
             }
             .background(Color(nsColor: .textBackgroundColor))
@@ -492,9 +535,10 @@ struct DocumentCenterView: View {
     
     private var emptyView: some View {
         
-        VStack(spacing: 10) {
-            Image(nsImage: WorkspaceCenterIcons.documentCenterIcon(isActive: false, size: NSSize(width: 34, height: 34)))
-                .renderingMode(.template)
+        VStack(spacing: 12) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 32, weight: .light))
+                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.tertiary)
             
             Text(self.state.searchText.isEmpty ? "暂无文档" : "没有匹配的文档")
@@ -542,18 +586,16 @@ struct DocumentCenterView: View {
     
     private func delete(item: DocumentCenterState.ManagedDocumentItem, in list: [DocumentCenterState.ManagedDocumentItem]) {
         
-        withAnimation(.snappy(duration: 0.22)) {
-            if let idx = list.firstIndex(where: { $0.id == item.id }) {
-                let nextItem = list.indices.contains(idx + 1) ? list[idx + 1] : (idx > 0 ? list[idx - 1] : nil)
-                self.state.selectedID = nextItem?.id
-            }
-            
-            if let onDeleteDocument = self.onDeleteDocument {
-                onDeleteDocument(item)
-            } else if let recordID = item.dbRecordID {
-                self.db.deleteDocument(id: recordID, filePath: item.filePath)
-                self.state.refresh()
-            }
+        if let idx = list.firstIndex(where: { $0.id == item.id }) {
+            let nextItem = list.indices.contains(idx + 1) ? list[idx + 1] : (idx > 0 ? list[idx - 1] : nil)
+            self.state.selectedID = nextItem?.id
+        }
+        
+        if let onDeleteDocument = self.onDeleteDocument {
+            onDeleteDocument(item)
+        } else if let recordID = item.dbRecordID {
+            self.db.deleteDocument(id: recordID, filePath: item.filePath)
+            self.state.refresh()
         }
         self.showToast("已删除「\(item.title)」")
     }
@@ -586,13 +628,13 @@ struct DocumentCenterView: View {
     private func showToast(_ message: String) {
         
         self.toastTask?.cancel()
-        withAnimation(.easeOut(duration: 0.16)) {
+        withAnimation(.easeOut(duration: 0.15)) {
             self.toastMessage = message
         }
         self.toastTask = Task {
-            try? await Task.sleep(for: .milliseconds(1800))
+            try? await Task.sleep(for: .milliseconds(1600))
             guard !Task.isCancelled else { return }
-            withAnimation(.easeIn(duration: 0.2)) {
+            withAnimation(.easeIn(duration: 0.18)) {
                 self.toastMessage = nil
             }
         }
@@ -600,7 +642,7 @@ struct DocumentCenterView: View {
 }
 
 
-private struct DocumentSidebarRow: View {
+private struct DocumentSidebarRow: View, Equatable {
     
     let item: DocumentCenterState.ManagedDocumentItem
     let isSelected: Bool
@@ -612,12 +654,16 @@ private struct DocumentSidebarRow: View {
     @State private var isHovered = false
     @State private var isTrashHovered = false
     
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.item == rhs.item && lhs.isSelected == rhs.isSelected && lhs.statusColor == rhs.statusColor
+    }
+    
     var body: some View {
         
-        HStack(spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
             Circle()
                 .fill(self.statusColor)
-                .frame(width: 6, height: 6)
+                .frame(width: 6.5, height: 6.5)
             
             Text(self.item.title)
                 .font(.system(size: 12.5, weight: self.isSelected ? .semibold : .regular))
@@ -626,38 +672,35 @@ private struct DocumentSidebarRow: View {
             
             Spacer(minLength: 4)
             
-            if self.isHovered || self.isSelected {
-                Button {
-                    self.onDelete()
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11))
-                        .foregroundStyle(self.isTrashHovered ? Color.red : Color.secondary)
-                        .frame(width: 22, height: 22)
-                        .background(
-                            self.isTrashHovered ? Color.red.opacity(0.14) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 4)
-                        )
-                        .scaleEffect(self.isTrashHovered ? 1.08 : 1.0)
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .onHover { hovering in
-                    withAnimation(.easeOut(duration: 0.12)) {
-                        self.isTrashHovered = hovering
-                    }
-                }
-                .help("删除「\(self.item.title)」")
+            Button {
+                self.onDelete()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(self.isTrashHovered ? Color.red : Color.secondary)
+                    .frame(width: 22, height: 22)
+                    .background(
+                        self.isTrashHovered ? Color.red.opacity(0.14) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 5)
+                    )
             }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+            .opacity((self.isHovered || self.isSelected) ? 1.0 : 0.0)
+            .allowsHitTesting(self.isHovered || self.isSelected)
+            .onHover { hovering in
+                self.isTrashHovered = hovering
+            }
+            .help("删除「\(self.item.title)」")
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .frame(height: 32)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             self.isSelected
-                ? Color.accentColor.opacity(0.13)
-                : (self.isHovered ? Color.primary.opacity(0.045) : Color.clear),
-            in: RoundedRectangle(cornerRadius: 6)
+                ? Color.accentColor.opacity(0.14)
+                : (self.isHovered ? Color.primary.opacity(0.05) : Color.clear),
+            in: RoundedRectangle(cornerRadius: 7)
         )
         .contentShape(Rectangle())
         .pointerStyle(.link)

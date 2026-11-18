@@ -981,8 +981,8 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         
         let defaults = UserDefaults.standard
         defaults.set(self.bool(forKey: ConfigKey.typewriterEffectEnabled, default: true), forKey: ConfigKey.typewriterEffectEnabled)
-        let styleRaw = self.string(forKey: ConfigKey.typewriterEffectStyle, default: "luxeGlow")
-        defaults.set(styleRaw.isEmpty ? "luxeGlow" : styleRaw, forKey: ConfigKey.typewriterEffectStyle)
+        let styleRaw = self.string(forKey: ConfigKey.typewriterEffectStyle, default: "powerMode")
+        defaults.set(styleRaw.isEmpty ? "powerMode" : styleRaw, forKey: ConfigKey.typewriterEffectStyle)
         defaults.set(self.bool(forKey: ConfigKey.vimCursorEffectEnabled, default: true), forKey: ConfigKey.vimCursorEffectEnabled)
         defaults.set(self.bool(forKey: ConfigKey.plainTextInlineImagesEnabled, default: true), forKey: ConfigKey.plainTextInlineImagesEnabled)
         
@@ -1079,7 +1079,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             (ConfigKey.promptOrganizeMerge, AIAction.organizeAndMerge.defaultSystemPrompt),
             (ConfigKey.weeklyReportAuthor, "陈明扬"),
             (ConfigKey.typewriterEffectEnabled, "true"),
-            (ConfigKey.typewriterEffectStyle, "luxeGlow"),
+            (ConfigKey.typewriterEffectStyle, "powerMode"),
             (ConfigKey.vimCursorEffectEnabled, "true"),
             (ConfigKey.plainTextInlineImagesEnabled, "true"),
             (ConfigKey.usesCustomCursorColor, "false"),

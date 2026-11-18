@@ -918,8 +918,9 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.label = "Emoji"
                 item.toolTip = String(localized: "chrome.toolbar.emoji.tooltip",
                                       defaultValue: "Frequently used emoji", table: "Chrome")
-                item.image = NSImage(systemSymbolName: "face.smiling.inverse", accessibilityDescription: item.label)
-                    ?? NSImage(systemSymbolName: "face.smiling", accessibilityDescription: item.label)
+                let emojiConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
+                item.image = NSImage(systemSymbolName: "face.smiling", accessibilityDescription: item.label)?
+                    .withSymbolConfiguration(emojiConfig)
                 item.menu = Self.quickEmojiMenu()
                 return item
                 
@@ -959,7 +960,9 @@ extension DocumentWindowController: NSToolbarDelegate {
                                     defaultValue: "More", table: "Chrome")
                 item.toolTip = String(localized: "chrome.toolbar.more.tooltip",
                                       defaultValue: "More actions", table: "Chrome")
-                item.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: item.label)
+                let symConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
+                item.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: item.label)?
+                    .withSymbolConfiguration(symConfig)
                 item.menu = Self.moreMenu()
                 return item
                 
@@ -970,7 +973,9 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.toolTip = String(localized: "chrome.toolbar.ai.tooltip",
                                       defaultValue: "Configure AI: endpoint, model, and API key",
                                       table: "Chrome")
-                item.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: item.label)
+                let symConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
+                item.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: item.label)?
+                    .withSymbolConfiguration(symConfig)
                 item.target = NSApp.delegate
                 item.action = #selector(AppDelegate.showAIPreferences(_:))
                 item.isNavigational = true
@@ -985,7 +990,9 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.toolTip = String(localized: "chrome.toolbar.terminal.tooltip",
                                       defaultValue: "Show or hide the terminal in this window",
                                       table: "Chrome")
-                item.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: item.label)
+                let symConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
+                item.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: item.label)?
+                    .withSymbolConfiguration(symConfig)
                 item.action = #selector(ContentViewController.toggleTerminal(_:))
                 // keep it next to the other leading controls, and out of the overflow menu
                 item.isNavigational = true
@@ -999,7 +1006,10 @@ extension DocumentWindowController: NSToolbarDelegate {
                                     defaultValue: "Inspector", table: "Document")
                 item.toolTip = String(localized: "Toolbar.inspector.tooltip",
                                       defaultValue: "Show inspector", table: "Document")
-                item.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: item.label)
+                let symConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
+                item.image = NSImage(systemSymbolName: "sidebar.trailing", accessibilityDescription: item.label)?
+                    .withSymbolConfiguration(symConfig)
+                    ?? NSImage(systemSymbolName: "info.circle", accessibilityDescription: item.label)
                 item.action = #selector(NSSplitViewController.toggleInspector)
                 item.visibilityPriority = .high
                 return item
@@ -1217,8 +1227,11 @@ extension DocumentWindowController: NSToolbarDelegate {
                                     defaultValue: "Edit", table: "Document")
                 item.toolTip = String(localized: "Toolbar.editable.tooltip.off",
                                       defaultValue: "Prevent the document from being edited", table: "Document")
-                item.stateImages[.on] = NSImage(systemSymbolName: "pencil", accessibilityDescription: item.label)
-                item.stateImages[.off] = NSImage(systemSymbolName: "pencil.slash", accessibilityDescription: item.label)
+                let symConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
+                item.stateImages[.on] = NSImage(systemSymbolName: "pencil", accessibilityDescription: item.label)?
+                    .withSymbolConfiguration(symConfig)
+                item.stateImages[.off] = NSImage(systemSymbolName: "pencil.slash", accessibilityDescription: item.label)?
+                    .withSymbolConfiguration(symConfig)
                 item.action = #selector(Document.toggleEditable)
                 item.isNavigational = true
                 return item

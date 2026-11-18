@@ -37,130 +37,36 @@ enum WorkspaceCenterKind: String, CaseIterable, Identifiable {
 
 enum WorkspaceCenterIcons {
     
-    /// Custom vector icon for 周报中心 (a clean weekly report sheet with 3 structured summary bars).
+    /// Custom vector icon for 周报中心 (a crisp, pixel-aligned calendar report badge).
     @MainActor
     static func weeklyReportIcon(isActive: Bool, size: NSSize = NSSize(width: 18, height: 18)) -> NSImage {
         
-        let image = NSImage(size: size, flipped: true) { _ in
-            let strokeColor: NSColor = isActive ? .controlAccentColor : .labelColor
-            let scaleX = size.width / 18.0
-            let scaleY = size.height / 18.0
-            
-            let transform = NSAffineTransform()
-            transform.scaleX(by: scaleX, yBy: scaleY)
-            transform.concat()
-            
-            let cardRect = NSRect(x: 2.75, y: 3.2, width: 12.5, height: 12.3)
-            let cardPath = NSBezierPath(roundedRect: cardRect, xRadius: 2.6, yRadius: 2.6)
-            
-            if isActive {
-                NSGraphicsContext.saveGraphicsState()
-                cardPath.addClip()
-                NSColor.controlAccentColor.withAlphaComponent(0.20).setFill()
-                NSRect(x: 2.75, y: 3.2, width: 12.5, height: 3.3).fill()
-                NSGraphicsContext.restoreGraphicsState()
+        if let sf = NSImage(systemSymbolName: isActive ? "calendar.badge.clock" : "calendar", accessibilityDescription: "周报中心") {
+            let config = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
+            if let configured = sf.withSymbolConfiguration(config) {
+                configured.isTemplate = !isActive
+                return configured
             }
-            
-            strokeColor.setStroke()
-            cardPath.lineWidth = 1.4
-            cardPath.stroke()
-            
-            // Top binding ticks
-            let ticks = NSBezierPath()
-            ticks.lineWidth = 1.4
-            ticks.lineCapStyle = .round
-            ticks.move(to: NSPoint(x: 6.25, y: 1.7))
-            ticks.line(to: NSPoint(x: 6.25, y: 3.5))
-            ticks.move(to: NSPoint(x: 11.75, y: 1.7))
-            ticks.line(to: NSPoint(x: 11.75, y: 3.5))
-            ticks.stroke()
-            
-            // Header divider rule
-            let divider = NSBezierPath()
-            divider.lineWidth = 1.25
-            divider.move(to: NSPoint(x: 2.75, y: 6.5))
-            divider.line(to: NSPoint(x: 15.25, y: 6.5))
-            divider.stroke()
-            
-            // Three ascending summary bars representing weekly progress
-            let bars = NSBezierPath()
-            bars.lineWidth = 1.6
-            bars.lineCapStyle = .round
-            bars.move(to: NSPoint(x: 6.2, y: 12.9))
-            bars.line(to: NSPoint(x: 6.2, y: 10.6))
-            bars.move(to: NSPoint(x: 9.0, y: 12.9))
-            bars.line(to: NSPoint(x: 9.0, y: 8.7))
-            bars.move(to: NSPoint(x: 11.8, y: 12.9))
-            bars.line(to: NSPoint(x: 11.8, y: 9.7))
-            bars.stroke()
-            
-            return true
         }
-        image.isTemplate = !isActive
+        let image = NSImage(size: size)
+        image.isTemplate = true
         return image
     }
     
     
-    /// Custom vector icon for 文档中心 (a split master-detail document library card).
+    /// Custom vector icon for 文档中心 (a crisp, pixel-aligned master-detail document library symbol).
     @MainActor
     static func documentCenterIcon(isActive: Bool, size: NSSize = NSSize(width: 18, height: 18)) -> NSImage {
         
-        let image = NSImage(size: size, flipped: true) { _ in
-            let strokeColor: NSColor = isActive ? .controlAccentColor : .labelColor
-            let scaleX = size.width / 18.0
-            let scaleY = size.height / 18.0
-            
-            let transform = NSAffineTransform()
-            transform.scaleX(by: scaleX, yBy: scaleY)
-            transform.concat()
-            
-            let frameRect = NSRect(x: 2.25, y: 3.0, width: 13.5, height: 12.0)
-            let framePath = NSBezierPath(roundedRect: frameRect, xRadius: 2.6, yRadius: 2.6)
-            
-            if isActive {
-                NSGraphicsContext.saveGraphicsState()
-                framePath.addClip()
-                NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
-                NSRect(x: 2.25, y: 3.0, width: 4.75, height: 12.0).fill()
-                NSGraphicsContext.restoreGraphicsState()
+        if let sf = NSImage(systemSymbolName: isActive ? "square.stack.3d.up.fill" : "square.stack.3d.up", accessibilityDescription: "文档中心") {
+            let config = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
+            if let configured = sf.withSymbolConfiguration(config) {
+                configured.isTemplate = !isActive
+                return configured
             }
-            
-            strokeColor.setStroke()
-            framePath.lineWidth = 1.4
-            framePath.stroke()
-            
-            // Vertical sidebar divider
-            let divider = NSBezierPath()
-            divider.lineWidth = 1.25
-            divider.move(to: NSPoint(x: 7.0, y: 3.0))
-            divider.line(to: NSPoint(x: 7.0, y: 15.0))
-            divider.stroke()
-            
-            // Left list ticks
-            let listTicks = NSBezierPath()
-            listTicks.lineWidth = 1.35
-            listTicks.lineCapStyle = .round
-            for y in [6.2, 9.0, 11.8] {
-                listTicks.move(to: NSPoint(x: 3.9, y: y))
-                listTicks.line(to: NSPoint(x: 5.35, y: y))
-            }
-            listTicks.stroke()
-            
-            // Right document preview lines
-            let docLines = NSBezierPath()
-            docLines.lineWidth = 1.35
-            docLines.lineCapStyle = .round
-            docLines.move(to: NSPoint(x: 8.85, y: 6.7))
-            docLines.line(to: NSPoint(x: 13.65, y: 6.7))
-            docLines.move(to: NSPoint(x: 8.85, y: 9.3))
-            docLines.line(to: NSPoint(x: 13.65, y: 9.3))
-            docLines.move(to: NSPoint(x: 8.85, y: 11.9))
-            docLines.line(to: NSPoint(x: 11.9, y: 11.9))
-            docLines.stroke()
-            
-            return true
         }
-        image.isTemplate = !isActive
+        let image = NSImage(size: size)
+        image.isTemplate = true
         return image
     }
 }
@@ -342,8 +248,11 @@ final class ContentViewController: NSSplitViewController {
         
         switch kind {
             case .weeklyReports:
-                CotLocalDatabase.shared.reloadWeeklyReports()
+                if CotLocalDatabase.shared.weeklyReports.isEmpty {
+                    CotLocalDatabase.shared.reloadWeeklyReports()
+                }
                 self.weeklyReportState.isGeneratorActive = (weeklyMode == .generator)
+                self.weeklyReportState.rebuildGroups()
                 if let selectingReportID {
                     self.weeklyReportState.selectedReportID = selectingReportID
                 } else if self.weeklyReportState.selectedReportID == nil {
@@ -357,6 +266,7 @@ final class ContentViewController: NSSplitViewController {
         let rootView = self.makeCenterHostView(selectedKind: kind)
         if let existing = self.centerHostView {
             existing.rootView = rootView
+            existing.alphaValue = 1
             existing.isHidden = false
         } else {
             let hostingView = NSHostingView(rootView: rootView)
@@ -368,12 +278,6 @@ final class ContentViewController: NSSplitViewController {
                 hostingView.topAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.topAnchor),
                 hostingView.bottomAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.bottomAnchor),
             ])
-            hostingView.alphaValue = 0
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.14
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                hostingView.animator().alphaValue = 1
-            }
             self.centerHostView = hostingView
         }
         
@@ -392,20 +296,8 @@ final class ContentViewController: NSSplitViewController {
         self.activeCenter = nil
         self.removeCenterEscMonitor()
         self.splitView.isHidden = false
+        self.centerHostView?.isHidden = true
         self.view.window?.invalidateCursorRects(for: self.view)
-        
-        if let hostingView = self.centerHostView {
-            self.centerHostView = nil
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.12
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                hostingView.animator().alphaValue = 0
-            } completionHandler: { [weak hostingView] in
-                Task { @MainActor in
-                    hostingView?.removeFromSuperview()
-                }
-            }
-        }
         
         self.view.window?.toolbar?.validateVisibleItems()
         if let textView = self.documentViewController?.focusedTextView {

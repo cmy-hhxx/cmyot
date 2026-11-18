@@ -172,7 +172,7 @@ final class EditorViewController: NSSplitViewController {
                                           tabs: self.tabState)
         self.navigationBarItem = NSSplitViewItem(viewController: NSHostingController(rootView: navigationBar))
         self.navigationBarItem.isCollapsed = true  // reconsidered below
-        let barHeight: CGFloat = isLiquidGlass ? 24 : 20
+        let barHeight: CGFloat = isLiquidGlass ? 30 : 28
         self.navigationBarItem.minimumThickness = barHeight
         self.navigationBarItem.maximumThickness = barHeight
         self.navigationBarItem.holdingPriority = NSLayoutConstraint.Priority(260)

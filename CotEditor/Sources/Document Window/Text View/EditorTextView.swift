@@ -827,16 +827,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         self.refreshHabitGhostSuggestion()
         
-        // auto completion
-        if self.isAutomaticCompletionEnabled {
-            if !self.hasMarkedText(),
-               self.rangeForUserCompletion.length >= self.minimumAutomaticCompletionLength
-            {
-                self.completionDebouncer.schedule(delay: .seconds(self.automaticCompletionDelay))
-            } else {
-                self.completionDebouncer.cancel()
-            }
-        }
+        // Cancel any popup completion list — inline ghost completion shows only the single highest-probability candidate
+        self.completionDebouncer.cancel()
     }
     
     
@@ -2295,7 +2287,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         let caretLocation = self.selectedRange.location
-        guard let candidate = UserHabitPredictor.shared.predictNextPhrase(in: self.string, caretLocation: caretLocation),
+        let syntaxWords = self.syntaxCompletionWords.map(\.text)
+        guard let candidate = UserHabitPredictor.shared.predictNextPhrase(
+            in: self.string,
+            caretLocation: caretLocation,
+            syntaxWords: syntaxWords
+        ),
               !candidate.isEmpty,
               var caretRect = self.boundingRect(for: self.selectedRange)
         else {
@@ -2780,20 +2777,10 @@ extension EditorTextView {
     }
     
     
-    /// Displays the word completion candidates list.
+    /// Updates the single highest-probability inline ghost candidate (never opens a popup list).
     private func performCompletion() {
         
-        guard
-            !self.hasMarkedText(),
-            self.selectedRange.isEmpty,
-            self.rangeForUserCompletion.length >= self.minimumAutomaticCompletionLength,
-            self.string.character(before: self.selectedRange)
-                .map(CharacterSet.whitespacesAndNewlines.contains) != true,  // last character is blank
-            self.string.character(after: self.selectedRange)
-                .map(CharacterSet.alphanumerics.contains) != true  // cursor is (probably) at the middle of a word
-        else { return }
-        
-        self.complete(self)
+        self.refreshHabitGhostSuggestion()
     }
 }
 
