@@ -20,6 +20,7 @@
 //
 
 import AppKit
+import Defaults
 import QuartzCore
 
 /// Ready-made typing effect presets inspired by `activate-power-mode` / `vscode-power-mode`,
@@ -64,14 +65,48 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
 
 
 /// Built-in CoreAnimation visual effects for tactile typing feedback,
-/// inline habit ghost-completion micro-animations, and zero-flicker elastic Vim cursor motion.
+/// inline habit ghost-completion micro-animations, and Neovide-inspired 4-corner spring Vim cursor physics.
 @MainActor final class EditorFunEffectsController {
     
     // MARK: Public State
     
-    /// Kept for API compatibility; always `false` because the static cursor draws normally
-    /// while the GPU-accelerated cursor overlay glides cleanly without full-viewport redraws.
-    var isVimCursorInFlight: Bool { false }
+    /// `true` while our persistent GPU-composited Vim cursor layer owns cursor rendering
+    /// (Normal / Visual / Replace modes when focused and enabled), suppressing AppKit's
+    /// blinking/2pt-clipped `drawInsertionPoint` so there is never double-cursor overlap or flicker.
+    var ownsVimCursorDrawing: Bool {
+        guard UserDefaults.standard[.vimMode],
+              VimState.shared.mode != .insert,
+              let textView = self.textView,
+              textView.window?.isKeyWindow == true,
+              textView.window?.firstResponder === textView
+        else { return false }
+        return UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
+    }
+    
+    /// Legacy alias kept for compatibility.
+    var isVimCursorInFlight: Bool { self.ownsVimCursorDrawing }
+    
+    
+    // MARK: Private Types
+    
+    private struct SpringCorner {
+        var pos: CGPoint
+        var vel: CGPoint
+        var omega: CGFloat
+        var zeta: CGFloat
+    }
+    
+    private final class DisplayLinkProxy: NSObject {
+        weak var owner: EditorFunEffectsController?
+        init(owner: EditorFunEffectsController) { self.owner = owner }
+        @objc func step(_ link: CADisplayLink) {
+            MainActor.assumeIsolated {
+                self.owner?.stepVimCursorDisplayLink(link)
+            }
+        }
+    }
     
     
     // MARK: Private Properties
@@ -104,14 +139,16 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private var ghostContainerLayer: CALayer?
     private var ghostSweepLayer: CALayer?
     
-    // Zero-flicker GPU-composited Vim cursor glide & elastic trail layers
+    // Persistent 120Hz Neovide 4-corner spring Vim cursor
     private var vimRootLayer: CALayer?
-    private var cursorOverlayLayer: CALayer?
-    private var trailLayer: CAShapeLayer?
-    private var lastCursorRect: NSRect?
-    private var lastTargetRect: NSRect?
-    private var lastTriggerTime: CFTimeInterval = 0
-    private var hideOverlayTask: Task<Void, Never>?
+    private var vimCursorLayer: CAShapeLayer?
+    private var springCorners: [SpringCorner] = []
+    private var targetCorners: [CGPoint] = []
+    private var currentTargetRect: NSRect?
+    private var hasInitializedCorners = false
+    private var vimDisplayLink: CADisplayLink?
+    private var displayLinkProxy: DisplayLinkProxy?
+    private var lastStepTime: CFTimeInterval = 0
     
     
     init(textView: EditorTextView) {
@@ -120,24 +157,70 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     }
     
     
+    isolated deinit {
+        
+        self.vimDisplayLink?.invalidate()
+        self.vimDisplayLink = nil
+    }
+    
+    
     // MARK: Public API
     
-    /// Clears cached cursor tracking and hides transient overlays (e.g. on focus loss or zoom).
+    /// Clears cached cursor tracking and hides transient overlays (e.g. on focus loss or window change).
     func resetCursorTracking() {
         
-        self.hideOverlayTask?.cancel()
-        self.hideOverlayTask = nil
-        self.lastCursorRect = nil
-        self.lastTargetRect = nil
+        self.vimDisplayLink?.isPaused = true
+        self.vimDisplayLink?.invalidate()
+        self.vimDisplayLink = nil
+        self.hasInitializedCorners = false
+        self.currentTargetRect = nil
+        self.springCorners.removeAll()
+        self.targetCorners.removeAll()
         self.hideGhostSuggestion(animated: false)
         self.hideComboHud(animated: false)
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        self.cursorOverlayLayer?.removeAllAnimations()
-        self.cursorOverlayLayer?.opacity = 0
-        self.trailLayer?.removeAllAnimations()
-        self.trailLayer?.opacity = 0
+        self.vimCursorLayer?.removeAllAnimations()
+        self.vimCursorLayer?.opacity = 0
+        CATransaction.commit()
+    }
+    
+    
+    /// Syncs the persistent GPU Vim cursor immediately (or smoothly when switching modes/colors/focus).
+    func syncVimCursor(animated: Bool) {
+        
+        guard self.ownsVimCursorDrawing, let textView = self.textView else {
+            self.hideVimCursorOnly()
+            return
+        }
+        let loc: Int
+        if VimState.shared.mode == .visual,
+           VimState.shared.visualOwnerID == ObjectIdentifier(textView),
+           let active = VimState.shared.visualActiveLocation
+        {
+            loc = active
+        } else {
+            loc = textView.selectedRange().location
+        }
+        guard let rect = textView.vimCursorRect(at: loc) else {
+            self.hideVimCursorOnly()
+            return
+        }
+        self.moveVimCursor(to: rect, color: textView.effectiveCursorColor, animated: animated)
+    }
+    
+    
+    /// Hides the persistent Vim cursor layer (e.g. when entering Insert mode).
+    func hideVimCursorOnly() {
+        
+        self.vimDisplayLink?.isPaused = true
+        self.hasInitializedCorners = false
+        self.currentTargetRect = nil
+        
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        self.vimCursorLayer?.opacity = 0
         CATransaction.commit()
     }
     
@@ -836,160 +919,330 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     }
     
     
-    // MARK: Zero-Flicker Elastic Vim Cursor Glide & Trail
+    // MARK: Neovide 4-Corner Damped Spring Vim Cursor (120Hz DisplayLink, Zero-Flicker)
     
-    /// Animates a smooth, GPU-composited Vim cursor glide + elastic comet trail without triggering
-    /// full-viewport `needsDisplay` redraws (which previously caused screen flashes and cursor twitching).
+    /// Transitions the single persistent GPU Vim cursor to `newRect` using Neovide's 4-corner
+    /// analytical damped-spring physics (leading corners snap ahead with crisp Q-bounce,
+    /// trailing corners stretch smoothly behind, preserving velocity across rapid key repeats).
     func animateVimCursorTransition(from oldRect: NSRect?, to newRect: NSRect, color: NSColor) {
         
-        let isEnabled = UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
-        guard
-            isEnabled,
-            let textView = self.textView,
-            textView.window?.isKeyWindow == true,
-            newRect.width > 0, newRect.height > 0,
-            newRect.height < 80
-        else { return }
-        
-        // Deduplicate duplicate invocations within the same key event cycle
-        // (e.g. setSelectedRanges + VimEngine.setCursor calling back-to-back for the same target)
-        let now = CACurrentMediaTime()
-        if let lastTarget = self.lastTargetRect,
-           now - self.lastTriggerTime < 0.035,
-           abs(lastTarget.minX - newRect.minX) < 0.5,
-           abs(lastTarget.minY - newRect.minY) < 0.5,
-           abs(lastTarget.width - newRect.width) < 0.5
-        {
+        guard self.ownsVimCursorDrawing else {
+            self.hideVimCursorOnly()
             return
         }
-        self.lastTargetRect = newRect
-        self.lastTriggerTime = now
+        self.moveVimCursor(to: newRect, color: color, animated: true, fallbackFrom: oldRect)
+    }
+    
+    
+    private func moveVimCursor(
+        to rawRect: NSRect,
+        color: NSColor,
+        animated: Bool,
+        fallbackFrom: NSRect? = nil
+    ) {
+        guard let textView = self.textView,
+              rawRect.width > 0, rawRect.height > 0, rawRect.height < 80,
+              let hostLayer = self.ensureClippedHostLayer(for: textView)
+        else { return }
         
-        guard let hostLayer = self.ensureClippedHostLayer(for: textView) else { return }
         self.ensureVimLayers(in: hostLayer)
+        guard let cursorLayer = self.vimCursorLayer else { return }
         
-        let targetCenter = CGPoint(x: newRect.midX, y: newRect.midY)
-        
-        let inFlightCenter: CGPoint? = if let overlay = self.cursorOverlayLayer,
-                                          overlay.opacity > 0.05,
-                                          let presentation = overlay.presentation(),
-                                          presentation.position.x.isFinite, presentation.position.y.isFinite
-        {
-            presentation.position
+        let mode = VimState.shared.mode
+        let visualRect: NSRect
+        if mode == .replace {
+            let barH = max(3, round(rawRect.height * 0.22))
+            visualRect = NSRect(x: rawRect.minX, y: rawRect.maxY - barH, width: rawRect.width, height: barH)
         } else {
-            nil
+            visualRect = rawRect
         }
         
-        let rawSourceRect = oldRect ?? self.lastCursorRect ?? newRect
-        self.lastCursorRect = newRect
-        
-        let visible = textView.visibleRect.insetBy(dx: -40, dy: -60)
-        var startCenter = inFlightCenter ?? CGPoint(x: rawSourceRect.midX, y: rawSourceRect.midY)
-        var startSize = rawSourceRect.size
-        if !visible.contains(startCenter) || startSize.height > 80 {
-            startCenter = targetCenter
-            startSize = newRect.size
+        let cursorAlpha: CGFloat = switch mode {
+            case .replace: 0.86
+            case .visual: 0.64
+            default: 0.56
         }
-        
-        let dx = targetCenter.x - startCenter.x
-        let dy = targetCenter.y - startCenter.y
-        let distance = hypot(dx, dy)
-        guard distance > 1.5 else { return }
-        
-        let maxTrailDistance: CGFloat = 200
-        if distance > maxTrailDistance {
-            let ratio = 48.0 / distance
-            startCenter = CGPoint(x: targetCenter.x - dx * ratio, y: targetCenter.y - dy * ratio)
-        }
-        
-        let effectiveDistance = hypot(targetCenter.x - startCenter.x, targetCenter.y - startCenter.y)
-        if effectiveDistance > 4.5, let trail = self.trailLayer {
-            let path = Self.sweptTrailPath(
-                from: startCenter,
-                fromSize: startSize,
-                to: targetCenter,
-                toSize: newRect.size
-            )
-            
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            trail.removeAllAnimations()
-            trail.path = path
-            trail.fillColor = color.withAlphaComponent(0.26).cgColor
-            trail.opacity = 0
-            CATransaction.commit()
-            
-            let fade = CABasicAnimation(keyPath: "opacity")
-            fade.fromValue = 0.88
-            fade.toValue = 0.0
-            fade.duration = 0.12
-            fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
-            fade.isRemovedOnCompletion = true
-            trail.add(fade, forKey: "trailFade")
-        }
-        
-        guard let cursorLayer = self.cursorOverlayLayer else { return }
-        
-        let mostlyHorizontal = abs(dx) >= abs(dy)
-        let stretchRatio = min(1.32, 1.0 + effectiveDistance / 110.0 * 0.28)
-        let squashRatio = max(0.82, 1.0 / sqrt(stretchRatio))
-        let midSize = CGSize(
-            width: newRect.width * (mostlyHorizontal ? stretchRatio : squashRatio),
-            height: newRect.height * (mostlyHorizontal ? squashRatio : stretchRatio)
-        )
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        cursorLayer.removeAllAnimations()
-        cursorLayer.backgroundColor = color.withAlphaComponent(0.52).cgColor
+        cursorLayer.fillColor = color.withAlphaComponent(cursorAlpha).cgColor
         cursorLayer.shadowColor = color.cgColor
-        cursorLayer.shadowOpacity = 0.28
-        cursorLayer.shadowRadius = 3.0
+        cursorLayer.shadowOpacity = 0.26
+        cursorLayer.shadowRadius = 3.2
         cursorLayer.shadowOffset = .zero
-        cursorLayer.position = targetCenter
-        cursorLayer.bounds = CGRect(origin: .zero, size: newRect.size)
         cursorLayer.opacity = 1.0
         CATransaction.commit()
         
-        let duration: CFTimeInterval = 0.125
-        let easeOut = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+        let destCorners = Self.rectCorners(visualRect)
         
-        let posAnim = CABasicAnimation(keyPath: "position")
-        posAnim.fromValue = NSValue(point: startCenter)
-        posAnim.toValue = NSValue(point: targetCenter)
-        posAnim.duration = duration
-        posAnim.timingFunction = easeOut
+        // Deduplicate back-to-back identical target calls within the same event
+        if self.hasInitializedCorners,
+           let lastTarget = self.currentTargetRect,
+           abs(lastTarget.minX - visualRect.minX) < 0.35,
+           abs(lastTarget.minY - visualRect.minY) < 0.35,
+           abs(lastTarget.width - visualRect.width) < 0.35,
+           abs(lastTarget.height - visualRect.height) < 0.35
+        {
+            return
+        }
         
-        let boundsAnim = CAKeyframeAnimation(keyPath: "bounds.size")
-        boundsAnim.values = [
-            NSValue(size: startSize),
-            NSValue(size: midSize),
-            NSValue(size: newRect.size),
-        ]
-        boundsAnim.keyTimes = [0.0, 0.38, 1.0]
-        boundsAnim.duration = duration
-        boundsAnim.timingFunctions = [easeOut, easeOut]
+        if !self.hasInitializedCorners, let fallbackFrom,
+           fallbackFrom.width > 0, fallbackFrom.height > 0, fallbackFrom.height < 80,
+           textView.visibleRect.insetBy(dx: -80, dy: -100).intersects(fallbackFrom)
+        {
+            let startCorners = Self.rectCorners(fallbackFrom)
+            self.springCorners = startCorners.map { SpringCorner(pos: $0, vel: .zero, omega: 32, zeta: 0.80) }
+            self.hasInitializedCorners = true
+        }
         
-        let fadeOut = CAKeyframeAnimation(keyPath: "opacity")
-        fadeOut.values = [0.95, 0.80, 0.0]
-        fadeOut.keyTimes = [0.0, 0.65, 1.0]
-        fadeOut.duration = duration
-        
-        cursorLayer.add(posAnim, forKey: "glidePosition")
-        cursorLayer.add(boundsAnim, forKey: "jellyBounds")
-        cursorLayer.add(fadeOut, forKey: "glideOpacity")
-        
-        self.hideOverlayTask?.cancel()
-        self.hideOverlayTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(130))
-            guard !Task.isCancelled, let overlay = self?.cursorOverlayLayer else { return }
+        guard animated, self.hasInitializedCorners, self.springCorners.count == 4, textView.window != nil else {
+            self.springCorners = destCorners.map { SpringCorner(pos: $0, vel: .zero, omega: 32, zeta: 0.80) }
+            self.targetCorners = destCorners
+            self.currentTargetRect = visualRect
+            self.hasInitializedCorners = true
+            self.vimDisplayLink?.isPaused = true
+            
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            overlay.opacity = 0
+            cursorLayer.path = CGPath(roundedRect: visualRect, cornerWidth: 1.8, cornerHeight: 1.8, transform: nil)
             CATransaction.commit()
+            return
         }
+        
+        // Current quad bounding center
+        let curCenter = CGPoint(
+            x: self.springCorners.reduce(0) { $0 + $1.pos.x } * 0.25,
+            y: self.springCorners.reduce(0) { $0 + $1.pos.y } * 0.25
+        )
+        let targetCenter = CGPoint(x: visualRect.midX, y: visualRect.midY)
+        var dx = targetCenter.x - curCenter.x
+        var dy = targetCenter.y - curCenter.y
+        var distance = hypot(dx, dy)
+        
+        if distance < 0.4 && self.vimDisplayLink?.isPaused != false {
+            self.springCorners = destCorners.map { SpringCorner(pos: $0, vel: .zero, omega: 32, zeta: 0.80) }
+            self.targetCorners = destCorners
+            self.currentTargetRect = visualRect
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            cursorLayer.path = CGPath(roundedRect: visualRect, cornerWidth: 1.8, cornerHeight: 1.8, transform: nil)
+            CATransaction.commit()
+            return
+        }
+        
+        // For huge cross-document jumps (gg / G / Ctrl-D), bring the offscreen origin closer
+        // along the travel vector so it swoops gracefully into frame instead of teleporting across 5000px.
+        let maxJump: CGFloat = 220
+        if distance > maxJump {
+            let clampedOriginDist: CGFloat = 115
+            let shiftX = dx - (dx / distance) * clampedOriginDist
+            let shiftY = dy - (dy / distance) * clampedOriginDist
+            for i in 0..<4 {
+                self.springCorners[i].pos.x += shiftX
+                self.springCorners[i].pos.y += shiftY
+                self.springCorners[i].vel = .zero
+            }
+            dx = (dx / distance) * clampedOriginDist
+            dy = (dy / distance) * clampedOriginDist
+            distance = clampedOriginDist
+        }
+        
+        let ux = distance > 0.5 ? dx / distance : 1.0
+        let uy = distance > 0.5 ? dy / distance : 0.0
+        
+        // Unit corner offsets in flipped coordinates: TL(-1,-1), TR(+1,-1), BR(+1,+1), BL(-1,+1)
+        let unitOffsets: [CGPoint] = [
+            CGPoint(x: -1, y: -1),
+            CGPoint(x: 1, y: -1),
+            CGPoint(x: 1, y: 1),
+            CGPoint(x: -1, y: 1),
+        ]
+        
+        let shortStepBoost: CGFloat = distance < 20 ? 1.15 : 1.0
+        for i in 0..<4 {
+            let dot = unitOffsets[i].x * ux + unitOffsets[i].y * uy  // [-sqrt(2), +sqrt(2)]
+            let rank = max(0, min(1, (dot + 1.4142) / 2.8284))      // 1 = leading front, 0 = trailing tail
+            // Leading corners snap ahead with light underdamping (Q-elastic rebound);
+            // trailing corners trail behind to create Neovide's signature smear/stretch.
+            self.springCorners[i].omega = (22.0 + 24.0 * rank) * shortStepBoost
+            self.springCorners[i].zeta = 0.85 - 0.11 * rank
+        }
+        
+        self.targetCorners = destCorners
+        self.currentTargetRect = visualRect
+        self.startOrResumeDisplayLink(for: textView)
+    }
+    
+    
+    private func startOrResumeDisplayLink(for textView: EditorTextView) {
+        
+        if self.vimDisplayLink == nil {
+            let proxy = DisplayLinkProxy(owner: self)
+            self.displayLinkProxy = proxy
+            let link = textView.displayLink(target: proxy, selector: #selector(DisplayLinkProxy.step(_:)))
+            link.add(to: .main, forMode: .common)
+            self.vimDisplayLink = link
+        }
+        self.lastStepTime = CACurrentMediaTime()
+        self.vimDisplayLink?.isPaused = false
+    }
+    
+    
+    private func stepVimCursorDisplayLink(_ link: CADisplayLink) {
+        
+        guard self.ownsVimCursorDrawing,
+              let cursorLayer = self.vimCursorLayer,
+              self.springCorners.count == 4,
+              self.targetCorners.count == 4,
+              let targetRect = self.currentTargetRect
+        else {
+            link.isPaused = true
+            return
+        }
+        
+        let now = CACurrentMediaTime()
+        let dt = CGFloat(min(max(now - self.lastStepTime, 1.0 / 240.0), 1.0 / 24.0))
+        self.lastStepTime = now
+        
+        var maxError: CGFloat = 0
+        var maxSpeed: CGFloat = 0
+        
+        for i in 0..<4 {
+            let target = self.targetCorners[i]
+            let omega = self.springCorners[i].omega
+            let zeta = self.springCorners[i].zeta
+            
+            let (nx, nvx) = Self.stepUnderdampedSpring(
+                pos: self.springCorners[i].pos.x,
+                vel: self.springCorners[i].vel.x,
+                target: target.x,
+                omega: omega,
+                zeta: zeta,
+                dt: dt
+            )
+            let (ny, nvy) = Self.stepUnderdampedSpring(
+                pos: self.springCorners[i].pos.y,
+                vel: self.springCorners[i].vel.y,
+                target: target.y,
+                omega: omega,
+                zeta: zeta,
+                dt: dt
+            )
+            
+            self.springCorners[i].pos = CGPoint(x: nx, y: ny)
+            self.springCorners[i].vel = CGPoint(x: nvx, y: nvy)
+            
+            maxError = max(maxError, hypot(nx - target.x, ny - target.y))
+            maxSpeed = max(maxSpeed, hypot(nvx, nvy))
+        }
+        
+        if maxError < 0.12 && maxSpeed < 1.8 {
+            for i in 0..<4 {
+                self.springCorners[i].pos = self.targetCorners[i]
+                self.springCorners[i].vel = .zero
+            }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            cursorLayer.path = CGPath(roundedRect: targetRect, cornerWidth: 1.8, cornerHeight: 1.8, transform: nil)
+            CATransaction.commit()
+            link.isPaused = true
+            return
+        }
+        
+        let points = self.springCorners.map { NSPoint(x: $0.pos.x, y: $0.pos.y) }
+        let path = Self.roundedConvexHullPath(of: points, cornerRadius: 1.8)
+        
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        cursorLayer.path = path
+        CATransaction.commit()
+    }
+    
+    
+    /// Exact analytical closed-form integration for a damped harmonic oscillator (`0 < zeta < 1`).
+    private static func stepUnderdampedSpring(
+        pos: CGFloat,
+        vel: CGFloat,
+        target: CGFloat,
+        omega: CGFloat,
+        zeta: CGFloat,
+        dt: CGFloat
+    ) -> (CGFloat, CGFloat) {
+        
+        let x0 = pos - target
+        let omegaZeta = omega * zeta
+        let omegaD = omega * sqrt(max(0.0001, 1.0 - zeta * zeta))
+        let decay = exp(-omegaZeta * dt)
+        let cosTerm = cos(omegaD * dt)
+        let sinTerm = sin(omegaD * dt)
+        let c2 = (vel + omegaZeta * x0) / omegaD
+        
+        let newX = target + decay * (x0 * cosTerm + c2 * sinTerm)
+        let newV = decay * ((c2 * omegaD - x0 * omegaZeta) * cosTerm - (x0 * omegaD + c2 * omegaZeta) * sinTerm)
+        return (newX, newV)
+    }
+    
+    
+    private static func rectCorners(_ rect: NSRect) -> [CGPoint] {
+        
+        [
+            CGPoint(x: rect.minX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.maxY),
+            CGPoint(x: rect.minX, y: rect.maxY),
+        ]
+    }
+    
+    
+    /// Computes the convex hull of `points` (Andrew's monotone chain) and rounds all corners smoothly.
+    private static func roundedConvexHullPath(of points: [NSPoint], cornerRadius: CGFloat) -> CGPath {
+        
+        let sorted = points.sorted { lhs, rhs in
+            if abs(lhs.x - rhs.x) > 0.01 { return lhs.x < rhs.x }
+            return lhs.y < rhs.y
+        }
+        guard sorted.count >= 3 else {
+            return CGPath(rect: .zero, transform: nil)
+        }
+        
+        func cross(_ origin: NSPoint, _ first: NSPoint, _ second: NSPoint) -> CGFloat {
+            (first.x - origin.x) * (second.y - origin.y) - (first.y - origin.y) * (second.x - origin.x)
+        }
+        
+        var lower: [NSPoint] = []
+        for point in sorted {
+            while lower.count >= 2 && cross(lower[lower.count - 2], lower[lower.count - 1], point) <= 0.001 {
+                lower.removeLast()
+            }
+            lower.append(point)
+        }
+        
+        var upper: [NSPoint] = []
+        for point in sorted.reversed() {
+            while upper.count >= 2 && cross(upper[upper.count - 2], upper[upper.count - 1], point) <= 0.001 {
+                upper.removeLast()
+            }
+            upper.append(point)
+        }
+        
+        let hull = Array(lower.dropLast()) + Array(upper.dropLast())
+        guard hull.count >= 3 else {
+            return CGPath(rect: .zero, transform: nil)
+        }
+        
+        let path = CGMutablePath()
+        let count = hull.count
+        let last = hull[count - 1]
+        let first = hull[0]
+        path.move(to: CGPoint(x: (last.x + first.x) * 0.5, y: (last.y + first.y) * 0.5))
+        
+        for idx in 0..<count {
+            let current = hull[idx]
+            let next = hull[(idx + 1) % count]
+            path.addArc(tangent1End: current, tangent2End: next, radius: cornerRadius)
+        }
+        path.closeSubpath()
+        return path
     }
     
     
@@ -1091,8 +1344,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         self.vimRootLayer?.removeFromSuperlayer()
         self.vimRootLayer = nil
-        self.cursorOverlayLayer = nil
-        self.trailLayer = nil
+        self.vimCursorLayer = nil
     }
     
     
@@ -1199,42 +1451,10 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         hostLayer.addSublayer(root)
         self.vimRootLayer = root
         
-        let trail = CAShapeLayer()
-        trail.opacity = 0
-        root.addSublayer(trail)
-        self.trailLayer = trail
-        
-        let overlay = CALayer()
-        overlay.cornerRadius = 2.0
-        overlay.opacity = 0
-        root.addSublayer(overlay)
-        self.cursorOverlayLayer = overlay
-    }
-    
-    
-    private static func sweptTrailPath(
-        from startCenter: CGPoint,
-        fromSize: CGSize,
-        to endCenter: CGPoint,
-        toSize: CGSize
-    ) -> CGPath {
-        
-        let dx = endCenter.x - startCenter.x
-        let dy = endCenter.y - startCenter.y
-        let len = max(1, hypot(dx, dy))
-        let nx = -dy / len
-        let ny = dx / len
-        
-        let startHalf = max(1.5, min(fromSize.width, fromSize.height) * 0.28)
-        let endHalf = max(2.5, min(toSize.width, toSize.height) * 0.44)
-        
-        let path = CGMutablePath()
-        path.move(to: CGPoint(x: startCenter.x + nx * startHalf, y: startCenter.y + ny * startHalf))
-        path.addLine(to: CGPoint(x: endCenter.x + nx * endHalf, y: endCenter.y + ny * endHalf))
-        path.addLine(to: CGPoint(x: endCenter.x - nx * endHalf, y: endCenter.y - ny * endHalf))
-        path.addLine(to: CGPoint(x: startCenter.x - nx * startHalf, y: startCenter.y - ny * startHalf))
-        path.closeSubpath()
-        return path
+        let cursor = CAShapeLayer()
+        cursor.opacity = 0
+        root.addSublayer(cursor)
+        self.vimCursorLayer = cursor
     }
     
     

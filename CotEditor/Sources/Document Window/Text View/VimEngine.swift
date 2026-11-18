@@ -2031,11 +2031,23 @@ final class VimEngine {
     }
     
     
-    /// Redraws the caret so the block cursor appears/disappears with the mode.
+    /// Redraws/syncs the caret so the block cursor appears/disappears cleanly with the mode.
     private func refreshCursor() {
         
-        self.textView?.updateInsertionPointStateAndRestartTimer(true)
-        self.textView?.setNeedsDisplay(self.textView?.visibleRect ?? .zero)
+        if let editorTextView = self.textView as? EditorTextView {
+            if VimState.shared.mode == .insert {
+                editorTextView.funEffects.hideVimCursorOnly()
+                editorTextView.updateInsertionPointStateAndRestartTimer(true)
+            } else if editorTextView.funEffects.ownsVimCursorDrawing {
+                editorTextView.funEffects.syncVimCursor(animated: true)
+            } else {
+                editorTextView.updateInsertionPointStateAndRestartTimer(true)
+                editorTextView.setNeedsDisplay(editorTextView.visibleRect)
+            }
+        } else {
+            self.textView?.updateInsertionPointStateAndRestartTimer(true)
+            self.textView?.setNeedsDisplay(self.textView?.visibleRect ?? .zero)
+        }
     }
     
     

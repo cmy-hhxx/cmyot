@@ -126,7 +126,17 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     var needsUpdateLineHighlight = true {
         
         didSet {
-            (self.lineHighlightRects + [self.visibleRect]).forEach { self.setNeedsDisplay($0, avoidAdditionalLayout: true) }
+            guard self.needsUpdateLineHighlight, self.highlightsCurrentLines else { return }
+            self.lineHighlightRects.forEach { self.setNeedsDisplay($0, avoidAdditionalLayout: true) }
+            if let caretRect = self.boundingRect(for: self.selectedRange) {
+                let band = NSRect(x: self.visibleRect.minX,
+                                  y: caretRect.minY - 2,
+                                  width: self.visibleRect.width,
+                                  height: caretRect.height + 4)
+                self.setNeedsDisplay(band, avoidAdditionalLayout: true)
+            } else {
+                self.setNeedsDisplay(self.visibleRect, avoidAdditionalLayout: true)
+            }
         }
     }
     var lineHighlightRects: [NSRect] = []
@@ -318,6 +328,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         defer {
             self.invalidateInsertionIndicatorDisplayMode()
             self.invalidateAutomaticPeriodSubstitution()
+            self.funEffects.syncVimCursor(animated: false)
         }
         
         return true
@@ -394,6 +405,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     MainActor.assumeIsolated { [unowned self] in
                         self.invalidateInsertionIndicatorDisplayMode()
                         self.invalidateAutomaticPeriodSubstitution()
+                        self.funEffects.syncVimCursor(animated: false)
                     }
                 },
                 NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [unowned self] _ in
@@ -536,6 +548,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         if self.isAutomaticWhitespaceTrimmingEnabled {
             self.trimTrailingWhitespaceTask.schedule(delay: .seconds(3))
         }
+        
+        if self.funEffects.ownsVimCursorDrawing {
+            self.funEffects.syncVimCursor(animated: true)
+        }
     }
     
     
@@ -574,7 +590,19 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         for indicator in self.insertionIndicators {
             indicator.color = color
         }
-        self.setNeedsDisplay(self.visibleRect, avoidAdditionalLayout: true)
+        self.funEffects.syncVimCursor(animated: false)
+        if !self.funEffects.ownsVimCursorDrawing {
+            self.setNeedsDisplay(self.visibleRect, avoidAdditionalLayout: true)
+        }
+    }
+    
+    
+    override var shouldDrawInsertionPoint: Bool {
+        
+        if self.funEffects.ownsVimCursorDrawing {
+            return false
+        }
+        return super.shouldDrawInsertionPoint
     }
     
     
@@ -604,7 +632,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return
         }
         
-        if self.funEffects.isVimCursorInFlight {
+        // When the persistent 120Hz GPU Vim cursor layer owns rendering, do not draw a second
+        // static block via AppKit's blinking `drawInsertionPoint` (prevents overlap & blink flicker).
+        if self.funEffects.ownsVimCursorDrawing {
             return
         }
         
