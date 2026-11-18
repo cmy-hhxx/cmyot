@@ -373,7 +373,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     queue: .main
                 ) { [weak self] _ in
                     MainActor.assumeIsolated {
-                        self?.funEffects.resetCursorTracking()
+                        self?.funEffects.hideGhostSuggestion(animated: false)
                     }
                 }
             }
@@ -601,6 +601,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             } else {
                 super.drawInsertionPoint(in: caretRect, color: cursorColor, turnedOn: flag)
             }
+            return
+        }
+        
+        if self.funEffects.isVimCursorInFlight {
             return
         }
         
@@ -1049,6 +1053,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         let currentRanges = self.rangesForUserTextChange ?? self.selectedRanges
+        let previousLocation = self.selectedRange.location
+        let shouldTrackVimCursor = !stillSelectingFlag
+            && self.window?.isKeyWindow == true
+            && UserDefaults.standard[.vimMode]
+            && (VimState.shared.mode == .normal || VimState.shared.mode == .replace)
+        let previousVimRect = shouldTrackVimCursor ? self.vimCursorRect(at: previousLocation) : nil
         
         super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelectingFlag)
         
@@ -1100,6 +1110,18 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     try await self?.highlightInstances()
                 }
             }
+        }
+        
+        if shouldTrackVimCursor,
+           let newLocation = selectedRanges.first?.location,
+           newLocation != previousLocation,
+           let newVimRect = self.vimCursorRect(at: newLocation)
+        {
+            self.funEffects.animateVimCursorTransition(
+                from: previousVimRect,
+                to: newVimRect,
+                color: self.effectiveCursorColor
+            )
         }
         
         // send notification on the next run loop
@@ -1527,6 +1549,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         // ourselves at the active end using the same unified cursor color/shape.
         if
             UserDefaults.standard[.vimMode],
+            !self.funEffects.isVimCursorInFlight,
             VimState.shared.mode == .visual,
             VimState.shared.visualOwnerID == ObjectIdentifier(self),
             let location = VimState.shared.visualActiveLocation,

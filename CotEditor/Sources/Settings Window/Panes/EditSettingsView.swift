@@ -30,8 +30,6 @@ struct EditSettingsView: View {
     
     @Namespace private var accessibility
     
-    @Environment(\.layoutDirection) private var layoutDirection
-    
     @AppStorage(.autoExpandTab) private var autoExpandTab
     @AppStorage(.tabWidth) private var tabWidth
     @AppStorage(.detectsIndentStyle) private var detectsIndentStyle
@@ -41,13 +39,9 @@ struct EditSettingsView: View {
     @AppStorage(.autoTrimsTrailingWhitespace) private var autoTrimsTrailingWhitespace
     @AppStorage(.trimsWhitespaceOnlyLines) private var trimsWhitespaceOnlyLines
     
-    @AppStorage(.insertsCommentDelimitersAfterIndent) private var insertsCommentDelimitersAfterIndent
-    @AppStorage(.appendsCommentSpacer) private var appendsCommentSpacer
-    
     @AppStorage(.autoLinkDetection) private var autoLinkDetection
     @AppStorage(.highlightBraces) private var highlightBraces
     @AppStorage(.highlightSelectionInstance) private var highlightSelectionInstance
-    @AppStorage(.selectionInstanceHighlightDelay) private var selectionInstanceHighlightDelay
     
     
     var body: some View {
@@ -100,16 +94,6 @@ struct EditSettingsView: View {
             }
             
             GridRow {
-                Text("Comment:", tableName: "EditSettings")
-                    .gridColumnAlignment(.trailing)
-                
-                VStack(alignment: .leading, spacing: isLiquidGlass ? nil : 6) {
-                    Toggle(String(localized: "Insert comment delimiters after indent", table: "EditSettings"), isOn: $insertsCommentDelimitersAfterIndent)
-                    Toggle(String(localized: "Add a space to comment delimiters", table: "EditSettings"), isOn: $appendsCommentSpacer)
-                }
-            }
-            
-            GridRow {
                 Text("Content parse:", tableName: "EditSettings")
                     .gridColumnAlignment(.trailing)
                 
@@ -117,22 +101,6 @@ struct EditSettingsView: View {
                     Toggle(String(localized: "Link URLs in document", table: "EditSettings"), isOn: $autoLinkDetection)
                     Toggle(String(localized: "Highlight matching braces", table: "EditSettings"), isOn: $highlightBraces)
                     Toggle(String(localized: "Highlight instances of selected text", table: "EditSettings"), isOn: $highlightSelectionInstance)
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("Delay:", tableName: "EditSettings")
-                            .accessibilityLabeledPair(role: .label, id: "selectionInstanceHighlightDelay", in: self.accessibility)
-                        Stepper(value: $selectionInstanceHighlightDelay, in: 0...10, step: 0.25, format: .number.precision(.fractionLength(2)).numberLocale, label: EmptyView.init)
-                            .monospacedDigit()
-                            .multilineTextAlignment(self.layoutDirection == .rightToLeft ? .leading : .trailing)  // width: 40
-                            .accessibilityValue(Duration.seconds(self.selectionInstanceHighlightDelay)
-                                .formatted(.units(allowed: [.seconds], width: .wide, fractionalPart: .show(length: 2))))
-                            .accessibilityLabeledPair(role: .content, id: "selectionInstanceHighlightDelay", in: self.accessibility)
-                        Text("seconds", tableName: "EditSettings", comment: "init for delay time")
-                            .accessibilityHidden(true)
-                    }
-                    .disabled(!self.highlightSelectionInstance)
-                    .foregroundStyle(self.highlightSelectionInstance ? .primary : .tertiary)
-                    .controlSize(.small)
-                    .padding(.leading, 20)
                 }
             }
             

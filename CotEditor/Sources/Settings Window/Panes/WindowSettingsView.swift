@@ -30,21 +30,10 @@ struct WindowSettingsView: View {
     
     @Namespace private var accessibility
     
-    @Environment(\.layoutDirection) private var layoutDirection
-    
-    @AppStorage(.windowTabbing) private var windowTabbing
-    @AppStorage(.windowWidth) private var windowWidth
-    @AppStorage(.windowHeight) private var windowHeight
-    
     @AppStorage(.showLineNumbers) private var showLineNumbers
     @available(macOS, deprecated: 26)
     @AppStorage(.showLineNumberSeparator) private var showLineNumberSeparator
     @AppStorage(.showInvisibles) private var showInvisibles
-    @AppStorage(.showInvisibleNewLine) private var showInvisibleNewLine
-    @AppStorage(.showInvisibleTab) private var showInvisibleTab
-    @AppStorage(.showInvisibleSpace) private var showInvisibleSpace
-    @AppStorage(.showInvisibleWhitespaces) private var showInvisibleWhitespaces
-    @AppStorage(.showInvisibleControl) private var showInvisibleControl
     @AppStorage(.showIndentGuides) private var showIndentGuides
     @AppStorage(.showPageGuide) private var showPageGuide
     @AppStorage(.pageGuideColumn) private var pageGuideColumn
@@ -53,8 +42,6 @@ struct WindowSettingsView: View {
     @AppStorage(.wrapLines) private var wrapLines
     @AppStorage(.enablesHangingIndent) private var enablesHangingIndent
     @AppStorage(.hangingIndentWidth) private var hangingIndentWidth
-    @AppStorage(.writingDirection) private var writingDirection
-    @AppStorage(.overscrollRate) private var overscrollRate
     
     @AppStorage(.showStatusBarLines) private var showStatusBarLines
     @AppStorage(.showStatusBarChars) private var showStatusBarChars
@@ -67,76 +54,6 @@ struct WindowSettingsView: View {
     var body: some View {
         
         Grid(alignment: .leadingFirstTextBaseline, verticalSpacing: 8) {
-            GridRow(alignment: .lastTextBaseline) {
-                Text("Open documents in tabs:", tableName: "WindowSettings",
-                     comment: "Omit “documents” if label becomes too long.")
-                    .accessibilityLabeledPair(role: .label, id: "windowTabbing", in: self.accessibility)
-                
-                Picker(selection: $windowTabbing) {
-                    Text(
-                        AttributedString(localized: "Respect System Setting", table: "WindowSettings") +
-                        AttributedString(" (\(NSWindow.userTabbingPreference.label))",
-                                         attributes: .init().foregroundColor(.secondary))
-                    ).tag(-1)
-                    
-                    Divider()
-                    
-                    ForEach([NSWindow.UserTabbingPreference.manual, .inFullScreen, .always], id: \.self) {
-                        Text($0.label).tag($0.rawValue)
-                    }
-                } label: {
-                    EmptyView()
-                }
-                .fixedSize()
-                .accessibilityLabeledPair(role: .content, id: "windowTabbing", in: self.accessibility)
-            }
-            
-            GridRow {
-                Text("Window size:", tableName: "WindowSettings")
-                    .accessibilityLabeledPair(role: .label, id: "windowSize", in: self.accessibility)
-                    .gridColumnAlignment(.trailing)
-                
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        VStack(spacing: 1) {
-                            TextField(value: $windowWidth, format: .number, prompt: Text("Auto", tableName: "WindowSettings", comment: "placeholder for window size field"), label: EmptyView.init)
-                                .monospacedDigit()
-                                .multilineTextAlignment(self.layoutDirection == .rightToLeft ? .leading : .trailing)
-                                .frame(width: 64)
-                                .accessibilityLabeledPair(role: .content, id: "windowWidth", in: self.accessibility)
-                            Text("Width", tableName: "WindowSettings")
-                                .controlSize(.small)
-                                .accessibilitySortPriority(1)
-                                .accessibilityLabeledPair(role: .label, id: "windowWidth", in: self.accessibility)
-                        }
-                        Text("px", tableName: "WindowSettings", comment: "length unit following an input field")
-                            .accessibilityLabel(String(localized: "pixels", table: "WindowSettings", comment: "accessibility label for “px”"))
-                    }
-                    .accessibilityElement(children: .contain)
-                    
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        VStack(spacing: 1) {
-                            TextField(value: $windowHeight, format: .number, prompt: Text("Auto", tableName: "WindowSettings", comment: "placeholder for window size field"), label: EmptyView.init)
-                                .monospacedDigit()
-                                .multilineTextAlignment(self.layoutDirection == .rightToLeft ? .leading : .trailing)
-                                .frame(width: 64)
-                                .accessibilityLabeledPair(role: .label, id: "windowHeight", in: self.accessibility)
-                            Text("Height", tableName: "WindowSettings")
-                                .controlSize(.small)
-                                .accessibilitySortPriority(1)
-                                .accessibilityLabeledPair(role: .content, id: "windowHeight", in: self.accessibility)
-                        }
-                        Text("px", tableName: "WindowSettings", comment: "length unit following an input field")
-                            .accessibilityLabel(String(localized: "pixels", table: "WindowSettings", comment: "accessibility label for “px”"))
-                    }
-                    .accessibilityElement(children: .contain)
-                }
-                .accessibilityLabeledPair(role: .content, id: "windowSize", in: self.accessibility)
-            }
-            
-            Divider()
-                .padding(.vertical, 6)
-            
             GridRow {
                 Text("Show:", tableName: "WindowSettings")
                     .gridColumnAlignment(.trailing)
@@ -150,21 +67,6 @@ struct WindowSettingsView: View {
                     }
                     
                     Toggle(String(localized: "Invisible characters", table: "WindowSettings"), isOn: $showInvisibles)
-                    Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: isLiquidGlass ? nil : 6) {
-                        GridRow {
-                            Toggle(String(localized: "Line ending", table: "WindowSettings", comment: "invisible character type"), isOn: $showInvisibleNewLine)
-                            Toggle(String(localized: "Tab", table: "WindowSettings", comment: "invisible character type"), isOn: $showInvisibleTab)
-                            Toggle(String(localized: "Space", table: "WindowSettings", comment: "invisible character type"), isOn: $showInvisibleSpace)
-                        }
-                        GridRow {
-                            Toggle(String(localized: "Other whitespace", table: "WindowSettings", comment: "invisible character type"), isOn: $showInvisibleWhitespaces)
-                            Toggle(String(localized: "Other control characters", table: "WindowSettings", comment: "invisible character type"), isOn: $showInvisibleControl)
-                                .gridCellColumns(2)
-                        }
-                    }
-                    .padding(.leading, 20)
-                    .fixedSize()
-                    
                     Toggle(String(localized: "Indent guides", table: "WindowSettings"), isOn: $showIndentGuides)
                     HStack(alignment: .firstTextBaseline) {
                         Toggle(String(localized: "Page guide at column:", table: "WindowSettings"), isOn: $showPageGuide)
@@ -201,35 +103,6 @@ struct WindowSettingsView: View {
                 }
             }
             
-            GridRow {
-                Text("Writing direction:", tableName: "WindowSettings")
-                    .accessibilityLabeledPair(role: .label, id: "writingDirection", in: self.accessibility)
-                    .gridColumnAlignment(.trailing)
-                
-                Picker(selection: $writingDirection) {
-                    ForEach(WritingDirection.allCases, id: \.self) {
-                        Text($0.label)
-                    }
-                } label: {
-                    EmptyView()
-                }
-                .pickerStyle(.radioGroup)
-                .horizontalRadioGroupLayout()
-                .labelsHidden()
-                .accessibilityLabeledPair(role: .content, id: "writingDirection", in: self.accessibility)
-            }
-            
-            GridRow {
-                Text("Overscroll:", tableName: "WindowSettings")
-                    .accessibilityLabeledPair(role: .label, id: "overscrollRate", in: self.accessibility)
-                    .gridColumnAlignment(.trailing)
-                
-                Stepper(value: $overscrollRate, in: 0...1, step: 0.1, format: .percent.precision(.fractionLength(0)), label: EmptyView.init)
-                    .monospacedDigit()
-                    .multilineTextAlignment(self.layoutDirection == .rightToLeft ? .leading : .trailing)
-                    .accessibilityLabeledPair(role: .content, id: "overscrollRate", in: self.accessibility)
-            }
-            
             Divider()
                 .padding(.vertical, 6)
             
@@ -261,55 +134,6 @@ struct WindowSettingsView: View {
         }
         .scenePadding()
         .frame(minWidth: 620)
-    }
-}
-
-
-private extension NSWindow.UserTabbingPreference {
-    
-    var label: String {
-        
-        switch self {
-            case .manual:
-                String(localized: "Never",
-                       table: "WindowSettings",
-                       comment: "window tabbing option")
-            case .always:
-                String(localized: "Always",
-                       table: "WindowSettings",
-                       comment: "window tabbing option")
-            case .inFullScreen:
-                String(localized: "Automatically",
-                       table: "WindowSettings",
-                       comment: "window tabbing option")
-            @unknown default:
-                fatalError()
-        }
-    }
-}
-
-
-private extension WritingDirection {
-    
-    var label: String {
-        
-        switch self {
-            case .leftToRight:
-                String(localized: "WritingDirection.leftToRight.label",
-                       defaultValue: "Left to right",
-                       table: "WindowSettings",
-                       comment: "writing direction option")
-            case .rightToLeft:
-                String(localized: "WritingDirection.rightToLeft.label",
-                       defaultValue: "Right to left",
-                       table: "WindowSettings",
-                       comment: "writing direction option")
-            case .vertical:
-                String(localized: "WritingDirection.vertical.label",
-                       defaultValue: "Vertical",
-                       table: "WindowSettings",
-                       comment: "writing direction option")
-        }
     }
 }
 

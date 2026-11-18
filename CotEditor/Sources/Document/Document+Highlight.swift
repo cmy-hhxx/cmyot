@@ -230,10 +230,10 @@ extension Document {
     
     
     /// Writes the current document content and metadata into `CotLocalDatabase`.
-    func syncToLocalDatabase() {
+    func syncToLocalDatabase(force: Bool = false) {
         
         let content = self.textStorage.string
-        guard self.fileURL != nil || !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard force || self.fileURL != nil || !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         
         let rawDocID = self.databaseDocumentID.hasPrefix("doc:") ? self.databaseDocumentID : "doc:\(self.databaseDocumentID)"
         let recordID = self.fileURL?.path(percentEncoded: false) ?? rawDocID

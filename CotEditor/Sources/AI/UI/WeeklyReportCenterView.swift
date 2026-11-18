@@ -139,7 +139,6 @@ import UniformTypeIdentifiers
     var selectedReportID: String?
     var searchText: String = ""
     var isGeneratorActive: Bool = false
-    var statusBanner: String?
     
     // Generator fields
     var authorName: String = CotLocalDatabase.shared.weeklyReportAuthor
@@ -185,34 +184,58 @@ import UniformTypeIdentifiers
 struct WeeklyReportCenterView: View {
     
     @Bindable var state: WeeklyReportCenterState
-    var onOpenReport: ((StoredWeeklyReport) -> Void)? = nil
-    var onDismiss: (() -> Void)? = nil
+    var onOpenReport: ((StoredWeeklyReport) -> Void)?
+    var onDismiss: (() -> Void)?
     
     @State private var db = CotLocalDatabase.shared
     @State private var isEditingSelected = false
     @State private var editingDraft = ""
     @State private var copiedFlag = false
+    @State private var toastMessage: String?
+    @State private var toastTask: Task<Void, Never>?
     
     var body: some View {
         
-        HStack(spacing: 0) {
-            self.sidebar
-                .frame(width: 268)
-            
-            Rectangle()
-                .fill(Color.primary.opacity(0.06))
-                .frame(width: 1)
-            
-            Group {
-                if self.state.isGeneratorActive {
-                    self.generatorView
-                } else if let selected = self.selectedReport {
-                    self.detailView(for: selected)
-                } else {
-                    self.emptyDetailView
+        let groups = self.groupedYearMonths
+        let flatReports = groups.flatMap(\.reports)
+        let activeReport = self.selectedReport(in: flatReports)
+        
+        ZStack(alignment: .bottom) {
+            HStack(spacing: 0) {
+                self.sidebar(groups: groups, flatReports: flatReports, activeReport: activeReport)
+                    .frame(width: 268)
+                
+                Rectangle()
+                    .fill(Color.primary.opacity(0.06))
+                    .frame(width: 1)
+                
+                Group {
+                    if self.state.isGeneratorActive {
+                        self.generatorView
+                    } else if let selected = activeReport {
+                        self.detailView(for: selected)
+                    } else {
+                        self.emptyDetailView
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            
+            if let toastMessage {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.green)
+                    Text(toastMessage)
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                .padding(.bottom, 16)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .background(Color(nsColor: .textBackgroundColor))
         .onAppear {
@@ -252,23 +275,22 @@ struct WeeklyReportCenterView: View {
         }
     }
     
-    private var orderedFilteredReports: [StoredWeeklyReport] {
+    private func selectedReport(in orderedReports: [StoredWeeklyReport]) -> StoredWeeklyReport? {
         
-        self.groupedYearMonths.flatMap(\.reports)
-    }
-    
-    private var selectedReport: StoredWeeklyReport? {
-        
-        guard let id = self.state.selectedReportID else { return self.orderedFilteredReports.first }
-        return self.orderedFilteredReports.first(where: { $0.id == id })
+        guard let id = self.state.selectedReportID else { return orderedReports.first }
+        return orderedReports.first(where: { $0.id == id })
             ?? self.db.weeklyReports.first(where: { $0.id == id })
-            ?? self.orderedFilteredReports.first
+            ?? orderedReports.first
     }
     
     
     // MARK: Sidebar
     
-    private var sidebar: some View {
+    private func sidebar(
+        groups: [(month: String, reports: [StoredWeeklyReport])],
+        flatReports: [StoredWeeklyReport],
+        activeReport: StoredWeeklyReport?
+    ) -> some View {
         
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
@@ -302,6 +324,7 @@ struct WeeklyReportCenterView: View {
                             .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 5))
                         }
                         .buttonStyle(.plain)
+                        .pointerStyle(.link)
                         .help("返回编辑器 (Esc)")
                     }
                 }
@@ -324,6 +347,7 @@ struct WeeklyReportCenterView: View {
                                 .foregroundStyle(.tertiary)
                         }
                         .buttonStyle(.plain)
+                        .pointerStyle(.link)
                     }
                 }
                 .padding(.horizontal, 9)
@@ -340,19 +364,14 @@ struct WeeklyReportCenterView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    .pointerStyle(.link)
                     
                     Button("导入…") {
                         self.runImportPanel()
                     }
                     .controlSize(.small)
+                    .pointerStyle(.link)
                     .help("从 .zip 压缩包、文件夹或 .md 文件导入历史周报")
-                }
-                
-                if let banner = self.state.statusBanner {
-                    Text(banner)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
             }
             .padding(.horizontal, 12)
@@ -365,7 +384,7 @@ struct WeeklyReportCenterView: View {
             
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(self.groupedYearMonths, id: \.month) { group in
+                    ForEach(groups, id: \.month) { group in
                         HStack(spacing: 5) {
                             Text(group.month)
                                 .font(.system(size: 11, weight: .semibold))
@@ -381,7 +400,7 @@ struct WeeklyReportCenterView: View {
                         ForEach(group.reports) { report in
                             WeeklyReportSidebarRow(
                                 report: report,
-                                isSelected: !self.state.isGeneratorActive && self.selectedReport?.id == report.id,
+                                isSelected: !self.state.isGeneratorActive && activeReport?.id == report.id,
                                 onSelect: {
                                     self.isEditingSelected = false
                                     self.state.isGeneratorActive = false
@@ -391,7 +410,7 @@ struct WeeklyReportCenterView: View {
                                     self.open(report: report)
                                 },
                                 onDelete: {
-                                    self.delete(report: report)
+                                    self.delete(report: report, in: flatReports)
                                 }
                             )
                         }
@@ -427,6 +446,7 @@ struct WeeklyReportCenterView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    .pointerStyle(.link)
                     
                     if self.isEditingSelected {
                         Button("保存") {
@@ -440,21 +460,24 @@ struct WeeklyReportCenterView: View {
                                 isEnhanced: false
                             )
                             self.isEditingSelected = false
-                            self.state.statusBanner = "已保存 \(report.periodLabel)"
+                            self.showToast("已保存 \(report.periodLabel)")
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                        .pointerStyle(.link)
                         
                         Button("取消") {
                             self.isEditingSelected = false
                         }
                         .controlSize(.small)
+                        .pointerStyle(.link)
                     } else {
                         Button("编辑") {
                             self.editingDraft = report.content
                             self.isEditingSelected = true
                         }
                         .controlSize(.small)
+                        .pointerStyle(.link)
                     }
                     
                     Button(self.copiedFlag ? "已拷贝 ✓" : "拷贝") {
@@ -462,20 +485,14 @@ struct WeeklyReportCenterView: View {
                         pboard.clearContents()
                         pboard.setString(report.content, forType: .string)
                         self.copiedFlag = true
+                        self.showToast("已拷贝「\(report.periodLabel)」")
                         Task {
                             try? await Task.sleep(for: .seconds(1.5))
                             self.copiedFlag = false
                         }
                     }
                     .controlSize(.small)
-                    
-                    Button(role: .destructive) {
-                        self.delete(report: report)
-                    } label: {
-                        Label("删除", systemImage: "trash")
-                    }
-                    .controlSize(.small)
-                    .help("移除这篇周报")
+                    .pointerStyle(.link)
                 }
                 .padding(.leading, 8)
                 
@@ -497,13 +514,17 @@ struct WeeklyReportCenterView: View {
                     .background(Color(nsColor: .textBackgroundColor))
             } else {
                 ScrollView {
-                    Text(report.content)
+                    let preview = report.content.count > 6_000
+                        ? String(report.content.prefix(6_000)) + "\n\n……（仅预览前 6,000 字，点击上方「打开」查看全部）"
+                        : report.content
+                    Text(preview)
                         .font(.system(size: 13))
                         .lineSpacing(3.5)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 22)
                         .padding(.vertical, 18)
+                        .id(report.id)
                 }
                 .background(Color(nsColor: .textBackgroundColor))
             }
@@ -528,6 +549,7 @@ struct WeeklyReportCenterView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
+            .pointerStyle(.link)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))
@@ -551,6 +573,7 @@ struct WeeklyReportCenterView: View {
                     self.state.isGeneratorActive = false
                 }
                 .controlSize(.small)
+                .pointerStyle(.link)
                 .padding(.leading, 6)
                 
                 Spacer(minLength: 0)
@@ -601,6 +624,7 @@ struct WeeklyReportCenterView: View {
                                     self.state.refreshOpenSources()
                                 }
                                 .controlSize(.mini)
+                                .pointerStyle(.link)
                             }
                             
                             ForEach(self.$state.openSources) { $source in
@@ -637,6 +661,7 @@ struct WeeklyReportCenterView: View {
                                     self.state.fragmentsText = ""
                                 }
                                 .controlSize(.mini)
+                                .pointerStyle(.link)
                             }
                             TextEditor(text: self.$state.fragmentsText)
                                 .font(.system(size: 11.5))
@@ -662,21 +687,23 @@ struct WeeklyReportCenterView: View {
                             }
                         }
                         .buttonStyle(.borderedProminent)
+                        .pointerStyle(.link)
                         .disabled(self.state.isGenerating)
                         
                         if !self.state.generatedOutput.isEmpty {
                             Button("存入周报库并在编辑器打开") {
                                 let saved = self.db.saveGeneratedWeeklyReport(content: self.state.generatedOutput)
-                                self.state.statusBanner = "已保存：\(saved.periodLabel)"
                                 self.state.selectedReportID = saved.id
                                 self.state.isGeneratorActive = false
                                 self.open(report: saved)
                             }
+                            .pointerStyle(.link)
                             
                             Button("只存周报库") {
                                 let saved = self.db.saveGeneratedWeeklyReport(content: self.state.generatedOutput)
-                                self.state.statusBanner = "已存周报：\(saved.periodLabel)"
+                                self.showToast("已存周报：\(saved.periodLabel)")
                             }
+                            .pointerStyle(.link)
                         }
                     }
                     
@@ -719,20 +746,37 @@ struct WeeklyReportCenterView: View {
     }
     
     
-    private func delete(report: StoredWeeklyReport) {
+    private func delete(report: StoredWeeklyReport, in list: [StoredWeeklyReport]) {
         
-        let list = self.orderedFilteredReports
-        if let idx = list.firstIndex(where: { $0.id == report.id }) {
-            let nextReport = list.indices.contains(idx + 1) ? list[idx + 1] : (idx > 0 ? list[idx - 1] : nil)
-            self.state.selectedReportID = nextReport?.id
+        withAnimation(.snappy(duration: 0.22)) {
+            if let idx = list.firstIndex(where: { $0.id == report.id }) {
+                let nextReport = list.indices.contains(idx + 1) ? list[idx + 1] : (idx > 0 ? list[idx - 1] : nil)
+                self.state.selectedReportID = nextReport?.id
+            }
+            
+            self.db.deleteWeeklyReport(id: report.id)
+            if self.state.selectedReportID == report.id {
+                self.state.selectedReportID = self.db.weeklyReports.first?.id
+            }
+            self.isEditingSelected = false
         }
+        self.showToast("已移除 \(report.periodLabel)")
+    }
+    
+    
+    private func showToast(_ message: String) {
         
-        self.db.deleteWeeklyReport(id: report.id)
-        if self.state.selectedReportID == report.id {
-            self.state.selectedReportID = self.db.weeklyReports.first?.id
+        self.toastTask?.cancel()
+        withAnimation(.easeOut(duration: 0.16)) {
+            self.toastMessage = message
         }
-        self.isEditingSelected = false
-        self.state.statusBanner = "已移除 \(report.periodLabel)"
+        self.toastTask = Task {
+            try? await Task.sleep(for: .milliseconds(1800))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeIn(duration: 0.2)) {
+                self.toastMessage = nil
+            }
+        }
     }
     
     
@@ -750,12 +794,12 @@ struct WeeklyReportCenterView: View {
             Task { @MainActor in
                 do {
                     let count = try self.db.importWeeklyReports(fromURLs: panel.urls)
-                    self.state.statusBanner = "成功导入 \(count) 篇周报"
+                    self.showToast("成功导入 \(count) 篇周报")
                     if self.state.selectedReportID == nil {
                         self.state.selectedReportID = self.db.weeklyReports.first?.id
                     }
                 } catch {
-                    self.state.statusBanner = "导入失败：\(error.localizedDescription)"
+                    self.showToast("导入失败：\(error.localizedDescription)")
                 }
             }
         }
@@ -855,13 +899,17 @@ private struct WeeklyReportSidebarRow: View {
                         .foregroundStyle(self.isTrashHovered ? Color.red : Color.secondary)
                         .frame(width: 22, height: 22)
                         .background(
-                            self.isTrashHovered ? Color.red.opacity(0.12) : Color.clear,
+                            self.isTrashHovered ? Color.red.opacity(0.14) : Color.clear,
                             in: RoundedRectangle(cornerRadius: 4)
                         )
+                        .scaleEffect(self.isTrashHovered ? 1.08 : 1.0)
                 }
                 .buttonStyle(.plain)
+                .pointerStyle(.link)
                 .onHover { hovering in
-                    self.isTrashHovered = hovering
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        self.isTrashHovered = hovering
+                    }
                 }
                 .help("删除「\(self.report.periodLabel)」")
             }
@@ -876,6 +924,7 @@ private struct WeeklyReportSidebarRow: View {
             in: RoundedRectangle(cornerRadius: 6)
         )
         .contentShape(Rectangle())
+        .pointerStyle(.link)
         .onHover { hovering in
             self.isHovered = hovering
         }

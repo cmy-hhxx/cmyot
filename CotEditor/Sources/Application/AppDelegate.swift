@@ -432,10 +432,10 @@ extension Logger {
     }
     
     
-    /// Shows Snippet pane in the Settings window.
+    /// Fallback action when snippet editor menu item is invoked directly.
     @IBAction func showSnippetEditor(_ sender: Any?) {
         
-        self.settingsWindowController.openPane(.snippets)
+        self.settingsWindowController.openPane(.edit)
     }
     
     
@@ -979,8 +979,20 @@ extension Logger {
         ]
         
         func retitle(in menu: NSMenu) {
+            let hiddenSelectors: Set<Selector> = [
+                #selector(DocumentViewController.openSplitTextView(_:)),
+                #selector(DocumentViewController.splitEditorHorizontally(_:)),
+                #selector(DocumentViewController.splitEditorVertically(_:)),
+                #selector(AppDelegate.showSnippetEditor(_:)),
+            ]
             for item in menu.items {
-                if let action = item.action, let title = titles[action] {
+                if item.submenu === self.snippetMenu {
+                    item.isHidden = true
+                    item.keyEquivalent = ""
+                } else if let action = item.action, hiddenSelectors.contains(action) {
+                    item.isHidden = true
+                    item.keyEquivalent = ""
+                } else if let action = item.action, let title = titles[action] {
                     item.title = title
                 }
                 if let submenu = item.submenu {

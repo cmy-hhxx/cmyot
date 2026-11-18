@@ -43,7 +43,6 @@ import SwiftUI
     var items: [ManagedDocumentItem] = []
     var selectedID: String?
     var searchText: String = ""
-    var statusBanner: String?
     
     private var liveDocsByID: [String: Document] = [:]
     
@@ -55,25 +54,7 @@ import SwiftUI
     
     func refresh() {
         
-        var liveByKey: [String: Document] = [:]
-        var orderedOpenDocs: [Document] = []
-        var seenPointers = Set<ObjectIdentifier>()
-        
-        for window in NSApp.orderedWindows {
-            guard let docVC = (window.windowController as? DocumentWindowController)?.documentViewController else { continue }
-            for pane in docVC.editorViewControllers {
-                for tab in pane.tabs {
-                    let doc = tab.document
-                    guard seenPointers.insert(ObjectIdentifier(doc)).inserted else { continue }
-                    orderedOpenDocs.append(doc)
-                }
-            }
-        }
-        for case let doc as Document in NSDocumentController.shared.documents {
-            guard seenPointers.insert(ObjectIdentifier(doc)).inserted else { continue }
-            orderedOpenDocs.append(doc)
-        }
-        
+        let orderedOpenDocs = Self.collectOpenDocuments()
         var dbByCanonicalKey: [String: StoredDocumentRecord] = [:]
         for record in CotLocalDatabase.shared.documents {
             let key = Self.canonicalKey(filePath: record.filePath, rawID: record.id)
@@ -82,6 +63,7 @@ import SwiftUI
             }
         }
         
+        var liveByKey: [String: Document] = [:]
         var merged: [ManagedDocumentItem] = []
         var usedKeys = Set<String>()
         
@@ -106,10 +88,11 @@ import SwiftUI
                 doc.fileModificationDate ?? .distantPast,
                 dbMatch?.updatedAt ?? Date()
             )
+            let fallbackID = filePath ?? (doc.databaseDocumentID.hasPrefix("doc:") ? doc.databaseDocumentID : "doc:\(doc.databaseDocumentID)")
             
             merged.append(ManagedDocumentItem(
                 id: key,
-                dbRecordID: dbMatch?.id ?? (filePath ?? (doc.databaseDocumentID.hasPrefix("doc:") ? doc.databaseDocumentID : "doc:\(doc.databaseDocumentID)")),
+                dbRecordID: dbMatch?.id ?? fallbackID,
                 title: doc.displayName,
                 filePath: filePath,
                 fileExists: filePath.map { FileManager.default.fileExists(atPath: $0) } ?? false,
@@ -120,7 +103,7 @@ import SwiftUI
                 isDirty: dirty,
                 characterCount: content.count,
                 storedRecord: dbMatch ?? StoredDocumentRecord(
-                    id: filePath ?? (doc.databaseDocumentID.hasPrefix("doc:") ? doc.databaseDocumentID : "doc:\(doc.databaseDocumentID)"),
+                    id: fallbackID,
                     title: doc.displayName,
                     filePath: filePath,
                     syntax: doc.syntaxName,
@@ -131,8 +114,7 @@ import SwiftUI
             ))
         }
         
-        for record in CotLocalDatabase.shared.documents {
-            guard !record.id.hasPrefix("weekly:") else { continue }
+        for record in CotLocalDatabase.shared.documents where !record.id.hasPrefix("weekly:") {
             let key = Self.canonicalKey(filePath: record.filePath, rawID: record.id)
             guard usedKeys.insert(key).inserted else { continue }
             
@@ -163,6 +145,29 @@ import SwiftUI
     }
     
     
+    private static func collectOpenDocuments() -> [Document] {
+        
+        var orderedOpenDocs: [Document] = []
+        var seenPointers = Set<ObjectIdentifier>()
+        
+        for window in NSApp.orderedWindows {
+            guard let docVC = (window.windowController as? DocumentWindowController)?.documentViewController else { continue }
+            for pane in docVC.editorViewControllers {
+                for tab in pane.tabs {
+                    let doc = tab.document
+                    if seenPointers.insert(ObjectIdentifier(doc)).inserted {
+                        orderedOpenDocs.append(doc)
+                    }
+                }
+            }
+        }
+        for case let doc as Document in NSDocumentController.shared.documents where seenPointers.insert(ObjectIdentifier(doc)).inserted {
+            orderedOpenDocs.append(doc)
+        }
+        return orderedOpenDocs
+    }
+    
+    
     private static func canonicalKey(filePath: String?, rawID: String) -> String {
         
         if let filePath, !filePath.isEmpty {
@@ -177,41 +182,66 @@ import SwiftUI
 struct DocumentCenterView: View {
     
     @Bindable var state: DocumentCenterState
-    var onOpenDocument: ((Document?, StoredDocumentRecord?, _ splitRight: Bool) -> Void)? = nil
-    var onDeleteDocument: ((DocumentCenterState.ManagedDocumentItem) -> Void)? = nil
-    var onCreateNewDocument: (() -> Void)? = nil
-    var onDismiss: (() -> Void)? = nil
+    var onOpenDocument: ((Document?, StoredDocumentRecord?) -> Void)?
+    var onDeleteDocument: ((DocumentCenterState.ManagedDocumentItem) -> Void)?
+    var onCreateNewDocument: (() -> Void)?
+    var onDismiss: (() -> Void)?
     
     @State private var db = CotLocalDatabase.shared
     @State private var isRenaming = false
     @State private var renameDraft = ""
     @State private var copiedFlag = false
+    @State private var toastMessage: String?
+    @State private var toastTask: Task<Void, Never>?
     
     var body: some View {
         
-        HStack(spacing: 0) {
-            self.sidebar
-                .frame(width: 268)
-            
-            Rectangle()
-                .fill(Color.primary.opacity(0.06))
-                .frame(width: 1)
-            
-            Group {
-                if let item = self.selectedItem {
-                    self.detailView(for: item)
-                } else {
-                    self.emptyView
+        let displayedItems = self.filteredItems
+        let activeItem = self.selectedItem(in: displayedItems)
+        
+        ZStack(alignment: .bottom) {
+            HStack(spacing: 0) {
+                self.sidebar(items: displayedItems, activeItem: activeItem)
+                    .frame(width: 268)
+                
+                Rectangle()
+                    .fill(Color.primary.opacity(0.06))
+                    .frame(width: 1)
+                
+                Group {
+                    if let item = activeItem {
+                        self.detailView(for: item, displayedItems: displayedItems)
+                    } else {
+                        self.emptyView
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            
+            if let toastMessage {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.green)
+                    Text(toastMessage)
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                .padding(.bottom, 16)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .background(Color(nsColor: .textBackgroundColor))
         .onAppear {
             self.state.refresh()
         }
         .onChange(of: self.db.documents) { _, _ in
-            self.state.refresh()
+            withAnimation(.snappy(duration: 0.22)) {
+                self.state.refresh()
+            }
         }
     }
     
@@ -237,17 +267,19 @@ struct DocumentCenterView: View {
     }
     
     
-    private var selectedItem: DocumentCenterState.ManagedDocumentItem? {
+    private func selectedItem(in items: [DocumentCenterState.ManagedDocumentItem]) -> DocumentCenterState.ManagedDocumentItem? {
         
-        guard let selectedID = self.state.selectedID else { return self.filteredItems.first }
-        return self.filteredItems.first(where: { $0.id == selectedID })
-            ?? self.filteredItems.first
+        guard let selectedID = self.state.selectedID else { return items.first }
+        return items.first(where: { $0.id == selectedID }) ?? items.first
     }
     
     
     // MARK: Sidebar
     
-    private var sidebar: some View {
+    private func sidebar(
+        items: [DocumentCenterState.ManagedDocumentItem],
+        activeItem: DocumentCenterState.ManagedDocumentItem?
+    ) -> some View {
         
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
@@ -259,7 +291,7 @@ struct DocumentCenterView: View {
                     Text("文档中心")
                         .font(.system(size: 13.5, weight: .semibold))
                     
-                    Text("\(self.filteredItems.count)")
+                    Text("\(items.count)")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.tertiary)
                     
@@ -281,6 +313,7 @@ struct DocumentCenterView: View {
                             .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 5))
                         }
                         .buttonStyle(.plain)
+                        .pointerStyle(.link)
                         .help("返回编辑器 (Esc)")
                     }
                 }
@@ -303,18 +336,12 @@ struct DocumentCenterView: View {
                                 .foregroundStyle(.tertiary)
                         }
                         .buttonStyle(.plain)
+                        .pointerStyle(.link)
                     }
                 }
                 .padding(.horizontal, 9)
                 .padding(.vertical, 6)
                 .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
-                
-                if let banner = self.state.statusBanner {
-                    Text(banner)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
             }
             .padding(.horizontal, 12)
             .padding(.top, 12)
@@ -326,23 +353,20 @@ struct DocumentCenterView: View {
             
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    ForEach(self.filteredItems) { item in
+                    ForEach(items) { item in
                         DocumentSidebarRow(
                             item: item,
-                            isSelected: self.selectedItem?.id == item.id,
+                            isSelected: activeItem?.id == item.id,
                             statusColor: self.statusColor(for: item),
                             onSelect: {
                                 self.isRenaming = false
                                 self.state.selectedID = item.id
                             },
                             onOpen: {
-                                self.open(item: item, splitRight: false)
-                            },
-                            onOpenSplit: {
-                                self.open(item: item, splitRight: true)
+                                self.open(item: item)
                             },
                             onDelete: {
-                                self.delete(item: item)
+                                self.delete(item: item, in: items)
                             }
                         )
                     }
@@ -365,7 +389,10 @@ struct DocumentCenterView: View {
     
     // MARK: Detail View
     
-    private func detailView(for item: DocumentCenterState.ManagedDocumentItem) -> some View {
+    private func detailView(
+        for item: DocumentCenterState.ManagedDocumentItem,
+        displayedItems: [DocumentCenterState.ManagedDocumentItem]
+    ) -> some View {
         
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 8) {
@@ -381,10 +408,12 @@ struct DocumentCenterView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    .pointerStyle(.link)
                     Button("取消") {
                         self.isRenaming = false
                     }
                     .controlSize(.small)
+                    .pointerStyle(.link)
                 } else {
                     Text(item.title)
                         .font(.system(size: 16, weight: .semibold))
@@ -399,6 +428,7 @@ struct DocumentCenterView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .pointerStyle(.link)
                     .help("重命名")
                     
                     Text("\(item.characterCount) 字")
@@ -408,39 +438,27 @@ struct DocumentCenterView: View {
                 
                 HStack(spacing: 6) {
                     Button {
-                        self.open(item: item, splitRight: false)
+                        self.open(item: item)
                     } label: {
                         Label("打开", systemImage: "macwindow")
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    
-                    Button {
-                        self.open(item: item, splitRight: true)
-                    } label: {
-                        Label("分屏", systemImage: "rectangle.split.2x1")
-                    }
-                    .controlSize(.small)
+                    .pointerStyle(.link)
                     
                     Button(self.copiedFlag ? "已拷贝 ✓" : "拷贝") {
                         let pboard = NSPasteboard.general
                         pboard.clearContents()
                         pboard.setString(item.content, forType: .string)
                         self.copiedFlag = true
+                        self.showToast("已拷贝「\(item.title)」")
                         Task {
                             try? await Task.sleep(for: .seconds(1.5))
                             self.copiedFlag = false
                         }
                     }
                     .controlSize(.small)
-                    
-                    Button(role: .destructive) {
-                        self.delete(item: item)
-                    } label: {
-                        Label("删除", systemImage: "trash")
-                    }
-                    .controlSize(.small)
-                    .help("删除此文档记录（磁盘文件不受影响）")
+                    .pointerStyle(.link)
                 }
                 .padding(.leading, 8)
                 
@@ -454,8 +472,8 @@ struct DocumentCenterView: View {
                 .frame(height: 1)
             
             ScrollView {
-                let preview = item.content.count > 40_000
-                    ? String(item.content.prefix(40_000)) + "\n\n……（文档较长，点击上方「打开」查看全部内容）"
+                let preview = item.content.count > 6_000
+                    ? String(item.content.prefix(6_000)) + "\n\n……（仅预览前 6,000 字，点击上方「打开」查看全部）"
                     : (item.content.isEmpty ? "（空文档）" : item.content)
                 
                 Text(preview)
@@ -465,6 +483,7 @@ struct DocumentCenterView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 22)
                     .padding(.vertical, 18)
+                    .id(item.id)
             }
             .background(Color(nsColor: .textBackgroundColor))
         }
@@ -488,6 +507,7 @@ struct DocumentCenterView: View {
                         self.state.searchText = ""
                     }
                     .controlSize(.small)
+                    .pointerStyle(.link)
                 }
                 if let onCreateNewDocument = self.onCreateNewDocument {
                     Button("新建文档") {
@@ -495,6 +515,7 @@ struct DocumentCenterView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    .pointerStyle(.link)
                 }
             }
         }
@@ -505,11 +526,11 @@ struct DocumentCenterView: View {
     
     // MARK: Actions
     
-    private func open(item: DocumentCenterState.ManagedDocumentItem, splitRight: Bool) {
+    private func open(item: DocumentCenterState.ManagedDocumentItem) {
         
         let liveDoc = self.state.liveDocument(for: item.id)
         if let onOpenDocument = self.onOpenDocument {
-            onOpenDocument(liveDoc, item.storedRecord, splitRight)
+            onOpenDocument(liveDoc, item.storedRecord)
         } else if let liveDoc {
             liveDoc.makeWindowControllers()
             liveDoc.showWindows()
@@ -519,21 +540,22 @@ struct DocumentCenterView: View {
     }
     
     
-    private func delete(item: DocumentCenterState.ManagedDocumentItem) {
+    private func delete(item: DocumentCenterState.ManagedDocumentItem, in list: [DocumentCenterState.ManagedDocumentItem]) {
         
-        let list = self.filteredItems
-        if let idx = list.firstIndex(where: { $0.id == item.id }) {
-            let nextItem = list.indices.contains(idx + 1) ? list[idx + 1] : (idx > 0 ? list[idx - 1] : nil)
-            self.state.selectedID = nextItem?.id
+        withAnimation(.snappy(duration: 0.22)) {
+            if let idx = list.firstIndex(where: { $0.id == item.id }) {
+                let nextItem = list.indices.contains(idx + 1) ? list[idx + 1] : (idx > 0 ? list[idx - 1] : nil)
+                self.state.selectedID = nextItem?.id
+            }
+            
+            if let onDeleteDocument = self.onDeleteDocument {
+                onDeleteDocument(item)
+            } else if let recordID = item.dbRecordID {
+                self.db.deleteDocument(id: recordID, filePath: item.filePath)
+                self.state.refresh()
+            }
         }
-        
-        if let onDeleteDocument = self.onDeleteDocument {
-            onDeleteDocument(item)
-        } else if let recordID = item.dbRecordID {
-            self.db.deleteDocument(id: recordID, filePath: item.filePath)
-            self.state.refresh()
-        }
-        self.state.statusBanner = "已删除「\(item.title)」"
+        self.showToast("已删除「\(item.title)」")
     }
     
     
@@ -548,16 +570,32 @@ struct DocumentCenterView: View {
         if let liveDoc = self.state.liveDocument(for: item.id) {
             do {
                 let newName = try WorkspaceOrganizer.renameDocument(liveDoc, to: trimmed)
-                self.state.statusBanner = "已重命名为「\(newName)」"
+                self.showToast("已重命名为「\(newName)」")
             } catch {
-                self.state.statusBanner = "重命名失败：\(error.localizedDescription)"
+                self.showToast("重命名失败：\(error.localizedDescription)")
             }
         } else if let recordID = item.dbRecordID, item.filePath == nil {
             self.db.renameDocument(oldID: recordID, newID: recordID, newTitle: trimmed, newFilePath: nil)
-            self.state.statusBanner = "已重命名为「\(trimmed)」"
+            self.showToast("已重命名为「\(trimmed)」")
         }
         self.isRenaming = false
         self.state.refresh()
+    }
+    
+    
+    private func showToast(_ message: String) {
+        
+        self.toastTask?.cancel()
+        withAnimation(.easeOut(duration: 0.16)) {
+            self.toastMessage = message
+        }
+        self.toastTask = Task {
+            try? await Task.sleep(for: .milliseconds(1800))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeIn(duration: 0.2)) {
+                self.toastMessage = nil
+            }
+        }
     }
 }
 
@@ -569,7 +607,6 @@ private struct DocumentSidebarRow: View {
     let statusColor: Color
     var onSelect: () -> Void
     var onOpen: () -> Void
-    var onOpenSplit: () -> Void
     var onDelete: () -> Void
     
     @State private var isHovered = false
@@ -598,13 +635,17 @@ private struct DocumentSidebarRow: View {
                         .foregroundStyle(self.isTrashHovered ? Color.red : Color.secondary)
                         .frame(width: 22, height: 22)
                         .background(
-                            self.isTrashHovered ? Color.red.opacity(0.12) : Color.clear,
+                            self.isTrashHovered ? Color.red.opacity(0.14) : Color.clear,
                             in: RoundedRectangle(cornerRadius: 4)
                         )
+                        .scaleEffect(self.isTrashHovered ? 1.08 : 1.0)
                 }
                 .buttonStyle(.plain)
+                .pointerStyle(.link)
                 .onHover { hovering in
-                    self.isTrashHovered = hovering
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        self.isTrashHovered = hovering
+                    }
                 }
                 .help("删除「\(self.item.title)」")
             }
@@ -619,6 +660,7 @@ private struct DocumentSidebarRow: View {
             in: RoundedRectangle(cornerRadius: 6)
         )
         .contentShape(Rectangle())
+        .pointerStyle(.link)
         .onHover { hovering in
             self.isHovered = hovering
         }
@@ -630,7 +672,6 @@ private struct DocumentSidebarRow: View {
         }
         .contextMenu {
             Button("在当前窗口打开") { self.onOpen() }
-            Button("右侧分屏打开") { self.onOpenSplit() }
             Divider()
             Button("删除", role: .destructive) { self.onDelete() }
         }

@@ -485,7 +485,7 @@ final class EditorViewController: NSSplitViewController {
     // MARK: Action Messages
     
     /// Saves the document this pane edits, whatever window it is shown in.
-    @IBAction func save(_ sender: Any?) {
+    @objc(saveDocument:) @IBAction func save(_ sender: Any?) {
         
         self.document.performQuickSave(sender)
         self.updateTabState()
@@ -493,7 +493,7 @@ final class EditorViewController: NSSplitViewController {
     
     
     /// Saves the document this pane edits under a new name.
-    @IBAction func saveAs(_ sender: Any?) {
+    @objc(saveDocumentAs:) @IBAction func saveAs(_ sender: Any?) {
         
         self.document.saveAs(sender)
     }
@@ -700,23 +700,13 @@ final class EditorViewController: NSSplitViewController {
             return []
         }
         
-        let containerView = self.contentViewController.view
-        let point = containerView.convert(sender.draggingLocation, from: nil)
-        let zone = PaneDropZone.from(point: point, in: containerView.bounds)
-        
-        // Dropping onto the center of the same single-tab pane does nothing.
-        if zone == .center, self.tabs.contains(where: { $0.id == draggedID }) {
+        // Dropping onto the same pane does nothing; cross-pane drop moves without splitting.
+        if self.tabs.contains(where: { $0.id == draggedID }) {
             self.hideDropOverlay()
             return []
         }
         
-        // Cannot split a 1-tab pane with its own single tab.
-        if self.tabs.count == 1, self.tabs.first?.id == draggedID {
-            self.hideDropOverlay()
-            return []
-        }
-        
-        self.showDropOverlay(for: zone)
+        self.showDropOverlay(for: .center)
         return .move
     }
     
@@ -731,23 +721,12 @@ final class EditorViewController: NSSplitViewController {
         
         defer { self.hideDropOverlay() }
         
-        guard let draggedID = Self.extractTabID(from: sender.draggingPasteboard) else {
-            return false
-        }
+        guard
+            let draggedID = Self.extractTabID(from: sender.draggingPasteboard),
+            !self.tabs.contains(where: { $0.id == draggedID })
+        else { return false }
         
-        let containerView = self.contentViewController.view
-        let point = containerView.convert(sender.draggingLocation, from: nil)
-        let zone = PaneDropZone.from(point: point, in: containerView.bounds)
-        
-        if self.tabs.count == 1, self.tabs.first?.id == draggedID {
-            return false
-        }
-        
-        if zone == .center, self.tabs.contains(where: { $0.id == draggedID }) {
-            return false
-        }
-        
-        return self.requestDropTabInZone?(draggedID, zone) ?? false
+        return self.requestDropTabInZone?(draggedID, .center) ?? false
     }
     
     
@@ -854,7 +833,7 @@ private final class PaneDropOverlayView: NSView {
         switch self.zone {
             case .center:
                 highlightRect = bounds
-                label = String(localized: "chrome.dropZone.addTab", defaultValue: "Add to Tab Bar", table: "Chrome")
+                label = String(localized: "chrome.dropZone.moveToPane", defaultValue: "移动到此分栏", table: "Chrome")
             case .left:
                 highlightRect = NSRect(x: bounds.minX, y: bounds.minY, width: bounds.width * 0.48, height: bounds.height)
                 label = String(localized: "chrome.dropZone.splitLeft", defaultValue: "Split Left", table: "Chrome")

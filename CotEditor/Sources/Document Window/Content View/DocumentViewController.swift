@@ -589,13 +589,13 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                     (item as? NSMenuItem)?.image = nil
                 }
                 
-            case #selector(openSplitTextView):
-                (item as? NSMenuItem)?.image = self.splitView.isVertical
-                    ? NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: nil)
-                    : NSImage(systemSymbolName: "rectangle.split.1x2", accessibilityDescription: nil)
-                if #unavailable(macOS 26) {
-                    (item as? NSMenuItem)?.image = nil
-                }
+            case #selector(openSplitTextView),
+                 #selector(splitEditorVertically),
+                 #selector(splitEditorHorizontally):
+                return false
+                
+            case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)):
+                return true
                 
             case #selector(closeSplitTextView):
                 return self.editorViewControllers.count > 1
@@ -1134,6 +1134,21 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
+    /// Saves the currently focused pane's document (`⌘S`).
+    @objc(saveDocument:) @IBAction func saveDocument(_ sender: Any?) {
+        
+        self.focusedDocument.performQuickSave(sender)
+        self.editorViewControllers.forEach { $0.updateTabState() }
+    }
+    
+    
+    /// Opens Save As for the currently focused pane's document (`⌘⇧S`).
+    @objc(saveDocumentAs:) @IBAction func saveDocumentAs(_ sender: Any?) {
+        
+        self.focusedDocument.saveAs(sender)
+    }
+    
+    
     /// Runs the embedded Vision OCR model on a clipboard or chosen image, then connects to AI for smart structuring.
     @IBAction func runOCRAndAI(_ sender: Any?) {
         
@@ -1642,6 +1657,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     ///   - isVertical: `true` to place the new pane to the right, `false` to place it below.
     private func openSplitEditor(for sender: Any?, isVertical: Bool) {
         
+        // Splitting is reserved strictly for explicit ⌃A % / ⌃A " commands from the active editor.
+        guard sender is EditorTextView else { return }
         guard self.editorViewControllers.count < Self.maximumNumberOfSplitEditors else { return NSSound.beep() }
         
         guard
@@ -2538,85 +2555,10 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Moves a dragged tab onto `targetPane`'s content area (`.center`) or creates a split (`.left`/`.right`/`.top`/`.bottom`).
+    /// Moves a dragged tab into `targetPane` without creating a new split pane.
     func handleDroppedTab(id tabID: UUID, onto targetPane: EditorViewController, zone: PaneDropZone) -> Bool {
         
-        if zone == .center {
-            return self.handleDroppedTab(id: tabID, onto: targetPane, before: nil)
-        }
-        
-        guard
-            self.editorViewControllers.count < Self.maximumNumberOfSplitEditors,
-            let source = Self.locateTab(withID: tabID)
-        else {
-            return self.handleDroppedTab(id: tabID, onto: targetPane, before: nil)
-        }
-        
-        let sourceWindowVC = source.windowVC
-        let sourcePane = source.pane
-        let sourceTab = source.tab
-        
-        if sourcePane === targetPane, targetPane.tabs.count <= 1 {
-            return false
-        }
-        
-        let movedDocument = sourceTab.document
-        let wasPinned = sourceTab.isPinned
-        
-        if sourceWindowVC === self {
-            if let oldTextView = sourcePane.textView(for: sourceTab) {
-                NotificationCenter.default.removeObserver(self, name: EditorTextView.DidLiveChangeSelectionMessage.name, object: oldTextView)
-            }
-            let wasLastInSourcePane = (sourcePane.tabs.count == 1)
-            sourcePane.removeTab(sourceTab)
-            if wasLastInSourcePane, self.editorViewControllers.count > 1 {
-                self.removePane(sourcePane)
-            }
-        } else {
-            let sourceTotalTabs = sourceWindowVC.editorViewControllers.reduce(0) { $0 + $1.tabs.count }
-            if movedDocument === sourceWindowVC.document {
-                if sourceTotalTabs > 1 {
-                    let replacement = sourcePane.tabs.first(where: { $0 !== sourceTab })?.document
-                        ?? sourceWindowVC.editorViewControllers.first(where: { $0 !== sourcePane })?.selectedTab.document
-                    if let replacement {
-                        sourceWindowVC.promotePrimaryDocument(to: replacement)
-                    }
-                } else if let sourceWC = sourceWindowVC.view.window?.windowController as? DocumentWindowController {
-                    movedDocument.removeWindowController(sourceWC)
-                }
-            }
-            
-            if let oldTextView = sourcePane.textView(for: sourceTab) {
-                NotificationCenter.default.removeObserver(sourceWindowVC, name: EditorTextView.DidLiveChangeSelectionMessage.name, object: oldTextView)
-            }
-            NotificationCenter.default.removeObserver(sourceWindowVC, name: NSTextStorage.didProcessEditingNotification, object: movedDocument.textStorage)
-            
-            let wasLastInSourcePane = (sourcePane.tabs.count == 1)
-            sourcePane.removeTab(sourceTab)
-            
-            if sourceTotalTabs <= 1 {
-                sourceWindowVC.view.window?.close()
-            } else {
-                if wasLastInSourcePane, sourceWindowVC.editorViewControllers.count > 1 {
-                    sourceWindowVC.removePane(sourcePane)
-                }
-                sourceWindowVC.updateSplitState()
-            }
-        }
-        
-        let isVertical = (zone == .left || zone == .right)
-        let insertBefore = (zone == .left || zone == .top)
-        let newPane = self.makeEditorViewController(document: movedDocument, copying: targetPane)
-        if wasPinned {
-            newPane.tabs.first?.isPinned = true
-            newPane.updateTabState()
-        }
-        self.insertPane(newPane, beside: targetPane, isVertical: isVertical, insertBefore: insertBefore)
-        self.updateSplitState()
-        self.scheduleRatioRebalance()
-        self.view.window?.makeKeyAndOrderFront(nil)
-        self.view.window?.makeFirstResponderDiscardingMarkedText(newPane.textView)
-        return true
+        self.handleDroppedTab(id: tabID, onto: targetPane, before: nil)
     }
     
     
@@ -3109,7 +3051,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             if let existing = NSDocumentController.shared.document(for: fileURL) as? Document {
                 return existing
             }
-            if let fileDoc = try? Document(contentsOf: fileURL, ofType: "public.plain-text") {
+            let typeName = (try? NSDocumentController.shared.typeForContents(of: fileURL)) ?? UTType.plainText.identifier
+            if let fileDoc = try? Document(contentsOf: fileURL, ofType: typeName) {
                 NSDocumentController.shared.addDocument(fileDoc)
                 fileDoc.isTransient = false
                 fileDoc.syntaxController.setupParser()
@@ -3488,7 +3431,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     // MARK: In-Window Document & Report Opening
     
-    /// Opens or focuses a live `Document` directly inside this window (new tab or optional right split).
+    /// Opens or focuses a live `Document` directly inside the focused pane (never splits).
     func openOrFocusDocument(_ document: Document, splitRight: Bool = false) {
         
         // Check if already hosted as a tab in this window
@@ -3505,24 +3448,6 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         }
         
         guard let targetPane = self.focusedChild ?? self.editorViewControllers.first else { return }
-        
-        if splitRight, self.editorViewControllers.count < Self.maximumNumberOfSplitEditors {
-            self.unzoomPane()
-            document.isTransient = false
-            document.syntaxController.setupParser()
-            document.counter.refreshNow()
-            
-            let newPane = self.makeEditorViewController(document: document, copying: targetPane)
-            self.insertPane(newPane, beside: targetPane, isVertical: true)
-            self.splitState.isVertical = true
-            self.focusedChild = newPane
-            self.updateSplitState()
-            self.scheduleRatioRebalance()
-            self.view.window?.makeFirstResponderDiscardingMarkedText(newPane.textView)
-            NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
-            return
-        }
-        
         self.addTab(document, to: targetPane, copying: targetPane.textView)
     }
     
@@ -3572,7 +3497,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 self.openOrFocusDocument(existing, splitRight: splitRight)
                 return
             }
-            if let fileDoc = try? Document(contentsOf: fileURL, ofType: "public.plain-text") {
+            let typeName = (try? NSDocumentController.shared.typeForContents(of: fileURL)) ?? UTType.plainText.identifier
+            if let fileDoc = try? Document(contentsOf: fileURL, ofType: typeName) {
                 NSDocumentController.shared.addDocument(fileDoc)
                 self.openOrFocusDocument(fileDoc, splitRight: splitRight)
                 return

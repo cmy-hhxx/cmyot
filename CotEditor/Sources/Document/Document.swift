@@ -515,23 +515,35 @@ extension NSAttributedString.Key {
     
     @IBAction override func save(_ sender: Any?) {
         
-        self.syncToLocalDatabase()
+        self.syncToLocalDatabase(force: true)
         self.viewController?.savePaneTabsSessionToDatabase()
         
-        if self.fileURL == nil {
-            self.hasUncommittedChanges = false
-            self.lastManualSaveDate = .now
-            self.updateChangeCount(.changeCleared)
+        if let fileURL = self.fileURL {
+            self.invalidateFileModificationDate()
+            let typeName = self.fileType
+                ?? (try? NSDocumentController.shared.typeForContents(of: fileURL))
+                ?? UTType.plainText.identifier
+            self.save(to: fileURL, ofType: typeName, for: .saveOperation) { [weak self] error in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if let error {
+                        self.presentErrorAsSheet(error)
+                        return
+                    }
+                    self.hasUncommittedChanges = false
+                    self.lastManualSaveDate = .now
+                    self.updateChangeCount(.changeCleared)
+                    self.viewController?.editorViewControllers.forEach { $0.updateTabState() }
+                    NotificationCenter.default.post(name: DidUpdateChangeMessage.name, object: self)
+                }
+            }
             return
         }
         
-        let wasEdited = self.isDocumentEdited
-        super.save(sender)
-        if !wasEdited {
-            self.hasUncommittedChanges = false
-            self.lastManualSaveDate = .now
-            NotificationCenter.default.post(name: DidUpdateChangeMessage.name, object: self)
-        }
+        self.hasUncommittedChanges = false
+        self.lastManualSaveDate = .now
+        self.updateChangeCount(.changeCleared)
+        self.viewController?.editorViewControllers.forEach { $0.updateTabState() }
     }
     
     

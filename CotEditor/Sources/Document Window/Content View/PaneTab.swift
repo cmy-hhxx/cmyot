@@ -37,15 +37,9 @@ enum PaneDropZone: Equatable {
     
     static func from(point: NSPoint, in bounds: NSRect) -> PaneDropZone {
         
-        let rx = bounds.width > 0 ? (point.x - bounds.minX) / bounds.width : 0.5
-        let ry = bounds.height > 0 ? (point.y - bounds.minY) / bounds.height : 0.5
-        let edgeRatio: CGFloat = 0.22
-        
-        if rx < edgeRatio { return .left }
-        if rx > 1 - edgeRatio { return .right }
-        if ry < edgeRatio { return .bottom }  // non-flipped AppKit coordinates: minY is bottom
-        if ry > 1 - edgeRatio { return .top }
-        return .center
+        // Dragging a document onto another pane only moves the tab into that pane;
+        // splitting is reserved strictly for explicit ⌃A % / ⌃A " commands.
+        .center
     }
 }
 

@@ -32,12 +32,10 @@ enum SettingsPane: String, ControlUI.SettingsPane {
     case appearance
     case window
     case edit
-    case mode
     case format
-    case snippets
     case keyBindings
     case ai
-    case donation
+    case aiPersona
     
     
     /// The localized label.
@@ -60,17 +58,9 @@ enum SettingsPane: String, ControlUI.SettingsPane {
                 String(localized: "SettingsPane.edit.label",
                        defaultValue: "Edit",
                        table: "Settings")
-            case .mode:
-                String(localized: "SettingsPane.mode.label",
-                       defaultValue: "Mode",
-                       table: "Settings")
             case .format:
                 String(localized: "SettingsPane.format.label",
                        defaultValue: "Format",
-                       table: "Settings")
-            case .snippets:
-                String(localized: "SettingsPane.snippets.label",
-                       defaultValue: "Snippets",
                        table: "Settings")
             case .keyBindings:
                 String(localized: "SettingsPane.keyBindings.label",
@@ -78,10 +68,8 @@ enum SettingsPane: String, ControlUI.SettingsPane {
                        table: "Settings")
             case .ai:
                 "AI"
-            case .donation:
-                String(localized: "SettingsPane.donation.label",
-                       defaultValue: "Donation",
-                       table: "Settings")
+            case .aiPersona:
+                "AI Persona"
         }
     }
     
@@ -94,12 +82,10 @@ enum SettingsPane: String, ControlUI.SettingsPane {
             case .appearance: "eyeglasses"
             case .window: "uiwindow.split.2x1"
             case .edit: "square.and.pencil"
-            case .mode: "switch.2"
             case .format: "text.document"
-            case .snippets: "text.viewfinder"
             case .keyBindings: "keyboard"
             case .ai: "sparkles"
-            case .donation: "mug"
+            case .aiPersona: "person.text.rectangle"
         }
     }
     
@@ -112,12 +98,10 @@ enum SettingsPane: String, ControlUI.SettingsPane {
             case .appearance: AppearanceSettingsView()
             case .window: WindowSettingsView()
             case .edit: EditSettingsView()
-            case .mode: ModeSettingsView()
             case .format: FormatSettingsView()
-            case .snippets: SnippetsSettingsView()
             case .keyBindings: KeyBindingsSettingsView()
             case .ai: AISettingsView()
-            case .donation: DonationSettingsView()
+            case .aiPersona: AIPersonaSettingsView()
         }
     }
 }

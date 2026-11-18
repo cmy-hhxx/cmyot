@@ -377,6 +377,10 @@ final class ContentViewController: NSSplitViewController {
             self.centerHostView = hostingView
         }
         
+        self.splitView.isHidden = true
+        self.view.window?.invalidateCursorRects(for: self.view)
+        NSCursor.arrow.set()
+        
         self.installCenterEscMonitor()
         self.view.window?.toolbar?.validateVisibleItems()
     }
@@ -387,6 +391,8 @@ final class ContentViewController: NSSplitViewController {
         
         self.activeCenter = nil
         self.removeCenterEscMonitor()
+        self.splitView.isHidden = false
+        self.view.window?.invalidateCursorRects(for: self.view)
         
         if let hostingView = self.centerHostView {
             self.centerHostView = nil
@@ -422,12 +428,12 @@ final class ContentViewController: NSSplitViewController {
                 self.documentViewController?.openStoredWeeklyReport(report)
                 self.hideInWindowCenter()
             },
-            onOpenManagedDocument: { [weak self] liveDoc, record, splitRight in
+            onOpenManagedDocument: { [weak self] liveDoc, record in
                 guard let self, let docVC = self.documentViewController else { return }
                 if let liveDoc {
-                    docVC.openOrFocusDocument(liveDoc, splitRight: splitRight)
+                    docVC.openOrFocusDocument(liveDoc)
                 } else if let record {
-                    docVC.openStoredDocumentRecord(record, splitRight: splitRight)
+                    docVC.openStoredDocumentRecord(record)
                 }
                 self.hideInWindowCenter()
             },
@@ -693,7 +699,7 @@ private struct WorkspaceCenterHostView: View {
     
     var onDismiss: () -> Void
     var onOpenWeeklyReport: (StoredWeeklyReport) -> Void
-    var onOpenManagedDocument: (Document?, StoredDocumentRecord?, _ splitRight: Bool) -> Void
+    var onOpenManagedDocument: (Document?, StoredDocumentRecord?) -> Void
     var onDeleteManagedDocument: (DocumentCenterState.ManagedDocumentItem) -> Void
     var onCreateNewDocument: () -> Void
     

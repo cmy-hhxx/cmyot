@@ -25,25 +25,15 @@
 
 import SwiftUI
 import Defaults
-import SemanticVersioning
 
 struct GeneralSettingsView: View {
     
-#if SPARKLE
-    var showsUpdaterSettings = true
-#else
-    var showsUpdaterSettings = false
-#endif
-    
     @Namespace private var accessibility
-    
-    @Environment(\.locale) private var locale
     
     @AppStorage(.quitAlwaysKeepsWindows) private var quitAlwaysKeepsWindows: Bool
     @AppStorage(.noDocumentOnLaunchOption) private var noDocumentOnLaunchOption: NoDocumentOnLaunchOption
     
     @AppStorage(.enablesAutosaveInPlace) private var enablesAutosaveInPlace: Bool
-    @AppStorage(.documentConflictOption) private var documentConflictOption: DocumentConflictOption
     
     @State private var initialEnablesAutosaveInPlace: Bool = false
     
@@ -53,10 +43,6 @@ struct GeneralSettingsView: View {
     @State private var isLanguageChangeConfirmationPresented = false
     @State private var suppressesQuitAlwaysKeepsWindowsChangeConfirmation = false
     @State private var isQuitAlwaysKeepsWindowsChangeConfirmationPresented = false
-    @State private var isWarningsSettingPresented = false
-    
-    @State private var commandLineToolStatus: CommandLineToolManager.Status = .none
-    @State private var commandLineToolURL: URL?
     
     
     // MARK: View
@@ -123,17 +109,7 @@ struct GeneralSettingsView: View {
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
-                    .modifier { content in
-                        if #available(macOS 26, *) {
-                            content
-                        } else if self.locale.language.languageCode == .russian {
-                            content
-                                .frame(maxWidth: 200)
-                        } else {
-                            content
-                                .fixedSize()
-                        }
-                    }
+                    .fixedSize()
                     .accessibilityLabeledPair(role: .content, id: "noDocumentOnLaunchOption", in: self.accessibility)
                     .padding(.leading, 20)
                 }
@@ -177,186 +153,14 @@ struct GeneralSettingsView: View {
                 }
             }
             
-            
-            GridRow {
-                Text("When document is changed by another application:", tableName: "GeneralSettings")
-                    .accessibilityLabeledPair(role: .label, id: "documentConflictOption", in: self.accessibility)
-                    .gridCellColumns(2)
-            }.padding(.bottom, -8)
-            
-            GridRow {
-                Color.clear
-                    .frame(width: 1, height: 1)
-                    .gridCellUnsizedAxes([.vertical, .vertical])
-                    .accessibilityHidden(true)
-                
-                Picker(selection: $documentConflictOption) {
-                    ForEach(DocumentConflictOption.allCases, id: \.self) {
-                        Text($0.label)
-                    }
-                } label: {
-                    EmptyView()
-                }
-                .pickerStyle(.radioGroup)
-                .labelsHidden()
-                .accessibilityLabeledPair(role: .content, id: "documentConflictOption", in: self.accessibility)
-            }
-            
-            GridRow {
-                Text("Dialog warnings:", tableName: "GeneralSettings")
-                    .gridColumnAlignment(.trailing)
-                    .accessibilityLabeledPair(role: .label, id: "dialogWarnings", in: self.accessibility)
-                
-                Button(String(localized: "Manage Warnings…", table: "GeneralSettings")) {
-                    self.isWarningsSettingPresented.toggle()
-                }
-                .accessibilityLabeledPair(role: .content, id: "dialogWarnings", in: self.accessibility)
-                .sheet(isPresented: $isWarningsSettingPresented, content: WarningsSettingView.init)
-            }
-            
-            Divider()
-                .padding(.vertical, isLiquidGlass ? 0 : 6)
-            
-            GridRow {
-                Text("Command-line tool:", tableName: "GeneralSettings")
-                    .gridColumnAlignment(.trailing)
-                
-                VStack(alignment: .leading) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Button(String(localized: "Learn More…", table: "GeneralSettings")) {
-                            NSHelpManager.shared.openHelpAnchor("about_cot", inBook: nil)
-                        }
-                        if self.commandLineToolStatus.installed,
-                           let url = self.commandLineToolURL
-                        {
-                            Label {
-                                Text("installed at \(url, format: .url.scheme(.never))", tableName: "GeneralSettings")
-                            } icon: {
-                                StatusImage(status: self.commandLineToolStatus.imageStatus)
-                                    .imageScale(.small)
-                                    .help(self.commandLineToolStatus.message ?? "")
-                                    .accessibilityHint(self.commandLineToolStatus.message ?? "")
-                            }.foregroundStyle(.secondary)
-                        }
-                    }
-                    Text("With the `cot` command-line tool, you can launch CotEditor and let it open files from the command line.", tableName: "GeneralSettings")
-                        .foregroundStyle(.secondary)
-                        .controlSize(.small)
-                        .lineLimit(10)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            
-            if self.showsUpdaterSettings {
-                Divider()
-                    .padding(.vertical, isLiquidGlass ? 0 : 6)
-                UpdaterView()
-            }
-            
             HStack {
                 Spacer()
                 HelpLink(anchor: "settings_general")
             }
         }
-        .onAppear {
-            let manager = CommandLineToolManager()
-            self.commandLineToolStatus = manager.validateSymlink()
-            self.commandLineToolURL = manager.linkURL
-        }
         .fixedSize(horizontal: false, vertical: true)
         .scenePadding()
         .frame(width: 620)
-    }
-}
-
-
-private struct UpdaterView: View {
-    
-    @AppStorage("SUEnableAutomaticChecks") private var enableAutomaticUpdateChecks: Bool = true
-    @AppStorage(.checksUpdatesForBeta) private var checksUpdatesForBeta: Bool
-    
-    
-    var body: some View {
-        
-        GridRow {
-            Text("Software update:", tableName: "GeneralSettings")
-                .gridColumnAlignment(.trailing)
-            
-            VStack(alignment: .leading, spacing: isLiquidGlass ? nil : 6) {
-                Toggle(String(localized: "Check for updates automatically", table: "GeneralSettings"), isOn: $enableAutomaticUpdateChecks)
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    Toggle(String(localized: "Update to prereleases when available", table: "GeneralSettings"), isOn: $checksUpdatesForBeta)
-                    
-                    if Bundle.main.version!.isPrerelease {
-                        Text("Regardless of this setting, new prereleases are always included while using a prerelease.", tableName: "GeneralSettings")
-                            .foregroundStyle(.secondary)
-                            .controlSize(.small)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.leading, 20)
-                    }
-                }
-            }
-        }
-    }
-}
-
-
-private struct WarningsSettingView: View {
-    
-    @Environment(\.dismiss) private var dismiss
-    
-    @AppStorage(.suppressesInconsistentLineEndingAlert) private var suppressesInconsistentLineEndingAlert: Bool
-    
-    
-    var body: some View {
-        
-        VStack {
-            Form {
-                Text("Suppress the following warnings:", tableName: "GeneralSettings")
-                Toggle(String(localized: "Inconsistent line endings", table: "GeneralSettings"), isOn: $suppressesInconsistentLineEndingAlert)
-            }
-            
-            HStack {
-                HelpLink(anchor: "howto_manage_warnings")
-                Spacer()
-                Button(.done) {
-                    self.dismiss()
-                }.keyboardShortcut(.defaultAction)
-            }.padding(.top)
-        }
-        .fixedSize()
-        .scenePadding()
-    }
-}
-
-
-private extension CommandLineToolManager.Status {
-    
-    var imageStatus: StatusImage.Status {
-        
-        switch self {
-            case .none: .none
-            case .validTarget: .available
-            case .differentTarget: .partiallyAvailable
-            case .invalidTarget: .unavailable
-        }
-    }
-    
-    
-    var message: String? {
-        
-        switch self {
-            case .none, .validTarget:
-                nil
-            case .differentTarget:
-                String(localized: "CommandLineToolManager.Status.differentTarget.message",
-                       defaultValue: "The current `cot` symbolic link doesn’t target the running CotEditor.",
-                       table: "GeneralSettings")
-            case .invalidTarget:
-                String(localized: "CommandLineToolManager.Status.invalidTarget.message",
-                       defaultValue: "The current `cot` symbolic link may target an invalid path.", table: "GeneralSettings")
-        }
     }
 }
 
@@ -383,34 +187,8 @@ private extension NoDocumentOnLaunchOption {
 }
 
 
-private extension DocumentConflictOption {
-    
-    var label: String {
-        
-        switch self {
-            case .ignore:
-                String(localized: "DocumentConflictOption.ignore.label",
-                       defaultValue: "Keep CotEditor’s version",
-                       table: "GeneralSettings")
-            case .notify:
-                String(localized: "DocumentConflictOption.notify.label",
-                       defaultValue: "Ask how to resolve",
-                       table: "GeneralSettings")
-            case .revert:
-                String(localized: "DocumentConflictOption.revert.label",
-                       defaultValue: "Update to modified version",
-                       table: "GeneralSettings")
-        }
-    }
-}
-
-
 // MARK: - Preview
 
 #Preview {
-    GeneralSettingsView(showsUpdaterSettings: false)
-}
-
-#Preview("with Sparkle") {
-    GeneralSettingsView(showsUpdaterSettings: true)
+    GeneralSettingsView()
 }
