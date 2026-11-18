@@ -152,7 +152,7 @@ nonisolated enum AIDocumentTextCleaner {
         
         let text = rest
             .trimmingCharacters(in: .whitespaces)
-            .replacingOccurrences(of: "#+$", with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+#+$"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)
         
         return (hashes.count, Self.inline(text))
