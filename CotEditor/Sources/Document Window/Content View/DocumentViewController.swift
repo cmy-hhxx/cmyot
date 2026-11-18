@@ -308,6 +308,18 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         self.restorePersistedPaneTabsIfNeeded()
         
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.view.window else { return }
+            self.view.layoutSubtreeIfNeeded()
+            let isCenterOpen = (window.windowController as? DocumentWindowController)?.workspaceContentViewController?.activeCenter != nil
+            guard !isCenterOpen, let textView = self.focusedTextView else { return }
+            if window.firstResponder as? EditorTextView == nil {
+                window.makeFirstResponderDiscardingMarkedText(textView)
+            }
+            textView.updateInsertionPointStateAndRestartTimer(true)
+            textView.needsDisplay = true
+        }
+        
         #if DEBUG
         if !self.didRunDemo, UserDefaults.standard.bool(forKey: "COTUIDemoTabs") {
             self.didRunDemo = true
@@ -3615,5 +3627,54 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         doc.hasUncommittedChanges = false
         
         self.openOrFocusDocument(doc, splitRight: splitRight)
+    }
+    
+    
+    /// Closes a document directly from Document Center without closing the host window when it is the last tab.
+    func closeDocumentFromCenter(_ document: Document) {
+        
+        for pane in self.editorViewControllers {
+            guard let tab = pane.tabs.first(where: { $0.document === document }) else { continue }
+            
+            if pane === self.zoomedPane, pane.tabs.count == 1 {
+                self.unzoomPane()
+            }
+            
+            // Keep the host window alive with an empty scratch tab if this was the sole tab.
+            if self.editorViewControllers.count == 1, pane.tabs.count == 1 {
+                guard let replacement = try? self.makePaneDocument() else { return }
+                self.addTab(replacement, to: pane, copying: pane.textView)
+                self.promotePrimaryDocument(to: replacement)
+            }
+            
+            if tab.document === self.document {
+                let replacement = pane.tabs.first(where: { $0 !== tab })?.document
+                    ?? self.editorViewControllers.first(where: { $0 !== pane })?.selectedTab.document
+                if let replacement {
+                    self.promotePrimaryDocument(to: replacement)
+                }
+            }
+            
+            self.stopObservingTextStorage(of: tab.document)
+            
+            if let textView = pane.textView(for: tab) {
+                NotificationCenter.default.removeObserver(self, name: EditorTextView.DidLiveChangeSelectionMessage.name, object: textView)
+                textView.undoManager?.removeAllActions(withTarget: textView)
+            }
+            
+            let wasLastTab = (pane.tabs.count == 1)
+            pane.removeTab(tab)
+            tab.document.updateChangeCount(.changeCleared)
+            tab.document.hasUncommittedChanges = false
+            tab.document.close()
+            
+            if wasLastTab {
+                self.removePane(pane)
+            }
+            
+            self.updateSplitState()
+            NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
+            return
+        }
     }
 }

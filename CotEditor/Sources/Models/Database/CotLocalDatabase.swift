@@ -125,6 +125,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         static let weeklyReportFragments = "ai.weeklyReport.fragments"
         static let weeklyReportAuthor = "weeklyReport.authorName"
         static let typewriterEffectEnabled = "fun.typewriterEffect"
+        static let typewriterEffectStyle = "fun.typewriterEffect.style"
         static let typewriterEffectV2Migrated = "fun.typewriterEffect.v2Enabled"
         static let vimCursorEffectEnabled = "fun.vimCursorEffect"
         static let plainTextInlineImagesEnabled = "editor.plainTextInlineImages"
@@ -356,16 +357,35 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     }
     
     
-    /// Deletes a stored document record from the database.
-    func deleteDocument(id: String) {
+    /// Deletes a stored document record from the database (matching by record ID or file path).
+    func deleteDocument(id: String, filePath: String? = nil) {
         
-        let sql = "DELETE FROM documents WHERE id = ?;"
-        var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
-            sqlite3_bind_text(stmt, 1, id, -1, self.transientDestructor)
-            sqlite3_step(stmt)
+        let cleanID = id.hasPrefix("doc:") ? String(id.dropFirst(4)) : id
+        let prefixedID = "doc:\(cleanID)"
+        
+        if let filePath, !filePath.isEmpty {
+            let sql = "DELETE FROM documents WHERE id = ? OR id = ? OR id = ? OR file_path = ? OR id = ?;"
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, id, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 2, cleanID, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 3, prefixedID, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 4, filePath, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 5, filePath, -1, self.transientDestructor)
+                sqlite3_step(stmt)
+            }
+            sqlite3_finalize(stmt)
+        } else {
+            let sql = "DELETE FROM documents WHERE id = ? OR id = ? OR id = ?;"
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, id, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 2, cleanID, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 3, prefixedID, -1, self.transientDestructor)
+                sqlite3_step(stmt)
+            }
+            sqlite3_finalize(stmt)
         }
-        sqlite3_finalize(stmt)
         
         self.reloadDocuments()
     }
@@ -961,6 +981,8 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         
         let defaults = UserDefaults.standard
         defaults.set(self.bool(forKey: ConfigKey.typewriterEffectEnabled, default: true), forKey: ConfigKey.typewriterEffectEnabled)
+        let styleRaw = self.string(forKey: ConfigKey.typewriterEffectStyle, default: "powerMode")
+        defaults.set(styleRaw.isEmpty ? "powerMode" : styleRaw, forKey: ConfigKey.typewriterEffectStyle)
         defaults.set(self.bool(forKey: ConfigKey.vimCursorEffectEnabled, default: true), forKey: ConfigKey.vimCursorEffectEnabled)
         defaults.set(self.bool(forKey: ConfigKey.plainTextInlineImagesEnabled, default: true), forKey: ConfigKey.plainTextInlineImagesEnabled)
         
@@ -1057,6 +1079,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             (ConfigKey.promptOrganizeMerge, AIAction.organizeAndMerge.defaultSystemPrompt),
             (ConfigKey.weeklyReportAuthor, "陈明扬"),
             (ConfigKey.typewriterEffectEnabled, "true"),
+            (ConfigKey.typewriterEffectStyle, "powerMode"),
             (ConfigKey.vimCursorEffectEnabled, "true"),
             (ConfigKey.plainTextInlineImagesEnabled, "true"),
             (ConfigKey.usesCustomCursorColor, "false"),

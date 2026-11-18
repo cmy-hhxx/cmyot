@@ -22,26 +22,6 @@
 import AppKit
 import Observation
 import SwiftUI
-import UniformTypeIdentifiers
-
-enum DocumentCenterFilter: String, CaseIterable, Identifiable {
-    case all = "全部"
-    case openNow = "已打开"
-    case diskFiles = "本地文件"
-    case drafts = "草稿笔记"
-    
-    var id: String { self.rawValue }
-}
-
-
-enum DocumentCenterSort: String, CaseIterable, Identifiable {
-    case recent = "最近更新"
-    case title = "名称"
-    case length = "字数"
-    
-    var id: String { self.rawValue }
-}
-
 
 @MainActor @Observable final class DocumentCenterState {
     
@@ -58,22 +38,11 @@ enum DocumentCenterSort: String, CaseIterable, Identifiable {
         let isDirty: Bool
         let characterCount: Int
         let storedRecord: StoredDocumentRecord?
-        
-        var isDiskFile: Bool { self.filePath != nil }
-        
-        var locationSubtitle: String {
-            if let filePath {
-                return (filePath as NSString).abbreviatingWithTildeInPath
-            }
-            return "本软件云端/本地库笔记"
-        }
     }
     
     var items: [ManagedDocumentItem] = []
     var selectedID: String?
     var searchText: String = ""
-    var filter: DocumentCenterFilter = .all
-    var sortOrder: DocumentCenterSort = .recent
     var statusBanner: String?
     
     private var liveDocsByID: [String: Document] = [:]
@@ -119,13 +88,19 @@ enum DocumentCenterSort: String, CaseIterable, Identifiable {
         for doc in orderedOpenDocs {
             guard !doc.databaseDocumentID.hasPrefix("weekly:") else { continue }
             let filePath = doc.fileURL?.standardizedFileURL.path(percentEncoded: false)
+            let content = doc.textStorage.string
+            let dirty = doc.hasUncommittedChanges || doc.isDocumentEdited
+            
+            // Skip transient empty scratch tabs that have never been written or saved
+            if filePath == nil, content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !dirty {
+                continue
+            }
+            
             let key = Self.canonicalKey(filePath: filePath, rawID: doc.databaseDocumentID)
             guard usedKeys.insert(key).inserted else { continue }
             
             liveByKey[key] = doc
             let dbMatch = dbByCanonicalKey[key]
-            let content = doc.textStorage.string
-            let dirty = doc.hasUncommittedChanges || doc.isDocumentEdited
             let modifiedDate = max(
                 doc.lastManualSaveDate ?? .distantPast,
                 doc.fileModificationDate ?? .distantPast,
@@ -203,8 +178,9 @@ struct DocumentCenterView: View {
     
     @Bindable var state: DocumentCenterState
     var onOpenDocument: ((Document?, StoredDocumentRecord?, _ splitRight: Bool) -> Void)? = nil
+    var onDeleteDocument: ((DocumentCenterState.ManagedDocumentItem) -> Void)? = nil
     var onCreateNewDocument: (() -> Void)? = nil
-    var onOpenDiskURLs: (([URL]) -> Void)? = nil
+    var onDismiss: (() -> Void)? = nil
     
     @State private var db = CotLocalDatabase.shared
     @State private var isRenaming = false
@@ -215,9 +191,11 @@ struct DocumentCenterView: View {
         
         HStack(spacing: 0) {
             self.sidebar
-                .frame(width: 310)
+                .frame(width: 268)
             
-            Divider()
+            Rectangle()
+                .fill(Color.primary.opacity(0.06))
+                .frame(width: 1)
             
             Group {
                 if let item = self.selectedItem {
@@ -228,6 +206,7 @@ struct DocumentCenterView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .background(Color(nsColor: .textBackgroundColor))
         .onAppear {
             self.state.refresh()
         }
@@ -237,38 +216,23 @@ struct DocumentCenterView: View {
     }
     
     
-    // MARK: Filtering & Sorting
+    // MARK: Filtering
     
     private var filteredItems: [DocumentCenterState.ManagedDocumentItem] {
         
         let query = self.state.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let filtered = self.state.items.filter { item in
-            switch self.state.filter {
-                case .all: break
-                case .openNow: guard item.isOpenNow else { return false }
-                case .diskFiles: guard item.isDiskFile else { return false }
-                case .drafts: guard !item.isDiskFile else { return false }
-            }
-            
             guard !query.isEmpty else { return true }
             return item.title.lowercased().contains(query)
                 || (item.filePath?.lowercased().contains(query) ?? false)
-                || item.syntax.lowercased().contains(query)
                 || item.content.lowercased().contains(query)
         }
         
         return filtered.sorted { lhs, rhs in
-            switch self.state.sortOrder {
-                case .recent:
-                    if lhs.isOpenNow != rhs.isOpenNow {
-                        return lhs.isOpenNow && !rhs.isOpenNow
-                    }
-                    return lhs.updatedAt > rhs.updatedAt
-                case .title:
-                    return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
-                case .length:
-                    return lhs.characterCount > rhs.characterCount
+            if lhs.isOpenNow != rhs.isOpenNow {
+                return lhs.isOpenNow && !rhs.isOpenNow
             }
+            return lhs.updatedAt > rhs.updatedAt
         }
     }
     
@@ -277,7 +241,7 @@ struct DocumentCenterView: View {
         
         guard let selectedID = self.state.selectedID else { return self.filteredItems.first }
         return self.filteredItems.first(where: { $0.id == selectedID })
-            ?? self.state.items.first(where: { $0.id == selectedID })
+            ?? self.filteredItems.first
     }
     
     
@@ -287,138 +251,107 @@ struct DocumentCenterView: View {
         
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label("文档中心", systemImage: "doc.on.doc")
-                        .font(.headline)
+                HStack(spacing: 7) {
+                    Image(nsImage: WorkspaceCenterIcons.documentCenterIcon(isActive: false, size: NSSize(width: 15, height: 15)))
+                        .renderingMode(.template)
+                        .foregroundStyle(.secondary)
+                    
+                    Text("文档中心")
+                        .font(.system(size: 13.5, weight: .semibold))
+                    
+                    Text("\(self.filteredItems.count)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                    
                     Spacer()
-                    Text("\(self.state.items.count) 份")
-                        .font(.caption)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(.quaternary, in: Capsule())
-                }
-                
-                TextField("搜索标题、路径、语言或正文…", text: self.$state.searchText)
-                    .textFieldStyle(.roundedBorder)
-                
-                Picker("筛选", selection: self.$state.filter) {
-                    ForEach(DocumentCenterFilter.allCases) { filter in
-                        Text(filter.rawValue).tag(filter)
+                    
+                    if let onDismiss = self.onDismiss {
+                        Button {
+                            onDismiss()
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "chevron.left")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text("返回")
+                                    .font(.system(size: 11.5))
+                            }
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 5))
+                        }
+                        .buttonStyle(.plain)
+                        .help("返回编辑器 (Esc)")
                     }
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
                 
                 HStack(spacing: 6) {
-                    Button {
-                        self.onCreateNewDocument?()
-                    } label: {
-                        Label("新建标签页", systemImage: "plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.tertiary)
                     
-                    Button {
-                        self.presentOpenPanel()
-                    } label: {
-                        Label("打开文件…", systemImage: "folder")
-                    }
-                    .controlSize(.small)
+                    TextField("搜索文档…", text: self.$state.searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
                     
-                    Spacer()
-                    
-                    Picker("", selection: self.$state.sortOrder) {
-                        ForEach(DocumentCenterSort.allCases) { sort in
-                            Text(sort.rawValue).tag(sort)
+                    if !self.state.searchText.isEmpty {
+                        Button {
+                            self.state.searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.tertiary)
                         }
+                        .buttonStyle(.plain)
                     }
-                    .labelsHidden()
-                    .frame(width: 96)
-                    .controlSize(.small)
                 }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
                 
                 if let banner = self.state.statusBanner {
                     Text(banner)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(1)
                 }
             }
-            .padding(12)
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
             
-            Divider()
+            Rectangle()
+                .fill(Color.primary.opacity(0.05))
+                .frame(height: 1)
             
-            List(selection: self.$state.selectedID) {
-                ForEach(self.filteredItems) { item in
-                    self.sidebarRow(for: item)
-                        .tag(item.id)
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2) {
-                            self.open(item: item, splitRight: false)
-                        }
-                        .onTapGesture {
-                            self.isRenaming = false
-                            self.state.selectedID = item.id
-                        }
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(self.filteredItems) { item in
+                        DocumentSidebarRow(
+                            item: item,
+                            isSelected: self.selectedItem?.id == item.id,
+                            statusColor: self.statusColor(for: item),
+                            onSelect: {
+                                self.isRenaming = false
+                                self.state.selectedID = item.id
+                            },
+                            onOpen: {
+                                self.open(item: item, splitRight: false)
+                            },
+                            onOpenSplit: {
+                                self.open(item: item, splitRight: true)
+                            },
+                            onDelete: {
+                                self.delete(item: item)
+                            }
+                        )
+                    }
                 }
-            }
-            .listStyle(.sidebar)
-        }
-    }
-    
-    
-    private func sidebarRow(for item: DocumentCenterState.ManagedDocumentItem) -> some View {
-        
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(self.statusColor(for: item))
-                    .frame(width: 7, height: 7)
-                
-                Text(item.title)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .lineLimit(1)
-                
-                Spacer(minLength: 4)
-                
-                if item.isOpenNow {
-                    Text("打开中")
-                        .font(.system(size: 9.5, weight: .medium))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.accentColor.opacity(0.14), in: Capsule())
-                        .foregroundStyle(Color.accentColor)
-                }
-            }
-            
-            HStack(spacing: 6) {
-                Text(item.syntax)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                
-                Text("·")
-                    .foregroundStyle(.tertiary)
-                
-                Text("\(item.characterCount) 字")
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                
-                Spacer()
-                
-                Text(item.updatedAt, style: .relative)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            }
-            
-            if let filePath = item.filePath {
-                Text((filePath as NSString).abbreviatingWithTildeInPath)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 8)
             }
         }
-        .padding(.vertical, 3)
+        .background(Color(nsColor: .textBackgroundColor))
     }
     
     
@@ -426,7 +359,7 @@ struct DocumentCenterView: View {
         
         if item.isDirty { return .orange }
         if item.isOpenNow || item.fileExists { return .green }
-        return .secondary.opacity(0.5)
+        return .secondary.opacity(0.45)
     }
     
     
@@ -435,67 +368,49 @@ struct DocumentCenterView: View {
     private func detailView(for item: DocumentCenterState.ManagedDocumentItem) -> some View {
         
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .center, spacing: 8) {
-                    if self.isRenaming {
-                        TextField("文档标题", text: self.$renameDraft)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: 280)
-                            .onSubmit {
-                                self.commitRename(for: item)
-                            }
-                        Button("确定") {
+            HStack(alignment: .center, spacing: 8) {
+                if self.isRenaming {
+                    TextField("文档标题", text: self.$renameDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 240)
+                        .onSubmit {
                             self.commitRename(for: item)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        Button("取消") {
-                            self.isRenaming = false
-                        }
-                        .controlSize(.small)
-                    } else {
-                        Text(item.title)
-                            .font(.title3.weight(.semibold))
-                            .lineLimit(1)
-                        
-                        Button {
-                            self.renameDraft = item.title
-                            self.isRenaming = true
-                        } label: {
-                            Image(systemName: "pencil")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("重命名文档")
+                    Button("确定") {
+                        self.commitRename(for: item)
                     }
-                    
-                    Spacer()
-                    
-                    self.saveBadge(for: item)
-                }
-                
-                HStack(spacing: 10) {
-                    Label(item.syntax, systemImage: "chevron.left.forwardslash.chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("·")
-                        .foregroundStyle(.tertiary)
-                    Text("\(item.characterCount) 字符")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("·")
-                        .foregroundStyle(.tertiary)
-                    Text(item.locationSubtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    Button("取消") {
+                        self.isRenaming = false
+                    }
+                    .controlSize(.small)
+                } else {
+                    Text(item.title)
+                        .font(.system(size: 16, weight: .semibold))
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                    
+                    Button {
+                        self.renameDraft = item.title
+                        self.isRenaming = true
+                    } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("重命名")
+                    
+                    Text("\(item.characterCount) 字")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.tertiary)
                 }
                 
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Button {
                         self.open(item: item, splitRight: false)
                     } label: {
-                        Label("在当前窗口打开", systemImage: "macwindow")
+                        Label("打开", systemImage: "macwindow")
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
@@ -503,22 +418,11 @@ struct DocumentCenterView: View {
                     Button {
                         self.open(item: item, splitRight: true)
                     } label: {
-                        Label("右侧分屏对照", systemImage: "rectangle.split.2x1")
+                        Label("分屏", systemImage: "rectangle.split.2x1")
                     }
                     .controlSize(.small)
                     
-                    if item.isOpenNow, let liveDoc = self.state.liveDocument(for: item.id), item.isDirty {
-                        Button {
-                            liveDoc.performQuickSave(nil)
-                            self.state.refresh()
-                            self.state.statusBanner = "已保存「\(item.title)」"
-                        } label: {
-                            Label("保存 (⌘S)", systemImage: "square.and.arrow.down")
-                        }
-                        .controlSize(.small)
-                    }
-                    
-                    Button(self.copiedFlag ? "已拷贝 ✓" : "拷贝全文") {
+                    Button(self.copiedFlag ? "已拷贝 ✓" : "拷贝") {
                         let pboard = NSPasteboard.general
                         pboard.clearContents()
                         pboard.setString(item.content, forType: .string)
@@ -530,97 +434,72 @@ struct DocumentCenterView: View {
                     }
                     .controlSize(.small)
                     
-                    if let path = item.filePath, item.fileExists {
-                        Button("在 Finder 中显示") {
-                            NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path)])
-                        }
-                        .controlSize(.small)
+                    Button(role: .destructive) {
+                        self.delete(item: item)
+                    } label: {
+                        Label("删除", systemImage: "trash")
                     }
-                    
-                    Spacer()
-                    
-                    if let recordID = item.dbRecordID {
-                        Button(role: .destructive) {
-                            self.db.deleteDocument(id: recordID)
-                            self.state.refresh()
-                            self.state.statusBanner = "已从文档中心记录移除「\(item.title)」（磁盘文件不受影响）"
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .controlSize(.small)
-                        .help("从文档中心历史记录中移除（不会删除本地磁盘文件）")
-                    }
+                    .controlSize(.small)
+                    .help("删除此文档记录（磁盘文件不受影响）")
                 }
+                .padding(.leading, 8)
+                
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, 22)
             .padding(.vertical, 12)
             
-            Divider()
+            Rectangle()
+                .fill(Color.primary.opacity(0.05))
+                .frame(height: 1)
             
             ScrollView {
                 let preview = item.content.count > 40_000
-                    ? String(item.content.prefix(40_000)) + "\n\n……（文档较长，点击上方「在当前窗口打开」查看全部内容）"
+                    ? String(item.content.prefix(40_000)) + "\n\n……（文档较长，点击上方「打开」查看全部内容）"
                     : (item.content.isEmpty ? "（空文档）" : item.content)
                 
                 Text(preview)
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(.system(size: 13))
+                    .lineSpacing(3.5)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(18)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 18)
             }
             .background(Color(nsColor: .textBackgroundColor))
         }
     }
     
     
-    private func saveBadge(for item: DocumentCenterState.ManagedDocumentItem) -> some View {
-        
-        let (label, color): (String, Color) = if item.isDirty {
-            ("未保存", .orange)
-        } else if item.isOpenNow || item.fileExists {
-            ("已保存", .green)
-        } else {
-            ("本地库快照", .secondary)
-        }
-        
-        return HStack(spacing: 4) {
-            Circle()
-                .fill(color)
-                .frame(width: 6, height: 6)
-            Text(label)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(color)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(color.opacity(0.12), in: Capsule())
-    }
-    
-    
     private var emptyView: some View {
         
-        VStack(spacing: 12) {
-            Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 42))
+        VStack(spacing: 10) {
+            Image(nsImage: WorkspaceCenterIcons.documentCenterIcon(isActive: false, size: NSSize(width: 34, height: 34)))
+                .renderingMode(.template)
+                .foregroundStyle(.tertiary)
+            
+            Text(self.state.searchText.isEmpty ? "暂无文档" : "没有匹配的文档")
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
-            Text("文档中心")
-                .font(.title3.weight(.semibold))
-            Text("这里汇集了你通过 CotEditor 打开或创建的所有文件与笔记，点击左侧文档即可直接在当前窗口打开并管理保存状态。")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-            HStack(spacing: 10) {
-                Button("新建标签页") {
-                    self.onCreateNewDocument?()
+            
+            HStack(spacing: 8) {
+                if !self.state.searchText.isEmpty {
+                    Button("清除搜索") {
+                        self.state.searchText = ""
+                    }
+                    .controlSize(.small)
                 }
-                .buttonStyle(.borderedProminent)
-                Button("从磁盘打开文件…") {
-                    self.presentOpenPanel()
+                if let onCreateNewDocument = self.onCreateNewDocument {
+                    Button("新建文档") {
+                        onCreateNewDocument()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .textBackgroundColor))
     }
     
     
@@ -637,6 +516,24 @@ struct DocumentCenterView: View {
         } else if let path = item.filePath, FileManager.default.fileExists(atPath: path) {
             NSDocumentController.shared.openDocument(withContentsOf: URL(filePath: path), display: true) { _, _, _ in }
         }
+    }
+    
+    
+    private func delete(item: DocumentCenterState.ManagedDocumentItem) {
+        
+        let list = self.filteredItems
+        if let idx = list.firstIndex(where: { $0.id == item.id }) {
+            let nextItem = list.indices.contains(idx + 1) ? list[idx + 1] : (idx > 0 ? list[idx - 1] : nil)
+            self.state.selectedID = nextItem?.id
+        }
+        
+        if let onDeleteDocument = self.onDeleteDocument {
+            onDeleteDocument(item)
+        } else if let recordID = item.dbRecordID {
+            self.db.deleteDocument(id: recordID, filePath: item.filePath)
+            self.state.refresh()
+        }
+        self.state.statusBanner = "已删除「\(item.title)」"
     }
     
     
@@ -662,23 +559,80 @@ struct DocumentCenterView: View {
         self.isRenaming = false
         self.state.refresh()
     }
+}
+
+
+private struct DocumentSidebarRow: View {
     
+    let item: DocumentCenterState.ManagedDocumentItem
+    let isSelected: Bool
+    let statusColor: Color
+    var onSelect: () -> Void
+    var onOpen: () -> Void
+    var onOpenSplit: () -> Void
+    var onDelete: () -> Void
     
-    private func presentOpenPanel() {
+    @State private var isHovered = false
+    @State private var isTrashHovered = false
+    
+    var body: some View {
         
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = true
-        panel.message = "选择一个或多个文档，直接在当前窗口中打开并纳入文档中心管理"
-        
-        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
-        if let onOpenDiskURLs = self.onOpenDiskURLs {
-            onOpenDiskURLs(panel.urls)
-        } else {
-            for url in panel.urls {
-                NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, _ in }
+        HStack(spacing: 8) {
+            Circle()
+                .fill(self.statusColor)
+                .frame(width: 6, height: 6)
+            
+            Text(self.item.title)
+                .font(.system(size: 12.5, weight: self.isSelected ? .semibold : .regular))
+                .foregroundStyle(self.isSelected ? Color.primary : Color.primary.opacity(0.88))
+                .lineLimit(1)
+            
+            Spacer(minLength: 4)
+            
+            if self.isHovered || self.isSelected {
+                Button {
+                    self.onDelete()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(self.isTrashHovered ? Color.red : Color.secondary)
+                        .frame(width: 22, height: 22)
+                        .background(
+                            self.isTrashHovered ? Color.red.opacity(0.12) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 4)
+                        )
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    self.isTrashHovered = hovering
+                }
+                .help("删除「\(self.item.title)」")
             }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            self.isSelected
+                ? Color.accentColor.opacity(0.13)
+                : (self.isHovered ? Color.primary.opacity(0.045) : Color.clear),
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            self.isHovered = hovering
+        }
+        .onTapGesture(count: 2) {
+            self.onOpen()
+        }
+        .onTapGesture {
+            self.onSelect()
+        }
+        .contextMenu {
+            Button("在当前窗口打开") { self.onOpen() }
+            Button("右侧分屏打开") { self.onOpenSplit() }
+            Divider()
+            Button("删除", role: .destructive) { self.onDelete() }
         }
     }
 }

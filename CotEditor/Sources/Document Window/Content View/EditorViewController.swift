@@ -172,6 +172,10 @@ final class EditorViewController: NSSplitViewController {
                                           tabs: self.tabState)
         self.navigationBarItem = NSSplitViewItem(viewController: NSHostingController(rootView: navigationBar))
         self.navigationBarItem.isCollapsed = true  // reconsidered below
+        let barHeight: CGFloat = isLiquidGlass ? 24 : 20
+        self.navigationBarItem.minimumThickness = barHeight
+        self.navigationBarItem.maximumThickness = barHeight
+        self.navigationBarItem.holdingPriority = NSLayoutConstraint.Priority(260)
         self.addSplitViewItem(self.navigationBarItem)
         
         // setup the content area that hosts the selected tab's text view
@@ -326,6 +330,11 @@ final class EditorViewController: NSSplitViewController {
         self.observeOutline(of: tab.document)
         tab.document.applyHighlightRendering()
         self.updateNavigationBarVisibility()
+        
+        if let textView = self.textView {
+            textView.updateInsertionPointStateAndRestartTimer(true)
+            textView.needsDisplay = true
+        }
         
         if didChange {
             self.didSelectTab?(tab)

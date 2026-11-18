@@ -148,6 +148,7 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
             }
             
         } else {
+            contentViewController.loadViewIfNeeded()
             let controller = NSHostingController(rootView: StatusBar(model: self.statusBarModel))
             let statusBarItem = NSSplitViewItem(viewController: controller)
             statusBarItem.isCollapsed = !UserDefaults.standard[.showStatusBar]

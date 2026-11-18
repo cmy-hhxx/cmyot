@@ -793,6 +793,8 @@ extension NSAttributedString.Key {
         
         super.close()
         
+        self.highlightSaveTask?.cancel()
+        self.databaseSyncTask?.cancel()
         self.syntaxUpdateObserver?.cancel()
         self.textStorageObserver?.cancel()
         self.defaultObservers.removeAll()

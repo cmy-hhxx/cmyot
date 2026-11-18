@@ -35,6 +35,137 @@ enum WorkspaceCenterKind: String, CaseIterable, Identifiable {
 }
 
 
+enum WorkspaceCenterIcons {
+    
+    /// Custom vector icon for 周报中心 (a clean weekly report sheet with 3 structured summary bars).
+    @MainActor
+    static func weeklyReportIcon(isActive: Bool, size: NSSize = NSSize(width: 18, height: 18)) -> NSImage {
+        
+        let image = NSImage(size: size, flipped: true) { _ in
+            let strokeColor: NSColor = isActive ? .controlAccentColor : .labelColor
+            let scaleX = size.width / 18.0
+            let scaleY = size.height / 18.0
+            
+            let transform = NSAffineTransform()
+            transform.scaleX(by: scaleX, yBy: scaleY)
+            transform.concat()
+            
+            let cardRect = NSRect(x: 2.75, y: 3.2, width: 12.5, height: 12.3)
+            let cardPath = NSBezierPath(roundedRect: cardRect, xRadius: 2.6, yRadius: 2.6)
+            
+            if isActive {
+                NSGraphicsContext.saveGraphicsState()
+                cardPath.addClip()
+                NSColor.controlAccentColor.withAlphaComponent(0.20).setFill()
+                NSRect(x: 2.75, y: 3.2, width: 12.5, height: 3.3).fill()
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            
+            strokeColor.setStroke()
+            cardPath.lineWidth = 1.4
+            cardPath.stroke()
+            
+            // Top binding ticks
+            let ticks = NSBezierPath()
+            ticks.lineWidth = 1.4
+            ticks.lineCapStyle = .round
+            ticks.move(to: NSPoint(x: 6.25, y: 1.7))
+            ticks.line(to: NSPoint(x: 6.25, y: 3.5))
+            ticks.move(to: NSPoint(x: 11.75, y: 1.7))
+            ticks.line(to: NSPoint(x: 11.75, y: 3.5))
+            ticks.stroke()
+            
+            // Header divider rule
+            let divider = NSBezierPath()
+            divider.lineWidth = 1.25
+            divider.move(to: NSPoint(x: 2.75, y: 6.5))
+            divider.line(to: NSPoint(x: 15.25, y: 6.5))
+            divider.stroke()
+            
+            // Three ascending summary bars representing weekly progress
+            let bars = NSBezierPath()
+            bars.lineWidth = 1.6
+            bars.lineCapStyle = .round
+            bars.move(to: NSPoint(x: 6.2, y: 12.9))
+            bars.line(to: NSPoint(x: 6.2, y: 10.6))
+            bars.move(to: NSPoint(x: 9.0, y: 12.9))
+            bars.line(to: NSPoint(x: 9.0, y: 8.7))
+            bars.move(to: NSPoint(x: 11.8, y: 12.9))
+            bars.line(to: NSPoint(x: 11.8, y: 9.7))
+            bars.stroke()
+            
+            return true
+        }
+        image.isTemplate = !isActive
+        return image
+    }
+    
+    
+    /// Custom vector icon for 文档中心 (a split master-detail document library card).
+    @MainActor
+    static func documentCenterIcon(isActive: Bool, size: NSSize = NSSize(width: 18, height: 18)) -> NSImage {
+        
+        let image = NSImage(size: size, flipped: true) { _ in
+            let strokeColor: NSColor = isActive ? .controlAccentColor : .labelColor
+            let scaleX = size.width / 18.0
+            let scaleY = size.height / 18.0
+            
+            let transform = NSAffineTransform()
+            transform.scaleX(by: scaleX, yBy: scaleY)
+            transform.concat()
+            
+            let frameRect = NSRect(x: 2.25, y: 3.0, width: 13.5, height: 12.0)
+            let framePath = NSBezierPath(roundedRect: frameRect, xRadius: 2.6, yRadius: 2.6)
+            
+            if isActive {
+                NSGraphicsContext.saveGraphicsState()
+                framePath.addClip()
+                NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
+                NSRect(x: 2.25, y: 3.0, width: 4.75, height: 12.0).fill()
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            
+            strokeColor.setStroke()
+            framePath.lineWidth = 1.4
+            framePath.stroke()
+            
+            // Vertical sidebar divider
+            let divider = NSBezierPath()
+            divider.lineWidth = 1.25
+            divider.move(to: NSPoint(x: 7.0, y: 3.0))
+            divider.line(to: NSPoint(x: 7.0, y: 15.0))
+            divider.stroke()
+            
+            // Left list ticks
+            let listTicks = NSBezierPath()
+            listTicks.lineWidth = 1.35
+            listTicks.lineCapStyle = .round
+            for y in [6.2, 9.0, 11.8] {
+                listTicks.move(to: NSPoint(x: 3.9, y: y))
+                listTicks.line(to: NSPoint(x: 5.35, y: y))
+            }
+            listTicks.stroke()
+            
+            // Right document preview lines
+            let docLines = NSBezierPath()
+            docLines.lineWidth = 1.35
+            docLines.lineCapStyle = .round
+            docLines.move(to: NSPoint(x: 8.85, y: 6.7))
+            docLines.line(to: NSPoint(x: 13.65, y: 6.7))
+            docLines.move(to: NSPoint(x: 8.85, y: 9.3))
+            docLines.line(to: NSPoint(x: 13.65, y: 9.3))
+            docLines.move(to: NSPoint(x: 8.85, y: 11.9))
+            docLines.line(to: NSPoint(x: 11.9, y: 11.9))
+            docLines.stroke()
+            
+            return true
+        }
+        image.isTemplate = !isActive
+        return image
+    }
+}
+
+
 final class ContentViewController: NSSplitViewController {
     
     // MARK: Public Properties
@@ -71,10 +202,6 @@ final class ContentViewController: NSSplitViewController {
         self.document = document
         
         super.init(nibName: nil, bundle: nil)
-        
-        self.splitViewItems = [
-            NSSplitViewItem(viewController: .viewController(document: document)),
-        ]
     }
     
     
@@ -88,9 +215,17 @@ final class ContentViewController: NSSplitViewController {
         
         let container = NSView()
         container.frame.size = NSSize(width: 640, height: 600)
-        self.splitView.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(self.splitView)
         self.view = container
+        
+        let splitView = self.splitView
+        splitView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(splitView)
+        NSLayoutConstraint.activate([
+            splitView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            splitView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            splitView.topAnchor.constraint(equalTo: container.topAnchor),
+            splitView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
     }
     
     
@@ -99,6 +234,9 @@ final class ContentViewController: NSSplitViewController {
         super.viewDidLoad()
         
         self.splitView.isVertical = false
+        self.splitViewItems = [
+            NSSplitViewItem(viewController: .viewController(document: self.document)),
+        ]
     }
     
     
@@ -276,9 +414,6 @@ final class ContentViewController: NSSplitViewController {
             selectedKind: selectedKind,
             weeklyReportState: self.weeklyReportState,
             documentCenterState: self.documentCenterState,
-            onSwitchKind: { [weak self] newKind in
-                self?.showInWindowCenter(newKind)
-            },
             onDismiss: { [weak self] in
                 self?.hideInWindowCenter()
             },
@@ -296,26 +431,53 @@ final class ContentViewController: NSSplitViewController {
                 }
                 self.hideInWindowCenter()
             },
+            onDeleteManagedDocument: { [weak self] item in
+                self?.deleteManagedDocument(item)
+            },
             onCreateNewDocument: { [weak self] in
                 guard let self, let docVC = self.documentViewController else { return }
                 if let created = try? (NSDocumentController.shared as? DocumentController)?.openUntitledDocumentAndDisplay(false) as? Document {
                     docVC.openOrFocusDocument(created, splitRight: false)
                 }
                 self.hideInWindowCenter()
-            },
-            onOpenDiskURLs: { [weak self] urls in
-                guard let self, let docVC = self.documentViewController else { return }
-                for url in urls {
-                    if let existing = NSDocumentController.shared.document(for: url) as? Document {
-                        docVC.openOrFocusDocument(existing, splitRight: false)
-                    } else if let doc = try? Document(contentsOf: url, ofType: "public.plain-text") {
-                        NSDocumentController.shared.addDocument(doc)
-                        docVC.openOrFocusDocument(doc, splitRight: false)
-                    }
-                }
-                self.hideInWindowCenter()
             }
         )
+    }
+    
+    
+    private func deleteManagedDocument(_ item: DocumentCenterState.ManagedDocumentItem) {
+        
+        let liveDoc = self.documentCenterState.liveDocument(for: item.id)
+        
+        let finishDeletion: () -> Void = { [weak self] in
+            if let liveDoc {
+                var closedInPane = false
+                for window in NSApp.orderedWindows {
+                    guard let docVC = (window.windowController as? DocumentWindowController)?.documentViewController else { continue }
+                    if docVC.paneDocuments.contains(where: { $0 === liveDoc }) {
+                        docVC.closeDocumentFromCenter(liveDoc)
+                        closedInPane = true
+                    }
+                }
+                if !closedInPane {
+                    liveDoc.updateChangeCount(.changeCleared)
+                    liveDoc.hasUncommittedChanges = false
+                    liveDoc.close()
+                }
+            }
+            
+            CotLocalDatabase.shared.deleteDocument(id: item.dbRecordID ?? item.id, filePath: item.filePath)
+            self?.documentCenterState.refresh()
+        }
+        
+        if let liveDoc, item.filePath != nil, item.isDirty, let docVC = self.documentViewController {
+            docVC.reviewDocuments([liveDoc]) { canClose in
+                guard canClose else { return }
+                finishDeletion()
+            }
+        } else {
+            finishDeletion()
+        }
     }
     
     
@@ -529,73 +691,33 @@ private struct WorkspaceCenterHostView: View {
     let weeklyReportState: WeeklyReportCenterState
     let documentCenterState: DocumentCenterState
     
-    var onSwitchKind: (WorkspaceCenterKind) -> Void
     var onDismiss: () -> Void
     var onOpenWeeklyReport: (StoredWeeklyReport) -> Void
     var onOpenManagedDocument: (Document?, StoredDocumentRecord?, _ splitRight: Bool) -> Void
+    var onDeleteManagedDocument: (DocumentCenterState.ManagedDocumentItem) -> Void
     var onCreateNewDocument: () -> Void
-    var onOpenDiskURLs: ([URL]) -> Void
     
     var body: some View {
         
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Button {
-                    self.onDismiss()
-                } label: {
-                    Label("返回编辑器", systemImage: "chevron.left")
-                }
-                .controlSize(.small)
-                .keyboardShortcut(.cancelAction)
-                
-                Spacer()
-                
-                Picker("", selection: Binding(
-                    get: { self.selectedKind },
-                    set: { newKind in
-                        if newKind != self.selectedKind {
-                            self.onSwitchKind(newKind)
-                        }
-                    }
-                )) {
-                    ForEach(WorkspaceCenterKind.allCases) { kind in
-                        Text(kind.rawValue).tag(kind)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 220)
-                
-                Spacer()
-                
-                Text("Esc 返回编辑")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+        Group {
+            switch self.selectedKind {
+                case .weeklyReports:
+                    WeeklyReportCenterView(
+                        state: self.weeklyReportState,
+                        onOpenReport: self.onOpenWeeklyReport,
+                        onDismiss: self.onDismiss
+                    )
+                case .documents:
+                    DocumentCenterView(
+                        state: self.documentCenterState,
+                        onOpenDocument: self.onOpenManagedDocument,
+                        onDeleteDocument: self.onDeleteManagedDocument,
+                        onCreateNewDocument: self.onCreateNewDocument,
+                        onDismiss: self.onDismiss
+                    )
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 9)
-            .background(.bar)
-            
-            Divider()
-            
-            Group {
-                switch self.selectedKind {
-                    case .weeklyReports:
-                        WeeklyReportCenterView(
-                            state: self.weeklyReportState,
-                            onOpenReport: self.onOpenWeeklyReport
-                        )
-                    case .documents:
-                        DocumentCenterView(
-                            state: self.documentCenterState,
-                            onOpenDocument: self.onOpenManagedDocument,
-                            onCreateNewDocument: self.onCreateNewDocument,
-                            onOpenDiskURLs: self.onOpenDiskURLs
-                        )
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .textBackgroundColor))
     }
 }

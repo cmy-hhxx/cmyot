@@ -930,9 +930,8 @@ extension DocumentWindowController: NSToolbarDelegate {
                                     defaultValue: "周报中心", table: "Chrome")
                 item.toolTip = String(localized: "chrome.toolbar.weeklyReportCenter.tooltip",
                                       defaultValue: "在当前窗口打开/关闭周报中心", table: "Chrome")
-                let baseImage = NSImage(systemSymbolName: "calendar.badge.clock", accessibilityDescription: item.label)
-                item.stateImages[.off] = baseImage
-                item.stateImages[.on] = baseImage?.withSymbolConfiguration(.init(paletteColors: [.controlAccentColor, .labelColor])) ?? baseImage
+                item.stateImages[.off] = WorkspaceCenterIcons.weeklyReportIcon(isActive: false)
+                item.stateImages[.on] = WorkspaceCenterIcons.weeklyReportIcon(isActive: true)
                 item.action = #selector(ContentViewController.toggleWeeklyReportCenter(_:))
                 item.isNavigational = true
                 item.visibilityPriority = .high
@@ -945,9 +944,8 @@ extension DocumentWindowController: NSToolbarDelegate {
                                     defaultValue: "文档中心", table: "Chrome")
                 item.toolTip = String(localized: "chrome.toolbar.documentCenter.tooltip",
                                       defaultValue: "在当前窗口管理与打开所有文档", table: "Chrome")
-                let baseImage = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: item.label)
-                item.stateImages[.off] = baseImage
-                item.stateImages[.on] = baseImage?.withSymbolConfiguration(.init(paletteColors: [.controlAccentColor])) ?? baseImage
+                item.stateImages[.off] = WorkspaceCenterIcons.documentCenterIcon(isActive: false)
+                item.stateImages[.on] = WorkspaceCenterIcons.documentCenterIcon(isActive: true)
                 item.action = #selector(ContentViewController.toggleDocumentCenter(_:))
                 item.isNavigational = true
                 item.visibilityPriority = .high

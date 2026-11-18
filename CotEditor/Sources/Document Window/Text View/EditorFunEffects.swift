@@ -22,7 +22,34 @@
 import AppKit
 import QuartzCore
 
-/// Built-in CoreAnimation visual effects for rhythmic, immersive typing feedback,
+/// Ready-made typing effect presets inspired by `activate-power-mode` / `vscode-power-mode`.
+enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
+    
+    case powerMode = "powerMode"
+    case fireworks = "fireworks"
+    case magicStars = "magicStars"
+    case neonPop = "neonPop"
+    
+    var id: String { self.rawValue }
+    
+    var displayName: String {
+        switch self {
+            case .powerMode: "Power Mode 重力粒子 + 连击"
+            case .fireworks: "绚烂烟花 (Fireworks)"
+            case .magicStars: "魔法星尘 (Magic Sparkles)"
+            case .neonPop: "极简霓虹波纹 (Neon Pop)"
+        }
+    }
+    
+    @MainActor static var current: TypingEffectPreset {
+        let raw = UserDefaults.standard.string(forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
+            ?? CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle, default: "powerMode")
+        return TypingEffectPreset(rawValue: raw) ?? .powerMode
+    }
+}
+
+
+/// Built-in CoreAnimation visual effects for `activate-power-mode` typing presets,
 /// inline habit ghost-completion micro-animations, and Neovide-inspired Vim cursor motion trails.
 @MainActor final class EditorFunEffectsController {
     
@@ -30,17 +57,26 @@ import QuartzCore
     
     private weak var textView: EditorTextView?
     
-    // Typing rhythm state (no audio — pure visual kinetic rhythm)
+    // Power Mode combo streak state
     private var lastKeystrokeTime: CFTimeInterval = 0
-    private var rhythmStreak: Int = 0
+    private var comboCount: Int = 0
+    private var comboResetTask: Task<Void, Never>?
     
-    // Pre-allocated GPU-composited typewriter layers
+    // Pre-allocated GPU-composited particle & ripple pools
     private weak var hostedLayer: CALayer?
     private var typewriterRootLayer: CALayer?
     private var caretPulseLayer: CALayer?
-    private var rippleRingLayer: CAShapeLayer?
-    private var sparkPool: [CALayer] = []
-    private var sparkPoolIndex = 0
+    private var ripplePool: [CAShapeLayer] = []
+    private var ripplePoolIndex = 0
+    private var particlePool: [CALayer] = []
+    private var particlePoolIndex = 0
+    
+    // Power Mode Combo HUD (anchored in the scroll view viewport, never scrolls with text)
+    private weak var hostedScrollLayer: CALayer?
+    private var comboHudContainer: CALayer?
+    private var comboHudBadgeLayer: CALayer?
+    private var comboHudBarTrackLayer: CALayer?
+    private var comboHudBarFillLayer: CALayer?
     
     // Inline ghost completion layers & acceptance sweep
     private var ghostRootLayer: CALayer?
@@ -70,6 +106,7 @@ import QuartzCore
         self.hideOverlayTask = nil
         self.lastCursorRect = nil
         self.hideGhostSuggestion(animated: false)
+        self.hideComboHud(animated: false)
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -81,7 +118,7 @@ import QuartzCore
     }
     
     
-    /// Triggers rhythmic kinetic typing feedback (caret pulse + expanding wave ring + glowing particles).
+    /// Triggers the user-selected ready-made typing visual preset at `rect`.
     func triggerTypewriterBurst(at rect: NSRect, color: NSColor? = nil, intensityScale: CGFloat = 1.0) {
         
         let isEnabled = UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled) == nil
@@ -89,134 +126,493 @@ import QuartzCore
             : UserDefaults.standard.bool(forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
         guard isEnabled else { return }
         guard let textView = self.textView, textView.window?.isKeyWindow == true else { return }
-        
         guard let hostLayer = self.ensureClippedHostLayer(for: textView) else { return }
+        
         self.ensureTypewriterLayers(in: hostLayer)
         
         let now = CACurrentMediaTime()
-        if now - self.lastKeystrokeTime < 0.42 {
-            self.rhythmStreak = min(self.rhythmStreak + 1, 14)
+        if now - self.lastKeystrokeTime < 1.8 {
+            self.comboCount += 1
         } else {
-            self.rhythmStreak = 0
+            self.comboCount = 1
         }
         self.lastKeystrokeTime = now
         
-        let rhythmFactor = (1.0 + CGFloat(self.rhythmStreak) * 0.048) * intensityScale
-        let baseColor = color ?? textView.effectiveCursorColor
-        let accentHighlight = NSColor.controlAccentColor.blended(withFraction: 0.35, of: baseColor) ?? baseColor
-        let easeOut = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+        let preset = TypingEffectPreset.current
         let center = CGPoint(x: rect.midX, y: rect.midY)
+        let palette = self.resolvedPalette(for: textView, fallback: color ?? textView.effectiveCursorColor, preset: preset)
         
-        // 1. Caret kinetic glow pop
+        switch preset {
+            case .powerMode:
+                self.emitPowerModeBurst(at: center, rect: rect, palette: palette, intensityScale: intensityScale)
+                self.updateComboHud(in: textView, combo: self.comboCount)
+            case .fireworks:
+                self.emitFireworksBurst(at: center, rect: rect, palette: palette, intensityScale: intensityScale)
+            case .magicStars:
+                self.emitMagicStarsBurst(at: center, rect: rect, palette: palette, intensityScale: intensityScale)
+            case .neonPop:
+                self.emitNeonPopBurst(at: center, rect: rect, palette: palette, intensityScale: intensityScale)
+        }
+    }
+    
+    
+    // MARK: Typing Effect Presets
+    
+    /// Authentic `activate-power-mode` / `vscode-power-mode` physics: parabolic gravity particles + combo meter.
+    private func emitPowerModeBurst(at center: CGPoint, rect: NSRect, palette: [NSColor], intensityScale: CGFloat) {
+        
+        let easeOut = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+        
+        // Crisp caret energy flash
         if let pulse = self.caretPulseLayer {
-            let pulseSize = CGSize(width: max(10, rect.width + 10), height: max(20, rect.height + 6))
-            
+            let pulseSize = CGSize(width: max(8, rect.width + 8), height: max(18, rect.height + 4))
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             pulse.removeAllAnimations()
             pulse.position = center
             pulse.bounds = CGRect(origin: .zero, size: pulseSize)
-            pulse.backgroundColor = baseColor.withAlphaComponent(0.38).cgColor
-            pulse.cornerRadius = 4.5
+            pulse.backgroundColor = palette[0].withAlphaComponent(0.32).cgColor
+            pulse.cornerRadius = 3.5
             pulse.opacity = 0
             CATransaction.commit()
             
             let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
-            scaleAnim.fromValue = 0.72
-            scaleAnim.toValue = 1.48 * min(1.3, rhythmFactor)
-            
+            scaleAnim.fromValue = 0.82
+            scaleAnim.toValue = 1.32
             let alphaAnim = CAKeyframeAnimation(keyPath: "opacity")
-            alphaAnim.values = [0.0, 0.92, 0.0]
+            alphaAnim.values = [0.0, 0.85, 0.0]
             alphaAnim.keyTimes = [0.0, 0.16, 1.0]
             
             let group = CAAnimationGroup()
             group.animations = [scaleAnim, alphaAnim]
-            group.duration = 0.21
+            group.duration = 0.18
             group.timingFunction = easeOut
             group.isRemovedOnCompletion = true
             pulse.add(group, forKey: "caretPulse")
         }
         
-        // 2. Expanding rhythmic ripple wave around the caret
-        if let ripple = self.rippleRingLayer {
-            let baseRadius = max(7.0, min(11.0, rect.height * 0.42))
-            let ringRect = CGRect(x: -baseRadius, y: -baseRadius, width: baseRadius * 2, height: baseRadius * 2)
+        guard !self.particlePool.isEmpty else { return }
+        let comboBoost = min(1.35, 1.0 + CGFloat(min(self.comboCount, 30)) * 0.012)
+        let count = max(6, Int(round(CGFloat.random(in: 9...13) * intensityScale)))
+        let gravity: CGFloat = 390.0  // downward in flipped coordinates (+y)
+        
+        for i in 0..<count {
+            let particle = self.nextParticleLayer()
+            let pColor = palette[i % palette.count]
+            let size = CGFloat.random(in: 2.6...4.6)
+            let isSquare = (i % 3 == 0)
+            
+            let duration = Double.random(in: 0.42...0.68)
+            let vx = CGFloat.random(in: -125...125) * comboBoost
+            let vy = CGFloat.random(in: -205 ... -75) * comboBoost
+            
+            let samples = 12
+            var positions: [NSValue] = []
+            positions.reserveCapacity(samples)
+            for step in 0..<samples {
+                let frac = CGFloat(step) / CGFloat(samples - 1)
+                let t = CGFloat(duration) * frac
+                let drag = 1.0 - 0.18 * frac
+                let px = center.x + vx * t * drag
+                let py = center.y + vy * t + 0.5 * gravity * t * t
+                positions.append(NSValue(point: CGPoint(x: px, y: py)))
+            }
             
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            ripple.removeAllAnimations()
-            ripple.position = center
-            ripple.bounds = ringRect
-            ripple.path = CGPath(ellipseIn: ringRect, transform: nil)
-            ripple.strokeColor = accentHighlight.withAlphaComponent(0.72).cgColor
-            ripple.fillColor = nil
-            ripple.lineWidth = 1.6
-            ripple.opacity = 0
+            particle.removeAllAnimations()
+            particle.position = center
+            particle.bounds = CGRect(x: 0, y: 0, width: size, height: size)
+            particle.cornerRadius = isSquare ? 1.0 : size / 2
+            particle.contents = isSquare ? nil : Self.tintedGlowCGImage(color: pColor)
+            particle.backgroundColor = isSquare ? pColor.cgColor : nil
+            particle.transform = CATransform3DIdentity
+            particle.opacity = 0
             CATransaction.commit()
             
-            let ringScale = CABasicAnimation(keyPath: "transform.scale")
-            ringScale.fromValue = 0.35
-            ringScale.toValue = 1.85 * min(1.35, rhythmFactor)
-            
-            let ringWidth = CABasicAnimation(keyPath: "lineWidth")
-            ringWidth.fromValue = 1.8
-            ringWidth.toValue = 0.35
-            
-            let ringAlpha = CAKeyframeAnimation(keyPath: "opacity")
-            ringAlpha.values = [0.0, 0.78, 0.0]
-            ringAlpha.keyTimes = [0.0, 0.15, 1.0]
-            
-            let group = CAAnimationGroup()
-            group.animations = [ringScale, ringWidth, ringAlpha]
-            group.duration = 0.25
-            group.timingFunction = easeOut
-            group.isRemovedOnCompletion = true
-            ripple.add(group, forKey: "rhythmRipple")
-        }
-        
-        // 3. Velocity sparks scaled by typing cadence
-        guard !self.sparkPool.isEmpty else { return }
-        let sparkCount = max(5, Int(round(CGFloat(7 + min(5, self.rhythmStreak / 2)) * intensityScale)))
-        
-        for i in 0..<sparkCount {
-            let spark = self.sparkPool[self.sparkPoolIndex]
-            self.sparkPoolIndex = (self.sparkPoolIndex + 1) % self.sparkPool.count
-            
-            let baseAngle = (.pi * 2.0 / Double(sparkCount)) * Double(i) + Double.random(in: -0.32...0.32)
-            let travel = CGFloat.random(in: 15...34) * min(1.4, rhythmFactor)
-            let dx = cos(baseAngle) * travel
-            let dy = sin(baseAngle) * travel - CGFloat.random(in: 3...9)  // upward arc in flipped view
-            let endPoint = CGPoint(x: center.x + dx, y: center.y + dy)
-            let startScale = CGFloat.random(in: 0.85...1.32)
-            let particleColor = (i % 3 == 0 ? accentHighlight : baseColor).cgColor
-            
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            spark.removeAllAnimations()
-            spark.position = center
-            spark.backgroundColor = particleColor
-            spark.opacity = 0
-            CATransaction.commit()
-            
-            let moveAnim = CABasicAnimation(keyPath: "position")
-            moveAnim.fromValue = NSValue(point: center)
-            moveAnim.toValue = NSValue(point: endPoint)
+            let posAnim = CAKeyframeAnimation(keyPath: "position")
+            posAnim.values = positions
+            posAnim.calculationMode = .linear
             
             let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
-            scaleAnim.fromValue = startScale
-            scaleAnim.toValue = 0.08
+            scaleAnim.fromValue = 1.15
+            scaleAnim.toValue = 0.18
             
-            let fadeAnim = CAKeyframeAnimation(keyPath: "opacity")
-            fadeAnim.values = [0.0, 0.96, 0.0]
-            fadeAnim.keyTimes = [0.0, 0.14, 1.0]
+            let alphaAnim = CAKeyframeAnimation(keyPath: "opacity")
+            alphaAnim.values = [0.0, 0.98, 0.82, 0.0]
+            alphaAnim.keyTimes = [0.0, 0.08, 0.62, 1.0]
+            
+            var animations: [CAAnimation] = [posAnim, scaleAnim, alphaAnim]
+            if isSquare {
+                let rotAnim = CABasicAnimation(keyPath: "transform.rotation.z")
+                rotAnim.fromValue = 0.0
+                rotAnim.toValue = Double.random(in: -3.2...3.2)
+                animations.append(rotAnim)
+            }
             
             let group = CAAnimationGroup()
-            group.animations = [moveAnim, scaleAnim, fadeAnim]
-            group.duration = Double.random(in: 0.27...0.40)
-            group.timingFunction = easeOut
+            group.animations = animations
+            group.duration = duration
             group.isRemovedOnCompletion = true
-            spark.add(group, forKey: "sparkBurst")
+            particle.add(group, forKey: "powerModeParticle")
         }
+    }
+    
+    
+    /// `vscode-power-mode` Fireworks preset: radiant multi-color streaks + glittering gravity embers.
+    private func emitFireworksBurst(at center: CGPoint, rect: NSRect, palette: [NSColor], intensityScale: CGFloat) {
+        
+        // Central radial flash
+        self.emitRippleRing(at: center, baseRadius: max(6, rect.height * 0.35), toScale: 2.1, color: palette[0], duration: 0.24)
+        
+        guard !self.particlePool.isEmpty else { return }
+        let count = max(10, Int(round(CGFloat.random(in: 14...18) * intensityScale)))
+        let gravity: CGFloat = 210.0
+        
+        for i in 0..<count {
+            let particle = self.nextParticleLayer()
+            let pColor = palette[i % palette.count]
+            let angle = (.pi * 2.0 / Double(count)) * Double(i) + Double.random(in: -0.22...0.22)
+            let speed = CGFloat.random(in: 85...185) * min(1.3, intensityScale)
+            let vx = cos(angle) * speed
+            let vy = sin(angle) * speed - 40
+            let duration = Double.random(in: 0.44...0.70)
+            let isStreak = (i % 2 == 0)
+            
+            let samples = 10
+            var positions: [NSValue] = []
+            positions.reserveCapacity(samples)
+            for step in 0..<samples {
+                let frac = CGFloat(step) / CGFloat(samples - 1)
+                let t = CGFloat(duration) * frac
+                let px = center.x + vx * t * (1.0 - 0.14 * frac)
+                let py = center.y + vy * t + 0.5 * gravity * t * t
+                positions.append(NSValue(point: CGPoint(x: px, y: py)))
+            }
+            
+            let w: CGFloat = isStreak ? CGFloat.random(in: 8...13) : CGFloat.random(in: 3.5...5.5)
+            let h: CGFloat = isStreak ? 2.2 : w
+            
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            particle.removeAllAnimations()
+            particle.position = center
+            particle.bounds = CGRect(x: 0, y: 0, width: w, height: h)
+            particle.cornerRadius = h / 2
+            particle.contents = isStreak ? nil : Self.tintedGlowCGImage(color: pColor)
+            particle.backgroundColor = isStreak ? pColor.cgColor : nil
+            particle.transform = isStreak ? CATransform3DMakeRotation(CGFloat(angle), 0, 0, 1) : CATransform3DIdentity
+            particle.opacity = 0
+            CATransaction.commit()
+            
+            let posAnim = CAKeyframeAnimation(keyPath: "position")
+            posAnim.values = positions
+            
+            let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
+            scaleAnim.fromValue = 1.1
+            scaleAnim.toValue = 0.12
+            
+            let alphaAnim = CAKeyframeAnimation(keyPath: "opacity")
+            alphaAnim.values = [0.0, 1.0, 0.78, 0.0]
+            alphaAnim.keyTimes = [0.0, 0.08, 0.58, 1.0]
+            
+            let group = CAAnimationGroup()
+            group.animations = [posAnim, scaleAnim, alphaAnim]
+            group.duration = duration
+            group.isRemovedOnCompletion = true
+            particle.add(group, forKey: "fireworkParticle")
+        }
+    }
+    
+    
+    /// `vscode-power-mode` Magic Sparkles preset: spinning 4-point twinkling star sparkles rising upward.
+    private func emitMagicStarsBurst(at center: CGPoint, rect: NSRect, palette: [NSColor], intensityScale: CGFloat) {
+        
+        guard !self.particlePool.isEmpty else { return }
+        let count = max(6, Int(round(CGFloat.random(in: 8...11) * intensityScale)))
+        
+        for i in 0..<count {
+            let star = self.nextParticleLayer()
+            let pColor = palette[i % palette.count]
+            let size = CGFloat.random(in: 7.5...12.5)
+            let duration = Double.random(in: 0.50...0.82)
+            let dx = CGFloat.random(in: -44...44)
+            let dy = CGFloat.random(in: -56 ... -16)
+            let sway = CGFloat.random(in: -10...10)
+            
+            let samples = 10
+            var positions: [NSValue] = []
+            positions.reserveCapacity(samples)
+            for step in 0..<samples {
+                let t = CGFloat(step) / CGFloat(samples - 1)
+                let ease = 1.0 - pow(1.0 - t, 2.2)
+                let px = center.x + dx * ease + sin(t * .pi * 2.0) * sway * 0.45
+                let py = center.y + dy * ease
+                positions.append(NSValue(point: CGPoint(x: px, y: py)))
+            }
+            
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            star.removeAllAnimations()
+            star.position = center
+            star.bounds = CGRect(x: 0, y: 0, width: size, height: size)
+            star.cornerRadius = 0
+            star.backgroundColor = nil
+            star.contents = Self.tintedStarCGImage(color: pColor)
+            star.transform = CATransform3DIdentity
+            star.opacity = 0
+            CATransaction.commit()
+            
+            let posAnim = CAKeyframeAnimation(keyPath: "position")
+            posAnim.values = positions
+            
+            let scaleAnim = CAKeyframeAnimation(keyPath: "transform.scale")
+            scaleAnim.values = [0.25, 1.25, 0.85, 1.15, 0.1]
+            scaleAnim.keyTimes = [0.0, 0.22, 0.48, 0.72, 1.0]
+            
+            let rotAnim = CABasicAnimation(keyPath: "transform.rotation.z")
+            rotAnim.fromValue = Double.random(in: -0.6...0.6)
+            rotAnim.toValue = Double.random(in: 1.8...3.6) * (i.isMultiple(of: 2) ? 1.0 : -1.0)
+            
+            let alphaAnim = CAKeyframeAnimation(keyPath: "opacity")
+            alphaAnim.values = [0.0, 1.0, 0.9, 0.0]
+            alphaAnim.keyTimes = [0.0, 0.14, 0.68, 1.0]
+            
+            let group = CAAnimationGroup()
+            group.animations = [posAnim, scaleAnim, rotAnim, alphaAnim]
+            group.duration = duration
+            group.isRemovedOnCompletion = true
+            star.add(group, forKey: "magicStar")
+        }
+    }
+    
+    
+    /// Clean overlapping shockwave rings + subtle caret flash.
+    private func emitNeonPopBurst(at center: CGPoint, rect: NSRect, palette: [NSColor], intensityScale: CGFloat) {
+        
+        let baseRadius = max(6.5, min(10.5, rect.height * 0.4))
+        self.emitRippleRing(
+            at: center,
+            baseRadius: baseRadius,
+            toScale: 2.05 * min(1.3, intensityScale),
+            color: palette[0],
+            duration: 0.28
+        )
+        
+        if let pulse = self.caretPulseLayer {
+            let pulseSize = CGSize(width: max(10, rect.width + 10), height: max(20, rect.height + 6))
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            pulse.removeAllAnimations()
+            pulse.position = center
+            pulse.bounds = CGRect(origin: .zero, size: pulseSize)
+            pulse.backgroundColor = palette[1 % palette.count].withAlphaComponent(0.35).cgColor
+            pulse.cornerRadius = 4.5
+            pulse.opacity = 0
+            CATransaction.commit()
+            
+            let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
+            scaleAnim.fromValue = 0.78
+            scaleAnim.toValue = 1.45
+            let alphaAnim = CAKeyframeAnimation(keyPath: "opacity")
+            alphaAnim.values = [0.0, 0.9, 0.0]
+            alphaAnim.keyTimes = [0.0, 0.18, 1.0]
+            
+            let group = CAAnimationGroup()
+            group.animations = [scaleAnim, alphaAnim]
+            group.duration = 0.21
+            group.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+            group.isRemovedOnCompletion = true
+            pulse.add(group, forKey: "neonCaret")
+        }
+    }
+    
+    
+    private func emitRippleRing(at center: CGPoint, baseRadius: CGFloat, toScale: CGFloat, color: NSColor, duration: CFTimeInterval) {
+        
+        guard !self.ripplePool.isEmpty else { return }
+        let ripple = self.ripplePool[self.ripplePoolIndex]
+        self.ripplePoolIndex = (self.ripplePoolIndex + 1) % self.ripplePool.count
+        
+        let ringRect = CGRect(x: -baseRadius, y: -baseRadius, width: baseRadius * 2, height: baseRadius * 2)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        ripple.removeAllAnimations()
+        ripple.position = center
+        ripple.bounds = ringRect
+        ripple.path = CGPath(ellipseIn: ringRect, transform: nil)
+        ripple.strokeColor = color.withAlphaComponent(0.75).cgColor
+        ripple.fillColor = nil
+        ripple.lineWidth = 1.7
+        ripple.opacity = 0
+        CATransaction.commit()
+        
+        let ringScale = CABasicAnimation(keyPath: "transform.scale")
+        ringScale.fromValue = 0.4
+        ringScale.toValue = toScale
+        
+        let ringWidth = CABasicAnimation(keyPath: "lineWidth")
+        ringWidth.fromValue = 1.8
+        ringWidth.toValue = 0.35
+        
+        let ringAlpha = CAKeyframeAnimation(keyPath: "opacity")
+        ringAlpha.values = [0.0, 0.85, 0.0]
+        ringAlpha.keyTimes = [0.0, 0.15, 1.0]
+        
+        let group = CAAnimationGroup()
+        group.animations = [ringScale, ringWidth, ringAlpha]
+        group.duration = duration
+        group.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+        group.isRemovedOnCompletion = true
+        ripple.add(group, forKey: "rippleRing")
+    }
+    
+    
+    // MARK: Power Mode Combo HUD
+    
+    private func updateComboHud(in textView: EditorTextView, combo: Int) {
+        
+        guard combo >= 3 else {
+            self.hideComboHud(animated: true)
+            return
+        }
+        guard let scrollView = textView.enclosingScrollView else { return }
+        if !scrollView.wantsLayer {
+            scrollView.wantsLayer = true
+        }
+        guard let scrollLayer = scrollView.layer else { return }
+        self.ensureComboHudLayers(in: scrollLayer)
+        
+        guard
+            let container = self.comboHudContainer,
+            let badgeLayer = self.comboHudBadgeLayer,
+            let trackLayer = self.comboHudBarTrackLayer,
+            let fillLayer = self.comboHudBarFillLayer
+        else { return }
+        
+        let tierTitle: String
+        let accentColor: NSColor
+        switch combo {
+            case ..<15:
+                tierTitle = "COMBO"
+                accentColor = NSColor(srgbRed: 0.0, green: 0.73, blue: 0.98, alpha: 1.0)
+            case 15..<30:
+                tierTitle = "NICE!"
+                accentColor = NSColor(srgbRed: 0.0, green: 0.96, blue: 0.83, alpha: 1.0)
+            case 30..<60:
+                tierTitle = "GREAT!"
+                accentColor = NSColor(srgbRed: 0.95, green: 0.36, blue: 0.71, alpha: 1.0)
+            case 60..<100:
+                tierTitle = "UNSTOPPABLE!"
+                accentColor = NSColor(srgbRed: 1.0, green: 0.62, blue: 0.11, alpha: 1.0)
+            default:
+                tierTitle = "GODLIKE!"
+                accentColor = NSColor(srgbRed: 1.0, green: 0.30, blue: 0.36, alpha: 1.0)
+        }
+        
+        let scale = textView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        let countText = "×\(combo)"
+        let tierFont = NSFont.systemFont(ofSize: 9.5, weight: .heavy)
+        let countFont = NSFont.monospacedDigitSystemFont(ofSize: 22, weight: .black)
+        
+        let tierAttr = NSAttributedString(string: tierTitle, attributes: [
+            .font: tierFont,
+            .foregroundColor: accentColor,
+            .kern: 1.1,
+        ])
+        let countAttr = NSAttributedString(string: countText, attributes: [
+            .font: countFont,
+            .foregroundColor: accentColor,
+        ])
+        
+        let tierSize = tierAttr.size()
+        let countSize = countAttr.size()
+        let hudWidth = max(78, ceil(max(tierSize.width, countSize.width)) + 16)
+        let badgeHeight = ceil(tierSize.height + countSize.height) + 4
+        let totalHeight = badgeHeight + 8
+        
+        let rendered = NSImage(size: NSSize(width: hudWidth, height: badgeHeight), flipped: true) { _ in
+            tierAttr.draw(at: NSPoint(x: hudWidth - tierSize.width - 2, y: 0))
+            countAttr.draw(at: NSPoint(x: hudWidth - countSize.width - 2, y: tierSize.height - 1))
+            return true
+        }
+        var proposedRect = NSRect(origin: .zero, size: NSSize(width: hudWidth, height: badgeHeight))
+        let scaleTransform = NSAffineTransform()
+        scaleTransform.scale(by: scale)
+        let cgImage = rendered.cgImage(forProposedRect: &proposedRect, context: nil, hints: [.ctm: scaleTransform])
+        
+        let viewBounds = scrollView.bounds
+        let marginRight: CGFloat = 18
+        let marginTop: CGFloat = 14
+        let originX = max(12, viewBounds.width - hudWidth - marginRight)
+        let originY = scrollView.isFlipped ? marginTop : max(12, viewBounds.height - totalHeight - marginTop)
+        
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        container.removeAllAnimations()
+        container.bounds = CGRect(x: 0, y: 0, width: hudWidth, height: totalHeight)
+        container.position = CGPoint(x: originX + hudWidth / 2, y: originY + totalHeight / 2)
+        container.opacity = 1.0
+        
+        badgeLayer.frame = CGRect(x: 0, y: 0, width: hudWidth, height: badgeHeight)
+        badgeLayer.contents = cgImage
+        badgeLayer.contentsScale = scale
+        badgeLayer.contentsGravity = .resize
+        
+        let trackWidth = min(hudWidth, max(58, countSize.width + 12))
+        let trackY = badgeHeight + 2
+        trackLayer.frame = CGRect(x: hudWidth - trackWidth, y: trackY, width: trackWidth, height: 3)
+        trackLayer.backgroundColor = accentColor.withAlphaComponent(0.18).cgColor
+        trackLayer.cornerRadius = 1.5
+        
+        fillLayer.removeAllAnimations()
+        fillLayer.anchorPoint = CGPoint(x: 1.0, y: 0.5)
+        fillLayer.bounds = CGRect(x: 0, y: 0, width: trackWidth, height: 3)
+        fillLayer.position = CGPoint(x: trackWidth, y: 1.5)
+        fillLayer.backgroundColor = accentColor.cgColor
+        fillLayer.cornerRadius = 1.5
+        CATransaction.commit()
+        
+        // Spring pop on container
+        let pop = CASpringAnimation(keyPath: "transform.scale")
+        pop.fromValue = 1.18
+        pop.toValue = 1.0
+        pop.mass = 0.5
+        pop.stiffness = 520
+        pop.damping = 22
+        pop.duration = min(0.24, pop.settlingDuration)
+        container.add(pop, forKey: "comboPop")
+        
+        // Decaying timer bar (1.8s timeout)
+        let decay = CABasicAnimation(keyPath: "transform.scale.x")
+        decay.fromValue = 1.0
+        decay.toValue = 0.0
+        decay.duration = 1.8
+        decay.fillMode = .forwards
+        decay.isRemovedOnCompletion = false
+        fillLayer.add(decay, forKey: "comboDecay")
+        
+        self.comboResetTask?.cancel()
+        self.comboResetTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(1800))
+            guard !Task.isCancelled else { return }
+            self?.comboCount = 0
+            self?.hideComboHud(animated: true)
+        }
+    }
+    
+    
+    private func hideComboHud(animated: Bool) {
+        
+        self.comboResetTask?.cancel()
+        self.comboResetTask = nil
+        
+        guard let container = self.comboHudContainer, container.opacity > 0.01 else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(!animated)
+        CATransaction.setAnimationDuration(0.22)
+        container.opacity = 0
+        CATransaction.commit()
     }
     
     
@@ -308,7 +704,6 @@ import QuartzCore
         container.opacity = 1.0
         CATransaction.commit()
         
-        // Subtle entrance micro-animation (glide in + fade + crisp settle)
         let easeOut = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
         
         let fadeIn = CABasicAnimation(keyPath: "opacity")
@@ -418,8 +813,6 @@ import QuartzCore
         
         let targetCenter = CGPoint(x: newRect.midX, y: newRect.midY)
         
-        // If an animation is already in flight, continue seamlessly from its current rendered center
-        // so rapid `jjjjj` / `lllll` holds never snap backwards or stutter.
         let inFlightCenter: CGPoint? = if let overlay = self.cursorOverlayLayer,
                                           overlay.opacity > 0.05,
                                           let presentation = overlay.presentation(),
@@ -433,7 +826,6 @@ import QuartzCore
         let rawSourceRect = oldRect ?? self.lastCursorRect ?? newRect
         self.lastCursorRect = newRect
         
-        // Ignore stale source positions outside the current visible viewport (e.g. after scrolling)
         let visible = textView.visibleRect.insetBy(dx: -40, dy: -60)
         var startCenter = inFlightCenter ?? CGPoint(x: rawSourceRect.midX, y: rawSourceRect.midY)
         var startSize = rawSourceRect.size
@@ -447,15 +839,12 @@ import QuartzCore
         let distance = hypot(dx, dy)
         guard distance > 1.5 else { return }
         
-        // Cap long-distance jumps (like `gg`, `G`, `⌃D`) so trails stay sleek and local,
-        // never streaking across the entire window.
         let maxTrailDistance: CGFloat = 220
         if distance > maxTrailDistance {
             let ratio = 44.0 / distance
             startCenter = CGPoint(x: targetCenter.x - dx * ratio, y: targetCenter.y - dy * ratio)
         }
         
-        // 1. Clean convex tapered comet trail (reused single CAShapeLayer)
         let effectiveDistance = hypot(targetCenter.x - startCenter.x, targetCenter.y - startCenter.y)
         if effectiveDistance > 5, let trail = self.trailLayer {
             let path = Self.sweptTrailPath(
@@ -482,7 +871,6 @@ import QuartzCore
             trail.add(fade, forKey: "trailFade")
         }
         
-        // 2. Critically-damped cursor glide (snappy, zero overshoot, zero drift)
         guard let cursorLayer = self.cursorOverlayLayer else { return }
         
         CATransaction.begin()
@@ -532,6 +920,66 @@ import QuartzCore
     
     // MARK: Private Helpers
     
+    private func nextParticleLayer() -> CALayer {
+        
+        let layer = self.particlePool[self.particlePoolIndex]
+        self.particlePoolIndex = (self.particlePoolIndex + 1) % self.particlePool.count
+        return layer
+    }
+    
+    
+    private func resolvedPalette(for textView: EditorTextView, fallback: NSColor, preset: TypingEffectPreset) -> [NSColor] {
+        
+        var syntaxColor: NSColor?
+        let loc = textView.selectedRange().location
+        if loc > 0, let lm = textView.layoutManager {
+            let probeIndex = min(loc - 1, max(0, (textView.string as NSString).length - 1))
+            if let attrColor = lm.temporaryAttribute(.foregroundColor, atCharacterIndex: probeIndex, effectiveRange: nil) as? NSColor,
+               let rgb = attrColor.usingColorSpace(.sRGB),
+               rgb.saturationComponent > 0.25
+            {
+                syntaxColor = attrColor
+            }
+        }
+        
+        switch preset {
+            case .powerMode:
+                let base: [NSColor] = [
+                    NSColor(srgbRed: 0.00, green: 0.73, blue: 0.98, alpha: 1.0), // #00BBF9
+                    NSColor(srgbRed: 0.00, green: 0.96, blue: 0.83, alpha: 1.0), // #00F5D4
+                    NSColor(srgbRed: 0.95, green: 0.36, blue: 0.71, alpha: 1.0), // #F15BB5
+                    NSColor(srgbRed: 0.99, green: 0.89, blue: 0.25, alpha: 1.0), // #FEE440
+                    NSColor(srgbRed: 0.61, green: 0.36, blue: 0.90, alpha: 1.0), // #9B5DE5
+                ]
+                if let syntaxColor {
+                    return [syntaxColor] + base
+                }
+                return [fallback] + base
+                
+            case .fireworks:
+                return [
+                    NSColor(srgbRed: 1.00, green: 0.35, blue: 0.37, alpha: 1.0), // #FF595E
+                    NSColor(srgbRed: 1.00, green: 0.79, blue: 0.23, alpha: 1.0), // #FFCA3A
+                    NSColor(srgbRed: 0.54, green: 0.79, blue: 0.15, alpha: 1.0), // #8AC926
+                    NSColor(srgbRed: 0.10, green: 0.51, blue: 0.77, alpha: 1.0), // #1982C4
+                    NSColor(srgbRed: 1.00, green: 0.57, blue: 0.30, alpha: 1.0), // #FF924C
+                ]
+                
+            case .magicStars:
+                return [
+                    NSColor(srgbRed: 0.75, green: 0.52, blue: 0.99, alpha: 1.0),
+                    NSColor(srgbRed: 0.30, green: 0.79, blue: 0.94, alpha: 1.0),
+                    NSColor(srgbRed: 1.00, green: 0.84, blue: 0.35, alpha: 1.0),
+                    NSColor(srgbRed: 0.98, green: 0.52, blue: 0.78, alpha: 1.0),
+                ]
+                
+            case .neonPop:
+                let accent = NSColor.controlAccentColor.blended(withFraction: 0.35, of: fallback) ?? fallback
+                return [syntaxColor ?? fallback, accent]
+        }
+    }
+    
+    
     private func ensureClippedHostLayer(for textView: EditorTextView) -> CALayer? {
         
         if !textView.wantsLayer {
@@ -558,8 +1006,8 @@ import QuartzCore
         self.typewriterRootLayer?.removeFromSuperlayer()
         self.typewriterRootLayer = nil
         self.caretPulseLayer = nil
-        self.rippleRingLayer = nil
-        self.sparkPool.removeAll()
+        self.ripplePool.removeAll()
+        self.particlePool.removeAll()
         
         self.ghostRootLayer?.removeFromSuperlayer()
         self.ghostRootLayer = nil
@@ -588,25 +1036,58 @@ import QuartzCore
         root.addSublayer(pulse)
         self.caretPulseLayer = pulse
         
-        let ripple = CAShapeLayer()
-        ripple.opacity = 0
-        root.addSublayer(ripple)
-        self.rippleRingLayer = ripple
-        
-        let sparkImage = Self.sparkGlowCGImage
-        var pool: [CALayer] = []
-        pool.reserveCapacity(64)
-        for index in 0..<64 {
-            let size: CGFloat = (index % 3 == 0) ? 7.5 : 5.5
-            let spark = CALayer()
-            spark.bounds = CGRect(x: 0, y: 0, width: size, height: size)
-            spark.cornerRadius = size / 2
-            spark.contents = sparkImage
-            spark.opacity = 0
-            root.addSublayer(spark)
-            pool.append(spark)
+        var ripples: [CAShapeLayer] = []
+        ripples.reserveCapacity(8)
+        for _ in 0..<8 {
+            let ripple = CAShapeLayer()
+            ripple.opacity = 0
+            root.addSublayer(ripple)
+            ripples.append(ripple)
         }
-        self.sparkPool = pool
+        self.ripplePool = ripples
+        
+        var pool: [CALayer] = []
+        pool.reserveCapacity(96)
+        for _ in 0..<96 {
+            let particle = CALayer()
+            particle.opacity = 0
+            root.addSublayer(particle)
+            pool.append(particle)
+        }
+        self.particlePool = pool
+    }
+    
+    
+    private func ensureComboHudLayers(in scrollLayer: CALayer) {
+        
+        if self.hostedScrollLayer !== scrollLayer {
+            self.comboHudContainer?.removeFromSuperlayer()
+            self.comboHudContainer = nil
+            self.comboHudBadgeLayer = nil
+            self.comboHudBarTrackLayer = nil
+            self.comboHudBarFillLayer = nil
+            self.hostedScrollLayer = scrollLayer
+        }
+        guard self.comboHudContainer == nil else { return }
+        
+        let container = CALayer()
+        container.zPosition = 240
+        container.opacity = 0
+        scrollLayer.addSublayer(container)
+        self.comboHudContainer = container
+        
+        let badge = CALayer()
+        container.addSublayer(badge)
+        self.comboHudBadgeLayer = badge
+        
+        let track = CALayer()
+        track.masksToBounds = true
+        container.addSublayer(track)
+        self.comboHudBarTrackLayer = track
+        
+        let fill = CALayer()
+        track.addSublayer(fill)
+        self.comboHudBarFillLayer = fill
     }
     
     
@@ -656,7 +1137,6 @@ import QuartzCore
     }
     
     
-    /// Builds a clean tapered quadrilateral connecting `startCenter` -> `endCenter` without self-intersection.
     private static func sweptTrailPath(
         from startCenter: CGPoint,
         fromSize: CGSize,
@@ -683,17 +1163,72 @@ import QuartzCore
     }
     
     
-    private static let sparkGlowCGImage: CGImage? = {
+    private static var glowImageCache: [NSColor: CGImage] = [:]
+    
+    
+    private static func tintedGlowCGImage(color: NSColor) -> CGImage? {
+        
+        if let cached = self.glowImageCache[color] {
+            return cached
+        }
         let size = NSSize(width: 14, height: 14)
         let image = NSImage(size: size, flipped: false) { rect in
             let gradient = NSGradient(colors: [
-                NSColor.white.withAlphaComponent(0.98),
-                NSColor.white.withAlphaComponent(0.55),
-                NSColor.white.withAlphaComponent(0.0),
+                NSColor.white.withAlphaComponent(0.95),
+                color.withAlphaComponent(0.90),
+                color.withAlphaComponent(0.0),
             ])
             gradient?.draw(in: NSBezierPath(ovalIn: rect), relativeCenterPosition: .zero)
             return true
         }
-        return image.cgImage(forProposedRect: nil, context: nil, hints: nil)
-    }()
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            if self.glowImageCache.count > 32 {
+                self.glowImageCache.removeAll()
+            }
+            self.glowImageCache[color] = cgImage
+            return cgImage
+        }
+        return nil
+    }
+    
+    
+    private static var starImageCache: [NSColor: CGImage] = [:]
+    
+    
+    private static func tintedStarCGImage(color: NSColor) -> CGImage? {
+        
+        if let cached = self.starImageCache[color] {
+            return cached
+        }
+        let size = NSSize(width: 18, height: 18)
+        let image = NSImage(size: size, flipped: false) { rect in
+            let cx = rect.midX
+            let cy = rect.midY
+            let outer = rect.width * 0.46
+            let inner = rect.width * 0.14
+            
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: cx, y: cy + outer))
+            path.line(to: NSPoint(x: cx + inner, y: cy + inner))
+            path.line(to: NSPoint(x: cx + outer, y: cy))
+            path.line(to: NSPoint(x: cx + inner, y: cy - inner))
+            path.line(to: NSPoint(x: cx, y: cy - outer))
+            path.line(to: NSPoint(x: cx - inner, y: cy - inner))
+            path.line(to: NSPoint(x: cx - outer, y: cy))
+            path.line(to: NSPoint(x: cx - inner, y: cy + inner))
+            path.close()
+            
+            color.setFill()
+            path.fill()
+            return true
+        }
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            if self.starImageCache.count > 32 {
+                self.starImageCache.removeAll()
+            }
+            self.starImageCache[color] = cgImage
+            return cgImage
+        }
+        return nil
+    }
 }

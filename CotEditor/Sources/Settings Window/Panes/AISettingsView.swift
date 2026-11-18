@@ -51,6 +51,7 @@ struct AISettingsView: View {
     @State private var selectedStageAction: AIAction = .weeklyReport
     @State private var stagePromptText: String = ""
     @State private var typewriterEnabled: Bool = false
+    @State private var typewriterStyle: TypingEffectPreset = .powerMode
     @State private var vimCursorTrailEnabled: Bool = true
     @State private var plainTextImagesEnabled: Bool = true
     @State private var dbStatusMessage: String?
@@ -194,12 +195,28 @@ struct AISettingsView: View {
                         .frame(minWidth: 90, alignment: .trailing)
                     
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 16) {
-                            Toggle("动感打字特效 (律动+粒子)", isOn: self.$typewriterEnabled)
+                        HStack(spacing: 12) {
+                            Toggle("动感打字特效", isOn: self.$typewriterEnabled)
                                 .onChange(of: self.typewriterEnabled) { _, val in
                                     CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
                                     UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
                                 }
+                            Picker("", selection: self.$typewriterStyle) {
+                                ForEach(TypingEffectPreset.allCases) { preset in
+                                    Text(preset.displayName).tag(preset)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 205)
+                            .disabled(!self.typewriterEnabled)
+                            .onChange(of: self.typewriterStyle) { _, val in
+                                CotLocalDatabase.shared.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
+                                UserDefaults.standard.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
+                            }
+                        }
+                        .controlSize(.small)
+                        
+                        HStack(spacing: 16) {
                             Toggle("Vim 炫酷光标拖尾", isOn: self.$vimCursorTrailEnabled)
                                 .onChange(of: self.vimCursorTrailEnabled) { _, val in
                                     CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
@@ -323,6 +340,8 @@ struct AISettingsView: View {
         self.personaText = db.aiPersona
         self.loadStagePrompt(for: self.selectedStageAction)
         self.typewriterEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled, default: true)
+        let styleRaw = db.string(forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle, default: "powerMode")
+        self.typewriterStyle = TypingEffectPreset(rawValue: styleRaw) ?? .powerMode
         self.vimCursorTrailEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled, default: true)
         self.plainTextImagesEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled, default: true)
     }
