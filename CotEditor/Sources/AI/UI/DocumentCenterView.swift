@@ -178,6 +178,12 @@ struct CenterPreviewTextView: NSViewRepresentable {
             }
         }
         
+        let trashedKeys = Set(
+            CotLocalDatabase.shared.trashedDocuments.map {
+                Self.canonicalKey(filePath: $0.filePath, rawID: $0.id)
+            }
+        )
+        
         var liveByKey: [String: Document] = [:]
         var merged: [ManagedDocumentItem] = []
         var usedKeys = Set<String>()
@@ -194,6 +200,8 @@ struct CenterPreviewTextView: NSViewRepresentable {
             }
             
             let key = Self.canonicalKey(filePath: filePath, rawID: doc.databaseDocumentID)
+            // A still-open document that was moved to the trash belongs to the trash view only.
+            guard !trashedKeys.contains(key) else { continue }
             guard usedKeys.insert(key).inserted else { continue }
             
             liveByKey[key] = doc
