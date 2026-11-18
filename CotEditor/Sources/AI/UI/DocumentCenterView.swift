@@ -653,6 +653,7 @@ struct DocumentCenterView: View {
                     }
                     .padding(.top, 2)
                 }
+                }
                 
                 if self.state.showingTrash, !self.state.trashedItems.isEmpty {
                     Button(role: .destructive) {
@@ -665,7 +666,6 @@ struct DocumentCenterView: View {
                     .controlSize(.small)
                     .pointerStyle(.link)
                     .help("彻底删除废纸篓中的所有文档")
-                }
                 }
             }
             .padding(.horizontal, 12)
