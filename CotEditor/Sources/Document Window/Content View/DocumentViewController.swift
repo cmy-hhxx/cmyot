@@ -321,7 +321,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 .sink { [weak self] _ in self?.closeSecondaryDocuments() }
         }
         
-        self.restorePersistedPaneTabsIfNeeded()
+        // Launch always starts with a single pane. Restoring the previous split/tab tree made
+        // every restart reopen a cluttered layout, so the persisted session is no longer applied.
+        // (Saving is gated by `didRestoreAppPaneTabsThisLaunch`, so it stays dormant as well.)
         
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.view.window else { return }

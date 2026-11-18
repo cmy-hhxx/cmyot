@@ -117,6 +117,7 @@ struct CenterPreviewTextView: NSViewRepresentable {
         let characterCount: Int
         let groupName: String
         let storedRecord: StoredDocumentRecord?
+        var isTrashed: Bool = false
         
         static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.id == rhs.id
@@ -137,10 +138,19 @@ struct CenterPreviewTextView: NSViewRepresentable {
     }
     
     var items: [ManagedDocumentItem] = []
+    var trashedItems: [ManagedDocumentItem] = []
     var displayedItems: [ManagedDocumentItem] = []
     var groupSections: [DocumentGroupSection] = []
     var collapsedGroups: Set<String> = []
     var selectedID: String?
+    var showingTrash = false {
+        didSet {
+            if oldValue != self.showingTrash {
+                self.selectedID = nil
+                self.recomputeDisplayedItems()
+            }
+        }
+    }
     var searchText: String = "" {
         didSet {
             if oldValue != self.searchText {
@@ -249,23 +259,57 @@ struct CenterPreviewTextView: NSViewRepresentable {
         
         self.liveDocsByID = liveByKey
         self.items = merged
+        self.trashedItems = CotLocalDatabase.shared.trashedDocuments.map { record in
+            ManagedDocumentItem(
+                id: Self.canonicalKey(filePath: record.filePath, rawID: record.id),
+                dbRecordID: record.id,
+                title: record.title,
+                filePath: record.filePath,
+                fileExists: record.filePath != nil,
+                syntax: record.syntax,
+                content: record.content,
+                previewText: Self.buildPreviewText(from: record.content),
+                updatedAt: record.updatedAt,
+                isOpenNow: false,
+                isDirty: false,
+                characterCount: record.content.count,
+                groupName: record.groupName,
+                storedRecord: record,
+                isTrashed: true
+            )
+        }
         self.recomputeDisplayedItems()
+    }
+    
+    
+    private func matchesSearch(_ item: ManagedDocumentItem, query: String) -> Bool {
+        
+        query.isEmpty
+            || item.title.localizedCaseInsensitiveContains(query)
+            || item.groupName.localizedCaseInsensitiveContains(query)
+            || (item.filePath?.localizedCaseInsensitiveContains(query) ?? false)
+            || item.content.prefix(2_000).localizedCaseInsensitiveContains(query)
     }
     
     
     private func recomputeDisplayedItems() {
         
         let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filtered = if query.isEmpty {
-            self.items
-        } else {
-            self.items.filter { item in
-                item.title.localizedCaseInsensitiveContains(query)
-                    || item.groupName.localizedCaseInsensitiveContains(query)
-                    || (item.filePath?.localizedCaseInsensitiveContains(query) ?? false)
-                    || item.content.prefix(2_000).localizedCaseInsensitiveContains(query)
+        
+        if self.showingTrash {
+            let sorted = self.trashedItems
+                .filter { self.matchesSearch($0, query: query) }
+                .sorted { $0.updatedAt > $1.updatedAt }
+            self.displayedItems = sorted
+            self.groupSections = []
+            if let selectedID, sorted.contains(where: { $0.id == selectedID }) {
+                return
             }
+            self.selectedID = sorted.first?.id
+            return
         }
+        
+        let filtered = self.items.filter { self.matchesSearch($0, query: query) }
         
         let sorted = filtered.sorted { lhs, rhs in
             if lhs.isOpenNow != rhs.isOpenNow {
@@ -447,16 +491,16 @@ struct DocumentCenterView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .center, spacing: 8) {
-                    Image(systemName: "square.stack.3d.up.fill")
+                    Image(systemName: self.state.showingTrash ? "trash.fill" : "square.stack.3d.up.fill")
                         .font(.system(size: 13, weight: .semibold))
                         .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(self.state.showingTrash ? Color.secondary : Color.accentColor)
                         .frame(width: 18, height: 18)
                     
-                    Text("文档中心")
+                    Text(self.state.showingTrash ? "废纸篓" : "文档中心")
                         .font(.system(size: 13.5, weight: .semibold))
                     
-                    Text("\(items.count)")
+                    Text("\(self.state.showingTrash ? self.state.trashedItems.count : items.count)")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
@@ -513,7 +557,36 @@ struct DocumentCenterView: View {
                 .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.06), lineWidth: 1))
                 
-                HStack(spacing: 6) {
+                Button {
+                    self.isRenaming = false
+                    self.state.showingTrash.toggle()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: self.state.showingTrash ? "tray.full" : "trash")
+                            .font(.system(size: 11.5, weight: .medium))
+                        Text(self.state.showingTrash ? "返回文档列表" : "废纸篓")
+                            .font(.system(size: 12, weight: .medium))
+                        Spacer()
+                        Text("\(self.state.trashedItems.count)")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 9)
+                    .frame(height: 26)
+                    .background(
+                        self.state.showingTrash
+                            ? Color.primary.opacity(0.075)
+                            : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 6)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help(self.state.showingTrash ? "返回正常文档列表" : "查看已删除的文档，可恢复或彻底删除")
+                
+                if !self.state.showingTrash {
+                    HStack(spacing: 6) {
                     Button {
                         self.openAll(items: items)
                     } label: {
@@ -572,6 +645,20 @@ struct DocumentCenterView: View {
                     }
                     .padding(.top, 2)
                 }
+                
+                if self.state.showingTrash, !self.state.trashedItems.isEmpty {
+                    Button(role: .destructive) {
+                        self.confirmEmptyTrash()
+                    } label: {
+                        Label("清空废纸篓", systemImage: "trash.slash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .pointerStyle(.link)
+                    .help("彻底删除废纸篓中的所有文档")
+                }
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 12)
@@ -582,6 +669,19 @@ struct DocumentCenterView: View {
             
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
+                    if self.state.showingTrash {
+                        if self.state.displayedItems.isEmpty {
+                            Text(self.state.searchText.isEmpty ? "废纸篓是空的" : "没有匹配的文档")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                        } else {
+                            ForEach(self.state.displayedItems) { item in
+                                self.trashRow(item: item, isSelected: activeItem?.id == item.id)
+                            }
+                        }
+                    } else {
                     ForEach(self.state.groupSections) { section in
                         let isExpanded = !self.state.collapsedGroups.contains(section.id) || !self.state.searchText.isEmpty
                         
@@ -664,12 +764,53 @@ struct DocumentCenterView: View {
                             }
                         }
                     }
+                    }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
             }
         }
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.45))
+    }
+    
+    
+    private func trashRow(item: DocumentCenterState.ManagedDocumentItem, isSelected: Bool) -> some View {
+        
+        Button {
+            self.isRenaming = false
+            self.state.selectedID = item.id
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "trash")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.title)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                    Text(item.updatedAt, format: .dateTime.month().day().hour().minute())
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+                
+                Spacer(minLength: 4)
+                
+                Text("\(item.characterCount) 字")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(
+                isSelected ? Color.accentColor.opacity(0.14) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 6)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
     }
     
     
@@ -687,7 +828,7 @@ struct DocumentCenterView: View {
         
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 10) {
-                if self.isRenaming {
+                if self.isRenaming && !item.isTrashed {
                     TextField("文档标题", text: self.$renameDraft)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 240)
@@ -710,6 +851,7 @@ struct DocumentCenterView: View {
                         .font(.system(size: 15.5, weight: .semibold))
                         .lineLimit(1)
                     
+                    if !item.isTrashed {
                     Button {
                         self.renameDraft = item.title
                         self.isRenaming = true
@@ -730,6 +872,15 @@ struct DocumentCenterView: View {
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
                         .background(Color.primary.opacity(0.045), in: Capsule())
+                    
+                    if item.isTrashed {
+                        Label("已删除", systemImage: "trash")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(Color.red.opacity(0.1), in: Capsule())
+                    }
                     
                     Menu {
                         ForEach(self.db.documentGroups, id: \.self) { groupName in
@@ -782,11 +933,33 @@ struct DocumentCenterView: View {
                     .fixedSize()
                     .pointerStyle(.link)
                     .help("设置文档所属分组")
+                    }
                 }
                 
                 Spacer(minLength: 8)
                 
                 HStack(spacing: 8) {
+                    if item.isTrashed {
+                        Button {
+                            self.restore(item: item)
+                        } label: {
+                            Label("恢复", systemImage: "arrow.uturn.backward")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .pointerStyle(.link)
+                        .help("把这份文档恢复到文档列表中")
+                        
+                        Button(role: .destructive) {
+                            self.permanentlyDelete(item: item)
+                        } label: {
+                            Label("彻底删除", systemImage: "trash.slash")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .pointerStyle(.link)
+                        .help("从本地数据库永久删除，无法恢复")
+                    } else {
                     Button {
                         let pboard = NSPasteboard.general
                         pboard.clearContents()
@@ -811,6 +984,7 @@ struct DocumentCenterView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .pointerStyle(.link)
+                    }
                 }
             }
             .padding(.horizontal, 24)
@@ -828,12 +1002,14 @@ struct DocumentCenterView: View {
     private var emptyView: some View {
         
         VStack(spacing: 12) {
-            Image(systemName: "doc.text.magnifyingglass")
+            Image(systemName: self.state.showingTrash ? "trash" : "doc.text.magnifyingglass")
                 .font(.system(size: 32, weight: .light))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.tertiary)
             
-            Text(self.state.searchText.isEmpty ? "暂无文档" : "没有匹配的文档")
+            Text(self.state.showingTrash
+                 ? (self.state.searchText.isEmpty ? "废纸篓是空的" : "没有匹配的文档")
+                 : (self.state.searchText.isEmpty ? "暂无文档" : "没有匹配的文档"))
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
             
@@ -845,7 +1021,7 @@ struct DocumentCenterView: View {
                     .controlSize(.small)
                     .pointerStyle(.link)
                 }
-                if let onCreateNewDocument = self.onCreateNewDocument {
+                if !self.state.showingTrash, let onCreateNewDocument = self.onCreateNewDocument {
                     Button("新建文档") {
                         onCreateNewDocument()
                     }
@@ -899,10 +1075,57 @@ struct DocumentCenterView: View {
         if let onDeleteDocument = self.onDeleteDocument {
             onDeleteDocument(item)
         } else if let recordID = item.dbRecordID {
-            self.db.deleteDocument(id: recordID, filePath: item.filePath)
+            self.db.trashDocument(id: recordID, filePath: item.filePath)
             self.state.refresh()
         }
-        self.showToast("已删除「\(item.title)」")
+        self.showToast("已移入废纸篓「\(item.title)」")
+    }
+    
+    
+    private func restore(item: DocumentCenterState.ManagedDocumentItem) {
+        
+        self.db.restoreDocument(id: item.dbRecordID ?? item.id, filePath: item.filePath)
+        self.state.refresh()
+        self.showToast("已恢复「\(item.title)」")
+    }
+    
+    
+    private func permanentlyDelete(item: DocumentCenterState.ManagedDocumentItem) {
+        
+        self.confirmDestructive(
+            title: "彻底删除「\(item.title)」？",
+            message: "这条文档快照会从本地数据库永久删除，无法恢复。磁盘上的原文件不会被删除。"
+        ) {
+            self.db.permanentlyDeleteDocument(id: item.dbRecordID ?? item.id, filePath: item.filePath)
+            self.state.refresh()
+            self.showToast("已彻底删除「\(item.title)」")
+        }
+    }
+    
+    
+    private func confirmEmptyTrash() {
+        
+        self.confirmDestructive(
+            title: "清空废纸篓？",
+            message: "废纸篓中的 \(self.state.trashedItems.count) 份文档快照会被永久删除，无法恢复。磁盘上的原文件不会被删除。"
+        ) {
+            self.db.emptyDocumentTrash()
+            self.state.refresh()
+            self.showToast("废纸篓已清空")
+        }
+    }
+    
+    
+    private func confirmDestructive(title: String, message: String, action: @escaping () -> Void) {
+        
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "彻底删除")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        action()
     }
     
     
@@ -1196,7 +1419,7 @@ private struct DocumentSidebarRow: View {
             .onHover { hovering in
                 self.isTrashHovered = hovering
             }
-            .help("删除「\(self.item.title)」")
+            .help("移到废纸篓「\(self.item.title)」")
         }
         .padding(.horizontal, 10)
         .frame(height: 30)
@@ -1248,7 +1471,7 @@ private struct DocumentSidebarRow: View {
                 }
             }
             Divider()
-            Button("删除", role: .destructive) { self.onDelete() }
+            Button("移到废纸篓") { self.onDelete() }
         }
     }
 }

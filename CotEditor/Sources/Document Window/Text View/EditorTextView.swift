@@ -1100,6 +1100,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         let currentRanges = self.rangesForUserTextChange ?? self.selectedRanges
         let previousLocation = self.selectedRange.location
+        let previousHadSelection = !self.selectedRange.isEmpty
         let shouldTrackVimCursor = !stillSelectingFlag
             && self.window?.isKeyWindow == true
             && UserDefaults.standard[.vimMode]
@@ -1136,9 +1137,13 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         // invalidate current instance highlights
         if self.highlightsSelectionInstance {
             self.instanceHighlightTask?.cancel()
-            if let layoutManager = self.layoutManager, layoutManager.hasTemporaryAttribute(.roundedBackgroundColor) {
-                layoutManager.removeTemporaryAttribute(.roundedBackgroundColor, forCharacterRange: self.string.range)
-            }
+        }
+        // When the user clears a selection, force a repaint even if the temporary attribute
+        // is already gone: TextKit can leave a 1px colored hairline where the rounded
+        // instance highlight used to be.
+        let hasEmptySelection = selectedRanges.allSatisfy { $0.isEmpty }
+        if self.highlightsSelectionInstance || (previousHadSelection && hasEmptySelection) {
+            self.clearSelectionInstanceHighlight(redraw: previousHadSelection && hasEmptySelection)
         }
         
         if !stillSelectingFlag, !self.isShowingCompletion {
@@ -2623,13 +2628,33 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    /// Removes the rounded instance highlight and, when asked, repaints the visible area.
+    ///
+    /// The forced repaint covers the TextKit edge case where the temporary attribute is
+    /// already removed but a 1px tinted hairline survives until the next invalidation.
+    private func clearSelectionInstanceHighlight(redraw: Bool = false) {
+        
+        guard let layoutManager = self.layoutManager else { return }
+        
+        let range = self.string.range
+        if layoutManager.hasTemporaryAttribute(.roundedBackgroundColor) {
+            layoutManager.removeTemporaryAttribute(.roundedBackgroundColor, forCharacterRange: range)
+            layoutManager.invalidateDisplay(forCharacterRange: range)
+        }
+        
+        if redraw {
+            self.setNeedsDisplay(self.visibleRect, avoidAdditionalLayout: true)
+        }
+    }
+    
+    
     /// Updates the selection instance highlighting state.
     private func invalidateInstanceHighlights() {
         
         if !self.highlightsSelectionInstance {
             self.instanceHighlightTask?.cancel()
             self.instanceHighlightTask = nil
-            self.layoutManager?.removeTemporaryAttribute(.roundedBackgroundColor, forCharacterRange: self.string.range)
+            self.clearSelectionInstanceHighlight()
         }
     }
 }

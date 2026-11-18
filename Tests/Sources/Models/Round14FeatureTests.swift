@@ -284,7 +284,8 @@ struct Round14FeatureTests {
         链接 [文档](https://example.com) 和 `code`
         """)
         
-        #expect(cleaned.contains("# 标题 加粗"))
+        #expect(cleaned.contains("标题 加粗"))
+        #expect(!cleaned.contains("#"))
         #expect(!cleaned.contains("**"))
         #expect(cleaned.contains("1. 要点一：完成 ✅"))
         #expect(!cleaned.contains("😀"))
@@ -304,6 +305,30 @@ struct Round14FeatureTests {
         ```
         """
         #expect(AIDocumentTextCleaner.clean(fenced) == "let value = \"**keep**\"")
+        
+        // Deeper headings become four-space indentation, never `#`.
+        #expect(AIDocumentTextCleaner.clean("# A\n## B\n### C") == "A\n    B\n        C")
+    }
+    
+    
+    @Test func documentTrashRoundTrip() {
+        
+        let db = CotLocalDatabase.shared
+        let id = "trash-test-\(UUID().uuidString)"
+        db.saveDocument(id: id, title: "垃圾测试", filePath: nil, syntax: "Plain Text", content: "hello")
+        #expect(db.documents.contains { $0.id == id })
+        
+        db.trashDocument(id: id)
+        #expect(!db.documents.contains { $0.id == id })
+        #expect(db.trashedDocuments.contains { $0.id == id })
+        
+        db.restoreDocument(id: id)
+        #expect(db.documents.contains { $0.id == id })
+        #expect(!db.trashedDocuments.contains { $0.id == id })
+        
+        db.permanentlyDeleteDocument(id: id)
+        #expect(!db.documents.contains { $0.id == id })
+        #expect(!db.trashedDocuments.contains { $0.id == id })
     }
     
     

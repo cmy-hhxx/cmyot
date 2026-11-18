@@ -1,35 +1,35 @@
 {
-  "attributes" : {
-    "color" : "#c76090"
+  "attributes": {
+    "color": "#D7BA7D"
   },
-  "background" : {
-    "color" : "#1f1f1f"
+  "background": {
+    "color": "#1F1F1F"
   },
-  "characters" : {
-    "color" : "#9cd936"
+  "characters": {
+    "color": "#CE9178"
   },
-  "commands" : {
-    "color" : "#d4a046"
+  "commands": {
+    "color": "#DCDCAA"
   },
-  "comments" : {
-    "color" : "#808080"
+  "comments": {
+    "color": "#6A9955"
   },
-  "highlight" : {
-      "color" : "#5da810",
-      "usesSystemSetting" : true
+  "highlight": {
+    "color": "#2F81F7",
+    "usesSystemSetting": false
   },
-  "insertionPoint" : {
-    "color" : "#a8a8a8",
-    "usesSystemSetting" : true
+  "insertionPoint": {
+    "color": "#AEAFAD",
+    "usesSystemSetting": true
   },
-  "invisibles" : {
-    "color" : "#555555"
+  "invisibles": {
+    "color": "#404040"
   },
-  "keywords" : {
-    "color" : "#5199b3"
+  "keywords": {
+    "color": "#569CD6"
   },
-  "lineHighlight" : {
-    "color" : "#333333b3"
+  "lineHighlight": {
+    "color": "#FFFFFF0A"
   },
   "metadata" : {
     "author" : "1024jp",
@@ -37,27 +37,27 @@
     "distributionURL" : "https://coteditor.com",
     "license" : "Same as CotEditor (Apache, ver.2)"
   },
-  "name" : "Anura (Dark)",
-  "numbers" : {
-    "color" : "#a97dd1"
+  "name": "Anura (Dark)",
+  "numbers": {
+    "color": "#B5CEA8"
   },
-  "selection" : {
-    "color" : "#a7caff",
-    "usesSystemSetting" : true
+  "selection": {
+    "color": "#264F78",
+    "usesSystemSetting": false
   },
-  "strings" : {
-    "color" : "#90ad65"
+  "strings": {
+    "color": "#CE9178"
   },
-  "text" : {
-    "color" : "#e5e5e5"
+  "text": {
+    "color": "#CCCCCC"
   },
-  "types" : {
-    "color" : "#ed734c"
+  "types": {
+    "color": "#4EC9B0"
   },
-  "values" : {
-    "color" : "#f26669"
+  "values": {
+    "color": "#4FC1FF"
   },
-  "variables" : {
-    "color" : "#75c9c6"
+  "variables": {
+    "color": "#9CDCFE"
   }
 }

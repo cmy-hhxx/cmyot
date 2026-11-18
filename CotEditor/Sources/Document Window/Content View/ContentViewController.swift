@@ -374,7 +374,7 @@ final class ContentViewController: NSSplitViewController {
                 }
             }
             
-            CotLocalDatabase.shared.deleteDocument(id: item.dbRecordID ?? item.id, filePath: item.filePath)
+            CotLocalDatabase.shared.trashDocument(id: item.dbRecordID ?? item.id, filePath: item.filePath)
             self?.documentCenterState.refresh()
         }
         

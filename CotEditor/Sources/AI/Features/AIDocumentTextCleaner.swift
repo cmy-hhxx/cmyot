@@ -79,7 +79,9 @@ nonisolated enum AIDocumentTextCleaner {
             }
             
             if let heading = Self.heading(in: trimmed) {
-                output.append(String(repeating: "#", count: heading.level) + " " + heading.text)
+                // No `#` in the finished note: heading depth becomes four-space indentation.
+                let indent = String(repeating: "    ", count: min(3, heading.level - 1))
+                output.append(indent + heading.text)
                 counters.removeAll()
                 index += 1
                 continue
@@ -119,7 +121,7 @@ nonisolated enum AIDocumentTextCleaner {
                 }
                 let number = (counters[depth] ?? 0) + 1
                 counters[depth] = number
-                output.append(String(repeating: "  ", count: depth) + "\(number). " + item)
+                output.append(String(repeating: "    ", count: depth) + "\(number). " + item)
                 index += 1
                 continue
             }

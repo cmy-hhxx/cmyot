@@ -1,35 +1,35 @@
 {
-  "attributes" : {
-    "color" : "#862753"
+  "attributes": {
+    "color": "#AF00DB"
   },
-  "background" : {
-    "color" : "#fafafa"
+  "background": {
+    "color": "#FFFFFF"
   },
-  "characters" : {
-    "color" : "#639808"
+  "characters": {
+    "color": "#A31515"
   },
-  "commands" : {
-    "color" : "#806126"
+  "commands": {
+    "color": "#795E26"
   },
-  "comments" : {
-    "color" : "#66747a"
+  "comments": {
+    "color": "#008000"
   },
-  "highlight" : {
-    "color" : "#5da810",
-    "usesSystemSetting" : true
+  "highlight": {
+    "color": "#2F81F7",
+    "usesSystemSetting": false
   },
-  "insertionPoint" : {
-    "color" : "#6c6c6c",
-    "usesSystemSetting" : true
+  "insertionPoint": {
+    "color": "#000000",
+    "usesSystemSetting": true
   },
-  "invisibles" : {
-    "color" : "#bfbfbf"
+  "invisibles": {
+    "color": "#C8C8C8"
   },
-  "keywords" : {
-    "color" : "#1b556b"
+  "keywords": {
+    "color": "#0000FF"
   },
-  "lineHighlight" : {
-    "color" : "#e3e3e3b3"
+  "lineHighlight": {
+    "color": "#00000008"
   },
   "metadata" : {
     "author" : "1024jp",
@@ -37,26 +37,26 @@
     "distributionURL" : "https://coteditor.com",
     "license" : "Same as CotEditor (Apache, ver.2)"
   },
-  "numbers" : {
-    "color" : "#683a91"
+  "numbers": {
+    "color": "#098658"
   },
-  "selection" : {
-    "color" : "#a7caff",
-    "usesSystemSetting" : true
+  "selection": {
+    "color": "#ADD6FF",
+    "usesSystemSetting": false
   },
-  "strings" : {
-    "color" : "#4d6629"
+  "strings": {
+    "color": "#A31515"
   },
-  "text" : {
-    "color" : "#313131"
+  "text": {
+    "color": "#3B3B3B"
   },
-  "types" : {
-    "color" : "#ad4315"
+  "types": {
+    "color": "#267F99"
   },
-  "values" : {
-    "color" : "#ad263d"
+  "values": {
+    "color": "#098658"
   },
-  "variables" : {
-    "color" : "#2d807d"
+  "variables": {
+    "color": "#001080"
   }
 }

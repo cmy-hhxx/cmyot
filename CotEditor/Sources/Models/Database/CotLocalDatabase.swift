@@ -35,6 +35,7 @@ nonisolated struct StoredDocumentRecord: Identifiable, Codable, Sendable, Equata
     var highlightsJSON: String
     var updatedAt: Date
     var groupName: String = ""
+    var deletedAt: Date?
 }
 
 
@@ -149,6 +150,9 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     
     /// Recently saved/updated documents in the local database.
     private(set) var documents: [StoredDocumentRecord] = []
+    
+    /// Document snapshots moved to the Document Center trash.
+    private(set) var trashedDocuments: [StoredDocumentRecord] = []
     
     /// Monotonically incremented whenever `documents` is reloaded (including in-place renames/updates).
     private(set) var documentsRevision: Int = 0
@@ -363,6 +367,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             content = excluded.content,
             highlights_json = excluded.highlights_json,
             group_name = COALESCE(?, documents.group_name),
+            deleted_at = NULL,
             updated_at = excluded.updated_at;
         """
         
@@ -606,6 +611,69 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             }
             sqlite3_finalize(stmt)
         }
+        
+        self.reloadDocuments()
+    }
+    
+    
+    /// Moves a stored document snapshot into the Document Center trash.
+    func trashDocument(id: String, filePath: String? = nil) {
+        
+        self.setDocumentDeletedAt(Date().timeIntervalSince1970, id: id, filePath: filePath)
+    }
+    
+    
+    /// Brings a trashed document snapshot back into the Document Center.
+    func restoreDocument(id: String, filePath: String? = nil) {
+        
+        self.setDocumentDeletedAt(nil, id: id, filePath: filePath)
+    }
+    
+    
+    /// Deletes one trashed snapshot permanently.
+    func permanentlyDeleteDocument(id: String, filePath: String? = nil) {
+        
+        self.deleteDocument(id: id, filePath: filePath)
+    }
+    
+    
+    /// Permanently deletes every snapshot currently in the trash.
+    func emptyDocumentTrash() {
+        
+        self.executeSQL("DELETE FROM documents WHERE deleted_at IS NOT NULL;")
+        self.reloadDocuments()
+    }
+    
+    
+    private func setDocumentDeletedAt(_ timestamp: TimeInterval?, id: String, filePath: String?) {
+        
+        let cleanID = id.hasPrefix("doc:") ? String(id.dropFirst(4)) : id
+        let prefixedID = "doc:\(cleanID)"
+        let sql = """
+        UPDATE documents SET deleted_at = ?
+        WHERE id = ? OR id = ? OR id = ? OR (? IS NOT NULL AND file_path = ?);
+        """
+        
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            if let timestamp {
+                sqlite3_bind_double(stmt, 1, timestamp)
+            } else {
+                sqlite3_bind_null(stmt, 1)
+            }
+            sqlite3_bind_text(stmt, 2, id, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 3, cleanID, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 4, prefixedID, -1, self.transientDestructor)
+            if let filePath {
+                sqlite3_bind_text(stmt, 5, filePath, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 6, filePath, -1, self.transientDestructor)
+            } else {
+                sqlite3_bind_null(stmt, 5)
+                sqlite3_bind_null(stmt, 6)
+            }
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
         
         self.reloadDocuments()
     }
@@ -1478,7 +1546,8 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             content TEXT NOT NULL,
             highlights_json TEXT NOT NULL DEFAULT '[]',
             group_name TEXT NOT NULL DEFAULT '',
-            updated_at REAL NOT NULL
+            updated_at REAL NOT NULL,
+            deleted_at REAL
         );
         CREATE TABLE IF NOT EXISTS configs (
             key TEXT PRIMARY KEY,
@@ -1499,6 +1568,28 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         """
         self.executeSQL(sql)
         self.ensureDocumentsGroupColumnExists()
+        self.ensureDocumentsDeletedAtColumnExists()
+    }
+    
+    
+    private func ensureDocumentsDeletedAtColumnExists() {
+        
+        var stmt: OpaquePointer?
+        var hasDeletedColumn = false
+        if sqlite3_prepare_v2(self.db, "PRAGMA table_info(documents);", -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let nameCStr = sqlite3_column_text(stmt, 1),
+                   String(cString: nameCStr) == "deleted_at"
+                {
+                    hasDeletedColumn = true
+                    break
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        if !hasDeletedColumn {
+            self.executeSQL("ALTER TABLE documents ADD COLUMN deleted_at REAL;")
+        }
     }
     
     
@@ -1666,10 +1757,9 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     private func reloadDocuments() {
         
         let sql = """
-        SELECT id, title, file_path, syntax, content, highlights_json, updated_at, COALESCE(group_name, '')
+        SELECT id, title, file_path, syntax, content, highlights_json, updated_at, COALESCE(group_name, ''), COALESCE(deleted_at, 0)
         FROM documents
-        ORDER BY updated_at DESC
-        LIMIT 200;
+        ORDER BY updated_at DESC;
         """
         var stmt: OpaquePointer?
         var items: [StoredDocumentRecord] = []
@@ -1695,6 +1785,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
                 } else {
                     ""
                 }
+                let deletedTS = sqlite3_column_double(stmt, 8)
                 
                 items.append(StoredDocumentRecord(
                     id: String(cString: idCStr),
@@ -1704,16 +1795,20 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
                     content: String(cString: contentCStr),
                     highlightsJSON: String(cString: highlightsCStr),
                     updatedAt: Date(timeIntervalSince1970: ts),
-                    groupName: groupName
+                    groupName: groupName,
+                    deletedAt: deletedTS > 0 ? Date(timeIntervalSince1970: deletedTS) : nil
                 ))
             }
         }
         sqlite3_finalize(stmt)
-        self.documents = items
+        let activeItems = Array(items.lazy.filter { $0.deletedAt == nil }.prefix(200))
+        let trashItems = Array(items.lazy.filter { $0.deletedAt != nil }.prefix(200))
+        self.documents = activeItems
+        self.trashedDocuments = trashItems
         self.documentsRevision &+= 1
         
         var mergedGroups = self.loadStoredGroupList()
-        for item in items where !item.groupName.isEmpty && item.groupName != "未分组" {
+        for item in activeItems where !item.groupName.isEmpty && item.groupName != "未分组" {
             if !mergedGroups.contains(item.groupName) {
                 mergedGroups.append(item.groupName)
             }
