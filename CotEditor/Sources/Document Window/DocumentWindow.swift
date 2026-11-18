@@ -148,15 +148,11 @@ extension DocumentWindow {
     
     override class var userTabbingPreference: NSWindow.UserTabbingPreference {
         
+        // Native AppKit window tabs are disabled globally in favor of per-pane tab strips.
         if let tabbingPreference = self.tabbingPreference {
             return tabbingPreference
         }
-        
-        if let tabbingPreference = NSWindow.UserTabbingPreference(rawValue: UserDefaults.standard[.windowTabbing]), tabbingPreference.rawValue >= 0 {  // -1 obeys system setting
-            return tabbingPreference
-        }
-        
-        return super.userTabbingPreference
+        return .manual
     }
     
     

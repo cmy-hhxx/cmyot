@@ -424,8 +424,8 @@ final class DocumentController: NSDocumentController {
             return
         }
         
-        // Fall back to an AppKit window tab when there is no document window to grow.
-        DocumentWindow.tabbingPreference = .always
+        // Open a standalone document window (without AppKit window tab bar) when no editor window exists yet.
+        DocumentWindow.tabbingPreference = .manual
         self.newDocument(sender)
         DocumentWindow.tabbingPreference = nil
     }

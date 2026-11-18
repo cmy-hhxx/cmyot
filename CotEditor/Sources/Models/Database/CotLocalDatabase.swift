@@ -172,12 +172,25 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     private var isApplyingSyncedDefaults = false
     
     
+    private static var isRunningUnitTests: Bool {
+        
+        let env = ProcessInfo.processInfo.environment
+        return NSClassFromString("XCTestCase") != nil
+            || env["XCTestConfigurationFilePath"] != nil
+            || env["XCTestBundlePath"] != nil
+    }
+    
+    
     // MARK: Lifecycle
     
     init(customURL: URL? = nil) {
         
         if let customURL {
             self.databaseURL = customURL
+        } else if Self.isRunningUnitTests {
+            // Isolate XCTest hosts completely from the user's real database and open-tab session.
+            self.databaseURL = FileManager.default.temporaryDirectory
+                .appending(path: "cot_xctest_shared_\(ProcessInfo.processInfo.processIdentifier).sqlite3")
         } else {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             let folder = appSupport.appending(path: "Cot", directoryHint: .isDirectory)

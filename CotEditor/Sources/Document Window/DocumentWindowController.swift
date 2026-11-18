@@ -107,9 +107,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         let autosavedFrame = window.frame
         
         
-        if self.isDirectoryDocument {
-            window.tabbingMode = .disallowed
-        }
+        // Tabs live exclusively inside each editor pane (`PaneTabStripView`), never in AppKit's native window tab bar.
+        window.tabbingMode = .disallowed
         
         
         // set window size

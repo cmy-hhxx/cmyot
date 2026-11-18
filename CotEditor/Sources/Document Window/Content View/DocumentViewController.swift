@@ -2952,15 +2952,17 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         let treeRaw = CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.windowLayoutTree)
         if !treeRaw.isEmpty,
            let treeData = treeRaw.data(using: .utf8),
-           let workspace = try? JSONDecoder().decode(PersistedWorkspaceSession.self, from: treeData),
-           let primaryWindowLayout = workspace.windows.first
+           let workspace = try? JSONDecoder().decode(PersistedWorkspaceSession.self, from: treeData)
         {
-            self.applyPersistedWindowLayout(primaryWindowLayout)
-            
-            for extraLayout in workspace.windows.dropFirst() {
-                self.openAdditionalRestoredWindow(with: extraLayout)
+            let meaningfulWindows = workspace.windows.filter { Self.hasMeaningfulContent($0.root) }
+            if let primaryWindowLayout = meaningfulWindows.first ?? workspace.windows.first {
+                self.applyPersistedWindowLayout(primaryWindowLayout)
+                
+                for extraLayout in meaningfulWindows.dropFirst() {
+                    self.openAdditionalRestoredWindow(with: extraLayout)
+                }
+                return
             }
-            return
         }
         
         // 2. Fallback to flat `session.activePaneTabs` (converting to a layout)
@@ -3176,6 +3178,21 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             doc.restoreHighlightsFromDatabase(decoded)
         }
         return doc
+    }
+    
+    
+    /// Returns `true` when `node` contains at least one tab backed by a file or non-empty content.
+    private static func hasMeaningfulContent(_ node: PersistedLayoutNode) -> Bool {
+        
+        switch node {
+            case .pane(let tabs, _, _):
+                tabs.contains { tab in
+                    if let path = tab.filePath, !path.isEmpty { return true }
+                    return !tab.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+            case .split(_, let children, _):
+                children.contains { Self.hasMeaningfulContent($0) }
+        }
     }
     
     

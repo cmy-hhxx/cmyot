@@ -221,6 +221,7 @@ struct Round13FeatureTests {
         defer { wc.close() }
         
         let docVC = try #require(wc.documentViewController)
+        #expect(wc.window?.tabbingMode == .disallowed)
         try await Task.sleep(for: .milliseconds(150))
         
         // Add 9 more tabs so the navigation bar is visible with 10 tabs, matching real usage

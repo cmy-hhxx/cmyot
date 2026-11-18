@@ -58,7 +58,7 @@ struct DefaultSettings {
             .customCursorColorHex: "#0A84FF",
             
             // Window
-            .windowTabbing: 1,  // = NSWindow.UserTabbingPreference.always
+            .windowTabbing: 2,  // = NSWindow.UserTabbingPreference.manual (tabs live inside panes)
             .showLineNumbers: true,
             .showLineNumberSeparator: false,
             .showInvisibles: false,

@@ -141,6 +141,9 @@ extension Logger {
         LegacyContainerMigrator.migrateIfNeeded()
         _ = CotLocalDatabase.shared
         
+        // Disable macOS automatic window tabbing so documents stay in per-pane tabs, not double top tab bars.
+        NSWindow.allowsAutomaticWindowTabbing = false
+        
         // -> Setting `automaticTerminationSupportEnabled` programmatically doesn't appear to be working.
         //    (2024-11, macOS 15.1, FB15979536)
         ProcessInfo.processInfo.automaticTerminationSupportEnabled = true
