@@ -91,9 +91,11 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     
     // MARK: Private Types
     
-    private struct SpringCorner {
-        var pos: CGPoint
-        var vel: CGPoint
+    private struct FluidCursorState {
+        var center: CGPoint
+        var centerVelocity: CGPoint
+        var size: CGSize
+        var sizeVelocity: CGSize
         var omega: CGFloat
         var zeta: CGFloat
     }
@@ -139,13 +141,11 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private var ghostContainerLayer: CALayer?
     private var ghostSweepLayer: CALayer?
     
-    // Persistent 120Hz Neovide 4-corner spring Vim cursor
+    // Persistent 120Hz Apple-style fluid spring Vim cursor
     private var vimRootLayer: CALayer?
     private var vimCursorLayer: CAShapeLayer?
-    private var springCorners: [SpringCorner] = []
-    private var targetCorners: [CGPoint] = []
+    private var fluidCursor: FluidCursorState?
     private var currentTargetRect: NSRect?
-    private var hasInitializedCorners = false
     private var vimDisplayLink: CADisplayLink?
     private var displayLinkProxy: DisplayLinkProxy?
     private var lastStepTime: CFTimeInterval = 0
@@ -172,10 +172,8 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.vimDisplayLink?.isPaused = true
         self.vimDisplayLink?.invalidate()
         self.vimDisplayLink = nil
-        self.hasInitializedCorners = false
+        self.fluidCursor = nil
         self.currentTargetRect = nil
-        self.springCorners.removeAll()
-        self.targetCorners.removeAll()
         self.hideGhostSuggestion(animated: false)
         self.hideComboHud(animated: false)
         
@@ -215,7 +213,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     func hideVimCursorOnly() {
         
         self.vimDisplayLink?.isPaused = true
-        self.hasInitializedCorners = false
+        self.fluidCursor = nil
         self.currentTargetRect = nil
         
         CATransaction.begin()
@@ -919,18 +917,28 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     }
     
     
-    // MARK: Neovide 4-Corner Damped Spring Vim Cursor (120Hz DisplayLink, Zero-Flicker)
+    // MARK: Apple-Inspired Fluid Spring Vim Cursor (120Hz DisplayLink, Zero-Wobble Glide)
     
-    /// Transitions the single persistent GPU Vim cursor to `newRect` using Neovide's 4-corner
-    /// analytical damped-spring physics (leading corners snap ahead with crisp Q-bounce,
-    /// trailing corners stretch smoothly behind, preserving velocity across rapid key repeats).
-    func animateVimCursorTransition(from oldRect: NSRect?, to newRect: NSRect, color: NSColor) {
+    /// Transitions the single persistent GPU Vim cursor to `newRect` using an interruptible,
+    /// near-critically damped spring with subtle velocity-coupled axial elongation (no jelly wobble).
+    func animateVimCursorTransition(
+        from oldRect: NSRect?,
+        to newRect: NSRect,
+        color: NSColor,
+        isContinuous: Bool = false
+    ) {
         
         guard self.ownsVimCursorDrawing else {
             self.hideVimCursorOnly()
             return
         }
-        self.moveVimCursor(to: newRect, color: color, animated: true, fallbackFrom: oldRect)
+        self.moveVimCursor(
+            to: newRect,
+            color: color,
+            animated: true,
+            fallbackFrom: oldRect,
+            isContinuous: isContinuous
+        )
     }
     
     
@@ -938,7 +946,8 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         to rawRect: NSRect,
         color: NSColor,
         animated: Bool,
-        fallbackFrom: NSRect? = nil
+        fallbackFrom: NSRect? = nil,
+        isContinuous: Bool = false
     ) {
         guard let textView = self.textView,
               rawRect.width > 0, rawRect.height > 0, rawRect.height < 80,
@@ -962,21 +971,20 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             case .visual: 0.64
             default: 0.56
         }
+        let cornerRadius = Self.cursorCornerRadius(for: visualRect)
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         cursorLayer.fillColor = color.withAlphaComponent(cursorAlpha).cgColor
         cursorLayer.shadowColor = color.cgColor
-        cursorLayer.shadowOpacity = 0.26
-        cursorLayer.shadowRadius = 3.2
+        cursorLayer.shadowOpacity = 0.20
+        cursorLayer.shadowRadius = 2.4
         cursorLayer.shadowOffset = .zero
         cursorLayer.opacity = 1.0
         CATransaction.commit()
         
-        let destCorners = Self.rectCorners(visualRect)
-        
         // Deduplicate back-to-back identical target calls within the same event
-        if self.hasInitializedCorners,
+        if self.fluidCursor != nil,
            let lastTarget = self.currentTargetRect,
            abs(lastTarget.minX - visualRect.minX) < 0.35,
            abs(lastTarget.minY - visualRect.minY) < 0.35,
@@ -986,113 +994,119 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             return
         }
         
-        if !self.hasInitializedCorners, let fallbackFrom,
+        if self.fluidCursor == nil, let fallbackFrom,
            fallbackFrom.width > 0, fallbackFrom.height > 0, fallbackFrom.height < 80,
            textView.visibleRect.insetBy(dx: -80, dy: -100).intersects(fallbackFrom)
         {
-            let startCorners = Self.rectCorners(fallbackFrom)
-            self.springCorners = startCorners.map { SpringCorner(pos: $0, vel: .zero, omega: 32, zeta: 0.80) }
-            self.hasInitializedCorners = true
+            self.fluidCursor = FluidCursorState(
+                center: CGPoint(x: fallbackFrom.midX, y: fallbackFrom.midY),
+                centerVelocity: .zero,
+                size: fallbackFrom.size,
+                sizeVelocity: .zero,
+                omega: 42,
+                zeta: 0.90
+            )
         }
         
-        guard animated, self.hasInitializedCorners, self.springCorners.count == 4, textView.window != nil else {
-            self.springCorners = destCorners.map { SpringCorner(pos: $0, vel: .zero, omega: 32, zeta: 0.80) }
-            self.targetCorners = destCorners
+        guard animated, var cursorState = self.fluidCursor, textView.window != nil else {
+            self.fluidCursor = FluidCursorState(
+                center: CGPoint(x: visualRect.midX, y: visualRect.midY),
+                centerVelocity: .zero,
+                size: visualRect.size,
+                sizeVelocity: .zero,
+                omega: 42,
+                zeta: 0.90
+            )
             self.currentTargetRect = visualRect
-            self.hasInitializedCorners = true
             self.vimDisplayLink?.isPaused = true
             
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            cursorLayer.path = CGPath(roundedRect: visualRect, cornerWidth: 1.8, cornerHeight: 1.8, transform: nil)
+            cursorLayer.path = CGPath(roundedRect: visualRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
             CATransaction.commit()
             return
         }
         
-        // Current quad bounding center
-        let curCenter = CGPoint(
-            x: self.springCorners.reduce(0) { $0 + $1.pos.x } * 0.25,
-            y: self.springCorners.reduce(0) { $0 + $1.pos.y } * 0.25
-        )
         let targetCenter = CGPoint(x: visualRect.midX, y: visualRect.midY)
-        var dx = targetCenter.x - curCenter.x
-        var dy = targetCenter.y - curCenter.y
+        var dx = targetCenter.x - cursorState.center.x
+        var dy = targetCenter.y - cursorState.center.y
         var distance = hypot(dx, dy)
         
-        if distance < 0.4 && self.vimDisplayLink?.isPaused != false {
-            self.springCorners = destCorners.map { SpringCorner(pos: $0, vel: .zero, omega: 32, zeta: 0.80) }
-            self.targetCorners = destCorners
+        if distance < 0.4 && abs(cursorState.size.width - visualRect.width) < 0.4 && self.vimDisplayLink?.isPaused != false {
+            cursorState.center = targetCenter
+            cursorState.centerVelocity = .zero
+            cursorState.size = visualRect.size
+            cursorState.sizeVelocity = .zero
+            self.fluidCursor = cursorState
             self.currentTargetRect = visualRect
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            cursorLayer.path = CGPath(roundedRect: visualRect, cornerWidth: 1.8, cornerHeight: 1.8, transform: nil)
+            cursorLayer.path = CGPath(roundedRect: visualRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
             CATransaction.commit()
             return
         }
         
-        // For huge cross-document jumps (gg / G / Ctrl-D), bring the offscreen origin closer
-        // along the travel vector so it swoops gracefully into frame instead of teleporting across 5000px.
-        let maxJump: CGFloat = 260
+        // For huge jumps (gg / G / Ctrl-D), bring the offscreen origin within a clean ProMotion swoop range
+        // without injecting oscillation.
+        let maxJump: CGFloat = 240
         if distance > maxJump {
-            let clampedOriginDist: CGFloat = 145
+            let clampedOriginDist: CGFloat = 120
             let shiftX = dx - (dx / distance) * clampedOriginDist
             let shiftY = dy - (dy / distance) * clampedOriginDist
-            for i in 0..<4 {
-                self.springCorners[i].pos.x += shiftX
-                self.springCorners[i].pos.y += shiftY
-                self.springCorners[i].vel = .zero
-            }
+            cursorState.center.x += shiftX
+            cursorState.center.y += shiftY
+            cursorState.centerVelocity = .zero
             dx = (dx / distance) * clampedOriginDist
             dy = (dy / distance) * clampedOriginDist
             distance = clampedOriginDist
         }
         
-        let ux = distance > 0.5 ? dx / distance : 1.0
-        let uy = distance > 0.5 ? dy / distance : 0.0
+        let params = Self.fluidSpringParameters(distance: distance, isContinuous: isContinuous)
+        cursorState.omega = params.omega
+        cursorState.zeta = params.zeta
         
-        // Unit corner offsets in flipped coordinates: TL(-1,-1), TR(+1,-1), BR(+1,+1), BL(-1,+1)
-        let unitOffsets: [CGPoint] = [
-            CGPoint(x: -1, y: -1),
-            CGPoint(x: 1, y: -1),
-            CGPoint(x: 1, y: 1),
-            CGPoint(x: -1, y: 1),
-        ]
-        
-        for i in 0..<4 {
-            let dot = unitOffsets[i].x * ux + unitOffsets[i].y * uy  // [-sqrt(2), +sqrt(2)]
-            let rank = max(0, min(1, (dot + 1.4142) / 2.8284))      // 1 = leading front, 0 = trailing tail
-            let params = Self.vimSpringParameters(rank: rank, distance: distance)
-            self.springCorners[i].omega = params.omega
-            self.springCorners[i].zeta = params.zeta
-        }
-        
-        // Apply a subtle forward kick on short single-cell moves so h/j/k/l feel visibly bouncy ("Q弹")
-        // without causing visual jitter.
-        let impulseScale: CGFloat = distance < 28 ? 2.6 : 1.3
-        for i in 0..<4 {
-            let dot = unitOffsets[i].x * ux + unitOffsets[i].y * uy
-            let rank = max(0, min(1, (dot + 1.4142) / 2.8284))
-            self.springCorners[i].vel.x += dx * impulseScale * (0.35 + 0.65 * rank)
-            self.springCorners[i].vel.y += dy * impulseScale * (0.35 + 0.65 * rank)
-        }
-        
-        self.targetCorners = destCorners
+        self.fluidCursor = cursorState
         self.currentTargetRect = visualRect
         self.startOrResumeDisplayLink(for: textView)
     }
     
     
-    /// Computes Neovide-inspired spring stiffness and damping for a cursor corner at normalized
-    /// directional rank `0...1` (`1` = leading corner, `0` = trailing tail).
-    static func vimSpringParameters(rank: CGFloat, distance: CGFloat) -> (omega: CGFloat, zeta: CGFloat) {
+    /// Apple Fluid Interface spring tuning (`response` fast & responsive, `zeta` ~0.88–0.92 for crisp
+    /// zero-wobble settlement; continuous key-hold uses slightly higher stiffness & damping to stream smoothly).
+    static func fluidSpringParameters(distance: CGFloat, isContinuous: Bool) -> (omega: CGFloat, zeta: CGFloat) {
         
-        let clampedRank = max(0, min(1, rank))
-        let shortStepBoost: CGFloat = distance < 24 ? 1.18 : 1.0
-        // High leading/trailing omega separation stretches the cursor smoothly mid-flight,
-        // while light underdamping (zeta ~ 0.44...0.60) delivers a playful jelly rebound.
-        let omega = (18.5 + 32.0 * clampedRank) * shortStepBoost
-        let zeta = 0.60 - 0.16 * clampedRank
-        return (omega, zeta)
+        if isContinuous {
+            return (omega: 46.0, zeta: 0.92)
+        }
+        if distance < 28 {
+            return (omega: 44.0, zeta: 0.89)
+        }
+        return (omega: 38.0, zeta: 0.88)
+    }
+    
+    
+    /// Computes a subtle, strictly rectangular velocity-stretched frame during motion so rapid glides
+    /// feel fluid while preserving crisp geometric edges with zero wobble or corner skewing.
+    static func fluidStretchedRect(center: CGPoint, baseSize: CGSize, velocity: CGPoint) -> NSRect {
+        
+        let speedX = abs(velocity.x)
+        let speedY = abs(velocity.y)
+        
+        let extraW = min(baseSize.width * 0.50, speedX * 0.0085)
+        let extraH = min(baseSize.height * 0.42, speedY * 0.0065)
+        
+        let squeezeH = min(baseSize.height * 0.08, extraW * 0.14)
+        let squeezeW = min(baseSize.width * 0.08, extraH * 0.14)
+        
+        let w = max(2, baseSize.width + extraW - squeezeW)
+        let h = max(3, baseSize.height + extraH - squeezeH)
+        return NSRect(x: center.x - w * 0.5, y: center.y - h * 0.5, width: w, height: h)
+    }
+    
+    
+    private static func cursorCornerRadius(for rect: NSRect) -> CGFloat {
+        
+        min(2.6, max(1.6, rect.height * 0.14))
     }
     
     
@@ -1114,8 +1128,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         guard self.ownsVimCursorDrawing,
               let cursorLayer = self.vimCursorLayer,
-              self.springCorners.count == 4,
-              self.targetCorners.count == 4,
+              var state = self.fluidCursor,
               let targetRect = self.currentTargetRect
         else {
             link.isPaused = true
@@ -1126,53 +1139,73 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         let dt = CGFloat(min(max(now - self.lastStepTime, 1.0 / 240.0), 1.0 / 24.0))
         self.lastStepTime = now
         
-        var maxError: CGFloat = 0
-        var maxSpeed: CGFloat = 0
+        let targetCenter = CGPoint(x: targetRect.midX, y: targetRect.midY)
+        let (nx, nvx) = Self.stepUnderdampedSpring(
+            pos: state.center.x,
+            vel: state.centerVelocity.x,
+            target: targetCenter.x,
+            omega: state.omega,
+            zeta: state.zeta,
+            dt: dt
+        )
+        let (ny, nvy) = Self.stepUnderdampedSpring(
+            pos: state.center.y,
+            vel: state.centerVelocity.y,
+            target: targetCenter.y,
+            omega: state.omega,
+            zeta: state.zeta,
+            dt: dt
+        )
+        let (nw, nvw) = Self.stepUnderdampedSpring(
+            pos: state.size.width,
+            vel: state.sizeVelocity.width,
+            target: targetRect.width,
+            omega: 42.0,
+            zeta: 0.94,
+            dt: dt
+        )
+        let (nh, nvh) = Self.stepUnderdampedSpring(
+            pos: state.size.height,
+            vel: state.sizeVelocity.height,
+            target: targetRect.height,
+            omega: 42.0,
+            zeta: 0.94,
+            dt: dt
+        )
         
-        for i in 0..<4 {
-            let target = self.targetCorners[i]
-            let omega = self.springCorners[i].omega
-            let zeta = self.springCorners[i].zeta
-            
-            let (nx, nvx) = Self.stepUnderdampedSpring(
-                pos: self.springCorners[i].pos.x,
-                vel: self.springCorners[i].vel.x,
-                target: target.x,
-                omega: omega,
-                zeta: zeta,
-                dt: dt
-            )
-            let (ny, nvy) = Self.stepUnderdampedSpring(
-                pos: self.springCorners[i].pos.y,
-                vel: self.springCorners[i].vel.y,
-                target: target.y,
-                omega: omega,
-                zeta: zeta,
-                dt: dt
-            )
-            
-            self.springCorners[i].pos = CGPoint(x: nx, y: ny)
-            self.springCorners[i].vel = CGPoint(x: nvx, y: nvy)
-            
-            maxError = max(maxError, hypot(nx - target.x, ny - target.y))
-            maxSpeed = max(maxSpeed, hypot(nvx, nvy))
-        }
+        state.center = CGPoint(x: nx, y: ny)
+        state.centerVelocity = CGPoint(x: nvx, y: nvy)
+        state.size = CGSize(width: nw, height: nh)
+        state.sizeVelocity = CGSize(width: nvw, height: nvh)
+        self.fluidCursor = state
         
-        if maxError < 0.08 && maxSpeed < 1.2 {
-            for i in 0..<4 {
-                self.springCorners[i].pos = self.targetCorners[i]
-                self.springCorners[i].vel = .zero
-            }
+        let posError = hypot(nx - targetCenter.x, ny - targetCenter.y)
+        let sizeError = max(abs(nw - targetRect.width), abs(nh - targetRect.height))
+        let speed = hypot(nvx, nvy)
+        
+        if posError < 0.12 && sizeError < 0.12 && speed < 1.5 {
+            state.center = targetCenter
+            state.centerVelocity = .zero
+            state.size = targetRect.size
+            state.sizeVelocity = .zero
+            self.fluidCursor = state
+            
+            let radius = Self.cursorCornerRadius(for: targetRect)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            cursorLayer.path = CGPath(roundedRect: targetRect, cornerWidth: 1.8, cornerHeight: 1.8, transform: nil)
+            cursorLayer.path = CGPath(roundedRect: targetRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
             CATransaction.commit()
             link.isPaused = true
             return
         }
         
-        let points = self.springCorners.map { NSPoint(x: $0.pos.x, y: $0.pos.y) }
-        let path = Self.roundedConvexHullPath(of: points, cornerRadius: 1.8)
+        let renderedRect = Self.fluidStretchedRect(
+            center: state.center,
+            baseSize: state.size,
+            velocity: state.centerVelocity
+        )
+        let radius = Self.cursorCornerRadius(for: renderedRect)
+        let path = CGPath(roundedRect: renderedRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -1202,69 +1235,6 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         let newX = target + decay * (x0 * cosTerm + c2 * sinTerm)
         let newV = decay * ((c2 * omegaD - x0 * omegaZeta) * cosTerm - (x0 * omegaD + c2 * omegaZeta) * sinTerm)
         return (newX, newV)
-    }
-    
-    
-    private static func rectCorners(_ rect: NSRect) -> [CGPoint] {
-        
-        [
-            CGPoint(x: rect.minX, y: rect.minY),
-            CGPoint(x: rect.maxX, y: rect.minY),
-            CGPoint(x: rect.maxX, y: rect.maxY),
-            CGPoint(x: rect.minX, y: rect.maxY),
-        ]
-    }
-    
-    
-    /// Computes the convex hull of `points` (Andrew's monotone chain) and rounds all corners smoothly.
-    private static func roundedConvexHullPath(of points: [NSPoint], cornerRadius: CGFloat) -> CGPath {
-        
-        let sorted = points.sorted { lhs, rhs in
-            if abs(lhs.x - rhs.x) > 0.01 { return lhs.x < rhs.x }
-            return lhs.y < rhs.y
-        }
-        guard sorted.count >= 3 else {
-            return CGPath(rect: .zero, transform: nil)
-        }
-        
-        func cross(_ origin: NSPoint, _ first: NSPoint, _ second: NSPoint) -> CGFloat {
-            (first.x - origin.x) * (second.y - origin.y) - (first.y - origin.y) * (second.x - origin.x)
-        }
-        
-        var lower: [NSPoint] = []
-        for point in sorted {
-            while lower.count >= 2 && cross(lower[lower.count - 2], lower[lower.count - 1], point) <= 0.001 {
-                lower.removeLast()
-            }
-            lower.append(point)
-        }
-        
-        var upper: [NSPoint] = []
-        for point in sorted.reversed() {
-            while upper.count >= 2 && cross(upper[upper.count - 2], upper[upper.count - 1], point) <= 0.001 {
-                upper.removeLast()
-            }
-            upper.append(point)
-        }
-        
-        let hull = Array(lower.dropLast()) + Array(upper.dropLast())
-        guard hull.count >= 3 else {
-            return CGPath(rect: .zero, transform: nil)
-        }
-        
-        let path = CGMutablePath()
-        let count = hull.count
-        let last = hull[count - 1]
-        let first = hull[0]
-        path.move(to: CGPoint(x: (last.x + first.x) * 0.5, y: (last.y + first.y) * 0.5))
-        
-        for idx in 0..<count {
-            let current = hull[idx]
-            let next = hull[(idx + 1) % count]
-            path.addArc(tangent1End: current, tangent2End: next, radius: cornerRadius)
-        }
-        path.closeSubpath()
-        return path
     }
     
     

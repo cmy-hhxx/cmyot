@@ -226,12 +226,35 @@ struct Round14FeatureTests {
         )
         #expect(derived == "AIME Bench 可视化优化")
         
-        // Leading corner snaps faster & underdamped for bouncy ("Q弹") Vim cursor overshoot
-        let trail = EditorFunEffectsController.vimSpringParameters(rank: 0.0, distance: 12)
-        let lead = EditorFunEffectsController.vimSpringParameters(rank: 1.0, distance: 12)
-        #expect(lead.omega > trail.omega)
-        #expect(lead.zeta < trail.zeta)
-        #expect(lead.zeta < 0.55)
+        // Apple Fluid Interface cursor spring stays crisp and non-oscillating (zeta >= 0.85)
+        let shortParams = EditorFunEffectsController.fluidSpringParameters(distance: 12, isContinuous: false)
+        let jumpParams = EditorFunEffectsController.fluidSpringParameters(distance: 140, isContinuous: false)
+        let holdParams = EditorFunEffectsController.fluidSpringParameters(distance: 12, isContinuous: true)
+        #expect(shortParams.zeta >= 0.85 && shortParams.zeta < 1.0)
+        #expect(jumpParams.zeta >= 0.85 && jumpParams.zeta < 1.0)
+        #expect(holdParams.omega >= shortParams.omega)
+        #expect(holdParams.zeta > jumpParams.zeta)
+        
+        let stretched = EditorFunEffectsController.fluidStretchedRect(
+            center: CGPoint(x: 100, y: 50),
+            baseSize: CGSize(width: 8, height: 18),
+            velocity: CGPoint(x: 400, y: 0)
+        )
+        #expect(stretched.width > 8 && stretched.width <= 12.1)
+        #expect(stretched.midX == 100 && stretched.midY == 50)
+        
+        // Vim motion acceleration protects gentle taps (1) and ramps smoothly on hold/rapid repeat
+        #expect(VimEngine.acceleratedRepeatStep(for: .lineDown, streak: 0, elapsed: 0, fromKeyRepeat: false) == 1)
+        #expect(VimEngine.acceleratedRepeatStep(for: .lineDown, streak: 3, elapsed: 0.25, fromKeyRepeat: false) == 1)
+        #expect(VimEngine.acceleratedRepeatStep(for: .lineDown, streak: 1, elapsed: 0.02, fromKeyRepeat: true) == 1)
+        let midHold = VimEngine.acceleratedRepeatStep(for: .lineDown, streak: 8, elapsed: 0.40, fromKeyRepeat: true)
+        let longHold = VimEngine.acceleratedRepeatStep(for: .lineDown, streak: 20, elapsed: 1.0, fromKeyRepeat: true)
+        #expect(midHold > 1)
+        #expect(longHold >= midHold)
+        #expect(longHold <= 10)
+        
+        let wordHold = VimEngine.acceleratedRepeatStep(for: .wordForward, streak: 12, elapsed: 0.6, fromKeyRepeat: true)
+        #expect(wordHold >= 2 && wordHold <= 4)
     }
     
     

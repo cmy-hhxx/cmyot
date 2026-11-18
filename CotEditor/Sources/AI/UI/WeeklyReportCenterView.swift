@@ -412,11 +412,22 @@ struct WeeklyReportCenterView: View {
                             self.createWeeklyReport(weekOffset: 1)
                         }
                     } label: {
-                        Image(systemName: "calendar")
+                        HStack(alignment: .center, spacing: 3) {
+                            Image(systemName: "calendar")
+                                .font(.system(size: 10.5, weight: .medium))
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 7, weight: .bold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 6)
+                        .frame(height: 22)
+                        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 5))
+                        .contentShape(RoundedRectangle(cornerRadius: 5))
                     }
                     .menuStyle(.borderlessButton)
-                    .frame(width: 24, height: 22)
-                    .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 5))
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .pointerStyle(.link)
                     .help("选择周期新建周报")
                     
                     Button {

@@ -762,18 +762,23 @@ struct DocumentCenterView: View {
                             self.isCreatingGroup = true
                         }
                     } label: {
-                        HStack(spacing: 4) {
+                        HStack(alignment: .center, spacing: 4) {
                             Image(systemName: item.groupName.isEmpty ? "tray" : "folder.fill")
                                 .font(.system(size: 10))
                             Text(item.groupName.isEmpty ? "未分组" : item.groupName)
                                 .font(.system(size: 11, weight: .medium))
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 7.5, weight: .semibold))
+                                .opacity(0.65)
                         }
                         .foregroundStyle(item.groupName.isEmpty ? .secondary : Color.accentColor)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(Color.primary.opacity(0.045), in: Capsule())
+                        .contentShape(Capsule())
                     }
                     .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                     .fixedSize()
                     .pointerStyle(.link)
                     .help("设置文档所属分组")

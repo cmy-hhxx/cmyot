@@ -56,7 +56,7 @@ final class VimEngine {
         case yank = "y"
     }
     
-    private enum Motion {
+    enum Motion {
         case left, right, down, up
         case wordForward, wordBackward, wordEnd
         case bigWordForward, bigWordBackward, bigWordEnd
@@ -99,6 +99,15 @@ final class VimEngine {
     private var lastChange: (op: OperatorKind, motion: Motion, count: Int)?
     private var lastReplaceChar: (character: Character, count: Int)?
     private var lastStatus: String?
+    
+    // Motion acceleration tracking when holding/rapidly repeating j/k/h/l/w/b/e.
+    private var repeatMotion: Motion?
+    private var repeatStreak: Int = 0
+    private var repeatStartTimestamp: TimeInterval = 0
+    private var lastRepeatTimestamp: TimeInterval = 0
+    private var currentEventIsRepeat = false
+    private var currentEventTimestamp: TimeInterval = 0
+    private var lastMoveWasContinuous = false
     
     init(textView: NSTextView) {
         
@@ -214,6 +223,13 @@ final class VimEngine {
                 return true
             }
             return false
+        }
+        
+        self.currentEventIsRepeat = event.isARepeat
+        self.currentEventTimestamp = event.timestamp
+        defer {
+            self.currentEventIsRepeat = false
+            self.currentEventTimestamp = 0
         }
         
         for character in characters {
@@ -777,7 +793,14 @@ final class VimEngine {
     private func move(_ motion: Motion) {
         
         guard let textView else { return }
-        let count = self.takeCount()
+        let count: Int
+        if let explicitCount = self.count {
+            self.count = nil
+            count = max(1, explicitCount)
+            self.resetRepeatMotion()
+        } else {
+            count = self.resolveAcceleratedStep(for: motion)
+        }
         let string = textView.string as NSString
         // In visual mode the motion must continue from the active end of the
         // selection, not from its start — otherwise `v` followed by `w` jumps around.
@@ -2095,6 +2118,103 @@ final class VimEngine {
         self.pendingFindKind = nil
         self.pendingTextObject = nil
         if !keepCount { self.count = nil }
+        self.resetRepeatMotion()
+    }
+    
+    
+    private func resetRepeatMotion() {
+        
+        self.repeatMotion = nil
+        self.repeatStreak = 0
+        self.repeatStartTimestamp = 0
+        self.lastRepeatTimestamp = 0
+        self.lastMoveWasContinuous = false
+    }
+    
+    
+    static func isAcceleratableMotion(_ motion: Motion) -> Bool {
+        
+        switch motion {
+            case .left, .right, .down, .up, .lineDown, .lineUp,
+                 .wordForward, .wordBackward, .wordEnd,
+                 .bigWordForward, .bigWordBackward, .bigWordEnd:
+                true
+            default:
+                false
+        }
+    }
+    
+    
+    /// Computes progressive step acceleration when holding down (`fromKeyRepeat`) or rapidly
+    /// repeating `h`/`j`/`k`/`l` or `w`/`b`/`e`/`W`/`B`/`E` without disturbing deliberate single taps.
+    static func acceleratedRepeatStep(
+        for motion: Motion,
+        streak: Int,
+        elapsed: TimeInterval,
+        fromKeyRepeat: Bool
+    ) -> Int {
+        
+        guard Self.isAcceleratableMotion(motion) else { return 1 }
+        if !fromKeyRepeat && streak < 5 {
+            return 1
+        }
+        
+        let effectiveStreak = fromKeyRepeat ? streak : max(0, streak - 4)
+        let clampedElapsed = max(0, elapsed)
+        
+        switch motion {
+            case .wordForward, .wordBackward, .wordEnd,
+                 .bigWordForward, .bigWordBackward, .bigWordEnd:
+                return min(4, 1 + (effectiveStreak + Int(clampedElapsed * 2.5)) / 4)
+                
+            case .left, .right, .down, .up, .lineDown, .lineUp:
+                if effectiveStreak <= 1 && clampedElapsed < 0.06 {
+                    return 1
+                }
+                return min(10, 1 + Int(Double(effectiveStreak) * 0.50 + clampedElapsed * 4.8))
+                
+            default:
+                return 1
+        }
+    }
+    
+    
+    private func resolveAcceleratedStep(for motion: Motion) -> Int {
+        
+        guard Self.isAcceleratableMotion(motion) else {
+            self.resetRepeatMotion()
+            return 1
+        }
+        
+        let now = self.currentEventTimestamp > 0 ? self.currentEventTimestamp : ProcessInfo.processInfo.systemUptime
+        if self.currentEventIsRepeat {
+            if self.repeatMotion == motion, (now - self.lastRepeatTimestamp) <= 0.35 {
+                self.repeatStreak += 1
+                if self.repeatStreak == 1 {
+                    self.repeatStartTimestamp = now
+                }
+            } else {
+                self.repeatMotion = motion
+                self.repeatStreak = 1
+                self.repeatStartTimestamp = now
+            }
+            self.lastRepeatTimestamp = now
+            self.lastMoveWasContinuous = true
+            let elapsed = max(0, now - self.repeatStartTimestamp)
+            return Self.acceleratedRepeatStep(for: motion, streak: self.repeatStreak, elapsed: elapsed, fromKeyRepeat: true)
+        }
+        
+        if self.repeatMotion == motion, (now - self.lastRepeatTimestamp) <= 0.14 {
+            self.repeatStreak += 1
+        } else {
+            self.repeatMotion = motion
+            self.repeatStreak = 0
+            self.repeatStartTimestamp = now
+        }
+        self.lastRepeatTimestamp = now
+        self.lastMoveWasContinuous = self.repeatStreak >= 2
+        let elapsed = max(0, now - self.repeatStartTimestamp)
+        return Self.acceleratedRepeatStep(for: motion, streak: self.repeatStreak, elapsed: elapsed, fromKeyRepeat: false)
     }
     
     
@@ -2136,7 +2256,8 @@ final class VimEngine {
                 editorTextView.funEffects.animateVimCursorTransition(
                     from: oldRect,
                     to: newRect,
-                    color: editorTextView.effectiveCursorColor
+                    color: editorTextView.effectiveCursorColor,
+                    isContinuous: self.lastMoveWasContinuous
                 )
             }
         } else {
@@ -2184,14 +2305,22 @@ final class VimEngine {
         let column = location - currentLine.location
         
         var target = currentLine
+        var movedLines = 0
         for _ in 0..<abs(direction) {
             let next: Int = direction > 0 ? NSMaxRange(target) : target.location - 1
-            guard next >= 0, next <= string.length else { return location }
+            guard next >= 0, next <= string.length else {
+                if movedLines == 0 { return location }
+                break
+            }
             if direction > 0, next == string.length {
                 let endsWithNewline = target.length > 0 && string.character(at: target.location + target.length - 1) == 10
-                if !endsWithNewline { return location }
+                if !endsWithNewline {
+                    if movedLines == 0 { return location }
+                    break
+                }
             }
             target = self.lineRange(at: next) ?? target
+            movedLines += 1
         }
         
         var contentLength = target.length
