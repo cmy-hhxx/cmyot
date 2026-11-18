@@ -367,7 +367,6 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             content = excluded.content,
             highlights_json = excluded.highlights_json,
             group_name = COALESCE(?, documents.group_name),
-            deleted_at = NULL,
             updated_at = excluded.updated_at;
         """
         

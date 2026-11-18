@@ -322,6 +322,11 @@ struct Round14FeatureTests {
         #expect(!db.documents.contains { $0.id == id })
         #expect(db.trashedDocuments.contains { $0.id == id })
         
+        // A late background save of a just-closed document must not resurrect it.
+        db.saveDocument(id: id, title: "垃圾测试", filePath: nil, syntax: "Plain Text", content: "hello again")
+        #expect(!db.documents.contains { $0.id == id })
+        #expect(db.trashedDocuments.contains { $0.id == id })
+        
         db.restoreDocument(id: id)
         #expect(db.documents.contains { $0.id == id })
         #expect(!db.trashedDocuments.contains { $0.id == id })

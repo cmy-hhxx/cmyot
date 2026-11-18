@@ -321,9 +321,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 .sink { [weak self] _ in self?.closeSecondaryDocuments() }
         }
         
-        // Launch always starts with a single pane. Restoring the previous split/tab tree made
-        // every restart reopen a cluttered layout, so the persisted session is no longer applied.
-        // (Saving is gated by `didRestoreAppPaneTabsThisLaunch`, so it stays dormant as well.)
+        // Bring the previous tabs back into a single pane. The old split/window tree is not
+        // recreated, so restarting never reopens a cluttered multi-pane layout.
+        self.restorePersistedPaneTabsIfNeeded()
         
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.view.window else { return }
@@ -2950,7 +2950,10 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Restores the saved split layout tree and pane tabs from `CotLocalDatabase` once on launch.
+    /// Restores the saved tabs from `CotLocalDatabase` once on launch.
+    ///
+    /// The previous split/window layout is deliberately flattened into a single pane: restarting
+    /// should never rebuild a wall of panes, but it should still bring the documents back.
     private func restorePersistedPaneTabsIfNeeded() {
         
         guard !self.didRestorePersistedPaneTabs, !Self.didRestoreAppPaneTabsThisLaunch else { return }
@@ -2965,63 +2968,57 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
         }
         
-        // 1. Prefer full recursive window layout tree (`session.windowLayoutTree`)
-        let treeRaw = CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.windowLayoutTree)
-        if !treeRaw.isEmpty,
-           let treeData = treeRaw.data(using: .utf8),
-           let workspace = try? JSONDecoder().decode(PersistedWorkspaceSession.self, from: treeData)
+        var restoredItems: [PersistedPaneTabItem] = []
+        
+        // 1. The flat session already contains every tab across every window and pane.
+        let raw = CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.activePaneTabsSession)
+        if let data = raw.data(using: .utf8),
+           let items = try? JSONDecoder().decode([PersistedPaneTabItem].self, from: data),
+           !items.isEmpty
         {
-            let meaningfulWindows = workspace.windows.filter { Self.hasMeaningfulContent($0.root) }
-            if let primaryWindowLayout = meaningfulWindows.first ?? workspace.windows.first {
-                self.applyPersistedWindowLayout(primaryWindowLayout)
-                
-                for extraLayout in meaningfulWindows.dropFirst() {
-                    self.openAdditionalRestoredWindow(with: extraLayout)
+            restoredItems = items
+        }
+        
+        // 2. Fall back to the recursive tree and collect its leaves.
+        if restoredItems.isEmpty {
+            let treeRaw = CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.windowLayoutTree)
+            if let treeData = treeRaw.data(using: .utf8),
+               let workspace = try? JSONDecoder().decode(PersistedWorkspaceSession.self, from: treeData)
+            {
+                func collect(from node: PersistedLayoutNode, into items: inout [PersistedPaneTabItem]) {
+                    switch node {
+                        case .pane(let tabs, _, _):
+                            items.append(contentsOf: tabs)
+                        case .split(_, let children, _):
+                            for child in children {
+                                collect(from: child, into: &items)
+                            }
+                    }
                 }
-                return
+                for window in workspace.windows {
+                    collect(from: window.root, into: &restoredItems)
+                }
             }
         }
         
-        // 2. Fallback to flat `session.activePaneTabs` (converting to a layout)
-        let raw = CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.activePaneTabsSession)
-        guard
-            !raw.isEmpty,
-            let data = raw.data(using: .utf8),
-            var items = try? JSONDecoder().decode([PersistedPaneTabItem].self, from: data),
-            !items.isEmpty
-        else { return }
+        guard !restoredItems.isEmpty else { return }
         
-        // Ensure `打嗝的云朵` is included if backed up in `CotLocalDatabase.shared.documents`
-        if !items.contains(where: { $0.title == "打嗝的云朵" || $0.title == "打嗝的云朵.txt" }),
-           let cloudDoc = CotLocalDatabase.shared.documents.first(where: { $0.title == "打嗝的云朵" || $0.title == "打嗝的云朵.txt" })
-        {
-            items.insert(PersistedPaneTabItem(
-                title: "打嗝的云朵",
-                filePath: cloudDoc.filePath,
-                syntax: cloudDoc.syntax,
-                content: cloudDoc.content,
-                isPinned: false,
-                paneIndex: 0,
-                highlightsJSON: cloudDoc.highlightsJSON,
-                databaseID: cloudDoc.id
-            ), at: 0)
+        var seen = Set<String>()
+        let tabs = restoredItems.compactMap { item -> PersistedPaneTabItem? in
+            let key = item.filePath ?? item.databaseID ?? item.title
+            guard seen.insert(key).inserted else { return nil }
+            var normalized = item
+            normalized.paneIndex = 0
+            return normalized
         }
+        guard !tabs.isEmpty else { return }
         
-        let grouped = Dictionary(grouping: items, by: \.paneIndex)
-        let sortedPaneIndices = grouped.keys.sorted()
-        let paneNodes: [PersistedLayoutNode] = sortedPaneIndices.compactMap { idx in
-            guard let paneTabs = grouped[idx], !paneTabs.isEmpty else { return nil }
-            return .pane(tabs: paneTabs, selectedTabIndex: 0, showsLineNumber: self.showsLineNumber)
-        }
-        guard !paneNodes.isEmpty else { return }
-        
-        let weights = Array(repeating: 1.0 / Double(paneNodes.count), count: paneNodes.count)
-        let fallbackLayout = PersistedWindowLayout(
-            root: .split(isVertical: true, children: paneNodes, weights: weights),
+        let layout = PersistedWindowLayout(
+            root: .pane(tabs: tabs, selectedTabIndex: 0, showsLineNumber: self.showsLineNumber),
             focusedPaneIndex: 0,
             windowFrame: nil
         )
-        self.applyPersistedWindowLayout(fallbackLayout)
+        self.applyPersistedWindowLayout(layout)
     }
     
     
@@ -3195,36 +3192,6 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             doc.restoreHighlightsFromDatabase(decoded)
         }
         return doc
-    }
-    
-    
-    /// Returns `true` when `node` contains at least one tab backed by a file or non-empty content.
-    private static func hasMeaningfulContent(_ node: PersistedLayoutNode) -> Bool {
-        
-        switch node {
-            case .pane(let tabs, _, _):
-                tabs.contains { tab in
-                    if let path = tab.filePath, !path.isEmpty { return true }
-                    return !tab.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                }
-            case .split(_, let children, _):
-                children.contains { Self.hasMeaningfulContent($0) }
-        }
-    }
-    
-    
-    /// Opens an additional window and applies its persisted layout when multiple windows were saved.
-    private func openAdditionalRestoredWindow(with layout: PersistedWindowLayout) {
-        
-        guard let initialDoc = try? self.makePaneDocument() else { return }
-        initialDoc.makeWindowControllers()
-        initialDoc.showWindows()
-        guard let docVC = (initialDoc.windowControllers.first as? DocumentWindowController)?.documentViewController else { return }
-        docVC.didRestorePersistedPaneTabs = true
-        docVC.isRestoringPersistedPaneTabs = true
-        docVC.applyPersistedWindowLayout(layout)
-        docVC.isRestoringPersistedPaneTabs = false
-        docVC.updateSplitState()
     }
     
     

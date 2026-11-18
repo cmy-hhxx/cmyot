@@ -938,52 +938,32 @@ struct DocumentCenterView: View {
                 
                 Spacer(minLength: 8)
                 
-                HStack(spacing: 8) {
-                    if item.isTrashed {
+                if !item.isTrashed {
+                    HStack(spacing: 8) {
                         Button {
-                            self.restore(item: item)
+                            let pboard = NSPasteboard.general
+                            pboard.clearContents()
+                            pboard.setString(item.content, forType: .string)
+                            self.copiedFlag = true
+                            self.showToast("已拷贝「\(item.title)」")
+                            Task {
+                                try? await Task.sleep(for: .seconds(1.5))
+                                self.copiedFlag = false
+                            }
                         } label: {
-                            Label("恢复", systemImage: "arrow.uturn.backward")
+                            Label(self.copiedFlag ? "已拷贝" : "拷贝全文", systemImage: self.copiedFlag ? "checkmark" : "doc.on.doc")
+                        }
+                        .controlSize(.small)
+                        .pointerStyle(.link)
+                        
+                        Button {
+                            self.open(item: item)
+                        } label: {
+                            Label("在编辑器打开", systemImage: "arrow.up.right.square")
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                         .pointerStyle(.link)
-                        .help("把这份文档恢复到文档列表中")
-                        
-                        Button(role: .destructive) {
-                            self.permanentlyDelete(item: item)
-                        } label: {
-                            Label("彻底删除", systemImage: "trash.slash")
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .pointerStyle(.link)
-                        .help("从本地数据库永久删除，无法恢复")
-                    } else {
-                    Button {
-                        let pboard = NSPasteboard.general
-                        pboard.clearContents()
-                        pboard.setString(item.content, forType: .string)
-                        self.copiedFlag = true
-                        self.showToast("已拷贝「\(item.title)」")
-                        Task {
-                            try? await Task.sleep(for: .seconds(1.5))
-                            self.copiedFlag = false
-                        }
-                    } label: {
-                        Label(self.copiedFlag ? "已拷贝" : "拷贝全文", systemImage: self.copiedFlag ? "checkmark" : "doc.on.doc")
-                    }
-                    .controlSize(.small)
-                    .pointerStyle(.link)
-                    
-                    Button {
-                        self.open(item: item)
-                    } label: {
-                        Label("在编辑器打开", systemImage: "arrow.up.right.square")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .pointerStyle(.link)
                     }
                 }
             }
@@ -995,6 +975,42 @@ struct DocumentCenterView: View {
                 .frame(height: 1)
             
             CenterPreviewTextView(text: item.previewText)
+            
+            if item.isTrashed {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.06))
+                    .frame(height: 1)
+                
+                HStack(spacing: 8) {
+                    Button {
+                        self.restore(item: item)
+                    } label: {
+                        Label("恢复", systemImage: "arrow.uturn.backward")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .pointerStyle(.link)
+                    .help("把这份文档恢复到文档列表中")
+                    
+                    Button(role: .destructive) {
+                        self.permanentlyDelete(item: item)
+                    } label: {
+                        Label("彻底删除", systemImage: "trash.slash")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .pointerStyle(.link)
+                    .help("从本地数据库永久删除，无法恢复")
+                    
+                    Spacer()
+                    
+                    Text("彻底删除只移除本地快照，不会删除磁盘原文件")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 24)
+                .frame(height: 52)
+            }
         }
     }
     
@@ -1066,6 +1082,12 @@ struct DocumentCenterView: View {
     
     
     private func delete(item: DocumentCenterState.ManagedDocumentItem, in list: [DocumentCenterState.ManagedDocumentItem]) {
+        
+        // Deleting inside the trash is the permanent action, never another move-to-trash.
+        if item.isTrashed {
+            self.permanentlyDelete(item: item)
+            return
+        }
         
         if let idx = list.firstIndex(where: { $0.id == item.id }) {
             let nextItem = list.indices.contains(idx + 1) ? list[idx + 1] : (idx > 0 ? list[idx - 1] : nil)
