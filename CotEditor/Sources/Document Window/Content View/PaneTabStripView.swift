@@ -85,7 +85,7 @@ struct PaneTabStripView: NSViewRepresentable {
     private static let tabHeight: CGFloat = 24
     private static let tabSpacing: CGFloat = 4
     private static let minTabWidth: CGFloat = 80
-    private static let maxTabWidth: CGFloat = 200
+    private static let maxTabWidth: CGFloat = 240
     
     
     override init(frame frameRect: NSRect) {
@@ -822,11 +822,22 @@ private final class TabStripContainerView: NSView {
         if self.isRenaming {
             return max(136, min(maxWidth, 188))
         }
-        let titleSize = (self.titleLabel.stringValue as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)])
-        var extra: CGFloat = 8 + 8 + 6 + 6  // leading/trailing padding + persistent save status dot + gap
-        if self.tab?.isPinned == true { extra += 16 }
-        if self.tab?.isPinned == false && self.tab?.isClosable == true { extra += 18 }
-        return min(maxWidth, max(minWidth, ceil(titleSize.width) + extra))
+        
+        // Measure using the medium-weight intrinsic label width so AppKit's cell padding
+        // is accounted for accurately and 6-8 char titles never truncate with "…".
+        let previousFont = self.titleLabel.font
+        self.titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        let labelWidth = ceil(self.titleLabel.intrinsicContentSize.width)
+        self.titleLabel.font = previousFont
+        
+        let isPinned = (self.tab?.isPinned == true)
+        let showsClose = !isPinned && (self.tab?.isClosable == true)
+        
+        // Mirror exact insets reserved inside `layout()` plus 4pt breathing room.
+        let leadingOverhead: CGFloat = 8 + (isPinned ? 14 : 0)
+        let trailingOverhead: CGFloat = 4 + (showsClose ? 20 : 4) + 12
+        let neededWidth = labelWidth + leadingOverhead + trailingOverhead + 4
+        return min(maxWidth, max(minWidth, neededWidth))
     }
     
     

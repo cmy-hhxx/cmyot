@@ -42,40 +42,30 @@ enum GeneratedDocumentName {
     
     private static let recentHistoryKey = "GeneratedDocumentNameRecentHistory"
     private static let maxRecentHistory = 300
-    private static let maxNameLength = 8
+    private static let maxNameLength = 6
     
     private static let moods: [String] = [
         "打盹的", "加班的", "会飞的", "摸鱼的", "偷懒的", "正经的",
-        "刚醒的", "值夜班的", "走神的", "冒泡的", "佛系的", "秃头的",
-        "迷路的", "写诗的", "打嗝的", "抽屉里的", "戴墨镜的", "慢半拍的",
-        "微醺的", "吃香菜的", "失眠的", "讲段子的", "充电中的", "格子衫的",
-        "想放假的", "喝冰美的", "吹晚风的", "数星星的", "赶末班的", "云端上的",
-        "泡枸杞的", "翘二郎的", "听爵士的", "赶周报的", "偷吃糖的", "踩滑板的",
-        "躲雨的", "晒太阳的", "吹泡泡的", "宇宙漂的", "记笔记的", "开小差的",
-        "开会的", "藏猫猫的", "后空翻的", "吃宵夜的", "逛夜市的", "带板凳的",
-        "买青菜的", "挤地铁的", "等周末的", "满血的", "发光的", "偷笑的",
+        "刚醒的", "夜班的", "走神的", "冒泡的", "佛系的", "秃头的",
+        "迷路的", "写诗的", "打嗝的", "发光的", "偷笑的", "慢拍的",
+        "微醺的", "失眠的", "充能的", "放假的", "晚风的", "追星的",
+        "泡茶的", "翘班的", "赶稿的", "躲雨的", "吹风的", "发呆的",
+        "害羞的", "困倦的", "嘴馋的", "熬夜的", "躺平的", "雀跃的",
+        "软萌的", "高冷的", "好奇的", "机智的", "贪吃的", "乐天的",
     ]
     
     private static let scenes: [ScenePhrase] = [
         ScenePhrase(text: "凌晨", connector: "的"),
         ScenePhrase(text: "午后", connector: "的"),
         ScenePhrase(text: "深夜", connector: "的"),
-        ScenePhrase(text: "晴空下", connector: "的"),
-        ScenePhrase(text: "星光里", connector: "的"),
-        ScenePhrase(text: "天台上", connector: "的"),
-        ScenePhrase(text: "海风里", connector: "的"),
-        ScenePhrase(text: "雪地里", connector: "的"),
-        ScenePhrase(text: "树荫下", connector: "的"),
-        ScenePhrase(text: "窗台边", connector: "的"),
-        ScenePhrase(text: "桌角旁", connector: "的"),
-        ScenePhrase(text: "云层上", connector: "的"),
-        ScenePhrase(text: "工位下", connector: "的"),
-        ScenePhrase(text: "书摊旁", connector: "的"),
-        ScenePhrase(text: "花盆旁", connector: "的"),
-        ScenePhrase(text: "冰川上", connector: "的"),
-        ScenePhrase(text: "列车上", connector: "的"),
-        ScenePhrase(text: "海底", connector: "的"),
+        ScenePhrase(text: "天台", connector: "的"),
+        ScenePhrase(text: "海风", connector: "的"),
+        ScenePhrase(text: "窗台", connector: "的"),
+        ScenePhrase(text: "云端", connector: "的"),
+        ScenePhrase(text: "工位", connector: "的"),
+        ScenePhrase(text: "书摊", connector: "的"),
         ScenePhrase(text: "山顶", connector: "的"),
+        ScenePhrase(text: "海底", connector: "的"),
         ScenePhrase(text: "机房", connector: "里的"),
         ScenePhrase(text: "茶室", connector: "里的"),
         ScenePhrase(text: "书店", connector: "里的"),
@@ -90,26 +80,23 @@ enum GeneratedDocumentName {
     ]
     
     private static let actions: [String] = [
-        "发呆的", "啃薯片的", "改代码的", "练舞步的", "等投喂的", "写公式的",
-        "画圈的", "弹吉他的", "背单词的", "数羊毛的", "织毛衣的", "看夕阳的",
-        "找眼镜的", "调参数的", "修Bug的", "写日记的", "煮夜宵的", "剥橘子的",
-        "算卦的", "看云朵的", "记账的", "捉迷藏的", "熬夜的", "拍月亮的",
-        "攒机票的", "听播客的", "拼积木的", "吹口哨的", "盘核桃的", "喝奶茶的",
+        "发呆的", "啃瓜的", "改码的", "练舞的", "写诗的", "画圈的",
+        "弹琴的", "背词的", "数羊的", "织衣的", "看云的", "找猫的",
+        "调参的", "修Bug的", "记账的", "捉迷藏的", "拍月的", "听歌的",
+        "拼图的", "吹哨的", "盘核桃的", "喝茶的", "晒太阳的", "写日记的",
     ]
     
     private static let nouns: [String] = [
         "橘猫", "水獭", "企鹅", "咸鱼", "泡面", "月亮",
-        "蒲公英", "程序员", "咖啡渍", "小恐龙", "仙人掌", "洗衣机",
-        "泡芙", "榛果", "台灯", "拖鞋", "云朵", "螺蛳粉",
-        "熊猫", "布丁", "键盘", "萤火虫", "充电宝", "睡袋",
-        "红薯", "电风扇", "闹钟", "糖果", "南瓜", "章鱼",
-        "小浣熊", "树懒", "猫头鹰", "海豹", "刺猬", "袋鼠",
-        "柯基", "土拨鼠", "变色龙", "寄居蟹", "水母", "北极熊",
-        "松鼠", "羊驼", "乌鸦", "独角兽", "菠萝包", "烤冷面",
-        "鸡蛋仔", "铜锣烧", "小笼包", "冻柠茶", "可颂", "年糕",
-        "烤红薯", "留声机", "望远镜", "八音盒", "万花筒", "手电筒",
-        "指南针", "纸飞机", "竹蜻蜓", "胶片机", "打字机", "宇航员",
-        "外星人", "机器人", "魔法师", "旅行家", "卡皮巴拉",
+        "泡芙", "榛果", "台灯", "拖鞋", "云朵", "熊猫",
+        "布丁", "键盘", "睡袋", "红薯", "闹钟", "糖果",
+        "南瓜", "章鱼", "树懒", "海豹", "刺猬", "袋鼠",
+        "柯基", "水母", "松鼠", "羊驼", "乌鸦", "可颂",
+        "年糕", "狐狸", "小熊", "柴犬", "鲸鱼", "风铃",
+        "纸船", "小恐龙", "洗衣机", "萤火虫", "充电宝", "小浣熊",
+        "猫头鹰", "土拨鼠", "变色龙", "北极熊", "独角兽", "菠萝包",
+        "烤冷面", "鸡蛋仔", "铜锣烧", "小笼包", "冻柠茶", "烤红薯",
+        "留声机", "望远镜", "八音盒", "纸飞机", "竹蜻蜓", "魔法师",
     ]
     
     
@@ -141,9 +128,9 @@ enum GeneratedDocumentName {
             }
         }
         
-        let shortFallbacks = ["发呆橘猫", "摸鱼水獭", "偷懒企鹅", "烤肠咸鱼", "值班小熊", "喝茶布丁"]
+        let shortFallbacks = ["发呆猫", "摸鱼獭", "偷懒鹅", "咸鱼王", "小浣熊", "小布丁"]
         let base = self.randomName()
-        let clippedBase = base.count <= 6 ? base : (shortFallbacks.randomElement() ?? "打盹橘猫")
+        let clippedBase = base.count <= 5 ? base : (shortFallbacks.randomElement() ?? "摸鱼猫")
         let fallback = clippedBase + String(usedNames.count + 1)
         self.record(fallback, in: recent)
         return fallback

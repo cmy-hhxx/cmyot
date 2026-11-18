@@ -198,10 +198,25 @@ struct Round14FeatureTests {
         let badFragments = ["底下里的", "上方里的", "边缘里的", "山顶里的", "太平洋底里的", "傍晚里的", "季节里的", "天台里的"]
         for _ in 0..<250 {
             let name = GeneratedDocumentName.generateCandidate()
-            #expect(name.count <= 8)
+            #expect(name.count <= 6)
             for fragment in badFragments {
                 #expect(!name.contains(fragment))
             }
+        }
+        
+        // Tab preferredWidth must accommodate 7-char CJK titles without ellipsis truncation
+        for title in ["背单词的泡面", "抽屉里的魔法师"] {
+            let doc = Document()
+            doc.displayName = title
+            let tab = PaneTab(document: doc)
+            let itemView = PaneTabItemView(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
+            itemView.configure(tab: tab, isSelected: true, isRenaming: false)
+            let width = itemView.preferredWidth(minWidth: 80, maxWidth: 240)
+            itemView.frame = NSRect(x: 0, y: 0, width: width, height: 22)
+            itemView.layoutSubtreeIfNeeded()
+            let availableTextWidth = width - (8 + 4 + 20 + 12)
+            let neededTextWidth = (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width
+            #expect(availableTextWidth >= neededTextWidth)
         }
         
         // Content-based title fallback avoids leaving generic/empty names
