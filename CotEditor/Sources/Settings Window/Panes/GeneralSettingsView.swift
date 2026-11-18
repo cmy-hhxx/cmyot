@@ -119,7 +119,7 @@ struct GeneralSettingsView: View {
                 Text("Document save:", tableName: "GeneralSettings")
                     .gridColumnAlignment(.trailing)
                 
-                VStack(alignment: .leading, spacing: isLiquidGlass ? nil : 0) {
+                VStack(alignment: .leading, spacing: isLiquidGlass ? 8 : 6) {
                     Toggle(String(localized: "Enable Auto Save with Versions", table: "GeneralSettings"), isOn: $enablesAutosaveInPlace)
                         .onChange(of: self.enablesAutosaveInPlace) { _, newValue in
                             if newValue != self.initialEnablesAutosaveInPlace {
@@ -143,13 +143,6 @@ struct GeneralSettingsView: View {
                         } message: {
                             Text(String(localized: "NextSessionApplicationConfirmation.message", defaultValue: "Do you want to restart CotEditor now?", table: "GeneralSettings"))
                         }
-                    
-                    Text("A system feature that automatically overwrites your files while editing. Even if turned off, CotEditor covertly creates a backup in case it unexpectedly quits.", tableName: "GeneralSettings")
-                        .foregroundStyle(.secondary)
-                        .controlSize(.small)
-                        .lineLimit(10)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.leading, isLiquidGlass ? 22 : 20)
                 }
             }
             

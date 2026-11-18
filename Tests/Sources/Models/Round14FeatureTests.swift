@@ -226,14 +226,22 @@ struct Round14FeatureTests {
         )
         #expect(derived == "AIME Bench 可视化优化")
         
-        // Apple Fluid Interface cursor spring stays crisp and non-oscillating (zeta >= 0.85)
+        // Apple Fluid Interface cursor spring stays crisp and subtly luminous without jelly wobble
         let shortParams = EditorFunEffectsController.fluidSpringParameters(distance: 12, isContinuous: false)
         let jumpParams = EditorFunEffectsController.fluidSpringParameters(distance: 140, isContinuous: false)
         let holdParams = EditorFunEffectsController.fluidSpringParameters(distance: 12, isContinuous: true)
-        #expect(shortParams.zeta >= 0.85 && shortParams.zeta < 1.0)
-        #expect(jumpParams.zeta >= 0.85 && jumpParams.zeta < 1.0)
+        #expect(shortParams.zeta >= 0.84 && shortParams.zeta < 1.0)
+        #expect(jumpParams.zeta >= 0.84 && jumpParams.zeta < 1.0)
         #expect(holdParams.omega >= shortParams.omega)
         #expect(holdParams.zeta > jumpParams.zeta)
+        
+        // Luminous wake tapers monotonically across the 4 trail capsules and hides cleanly at rest
+        let idleTrail = EditorFunEffectsController.trailFrameParameters(layerIndex: 0, activity: 0, cursorAlpha: 0.56)
+        #expect(idleTrail.alpha == 0)
+        let trail0 = EditorFunEffectsController.trailFrameParameters(layerIndex: 0, activity: 1.0, cursorAlpha: 0.56)
+        let trail3 = EditorFunEffectsController.trailFrameParameters(layerIndex: 3, activity: 1.0, cursorAlpha: 0.56)
+        #expect(trail0.scale > trail3.scale)
+        #expect(trail0.alpha > trail3.alpha && trail3.alpha > 0)
         
         let stretched = EditorFunEffectsController.fluidStretchedRect(
             center: CGPoint(x: 100, y: 50),

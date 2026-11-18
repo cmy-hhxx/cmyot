@@ -88,10 +88,11 @@ struct AISettingsView: View {
                 
                 Spacer()
                 
-                if !self.profiles.isEmpty {
-                    Text("ai.settings.endpoint.hint", tableName: "AI")
-                        .font(.caption)
+                if let dbStatusMessage {
+                    Text(dbStatusMessage)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
             
@@ -131,46 +132,35 @@ struct AISettingsView: View {
     
     private var databaseSection: some View {
         
-        VStack(alignment: .leading, spacing: 10) {
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 8) {
-                GridRow {
-                    Text("本地数据库:")
-                        .gridColumnAlignment(.trailing)
-                        .frame(minWidth: 90, alignment: .trailing)
-                    
-                    HStack(spacing: 8) {
-                        Button {
-                            self.isShowingStoredDocs = true
-                        } label: {
-                            Label("文档与配置 (\(CotLocalDatabase.shared.documents.count))", systemImage: "cylinder.split.1x2")
-                        }
-                        
-                        Button {
-                            WeeklyReportWindowController.shared.showWindow(mode: .history)
-                        } label: {
-                            Label("周报库 (\(CotLocalDatabase.shared.weeklyReports.count))", systemImage: "calendar.badge.clock")
-                        }
-                        
-                        Button {
-                            self.exportLocalDatabase()
-                        } label: {
-                            Label("导出 DB…", systemImage: "square.and.arrow.up")
-                        }
-                        
-                        Button {
-                            self.importLocalDatabase()
-                        } label: {
-                            Label("导入 DB…", systemImage: "square.and.arrow.down")
-                        }
-                        
-                        if let dbStatusMessage {
-                            Text(dbStatusMessage)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 10) {
+            GridRow {
+                Text("本地数据库:")
+                    .gridColumnAlignment(.trailing)
+                
+                HStack(spacing: 8) {
+                    Button {
+                        self.isShowingStoredDocs = true
+                    } label: {
+                        Label("文档与配置 (\(CotLocalDatabase.shared.documents.count))", systemImage: "cylinder.split.1x2")
                     }
-                    .controlSize(.small)
+                    
+                    Button {
+                        WeeklyReportWindowController.shared.showWindow(mode: .history)
+                    } label: {
+                        Label("周报库 (\(CotLocalDatabase.shared.weeklyReports.count))", systemImage: "calendar.badge.clock")
+                    }
+                    
+                    Button {
+                        self.exportLocalDatabase()
+                    } label: {
+                        Label("导出 DB…", systemImage: "square.and.arrow.up")
+                    }
+                    
+                    Button {
+                        self.importLocalDatabase()
+                    } label: {
+                        Label("导入 DB…", systemImage: "square.and.arrow.down")
+                    }
                 }
             }
         }
@@ -188,10 +178,6 @@ struct AISettingsView: View {
                 .foregroundStyle(.tertiary)
             Text("ai.settings.endpoint.empty", tableName: "AI")
                 .foregroundStyle(.secondary)
-            Text("ai.settings.endpoint.empty.caption", tableName: "AI")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .frame(height: Self.listHeight)
@@ -687,8 +673,8 @@ struct AIPersonaSettingsView: View {
     var body: some View {
         
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .center) {
                     Label("AI 角色人设 (Persona)", systemImage: "person.text.rectangle")
                         .font(.headline)
                     Spacer()
@@ -701,13 +687,9 @@ struct AIPersonaSettingsView: View {
                     }
                 }
                 
-                Text("全局附加到总结、周报、润色与问答中，定义 AI 的性格语气、技术深度与表达偏好。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                
-                HStack(spacing: 6) {
+                HStack(alignment: .center, spacing: 6) {
                     Text("快捷人设:")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                     ForEach(Self.personaPresets) { preset in
                         let isSelected = self.personaText.trimmingCharacters(in: .whitespacesAndNewlines) == preset.prompt
@@ -807,11 +789,11 @@ struct AIPersonaSettingsView: View {
             
             Divider()
             
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 12) {
                 Label("沉浸交互与视觉反馈", systemImage: "wand.and.stars")
                     .font(.headline)
                 
-                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 10) {
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 20, verticalSpacing: 12) {
                     GridRow {
                         Toggle("动感打字特效", isOn: self.$typewriterEnabled)
                             .onChange(of: self.typewriterEnabled) { _, val in
@@ -819,7 +801,7 @@ struct AIPersonaSettingsView: View {
                                 UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
                             }
                         
-                        HStack(spacing: 8) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text("特效风格:")
                                 .foregroundStyle(.secondary)
                             Picker("", selection: self.$typewriterStyle) {
@@ -838,7 +820,7 @@ struct AIPersonaSettingsView: View {
                     }
                     
                     GridRow {
-                        Toggle("Vim 果冻光标特效", isOn: self.$vimCursorTrailEnabled)
+                        Toggle("Vim 流体光标特效", isOn: self.$vimCursorTrailEnabled)
                             .onChange(of: self.vimCursorTrailEnabled) { _, val in
                                 CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
                                 UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
@@ -851,7 +833,6 @@ struct AIPersonaSettingsView: View {
                             }
                     }
                 }
-                .controlSize(.small)
                 
                 CustomCursorColorControl()
             }

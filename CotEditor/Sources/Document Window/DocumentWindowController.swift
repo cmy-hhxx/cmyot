@@ -158,14 +158,16 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         
         // observe appearance setting change
         self.appearanceModeObserver = UserDefaults.standard.publisher(for: .documentAppearance, initial: true)
-            .map { value in
-                switch value {
+            .sink { [weak self, weak window] value in
+                guard let window else { return }
+                window.appearance = switch value {
                     case .default: nil
                     case .light: NSAppearance(named: .aqua)
                     case .dark: NSAppearance(named: .darkAqua)
                 }
+                window.toolbar?.validateVisibleItems()
+                _ = self
             }
-            .assign(to: \.appearance, on: window)
         
         // observe for syntax line-up change
         self.syntaxListObserver = Publishers.Merge(SyntaxManager.shared.$settingNames,
@@ -730,7 +732,7 @@ private extension NSViewController {
 
 private extension NSToolbar.Identifier {
     
-    static let document = Self("Document.personal.7")
+    static let document = Self("Document.personal.8")
     static let directoryDocument = Self("DirectoryDocument")
 }
 
@@ -742,6 +744,7 @@ private extension NSToolbarItem.Identifier {
     
     static let syntax = Self(Self.prefix + "syntaxStyle")
     static let quickEmoji = Self(Self.prefix + "quickEmoji")
+    static let appearanceMode = Self(Self.prefix + "appearanceMode")
     static let weeklyReportCenter = Self(Self.prefix + "weeklyReportCenter")
     static let documentCenter = Self(Self.prefix + "documentCenter")
     static let textScale = Self(Self.prefix + "textScale")
@@ -801,6 +804,7 @@ extension DocumentWindowController: NSToolbarDelegate {
         Set(self.directoryIdentifiers).union([
             .editable,
             .quickEmoji,
+            .appearanceMode,
             .weeklyReportCenter,
             .documentCenter,
             .flexibleSpace,
@@ -813,6 +817,7 @@ extension DocumentWindowController: NSToolbarDelegate {
         self.directoryIdentifiers + [
             .editable,
             .quickEmoji,
+            .appearanceMode,
             .weeklyReportCenter,
             .documentCenter,
             .syntax,
@@ -828,10 +833,11 @@ extension DocumentWindowController: NSToolbarDelegate {
     
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         
-        // Personal build: keep the toolbar minimal; Emoji, Weekly Report Center, and Document Center stay side-by-side.
+        // Personal build: keep the toolbar minimal; Emoji, Appearance toggle, Weekly Report Center, and Document Center stay side-by-side.
         var identifiers = self.directoryIdentifiers + [
             .editable,
             .quickEmoji,
+            .appearanceMode,
             .weeklyReportCenter,
             .documentCenter,
             .syntax,
@@ -921,6 +927,22 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.image = NSImage(systemSymbolName: "face.smiling", accessibilityDescription: item.label)?
                     .withSymbolConfiguration(emojiConfig)
                 item.menu = Self.quickEmojiMenu()
+                return item
+                
+            case .appearanceMode:
+                let item = StatableToolbarItem(itemIdentifier: itemIdentifier)
+                item.isBordered = true
+                item.label = String(localized: "chrome.toolbar.appearance.label",
+                                    defaultValue: "深浅外观", table: "Chrome")
+                item.toolTip = "切换深色 / 浅色外观"
+                let symConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
+                item.stateImages[.off] = NSImage(systemSymbolName: "sun.max", accessibilityDescription: "浅色模式")?
+                    .withSymbolConfiguration(symConfig)
+                item.stateImages[.on] = NSImage(systemSymbolName: "moon.stars.fill", accessibilityDescription: "深色模式")?
+                    .withSymbolConfiguration(symConfig)
+                item.action = #selector(DocumentViewController.toggleAppearanceMode(_:))
+                item.isNavigational = true
+                item.visibilityPriority = .high
                 return item
                 
             case .weeklyReportCenter:

@@ -35,13 +35,9 @@ struct KeyBindingsSettingsView: View {
     
     var body: some View {
         
-        VStack(alignment: .leading) {
-            Text("To change a shortcut, click the key column, then type the new keys.", tableName: "KeyBindingsSettings")
-                .lineLimit(10)
-                .fixedSize(horizontal: false, vertical: true)
-            
+        VStack(alignment: .leading, spacing: 12) {
             KeyBindingTreeView(model: $model)
-                .frame(height: 260)
+                .frame(height: 280)
             
             HStack(alignment: .firstTextBaseline) {
                 Button(String(localized: "Action.restoreDefaults.label", defaultValue: "Restore Defaults"), action: self.model.restore)

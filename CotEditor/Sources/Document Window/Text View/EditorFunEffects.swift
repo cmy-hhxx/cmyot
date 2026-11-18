@@ -141,14 +141,19 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private var ghostContainerLayer: CALayer?
     private var ghostSweepLayer: CALayer?
     
-    // Persistent 120Hz Apple-style fluid spring Vim cursor
+    // Persistent 120Hz Apple-style fluid spring Vim cursor + luminous wake trail
     private var vimRootLayer: CALayer?
     private var vimCursorLayer: CAShapeLayer?
+    private var vimTrailLayers: [CAShapeLayer] = []
+    private var trailRects: [NSRect] = []
     private var fluidCursor: FluidCursorState?
     private var currentTargetRect: NSRect?
     private var vimDisplayLink: CADisplayLink?
     private var displayLinkProxy: DisplayLinkProxy?
     private var lastStepTime: CFTimeInterval = 0
+    private var currentTrailColor: NSColor = .controlAccentColor
+    private var currentCursorAlpha: CGFloat = 0.56
+    private static let trailLayerCount = 4
     
     
     init(textView: EditorTextView) {
@@ -174,6 +179,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.vimDisplayLink = nil
         self.fluidCursor = nil
         self.currentTargetRect = nil
+        self.trailRects.removeAll()
         self.hideGhostSuggestion(animated: false)
         self.hideComboHud(animated: false)
         
@@ -181,6 +187,10 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         CATransaction.setDisableActions(true)
         self.vimCursorLayer?.removeAllAnimations()
         self.vimCursorLayer?.opacity = 0
+        for layer in self.vimTrailLayers {
+            layer.removeAllAnimations()
+            layer.opacity = 0
+        }
         CATransaction.commit()
     }
     
@@ -215,10 +225,14 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.vimDisplayLink?.isPaused = true
         self.fluidCursor = nil
         self.currentTargetRect = nil
+        self.trailRects.removeAll()
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         self.vimCursorLayer?.opacity = 0
+        for layer in self.vimTrailLayers {
+            layer.opacity = 0
+        }
         CATransaction.commit()
     }
     
@@ -972,15 +986,20 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             default: 0.56
         }
         let cornerRadius = Self.cursorCornerRadius(for: visualRect)
+        self.currentTrailColor = color
+        self.currentCursorAlpha = cursorAlpha
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         cursorLayer.fillColor = color.withAlphaComponent(cursorAlpha).cgColor
         cursorLayer.shadowColor = color.cgColor
-        cursorLayer.shadowOpacity = 0.20
-        cursorLayer.shadowRadius = 2.4
+        cursorLayer.shadowOpacity = 0.22
+        cursorLayer.shadowRadius = 2.6
         cursorLayer.shadowOffset = .zero
         cursorLayer.opacity = 1.0
+        for layer in self.vimTrailLayers {
+            layer.fillColor = color.cgColor
+        }
         CATransaction.commit()
         
         // Deduplicate back-to-back identical target calls within the same event
@@ -1003,9 +1022,10 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
                 centerVelocity: .zero,
                 size: fallbackFrom.size,
                 sizeVelocity: .zero,
-                omega: 42,
-                zeta: 0.90
+                omega: 40,
+                zeta: 0.86
             )
+            self.trailRects = Array(repeating: fallbackFrom, count: Self.trailLayerCount)
         }
         
         guard animated, var cursorState = self.fluidCursor, textView.window != nil else {
@@ -1014,17 +1034,31 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
                 centerVelocity: .zero,
                 size: visualRect.size,
                 sizeVelocity: .zero,
-                omega: 42,
-                zeta: 0.90
+                omega: 40,
+                zeta: 0.86
             )
+            self.trailRects = Array(repeating: visualRect, count: Self.trailLayerCount)
             self.currentTargetRect = visualRect
             self.vimDisplayLink?.isPaused = true
             
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             cursorLayer.path = CGPath(roundedRect: visualRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+            for layer in self.vimTrailLayers {
+                layer.opacity = 0
+            }
             CATransaction.commit()
             return
+        }
+        
+        if self.trailRects.count != Self.trailLayerCount {
+            let curRect = NSRect(
+                x: cursorState.center.x - cursorState.size.width * 0.5,
+                y: cursorState.center.y - cursorState.size.height * 0.5,
+                width: cursorState.size.width,
+                height: cursorState.size.height
+            )
+            self.trailRects = Array(repeating: curRect, count: Self.trailLayerCount)
         }
         
         let targetCenter = CGPoint(x: visualRect.midX, y: visualRect.midY)
@@ -1039,9 +1073,13 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             cursorState.sizeVelocity = .zero
             self.fluidCursor = cursorState
             self.currentTargetRect = visualRect
+            self.trailRects = Array(repeating: visualRect, count: Self.trailLayerCount)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             cursorLayer.path = CGPath(roundedRect: visualRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+            for layer in self.vimTrailLayers {
+                layer.opacity = 0
+            }
             CATransaction.commit()
             return
         }
@@ -1056,6 +1094,10 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             cursorState.center.x += shiftX
             cursorState.center.y += shiftY
             cursorState.centerVelocity = .zero
+            for i in self.trailRects.indices {
+                self.trailRects[i].origin.x += shiftX
+                self.trailRects[i].origin.y += shiftY
+            }
             dx = (dx / distance) * clampedOriginDist
             dy = (dy / distance) * clampedOriginDist
             distance = clampedOriginDist
@@ -1071,17 +1113,33 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     }
     
     
-    /// Apple Fluid Interface spring tuning (`response` fast & responsive, `zeta` ~0.88–0.92 for crisp
-    /// zero-wobble settlement; continuous key-hold uses slightly higher stiffness & damping to stream smoothly).
+    /// Apple Fluid Interface spring tuning (`response` fast & responsive, `zeta` ~0.85–0.91 for crisp
+    /// settled poise with a subtle, satisfying breath and zero harsh ringing).
     static func fluidSpringParameters(distance: CGFloat, isContinuous: Bool) -> (omega: CGFloat, zeta: CGFloat) {
         
         if isContinuous {
-            return (omega: 46.0, zeta: 0.92)
+            return (omega: 45.0, zeta: 0.90)
         }
         if distance < 28 {
-            return (omega: 44.0, zeta: 0.89)
+            return (omega: 42.0, zeta: 0.85)
         }
-        return (omega: 38.0, zeta: 0.88)
+        return (omega: 36.0, zeta: 0.85)
+    }
+    
+    
+    /// Tapered frosted-glow trail parameters for index `0...3` (0 = closest wake, 3 = faintest tail).
+    static func trailFrameParameters(layerIndex: Int, activity: CGFloat, cursorAlpha: CGFloat) -> (scale: CGFloat, alpha: CGFloat) {
+        
+        let scales: [CGFloat] = [0.92, 0.80, 0.66, 0.52]
+        let weights: [CGFloat] = [0.34, 0.22, 0.12, 0.055]
+        let idx = max(0, min(scales.count - 1, layerIndex))
+        let clampedActivity = max(0, min(1, activity))
+        return (scale: scales[idx], alpha: FloatCompat.clampAlpha(weights[idx] * clampedActivity * cursorAlpha))
+    }
+    
+    
+    private enum FloatCompat {
+        static func clampAlpha(_ v: CGFloat) -> CGFloat { max(0, min(1, v)) }
     }
     
     
@@ -1183,20 +1241,8 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         let sizeError = max(abs(nw - targetRect.width), abs(nh - targetRect.height))
         let speed = hypot(nvx, nvy)
         
-        if posError < 0.12 && sizeError < 0.12 && speed < 1.5 {
-            state.center = targetCenter
-            state.centerVelocity = .zero
-            state.size = targetRect.size
-            state.sizeVelocity = .zero
-            self.fluidCursor = state
-            
-            let radius = Self.cursorCornerRadius(for: targetRect)
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            cursorLayer.path = CGPath(roundedRect: targetRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
-            CATransaction.commit()
-            link.isPaused = true
-            return
+        if self.trailRects.count != Self.trailLayerCount {
+            self.trailRects = Array(repeating: targetRect, count: Self.trailLayerCount)
         }
         
         let renderedRect = Self.fluidStretchedRect(
@@ -1204,11 +1250,65 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             baseSize: state.size,
             velocity: state.centerVelocity
         )
+        
+        // Update 4-tap frame-rate-independent lagged wake behind the active cursor capsule.
+        let trailFollowRates: [CGFloat] = [34.0, 26.0, 20.0, 15.0]
+        var leadRect = renderedRect
+        var maxTrailGap: CGFloat = 0
+        for idx in 0..<Self.trailLayerCount {
+            let alpha = 1.0 - exp(-trailFollowRates[idx] * dt)
+            let prev = self.trailRects[idx]
+            let nextRect = NSRect(
+                x: prev.origin.x + (leadRect.origin.x - prev.origin.x) * alpha,
+                y: prev.origin.y + (leadRect.origin.y - prev.origin.y) * alpha,
+                width: prev.width + (leadRect.width - prev.width) * alpha,
+                height: prev.height + (leadRect.height - prev.height) * alpha
+            )
+            self.trailRects[idx] = nextRect
+            maxTrailGap = max(maxTrailGap, hypot(nextRect.midX - renderedRect.midX, nextRect.midY - renderedRect.midY))
+            leadRect = nextRect
+        }
+        
+        if posError < 0.12 && sizeError < 0.12 && speed < 1.5 && maxTrailGap < 0.25 {
+            state.center = targetCenter
+            state.centerVelocity = .zero
+            state.size = targetRect.size
+            state.sizeVelocity = .zero
+            self.fluidCursor = state
+            self.trailRects = Array(repeating: targetRect, count: Self.trailLayerCount)
+            
+            let radius = Self.cursorCornerRadius(for: targetRect)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            cursorLayer.path = CGPath(roundedRect: targetRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+            for layer in self.vimTrailLayers {
+                layer.opacity = 0
+            }
+            CATransaction.commit()
+            link.isPaused = true
+            return
+        }
+        
         let radius = Self.cursorCornerRadius(for: renderedRect)
         let path = CGPath(roundedRect: renderedRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        let motionActivity = min(1.0, max(speed / 240.0, max(posError, maxTrailGap) / 14.0))
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        for (idx, layer) in self.vimTrailLayers.enumerated() where idx < self.trailRects.count {
+            let base = self.trailRects[idx]
+            let tailParams = Self.trailFrameParameters(
+                layerIndex: idx,
+                activity: motionActivity,
+                cursorAlpha: self.currentCursorAlpha
+            )
+            let insetX = base.width * (1.0 - tailParams.scale) * 0.5
+            let insetY = base.height * (1.0 - tailParams.scale) * 0.5
+            let scaledRect = base.insetBy(dx: insetX, dy: insetY)
+            let tailRadius = Self.cursorCornerRadius(for: scaledRect)
+            layer.path = CGPath(roundedRect: scaledRect, cornerWidth: tailRadius, cornerHeight: tailRadius, transform: nil)
+            layer.opacity = Float(tailParams.alpha)
+        }
         cursorLayer.path = path
         CATransaction.commit()
     }
@@ -1337,6 +1437,8 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.vimRootLayer?.removeFromSuperlayer()
         self.vimRootLayer = nil
         self.vimCursorLayer = nil
+        self.vimTrailLayers.removeAll()
+        self.trailRects.removeAll()
     }
     
     
@@ -1442,6 +1544,18 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         root.zPosition = 180
         hostLayer.addSublayer(root)
         self.vimRootLayer = root
+        
+        var trails: [CAShapeLayer] = []
+        for _ in 0..<Self.trailLayerCount {
+            let trail = CAShapeLayer()
+            trail.opacity = 0
+            trails.append(trail)
+        }
+        // Insert farthest tail first so index 0 rests closest underneath the primary cursor.
+        for trail in trails.reversed() {
+            root.addSublayer(trail)
+        }
+        self.vimTrailLayers = trails
         
         let cursor = CAShapeLayer()
         cursor.opacity = 0

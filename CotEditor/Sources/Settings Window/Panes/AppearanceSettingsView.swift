@@ -54,7 +54,7 @@ struct AppearanceSettingsView: View {
     
     var body: some View {
         
-        Grid(alignment: .leadingFirstTextBaseline, verticalSpacing: isLiquidGlass ? 12 : 8) {
+        Grid(alignment: .leadingFirstTextBaseline, verticalSpacing: isLiquidGlass ? 14 : 12) {
             GridRow {
                 Text("Standard font:", tableName: "AppearanceSettings")
                     .gridColumnAlignment(.trailing)
@@ -203,6 +203,7 @@ struct AppearanceSettingsView: View {
             }
         }
         .scenePadding()
+        .frame(width: 620)
         .frame(width: 620)
     }
     

@@ -53,7 +53,7 @@ struct WindowSettingsView: View {
     
     var body: some View {
         
-        Grid(alignment: .leadingFirstTextBaseline, verticalSpacing: 8) {
+        Grid(alignment: .leadingFirstTextBaseline, verticalSpacing: 12) {
             GridRow {
                 Text("Show:", tableName: "WindowSettings")
                     .gridColumnAlignment(.trailing)
@@ -130,10 +130,10 @@ struct WindowSettingsView: View {
             HStack {
                 Spacer()
                 HelpLink(anchor: "settings_window")
-            }.padding(.top, -8)
+            }
         }
         .scenePadding()
-        .frame(minWidth: 620)
+        .frame(width: 620)
     }
 }
 

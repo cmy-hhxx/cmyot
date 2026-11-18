@@ -479,6 +479,11 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         
         switch item.action {
+            case #selector(toggleAppearanceMode):
+                let isDark = (self.view.window?.effectiveAppearance ?? NSApp.effectiveAppearance).isDark
+                (item as? StatableToolbarItem)?.state = isDark ? .on : .off
+                (item as? NSToolbarItem)?.toolTip = isDark ? "深色模式（点击切换浅色）" : "浅色模式（点击切换深色）"
+                
             case #selector(toggleLineNumber):
                 (item as? NSMenuItem)?.title = self.showsLineNumber
                     ? String(localized: "Hide Line Numbers", table: "MainMenu")
@@ -858,6 +863,15 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         guard let mode = AppearanceMode(rawValue: sender.tag) else { return }
         
         UserDefaults.standard[.documentAppearance] = mode
+    }
+    
+    
+    /// Toggles directly between Light and Dark appearance from the toolbar button.
+    @IBAction func toggleAppearanceMode(_ sender: Any?) {
+        
+        let isDark = (self.view.window?.effectiveAppearance ?? NSApp.effectiveAppearance).isDark
+        UserDefaults.standard[.documentAppearance] = isDark ? .light : .dark
+        CotLocalDatabase.shared.syncUserPreferencesToDatabase()
     }
     
     
