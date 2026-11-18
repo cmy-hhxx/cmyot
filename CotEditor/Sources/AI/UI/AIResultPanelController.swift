@@ -54,6 +54,9 @@ final class AIResultPanelController: NSWindowController {
     private var lastPartialRenderTime: Date = .distantPast
     private var partialRenderTask: Task<Void, Never>?
     private var pendingPartialText: String?
+    /// Set as soon as the request resolves, so a late streamed chunk can never revive the
+    /// "generating" state or overwrite the finished answer.
+    private var hasFinished = false
     
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let spinner = NSProgressIndicator()
@@ -111,6 +114,7 @@ final class AIResultPanelController: NSWindowController {
         
         guard let window else { return }
         
+        self.hasFinished = false
         self.subtitleLabel.stringValue = Self.serviceDescription
         self.spinner.startAnimation(nil)
         self.spinner.isHidden = false
@@ -129,6 +133,8 @@ final class AIResultPanelController: NSWindowController {
     ///
     /// - Parameter partial: The accumulated answer text so far.
     func presentPartial(result partial: String) {
+        
+        guard !self.hasFinished else { return }
         
         let trimmed = partial.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -153,8 +159,11 @@ final class AIResultPanelController: NSWindowController {
         guard let trimmed = self.pendingPartialText, !trimmed.isEmpty else { return }
         self.pendingPartialText = nil
         self.lastPartialRenderTime = .now
-        self.answer = trimmed
-        self.setText(AIAnswerFormatter.attributedString(from: trimmed))
+        let display = self.action.outputsPlainDocumentText
+            ? AIDocumentTextCleaner.clean(trimmed)
+            : trimmed
+        self.answer = display
+        self.setText(AIAnswerFormatter.attributedString(from: display))
         self.updateButtons(canApply: true)
     }
     
@@ -175,11 +184,15 @@ final class AIResultPanelController: NSWindowController {
     /// - Parameter result: The answer text.
     func present(result: String) {
         
+        self.hasFinished = true
         self.partialRenderTask?.cancel()
         self.partialRenderTask = nil
         self.pendingPartialText = nil
         
-        let raw = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawText = self.action.outputsPlainDocumentText
+            ? AIDocumentTextCleaner.clean(result)
+            : result
+        let raw = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         self.spinner.stopAnimation(nil)
         self.spinner.isHidden = true
         
@@ -204,6 +217,7 @@ final class AIResultPanelController: NSWindowController {
     /// - Parameter error: The error to describe.
     func present(error: any Error) {
         
+        self.hasFinished = true
         self.partialRenderTask?.cancel()
         self.partialRenderTask = nil
         self.pendingPartialText = nil

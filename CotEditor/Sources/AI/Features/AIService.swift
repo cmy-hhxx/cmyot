@@ -120,7 +120,10 @@ import Observation
             .user(action.prompt(for: text, context: effectiveContext), images: images),
         ]
         
-        let result = try await self.send(messages, onPartial: onPartial)
+        let rawResult = try await self.send(messages, onPartial: onPartial)
+        let result = action.outputsPlainDocumentText
+            ? AIDocumentTextCleaner.clean(rawResult)
+            : rawResult
         
         if action == .weeklyReportItem {
             db.appendWeeklyReportFragment(result)
@@ -220,11 +223,11 @@ import Observation
         self.isRunning = true
         defer { self.isRunning = false }
         
-        let nonisolatedPartial: (@Sendable (String) -> Void)? = onPartial.map { callback in
+        // Deliver every chunk before the request returns. A detached task here used to let a
+        // late chunk land after the final result, which flipped finished UI back to "running".
+        let nonisolatedPartial: (@Sendable (String) async -> Void)? = onPartial.map { callback in
             { partial in
-                Task { @MainActor in
-                    callback(partial)
-                }
+                await callback(partial)
             }
         }
         

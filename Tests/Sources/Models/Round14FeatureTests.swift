@@ -255,14 +255,72 @@ struct Round14FeatureTests {
         #expect(VimEngine.acceleratedRepeatStep(for: .lineDown, streak: 0, elapsed: 0, fromKeyRepeat: false) == 1)
         #expect(VimEngine.acceleratedRepeatStep(for: .lineDown, streak: 3, elapsed: 0.25, fromKeyRepeat: false) == 1)
         #expect(VimEngine.acceleratedRepeatStep(for: .lineDown, streak: 1, elapsed: 0.02, fromKeyRepeat: true) == 1)
+        #expect(VimEngine.acceleratedRepeatStep(for: .lineDown, streak: 4, elapsed: 0.13, fromKeyRepeat: true) == 1)
         let midHold = VimEngine.acceleratedRepeatStep(for: .lineDown, streak: 8, elapsed: 0.40, fromKeyRepeat: true)
         let longHold = VimEngine.acceleratedRepeatStep(for: .lineDown, streak: 20, elapsed: 1.0, fromKeyRepeat: true)
-        #expect(midHold > 1)
-        #expect(longHold >= midHold)
-        #expect(longHold <= 10)
+        #expect(midHold == 3)
+        #expect(longHold == 4)
         
         let wordHold = VimEngine.acceleratedRepeatStep(for: .wordForward, streak: 12, elapsed: 0.6, fromKeyRepeat: true)
-        #expect(wordHold >= 2 && wordHold <= 4)
+        #expect(wordHold == 3)
+    }
+    
+    
+    @Test func aiDocumentTextCleanerRemovesMarkdownButKeepsStructure() {
+        
+        let cleaned = AIDocumentTextCleaner.clean("""
+        # 标题 **加粗**
+        
+        - **要点一**：完成 ✅ 😀
+        - [x] 事项二
+        - [ ] 事项三
+        
+        > 引用文字
+        
+        | 名称 | 状态 |
+        | --- | --- |
+        | 光标 | ✅ 完成 |
+        
+        链接 [文档](https://example.com) 和 `code`
+        """)
+        
+        #expect(cleaned.contains("# 标题 加粗"))
+        #expect(!cleaned.contains("**"))
+        #expect(cleaned.contains("1. 要点一：完成 ✅"))
+        #expect(!cleaned.contains("😀"))
+        #expect(cleaned.contains("2. ✅ 事项二"))
+        #expect(cleaned.contains("3. 事项三"))
+        #expect(cleaned.contains("引用文字"))
+        #expect(!cleaned.contains("|"))
+        #expect(cleaned.contains("名称   状态"))
+        #expect(cleaned.contains("光标   ✅ 完成"))
+        #expect(cleaned.contains("文档 (https://example.com)"))
+        #expect(cleaned.contains("code"))
+        
+        // Symbols inside a fenced code block are content, not decoration.
+        let fenced = """
+        ```swift
+        let value = "**keep**"
+        ```
+        """
+        #expect(AIDocumentTextCleaner.clean(fenced) == "let value = \"**keep**\"")
+    }
+    
+    
+    @Test func organizeProgressIgnoresLateChunksAfterCompletion() {
+        
+        let state = WorkspaceOrganizeProgressState(
+            totalDocumentCount: 2,
+            endpointDescription: "test · model"
+        )
+        state.markCompleted(summary: "完成")
+        
+        state.markStepActive(1, detail: "迟到的流式内容", progress: 1.0, headline: "步骤 2/4：正在接收")
+        state.markStepActive(2, detail: "迟到的流式内容", progress: 1.0, headline: "步骤 3/4：正在更新")
+        
+        #expect(state.isFinished)
+        #expect(state.statusHeadline == "全部文档已规整完毕")
+        #expect(state.steps.allSatisfy { $0.status == .completed })
     }
     
     

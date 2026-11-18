@@ -64,6 +64,9 @@ import SwiftUI
     
     
     func markStepActive(_ index: Int, detail: String, progress: Double, headline: String) {
+        // A late streamed chunk must never revive the spinner once the run has finished.
+        guard !self.isFinished else { return }
+        
         for idx in self.steps.indices {
             if idx < index, self.steps[idx].status != .failed {
                 self.steps[idx].status = .completed
@@ -78,13 +81,15 @@ import SwiftUI
     
     
     func markStepCompleted(_ index: Int, detail: String) {
-        guard self.steps.indices.contains(index) else { return }
+        guard !self.isFinished, self.steps.indices.contains(index) else { return }
         self.steps[index].status = .completed
         self.steps[index].detail = detail
     }
     
     
     func markCompleted(summary: String) {
+        guard !self.isFinished else { return }
+        
         for idx in self.steps.indices {
             self.steps[idx].status = .completed
         }
@@ -96,6 +101,8 @@ import SwiftUI
     
     
     func markFailed(message: String) {
+        guard !self.isFinished else { return }
+        
         if let activeIndex = self.steps.firstIndex(where: { $0.status == .active }) {
             self.steps[activeIndex].status = .failed
             self.steps[activeIndex].detail = "执行失败"

@@ -47,7 +47,7 @@ nonisolated struct AIClient: Sendable {
     ///   - onPartial: Optional callback invoked with the accumulated answer text as tokens arrive.
     /// - Returns: The answer as plain text.
     /// - Throws: ``AIError`` when the request cannot be made or the reply cannot be read.
-    func send(_ messages: [AIMessage], onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
+    func send(_ messages: [AIMessage], onPartial: (@Sendable (String) async -> Void)? = nil) async throws -> String {
         
         let shouldSendTemperature = Self.supportsTemperature(for: self.wireConfig.model)
         do {
@@ -112,7 +112,7 @@ nonisolated struct AIClient: Sendable {
     private func sendAttempt(
         _ messages: [AIMessage],
         allowTemperature: Bool,
-        onPartial: (@Sendable (String) -> Void)?
+        onPartial: (@Sendable (String) async -> Void)?
     ) async throws -> String {
         
         let config = self.wireConfig
@@ -162,7 +162,7 @@ nonisolated struct AIClient: Sendable {
         }
         
         let finalAnswer = try self.answer(from: data)
-        onPartial?(finalAnswer)
+        await onPartial?(finalAnswer)
         return finalAnswer
     }
     
@@ -199,7 +199,7 @@ nonisolated struct AIClient: Sendable {
     private func sendStreaming(
         _ messages: [AIMessage],
         allowTemperature: Bool,
-        onPartial: @Sendable (String) -> Void
+        onPartial: @Sendable (String) async -> Void
     ) async throws -> String {
         
         let config = self.wireConfig
@@ -247,7 +247,7 @@ nonisolated struct AIClient: Sendable {
                    !delta.isEmpty
                 {
                     accumulated += delta
-                    onPartial(accumulated)
+                    await onPartial(accumulated)
                 }
                 continue
             }
@@ -269,14 +269,14 @@ nonisolated struct AIClient: Sendable {
                        !text.isEmpty
                     {
                         accumulated += text
-                        onPartial(accumulated)
+                        await onPartial(accumulated)
                     } else if let choices = obj["choices"] as? [[String: Any]],
                               let message = choices.first?["message"] as? [String: Any],
                               let text = Self.text(fromContent: message["content"]),
                               !text.isEmpty
                     {
                         accumulated += text
-                        onPartial(accumulated)
+                        await onPartial(accumulated)
                     }
                 case .anthropicMessages:
                     if obj["type"] as? String == "error" {
@@ -289,7 +289,7 @@ nonisolated struct AIClient: Sendable {
                        !text.isEmpty
                     {
                         accumulated += text
-                        onPartial(accumulated)
+                        await onPartial(accumulated)
                     }
                 default:
                     break

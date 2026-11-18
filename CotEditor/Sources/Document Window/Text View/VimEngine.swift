@@ -2165,13 +2165,17 @@ final class VimEngine {
         switch motion {
             case .wordForward, .wordBackward, .wordEnd,
                  .bigWordForward, .bigWordBackward, .bigWordEnd:
-                return min(4, 1 + (effectiveStreak + Int(clampedElapsed * 2.5)) / 4)
+                // Word motions stay close to one-per-keystroke: jumping several words per
+                // repeat overshoots the target before the eye can follow.
+                return min(3, 1 + Int(Double(effectiveStreak) * 0.15 + clampedElapsed * 0.9))
                 
             case .left, .right, .down, .up, .lineDown, .lineUp:
                 if effectiveStreak <= 1 && clampedElapsed < 0.06 {
                     return 1
                 }
-                return min(10, 1 + Int(Double(effectiveStreak) * 0.50 + clampedElapsed * 4.8))
+                // Ramp deliberately: the first ~0.2 s of holding still moves one line/char
+                // at a time, then the step grows by one every few repeats and tops out at 4.
+                return min(4, 1 + Int(Double(effectiveStreak) * 0.20 + clampedElapsed * 1.2))
                 
             default:
                 return 1

@@ -1560,10 +1560,14 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     }
     
     
-    /// Upgrades unmodified v1 built-in prompts (such as the old weekly report prompts) to v2.
+    /// Upgrades unmodified built-in prompts (for example the old weekly report prompts, or the
+    /// Markdown-heavy summarizer prompt) to the current plain-text defaults.
+    ///
+    /// A prompt the user edited is left alone: only an exact match with a shipped default is
+    /// replaced, so custom prompts survive the upgrade.
     private func migrateLegacyPromptsIfNeeded() {
         
-        for action in [AIAction.weeklyReport, .weeklyReportItem] {
+        for action in AIAction.allCases {
             guard let existing = self.queryConfigValue(forKey: action.databaseConfigKey) else { continue }
             let trimmedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
             if action.legacyDefaultSystemPrompts.contains(where: {

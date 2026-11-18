@@ -484,15 +484,16 @@ enum WorkspaceOrganizer {
         lines.append("")
         for (idx, group) in groups.enumerated() {
             let summaryText = group.summary.isEmpty ? "内容已去重并重新排版。" : group.summary
-            lines.append("\(idx + 1). **\(group.title)**（`\(group.syntax)`）— \(summaryText)")
+            lines.append("\(idx + 1). \(group.title)（\(group.syntax)）— \(summaryText)")
         }
         
         lines.append("")
-        lines.append("---")
-        lines.append("> 数据安全说明：合并前的所有非空文档快照已备份至本地 SQLite 数据库（设置 → AI → 查看已存文档），涉及的磁盘原文件不会被自动删除。")
+        lines.append("## 三、数据安全说明")
+        lines.append("")
+        lines.append("合并前的所有非空文档快照已备份至本地 SQLite 数据库（设置 → AI → 查看已存文档），涉及的磁盘原文件不会被自动删除。")
         lines.append("")
         
-        return MarkdownTableFormatter.formatTables(in: lines.joined(separator: "\n"))
+        return AIDocumentTextCleaner.clean(lines.joined(separator: "\n")) + "\n"
     }
     
     
@@ -617,7 +618,7 @@ enum WorkspaceOrganizer {
         
         for group in plan.groups {
             let resolvedSyntax = self.normalizedSyntaxName(group.syntax)
-            let formattedContent = MarkdownTableFormatter.formatTables(in: group.mergedContent)
+            let formattedContent = AIDocumentTextCleaner.clean(group.mergedContent)
                 .trimmingCharacters(in: .newlines) + "\n"
             
             let matchingEntries = group.sourceIDs.compactMap { entryByID[$0] }.filter { !consumedIDs.contains($0.id) }
