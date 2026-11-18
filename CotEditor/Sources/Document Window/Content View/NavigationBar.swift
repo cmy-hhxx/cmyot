@@ -75,11 +75,12 @@ struct NavigationBar: View {
         
         Button(action: self.tabs.onClosePane) {
             Image(systemName: "xmark")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 9.5, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 22, height: 22)
+                .frame(width: 22, height: 22, alignment: .center)
                 .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
+        .frame(width: 22, height: 24, alignment: .center)
         .buttonStyle(HoverPlainButtonStyle())
         .help(String(localized: "Close split editor", table: "Document", comment: "tooltip for button"))
     }

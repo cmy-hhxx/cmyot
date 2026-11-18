@@ -136,6 +136,9 @@ extension Logger {
     
     func applicationWillFinishLaunching(_ notification: Notification) {
         
+        CotLogger.shared.prepareForLaunch()
+        CotLogger.shared.installCrashAndExceptionHooks()
+        
         // The app used to be sandboxed; pull the old settings out of the container first,
         // so everything else here already sees the migrated values.
         LegacyContainerMigrator.migrateIfNeeded()
@@ -157,6 +160,7 @@ extension Logger {
                 try SyntaxManager.shared.migrateUserSettings()
             } catch {
                 Logger.app.error("Failed syntax definition migration: \(error)")
+                CotLogger.shared.error(category: .app, "Syntax definition migration failed", error: error)
             }
         }
         
@@ -461,6 +465,38 @@ extension Logger {
     @IBAction func showConsolePanel(_ sender: Any?) {
         
         ConsolePanelController.shared.showWindow(sender)
+    }
+    
+    
+    /// Opens today's rolling Cot error log file directly inside Cot.
+    @IBAction func openTodayErrorLog(_ sender: Any?) {
+        
+        CotLogger.shared.flush()
+        let logURL = CotLogger.shared.currentLogFileURL
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            CotLogger.shared.info(category: .app, "Opened today's log file")
+            CotLogger.shared.flush()
+        }
+        NSDocumentController.shared.openDocument(withContentsOf: logURL, display: true) { _, _, error in
+            if let error {
+                CotLogger.shared.error(category: .app, "Failed to open today's log file in Cot", error: error)
+                NSWorkspace.shared.open(logURL)
+            }
+        }
+    }
+    
+    
+    /// Reveals the rolling 7-day log folder in Finder.
+    @IBAction func openErrorLogDirectory(_ sender: Any?) {
+        
+        CotLogger.shared.flush()
+        let directoryURL = CotLogger.shared.logDirectoryURL
+        let todayURL = CotLogger.shared.currentLogFileURL
+        if FileManager.default.fileExists(atPath: todayURL.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([todayURL])
+        } else {
+            NSWorkspace.shared.open(directoryURL)
+        }
     }
     
     
@@ -851,6 +887,42 @@ extension Logger {
             .store(in: &self.menuUpdateObservers)
         
         self.installWeeklyReportTopMenu()
+        self.installErrorLogWindowMenuItems()
+    }
+    
+    
+    /// Adds error log inspection items right under Window -> Console.
+    private func installErrorLogWindowMenuItems() {
+        
+        guard let mainMenu = NSApp.mainMenu else { return }
+        func insertAfterConsole(in menu: NSMenu) -> Bool {
+            if let consoleIndex = menu.items.firstIndex(where: { $0.action == #selector(showConsolePanel(_:)) }) {
+                let openLogItem = NSMenuItem(
+                    title: "打开今日错误日志",
+                    action: #selector(openTodayErrorLog(_:)),
+                    keyEquivalent: ""
+                )
+                openLogItem.target = self
+                
+                let openFolderItem = NSMenuItem(
+                    title: "在访达中打开日志目录…",
+                    action: #selector(openErrorLogDirectory(_:)),
+                    keyEquivalent: ""
+                )
+                openFolderItem.target = self
+                
+                menu.insertItem(openLogItem, at: consoleIndex + 1)
+                menu.insertItem(openFolderItem, at: consoleIndex + 2)
+                return true
+            }
+            for item in menu.items {
+                if let submenu = item.submenu, insertAfterConsole(in: submenu) {
+                    return true
+                }
+            }
+            return false
+        }
+        _ = insertAfterConsole(in: mainMenu)
     }
     
     

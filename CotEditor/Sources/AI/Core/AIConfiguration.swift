@@ -37,6 +37,7 @@ nonisolated struct AIConfiguration: Sendable {
     var apiKey: String
     var temperature: Double?
     var reasoningEffort: String? = "low"
+    var customHeaders: [String: String] = [:]
     
     
     // MARK: Lifecycle
@@ -95,6 +96,24 @@ nonisolated struct AIConfiguration: Sendable {
     }
     
     
+    /// Effective wire configuration (for dual-protocol gateways such as CommandCode where
+    /// `claude-*` models require the Anthropic Messages wire shape instead of `/responses`).
+    var wireConfiguration: AIConfiguration {
+        
+        let host = (URL(string: self.resolvedBaseURL)?.host ?? "").lowercased()
+        let lowerModel = self.model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if host.contains("commandcode.ai"),
+           self.endpoint == .openAIResponses,
+           lowerModel.hasPrefix("claude-")
+        {
+            var routed = self
+            routed.endpoint = .anthropicMessages
+            return routed
+        }
+        return self
+    }
+    
+    
     /// The request URL for this configuration.
     ///
     /// - Returns: The full endpoint URL, or `nil` when the base URL is malformed.
@@ -111,11 +130,12 @@ nonisolated struct AIConfiguration: Sendable {
         }
         
         // accept a fully pasted endpoint URL
-        if base.hasSuffix(path) {
+        if base.hasSuffix("/" + path) || base.hasSuffix(path) {
             return URL(string: base)
         }
         
-        return URL(string: "\(base)/\(path)")
+        let effectiveBase = Self.normalizedBase(base, for: self.endpoint)
+        return URL(string: "\(effectiveBase)/\(path)")
     }
     
     
@@ -138,6 +158,8 @@ nonisolated struct AIConfiguration: Sendable {
             }
         }
         
+        base = Self.normalizedBase(base, for: self.endpoint)
+        
         let path = switch self.endpoint {
             case .openAIResponses, .openAIChatCompletions, .anthropicMessages, .googleGemini: "models"
             case .ollama: "api/tags"
@@ -152,6 +174,18 @@ nonisolated struct AIConfiguration: Sendable {
     }
     
     
+    /// Ensures `/v1` is appended for Anthropic Messages gateways whose base URL omits a version suffix
+    /// (such as `https://opencode.ai/inference/go` -> `.../v1/messages`).
+    private static func normalizedBase(_ base: String, for endpoint: AIEndpoint) -> String {
+        
+        guard endpoint == .anthropicMessages else { return base }
+        if base.range(of: #"/v\d+$"#, options: .regularExpression) != nil {
+            return base
+        }
+        return "\(base)/v1"
+    }
+    
+    
     /// The authentication and protocol headers.
     ///
     /// Shared by the chat client and the model list so a new protocol only needs one place
@@ -159,19 +193,27 @@ nonisolated struct AIConfiguration: Sendable {
     var requestHeaders: [String: String] {
         
         let key = self.apiKey
-        
-        switch self.endpoint {
+        var headers: [String: String] = switch self.endpoint {
             case .openAIResponses, .openAIChatCompletions:
-                return key.isEmpty ? [:] : ["Authorization": "Bearer \(key)"]
+                key.isEmpty ? [:] : ["Authorization": "Bearer \(key)"]
             case .anthropicMessages:
-                return [
+                [
                     "x-api-key": key,
                     "anthropic-version": "2023-06-01",
                 ]
             case .googleGemini:
-                return key.isEmpty ? [:] : ["x-goog-api-key": key]
+                key.isEmpty ? [:] : ["x-goog-api-key": key]
             case .ollama:
-                return [:]
+                [:]
         }
+        
+        for (rawField, rawValue) in self.customHeaders {
+            let field = rawField.trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !field.isEmpty, !value.isEmpty else { continue }
+            headers[field] = value
+        }
+        
+        return headers
     }
 }

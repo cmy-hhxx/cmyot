@@ -56,6 +56,12 @@ nonisolated struct AIEndpointProfile: Identifiable, Sendable, Codable, Equatable
     /// Reasoning effort level (`"low"` by default for fast responses, `"none"`, `"medium"`, `"high"`).
     var reasoningEffort: String?
     
+    /// Optional HTTP headers attached to requests for this endpoint (e.g. `x-opencode-session`).
+    var customHeaders: [String: String]
+    
+    /// Remembered / quick-pick model IDs for switching models without retyping.
+    var savedModels: [String]
+    
     
     // MARK: Lifecycle
     
@@ -65,7 +71,9 @@ nonisolated struct AIEndpointProfile: Identifiable, Sendable, Codable, Equatable
         endpoint: AIEndpoint = .openAIChatCompletions,
         baseURL: String = AIProvider.deepSeek.defaultBaseURL,
         model: String = AIProvider.deepSeek.defaultModel,
-        reasoningEffort: String? = "low"
+        reasoningEffort: String? = "low",
+        customHeaders: [String: String] = [:],
+        savedModels: [String] = []
     ) {
         self.id = id
         self.name = name
@@ -73,6 +81,27 @@ nonisolated struct AIEndpointProfile: Identifiable, Sendable, Codable, Equatable
         self.baseURL = baseURL
         self.model = model
         self.reasoningEffort = reasoningEffort
+        self.customHeaders = customHeaders
+        self.savedModels = savedModels
+    }
+    
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name, endpoint, baseURL, model, reasoningEffort, customHeaders, savedModels
+    }
+    
+    
+    init(from decoder: any Decoder) throws {
+        
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        self.endpoint = try container.decodeIfPresent(AIEndpoint.self, forKey: .endpoint) ?? .openAIChatCompletions
+        self.baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
+        self.model = try container.decodeIfPresent(String.self, forKey: .model) ?? ""
+        self.reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort) ?? "low"
+        self.customHeaders = try container.decodeIfPresent([String: String].self, forKey: .customHeaders) ?? [:]
+        self.savedModels = try container.decodeIfPresent([String].self, forKey: .savedModels) ?? []
     }
     
     
@@ -133,6 +162,33 @@ nonisolated struct AIEndpointProfile: Identifiable, Sendable, Codable, Equatable
     
     // MARK: Public Methods
     
+    /// Unique ordered list of models available for quick switching on this endpoint.
+    var availableModelIDs: [String] {
+        
+        var seen: Set<String> = []
+        var result: [String] = []
+        let candidates = ([self.model] + self.savedModels)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        for candidate in candidates where seen.insert(candidate).inserted {
+            result.append(candidate)
+        }
+        return result
+    }
+    
+    
+    /// Adds model IDs to ``savedModels`` without duplicates, preserving order.
+    mutating func rememberModels(_ modelIDs: [String]) {
+        
+        var seen = Set(self.savedModels)
+        for raw in modelIDs {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            self.savedModels.append(trimmed)
+        }
+    }
+    
+    
     /// The configuration this profile describes with the given secret.
     ///
     /// - Parameter apiKey: The key stored for this profile.
@@ -145,7 +201,8 @@ nonisolated struct AIEndpointProfile: Identifiable, Sendable, Codable, Equatable
             model: self.model,
             apiKey: apiKey,
             temperature: 0.3,
-            reasoningEffort: self.reasoningEffort ?? "low"
+            reasoningEffort: self.reasoningEffort ?? "low",
+            customHeaders: self.customHeaders
         )
     }
 }

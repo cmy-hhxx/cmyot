@@ -64,7 +64,7 @@ struct PaneTabStripView: NSViewRepresentable {
     
     private let scrollView = NSScrollView()
     private let documentContainer = TabStripContainerView()
-    private let newTabButton = NSButton()
+    private let newTabButton = CenteredIconButton(symbolName: "plus", pointSize: 10.5, weight: .semibold, accessibilityDescription: "New Tab")
     private let insertionIndicator = NSView()
     
     private var tabViews: [UUID: PaneTabItemView] = [:]
@@ -102,7 +102,7 @@ struct PaneTabStripView: NSViewRepresentable {
     
     
     override var isFlipped: Bool { true }
-    override var mouseDownCanMoveWindow: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
     
     override var intrinsicContentSize: NSSize {
         NSSize(width: NSView.noIntrinsicMetric, height: Self.tabHeight)
@@ -121,11 +121,6 @@ struct PaneTabStripView: NSViewRepresentable {
         self.scrollView.translatesAutoresizingMaskIntoConstraints = false
         self.addSubview(self.scrollView)
         
-        self.newTabButton.bezelStyle = .inline
-        self.newTabButton.isBordered = false
-        self.newTabButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab")?
-            .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))
-        self.newTabButton.imagePosition = .imageOnly
         self.newTabButton.contentTintColor = .secondaryLabelColor
         self.newTabButton.wantsLayer = true
         self.newTabButton.layer?.cornerRadius = 6
@@ -296,6 +291,23 @@ struct PaneTabStripView: NSViewRepresentable {
         
         self.window?.makeFirstResponder(field)
         field.selectText(nil)
+        
+        // Re-assert first responder on the next runloop turn in case an asynchronous
+        // editor selection focus restore runs during the same event cycle.
+        let targetTabID = tab.id
+        DispatchQueue.main.async { [weak self, weak field] in
+            guard
+                let self,
+                let field,
+                self.renamingTabID == targetTabID,
+                self.renameField === field,
+                let window = self.window,
+                window.firstResponder !== field,
+                window.firstResponder !== field.currentEditor()
+            else { return }
+            window.makeFirstResponder(field)
+            field.selectText(nil)
+        }
     }
     
     
@@ -617,10 +629,66 @@ struct PaneTabStripView: NSViewRepresentable {
 
 // MARK: - Container & Individual Tab Item View
 
+private final class NonDraggableLabel: NSTextField {
+    
+    override var mouseDownCanMoveWindow: Bool { false }
+}
+
+
+private final class CenteredIconButton: NSButton {
+    
+    private let iconView = NSImageView()
+    
+    override var mouseDownCanMoveWindow: Bool { false }
+    
+    
+    init(symbolName: String, pointSize: CGFloat, weight: NSFont.Weight, accessibilityDescription: String) {
+        
+        super.init(frame: .zero)
+        self.isBordered = false
+        self.bezelStyle = .regularSquare
+        self.focusRingType = .none
+        self.title = ""
+        self.image = nil
+        
+        self.iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription)?
+            .withSymbolConfiguration(.init(pointSize: pointSize, weight: weight))
+        self.iconView.imageScaling = .scaleNone
+        self.iconView.translatesAutoresizingMaskIntoConstraints = false
+        self.addSubview(self.iconView)
+        
+        NSLayoutConstraint.activate([
+            self.iconView.centerXAnchor.constraint(equalTo: self.centerXAnchor),
+            self.iconView.centerYAnchor.constraint(equalTo: self.centerYAnchor),
+        ])
+    }
+    
+    
+    required init?(coder: NSCoder) {
+        
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    
+    override var contentTintColor: NSColor? {
+        didSet {
+            self.iconView.contentTintColor = self.contentTintColor
+        }
+    }
+    
+    
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        
+        let local = self.convert(point, from: self.superview)
+        return (!self.isHidden && self.bounds.contains(local)) ? self : nil
+    }
+}
+
+
 private final class TabStripContainerView: NSView {
     
     override var isFlipped: Bool { true }
-    override var mouseDownCanMoveWindow: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 
@@ -633,10 +701,14 @@ private final class TabStripContainerView: NSView {
     private var isHovered = false
     private var isRenaming = false
     
-    private let pinButton = NSButton()
-    private let titleLabel = NSTextField(labelWithString: "")
+    private let pinButton = CenteredIconButton(symbolName: "pin.fill", pointSize: 9, weight: .semibold, accessibilityDescription: "Pinned")
+    private let titleLabel: NonDraggableLabel = {
+        let label = NonDraggableLabel(labelWithString: "")
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return label
+    }()
     private let editedDot = NSView()
-    private let closeButton = NSButton()
+    private let closeButton = CenteredIconButton(symbolName: "xmark", pointSize: 9, weight: .semibold, accessibilityDescription: "Close")
     private var inlineTextField: NSTextField?
     
     private var trackingArea: NSTrackingArea?
@@ -661,17 +733,35 @@ private final class TabStripContainerView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
     
     
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        
+        let local = self.convert(point, from: self.superview)
+        guard !self.isHidden, self.bounds.contains(local) else { return nil }
+        
+        if self.isRenaming, let inlineField = self.inlineTextField {
+            if let subhit = super.hitTest(point), subhit.isDescendant(of: inlineField) {
+                return subhit
+            }
+            return self
+        }
+        if !self.closeButton.isHidden, self.closeButton.frame.contains(local) {
+            return self.closeButton
+        }
+        if !self.pinButton.isHidden, self.pinButton.frame.contains(local) {
+            return self.pinButton
+        }
+        // Keep all clicks over the title label or save-status dot inside `self`
+        // so double-clicks and drags never get hijacked by `titleLabel.mouseDownCanMoveWindow`.
+        return self
+    }
+    
+    
     private func setupViews() {
         
         self.wantsLayer = true
         self.layer?.cornerRadius = 6
         self.layer?.cornerCurve = .continuous
         
-        self.pinButton.bezelStyle = .inline
-        self.pinButton.isBordered = false
-        self.pinButton.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: "Pinned")?
-            .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
-        self.pinButton.imagePosition = .imageOnly
         self.pinButton.contentTintColor = .controlAccentColor
         self.pinButton.target = self
         self.pinButton.action = #selector(pinClicked(_:))
@@ -691,11 +781,6 @@ private final class TabStripContainerView: NSView {
         self.editedDot.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.75).cgColor
         self.addSubview(self.editedDot)
         
-        self.closeButton.bezelStyle = .inline
-        self.closeButton.isBordered = false
-        self.closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")?
-            .withSymbolConfiguration(.init(pointSize: 9, weight: .bold))
-        self.closeButton.imagePosition = .imageOnly
         self.closeButton.contentTintColor = .secondaryLabelColor
         self.closeButton.wantsLayer = true
         self.closeButton.layer?.cornerRadius = 4
@@ -760,25 +845,27 @@ private final class TabStripContainerView: NSView {
         var trailingX = self.bounds.width - 4
         if !self.closeButton.isHidden {
             trailingX -= 16
-            self.closeButton.frame = NSRect(x: trailingX, y: ((h - 16) / 2).rounded(), width: 16, height: 16)
-            trailingX -= 2
+            self.closeButton.frame = NSRect(x: trailingX, y: (h - 16) / 2, width: 16, height: 16)
+            trailingX -= 4
         } else {
             trailingX -= 4
         }
         
         if !self.editedDot.isHidden {
             trailingX -= 6
-            self.editedDot.frame = NSRect(x: trailingX, y: ((h - 6) / 2).rounded(), width: 6, height: 6)
+            self.editedDot.frame = NSRect(x: trailingX, y: (h - 6) / 2, width: 6, height: 6)
             trailingX -= 6
         }
         
-        // vertically center the label by its natural line height (pixel aligned)
+        // vertically center the label on the exact same horizontal line as the status dot & close button
         let titleWidth = max(20, trailingX - x)
         let lineHeight = ceil(self.titleLabel.intrinsicContentSize.height)
-        let titleFrame = NSRect(x: x, y: ((h - lineHeight) / 2).rounded(), width: titleWidth, height: lineHeight)
+        let titleFrame = NSRect(x: x, y: (h - lineHeight) / 2, width: titleWidth, height: lineHeight)
         self.titleLabel.frame = titleFrame
         let fieldHeight = min(h - 2, lineHeight + 4)
-        self.inlineTextField?.frame = NSRect(x: max(2, x - 4), y: ((h - fieldHeight) / 2).rounded(), width: max(84, self.bounds.width - x), height: fieldHeight)
+        let fieldX = max(3, x - 4)
+        let fieldWidth = max(48, self.bounds.width - fieldX - 3)
+        self.inlineTextField?.frame = NSRect(x: fieldX, y: (h - fieldHeight) / 2, width: fieldWidth, height: fieldHeight)
     }
     
     

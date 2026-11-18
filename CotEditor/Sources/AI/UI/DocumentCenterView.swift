@@ -20,6 +20,7 @@
 //
 
 import AppKit
+import Combine
 import Observation
 import SwiftUI
 
@@ -177,8 +178,8 @@ struct CenterPreviewTextView: NSViewRepresentable {
             let content = doc.textStorage.string
             let dirty = doc.hasUncommittedChanges || doc.isDocumentEdited
             
-            // Skip transient empty scratch tabs that have never been written or saved
-            if filePath == nil, content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !dirty {
+            // Skip transient empty scratch tabs unless they have been explicitly renamed or edited
+            if filePath == nil, !doc.isExplicitlyNamed, content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !dirty {
                 continue
             }
             
@@ -341,7 +342,7 @@ struct CenterPreviewTextView: NSViewRepresentable {
     }
     
     
-    private static func canonicalKey(filePath: String?, rawID: String) -> String {
+    static func canonicalKey(filePath: String?, rawID: String) -> String {
         
         if let filePath, !filePath.isEmpty {
             return "file:\(URL(filePath: filePath).standardizedFileURL.path(percentEncoded: false))"
@@ -417,10 +418,13 @@ struct DocumentCenterView: View {
         .onAppear {
             self.state.refresh()
         }
-        .onChange(of: self.db.documents.count) { _, _ in
+        .onChange(of: self.db.documentsRevision) { _, _ in
             self.state.refresh()
         }
         .onChange(of: self.db.documentGroups) { _, _ in
+            self.state.refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSDocument.DidChangeFileURLMessage.name).receive(on: RunLoop.main)) { _ in
             self.state.refresh()
         }
     }
@@ -953,35 +957,47 @@ struct DocumentCenterView: View {
             return
         }
         
+        var targetSelectionID = item.id
         if let liveDoc = self.state.liveDocument(for: item.id) {
             do {
                 let newName = try WorkspaceOrganizer.renameDocument(liveDoc, to: trimmed)
+                targetSelectionID = DocumentCenterState.canonicalKey(
+                    filePath: liveDoc.fileURL?.path(percentEncoded: false),
+                    rawID: liveDoc.databaseDocumentID
+                )
                 self.showToast("已重命名为「\(newName)」")
             } catch {
+                CotLogger.shared.error(category: .document, "Document Center live rename failed", error: error)
                 self.showToast("重命名失败：\(error.localizedDescription)")
             }
         } else if let recordID = item.dbRecordID, item.filePath == nil {
-            self.db.renameDocument(oldID: recordID, newID: recordID, newTitle: trimmed, newFilePath: nil)
+            self.db.renameDocument(oldID: recordID, oldFilePath: nil, newID: recordID, newTitle: trimmed, newFilePath: nil)
             self.showToast("已重命名为「\(trimmed)」")
         } else if let filePath = item.filePath {
             let oldURL = URL(filePath: filePath)
-            let ext = oldURL.pathExtension
-            let cleanName = (ext.isEmpty || (trimmed as NSString).pathExtension == ext) ? trimmed : "\(trimmed).\(ext)"
-            let newURL = oldURL.deletingLastPathComponent().appending(path: cleanName)
+            let desiredName = WorkspaceOrganizer.resolvedRenamedFilename(for: trimmed, preservingExtensionOf: oldURL)
             do {
-                if oldURL != newURL {
-                    try FileManager.default.moveItem(at: oldURL, to: newURL)
-                }
+                let newURL = try WorkspaceOrganizer.coordinatedMoveFile(from: oldURL, toDesiredFilename: desiredName)
+                let newPath = newURL.path(percentEncoded: false)
                 if let recordID = item.dbRecordID {
-                    self.db.renameDocument(oldID: recordID, newID: newURL.path(percentEncoded: false), newTitle: cleanName, newFilePath: newURL.path(percentEncoded: false))
+                    self.db.renameDocument(
+                        oldID: recordID,
+                        oldFilePath: filePath,
+                        newID: newPath,
+                        newTitle: newURL.lastPathComponent,
+                        newFilePath: newPath
+                    )
                 }
-                self.showToast("已重命名为「\(cleanName)」")
+                targetSelectionID = DocumentCenterState.canonicalKey(filePath: newPath, rawID: newPath)
+                self.showToast("已重命名为「\(newURL.lastPathComponent)」")
             } catch {
+                CotLogger.shared.error(category: .document, "Document Center file rename failed", error: error)
                 self.showToast("重命名失败：\(error.localizedDescription)")
             }
         }
         self.isRenaming = false
         self.state.refresh()
+        self.state.selectedID = targetSelectionID
     }
     
     

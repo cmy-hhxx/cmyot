@@ -150,6 +150,9 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     /// Recently saved/updated documents in the local database.
     private(set) var documents: [StoredDocumentRecord] = []
     
+    /// Monotonically incremented whenever `documents` is reloaded (including in-place renames/updates).
+    private(set) var documentsRevision: Int = 0
+    
     /// User-defined Document Center groups (ordered, including empty groups).
     private(set) var documentGroups: [String] = []
     
@@ -259,7 +262,10 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             sqlite3_bind_text(stmt, 1, key, -1, self.transientDestructor)
             sqlite3_bind_text(stmt, 2, value, -1, self.transientDestructor)
             sqlite3_bind_double(stmt, 3, now)
-            sqlite3_step(stmt)
+            let rc = sqlite3_step(stmt)
+            if rc != SQLITE_DONE {
+                self.logSQLiteError(#function, code: rc)
+            }
         }
         sqlite3_finalize(stmt)
         
@@ -281,7 +287,10 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
             sqlite3_bind_text(stmt, 1, key, -1, self.transientDestructor)
-            sqlite3_step(stmt)
+            let rc = sqlite3_step(stmt)
+            if rc != SQLITE_DONE {
+                self.logSQLiteError(#function, code: rc)
+            }
         }
         sqlite3_finalize(stmt)
         
@@ -380,7 +389,10 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             } else {
                 sqlite3_bind_null(stmt, 9)
             }
-            sqlite3_step(stmt)
+            let rc = sqlite3_step(stmt)
+            if rc != SQLITE_DONE {
+                self.logSQLiteError(#function, code: rc)
+            }
         }
         sqlite3_finalize(stmt)
         
@@ -432,7 +444,10 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
             sqlite3_bind_text(stmt, 1, trimmed, -1, self.transientDestructor)
             sqlite3_bind_text(stmt, 2, oldName, -1, self.transientDestructor)
-            sqlite3_step(stmt)
+            let rc = sqlite3_step(stmt)
+            if rc != SQLITE_DONE {
+                self.logSQLiteError(#function, code: rc)
+            }
         }
         sqlite3_finalize(stmt)
         
@@ -452,7 +467,10 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
             sqlite3_bind_text(stmt, 1, name, -1, self.transientDestructor)
-            sqlite3_step(stmt)
+            let rc = sqlite3_step(stmt)
+            if rc != SQLITE_DONE {
+                self.logSQLiteError(#function, code: rc)
+            }
         }
         sqlite3_finalize(stmt)
         
@@ -594,32 +612,84 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     
     
     /// Updates an existing document record's identifier, title, or file path when renamed or saved.
-    func renameDocument(oldID: String, newID: String, newTitle: String, newFilePath: String?) {
+    func renameDocument(
+        oldID: String,
+        oldFilePath: String? = nil,
+        newID: String,
+        newTitle: String,
+        newFilePath: String?
+    ) {
         
-        if oldID != newID {
-            let deleteOldSQL = "DELETE FROM documents WHERE id = ?;"
+        let cleanOldID = oldID.hasPrefix("doc:") ? String(oldID.dropFirst(4)) : oldID
+        let candidateOldIDs = Set([oldID, cleanOldID, "doc:\(cleanOldID)"])
+        
+        let matchedOld = self.documents.first {
+            candidateOldIDs.contains($0.id) || (oldFilePath != nil && $0.filePath == oldFilePath)
+        }
+        let matchedNew = self.documents.first {
+            $0.id == newID || (newFilePath != nil && $0.filePath == newFilePath)
+        }
+        
+        let preservedGroup: String = {
+            if let grp = matchedOld?.groupName, !grp.isEmpty { return grp }
+            if let grp = matchedNew?.groupName, !grp.isEmpty { return grp }
+            return ""
+        }()
+        
+        let now = Date().timeIntervalSince1970
+        if let oldRecord = matchedOld {
+            if let conflict = matchedNew, conflict.id != oldRecord.id {
+                let deleteConflictSQL = "DELETE FROM documents WHERE id = ?;"
+                var delStmt: OpaquePointer?
+                if sqlite3_prepare_v2(self.db, deleteConflictSQL, -1, &delStmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(delStmt, 1, conflict.id, -1, self.transientDestructor)
+                    let rc = sqlite3_step(delStmt)
+                    if rc != SQLITE_DONE {
+                        self.logSQLiteError("renameDocument.deleteConflict", code: rc)
+                    }
+                }
+                sqlite3_finalize(delStmt)
+            }
+            
+            let updateSQL = "UPDATE documents SET id = ?, title = ?, file_path = ?, group_name = ?, updated_at = ? WHERE id = ?;"
             var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(self.db, deleteOldSQL, -1, &stmt, nil) == SQLITE_OK {
-                sqlite3_bind_text(stmt, 1, oldID, -1, self.transientDestructor)
-                sqlite3_step(stmt)
+            if sqlite3_prepare_v2(self.db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, newID, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 2, newTitle, -1, self.transientDestructor)
+                if let newFilePath {
+                    sqlite3_bind_text(stmt, 3, newFilePath, -1, self.transientDestructor)
+                } else {
+                    sqlite3_bind_null(stmt, 3)
+                }
+                sqlite3_bind_text(stmt, 4, preservedGroup, -1, self.transientDestructor)
+                sqlite3_bind_double(stmt, 5, now)
+                sqlite3_bind_text(stmt, 6, oldRecord.id, -1, self.transientDestructor)
+                let rc = sqlite3_step(stmt)
+                if rc != SQLITE_DONE {
+                    self.logSQLiteError("renameDocument.updateOld", code: rc)
+                }
+            }
+            sqlite3_finalize(stmt)
+        } else if let newRecord = matchedNew {
+            let updateSQL = "UPDATE documents SET id = ?, title = ?, file_path = ?, updated_at = ? WHERE id = ?;"
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, newID, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 2, newTitle, -1, self.transientDestructor)
+                if let newFilePath {
+                    sqlite3_bind_text(stmt, 3, newFilePath, -1, self.transientDestructor)
+                } else {
+                    sqlite3_bind_null(stmt, 3)
+                }
+                sqlite3_bind_double(stmt, 4, now)
+                sqlite3_bind_text(stmt, 5, newRecord.id, -1, self.transientDestructor)
+                let rc = sqlite3_step(stmt)
+                if rc != SQLITE_DONE {
+                    self.logSQLiteError("renameDocument.updateNew", code: rc)
+                }
             }
             sqlite3_finalize(stmt)
         }
-        
-        let updateSQL = "UPDATE documents SET title = ?, file_path = ?, updated_at = ? WHERE id = ?;"
-        var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(self.db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
-            sqlite3_bind_text(stmt, 1, newTitle, -1, self.transientDestructor)
-            if let newFilePath {
-                sqlite3_bind_text(stmt, 2, newFilePath, -1, self.transientDestructor)
-            } else {
-                sqlite3_bind_null(stmt, 2)
-            }
-            sqlite3_bind_double(stmt, 3, Date().timeIntervalSince1970)
-            sqlite3_bind_text(stmt, 4, newID, -1, self.transientDestructor)
-            sqlite3_step(stmt)
-        }
-        sqlite3_finalize(stmt)
         
         self.reloadDocuments()
     }
@@ -685,7 +755,10 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             sqlite3_bind_int(stmt, 7, isEnhanced ? 1 : 0)
             sqlite3_bind_double(stmt, 8, createdTS)
             sqlite3_bind_double(stmt, 9, now)
-            sqlite3_step(stmt)
+            let rc = sqlite3_step(stmt)
+            if rc != SQLITE_DONE {
+                self.logSQLiteError(#function, code: rc)
+            }
         }
         sqlite3_finalize(stmt)
         
@@ -702,7 +775,10 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
             sqlite3_bind_text(stmt, 1, id, -1, self.transientDestructor)
-            sqlite3_step(stmt)
+            let rc = sqlite3_step(stmt)
+            if rc != SQLITE_DONE {
+                self.logSQLiteError(#function, code: rc)
+            }
         }
         sqlite3_finalize(stmt)
         
@@ -1630,6 +1706,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         }
         sqlite3_finalize(stmt)
         self.documents = items
+        self.documentsRevision &+= 1
         
         var mergedGroups = self.loadStoredGroupList()
         for item in items where !item.groupName.isEmpty && item.groupName != "未分组" {
@@ -1638,6 +1715,17 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             }
         }
         self.documentGroups = mergedGroups
+    }
+    
+    
+    private func logSQLiteError(_ operation: String, code: Int32) {
+        
+        let errmsg = self.db.flatMap { sqlite3_errmsg($0) }.map { String(cString: $0) } ?? "unknown"
+        CotLogger.shared.error(
+            category: .database,
+            "SQLite error in \(operation)",
+            context: ["code": "\(code)", "message": errmsg]
+        )
     }
     
     

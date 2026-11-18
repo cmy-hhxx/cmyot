@@ -24,28 +24,25 @@
 //
 
 import Foundation
-import Security
 
-/// The API key store.
+/// Local file-backed API key store for configured AI endpoints.
 ///
-/// API keys are secrets, so they live in the keychain rather than in the preferences file, where
-/// they would end up in plain text and in every settings export.
-///
-/// Every configured endpoint owns one item, keyed by its profile id, so switching endpoints
-/// switches keys and removing an endpoint removes its secret. The single account the earlier
-/// version used is still readable, because that key is imported once when the endpoint list is
-/// built.
+/// Stores secrets in a private JSON dictionary (`0o600`) inside the app's Application Support
+/// directory rather than the macOS Keychain, preventing password prompts and ACL invalidation
+/// across ad-hoc rebuilds while keeping reads non-blocking and lock-synchronized.
 nonisolated enum AIKeychain {
     
-    private static let service = (Bundle.main.bundleIdentifier ?? "local.cmy.Cot") + ".ai"
-    
-    /// The account that held the only key before endpoints became a list.
+    /// The account name used before endpoints became a list.
     private static let legacyAccount = "api-key"
+    
+    private static let lock = NSLock()
+    private static var cachedSecrets: [String: String]?
+    private static var customStoreURL: URL?
     
     
     // MARK: Public Computed Properties
     
-    /// The key stored by the version that supported a single endpoint.
+    /// The key stored under the legacy single-endpoint account if present locally.
     static var legacyAPIKey: String {
         
         self.value(account: self.legacyAccount)
@@ -54,96 +51,139 @@ nonisolated enum AIKeychain {
     
     // MARK: Public Methods
     
-    /// The stored key of one endpoint.
-    ///
-    /// - Parameter id: The id of the profile.
-    /// - Returns: The key, or an empty string when none is stored.
+    /// Returns the stored API key for one endpoint profile.
     static func apiKey(for id: UUID) -> String {
         
         self.value(account: id.uuidString)
     }
     
     
-    /// Stores the key of one endpoint.
-    ///
-    /// - Parameters:
-    ///   - key: The key; an empty string removes the item.
-    ///   - id: The id of the profile.
+    /// Stores or clears the API key for one endpoint profile.
     static func setAPIKey(_ key: String, for id: UUID) {
         
         self.set(key, account: id.uuidString)
     }
     
     
-    /// Removes the stored key of one endpoint.
-    ///
-    /// - Parameter id: The id of the profile.
+    /// Removes the stored API key for one endpoint profile.
     static func removeAPIKey(for id: UUID) {
         
-        SecItemDelete(self.query(account: id.uuidString) as CFDictionary)
+        self.set("", account: id.uuidString)
+    }
+    
+    
+    /// Overrides the backing store file URL (intended for unit tests).
+    static func setStoreURLForTesting(_ url: URL?) {
+        
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        self.customStoreURL = url
+        self.cachedSecrets = nil
+    }
+    
+    
+    /// Returns the active local secrets file URL.
+    static var storeURL: URL {
+        
+        self.lock.lock()
+        let custom = self.customStoreURL
+        self.lock.unlock()
+        if let custom {
+            return custom
+        }
+        
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent("CotTests-ai_secrets-\(ProcessInfo.processInfo.processIdentifier).json", isDirectory: false)
+        }
+        
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL.homeDirectory.appendingPathComponent("Library/Application Support", isDirectory: true)
+        return appSupport
+            .appendingPathComponent("Cot", isDirectory: true)
+            .appendingPathComponent("ai_secrets.json", isDirectory: false)
     }
     
     
     // MARK: Private Methods
     
-    /// Reads one stored key.
-    ///
-    /// - Parameter account: The keychain account to read.
-    /// - Returns: The key, or an empty string when none is stored.
     private static func value(account: String) -> String {
         
-        var query = self.query(account: account)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        
-        var result: CFTypeRef?
-        guard
-            SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-            let data = result as? Data,
-            let key = String(data: data, encoding: .utf8)
-        else { return "" }
-        
-        return key
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        let map = self.loadSecretsLocked()
+        return map[account] ?? ""
     }
     
     
-    /// Writes one key, updating the item in place when it exists.
-    ///
-    /// - Parameters:
-    ///   - key: The key; an empty string removes the item.
-    ///   - account: The keychain account to write.
     private static func set(_ key: String, account: String) {
         
-        let value = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.lock.lock()
+        defer { self.lock.unlock() }
         
-        guard !value.isEmpty else {
-            SecItemDelete(self.query(account: account) as CFDictionary)
-            return
+        var map = self.loadSecretsLocked()
+        if trimmed.isEmpty {
+            map.removeValue(forKey: account)
+        } else {
+            map[account] = trimmed
+        }
+        self.saveSecretsLocked(map)
+    }
+    
+    
+    private static func loadSecretsLocked() -> [String: String] {
+        
+        if let cached = self.cachedSecrets {
+            return cached
         }
         
-        let data = Data(value.utf8)
-        let attributes: [String: Any] = [kSecValueData as String: data]
+        let url = self.currentStoreURLLocked()
+        guard
+            let data = try? Data(contentsOf: url),
+            let decoded = try? JSONDecoder().decode([String: String].self, from: data)
+        else {
+            self.cachedSecrets = [:]
+            return [:]
+        }
         
-        let status = SecItemUpdate(self.query(account: account) as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            var query = self.query(account: account)
-            query[kSecValueData as String] = data
-            query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            SecItemAdd(query as CFDictionary, nil)
+        self.cachedSecrets = decoded
+        return decoded
+    }
+    
+    
+    private static func saveSecretsLocked(_ secrets: [String: String]) {
+        
+        self.cachedSecrets = secrets
+        let url = self.currentStoreURLLocked()
+        let dirURL = url.deletingLastPathComponent()
+        
+        do {
+            try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(secrets)
+            try data.write(to: url, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            CotLogger.shared.error(category: .ai, "Failed persisting AI API key store", error: error)
         }
     }
     
     
-    /// The query that identifies one item.
-    ///
-    /// - Parameter account: The keychain account.
-    /// - Returns: The query dictionary.
-    private static func query(account: String) -> [String: Any] {
+    private static func currentStoreURLLocked() -> URL {
         
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: self.service,
-            kSecAttrAccount as String: account,
-        ]
+        if let custom = self.customStoreURL {
+            return custom
+        }
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent("CotTests-ai_secrets-\(ProcessInfo.processInfo.processIdentifier).json", isDirectory: false)
+        }
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL.homeDirectory.appendingPathComponent("Library/Application Support", isDirectory: true)
+        return appSupport
+            .appendingPathComponent("Cot", isDirectory: true)
+            .appendingPathComponent("ai_secrets.json", isDirectory: false)
     }
 }

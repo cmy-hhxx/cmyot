@@ -256,14 +256,14 @@ private struct DocumentSaveStatusBadge: View {
                 Image(systemName: self.isDirty ? "circle.fill" : "checkmark.circle.fill")
                     .font(.system(size: self.isDirty ? 6 : 10, weight: .semibold))
                     .symbolRenderingMode(.hierarchical)
-                    .frame(width: 10, height: 10)
+                    .frame(width: 10, height: 10, alignment: .center)
                     .foregroundStyle(self.isDirty ? Color.orange : Color.green)
                 Text(self.isDirty ? "未保存 · ⌘S" : "已保存")
                     .font(.system(size: 11, weight: .medium))
             }
             .foregroundStyle(self.isDirty ? Color.orange : Color.secondary)
             .padding(.horizontal, 7)
-            .frame(height: 17)
+            .frame(height: 17, alignment: .center)
             .background(
                 Capsule()
                     .fill(self.isDirty ? Color.orange.opacity(0.14) : Color.green.opacity(self.justSavedPulse ? 0.22 : 0.08))

@@ -44,6 +44,7 @@ struct AIEndpointEditorView: View {
     
     @State private var draft: AIEndpointProfile
     @State private var apiKey: String
+    @State private var customHeadersText: String
     @State private var models: [AIModel] = []
     @State private var isFetchingModels = false
     @State private var fetchError: String?
@@ -61,6 +62,15 @@ struct AIEndpointEditorView: View {
         
         self._draft = State(initialValue: profile)
         self._apiKey = State(initialValue: apiKey)
+        let formattedHeaders = profile.customHeaders
+            .keys
+            .sorted()
+            .compactMap { key -> String? in
+                guard let value = profile.customHeaders[key], !value.isEmpty else { return nil }
+                return "\(key): \(value)"
+            }
+            .joined(separator: "\n")
+        self._customHeadersText = State(initialValue: formattedHeaders)
         self.isNew = isNew
         self.onSave = onSave
     }
@@ -163,8 +173,30 @@ struct AIEndpointEditorView: View {
                         .textFieldStyle(.roundedBorder)
                         
                         Menu {
-                            ForEach(self.models) { model in
-                                Button(model.name) { self.draft.model = model.id }
+                            if !self.models.isEmpty {
+                                Section("已从接口获取") {
+                                    ForEach(self.models) { model in
+                                        Button(model.name) {
+                                            self.draft.model = model.id
+                                            self.draft.rememberModels([model.id])
+                                        }
+                                    }
+                                }
+                            }
+                            if !self.draft.availableModelIDs.isEmpty {
+                                Section("常用 / 已保存模型") {
+                                    ForEach(self.draft.availableModelIDs, id: \.self) { id in
+                                        Button(id) { self.draft.model = id }
+                                    }
+                                }
+                            }
+                            Section("推荐快捷模型") {
+                                ForEach(Self.quickPresetModels, id: \.self) { id in
+                                    Button(id) {
+                                        self.draft.model = id
+                                        self.draft.rememberModels([id])
+                                    }
+                                }
                             }
                         } label: {
                             Image(systemName: "chevron.up.chevron.down")
@@ -172,7 +204,6 @@ struct AIEndpointEditorView: View {
                         .menuStyle(.borderlessButton)
                         .menuIndicator(.hidden)
                         .fixedSize()
-                        .disabled(self.models.isEmpty)
                         .help(Text("ai.settings.model.pick", tableName: "AI"))
                         
                         Button {
@@ -189,6 +220,21 @@ struct AIEndpointEditorView: View {
                         }
                     }
                     .frame(width: Self.controlWidth)
+                }
+                
+                GridRow {
+                    Text("自定义请求头")
+                        .gridColumnAlignment(.trailing)
+                        .frame(minWidth: 76, alignment: .trailing)
+                    
+                    TextEditor(text: self.$customHeadersText)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(width: Self.controlWidth, height: 48)
+                        .scrollContentBackground(.hidden)
+                        .padding(4)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
+                        .help("每行一个请求头，例如：x-opencode-session: omp-opencode-go-1")
                 }
                 
                 if let fetchError {
@@ -239,7 +285,7 @@ struct AIEndpointEditorView: View {
                 .keyboardShortcut(.cancelAction)
                 
                 Button {
-                    self.onSave(self.draft, self.apiKey)
+                    self.onSave(self.preparedDraft(), self.apiKey)
                     self.dismiss()
                 } label: {
                     Text("ai.settings.endpoint.save", tableName: "AI")
@@ -267,7 +313,46 @@ struct AIEndpointEditorView: View {
     /// The configuration the fields describe.
     private var configuration: AIConfiguration {
         
-        self.draft.configuration(apiKey: self.apiKey)
+        self.preparedDraft().configuration(apiKey: self.apiKey)
+    }
+    
+    
+    private static let quickPresetModels: [String] = [
+        "claude-haiku-5-5",
+        "claude-sonnet-5-5",
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash-fast",
+        "qwen4-max",
+        "glm-5.3",
+    ]
+    
+    
+    private func preparedDraft() -> AIEndpointProfile {
+        
+        var copy = self.draft
+        copy.customHeaders = Self.parseHeaders(self.customHeadersText)
+        let currentModel = copy.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !currentModel.isEmpty {
+            copy.model = currentModel
+            copy.rememberModels([currentModel])
+        }
+        return copy
+    }
+    
+    
+    private static func parseHeaders(_ raw: String) -> [String: String] {
+        
+        var result: [String: String] = [:]
+        for line in raw.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, let colon = trimmed.firstIndex(of: ":") else { continue }
+            let key = String(trimmed[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, !value.isEmpty else { continue }
+            result[key] = value
+        }
+        return result
     }
     
     

@@ -37,6 +37,8 @@ nonisolated struct AIClient: Sendable {
     
     var configuration: AIConfiguration
     
+    private var wireConfig: AIConfiguration { self.configuration.wireConfiguration }
+    
     
     /// Sends the messages and streams partial text chunks as they arrive, returning the final answer.
     ///
@@ -47,7 +49,8 @@ nonisolated struct AIClient: Sendable {
     /// - Throws: ``AIError`` when the request cannot be made or the reply cannot be read.
     func send(_ messages: [AIMessage], onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
         
-        guard self.configuration.isUsable else { throw AIError.notConfigured }
+        let config = self.wireConfig
+        guard config.isUsable else { throw AIError.notConfigured }
         
         if let onPartial, self.supportsSSEStreaming {
             do {
@@ -55,20 +58,24 @@ nonisolated struct AIClient: Sendable {
                 if !streamed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     return streamed.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
+            } catch let error as AIError where Self.shouldFallbackFromStreamingError(error) {
+                // Fall back to standard non-streaming request only when SSE itself is rejected
+                // or yields an empty stream; never mask auth/rate-limit/404/transport errors.
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                // Fall back to standard non-streaming request if the gateway rejects SSE
-                // or reasoning_effort parameters.
+                throw error
             }
         }
         
-        guard let url = self.configuration.requestURL else { throw AIError.invalidURL(self.configuration.resolvedBaseURL) }
+        guard let url = config.requestURL else { throw AIError.invalidURL(config.resolvedBaseURL) }
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        for (field, value) in self.configuration.requestHeaders {
+        for (field, value) in config.requestHeaders {
             request.setValue(value, forHTTPHeaderField: field)
         }
         
@@ -94,9 +101,22 @@ nonisolated struct AIClient: Sendable {
     
     // MARK: Private Streaming Methods
     
+    private static func shouldFallbackFromStreamingError(_ error: AIError) -> Bool {
+        
+        switch error {
+            case .emptyResponse, .decoding:
+                return true
+            case .http(let status, _):
+                return status == 400 || status == 415 || status == 501
+            default:
+                return false
+        }
+    }
+    
+    
     private var supportsSSEStreaming: Bool {
         
-        switch self.configuration.endpoint {
+        switch self.wireConfig.endpoint {
             case .openAIChatCompletions, .anthropicMessages, .ollama:
                 true
             case .openAIResponses, .googleGemini:
@@ -107,14 +127,15 @@ nonisolated struct AIClient: Sendable {
     
     private func sendStreaming(_ messages: [AIMessage], onPartial: @Sendable (String) -> Void) async throws -> String {
         
-        guard let url = self.configuration.requestURL else { throw AIError.invalidURL(self.configuration.resolvedBaseURL) }
+        let config = self.wireConfig
+        guard let url = config.requestURL else { throw AIError.invalidURL(config.resolvedBaseURL) }
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        for (field, value) in self.configuration.requestHeaders {
+        for (field, value) in config.requestHeaders {
             request.setValue(value, forHTTPHeaderField: field)
         }
         
@@ -141,7 +162,7 @@ nonisolated struct AIClient: Sendable {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
             
-            if self.configuration.endpoint == .ollama {
+            if config.endpoint == .ollama {
                 if let data = trimmed.data(using: .utf8),
                    let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let msg = obj["message"] as? [String: Any],
@@ -163,7 +184,7 @@ nonisolated struct AIClient: Sendable {
                 let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
             
-            switch self.configuration.endpoint {
+            switch config.endpoint {
                 case .openAIChatCompletions:
                     if let choices = obj["choices"] as? [[String: Any]],
                        let delta = choices.first?["delta"] as? [String: Any],
@@ -181,8 +202,12 @@ nonisolated struct AIClient: Sendable {
                         onPartial(accumulated)
                     }
                 case .anthropicMessages:
+                    if obj["type"] as? String == "error" {
+                        throw AIError.http(status: 400, message: Self.errorMessage(from: data))
+                    }
                     if obj["type"] as? String == "content_block_delta",
                        let delta = obj["delta"] as? [String: Any],
+                       (delta["type"] as? String == nil || delta["type"] as? String == "text_delta"),
                        let text = delta["text"] as? String,
                        !text.isEmpty
                     {
@@ -212,11 +237,12 @@ nonisolated struct AIClient: Sendable {
     /// - Returns: A JSON-serializable body.
     private func body(for messages: [AIMessage], stream: Bool = false) -> [String: Any] {
         
-        let model = self.configuration.model
+        let config = self.wireConfig
+        let model = config.model
         let system = messages.first { $0.role == .system }?.text ?? ""
         let conversation = messages.filter { $0.role != .system }
         
-        switch self.configuration.endpoint {
+        switch config.endpoint {
             case .openAIResponses:
                 var body: [String: Any] = [
                     "model": model,
@@ -230,7 +256,7 @@ nonisolated struct AIClient: Sendable {
                 if !system.isEmpty {
                     body["instructions"] = system
                 }
-                if let effort = self.configuration.reasoningEffort, !effort.isEmpty {
+                if let effort = config.reasoningEffort, !effort.isEmpty {
                     body["reasoning"] = ["effort": effort]
                 }
                 
@@ -247,13 +273,13 @@ nonisolated struct AIClient: Sendable {
                         ]
                     },
                 ]
-                if let temperature = self.configuration.temperature {
+                if let temperature = config.temperature {
                     body["temperature"] = temperature
                 }
                 // For reasoning models (o1/o3/deepseek-reasoner), pass low reasoning effort to accelerate generation.
                 let lowerModel = model.lowercased()
                 if lowerModel.contains("reasoner") || lowerModel.hasPrefix("o1") || lowerModel.hasPrefix("o3") || lowerModel.hasPrefix("o4"),
-                   let effort = self.configuration.reasoningEffort, !effort.isEmpty
+                   let effort = config.reasoningEffort, !effort.isEmpty
                 {
                     body["reasoning_effort"] = effort
                 }
@@ -263,7 +289,7 @@ nonisolated struct AIClient: Sendable {
             case .anthropicMessages:
                 var body: [String: Any] = [
                     "model": model,
-                    "max_tokens": 4096,
+                    "max_tokens": 16384,
                     "stream": stream,
                     "messages": conversation.map { message in
                         [
@@ -284,7 +310,7 @@ nonisolated struct AIClient: Sendable {
                 if !system.isEmpty {
                     body["system"] = system
                 }
-                if let temperature = self.configuration.temperature {
+                if let temperature = config.temperature {
                     body["temperature"] = temperature
                 }
                 
@@ -363,7 +389,7 @@ nonisolated struct AIClient: Sendable {
         
         let text: String?
         
-        switch self.configuration.endpoint {
+        switch self.wireConfig.endpoint {
             case .openAIResponses:
                 text = Self.openAIResponsesText(object)
             case .openAIChatCompletions:

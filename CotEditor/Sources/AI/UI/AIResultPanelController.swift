@@ -51,6 +51,9 @@ final class AIResultPanelController: NSWindowController {
     private let action: AIAction
     private var answer = ""
     private var copyResetTask: Task<Void, Never>?
+    private var lastPartialRenderTime: Date = .distantPast
+    private var partialRenderTask: Task<Void, Never>?
+    private var pendingPartialText: String?
     
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let spinner = NSProgressIndicator()
@@ -122,12 +125,34 @@ final class AIResultPanelController: NSWindowController {
     
     /// Updates the panel with a progressive streaming chunk while the request is still running.
     ///
+    /// Throttles Markdown reflow so rapid token streams never block the main thread.
+    ///
     /// - Parameter partial: The accumulated answer text so far.
     func presentPartial(result partial: String) {
         
         let trimmed = partial.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         
+        self.pendingPartialText = trimmed
+        let elapsed = Date().timeIntervalSince(self.lastPartialRenderTime)
+        if elapsed >= 0.08 {
+            self.flushPendingPartial()
+        } else if self.partialRenderTask == nil {
+            self.partialRenderTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(80))
+                guard let self, !Task.isCancelled else { return }
+                self.partialRenderTask = nil
+                self.flushPendingPartial()
+            }
+        }
+    }
+    
+    
+    private func flushPendingPartial() {
+        
+        guard let trimmed = self.pendingPartialText, !trimmed.isEmpty else { return }
+        self.pendingPartialText = nil
+        self.lastPartialRenderTime = .now
         self.answer = trimmed
         self.setText(AIAnswerFormatter.attributedString(from: trimmed))
         self.updateButtons(canApply: true)
@@ -149,6 +174,10 @@ final class AIResultPanelController: NSWindowController {
     ///
     /// - Parameter result: The answer text.
     func present(result: String) {
+        
+        self.partialRenderTask?.cancel()
+        self.partialRenderTask = nil
+        self.pendingPartialText = nil
         
         let raw = result.trimmingCharacters(in: .whitespacesAndNewlines)
         self.spinner.stopAnimation(nil)
@@ -174,6 +203,17 @@ final class AIResultPanelController: NSWindowController {
     ///
     /// - Parameter error: The error to describe.
     func present(error: any Error) {
+        
+        self.partialRenderTask?.cancel()
+        self.partialRenderTask = nil
+        self.pendingPartialText = nil
+        
+        CotLogger.shared.error(
+            category: .ai,
+            "AI action UI error",
+            error: error,
+            context: ["action": self.action.title]
+        )
         
         self.answer = ""
         self.spinner.stopAnimation(nil)

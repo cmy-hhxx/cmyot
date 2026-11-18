@@ -228,6 +228,23 @@ import Observation
             }
         }
         
-        return try await AIClient(configuration: configuration).send(messages, onPartial: nonisolatedPartial)
+        do {
+            return try await AIClient(configuration: configuration).send(messages, onPartial: nonisolatedPartial)
+        } catch {
+            if !(error is CancellationError) {
+                let effective = configuration.wireConfiguration
+                CotLogger.shared.error(
+                    category: .ai,
+                    "AI request failed",
+                    error: error,
+                    context: [
+                        "endpoint": effective.endpoint.rawValue,
+                        "url": effective.requestURL?.absoluteString ?? effective.resolvedBaseURL,
+                        "model": effective.model,
+                    ]
+                )
+            }
+            throw error
+        }
     }
 }

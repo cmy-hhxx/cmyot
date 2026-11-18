@@ -11,6 +11,12 @@
 //
 //  https://www.apache.org/licenses/LICENSE-2.0
 //
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+//
 
 import Foundation
 
@@ -22,6 +28,16 @@ import Foundation
 /// becomes the suggested file name if the document is ever saved.
 enum GeneratedDocumentName {
     
+    // MARK: Types
+    
+    private struct ScenePhrase {
+        let text: String
+        let connector: String
+        
+        var combinedPrefix: String { self.text + self.connector }
+    }
+    
+    
     // MARK: Private Properties
     
     private static let recentHistoryKey = "GeneratedDocumentNameRecentHistory"
@@ -29,32 +45,56 @@ enum GeneratedDocumentName {
     private static let maxNameLength = 8
     
     private static let moods: [String] = [
-        "打盹的", "加班的", "会飞的", "摸鱼的", "偷偷发光的", "假装严肃的",
-        "刚睡醒的", "值夜班的", "走神的", "蹦蹦跳跳的", "佛系的", "秃头的",
-        "迷路的", "会写诗的", "打嗝的", "藏在抽屉里的", "戴墨镜的", "慢半拍的",
-        "半夜emo的", "爱吃香菜的", "不睡觉的", "会讲冷笑话的", "正在充电的", "穿格子衫的",
-        "想休假的", "喝冰美式的", "在天台吹风的", "倒立洗头的", "忘记带钥匙的", "数星星的",
-        "追赶落日的", "揣着明白装糊涂的", "在云端散步的", "刚理完发的", "泡枸杞的", "翘二郎腿的",
-        "听爵士乐的", "写不出周报的", "试图减肥的", "满脑子问号的", "刚中五块钱的", "踩着滑板的",
-        "躲雨的", "晒太阳的", "吹泡泡的", "在宇宙漂流的", "偷偷记笔记的", "一本正经的",
-        "灵魂出窍的", "假装在开会的", "找不到的", "会后空翻的", "爱吃宵夜的", "不按套路出牌的",
-        "带着小板凳的", "顺路买菜的", "在地铁看书的", "刚充完会员的", "等待周末的", "满血复活的",
+        "打盹的", "加班的", "会飞的", "摸鱼的", "偷懒的", "正经的",
+        "刚醒的", "值夜班的", "走神的", "冒泡的", "佛系的", "秃头的",
+        "迷路的", "写诗的", "打嗝的", "抽屉里的", "戴墨镜的", "慢半拍的",
+        "微醺的", "吃香菜的", "失眠的", "讲段子的", "充电中的", "格子衫的",
+        "想放假的", "喝冰美的", "吹晚风的", "数星星的", "赶末班的", "云端上的",
+        "泡枸杞的", "翘二郎的", "听爵士的", "赶周报的", "偷吃糖的", "踩滑板的",
+        "躲雨的", "晒太阳的", "吹泡泡的", "宇宙漂的", "记笔记的", "开小差的",
+        "开会的", "藏猫猫的", "后空翻的", "吃宵夜的", "逛夜市的", "带板凳的",
+        "买青菜的", "挤地铁的", "等周末的", "满血的", "发光的", "偷笑的",
     ]
     
-    private static let scenes: [String] = [
-        "凌晨三点", "咖啡馆角落", "天台边缘", "末班地铁上", "会议室后排", "老式收音机里",
-        "秋名山顶", "便利店门口", "工位底下", "旧书摊旁", "太平洋底", "平行宇宙里",
-        "键盘缝隙中", "阳台花盆旁", "南极冰川上", "下午茶时间", "周日傍晚", "梅雨季节",
-        "太空舱里", "街角面包店", "落叶堆里", "服务器机房", "晚高峰路口", "图书馆三楼",
-        "深海潜艇里", "旋转木马上", "云层上方", "篝火晚会旁", "自动售货机前", "复古列车上",
+    private static let scenes: [ScenePhrase] = [
+        ScenePhrase(text: "凌晨", connector: "的"),
+        ScenePhrase(text: "午后", connector: "的"),
+        ScenePhrase(text: "深夜", connector: "的"),
+        ScenePhrase(text: "晴空下", connector: "的"),
+        ScenePhrase(text: "星光里", connector: "的"),
+        ScenePhrase(text: "天台上", connector: "的"),
+        ScenePhrase(text: "海风里", connector: "的"),
+        ScenePhrase(text: "雪地里", connector: "的"),
+        ScenePhrase(text: "树荫下", connector: "的"),
+        ScenePhrase(text: "窗台边", connector: "的"),
+        ScenePhrase(text: "桌角旁", connector: "的"),
+        ScenePhrase(text: "云层上", connector: "的"),
+        ScenePhrase(text: "工位下", connector: "的"),
+        ScenePhrase(text: "书摊旁", connector: "的"),
+        ScenePhrase(text: "花盆旁", connector: "的"),
+        ScenePhrase(text: "冰川上", connector: "的"),
+        ScenePhrase(text: "列车上", connector: "的"),
+        ScenePhrase(text: "海底", connector: "的"),
+        ScenePhrase(text: "山顶", connector: "的"),
+        ScenePhrase(text: "机房", connector: "里的"),
+        ScenePhrase(text: "茶室", connector: "里的"),
+        ScenePhrase(text: "书店", connector: "里的"),
+        ScenePhrase(text: "太空", connector: "里的"),
+        ScenePhrase(text: "落叶", connector: "里的"),
+        ScenePhrase(text: "潜艇", connector: "里的"),
+        ScenePhrase(text: "梦境", connector: "里的"),
+        ScenePhrase(text: "口袋", connector: "里的"),
+        ScenePhrase(text: "周末", connector: "的"),
+        ScenePhrase(text: "雨夜", connector: "的"),
+        ScenePhrase(text: "黄昏", connector: "的"),
     ]
     
     private static let actions: [String] = [
-        "思考人生的", "偷吃薯片的", "重构代码的", "练习太空步的", "等待投喂的", "研究量子力学的",
-        "画圈圈的", "弹尤克里里的", "背单词的", "数羊毛的", "织毛衣的", "看夕阳的",
-        "找眼镜的", "调参数的", "修bug的", "写散文的", "煮螺蛳粉的", "剥橘子的",
-        "算命的", "看云的", "记账的", "发呆的", "捉迷藏的", "熬夜看球的",
-        "拍月亮的", "攒机票的", "听播客的", "拼乐高的", "吹口哨的", "盘核桃的",
+        "发呆的", "啃薯片的", "改代码的", "练舞步的", "等投喂的", "写公式的",
+        "画圈的", "弹吉他的", "背单词的", "数羊毛的", "织毛衣的", "看夕阳的",
+        "找眼镜的", "调参数的", "修Bug的", "写日记的", "煮夜宵的", "剥橘子的",
+        "算卦的", "看云朵的", "记账的", "捉迷藏的", "熬夜的", "拍月亮的",
+        "攒机票的", "听播客的", "拼积木的", "吹口哨的", "盘核桃的", "喝奶茶的",
     ]
     
     private static let nouns: [String] = [
@@ -63,14 +103,13 @@ enum GeneratedDocumentName {
         "泡芙", "榛果", "台灯", "拖鞋", "云朵", "螺蛳粉",
         "熊猫", "布丁", "键盘", "萤火虫", "充电宝", "睡袋",
         "红薯", "电风扇", "闹钟", "糖果", "南瓜", "章鱼",
-        "卡皮巴拉", "小浣熊", "树懒", "猫头鹰", "海豹", "刺猬",
-        "袋鼠", "柯基", "土拨鼠", "变色龙", "寄居蟹", "水母",
-        "北极熊", "松鼠", "羊驼", "乌鸦", "信天翁", "独角兽",
-        "菠萝包", "烤冷面", "冰糖葫芦", "鸡蛋仔", "铜锣烧", "小笼包",
-        "抹茶拿铁", "冻柠茶", "可颂", "年糕", "煎饼果子", "烤红薯",
-        "留声机", "望远镜", "八音盒", "万花筒", "手电筒", "指南针",
-        "纸飞机", "竹蜻蜓", "玻璃弹珠", "磁带", "胶片机", "打字机",
-        "宇航员", "外星人", "机器人", "魔法师", "炼金术士", "旅行家",
+        "小浣熊", "树懒", "猫头鹰", "海豹", "刺猬", "袋鼠",
+        "柯基", "土拨鼠", "变色龙", "寄居蟹", "水母", "北极熊",
+        "松鼠", "羊驼", "乌鸦", "独角兽", "菠萝包", "烤冷面",
+        "鸡蛋仔", "铜锣烧", "小笼包", "冻柠茶", "可颂", "年糕",
+        "烤红薯", "留声机", "望远镜", "八音盒", "万花筒", "手电筒",
+        "指南针", "纸飞机", "竹蜻蜓", "胶片机", "打字机", "宇航员",
+        "外星人", "机器人", "魔法师", "旅行家", "卡皮巴拉",
     ]
     
     
@@ -79,15 +118,14 @@ enum GeneratedDocumentName {
     /// Returns a name that none of the given documents or recent history uses yet.
     ///
     /// - Parameter usedNames: The display names of the documents already open.
-    /// - Returns: A made-up name, e.g. `打盹的橘猫` or `凌晨三点思考人生的卡皮巴拉`.
+    /// - Returns: A crisp, grammatical playful name within 8 characters.
     static func next(avoiding usedNames: [String]) -> String {
         
         let recent = UserDefaults.standard.stringArray(forKey: self.recentHistoryKey) ?? []
         let used = Set(usedNames).union(recent)
         
-        for _ in 0..<60 {
+        for _ in 0..<80 {
             let name = self.randomName()
-            
             if !used.contains(name) {
                 self.record(name, in: recent)
                 return name
@@ -112,43 +150,50 @@ enum GeneratedDocumentName {
     }
     
     
+    /// Generates one grammatical playful name strictly within `maxNameLength` characters.
+    static func generateCandidate() -> String {
+        
+        self.randomName()
+    }
+    
+    
+    /// Removes malformed or overly long historical entries (e.g. `工位底下里的...`) from recent history.
+    static func sanitizeRecentHistory() {
+        
+        let recent = UserDefaults.standard.stringArray(forKey: self.recentHistoryKey) ?? []
+        let badFragments = ["底下里的", "上方里的", "边缘里的", "山顶里的", "太平洋底里的", "傍晚里的", "季节里的", "天台里的"]
+        let cleaned = recent.filter { name in
+            name.count <= self.maxNameLength && !badFragments.contains(where: name.contains)
+        }
+        UserDefaults.standard.set(cleaned, forKey: self.recentHistoryKey)
+    }
+    
+    
     // MARK: Private Methods
     
-    /// Returns a random combination across playful templates kept strictly within `maxNameLength`
-    /// characters so tab titles display in full without ugly `...` truncation.
     private static func randomName() -> String {
         
-        let shortNouns = self.nouns.filter { $0.count <= 4 }
-        let shortMoods = self.moods.filter { $0.count <= 4 }
-        let shortScenes = self.scenes.filter { $0.count <= 4 }
-        let shortActions = self.actions.filter { $0.count <= 4 }
+        let moodPrefixes = self.moods.filter { $0.hasSuffix("的") && !$0.isEmpty }
+        let actionPrefixes = self.actions.filter { $0.hasSuffix("的") && !$0.isEmpty }
+        let scenePrefixes = self.scenes.map(\.combinedPrefix)
         
-        for _ in 0..<24 {
-            let noun = shortNouns.randomElement() ?? "橘猫"
+        for _ in 0..<32 {
+            let noun = self.nouns.randomElement() ?? "橘猫"
             let roll = Int.random(in: 0..<100)
-            let candidate: String
-            
-            if roll < 50 {
-                // Classic: 摸鱼的橘猫 / 加班的小恐龙
-                let prefixPool = shortMoods.filter { $0.count + noun.count <= Self.maxNameLength }
-                let mood = prefixPool.randomElement() ?? "打盹的"
-                candidate = mood + noun
-            } else if roll < 80 {
-                // Action + Noun: 修bug的橘猫 / 发呆的水獭
-                let prefixPool = shortActions.filter { $0.count + noun.count <= Self.maxNameLength }
-                let action = prefixPool.randomElement() ?? "发呆的"
-                candidate = action + noun
+            let pool: [String] = if roll < 45 {
+                moodPrefixes
+            } else if roll < 75 {
+                actionPrefixes
             } else {
-                // Scene + Noun: 机房里的企鹅 / 天台的橘猫
-                let prefixPool = shortScenes.filter { $0.count + 1 + noun.count <= Self.maxNameLength }
-                let scene = prefixPool.randomElement() ?? "天台"
-                let connector = scene.hasSuffix("里") || scene.hasSuffix("上") || scene.hasSuffix("中") || scene.hasSuffix("旁") ? "的" : "里的"
-                let joined = scene + connector + noun
-                candidate = joined.count <= Self.maxNameLength ? joined : (scene + "的" + noun)
+                scenePrefixes
             }
             
-            if candidate.count <= Self.maxNameLength {
-                return candidate
+            let fitting = pool.filter { $0.count + noun.count <= Self.maxNameLength }
+            if let prefix = fitting.randomElement() {
+                let candidate = prefix + noun
+                if candidate.count <= Self.maxNameLength {
+                    return candidate
+                }
             }
         }
         

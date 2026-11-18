@@ -77,7 +77,81 @@ enum WorkspaceOrganizer {
     // MARK: Public Actions
     
     /// Safely renames either an untitled tab/document or a saved file on disk, keeping extension and updating DB.
-    ///
+    /// Resolves a user-supplied filename while keeping the source extension intact when the new name omits one
+    /// or contains dots such as version numbers / dates (`2026.11 周报`).
+    static func resolvedRenamedFilename(for trimmed: String, preservingExtensionOf currentURL: URL) -> String {
+        
+        let existingExt = currentURL.pathExtension
+        guard !existingExt.isEmpty else { return trimmed }
+        if trimmed.lowercased().hasSuffix(".\(existingExt.lowercased())") {
+            return trimmed
+        }
+        
+        let candidateExt = (trimmed as NSString).pathExtension
+        let isPlausibleExtension = !candidateExt.isEmpty
+            && candidateExt.count <= 8
+            && !candidateExt.contains(where: \.isWhitespace)
+            && candidateExt.contains(where: \.isLetter)
+            && candidateExt.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
+        return isPlausibleExtension ? trimmed : "\(trimmed).\(existingExt)"
+    }
+    
+    
+    /// Moves a file safely using `NSFileCoordinator` and returns the destination URL with collision avoidance.
+    static func coordinatedMoveFile(
+        from sourceURL: URL,
+        toDesiredFilename desiredName: String,
+        filePresenter: (any NSFilePresenter)? = nil
+    ) throws -> URL {
+        
+        let parentDir = sourceURL.deletingLastPathComponent()
+        var targetURL = parentDir.appending(path: desiredName)
+        if targetURL.standardizedFileURL == sourceURL.standardizedFileURL {
+            return sourceURL
+        }
+        
+        if FileManager.default.fileExists(atPath: targetURL.path(percentEncoded: false)) {
+            let stem = (desiredName as NSString).deletingPathExtension
+            let ext = (desiredName as NSString).pathExtension
+            var suffix = 2
+            while FileManager.default.fileExists(atPath: targetURL.path(percentEncoded: false)) {
+                let candidate = ext.isEmpty ? "\(stem)-\(suffix)" : "\(stem)-\(suffix).\(ext)"
+                targetURL = parentDir.appending(path: candidate)
+                suffix += 1
+            }
+        }
+        
+        var coordinatorError: NSError?
+        var moveError: (any Error)?
+        let coordinator = NSFileCoordinator(filePresenter: filePresenter)
+        coordinator.coordinate(
+            writingItemAt: sourceURL,
+            options: .forMoving,
+            writingItemAt: targetURL,
+            options: .forReplacing,
+            error: &coordinatorError
+        ) { newSource, newDest in
+            do {
+                try FileManager.default.moveItem(at: newSource, to: newDest)
+                coordinator.item(at: newSource, didMoveTo: newDest)
+            } catch {
+                moveError = error
+            }
+        }
+        
+        if let coordinatorError {
+            CotLogger.shared.error(category: .document, "Coordinated file rename failed", error: coordinatorError)
+            throw coordinatorError
+        }
+        if let moveError {
+            CotLogger.shared.error(category: .document, "File rename move failed", error: moveError)
+            throw moveError
+        }
+        
+        return targetURL
+    }
+    
+    
     /// - Returns: The resulting display title if renaming succeeded.
     @discardableResult
     static func renameDocument(_ document: Document, to rawNewName: String) throws -> String {
@@ -99,39 +173,51 @@ enum WorkspaceOrganizer {
         
         if let currentURL = document.fileURL {
             let oldPath = currentURL.path(percentEncoded: false)
-            let parentDir = currentURL.deletingLastPathComponent()
-            let existingExt = currentURL.pathExtension
-            let hasExplicitExt = !(trimmed as NSString).pathExtension.isEmpty
-            let baseFilename = (!existingExt.isEmpty && !hasExplicitExt) ? "\(trimmed).\(existingExt)" : trimmed
+            let baseFilename = Self.resolvedRenamedFilename(for: trimmed, preservingExtensionOf: currentURL)
+            let targetURL = try Self.coordinatedMoveFile(
+                from: currentURL,
+                toDesiredFilename: baseFilename,
+                filePresenter: document
+            )
             
-            var targetURL = parentDir.appending(path: baseFilename)
-            if targetURL.standardizedFileURL == currentURL.standardizedFileURL {
-                return currentURL.lastPathComponent
-            }
-            
-            // Avoid overwriting an unrelated existing file on disk.
-            if FileManager.default.fileExists(atPath: targetURL.path(percentEncoded: false)) {
-                let stem = (baseFilename as NSString).deletingPathExtension
-                let ext = (baseFilename as NSString).pathExtension
-                var suffix = 2
-                while FileManager.default.fileExists(atPath: targetURL.path(percentEncoded: false)) {
-                    let candidate = ext.isEmpty ? "\(stem)-\(suffix)" : "\(stem)-\(suffix).\(ext)"
-                    targetURL = parentDir.appending(path: candidate)
-                    suffix += 1
-                }
-            }
-            
-            try FileManager.default.moveItem(at: currentURL, to: targetURL)
             document.fileURL = targetURL
+            document.displayName = targetURL.lastPathComponent
+            document.isExplicitlyNamed = true
+            document.invalidateSyntax(filename: targetURL.lastPathComponent)
+            
             let newPath = targetURL.path(percentEncoded: false)
+            CotLocalDatabase.shared.renameDocument(
+                oldID: oldPath,
+                oldFilePath: oldPath,
+                newID: newPath,
+                newTitle: targetURL.lastPathComponent,
+                newFilePath: newPath
+            )
+            // Migrate any pre-save untitled DB record into this file-backed row so no stale duplicate lingers.
+            if CotLocalDatabase.shared.documents.contains(where: { $0.id == rawDocID }) {
+                CotLocalDatabase.shared.renameDocument(
+                    oldID: rawDocID,
+                    oldFilePath: nil,
+                    newID: newPath,
+                    newTitle: targetURL.lastPathComponent,
+                    newFilePath: newPath
+                )
+            }
+            document.syncToLocalDatabase(force: true)
             NotificationCenter.default.post(name: NSDocument.DidChangeFileURLMessage.name, object: document)
-            CotLocalDatabase.shared.renameDocument(oldID: oldPath, newID: newPath, newTitle: targetURL.lastPathComponent, newFilePath: newPath)
             return targetURL.lastPathComponent
         } else {
             document.displayName = trimmed
+            document.isExplicitlyNamed = true
+            CotLocalDatabase.shared.renameDocument(
+                oldID: rawDocID,
+                oldFilePath: nil,
+                newID: rawDocID,
+                newTitle: trimmed,
+                newFilePath: nil
+            )
+            document.syncToLocalDatabase(force: true)
             NotificationCenter.default.post(name: NSDocument.DidChangeFileURLMessage.name, object: document)
-            CotLocalDatabase.shared.renameDocument(oldID: rawDocID, newID: rawDocID, newTitle: trimmed, newFilePath: nil)
-            document.syncToLocalDatabase()
             return trimmed
         }
     }
@@ -177,48 +263,122 @@ enum WorkspaceOrganizer {
             return
         }
         
-        // Snapshot every document into local SQLite before any destructive or merge operation.
+        let targetWindow = anchorWindow ?? NSApp.mainWindow ?? NSApp.orderedWindows.first
+        let profileDesc: String = {
+            if let profile = AIEndpointStore.activeProfile {
+                let model = profile.model.trimmingCharacters(in: .whitespacesAndNewlines)
+                return model.isEmpty ? profile.displayName : "\(profile.displayName) · \(model)"
+            }
+            return "AI"
+        }()
+        let progressController = WorkspaceOrganizeProgressController(
+            totalDocumentCount: entries.count,
+            endpointDescription: profileDesc
+        )
+        progressController.present(on: targetWindow)
+        
+        // Step 1: Snapshot every document into local SQLite before any modification.
+        progressController.state.markStepActive(
+            0,
+            detail: "正在备份 \(entries.count) 份文档快照到本地数据库…",
+            progress: 0.12,
+            headline: "步骤 1/4：备份当前文档快照"
+        )
         for entry in entries {
             guard let doc = entry.document else { continue }
-            doc.syncToLocalDatabase()
+            doc.syncToLocalDatabase(force: true)
         }
+        progressController.state.markStepCompleted(0, detail: "已安全备份 \(entries.count) 份文档快照")
         
         let compiledPrompt = self.buildPrompt(from: entries)
         
-        let panel = AIResultPanelController(action: .organizeAndMerge)
-        if let targetWindow = anchorWindow ?? NSApp.mainWindow ?? NSApp.orderedWindows.first {
-            panel.present(on: targetWindow)
-        }
+        progressController.state.markStepActive(
+            1,
+            detail: "正在发送 \(entries.count) 份文档至 AI 分析去重与拟定文件名…",
+            progress: 0.25,
+            headline: "步骤 2/4：AI 归类分析与内容提炼"
+        )
         
-        Task {
+        let organizeTask = Task { @MainActor in
             do {
                 let rawResponse = try await AIService.shared.run(.organizeAndMerge, on: compiledPrompt) { partial in
-                    panel.presentPartial(result: "正在分析全工作区 \(entries.count) 份文档并归类合并...\n\n\(partial)")
+                    let charCount = partial.count
+                    progressController.state.streamedCharacters = charCount
+                    let streamProgress = 0.25 + min(0.47, Double(charCount) / 8000.0 * 0.47)
+                    progressController.state.markStepActive(
+                        1,
+                        detail: "已接收模型整理方案 \(charCount) 字…",
+                        progress: streamProgress,
+                        headline: "步骤 2/4：正在接收 AI 归类与命名方案"
+                    )
                 }
+                
+                guard !Task.isCancelled else { return }
+                progressController.state.markStepCompleted(
+                    1,
+                    detail: "AI 分析完成（共 \(rawResponse.count) 字）"
+                )
+                
+                progressController.state.markStepActive(
+                    2,
+                    detail: "正在按文档内容重命名并排版（保持原有分屏 Pane 不变）…",
+                    progress: 0.78,
+                    headline: "步骤 3/4：原位更新文档与智能重命名"
+                )
                 
                 let plan = try self.decodePlan(from: rawResponse)
-                let mapMarkdown = self.apply(plan: plan, entries: entries)
+                let outcome = self.apply(plan: plan, entries: entries)
                 
-                // Close progress sheet cleanly and present the newly generated Map document.
-                if let sheetWindow = panel.window, let parent = sheetWindow.sheetParent {
-                    parent.endSheet(sheetWindow)
+                progressController.state.markStepCompleted(
+                    2,
+                    detail: "已更新 \(outcome.updatedCount) 份文档并重命名，原有分屏 Pane 完整保留"
+                )
+                
+                progressController.state.markStepActive(
+                    3,
+                    detail: "正在生成《整理合并 Map》总览文档…",
+                    progress: 0.92,
+                    headline: "步骤 4/4：生成整理合并 Map"
+                )
+                
+                if let hostDocVC = (targetWindow?.windowController as? DocumentWindowController)?.documentViewController {
+                    hostDocVC.openGeneratedTab(
+                        title: "整理合并 Map.md",
+                        content: outcome.mapMarkdown,
+                        syntaxName: SyntaxName.markdown,
+                        databaseID: "organize-map:latest"
+                    )
                 } else {
-                    panel.close()
+                    let mapDoc = try (NSDocumentController.shared as? DocumentController)?
+                        .openUntitledDocument(content: outcome.mapMarkdown, title: "整理合并 Map.md", display: true)
+                    mapDoc?.isExplicitlyNamed = true
+                    mapDoc?.setSyntax(name: SyntaxName.markdown)
+                    mapDoc?.syncToLocalDatabase(force: true)
                 }
-                
-                let mapDoc = try (NSDocumentController.shared as? DocumentController)?
-                    .openUntitledDocument(content: mapMarkdown, title: "整理合并 Map", display: true)
-                mapDoc?.setSyntax(name: SyntaxName.markdown)
-                mapDoc?.syncToLocalDatabase()
                 
                 for window in NSApp.orderedWindows {
-                    (window.windowController as? DocumentWindowController)?
-                        .documentViewController?
-                        .savePaneTabsSessionToDatabase()
+                    guard let docVC = (window.windowController as? DocumentWindowController)?.documentViewController else { continue }
+                    for pane in docVC.editorViewControllers {
+                        pane.updateTabState()
+                    }
+                    window.windowController?.synchronizeWindowTitleWithDocumentName()
+                    docVC.savePaneTabsSessionToDatabase()
                 }
+                
+                progressController.state.markStepCompleted(3, detail: "已生成并在当前焦点 Pane 中打开《整理合并 Map》")
+                progressController.state.markCompleted(
+                    summary: "整理完成：共处理 \(outcome.updatedCount) 组文档、重命名 \(outcome.renamedCount) 份文件/标签页，原有窗口与分屏 Pane 布局未作任何破坏性变动。"
+                )
+            } catch is CancellationError {
+                CotLogger.shared.info(category: .organizer, "Organize & Merge cancelled by user")
             } catch {
-                panel.present(error: error)
+                CotLogger.shared.error(category: .organizer, "Organize & Merge failed", error: error)
+                progressController.state.markFailed(message: error.localizedDescription)
             }
+        }
+        
+        progressController.onCancel = {
+            organizeTask.cancel()
         }
     }
     
@@ -383,12 +543,46 @@ enum WorkspaceOrganizer {
     }
     
     
-    private static func apply(plan: MergePlan, entries: [SourceEntry]) -> String {
+    struct ApplyOutcome {
+        let mapMarkdown: String
+        let updatedCount: Int
+        let renamedCount: Int
+    }
+    
+    
+    /// Derives a concise, content-representative title when AI returns an empty or generic/random title.
+    static func fallbackContentTitle(from content: String, currentTitle: String) -> String {
+        
+        for rawLine in content.components(separatedBy: .newlines) {
+            var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("#") {
+                line = String(line.drop(while: { $0 == "#" || $0 == " " }))
+            }
+            line = line
+                .replacingOccurrences(of: "/", with: "-")
+                .replacingOccurrences(of: ":", with: "-")
+                .replacingOccurrences(of: "|", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasSuffix("：") || line.hasSuffix(":") {
+                line.removeLast()
+            }
+            if !line.isEmpty {
+                return line.count > 22 ? String(line.prefix(22)).trimmingCharacters(in: .whitespacesAndNewlines) : line
+            }
+        }
+        return currentTitle.isEmpty ? "整理文档" : currentTitle
+    }
+    
+    
+    private static func apply(plan: MergePlan, entries: [SourceEntry]) -> ApplyOutcome {
         
         let entryByID = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
         var consumedIDs = Set<String>()
         var mappingRows: [(originalTitle: String, location: String, action: String, newTitle: String, note: String)] = []
         var createdGroups: [(title: String, syntax: String, summary: String)] = []
+        var updatedCount = 0
+        var renamedCount = 0
         
         // Map model-supplied mapping notes by sourceID/sourceTitle for rich explanations.
         var noteBySourceID: [String: String] = [:]
@@ -407,26 +601,42 @@ enum WorkspaceOrganizer {
             
             // Prefer an existing untitled document or primary entry to host the merged document.
             let primaryEntry = matchingEntries.first(where: { $0.fileURL == nil }) ?? matchingEntries.first
-            var finalTitle = group.newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            var finalTitle = group.newTitle
+                .replacingOccurrences(of: "/", with: "-")
+                .replacingOccurrences(of: ":", with: "-")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             if finalTitle.isEmpty {
-                finalTitle = primaryEntry?.originalTitle ?? "整理合并文档"
+                finalTitle = self.fallbackContentTitle(
+                    from: formattedContent,
+                    currentTitle: primaryEntry?.originalTitle ?? "整理合并文档"
+                )
             }
             
             if let primary = primaryEntry, let doc = primary.document {
                 consumedIDs.insert(primary.id)
+                updatedCount += 1
                 
-                if let renamed = try? self.renameDocument(doc, to: finalTitle) {
-                    finalTitle = renamed
-                }
-                doc.setSyntax(name: resolvedSyntax)
-                
-                // Replace document text cleanly via the text view when available so Undo still works.
-                if let tv = primary.pane?.textView(for: primary.tab ?? PaneTab(document: doc)) {
-                    tv.insertText(formattedContent, replacementRange: doc.textStorage.range)
+                // Replace document text safely even when the target tab/pane is not currently focused.
+                if let tv = primary.pane?.textView(for: primary.tab ?? PaneTab(document: doc)),
+                   tv.shouldChangeText(in: doc.textStorage.range, replacementString: formattedContent)
+                {
+                    doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: formattedContent)
+                    tv.didChangeText()
                 } else {
                     doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: formattedContent)
                 }
-                doc.syncToLocalDatabase()
+                doc.setSyntax(name: resolvedSyntax)
+                
+                if let renamed = try? self.renameDocument(doc, to: finalTitle) {
+                    if renamed != primary.originalTitle {
+                        renamedCount += 1
+                    }
+                    finalTitle = renamed
+                } else {
+                    doc.syncToLocalDatabase(force: true)
+                }
+                primary.pane?.updateTabState()
+                primary.windowVC?.view.window?.windowController?.synchronizeWindowTitleWithDocumentName()
                 
                 let actionLabel = matchingEntries.count > 1 ? "主合并并重命名" : "整理并重命名"
                 let defaultNote = matchingEntries.count > 1
@@ -440,38 +650,66 @@ enum WorkspaceOrganizer {
                     note: noteBySourceID[primary.id] ?? defaultNote
                 ))
                 
-                // Handle secondary source tabs merged into the primary document.
+                // Preserve user panes: never close the last tab in a pane (which would collapse a split pane).
                 for secondary in matchingEntries where secondary.id != primary.id {
                     consumedIDs.insert(secondary.id)
                     if let secDoc = secondary.document,
                        secDoc.fileURL == nil,
                        let secTab = secondary.tab,
                        let secPane = secondary.pane,
+                       secPane.tabs.count > 1,
                        let secWinVC = secondary.windowVC,
                        secWinVC.closeMergedTabSafely(secTab, in: secPane)
                     {
                         mappingRows.append((
                             originalTitle: secondary.originalTitle,
                             location: secondary.locationLabel,
-                            action: "已并入并关闭重复标签",
+                            action: "已并入并关闭多余标签",
                             newTitle: finalTitle,
                             note: noteBySourceID[secondary.id] ?? "内容已去重并入「\(finalTitle)」"
                         ))
                     } else {
+                        if let secDoc = secondary.document, secDoc.fileURL == nil {
+                            let derivedTitle = self.fallbackContentTitle(from: secondary.content, currentTitle: secondary.originalTitle)
+                            if derivedTitle != secondary.originalTitle,
+                               let renamed = try? self.renameDocument(secDoc, to: "\(derivedTitle)（已并入）")
+                            {
+                                renamedCount += 1
+                                secondary.pane?.updateTabState()
+                                mappingRows.append((
+                                    originalTitle: secondary.originalTitle,
+                                    location: secondary.locationLabel,
+                                    action: "已并入（分屏原位保留）",
+                                    newTitle: renamed,
+                                    note: noteBySourceID[secondary.id] ?? "内容已并入「\(finalTitle)」，为保持分屏 Pane 不关闭该标签"
+                                ))
+                                createdGroups.append((title: finalTitle, syntax: resolvedSyntax, summary: group.summary ?? ""))
+                                continue
+                            }
+                        }
                         mappingRows.append((
                             originalTitle: secondary.originalTitle,
                             location: secondary.locationLabel,
-                            action: "已并入（原文件保留）",
+                            action: "已并入（原位置保留）",
                             newTitle: finalTitle,
-                            note: noteBySourceID[secondary.id] ?? "内容已并入「\(finalTitle)」，原文件安全保留未删"
+                            note: noteBySourceID[secondary.id] ?? "内容已并入「\(finalTitle)」，原文件/Pane 布局完整保留"
                         ))
                     }
                 }
             } else if let opened = try? (NSDocumentController.shared as? DocumentController)?
-                .openUntitledDocument(content: formattedContent, title: finalTitle, display: true)
+                .openUntitledDocument(content: formattedContent, title: finalTitle, display: false)
             {
+                opened.isExplicitlyNamed = true
                 opened.setSyntax(name: resolvedSyntax)
-                opened.syncToLocalDatabase()
+                opened.syncToLocalDatabase(force: true)
+                updatedCount += 1
+                renamedCount += 1
+                if let hostDocVC = (NSApp.mainWindow?.windowController as? DocumentWindowController)?.documentViewController {
+                    hostDocVC.openOrFocusDocument(opened, splitRight: false)
+                } else {
+                    opened.makeWindowControllers()
+                    opened.showWindows()
+                }
                 createdGroups.append((title: finalTitle, syntax: resolvedSyntax, summary: group.summary ?? ""))
                 continue
             }
@@ -479,13 +717,36 @@ enum WorkspaceOrganizer {
             createdGroups.append((title: finalTitle, syntax: resolvedSyntax, summary: group.summary ?? ""))
         }
         
-        let untouched = entries.filter { !consumedIDs.contains($0.id) }
-        return self.renderMapMarkdown(
+        // Any open untitled document omitted by AI still receives a meaningful content-based filename.
+        var untouched = entries.filter { !consumedIDs.contains($0.id) }
+        for idx in untouched.indices {
+            let entry = untouched[idx]
+            guard let doc = entry.document, doc.fileURL == nil else { continue }
+            let candidate = self.fallbackContentTitle(from: entry.content, currentTitle: entry.originalTitle)
+            if candidate != entry.originalTitle,
+               let renamed = try? self.renameDocument(doc, to: candidate)
+            {
+                renamedCount += 1
+                entry.pane?.updateTabState()
+                mappingRows.append((
+                    originalTitle: entry.originalTitle,
+                    location: entry.locationLabel,
+                    action: "按内容自动重命名",
+                    newTitle: renamed,
+                    note: "依据正文首行内容生成清晰文件名"
+                ))
+                consumedIDs.insert(entry.id)
+            }
+        }
+        untouched = entries.filter { !consumedIDs.contains($0.id) }
+        
+        let markdown = self.renderMapMarkdown(
             overview: plan.overview,
             mappingRows: mappingRows,
             groups: createdGroups,
             untouchedEntries: untouched
         )
+        return ApplyOutcome(mapMarkdown: markdown, updatedCount: updatedCount, renamedCount: renamedCount)
     }
     
     

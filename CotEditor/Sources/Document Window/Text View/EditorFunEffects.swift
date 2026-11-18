@@ -1032,9 +1032,9 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         // For huge cross-document jumps (gg / G / Ctrl-D), bring the offscreen origin closer
         // along the travel vector so it swoops gracefully into frame instead of teleporting across 5000px.
-        let maxJump: CGFloat = 220
+        let maxJump: CGFloat = 260
         if distance > maxJump {
-            let clampedOriginDist: CGFloat = 115
+            let clampedOriginDist: CGFloat = 145
             let shiftX = dx - (dx / distance) * clampedOriginDist
             let shiftY = dy - (dy / distance) * clampedOriginDist
             for i in 0..<4 {
@@ -1058,19 +1058,41 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             CGPoint(x: -1, y: 1),
         ]
         
-        let shortStepBoost: CGFloat = distance < 20 ? 1.15 : 1.0
         for i in 0..<4 {
             let dot = unitOffsets[i].x * ux + unitOffsets[i].y * uy  // [-sqrt(2), +sqrt(2)]
             let rank = max(0, min(1, (dot + 1.4142) / 2.8284))      // 1 = leading front, 0 = trailing tail
-            // Leading corners snap ahead with light underdamping (Q-elastic rebound);
-            // trailing corners trail behind to create Neovide's signature smear/stretch.
-            self.springCorners[i].omega = (22.0 + 24.0 * rank) * shortStepBoost
-            self.springCorners[i].zeta = 0.85 - 0.11 * rank
+            let params = Self.vimSpringParameters(rank: rank, distance: distance)
+            self.springCorners[i].omega = params.omega
+            self.springCorners[i].zeta = params.zeta
+        }
+        
+        // Apply a subtle forward kick on short single-cell moves so h/j/k/l feel visibly bouncy ("Q弹")
+        // without causing visual jitter.
+        let impulseScale: CGFloat = distance < 28 ? 2.6 : 1.3
+        for i in 0..<4 {
+            let dot = unitOffsets[i].x * ux + unitOffsets[i].y * uy
+            let rank = max(0, min(1, (dot + 1.4142) / 2.8284))
+            self.springCorners[i].vel.x += dx * impulseScale * (0.35 + 0.65 * rank)
+            self.springCorners[i].vel.y += dy * impulseScale * (0.35 + 0.65 * rank)
         }
         
         self.targetCorners = destCorners
         self.currentTargetRect = visualRect
         self.startOrResumeDisplayLink(for: textView)
+    }
+    
+    
+    /// Computes Neovide-inspired spring stiffness and damping for a cursor corner at normalized
+    /// directional rank `0...1` (`1` = leading corner, `0` = trailing tail).
+    static func vimSpringParameters(rank: CGFloat, distance: CGFloat) -> (omega: CGFloat, zeta: CGFloat) {
+        
+        let clampedRank = max(0, min(1, rank))
+        let shortStepBoost: CGFloat = distance < 24 ? 1.18 : 1.0
+        // High leading/trailing omega separation stretches the cursor smoothly mid-flight,
+        // while light underdamping (zeta ~ 0.44...0.60) delivers a playful jelly rebound.
+        let omega = (18.5 + 32.0 * clampedRank) * shortStepBoost
+        let zeta = 0.60 - 0.16 * clampedRank
+        return (omega, zeta)
     }
     
     
@@ -1136,7 +1158,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             maxSpeed = max(maxSpeed, hypot(nvx, nvy))
         }
         
-        if maxError < 0.12 && maxSpeed < 1.8 {
+        if maxError < 0.08 && maxSpeed < 1.2 {
             for i in 0..<4 {
                 self.springCorners[i].pos = self.targetCorners[i]
                 self.springCorners[i].vel = .zero

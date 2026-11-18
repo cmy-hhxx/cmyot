@@ -58,16 +58,31 @@ nonisolated enum AIModelCatalog {
         do {
             (data, response) = try await URLSession.shared.data(for: request)
         } catch {
+            CotLogger.shared.error(
+                category: .ai,
+                "Model catalog transport failure",
+                error: error,
+                context: ["url": url.absoluteString]
+            )
             throw AIError.transport(error)
         }
         
         if let httpResponse = response as? HTTPURLResponse, !(200..<300).contains(httpResponse.statusCode) {
-            throw AIError.http(status: httpResponse.statusCode, message: AIClient.errorMessage(from: data))
+            let message = AIClient.errorMessage(from: data)
+            CotLogger.shared.error(
+                category: .ai,
+                "Model catalog HTTP \(httpResponse.statusCode)",
+                context: ["url": url.absoluteString, "message": message ?? ""]
+            )
+            throw AIError.http(status: httpResponse.statusCode, message: message)
         }
         
         let models = try self.parse(data, endpoint: configuration.endpoint)
         
-        guard !models.isEmpty else { throw AIError.noModels }
+        guard !models.isEmpty else {
+            CotLogger.shared.warning(category: .ai, "Model catalog returned empty model list", context: ["url": url.absoluteString])
+            throw AIError.noModels
+        }
         
         return models
     }
@@ -82,7 +97,7 @@ nonisolated enum AIModelCatalog {
     ///   - endpoint: The protocol that produced the body.
     /// - Returns: The models found, possibly empty.
     /// - Throws: ``AIError`` when the body cannot be decoded at all.
-    private static func parse(_ data: Data, endpoint: AIEndpoint) throws -> [AIModel] {
+    static func parse(_ data: Data, endpoint: AIEndpoint) throws -> [AIModel] {
         
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AIError.decoding(String((String(data: data, encoding: .utf8) ?? "").prefix(200)))
@@ -94,15 +109,20 @@ nonisolated enum AIModelCatalog {
                 return (object["data"] as? [[String: Any]] ?? []).compactMap { item in
                     guard let id = item["id"] as? String, !id.isEmpty else { return nil }
                     
-                    return AIModel(id: id, name: id)
+                    let display = Self.displayName(item["display_name"] ?? item["name"], fallback: id)
+                    let label = (display == id) ? id : "\(display) (\(id))"
+                    return AIModel(id: id, name: label)
                 }
                 
             case .anthropicMessages:
                 // {"data": [{"id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5", …}, …]}
+                // Some gateways (e.g. OpenCode Go) use "name" instead of "display_name".
                 return (object["data"] as? [[String: Any]] ?? []).compactMap { item in
                     guard let id = item["id"] as? String, !id.isEmpty else { return nil }
                     
-                    return AIModel(id: id, name: Self.displayName(item["display_name"], fallback: id))
+                    let display = Self.displayName(item["display_name"] ?? item["name"], fallback: id)
+                    let label = (display == id) ? id : "\(display) (\(id))"
+                    return AIModel(id: id, name: label)
                 }
                 
             case .googleGemini:

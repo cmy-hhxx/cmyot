@@ -77,6 +77,7 @@ extension NSAttributedString.Key {
         static let encoding = "encoding"
         static let displayName = "displayName"
         static let databaseDocumentID = "databaseDocumentID"
+        static let isExplicitlyNamed = "isExplicitlyNamed"
     }
     
     
@@ -84,6 +85,7 @@ extension NSAttributedString.Key {
     
     @ObservationIgnored @Published @objc var isEditable = true  { didSet { self.invalidateRestorableState() } }  // @objc for AppleScript support
     var isTransient = false  // untitled & empty document that was created automatically
+    var isExplicitlyNamed = false  // true once user or AI deliberately renames this document
     @ObservationIgnored @Published var hasUncommittedChanges = false
     @ObservationIgnored @Published var lastManualSaveDate: Date?
     
@@ -198,6 +200,7 @@ extension NSAttributedString.Key {
         if self.fileURL == nil {
             coder.encode(self.displayName, forKey: SerializationKey.displayName)
         }
+        coder.encode(self.isExplicitlyNamed, forKey: SerializationKey.isExplicitlyNamed)
         coder.encode(self.databaseDocumentID, forKey: SerializationKey.databaseDocumentID)
         
         // store unencoded string but only when incompatible
@@ -241,6 +244,9 @@ extension NSAttributedString.Key {
         }
         if coder.containsValue(forKey: SerializationKey.suppressesInconsistentLineEndingAlert) {
             self.suppressesInconsistentLineEndingAlert = coder.decodeBool(forKey: SerializationKey.suppressesInconsistentLineEndingAlert)
+        }
+        if coder.containsValue(forKey: SerializationKey.isExplicitlyNamed) {
+            self.isExplicitlyNamed = coder.decodeBool(forKey: SerializationKey.isExplicitlyNamed)
         }
         if let storedDatabaseID = coder.decodeObject(of: NSString.self, forKey: SerializationKey.databaseDocumentID) as? String,
            !storedDatabaseID.isEmpty
@@ -527,6 +533,12 @@ extension NSAttributedString.Key {
                 Task { @MainActor in
                     guard let self else { return }
                     if let error {
+                        CotLogger.shared.error(
+                            category: .document,
+                            "Document save failed",
+                            error: error,
+                            context: ["path": fileURL.path(percentEncoded: false)]
+                        )
                         self.presentErrorAsSheet(error)
                         return
                     }

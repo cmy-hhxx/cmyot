@@ -236,11 +236,12 @@ extension Document {
         guard force || self.fileURL != nil || !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         
         let rawDocID = self.databaseDocumentID.hasPrefix("doc:") ? self.databaseDocumentID : "doc:\(self.databaseDocumentID)"
-        let recordID = self.fileURL?.path(percentEncoded: false) ?? rawDocID
+        let canonicalPath = self.fileURL?.standardizedFileURL.path(percentEncoded: false)
+        let recordID = canonicalPath ?? rawDocID
         CotLocalDatabase.shared.saveDocument(
             id: recordID,
             title: self.displayName,
-            filePath: self.fileURL?.path(percentEncoded: false),
+            filePath: canonicalPath,
             syntax: self.syntaxName,
             content: content,
             highlights: self.textHighlights

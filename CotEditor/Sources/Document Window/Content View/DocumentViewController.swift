@@ -2602,6 +2602,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             }
             self.savePaneTabsSessionToDatabase()
         } catch {
+            CotLogger.shared.error(category: .document, "Pane tab rename failed", error: error, context: ["targetName": newName])
             if let window = self.view.window {
                 self.presentError(error, modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil)
             } else {
@@ -3742,6 +3743,54 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         }
         
         self.openOrFocusDocument(doc, splitRight: splitRight)
+    }
+    
+    
+    /// Opens a generated Markdown/text document (such as Organize & Merge Map) as a tab in the
+    /// currently focused pane without modifying the existing split pane layout.
+    func openGeneratedTab(
+        title: String,
+        content: String,
+        syntaxName: String = SyntaxName.markdown,
+        databaseID: String? = nil
+    ) {
+        
+        if let databaseID {
+            for pane in self.editorViewControllers {
+                if let existingTab = pane.tabs.first(where: { $0.document.databaseDocumentID == databaseID }) {
+                    let doc = existingTab.document
+                    doc.displayName = title
+                    doc.isExplicitlyNamed = true
+                    doc.setSyntax(name: syntaxName)
+                    doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: content)
+                    doc.updateChangeCount(.changeCleared)
+                    doc.hasUncommittedChanges = false
+                    pane.select(tab: existingTab)
+                    self.focusedChild = pane
+                    pane.updateTabState()
+                    doc.syncToLocalDatabase(force: true)
+                    self.savePaneTabsSessionToDatabase()
+                    return
+                }
+            }
+        }
+        
+        guard let doc = try? self.makePaneDocument() else { return NSSound.beep() }
+        if let databaseID {
+            doc.databaseDocumentID = databaseID
+        }
+        doc.displayName = title
+        doc.isExplicitlyNamed = true
+        doc.setSyntax(name: syntaxName)
+        if !content.isEmpty {
+            doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: content)
+        }
+        doc.updateChangeCount(.changeCleared)
+        doc.hasUncommittedChanges = false
+        
+        self.openOrFocusDocument(doc, splitRight: false)
+        doc.syncToLocalDatabase(force: true)
+        self.savePaneTabsSessionToDatabase()
     }
     
     

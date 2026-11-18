@@ -64,6 +64,7 @@ struct AISettingsView: View {
                         AIEndpointRow(profile: profile,
                                       isActive: profile.id == self.activeID,
                                       status: self.status[profile.id],
+                                      onSelectModel: { modelID in self.switchModel(modelID, on: profile) },
                                       onTest: { Task { await self.test(profile) } },
                                       onEdit: { self.beginEditing(profile) },
                                       onDelete: { self.pendingDeletion = profile })
@@ -311,6 +312,19 @@ struct AISettingsView: View {
     }
     
     
+    /// Switches the model ID on one saved endpoint without re-entering its key.
+    private func switchModel(_ modelID: String, on profile: AIEndpointProfile) {
+        
+        var updated = profile
+        updated.model = modelID
+        updated.rememberModels([modelID])
+        let apiKey = AIEndpointStore.apiKey(for: profile)
+        AIEndpointStore.save(updated, apiKey: apiKey)
+        self.status[profile.id] = nil
+        self.reload()
+    }
+    
+    
     /// Removes an endpoint and forgets its test result.
     ///
     /// - Parameter profile: The profile to remove.
@@ -371,9 +385,20 @@ private struct EditingTarget: Identifiable {
 /// One row of the endpoint list.
 private struct AIEndpointRow: View {
     
+    private static let alternativeModels: [String] = [
+        "claude-haiku-5-5",
+        "claude-sonnet-5-5",
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash-fast",
+        "qwen4-max",
+        "glm-5.3",
+    ]
+    
     let profile: AIEndpointProfile
     let isActive: Bool
     let status: EndpointStatus?
+    let onSelectModel: (String) -> Void
     let onTest: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
@@ -412,6 +437,45 @@ private struct AIEndpointRow: View {
             Spacer(minLength: 8)
             
             self.statusView
+            
+            Menu {
+                let saved = self.profile.availableModelIDs
+                if !saved.isEmpty {
+                    Section("当前接口模型") {
+                        ForEach(saved, id: \.self) { modelID in
+                            Button {
+                                self.onSelectModel(modelID)
+                            } label: {
+                                if modelID == self.profile.model {
+                                    Label(modelID, systemImage: "checkmark")
+                                } else {
+                                    Text(modelID)
+                                }
+                            }
+                        }
+                    }
+                }
+                let extras = Self.alternativeModels.filter { !saved.contains($0) }
+                if !extras.isEmpty {
+                    Section("切换其他模型") {
+                        ForEach(extras, id: \.self) { modelID in
+                            Button(modelID) {
+                                self.onSelectModel(modelID)
+                            }
+                        }
+                    }
+                }
+                Divider()
+                Button("编辑 / 获取完整模型列表…") {
+                    self.onEdit()
+                }
+            } label: {
+                Image(systemName: "cpu")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("快速切换当前端点使用的模型（如 claude-haiku-5-5）")
             
             HStack(spacing: 4) {
                 Button(action: self.onTest) {

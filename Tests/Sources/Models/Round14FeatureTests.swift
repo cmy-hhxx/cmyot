@@ -1,0 +1,275 @@
+//
+//  Round14FeatureTests.swift
+//
+//  CotEditor
+//
+//  ---------------------------------------------------------------------------
+//
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
+//
+//  https://www.apache.org/licenses/LICENSE-2.0
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+//
+
+import AppKit
+import Foundation
+import Testing
+@testable import CotEditor
+
+@Suite(.serialized)
+@MainActor
+struct Round14FeatureTests {
+    
+    @Test func cotLoggerRollingSevenDaysAndRedaction() throws {
+        
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CotLoggerTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = .current
+        let today = cal.startOfDay(for: Date())
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.calendar = cal
+        fmt.timeZone = .current
+        fmt.dateFormat = "yyyy-MM-dd"
+        
+        // Create log files from today back through 9 days ago
+        for offset in 0...9 {
+            let day = cal.date(byAdding: .day, value: -offset, to: today)!
+            let url = tempDir.appendingPathComponent("cot-\(fmt.string(from: day)).log")
+            try Data("entry-\(offset)\n".utf8).write(to: url)
+        }
+        
+        let logger = CotLogger(directoryURL: tempDir, retentionDays: 7, nowProvider: { today })
+        logger.pruneExpiredLogs(referenceDate: today)
+        
+        let retainedNames = logger.availableLogFiles().map(\.lastPathComponent)
+        #expect(retainedNames.count == 7)
+        #expect(retainedNames.contains("cot-\(fmt.string(from: today)).log"))
+        let day6Ago = cal.date(byAdding: .day, value: -6, to: today)!
+        let day7Ago = cal.date(byAdding: .day, value: -7, to: today)!
+        #expect(retainedNames.contains("cot-\(fmt.string(from: day6Ago)).log"))
+        #expect(!retainedNames.contains("cot-\(fmt.string(from: day7Ago)).log"))
+        
+        logger.logSynchronously(
+            level: .error,
+            category: .ai,
+            "Failed with oc_sk_1234567890_secret and user_ABCDEF1234567890",
+            context: ["auth": "Authorization: Bearer my-secret-token-value"]
+        )
+        let todayContent = try String(contentsOf: logger.currentLogFileURL, encoding: .utf8)
+        #expect(!todayContent.contains("oc_sk_1234567890_secret"))
+        #expect(!todayContent.contains("user_ABCDEF1234567890"))
+        #expect(!todayContent.contains("my-secret-token-value"))
+        #expect(todayContent.contains("[ERROR] [AI]"))
+    }
+    
+    
+    @Test func localSecretsStorePersistsWithoutKeychain() throws {
+        
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AISecretsTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            AIKeychain.setStoreURLForTesting(nil)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+        
+        let secretURL = tempDir.appendingPathComponent("ai_secrets.json")
+        AIKeychain.setStoreURLForTesting(secretURL)
+        
+        let profileID = UUID()
+        AIKeychain.setAPIKey("oc_sk_test_key_value", for: profileID)
+        #expect(AIKeychain.apiKey(for: profileID) == "oc_sk_test_key_value")
+        
+        // Reset in-memory cache via setStoreURLForTesting and verify reload from disk
+        AIKeychain.setStoreURLForTesting(secretURL)
+        #expect(AIKeychain.apiKey(for: profileID) == "oc_sk_test_key_value")
+        
+        AIKeychain.removeAPIKey(for: profileID)
+        #expect(AIKeychain.apiKey(for: profileID).isEmpty)
+    }
+    
+    
+    @Test func endpointRoutingAndHeadersAndProfileDecoding() throws {
+        
+        // OpenCode Go baseURL without /v1 gets /v1 inserted for Anthropic Messages & models
+        let openCodeConfig = AIConfiguration(
+            endpoint: .anthropicMessages,
+            baseURL: "https://opencode.ai/inference/go",
+            model: "deepseek-v4.1-flash",
+            apiKey: "oc_sk_dummy",
+            customHeaders: ["x-opencode-session": "omp-opencode-go-1"]
+        )
+        #expect(openCodeConfig.requestURL?.absoluteString == "https://opencode.ai/inference/go/v1/messages")
+        #expect(openCodeConfig.modelsRequestURL?.absoluteString == "https://opencode.ai/inference/go/v1/models?limit=1000")
+        #expect(openCodeConfig.requestHeaders["x-opencode-session"] == "omp-opencode-go-1")
+        #expect(openCodeConfig.requestHeaders["x-api-key"] == "oc_sk_dummy")
+        
+        // CommandCode routes claude-* models to /provider/v1/messages while keeping deepseek on /responses
+        let ccClaude = AIConfiguration(
+            endpoint: .openAIResponses,
+            baseURL: "https://api.commandcode.ai/provider/v1",
+            model: "claude-haiku-5-5",
+            apiKey: "user_dummy"
+        )
+        let wiredClaude = ccClaude.wireConfiguration
+        #expect(wiredClaude.endpoint == .anthropicMessages)
+        #expect(wiredClaude.requestURL?.absoluteString == "https://api.commandcode.ai/provider/v1/messages")
+        #expect(wiredClaude.requestHeaders["x-api-key"] == "user_dummy")
+        
+        let ccDeepSeek = AIConfiguration(
+            endpoint: .openAIResponses,
+            baseURL: "https://api.commandcode.ai/provider/v1",
+            model: "deepseek/deepseek-v4.1-flash",
+            apiKey: "user_dummy"
+        )
+        #expect(ccDeepSeek.wireConfiguration.endpoint == .openAIResponses)
+        #expect(ccDeepSeek.wireConfiguration.requestURL?.absoluteString == "https://api.commandcode.ai/provider/v1/responses")
+        
+        // Legacy profile JSON without customHeaders/savedModels still decodes cleanly
+        let legacyJSON = """
+        {"id":"11111111-1111-1111-1111-111111111111","name":"Legacy","endpoint":"openAIChatCompletions","baseURL":"https://example.com/v1","model":"gpt-4o"}
+        """
+        var decoded = try JSONDecoder().decode(AIEndpointProfile.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.customHeaders.isEmpty)
+        decoded.rememberModels(["claude-haiku-5-5", "gpt-4o", "claude-haiku-5-5"])
+        #expect(decoded.availableModelIDs == ["gpt-4o", "claude-haiku-5-5"])
+    }
+    
+    
+    @Test func renamePreservesDatabaseRecordAndResolvesExtensions() throws {
+        
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CotDBRenameTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let dbURL = tempDir.appendingPathComponent("test.sqlite3")
+        let db = CotLocalDatabase(customURL: dbURL)
+        let oldPath = tempDir.appendingPathComponent("old-note.md").path
+        let newPath = tempDir.appendingPathComponent("2026.11 周报.md").path
+        
+        db.saveDocument(
+            id: oldPath,
+            title: "old-note.md",
+            filePath: oldPath,
+            syntax: "Markdown",
+            content: "# 周报记录\n具体事项",
+            groupName: "工作"
+        )
+        #expect(db.documents.count == 1)
+        
+        db.renameDocument(
+            oldID: oldPath,
+            oldFilePath: oldPath,
+            newID: newPath,
+            newTitle: "2026.11 周报.md",
+            newFilePath: newPath
+        )
+        #expect(db.documents.count == 1)
+        let updated = try #require(db.documents.first)
+        #expect(updated.id == newPath)
+        #expect(updated.filePath == newPath)
+        #expect(updated.title == "2026.11 周报.md")
+        #expect(updated.groupName == "工作")
+        #expect(updated.content == "# 周报记录\n具体事项")
+        
+        // Dotted names keep the existing extension instead of stripping it
+        let srcURL = URL(filePath: oldPath)
+        #expect(WorkspaceOrganizer.resolvedRenamedFilename(for: "2026.11 周报", preservingExtensionOf: srcURL) == "2026.11 周报.md")
+        #expect(WorkspaceOrganizer.resolvedRenamedFilename(for: "v2.1", preservingExtensionOf: srcURL) == "v2.1.md")
+        #expect(WorkspaceOrganizer.resolvedRenamedFilename(for: "readme.txt", preservingExtensionOf: srcURL) == "readme.txt")
+    }
+    
+    
+    @Test func funNamingGrammarAndSpringParameters() {
+        
+        let badFragments = ["底下里的", "上方里的", "边缘里的", "山顶里的", "太平洋底里的", "傍晚里的", "季节里的", "天台里的"]
+        for _ in 0..<250 {
+            let name = GeneratedDocumentName.generateCandidate()
+            #expect(name.count <= 8)
+            for fragment in badFragments {
+                #expect(!name.contains(fragment))
+            }
+        }
+        
+        // Content-based title fallback avoids leaving generic/empty names
+        let derived = WorkspaceOrganizer.fallbackContentTitle(
+            from: "# AIME Bench 可视化优化\n\n具体设计如下",
+            currentTitle: "摸鱼的洗衣机"
+        )
+        #expect(derived == "AIME Bench 可视化优化")
+        
+        // Leading corner snaps faster & underdamped for bouncy ("Q弹") Vim cursor overshoot
+        let trail = EditorFunEffectsController.vimSpringParameters(rank: 0.0, distance: 12)
+        let lead = EditorFunEffectsController.vimSpringParameters(rank: 1.0, distance: 12)
+        #expect(lead.omega > trail.omega)
+        #expect(lead.zeta < trail.zeta)
+        #expect(lead.zeta < 0.55)
+    }
+    
+    
+    @Test func modelCatalogParsesOpenCodeGoNameField() throws {
+        
+        let json = """
+        {"data":[{"id":"claude-haiku-5-5","name":"Claude Haiku 5.5"},{"id":"deepseek-v4.1-flash","name":"DeepSeek V4.1 Flash"}]}
+        """
+        let config = AIConfiguration(
+            endpoint: .anthropicMessages,
+            baseURL: "https://opencode.ai/inference/go",
+            model: "deepseek-v4.1-flash",
+            apiKey: "oc_sk_dummy"
+        )
+        #expect(config.modelsRequestURL?.absoluteString == "https://opencode.ai/inference/go/v1/models?limit=1000")
+        let parsed = try AIModelCatalog.parse(Data(json.utf8), endpoint: .anthropicMessages)
+        #expect(parsed.count == 2)
+        #expect(parsed.first?.id == "claude-haiku-5-5")
+        #expect(parsed.first?.name == "Claude Haiku 5.5 (claude-haiku-5-5)")
+        
+        // Also test OpenCode / OpenAI compatible format
+        let ccModels = try AIModelCatalog.parse(Data(json.utf8), endpoint: .openAIResponses)
+        #expect(ccModels.map(\.id) == ["claude-haiku-5-5", "deepseek-v4.1-flash"])
+    }
+    
+    
+    @Test func coordinatedDocumentRenameUpdatesFileURLAndDisplayName() throws {
+        
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CotCoordinatedRename-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let sourceURL = tempDir.appendingPathComponent("scratch-old.txt")
+        try "Line 1\nLine 2\n".write(to: sourceURL, atomically: true, encoding: .utf8)
+        
+        let doc = try Document(contentsOf: sourceURL, ofType: "public.plain-text")
+        // Simulate a sticky custom displayName set before saving
+        doc.displayName = "摸鱼的洗衣机"
+        
+        let newTitle = try WorkspaceOrganizer.renameDocument(doc, to: "2026.11 周报")
+        #expect(newTitle == "2026.11 周报.txt")
+        #expect(doc.fileURL?.lastPathComponent == "2026.11 周报.txt")
+        #expect(doc.displayName == "2026.11 周报.txt")
+        #expect(doc.isExplicitlyNamed == true)
+        #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
+        #expect(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("2026.11 周报.txt").path))
+        
+        let canonical = DocumentCenterState.canonicalKey(
+            filePath: doc.fileURL?.path(percentEncoded: false),
+            rawID: doc.databaseDocumentID
+        )
+        #expect(canonical.hasPrefix("file:"))
+        #expect(canonical.hasSuffix("/2026.11 周报.txt"))
+    }
+}
