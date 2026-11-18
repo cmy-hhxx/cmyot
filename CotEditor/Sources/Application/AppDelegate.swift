@@ -124,9 +124,11 @@ extension Logger {
     override init() {
         
         // register default setting values
-        let defaults = DefaultSettings.defaults
+        var defaults = DefaultSettings.defaults
             .compactMapValues(\.self)
             .mapKeys(\.rawValue)
+        // Enable native key repeat on held keys (e.g. Vim h/j/k/l/w/b/e) instead of macOS accent popovers.
+        defaults["ApplePressAndHoldEnabled"] = false
         UserDefaults.standard.register(defaults: defaults)
         NSUserDefaultsController.shared.initialValues = defaults
     }
