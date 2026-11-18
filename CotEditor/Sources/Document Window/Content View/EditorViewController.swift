@@ -170,7 +170,10 @@ final class EditorViewController: NSSplitViewController {
         let navigationBar = NavigationBar(outlineNavigator: self.outlineNavigator,
                                           splitState: self.splitState,
                                           tabs: self.tabState)
-        self.navigationBarItem = NSSplitViewItem(viewController: NSHostingController(rootView: navigationBar))
+        let navHostingController = NSHostingController(rootView: navigationBar)
+        // Prevent SwiftUI's intrinsic min-width from fighting NSSplitView even-split proportions.
+        navHostingController.sizingOptions = []
+        self.navigationBarItem = NSSplitViewItem(viewController: navHostingController)
         self.navigationBarItem.isCollapsed = true  // reconsidered below
         let barHeight: CGFloat = isLiquidGlass ? 30 : 28
         self.navigationBarItem.minimumThickness = barHeight

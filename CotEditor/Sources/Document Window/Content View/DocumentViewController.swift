@@ -1681,6 +1681,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         self.splitState.isVertical = isVertical
         self.updateSplitState()
+        self.view.layoutSubtreeIfNeeded()
+        self.rebalancePanes(in: self)
         self.scheduleRatioRebalance()
         
         window.makeFirstResponderDiscardingMarkedText(newEditorViewController.textView)
@@ -2038,26 +2040,24 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             let thickness = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
             let dividerThickness = splitView.dividerThickness
             
-            // The toolbar, tab bar and status bar are laid out over the top and bottom of the
-            // window, so the panes at those edges show less than their split item's height.
-            // Balance the visible areas instead of the raw split item frames.
             var leadingInset: CGFloat = 0
             var trailingInset: CGFloat = 0
-            if !splitView.isVertical, group === self, let window = self.view.window {
-                let content = self.view.convert(window.contentLayoutRect, from: nil)
-                leadingInset = max(0, self.view.bounds.maxY - content.maxY)
-                trailingInset = (window.windowController?.contentViewController as? WindowContentViewController)?.statusBarHeight ?? 0
+            if !splitView.isVertical, group === self {
+                let insets = group.view.safeAreaInsets
+                leadingInset = max(0, insets.top)
+                trailingInset = max(0, insets.bottom)
             }
             
             let available = thickness - dividerThickness * CGFloat(items.count - 1) - leadingInset - trailingInset
             
             if available > 0 {
-                let share = available / CGFloat(items.count)
+                let share = floor(available / CGFloat(items.count))
                 
                 for index in 0..<(items.count - 1) {
                     let position = leadingInset + share * CGFloat(index + 1) + dividerThickness * CGFloat(index)
                     splitView.setPosition(position, ofDividerAt: index)
                 }
+                splitView.layoutSubtreeIfNeeded()
             }
         }
         
@@ -2397,7 +2397,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     private func makeSplitViewItem(for viewController: NSViewController) -> NSSplitViewItem {
         
         let splitViewItem = NSSplitViewItem(viewController: viewController)
-        splitViewItem.minimumThickness = 100
+        splitViewItem.minimumThickness = 80
+        splitViewItem.holdingPriority = .defaultLow
         
         return splitViewItem
     }
@@ -3430,6 +3431,108 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     
     // MARK: In-Window Document & Report Opening
+    
+    /// Opens all provided documents as tabs in the focused pane in one batch, then focuses the preferred item.
+    func openAllManagedDocuments(
+        _ entries: [(liveDoc: Document?, record: StoredDocumentRecord?)],
+        focusing preferredRecordID: String? = nil
+    ) {
+        guard !entries.isEmpty,
+              let targetPane = self.focusedChild ?? self.editorViewControllers.first
+        else { return }
+        
+        var openedDocs: [Document] = []
+        var preferredDoc: Document?
+        
+        self.isRestoringPersistedPaneTabs = true
+        defer {
+            self.isRestoringPersistedPaneTabs = false
+            self.savePaneTabsSessionToDatabase()
+        }
+        
+        for entry in entries {
+            let resolvedDoc: Document?
+            if let liveDoc = entry.liveDoc {
+                if !self.editorViewControllers.contains(where: { $0.tabs.contains(where: { $0.document === liveDoc }) }) {
+                    self.addTab(liveDoc, to: targetPane, copying: targetPane.textView)
+                }
+                resolvedDoc = liveDoc
+            } else if let record = entry.record {
+                resolvedDoc = self.resolveOrCreateDocument(for: record, in: targetPane)
+            } else {
+                resolvedDoc = nil
+            }
+            
+            if let doc = resolvedDoc {
+                openedDocs.append(doc)
+                if let preferredRecordID,
+                   (doc.databaseDocumentID == preferredRecordID || entry.record?.id == preferredRecordID)
+                {
+                    preferredDoc = doc
+                }
+            }
+        }
+        
+        if let docToFocus = preferredDoc ?? openedDocs.first {
+            self.openOrFocusDocument(docToFocus, splitRight: false)
+        }
+    }
+    
+    
+    /// Finds an existing open document for `record` in this window or creates/loads one into `targetPane`.
+    private func resolveOrCreateDocument(for record: StoredDocumentRecord, in targetPane: EditorViewController) -> Document? {
+        
+        let normalizedRecordID = record.id.hasPrefix("doc:") ? String(record.id.dropFirst(4)) : record.id
+        
+        for pane in self.editorViewControllers {
+            for tab in pane.tabs {
+                let doc = tab.document
+                let matchesPath = record.filePath.map { doc.fileURL?.path(percentEncoded: false) == $0 } ?? false
+                let docCleanID = doc.databaseDocumentID.hasPrefix("doc:") ? String(doc.databaseDocumentID.dropFirst(4)) : doc.databaseDocumentID
+                let matchesID = (docCleanID == normalizedRecordID) || (doc.databaseDocumentID == record.id)
+                if matchesPath || matchesID {
+                    return doc
+                }
+            }
+        }
+        
+        if let filePath = record.filePath, FileManager.default.fileExists(atPath: filePath) {
+            let fileURL = URL(filePath: filePath)
+            if let existing = NSDocumentController.shared.document(for: fileURL) as? Document {
+                if !self.editorViewControllers.contains(where: { $0.tabs.contains(where: { $0.document === existing }) }) {
+                    self.addTab(existing, to: targetPane, copying: targetPane.textView)
+                }
+                return existing
+            }
+            let typeName = (try? NSDocumentController.shared.typeForContents(of: fileURL)) ?? UTType.plainText.identifier
+            if let fileDoc = try? Document(contentsOf: fileURL, ofType: typeName) {
+                NSDocumentController.shared.addDocument(fileDoc)
+                self.addTab(fileDoc, to: targetPane, copying: targetPane.textView)
+                return fileDoc
+            }
+        }
+        
+        guard let doc = try? self.makePaneDocument() else { return nil }
+        doc.databaseDocumentID = record.id
+        doc.displayName = record.title
+        doc.setSyntax(name: record.syntax)
+        if !record.content.isEmpty {
+            doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: record.content)
+        }
+        doc.updateChangeCount(.changeCleared)
+        doc.hasUncommittedChanges = false
+        
+        if let highlightsData = record.highlightsJSON.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([TextHighlight].self, from: highlightsData),
+           !decoded.isEmpty
+        {
+            doc.restoreHighlightsFromDatabase(decoded)
+        }
+        
+        self.addTab(doc, to: targetPane, copying: targetPane.textView)
+        return doc
+    }
+    
     
     /// Opens or focuses a live `Document` directly inside the focused pane (never splits).
     func openOrFocusDocument(_ document: Document, splitRight: Bool = false) {

@@ -97,6 +97,7 @@ final class ContentViewController: NSSplitViewController {
     private var windowCloseObserver: NSObjectProtocol?
     private var centerEscMonitor: Any?
     private var centerHostView: NSHostingView<WorkspaceCenterHostView>?
+    private let centerHostModel = WorkspaceCenterHostModel()
     private let weeklyReportState = WeeklyReportCenterState()
     private let documentCenterState = DocumentCenterState()
     
@@ -263,12 +264,12 @@ final class ContentViewController: NSSplitViewController {
                 self.documentCenterState.refresh()
         }
         
-        let rootView = self.makeCenterHostView(selectedKind: kind)
+        self.centerHostModel.selectedKind = kind
         if let existing = self.centerHostView {
-            existing.rootView = rootView
             existing.alphaValue = 1
             existing.isHidden = false
         } else {
+            let rootView = self.makeCenterHostView()
             let hostingView = NSHostingView(rootView: rootView)
             hostingView.translatesAutoresizingMaskIntoConstraints = false
             self.view.addSubview(hostingView, positioned: .above, relativeTo: self.splitView)
@@ -306,10 +307,10 @@ final class ContentViewController: NSSplitViewController {
     }
     
     
-    private func makeCenterHostView(selectedKind: WorkspaceCenterKind) -> WorkspaceCenterHostView {
+    private func makeCenterHostView() -> WorkspaceCenterHostView {
         
         WorkspaceCenterHostView(
-            selectedKind: selectedKind,
+            hostModel: self.centerHostModel,
             weeklyReportState: self.weeklyReportState,
             documentCenterState: self.documentCenterState,
             onDismiss: { [weak self] in
@@ -327,6 +328,15 @@ final class ContentViewController: NSSplitViewController {
                 } else if let record {
                     docVC.openStoredDocumentRecord(record)
                 }
+                self.hideInWindowCenter()
+            },
+            onOpenAllManagedDocuments: { [weak self] items in
+                guard let self, let docVC = self.documentViewController else { return }
+                let entries = items.map { item in
+                    (liveDoc: self.documentCenterState.liveDocument(for: item.id), record: item.storedRecord)
+                }
+                let preferredRecordID = items.first(where: { $0.id == self.documentCenterState.selectedID })?.dbRecordID
+                docVC.openAllManagedDocuments(entries, focusing: preferredRecordID)
                 self.hideInWindowCenter()
             },
             onDeleteManagedDocument: { [weak self] item in
@@ -583,22 +593,29 @@ private extension NSViewController {
 }
 
 
+@MainActor @Observable
+private final class WorkspaceCenterHostModel {
+    var selectedKind: WorkspaceCenterKind = .documents
+}
+
+
 private struct WorkspaceCenterHostView: View {
     
-    let selectedKind: WorkspaceCenterKind
+    let hostModel: WorkspaceCenterHostModel
     let weeklyReportState: WeeklyReportCenterState
     let documentCenterState: DocumentCenterState
     
     var onDismiss: () -> Void
     var onOpenWeeklyReport: (StoredWeeklyReport) -> Void
     var onOpenManagedDocument: (Document?, StoredDocumentRecord?) -> Void
+    var onOpenAllManagedDocuments: ([DocumentCenterState.ManagedDocumentItem]) -> Void
     var onDeleteManagedDocument: (DocumentCenterState.ManagedDocumentItem) -> Void
     var onCreateNewDocument: () -> Void
     
     var body: some View {
         
         Group {
-            switch self.selectedKind {
+            switch self.hostModel.selectedKind {
                 case .weeklyReports:
                     WeeklyReportCenterView(
                         state: self.weeklyReportState,
@@ -609,6 +626,7 @@ private struct WorkspaceCenterHostView: View {
                     DocumentCenterView(
                         state: self.documentCenterState,
                         onOpenDocument: self.onOpenManagedDocument,
+                        onOpenAllDocuments: self.onOpenAllManagedDocuments,
                         onDeleteDocument: self.onDeleteManagedDocument,
                         onCreateNewDocument: self.onCreateNewDocument,
                         onDismiss: self.onDismiss

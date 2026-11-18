@@ -444,7 +444,6 @@ struct WeeklyReportCenterView: View {
                                     self.delete(report: report, in: flatReports)
                                 }
                             )
-                            .equatable()
                         }
                     }
                 }
@@ -552,20 +551,10 @@ struct WeeklyReportCenterView: View {
                     .padding(.vertical, 16)
                     .background(Color(nsColor: .textBackgroundColor))
             } else {
-                ScrollView {
-                    let preview = report.content.count > 4_000
-                        ? String(report.content.prefix(4_000)) + "\n\n……（仅预览前 4,000 字，点击右上角「在编辑器打开」查看完整内容）"
-                        : report.content
-                    Text(preview)
-                        .font(.system(size: 13))
-                        .lineSpacing(4)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 20)
-                        .id(report.id)
-                }
-                .background(Color(nsColor: .textBackgroundColor))
+                let preview = report.content.count > 12_000
+                    ? String(report.content.prefix(12_000)) + "\n\n……（仅预览前 12,000 字，点击右上角「在编辑器打开」查看完整内容）"
+                    : report.content
+                CenterPreviewTextView(text: preview)
             }
         }
     }
@@ -900,7 +889,7 @@ struct WeeklyReportCenterView: View {
 }
 
 
-private struct WeeklyReportSidebarRow: View, Equatable {
+private struct WeeklyReportSidebarRow: View {
     
     let report: StoredWeeklyReport
     let isSelected: Bool
@@ -910,13 +899,6 @@ private struct WeeklyReportSidebarRow: View, Equatable {
     
     @State private var isHovered = false
     @State private var isTrashHovered = false
-    
-    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.report.id == rhs.report.id
-            && lhs.report.title == rhs.report.title
-            && lhs.report.periodLabel == rhs.report.periodLabel
-            && lhs.isSelected == rhs.isSelected
-    }
     
     var body: some View {
         
@@ -969,11 +951,13 @@ private struct WeeklyReportSidebarRow: View, Equatable {
         .onHover { hovering in
             self.isHovered = hovering
         }
-        .onTapGesture(count: 2) {
-            self.onOpen()
-        }
+        // Single-click selects immediately with 0ms delay; double-click opens directly.
         .onTapGesture {
-            self.onSelect()
+            if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
+                self.onOpen()
+            } else {
+                self.onSelect()
+            }
         }
         .contextMenu {
             Button("在编辑器打开") { self.onOpen() }

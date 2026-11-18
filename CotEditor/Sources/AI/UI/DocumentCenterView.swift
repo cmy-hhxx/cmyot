@@ -23,6 +23,82 @@ import AppKit
 import Observation
 import SwiftUI
 
+/// High-speed reusable AppKit text previewer so switching between large documents/reports
+/// happens in <1ms with zero SwiftUI `Text` layout teardown and 120fps scrolling.
+struct CenterPreviewTextView: NSViewRepresentable {
+    
+    let text: String
+    var monospace: Bool = false
+    
+    func makeNSView(context: Context) -> NSScrollView {
+        
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .textBackgroundColor
+        scrollView.borderType = .noBorder
+        scrollView.scrollerStyle = .overlay
+        
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.isRichText = false
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
+        textView.isAutomaticLinkDetectionEnabled = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.textContainerInset = NSSize(width: 24, height: 20)
+        textView.minSize = .zero
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = 4.5
+        textView.defaultParagraphStyle = paragraphStyle
+        textView.font = self.monospace
+            ? .monospacedSystemFont(ofSize: 12.5, weight: .regular)
+            : .systemFont(ofSize: 13)
+        textView.textColor = .labelColor
+        
+        scrollView.documentView = textView
+        return scrollView
+    }
+    
+    
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        
+        let targetFont: NSFont = self.monospace
+            ? .monospacedSystemFont(ofSize: 12.5, weight: .regular)
+            : .systemFont(ofSize: 13)
+        if textView.font != targetFont {
+            textView.font = targetFont
+        }
+        
+        if textView.string != self.text {
+            let paragraphStyle = NSMutableParagraphStyle()
+            paragraphStyle.lineSpacing = 4.5
+            let attributed = NSAttributedString(string: self.text, attributes: [
+                .font: targetFont,
+                .foregroundColor: NSColor.labelColor,
+                .paragraphStyle: paragraphStyle,
+            ])
+            textView.textStorage?.setAttributedString(attributed)
+            scrollView.contentView.scroll(to: .zero)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+    }
+}
+
+
 @MainActor @Observable final class DocumentCenterState {
     
     struct ManagedDocumentItem: Identifiable, Equatable {
@@ -34,7 +110,6 @@ import SwiftUI
         let syntax: String
         let content: String
         let previewText: String
-        let searchableText: String
         let updatedAt: Date
         let isOpenNow: Bool
         let isDirty: Bool
@@ -108,7 +183,6 @@ import SwiftUI
             )
             let fallbackID = filePath ?? (doc.databaseDocumentID.hasPrefix("doc:") ? doc.databaseDocumentID : "doc:\(doc.databaseDocumentID)")
             let preview = Self.buildPreviewText(from: content)
-            let searchCorpus = "\(doc.displayName)\n\(filePath ?? "")\n\(content.prefix(2_000))".lowercased()
             
             merged.append(ManagedDocumentItem(
                 id: key,
@@ -119,7 +193,6 @@ import SwiftUI
                 syntax: doc.syntaxName,
                 content: content,
                 previewText: preview,
-                searchableText: searchCorpus,
                 updatedAt: modifiedDate,
                 isOpenNow: true,
                 isDirty: dirty,
@@ -141,7 +214,6 @@ import SwiftUI
             guard usedKeys.insert(key).inserted else { continue }
             
             let preview = Self.buildPreviewText(from: record.content)
-            let searchCorpus = "\(record.title)\n\(record.filePath ?? "")\n\(record.content.prefix(2_000))".lowercased()
             merged.append(ManagedDocumentItem(
                 id: key,
                 dbRecordID: record.id,
@@ -151,7 +223,6 @@ import SwiftUI
                 syntax: record.syntax,
                 content: record.content,
                 previewText: preview,
-                searchableText: searchCorpus,
                 updatedAt: record.updatedAt,
                 isOpenNow: false,
                 isDirty: false,
@@ -168,11 +239,15 @@ import SwiftUI
     
     private func recomputeDisplayedItems() {
         
-        let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtered = if query.isEmpty {
             self.items
         } else {
-            self.items.filter { $0.searchableText.contains(query) }
+            self.items.filter { item in
+                item.title.localizedCaseInsensitiveContains(query)
+                    || (item.filePath?.localizedCaseInsensitiveContains(query) ?? false)
+                    || item.content.prefix(2_000).localizedCaseInsensitiveContains(query)
+            }
         }
         
         let sorted = filtered.sorted { lhs, rhs in
@@ -195,8 +270,8 @@ import SwiftUI
         if content.isEmpty {
             return "（空文档）"
         }
-        if content.count > 4_000 {
-            return String(content.prefix(4_000)) + "\n\n……（仅预览前 4,000 字，点击右上角「打开」查看完整内容）"
+        if content.count > 12_000 {
+            return String(content.prefix(12_000)) + "\n\n……（仅预览前 12,000 字，点击右上角「在编辑器打开」查看完整内容）"
         }
         return content
     }
@@ -240,6 +315,7 @@ struct DocumentCenterView: View {
     
     @Bindable var state: DocumentCenterState
     var onOpenDocument: ((Document?, StoredDocumentRecord?) -> Void)?
+    var onOpenAllDocuments: (([DocumentCenterState.ManagedDocumentItem]) -> Void)?
     var onDeleteDocument: ((DocumentCenterState.ManagedDocumentItem) -> Void)?
     var onCreateNewDocument: (() -> Void)?
     var onDismiss: (() -> Void)?
@@ -267,7 +343,7 @@ struct DocumentCenterView: View {
                 
                 Group {
                     if let item = activeItem {
-                        self.detailView(for: item, displayedItems: displayedItems)
+                        self.detailView(for: item)
                     } else {
                         self.emptyView
                     }
@@ -383,6 +459,31 @@ struct DocumentCenterView: View {
                 .frame(height: 28)
                 .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.06), lineWidth: 1))
+                
+                HStack(spacing: 6) {
+                    Button {
+                        self.openAll(items: items)
+                    } label: {
+                        Label("打开全部 (\(items.count))", systemImage: "square.stack.3d.up")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(items.isEmpty)
+                    .pointerStyle(.link)
+                    .help("一键将列表中的所有文档作为标签页在当前窗口打开")
+                    
+                    if let onCreateNewDocument = self.onCreateNewDocument {
+                        Button {
+                            onCreateNewDocument()
+                        } label: {
+                            Label("新建", systemImage: "plus")
+                        }
+                        .controlSize(.small)
+                        .pointerStyle(.link)
+                        .help("新建空白文档")
+                    }
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 12)
@@ -409,7 +510,6 @@ struct DocumentCenterView: View {
                                 self.delete(item: item, in: items)
                             }
                         )
-                        .equatable()
                     }
                 }
                 .padding(.horizontal, 8)
@@ -430,10 +530,7 @@ struct DocumentCenterView: View {
     
     // MARK: Detail View
     
-    private func detailView(
-        for item: DocumentCenterState.ManagedDocumentItem,
-        displayedItems: [DocumentCenterState.ManagedDocumentItem]
-    ) -> some View {
+    private func detailView(for item: DocumentCenterState.ManagedDocumentItem) -> some View {
         
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 10) {
@@ -518,17 +615,7 @@ struct DocumentCenterView: View {
                 .fill(Color.primary.opacity(0.06))
                 .frame(height: 1)
             
-            ScrollView {
-                Text(item.previewText)
-                    .font(.system(size: 13))
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 20)
-                    .id(item.id)
-            }
-            .background(Color(nsColor: .textBackgroundColor))
+            CenterPreviewTextView(text: item.previewText)
         }
     }
     
@@ -580,6 +667,19 @@ struct DocumentCenterView: View {
             liveDoc.showWindows()
         } else if let path = item.filePath, FileManager.default.fileExists(atPath: path) {
             NSDocumentController.shared.openDocument(withContentsOf: URL(filePath: path), display: true) { _, _, _ in }
+        }
+    }
+    
+    
+    private func openAll(items: [DocumentCenterState.ManagedDocumentItem]) {
+        
+        guard !items.isEmpty else { return }
+        if let onOpenAllDocuments = self.onOpenAllDocuments {
+            onOpenAllDocuments(items)
+        } else {
+            for item in items {
+                self.open(item: item)
+            }
         }
     }
     
@@ -642,7 +742,7 @@ struct DocumentCenterView: View {
 }
 
 
-private struct DocumentSidebarRow: View, Equatable {
+private struct DocumentSidebarRow: View {
     
     let item: DocumentCenterState.ManagedDocumentItem
     let isSelected: Bool
@@ -653,10 +753,6 @@ private struct DocumentSidebarRow: View, Equatable {
     
     @State private var isHovered = false
     @State private var isTrashHovered = false
-    
-    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.item == rhs.item && lhs.isSelected == rhs.isSelected && lhs.statusColor == rhs.statusColor
-    }
     
     var body: some View {
         
@@ -707,11 +803,13 @@ private struct DocumentSidebarRow: View, Equatable {
         .onHover { hovering in
             self.isHovered = hovering
         }
-        .onTapGesture(count: 2) {
-            self.onOpen()
-        }
+        // Single-click selects immediately with 0ms delay; double-click (clickCount >= 2) opens directly.
         .onTapGesture {
-            self.onSelect()
+            if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
+                self.onOpen()
+            } else {
+                self.onSelect()
+            }
         }
         .contextMenu {
             Button("在当前窗口打开") { self.onOpen() }
