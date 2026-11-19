@@ -28,8 +28,8 @@ import Foundation
 /// The interface language of the app.
 ///
 /// This fork pins the app language through the `AppleLanguages` user default in the app's own
-/// preferences rather than following the system language. Therefore, changing the language can
-/// only be applied by relaunching the app.
+/// preferences rather than following the system language, defaulting to Simplified Chinese.
+/// Changing the language is applied after relaunching the app.
 enum AppLanguage: String, CaseIterable, Sendable {
     
     /// Simplified Chinese.
@@ -38,13 +38,36 @@ enum AppLanguage: String, CaseIterable, Sendable {
     /// English.
     case english = "en"
     
+    static let explicitPreferenceKey = "cotPreferredLanguage"
     
-    /// The language applied to the currently running app.
+    
+    /// The language applied to the currently running app (defaults to Simplified Chinese).
     static var current: AppLanguage {
         
-        let identifier = UserDefaults.standard.stringArray(forKey: "AppleLanguages")?.first
+        self.current(in: .standard)
+    }
+    
+    
+    /// Reads the configured language from `defaults`, defaulting to Simplified Chinese.
+    static func current(in defaults: UserDefaults) -> AppLanguage {
         
-        return (identifier?.lowercased().hasPrefix("zh") == true) ? .simplifiedChinese : .english
+        if let explicit = defaults.string(forKey: Self.explicitPreferenceKey) {
+            return explicit.lowercased().hasPrefix("en") ? .english : .simplifiedChinese
+        }
+        
+        if let appleLang = defaults.stringArray(forKey: "AppleLanguages")?.first?.lowercased() {
+            if appleLang.hasPrefix("en") { return .english }
+            if appleLang.hasPrefix("zh") { return .simplifiedChinese }
+        }
+        
+        return .simplifiedChinese
+    }
+    
+    
+    /// The `Locale` matching this language.
+    var locale: Locale {
+        
+        Locale(identifier: self.rawValue)
     }
     
     
@@ -58,10 +81,20 @@ enum AppLanguage: String, CaseIterable, Sendable {
     }
     
     
-    /// Writes the receiver as the preferred app language for the next launch.
-    func apply() {
+    /// Ensures Simplified Chinese is pinned on first launch before AppKit loads localized nibs/menus.
+    static func ensureDefaultInitialized(defaults: UserDefaults = .standard) {
         
-        UserDefaults.standard.set([self.rawValue], forKey: "AppleLanguages")
-        UserDefaults.standard.synchronize()
+        guard defaults.string(forKey: Self.explicitPreferenceKey) == nil else { return }
+        
+        defaults.set(Self.simplifiedChinese.rawValue, forKey: Self.explicitPreferenceKey)
+        defaults.set([Self.simplifiedChinese.rawValue], forKey: "AppleLanguages")
+    }
+    
+    
+    /// Writes the receiver as the preferred app language for the next launch.
+    func apply(to defaults: UserDefaults = .standard) {
+        
+        defaults.set(self.rawValue, forKey: Self.explicitPreferenceKey)
+        defaults.set([self.rawValue], forKey: "AppleLanguages")
     }
 }

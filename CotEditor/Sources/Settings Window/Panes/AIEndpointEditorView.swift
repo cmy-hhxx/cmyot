@@ -44,6 +44,7 @@ struct AIEndpointEditorView: View {
     
     @State private var draft: AIEndpointProfile
     @State private var apiKey: String
+    @State private var isAPIKeyVisible = false
     @State private var customHeadersText: String
     @State private var models: [AIModel] = []
     @State private var isFetchingModels = false
@@ -152,13 +153,33 @@ struct AIEndpointEditorView: View {
                         .gridColumnAlignment(.trailing)
                         .frame(minWidth: 76, alignment: .trailing)
                     
-                    SecureField(text: self.$apiKey, prompt: Text(verbatim: self.apiKeyPrompt)) {
-                        Text("ai.settings.apiKey.label", tableName: "AI")
+                    HStack(spacing: 6) {
+                        Group {
+                            if self.isAPIKeyVisible {
+                                TextField(text: self.$apiKey, prompt: Text(verbatim: self.apiKeyPrompt)) {
+                                    Text("ai.settings.apiKey.label", tableName: "AI")
+                                }
+                            } else {
+                                SecureField(text: self.$apiKey, prompt: Text(verbatim: self.apiKeyPrompt)) {
+                                    Text("ai.settings.apiKey.label", tableName: "AI")
+                                }
+                            }
+                        }
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(!self.draft.endpoint.requiresAPIKey)
+                        .help(Text("ai.settings.apiKey.caption", tableName: "AI"))
+                        
+                        Button {
+                            self.isAPIKeyVisible.toggle()
+                        } label: {
+                            Image(systemName: self.isAPIKeyVisible ? "eye.slash" : "eye")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(!self.draft.endpoint.requiresAPIKey)
+                        .help(self.isAPIKeyVisible ? "隐藏 API Key" : "显示 API Key")
                     }
-                    .textFieldStyle(.roundedBorder)
                     .frame(width: Self.controlWidth)
-                    .disabled(!self.draft.endpoint.requiresAPIKey)
-                    .help(Text("ai.settings.apiKey.caption", tableName: "AI"))
                 }
                 
                 GridRow {
@@ -220,6 +241,26 @@ struct AIEndpointEditorView: View {
                         }
                     }
                     .frame(width: Self.controlWidth)
+                }
+                
+                GridRow {
+                    Text("推理深度")
+                        .gridColumnAlignment(.trailing)
+                        .frame(minWidth: 76, alignment: .trailing)
+                    
+                    Picker(selection: Binding(
+                        get: { self.draft.reasoningEffort ?? "low" },
+                        set: { self.draft.reasoningEffort = $0 }
+                    )) {
+                        Text("极速 (low)").tag("low")
+                        Text("关闭 (none)").tag("none")
+                        Text("均衡 (medium)").tag("medium")
+                        Text("深度 (high)").tag("high")
+                    } label: {
+                        EmptyView()
+                    }
+                    .labelsHidden()
+                    .fixedSize()
                 }
                 
                 GridRow {
@@ -295,6 +336,7 @@ struct AIEndpointEditorView: View {
         }
         .padding(20)
         .frame(width: 560)
+        .environment(\.locale, AppLanguage.current.locale)
         .task { await self.autoFetchModels() }
     }
     
@@ -428,7 +470,9 @@ struct AIEndpointEditorView: View {
         defer { self.isFetchingModels = false }
         
         do {
-            self.models = try await AIService.shared.fetchModels(configuration: self.configuration)
+            let fetched = try await AIService.shared.fetchModels(configuration: self.configuration)
+            self.models = fetched
+            self.draft.rememberModels(fetched.prefix(12).map(\.id))
         } catch {
             self.models = []
             self.fetchError = error.localizedDescription

@@ -168,9 +168,10 @@ extension NSAttributedString.Key {
         self.defaultObservers = [
             UserDefaults.standard.publisher(for: .autoLinkDetection, initial: true)
                 .removeDuplicates()
-                .sink { [unowned self] enabled in
+                .sink { [unowned self] _ in
+                    // Keep URLs as plain text without `.link` attributes; navigation requires Cmd + Click.
                     self.urlDetector?.cancel()
-                    self.urlDetector = enabled ? URLDetector(textStorage: self.textStorage) : nil
+                    self.urlDetector = nil
                 },
             UserDefaults.standard.publisher(for: .modes, initial: true)
                 .sink { [weak self] _ in self?.invalidateMode() },

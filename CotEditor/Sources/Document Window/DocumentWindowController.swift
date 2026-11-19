@@ -160,12 +160,20 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         self.appearanceModeObserver = UserDefaults.standard.publisher(for: .documentAppearance, initial: true)
             .sink { [weak self, weak window] value in
                 guard let window else { return }
-                window.appearance = switch value {
+                let targetAppearance: NSAppearance? = switch value {
                     case .default: nil
                     case .light: NSAppearance(named: .aqua)
                     case .dark: NSAppearance(named: .darkAqua)
                 }
-                window.toolbar?.validateVisibleItems()
+                let applyAppearance = {
+                    window.appearance = targetAppearance
+                    window.toolbar?.validateVisibleItems()
+                }
+                if window.isVisible, window.appearance != targetAppearance {
+                    window.performSmoothAppearanceTransition(duration: 0.28, updates: applyAppearance)
+                } else {
+                    applyAppearance()
+                }
                 _ = self
             }
         

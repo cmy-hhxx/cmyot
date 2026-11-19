@@ -668,11 +668,31 @@ extension EditorTextView {
     /// Deletes forward (fn-Delete / ^D).
     override func deleteForward(_ sender: Any?) {
         
-        guard self.hasMultipleInsertions else {
-            return super.deleteForward(sender)
+        guard self.isEditable else { return super.deleteForward(sender) }
+        
+        self.dismissedGhostCaretLocation = nil
+        
+        if !self.hasMultipleInsertions,
+           self.selectedRange.isEmpty,
+           let tokenRange = self.resolvedInlineImageTokenRangeForDeletion(backward: false),
+           self.shouldChangeText(in: tokenRange, replacementString: "")
+        {
+            self.clearGhostSuggestion(animated: false)
+            self.replaceCharacters(in: tokenRange, with: "")
+            self.didChangeText()
+            return
         }
         
-        guard self.multipleDelete(forward: true) else { return super.deleteForward(sender) }
+        guard self.hasMultipleInsertions else {
+            super.deleteForward(sender)
+            self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: false)
+            return
+        }
+        
+        guard self.multipleDelete(forward: true) else {
+            super.deleteForward(sender)
+            return
+        }
     }
     
     

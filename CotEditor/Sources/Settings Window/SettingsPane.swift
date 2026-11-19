@@ -61,6 +61,7 @@ struct SettingsFormPane<Content: View>: View {
             }
         }
         .frame(width: SettingsPaneLayout.width, height: SettingsPaneLayout.height)
+        .environment(\.locale, AppLanguage.current.locale)
     }
 }
 
@@ -80,35 +81,44 @@ enum SettingsPane: String, ControlUI.SettingsPane {
     /// The localized label.
     var label: String {
         
-        switch self {
+        let currentLanguage = AppLanguage.current
+        let locale = currentLanguage.locale
+        
+        return switch self {
             case .general:
                 String(localized: "SettingsPane.general.label",
                        defaultValue: "General",
-                       table: "Settings")
+                       table: "Settings",
+                       locale: locale)
             case .appearance:
                 String(localized: "SettingsPane.appearance.label",
                        defaultValue: "Appearance",
-                       table: "Settings")
+                       table: "Settings",
+                       locale: locale)
             case .window:
                 String(localized: "SettingsPane.window.label",
                        defaultValue: "Window",
-                       table: "Settings")
+                       table: "Settings",
+                       locale: locale)
             case .edit:
                 String(localized: "SettingsPane.edit.label",
                        defaultValue: "Edit",
-                       table: "Settings")
+                       table: "Settings",
+                       locale: locale)
             case .format:
                 String(localized: "SettingsPane.format.label",
                        defaultValue: "Format",
-                       table: "Settings")
+                       table: "Settings",
+                       locale: locale)
             case .keyBindings:
                 String(localized: "SettingsPane.keyBindings.label",
                        defaultValue: "Key Bindings",
-                       table: "Settings")
+                       table: "Settings",
+                       locale: locale)
             case .ai:
-                "AI"
+                (currentLanguage == .simplifiedChinese) ? "AI 服务" : "AI"
             case .aiPersona:
-                "AI Persona"
+                (currentLanguage == .simplifiedChinese) ? "AI 人设" : "AI Persona"
         }
     }
     

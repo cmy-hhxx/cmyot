@@ -39,7 +39,6 @@ struct EditSettingsView: View {
     @AppStorage(.autoTrimsTrailingWhitespace) private var autoTrimsTrailingWhitespace
     @AppStorage(.trimsWhitespaceOnlyLines) private var trimsWhitespaceOnlyLines
     
-    @AppStorage(.autoLinkDetection) private var autoLinkDetection
     @AppStorage(.highlightBraces) private var highlightBraces
     @AppStorage(.highlightSelectionInstance) private var highlightSelectionInstance
     
@@ -82,7 +81,6 @@ struct EditSettingsView: View {
             }
             
             Section {
-                Toggle(String(localized: "Link URLs in document", table: "EditSettings"), isOn: $autoLinkDetection)
                 Toggle(String(localized: "Highlight matching braces", table: "EditSettings"), isOn: $highlightBraces)
                 Toggle(String(localized: "Highlight instances of selected text", table: "EditSettings"), isOn: $highlightSelectionInstance)
             } header: {

@@ -123,6 +123,76 @@ import ValueRange
 }
 
 
+extension URLDetector {
+    
+    /// Synchronously detects a clickable URL at a UTF-16 offset within a single line of text,
+    /// without attaching `.link` attributes to the text storage.
+    nonisolated static func detectedURL(in line: String, at utf16Offset: Int) -> URL? {
+        
+        let nsLine = line as NSString
+        guard utf16Offset >= 0, utf16Offset < nsLine.length else { return nil }
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
+        
+        let fullRange = NSRange(location: 0, length: nsLine.length)
+        for match in detector.matches(in: line, range: fullRange) {
+            let trimmedRange = self.trimUnbalancedTrailingDelimiters(in: nsLine, range: match.range)
+            guard trimmedRange.length > 0, NSLocationInRange(utf16Offset, trimmedRange) else { continue }
+            
+            let rawText = nsLine.substring(with: trimmedRange)
+            if let cleanedURL = URL(string: rawText), cleanedURL.scheme != nil {
+                return cleanedURL
+            }
+            if let fallbackURL = match.url {
+                return fallbackURL
+            }
+        }
+        
+        return nil
+    }
+    
+    
+    private nonisolated static func trimUnbalancedTrailingDelimiters(in string: NSString, range: NSRange) -> NSRange {
+        
+        var adjusted = range
+        let trailingPunctuation = CharacterSet(charactersIn: ".,;!?，。；！？、】》」』\"'<>")
+        
+        while adjusted.length > 0 {
+            let lastLocation = adjusted.upperBound - 1
+            let lastChar = string.character(at: lastLocation)
+            guard let scalar = Unicode.Scalar(lastChar) else { break }
+            
+            if scalar == ")" || scalar == "）" {
+                let opening: String = (scalar == ")") ? "(" : "（"
+                let closing = String(scalar)
+                let substring = string.substring(with: adjusted)
+                let openCount = substring.components(separatedBy: opening).count - 1
+                let closeCount = substring.components(separatedBy: closing).count - 1
+                if closeCount > openCount {
+                    adjusted.length -= 1
+                    continue
+                }
+                break
+            } else if scalar == "]" {
+                let substring = string.substring(with: adjusted)
+                let openCount = substring.components(separatedBy: "[").count - 1
+                let closeCount = substring.components(separatedBy: "]").count - 1
+                if closeCount > openCount {
+                    adjusted.length -= 1
+                    continue
+                }
+                break
+            } else if trailingPunctuation.contains(scalar) {
+                adjusted.length -= 1
+                continue
+            }
+            break
+        }
+        
+        return adjusted
+    }
+}
+
+
 extension NSTextStorage {
     
     /// Links detected URLs in the content.

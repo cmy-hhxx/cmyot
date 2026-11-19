@@ -20,6 +20,7 @@
 //
 
 import AppKit
+import CoreText
 import Defaults
 import QuartzCore
 
@@ -757,56 +758,87 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     
     // MARK: Inline Ghost Completion Overlay & Micro-Animation
     
-    /// Shows an inline gray next-phrase candidate beside the caret with a crisp Tab micro-badge.
-    func showGhostSuggestion(_ text: String, at caretRect: NSRect, font: NSFont, lineHeight: CGFloat) {
+    /// Shows an inline gray next-phrase candidate beside the caret aligned precisely with the text baseline,
+    /// returning the horizontal advance width (from `caretRect.minX`) required for any trailing text shift.
+    @discardableResult
+    func showGhostSuggestion(
+        _ text: String,
+        at caretRect: NSRect,
+        font: NSFont,
+        lineHeight: CGFloat,
+        baselineOffset: CGFloat,
+        trailingLineAdvance: CGFloat = 0,
+        animateEntrance: Bool = true
+    ) -> CGFloat {
         
         guard !text.isEmpty,
               let textView = self.textView,
               textView.window?.isKeyWindow == true,
               let hostLayer = self.ensureClippedHostLayer(for: textView)
-        else { return }
+        else { return 0 }
         
         self.ensureGhostLayers(in: hostLayer)
-        guard let container = self.ghostContainerLayer else { return }
+        guard let container = self.ghostContainerLayer else { return 0 }
         
         let scale = textView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
-        let textAttributes: [NSAttributedString.Key: Any] = [.font: font]
-        let textSize = (text as NSString).size(withAttributes: textAttributes)
-        let rowHeight = max(lineHeight, ceil(textSize.height))
-        
-        let badgeFont = NSFont.systemFont(ofSize: 9.5, weight: .semibold)
-        let badgeText = "Tab"
-        let badgeTextSize = (badgeText as NSString).size(withAttributes: [.font: badgeFont])
-        let badgeWidth = ceil(badgeTextSize.width) + 10
-        let badgeHeight = min(15.0, max(13.0, rowHeight - 3))
+        let ghostTextColor = (textView.theme?.text.color ?? NSColor.labelColor).withAlphaComponent(0.42)
+        let attrText = NSAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: ghostTextColor,
+        ])
+        let fullCTLine = CTLineCreateWithAttributedString(attrText)
+        let rawTextWidth = ceil(CGFloat(CTLineGetTypographicBounds(fullCTLine, nil, nil, nil)))
+        let rowHeight = max(lineHeight, ceil(font.ascender - font.descender + 2))
         
         let startX = caretRect.maxX + 1.5
         let availableWidth = max(28, textView.bounds.width - startX - 10)
-        let desiredWidth = ceil(textSize.width) + 6 + badgeWidth + 4
-        let containerWidth = ceil(min(desiredWidth, availableWidth))
-        let showsBadge = (ceil(textSize.width) + 6 + badgeWidth) <= availableWidth
-        let textDrawWidth = showsBadge ? ceil(textSize.width) + 2 : max(20, containerWidth - 2)
+        let trailingReserve = trailingLineAdvance > 0 ? ceil(trailingLineAdvance) : 0
         
-        let verticalOffset = max(0, (rowHeight - ceil(textSize.height)) / 2)
-        let ghostTextColor = (textView.theme?.text.color ?? NSColor.labelColor).withAlphaComponent(0.45)
-        let badgeBgColor = NSColor.controlAccentColor.withAlphaComponent(0.14)
-        let badgeBorderColor = NSColor.controlAccentColor.withAlphaComponent(0.35)
-        let badgeFgColor = NSColor.controlAccentColor.withAlphaComponent(0.90)
+        let badgeFont = NSFont.systemFont(ofSize: 9, weight: .medium)
+        let badgeText = "Tab"
+        let badgeTextSize = (badgeText as NSString).size(withAttributes: [.font: badgeFont])
+        let badgeWidth = ceil(badgeTextSize.width) + 9
+        let badgeHeight = min(14.5, max(12.5, rowHeight - 4))
         
+        let maxTextWidth = max(24, availableWidth - (trailingReserve > 0 ? 4 : badgeWidth + 10))
+        let drawnTextWidth = min(rawTextWidth, maxTextWidth)
+        let ghostAdvanceFromStartX = drawnTextWidth + 2
+        
+        let badgeGapAfterGhost: CGFloat = trailingReserve > 0 ? (trailingReserve + 6) : 5
+        let badgeX = ghostAdvanceFromStartX + badgeGapAfterGhost
+        let showsBadge = (trailingReserve <= 120) && (badgeX + badgeWidth <= availableWidth)
+        let containerWidth = ceil(showsBadge ? (badgeX + badgeWidth + 2) : ghostAdvanceFromStartX)
+        
+        let cgBaselineY = max(2, rowHeight - baselineOffset)
         let imageSize = NSSize(width: containerWidth, height: rowHeight)
-        let renderedImage = NSImage(size: imageSize, flipped: true) { _ in
-            let paragraphStyle = NSMutableParagraphStyle()
-            paragraphStyle.lineBreakMode = .byTruncatingTail
-            let attrText = NSAttributedString(string: text, attributes: [
-                .font: font,
-                .foregroundColor: ghostTextColor,
-                .paragraphStyle: paragraphStyle,
-            ])
-            attrText.draw(in: NSRect(x: 0, y: verticalOffset, width: textDrawWidth, height: ceil(textSize.height) + 2))
+        
+        let badgeBgColor = NSColor.controlAccentColor.withAlphaComponent(0.10)
+        let badgeBorderColor = NSColor.controlAccentColor.withAlphaComponent(0.28)
+        let badgeFgColor = NSColor.controlAccentColor.withAlphaComponent(0.85)
+        
+        let renderedImage = NSImage(size: imageSize, flipped: false) { _ in
+            if let ctx = NSGraphicsContext.current?.cgContext {
+                ctx.saveGState()
+                ctx.clip(to: CGRect(x: 0, y: 0, width: drawnTextWidth + 1, height: rowHeight))
+                ctx.textMatrix = .identity
+                ctx.textPosition = CGPoint(x: 0, y: cgBaselineY)
+                if rawTextWidth > maxTextWidth {
+                    let ellipsis = NSAttributedString(string: "…", attributes: [.font: font, .foregroundColor: ghostTextColor])
+                    let truncToken = CTLineCreateWithAttributedString(ellipsis)
+                    if let truncated = CTLineCreateTruncatedLine(fullCTLine, Double(maxTextWidth), .end, truncToken) {
+                        CTLineDraw(truncated, ctx)
+                    } else {
+                        CTLineDraw(fullCTLine, ctx)
+                    }
+                } else {
+                    CTLineDraw(fullCTLine, ctx)
+                }
+                ctx.restoreGState()
+            }
             
             if showsBadge {
-                let badgeX = ceil(textSize.width) + 6
-                let badgeY = max(0, (rowHeight - badgeHeight) / 2)
+                let capMidY = cgBaselineY + max(4, font.capHeight / 2)
+                let badgeY = min(max(1, capMidY - badgeHeight / 2), max(1, rowHeight - badgeHeight - 1))
                 let badgeRect = NSRect(x: badgeX, y: badgeY, width: badgeWidth, height: badgeHeight)
                 let badgePath = NSBezierPath(roundedRect: badgeRect, xRadius: 3.5, yRadius: 3.5)
                 badgeBgColor.setFill()
@@ -820,7 +852,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
                     .foregroundColor: badgeFgColor,
                 ])
                 let bx = badgeRect.minX + (badgeWidth - badgeTextSize.width) / 2
-                let by = badgeRect.minY + (badgeHeight - badgeTextSize.height) / 2 - 0.5
+                let by = badgeRect.minY + (badgeHeight - badgeTextSize.height) / 2
                 badgeAttr.draw(at: NSPoint(x: bx, y: by))
             }
             return true
@@ -843,26 +875,26 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         container.opacity = 1.0
         CATransaction.commit()
         
-        let easeOut = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+        if animateEntrance && !AnimationConstants.isReducedMotionEnabled {
+            let easeOut = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+            
+            let fadeIn = CABasicAnimation(keyPath: "opacity")
+            fadeIn.fromValue = 0.0
+            fadeIn.toValue = 1.0
+            
+            let slideIn = CABasicAnimation(keyPath: "transform.translation.x")
+            slideIn.fromValue = 4.0
+            slideIn.toValue = 0.0
+            
+            let group = CAAnimationGroup()
+            group.animations = [fadeIn, slideIn]
+            group.duration = 0.11
+            group.timingFunction = easeOut
+            group.isRemovedOnCompletion = true
+            container.add(group, forKey: "ghostEnter")
+        }
         
-        let fadeIn = CABasicAnimation(keyPath: "opacity")
-        fadeIn.fromValue = 0.0
-        fadeIn.toValue = 1.0
-        
-        let slideIn = CABasicAnimation(keyPath: "transform.translation.x")
-        slideIn.fromValue = 5.0
-        slideIn.toValue = 0.0
-        
-        let scaleIn = CABasicAnimation(keyPath: "transform.scale")
-        scaleIn.fromValue = 0.98
-        scaleIn.toValue = 1.0
-        
-        let group = CAAnimationGroup()
-        group.animations = [fadeIn, slideIn, scaleIn]
-        group.duration = 0.12
-        group.timingFunction = easeOut
-        group.isRemovedOnCompletion = true
-        container.add(group, forKey: "ghostEnter")
+        return (startX - caretRect.minX) + drawnTextWidth + 2
     }
     
     

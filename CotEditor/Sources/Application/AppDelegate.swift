@@ -121,7 +121,16 @@ extension Logger {
     
     // MARK: Lifecycle
     
+    static func main() {
+        
+        AppLanguage.ensureDefaultInitialized()
+        _ = NSApplicationMain(CommandLine.argc, CommandLine.unsafeArgv)
+    }
+    
+    
     override init() {
+        
+        AppLanguage.ensureDefaultInitialized()
         
         // register default setting values
         var defaults = DefaultSettings.defaults

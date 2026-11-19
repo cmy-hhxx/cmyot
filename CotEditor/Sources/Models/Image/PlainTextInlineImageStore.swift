@@ -118,15 +118,17 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
         
         self.lock.withLock {
             if let normalized = NSImage(data: pngData) {
+                let logicalSize = Self.naturalImageSize(for: normalized)
                 self.imageCache[targetURL.path] = normalized
                 self.imageCache[filename] = normalized
-                self.imageSizeCache[targetURL.path] = normalized.size
-                self.imageSizeCache[filename] = normalized.size
+                self.imageSizeCache[targetURL.path] = logicalSize
+                self.imageSizeCache[filename] = logicalSize
             } else {
+                let logicalSize = Self.naturalImageSize(for: image)
                 self.imageCache[targetURL.path] = image
                 self.imageCache[filename] = image
-                self.imageSizeCache[targetURL.path] = image.size
-                self.imageSizeCache[filename] = image.size
+                self.imageSizeCache[targetURL.path] = logicalSize
+                self.imageSizeCache[filename] = logicalSize
             }
         }
         
@@ -192,11 +194,12 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
         if let url = self.imageURL(for: identifier, documentURL: documentURL),
            let loaded = NSImage(contentsOf: url)
         {
+            let logicalSize = Self.naturalImageSize(for: loaded)
             self.lock.withLock {
                 self.imageCache[cacheKey] = loaded
                 self.imageCache[identifier] = loaded
-                self.imageSizeCache[cacheKey] = loaded.size
-                self.imageSizeCache[identifier] = loaded.size
+                self.imageSizeCache[cacheKey] = logicalSize
+                self.imageSizeCache[identifier] = logicalSize
             }
             return loaded
         }
@@ -205,28 +208,104 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     }
     
     
+    /// Computes the true logical display size of an image while strictly preserving its pixel aspect ratio.
+    static func naturalImageSize(for image: NSImage) -> NSSize {
+        
+        let bitmaps = image.representations.compactMap { $0 as? NSBitmapImageRep }
+        if let rep = bitmaps.max(by: { $0.pixelsWide * $0.pixelsHigh < $1.pixelsWide * $1.pixelsHigh }),
+           rep.pixelsWide > 0, rep.pixelsHigh > 0
+        {
+            return Self.logicalSize(pixelWidth: rep.pixelsWide, pixelHeight: rep.pixelsHigh, hintedSize: image.size)
+        }
+        
+        var proposed = NSRect(origin: .zero, size: image.size)
+        if let cgImage = image.cgImage(forProposedRect: &proposed, context: nil, hints: nil),
+           cgImage.width > 0, cgImage.height > 0
+        {
+            return Self.logicalSize(pixelWidth: cgImage.width, pixelHeight: cgImage.height, hintedSize: image.size)
+        }
+        
+        return image.size
+    }
+    
+    
+    private static func logicalSize(pixelWidth: Int, pixelHeight: Int, hintedSize: NSSize) -> NSSize {
+        
+        let pxW = CGFloat(pixelWidth)
+        let pxH = CGFloat(pixelHeight)
+        let aspectRatio = pxW / pxH
+        
+        let logicalWidth: CGFloat
+        if hintedSize.width > 0 {
+            let density = pxW / hintedSize.width
+            if abs(density - 2.0) < 0.15 {
+                logicalWidth = pxW / 2.0
+            } else if abs(density - 3.0) < 0.15 {
+                logicalWidth = pxW / 3.0
+            } else if density >= 0.85 && density <= 1.15 {
+                logicalWidth = pxW > 960 ? pxW / 2.0 : pxW
+            } else {
+                logicalWidth = hintedSize.width
+            }
+        } else {
+            logicalWidth = pxW > 960 ? pxW / 2.0 : pxW
+        }
+        
+        let logicalHeight = logicalWidth / aspectRatio
+        return NSSize(width: logicalWidth, height: logicalHeight)
+    }
+    
+    
+    /// Computes the maximum image width allowed inside a text container at `glyphX`.
+    static func effectiveMaxImageWidth(containerWidth: CGFloat, glyphX: CGFloat = 0) -> CGFloat {
+        
+        let usable = containerWidth - glyphX - 24
+        if usable.isFinite && usable > 0 {
+            return min(460, max(120, usable))
+        }
+        return 460
+    }
+    
+    
+    /// Returns an aspect-fit rectangle centered inside `bounds`, preserving exact `imageSize` proportions.
+    static func aspectFitRect(imageSize: NSSize, in bounds: NSRect) -> NSRect {
+        
+        guard imageSize.width > 0, imageSize.height > 0, bounds.width > 0, bounds.height > 0 else {
+            return bounds
+        }
+        let scale = min(bounds.width / imageSize.width, bounds.height / imageSize.height)
+        let width = imageSize.width * scale
+        let height = imageSize.height * scale
+        let x = bounds.minX + (bounds.width - width) / 2
+        let y = bounds.minY + (bounds.height - height) / 2
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+    
+    
     /// Returns the scaled card size (including padding) for an inline image token, or `nil` if unresolved.
     func cardSize(
         for identifier: String,
         documentURL: URL?,
-        maxImageWidth: CGFloat = 440,
-        maxImageHeight: CGFloat = 210
+        maxImageWidth: CGFloat = 460,
+        maxImageHeight: CGFloat = 260
     ) -> NSSize? {
         
         let cacheKey = self.cacheKey(for: identifier, documentURL: documentURL)
         let naturalSize: NSSize?
         if let cached = self.lock.withLock({ self.imageSizeCache[cacheKey] ?? self.imageSizeCache[identifier] }) {
             naturalSize = cached
+        } else if let img = self.image(for: identifier, documentURL: documentURL) {
+            naturalSize = Self.naturalImageSize(for: img)
         } else {
-            naturalSize = self.image(for: identifier, documentURL: documentURL)?.size
+            naturalSize = nil
         }
         
         guard let imgSize = naturalSize, imgSize.width > 0, imgSize.height > 0 else { return nil }
         
         let scale = min(maxImageWidth / imgSize.width, maxImageHeight / imgSize.height, 1.0)
-        let drawWidth = max(64, round(imgSize.width * scale))
-        let drawHeight = max(44, round(imgSize.height * scale))
-        return NSSize(width: drawWidth + 12, height: drawHeight + 12)
+        let drawWidth = max(1, round(imgSize.width * scale))
+        let drawHeight = max(1, round(imgSize.height * scale))
+        return NSSize(width: drawWidth + 8, height: drawHeight + 8)
     }
     
     
@@ -286,9 +365,10 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
         var proposedRect = NSRect(origin: .zero, size: image.size)
         if let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) {
             let bitmap = NSBitmapImageRep(cgImage: cgImage)
-            // Preserve Retina point size when pixel size is 2x so inline thumbnails don't blow up unnecessarily
-            if image.size.width > 0, image.size.height > 0 {
-                bitmap.size = image.size
+            // Preserve true pixel aspect ratio while applying Retina 2x point sizing when appropriate.
+            let logical = self.logicalSize(pixelWidth: cgImage.width, pixelHeight: cgImage.height, hintedSize: image.size)
+            if logical.width > 0, logical.height > 0 {
+                bitmap.size = logical
             }
             if let png = bitmap.representation(using: .png, properties: [:]) {
                 return png

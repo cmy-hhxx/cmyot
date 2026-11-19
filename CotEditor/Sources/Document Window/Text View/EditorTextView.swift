@@ -189,6 +189,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     private lazy var completionDebouncer = Debouncer { [weak self] in self?.performCompletion() }
     private(set) var activeGhostSuggestion: String?
     private var isUpdatingGhostSuggestion = false
+    var dismissedGhostCaretLocation: Int?
     
     private lazy var trimTrailingWhitespaceTask = Debouncer { [weak self] in
         guard let self, !self.hasMarkedText() else { return }
@@ -233,7 +234,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         self.allowsUndo = true
         self.isRichText = false
         self.allowedWritingToolsResultOptions = .plainText
-        self.linkTextAttributes?.removeValue(forKey: .foregroundColor)
+        self.isAutomaticLinkDetectionEnabled = false
+        self.linkTextAttributes = [:]
         
         // avoid AppKit falling back to Last Resort while fixing attributes during the initial setup
         self.typingAttributes[.font] = self.font ?? .systemFont(ofSize: 0)
@@ -389,7 +391,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     queue: .main
                 ) { [weak self] _ in
                     MainActor.assumeIsolated {
-                        self?.funEffects.hideGhostSuggestion(animated: false)
+                        self?.clearGhostSuggestion(animated: false)
                     }
                 }
             }
@@ -469,9 +471,27 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    override func clicked(onLink link: Any, at charIndex: Int) {
+        
+        // Ignore plain clicks on any `.link` attribute; only Cmd + Click opens links.
+        guard NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command] else { return }
+        
+        super.clicked(onLink: link, at: charIndex)
+    }
+    
+    
     override func mouseDown(with event: NSEvent) {
         
         self.mouseDownPoint = self.convert(event.locationInWindow, from: nil)
+        
+        // Cmd + Click on a URL jumps directly without highlighting links or showing tooltips
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command],
+           event.clickCount == 1,
+           let url = self.urlAtPoint(self.mouseDownPoint)
+        {
+            NSWorkspace.shared.open(url)
+            return
+        }
         
         // Clicking an inline image card in Plain Text opens an interactive preview popover
         if !event.modifierFlags.contains(.command),
@@ -526,6 +546,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     override func cancelOperation(_ sender: Any?) {
         
         if self.activeGhostSuggestion != nil {
+            self.dismissedGhostCaretLocation = self.selectedRange.location
             self.clearGhostSuggestion(animated: true)
             return
         }
@@ -709,8 +730,17 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return
         }
         
+        if !self.hasMarkedText(),
+           flags == [.option],
+           event.keyCode == 124,  // Option + Right Arrow accepts the next word/chunk of ghost completion
+           self.acceptPartialGhostSuggestionIfPresent()
+        {
+            return
+        }
+        
         // Clear stale ghost suggestion when leaving Vim insert mode via Esc
         if event.keyCode == 53, self.activeGhostSuggestion != nil {
+            self.dismissedGhostCaretLocation = self.selectedRange.location
             self.clearGhostSuggestion(animated: true)
         }
         
@@ -865,6 +895,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             }
         }
         
+        let previousGhost = (!self.hasMarkedText() && replacementRange.isEmpty) ? self.activeGhostSuggestion : nil
+        self.dismissedGhostCaretLocation = nil
+        
         self.isUpdatingGhostSuggestion = true
         super.insertText(plainString, replacementRange: replacementRange)
         self.isUpdatingGhostSuggestion = false
@@ -879,7 +912,16 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.funEffects.triggerTypewriterBurst(at: caretRect, color: self.effectiveCursorColor)
         }
         
-        self.refreshHabitGhostSuggestion()
+        if let previousGhost,
+           !plainString.isEmpty,
+           previousGhost.hasPrefix(plainString),
+           previousGhost.count > plainString.count
+        {
+            let remaining = String(previousGhost.dropFirst(plainString.count))
+            self.showGhostCandidate(remaining, animateEntrance: false)
+        } else {
+            self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: true)
+        }
         
         // Cancel any popup completion list — inline ghost completion shows only the single highest-probability candidate
         self.completionDebouncer.cancel()
@@ -956,6 +998,19 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         guard self.isEditable else { return super.deleteBackward(sender) }
         
+        self.dismissedGhostCaretLocation = nil
+        
+        if !self.hasMultipleInsertions,
+           self.selectedRange.isEmpty,
+           let tokenRange = self.resolvedInlineImageTokenRangeForDeletion(backward: true),
+           self.shouldChangeText(in: tokenRange, replacementString: "")
+        {
+            self.clearGhostSuggestion(animated: false)
+            self.replaceCharacters(in: tokenRange, with: "")
+            self.didChangeText()
+            return
+        }
+        
         if self.multipleDelete() { return }
         
         // delete tab
@@ -987,7 +1042,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             caretRect.size.height = min(caretRect.height, self.singleLineHeight)
             self.funEffects.triggerTypewriterBurst(at: caretRect, color: self.effectiveCursorColor, intensityScale: 0.65)
         }
-        self.refreshHabitGhostSuggestion()
+        self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: false)
     }
     
     
@@ -1101,6 +1156,18 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let currentRanges = self.rangesForUserTextChange ?? self.selectedRanges
         let previousLocation = self.selectedRange.location
         let previousHadSelection = !self.selectedRange.isEmpty
+        
+        if !stillSelectingFlag,
+           !self.isUpdatingGhostSuggestion,
+           ranges.count == 1,
+           var proposed = ranges.first?.rangeValue,
+           proposed.isEmpty,
+           let snapped = self.snappedLocationOutsideInlineImageToken(proposed.location, previousLocation: previousLocation)
+        {
+            proposed.location = snapped
+            ranges = [proposed as NSValue]
+        }
+        
         let shouldTrackVimCursor = !stillSelectingFlag
             && self.window?.isKeyWindow == true
             && UserDefaults.standard[.vimMode]
@@ -1625,7 +1692,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
-    /// Renders inline image preview cards inside Plain Text documents for `⟦🖼 filename⟧` tokens.
+    /// Renders inline image preview cards inside Plain Text documents without displaying token titles.
     private func drawPlainTextInlineImages(in dirtyRect: NSRect) {
         
         self.inlineImageCardEntries.removeAll()
@@ -1642,7 +1709,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         guard !tokens.isEmpty else { return }
         
         let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
-        let singleLineHeight = layoutManager.lineHeight
+        let borderColor = (self.theme?.text.color ?? .labelColor).withAlphaComponent(0.12)
+        let fillColor = self.theme?.background.color ?? .controlBackgroundColor
         
         for token in tokens {
             guard let image = PlainTextInlineImageStore.shared.image(for: token.identifier, documentURL: docURL) else { continue }
@@ -1651,22 +1719,18 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             guard layoutManager.isValidGlyphIndex(glyphIndex) else { continue }
             
             let fragmentRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
-            let tokenBounding = layoutManager.boundingRect(
-                forGlyphRange: layoutManager.glyphRange(forCharacterRange: token.range, actualCharacterRange: nil),
-                in: textContainer
+            let glyphLocation = layoutManager.location(forGlyphAt: glyphIndex)
+            let cardTopY = fragmentRect.minY + self.textContainerOrigin.y + 4
+            let cardX = fragmentRect.minX + self.textContainerOrigin.x + glyphLocation.x
+            let maxCardWidth = PlainTextInlineImageStore.effectiveMaxImageWidth(
+                containerWidth: textContainer.size.width,
+                glyphX: glyphLocation.x
             )
-            
-            let cardTopY = fragmentRect.minY + self.textContainerOrigin.y + singleLineHeight + 4
-            let cardX = max(self.textContainerOrigin.x + 8, tokenBounding.minX + self.textContainerOrigin.x)
-            let availableWidth = max(160, self.bounds.width - cardX - 24)
-            let maxCardWidth: CGFloat = min(440, availableWidth)
-            let maxCardHeight: CGFloat = 210
             
             guard let cardSize = PlainTextInlineImageStore.shared.cardSize(
                 for: token.identifier,
                 documentURL: docURL,
-                maxImageWidth: maxCardWidth,
-                maxImageHeight: maxCardHeight
+                maxImageWidth: maxCardWidth
             ) else { continue }
             
             let cardRect = NSRect(x: cardX, y: cardTopY, width: cardSize.width, height: cardSize.height)
@@ -1675,18 +1739,20 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current?.imageInterpolation = .high
-            let cardPath = NSBezierPath(roundedRect: cardRect, xRadius: 8, yRadius: 8)
-            NSColor.controlBackgroundColor.withAlphaComponent(0.94).setFill()
+            let cardPath = NSBezierPath(roundedRect: cardRect, xRadius: 6, yRadius: 6)
+            fillColor.setFill()
             cardPath.fill()
-            NSColor.separatorColor.withAlphaComponent(0.85).setStroke()
-            cardPath.lineWidth = 1
+            borderColor.setStroke()
+            cardPath.lineWidth = 0.75
             cardPath.stroke()
             
-            let imageRect = cardRect.insetBy(dx: 6, dy: 6)
-            let clipPath = NSBezierPath(roundedRect: imageRect, xRadius: 5, yRadius: 5)
+            let imageRect = cardRect.insetBy(dx: 4, dy: 4)
+            let naturalSize = PlainTextInlineImageStore.naturalImageSize(for: image)
+            let drawRect = PlainTextInlineImageStore.aspectFitRect(imageSize: naturalSize, in: imageRect)
+            let clipPath = NSBezierPath(roundedRect: drawRect, xRadius: 4, yRadius: 4)
             clipPath.addClip()
-            image.draw(in: imageRect,
-                       from: NSRect(origin: .zero, size: image.size),
+            image.draw(in: drawRect,
+                       from: .zero,
                        operation: .sourceOver,
                        fraction: 1.0,
                        respectFlipped: true,
@@ -1710,7 +1776,6 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         let contentView = InlineImagePreviewPopoverView(
             image: image,
-            filename: entry.identifier,
             fileURL: fileURL,
             onCopyImage: { [weak popover] in
                 let pboard = NSPasteboard.general
@@ -2351,10 +2416,30 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     // MARK: Inline Habit Ghost Completion
     
-    /// Recomputes and displays or hides the inline habit ghost candidate for the current caret position.
-    func refreshHabitGhostSuggestion() {
+    /// Displays an AI-predicted ghost continuation delivered asynchronously for the active caret.
+    func applyAIGhostSuggestion(_ candidate: String) {
         
         guard
+            AINextTokenPredictor.isInlineCompletionEnabled,
+            self.isEditable,
+            self.window?.isKeyWindow == true,
+            !self.hasMarkedText(),
+            !self.hasMultipleInsertions,
+            self.selectedRange.isEmpty,
+            self.dismissedGhostCaretLocation != self.selectedRange.location,
+            (!UserDefaults.standard[.vimMode] || VimState.shared.mode == .insert),
+            !candidate.isEmpty
+        else { return }
+        
+        self.showGhostCandidate(candidate, animateEntrance: true)
+    }
+    
+    
+    /// Recomputes and displays or hides the hybrid Tier-1 (local habit) + Tier-2 (AI FIM) ghost candidate.
+    func refreshHabitGhostSuggestion(animateEntrance: Bool = true, allowAIRefresh: Bool = true) {
+        
+        guard
+            AINextTokenPredictor.isInlineCompletionEnabled,
             self.isEditable,
             self.window?.isKeyWindow == true,
             !self.hasMarkedText(),
@@ -2367,32 +2452,152 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         let caretLocation = self.selectedRange.location
+        if self.dismissedGhostCaretLocation == caretLocation {
+            self.clearGhostSuggestion(animated: false)
+            return
+        }
+        
+        let siblingTexts: [String] = NSDocumentController.shared.documents
+            .compactMap { $0 as? Document }
+            .filter { $0.textStorage !== self.textStorage }
+            .prefix(5)
+            .map { String($0.textStorage.string.prefix(3_000)) }
+        
         let syntaxWords = self.syntaxCompletionWords.map(\.text)
-        guard let candidate = UserHabitPredictor.shared.predictNextPhrase(
+        if let localCandidate = UserHabitPredictor.shared.predictNextPhrase(
             in: self.string,
             caretLocation: caretLocation,
-            syntaxWords: syntaxWords
-        ),
-              !candidate.isEmpty,
-              var caretRect = self.boundingRect(for: self.selectedRange)
-        else {
-            self.clearGhostSuggestion(animated: false)
+            syntaxWords: syntaxWords,
+            siblingTexts: siblingTexts
+        ), !localCandidate.isEmpty {
+            AINextTokenPredictor.shared.cancel()
+            self.showGhostCandidate(localCandidate, animateEntrance: animateEntrance)
+            return
+        }
+        
+        let nsText = self.string as NSString
+        let safeCaret = min(caretLocation, max(0, nsText.length - 1))
+        if nsText.length > 0 {
+            let lineRange = nsText.lineRange(for: NSRange(location: safeCaret, length: 0))
+            let linePrefix = nsText.substring(with: NSRange(location: lineRange.location, length: max(0, caretLocation - lineRange.location)))
+            let lineEnd = NSMaxRange(lineRange)
+            let lineSuffix = (caretLocation < lineEnd)
+                ? nsText.substring(with: NSRange(location: caretLocation, length: lineEnd - caretLocation)).trimmingCharacters(in: .newlines)
+                : ""
+            if let cachedAI = AINextTokenPredictor.shared.lookupCachedContinuation(linePrefix: linePrefix, lineSuffix: lineSuffix),
+               !cachedAI.isEmpty
+            {
+                self.showGhostCandidate(cachedAI, animateEntrance: animateEntrance)
+                return
+            }
+        }
+        
+        self.clearGhostSuggestion(animated: false, cancelAI: false)
+        
+        if allowAIRefresh {
+            let doc = self.textStorage.flatMap { self.documentViewController?.document(for: $0) }
+            AINextTokenPredictor.shared.schedulePrediction(
+                for: self,
+                syntaxName: doc?.syntaxName ?? SyntaxName.none,
+                documentTitle: doc?.displayName ?? ""
+            )
+        }
+    }
+    
+    
+    private func showGhostCandidate(_ candidate: String, animateEntrance: Bool) {
+        
+        guard !candidate.isEmpty, var caretRect = self.boundingRect(for: self.selectedRange) else {
+            self.clearGhostSuggestion(animated: false, cancelAI: false)
             return
         }
         
         caretRect.size.height = min(caretRect.height > 0 ? caretRect.height : self.singleLineHeight, self.singleLineHeight)
         let font = self.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
+        let layoutManager = self.layoutManager as? LayoutManager
+        let baselineOffset = layoutManager?.baselineOffset(for: .horizontal) ?? max(11, font.ascender)
+        
+        let caretLocation = self.selectedRange.location
+        let nsString = self.string as NSString
+        var trailingLineAdvance: CGFloat = 0
+        if let layoutManager, caretLocation < nsString.length {
+            let nextChar = nsString.character(at: caretLocation)
+            if nextChar != 0xA, nextChar != 0xD {
+                let caretGlyphIndex = layoutManager.glyphIndexForCharacter(at: caretLocation)
+                if layoutManager.isValidGlyphIndex(caretGlyphIndex) {
+                    let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: caretGlyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
+                    let caretContainerX = caretRect.minX - self.textContainerOrigin.x
+                    trailingLineAdvance = max(0, usedRect.maxX - caretContainerX)
+                }
+            }
+        }
         
         self.activeGhostSuggestion = candidate
-        self.funEffects.showGhostSuggestion(candidate, at: caretRect, font: font, lineHeight: self.singleLineHeight)
+        let shiftWidth = self.funEffects.showGhostSuggestion(
+            candidate,
+            at: caretRect,
+            font: font,
+            lineHeight: self.singleLineHeight,
+            baselineOffset: baselineOffset,
+            trailingLineAdvance: trailingLineAdvance,
+            animateEntrance: animateEntrance
+        )
+        
+        if trailingLineAdvance > 0, shiftWidth > 0 {
+            layoutManager?.inlineGhostShift = LayoutManager.InlineGhostShift(
+                caretLocation: caretLocation,
+                shiftWidth: shiftWidth
+            )
+        } else {
+            layoutManager?.inlineGhostShift = nil
+        }
     }
     
     
     /// Clears any visible inline ghost suggestion.
-    func clearGhostSuggestion(animated: Bool = false) {
+    func clearGhostSuggestion(animated: Bool = false, cancelAI: Bool = true) {
         
         self.activeGhostSuggestion = nil
+        (self.layoutManager as? LayoutManager)?.inlineGhostShift = nil
         self.funEffects.hideGhostSuggestion(animated: animated)
+        if cancelAI {
+            AINextTokenPredictor.shared.cancel()
+        }
+    }
+    
+    
+    /// Accepts the first word/chunk of the active ghost suggestion (`Option + Right Arrow`).
+    @discardableResult
+    func acceptPartialGhostSuggestionIfPresent() -> Bool {
+        
+        guard
+            self.isEditable,
+            !self.hasMarkedText(),
+            self.selectedRange.isEmpty,
+            let suggestion = self.activeGhostSuggestion,
+            !suggestion.isEmpty
+        else { return false }
+        
+        let (accepted, remainder) = UserHabitPredictor.splitFirstAcceptUnit(from: suggestion)
+        if remainder.isEmpty {
+            return self.acceptGhostSuggestionIfPresent()
+        }
+        
+        var startRect = self.boundingRect(for: self.selectedRange) ?? .zero
+        startRect.size.height = min(startRect.height > 0 ? startRect.height : self.singleLineHeight, self.singleLineHeight)
+        
+        self.clearGhostSuggestion(animated: false, cancelAI: true)
+        
+        self.isUpdatingGhostSuggestion = true
+        super.insertText(accepted, replacementRange: self.selectedRange)
+        self.isUpdatingGhostSuggestion = false
+        
+        var endRect = self.boundingRect(for: self.selectedRange) ?? startRect
+        endRect.size.height = min(endRect.height > 0 ? endRect.height : self.singleLineHeight, self.singleLineHeight)
+        self.funEffects.triggerTypewriterBurst(at: endRect, color: self.effectiveCursorColor, intensityScale: 0.75)
+        
+        self.showGhostCandidate(remainder, animateEntrance: false)
+        return true
     }
     
     
@@ -2416,8 +2621,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         var startRect = self.boundingRect(for: self.selectedRange) ?? .zero
         startRect.size.height = min(startRect.height > 0 ? startRect.height : self.singleLineHeight, self.singleLineHeight)
         
-        self.activeGhostSuggestion = nil
-        self.funEffects.hideGhostSuggestion(animated: false)
+        self.clearGhostSuggestion(animated: false, cancelAI: true)
         
         self.isUpdatingGhostSuggestion = true
         super.insertText(suggestion, replacementRange: self.selectedRange)
@@ -2429,7 +2633,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         endRect.size.height = min(endRect.height > 0 ? endRect.height : self.singleLineHeight, self.singleLineHeight)
         self.funEffects.animateGhostCompletionAccept(from: startRect, to: endRect, color: self.effectiveCursorColor)
         
-        self.refreshHabitGhostSuggestion()
+        self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: true)
         return true
     }
     
@@ -2882,6 +3086,87 @@ extension EditorTextView {
         
         self.refreshHabitGhostSuggestion()
     }
+    
+    
+    /// Detects a URL directly under `point` in view coordinates for `Cmd + Click` navigation.
+    private func urlAtPoint(_ point: NSPoint) -> URL? {
+        
+        guard
+            let layoutManager = self.layoutManager,
+            let textContainer = self.textContainer,
+            !self.string.isEmpty
+        else { return nil }
+        
+        let containerPoint = point.offsetBy(dx: -self.textContainerOrigin.x, dy: -self.textContainerOrigin.y)
+        var fraction: CGFloat = 0
+        let glyphIndex = layoutManager.glyphIndex(for: containerPoint, in: textContainer, fractionOfDistanceThroughGlyph: &fraction)
+        guard layoutManager.isValidGlyphIndex(glyphIndex) else { return nil }
+        
+        let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
+        guard usedRect.insetBy(dx: -2, dy: -2).contains(containerPoint) else { return nil }
+        
+        let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+        let nsString = self.string as NSString
+        guard charIndex >= 0, charIndex < nsString.length else { return nil }
+        
+        let lineRange = nsString.lineRange(for: NSRange(location: charIndex, length: 0))
+        let lineString = nsString.substring(with: lineRange)
+        let localOffset = charIndex - lineRange.location
+        return URLDetector.detectedURL(in: lineString, at: localOffset)
+    }
+    
+    
+    /// Snaps single-caret movement out of hidden `⟦🖼 ...⟧` inline image tokens so tokens remain atomic.
+    private func snappedLocationOutsideInlineImageToken(_ location: Int, previousLocation: Int) -> Int? {
+        
+        guard (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true else { return nil }
+        let nsString = self.string as NSString
+        guard location > 0, location < nsString.length else { return nil }
+        
+        let lineRange = nsString.lineRange(for: NSRange(location: location, length: 0))
+        let lineSlice = nsString.substring(with: lineRange)
+        guard lineSlice.contains("⟦🖼"), lineSlice.contains("⟧") else { return nil }
+        
+        let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
+        for token in PlainTextInlineImageStore.shared.findTokens(in: nsString, range: lineRange) {
+            guard location > token.range.location, location < token.range.upperBound,
+                  PlainTextInlineImageStore.shared.image(for: token.identifier, documentURL: docURL) != nil
+            else { continue }
+            return (previousLocation >= location) ? token.range.location : token.range.upperBound
+        }
+        return nil
+    }
+    
+    
+    /// Returns the full range of a resolved `⟦🖼 ...⟧` inline image token adjacent to the caret for atomic deletion.
+    func resolvedInlineImageTokenRangeForDeletion(backward: Bool) -> NSRange? {
+        
+        guard (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true else { return nil }
+        let nsString = self.string as NSString
+        let loc = self.selectedRange.location
+        guard loc >= 0, loc <= nsString.length else { return nil }
+        
+        let probe = backward ? max(0, loc - 1) : min(loc, max(0, nsString.length - 1))
+        guard nsString.length > 0 else { return nil }
+        let lineRange = nsString.lineRange(for: NSRange(location: probe, length: 0))
+        let lineSlice = nsString.substring(with: lineRange)
+        guard lineSlice.contains("⟦🖼"), lineSlice.contains("⟧") else { return nil }
+        
+        let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
+        for token in PlainTextInlineImageStore.shared.findTokens(in: nsString, range: lineRange) {
+            guard PlainTextInlineImageStore.shared.image(for: token.identifier, documentURL: docURL) != nil else { continue }
+            if backward {
+                if loc > token.range.location && loc <= token.range.upperBound {
+                    return token.range
+                }
+            } else {
+                if loc >= token.range.location && loc < token.range.upperBound {
+                    return token.range
+                }
+            }
+        }
+        return nil
+    }
 }
 
 
@@ -2890,7 +3175,6 @@ extension EditorTextView {
 private struct InlineImagePreviewPopoverView: View {
     
     let image: NSImage
-    let filename: String
     let fileURL: URL?
     let onCopyImage: () -> Void
     let onRunOCR: () -> Void
@@ -2908,12 +3192,6 @@ private struct InlineImagePreviewPopoverView: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2), lineWidth: 1))
             
             HStack(spacing: 8) {
-                Text(self.filename)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                
                 Spacer()
                 
                 Button("OCR + AI", action: self.onRunOCR)

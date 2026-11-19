@@ -23,29 +23,41 @@
 //  limitations under the License.
 //
 
+import AppKit
 import SwiftUI
 
 /// The AI pane of the settings window.
 ///
-/// The pane is a list of configured services rather than one form, because a single
-/// configuration forced every service to be retyped when switching between them: a hosted
-/// endpoint, a gateway on the local network and a fallback can now sit side by side, and the one
-/// in use is picked by selecting its row.
-///
-/// Editing happens in a sheet, so the list stays a list and the pane keeps its size however much
-/// an endpoint needs. Every AI feature shares the service marked as in use, which is why this
-/// pane is the one place AI is configured.
+/// Renders endpoints directly inside the grouped `Form` (no nested `List` scroll view)
+/// so trackpad and mouse-wheel scrolling across the whole Settings window never traps or stalls.
 struct AISettingsView: View {
     
     // MARK: Private Properties
     
-    private static let listHeight: CGFloat = 205
+    private static let quickProviders: [AIProvider] = [
+        .openAI, .anthropic, .deepSeek, .qwen, .moonshot, .openRouter, .google, .ollama,
+    ]
+    
+    private static let nextTokenModelPresets: [String] = [
+        "claude-haiku-5-5",
+        "deepseek-v4.1-flash",
+        "gpt-4o-mini",
+        "gemini-2.5-flash",
+        "qwen-turbo",
+    ]
     
     @State private var profiles: [AIEndpointProfile] = []
     @State private var activeID: UUID?
     @State private var editingTarget: EditingTarget?
     @State private var pendingDeletion: AIEndpointProfile?
     @State private var status: [UUID: EndpointStatus] = [:]
+    @State private var fetchedModels: [UUID: [AIModel]] = [:]
+    @State private var fetchingModelsIDs: Set<UUID> = []
+    
+    @State private var inlineCompletionEnabled: Bool = true
+    @State private var aiNextTokenEnabled: Bool = true
+    @State private var aiNextTokenModelOverride: String = ""
+    @State private var aiNextTokenDebounceMs: Int = 420
     
     @State private var dbStatusMessage: String?
     @State private var isShowingStoredDocs = false
@@ -60,44 +72,142 @@ struct AISettingsView: View {
                 if self.profiles.isEmpty {
                     self.emptyState
                 } else {
-                    List(selection: self.activeSelection) {
-                        ForEach(self.profiles) { profile in
-                            AIEndpointRow(profile: profile,
-                                          isActive: profile.id == self.activeID,
-                                          status: self.status[profile.id],
-                                          onSelectModel: { modelID in self.switchModel(modelID, on: profile) },
-                                          onTest: { Task { await self.test(profile) } },
-                                          onEdit: { self.beginEditing(profile) },
-                                          onDelete: { self.pendingDeletion = profile })
-                                .tag(profile.id)
-                        }
+                    ForEach(self.profiles) { profile in
+                        AIEndpointRow(
+                            profile: profile,
+                            isActive: profile.id == self.activeID,
+                            status: self.status[profile.id],
+                            fetchedModels: self.fetchedModels[profile.id] ?? [],
+                            isFetchingModels: self.fetchingModelsIDs.contains(profile.id),
+                            onActivate: { self.activate(profile) },
+                            onSelectModel: { modelID in self.switchModel(modelID, on: profile) },
+                            onFetchModels: { Task { await self.fetchModels(for: profile) } },
+                            onTest: { Task { await self.test(profile) } },
+                            onDuplicate: { self.duplicate(profile) },
+                            onEdit: { self.beginEditing(profile) },
+                            onDelete: { self.pendingDeletion = profile }
+                        )
                     }
-                    .frame(height: Self.listHeight)
-                    .listStyle(.inset)
-                    .listRowInsets(EdgeInsets())
                 }
                 
-                HStack {
+                HStack(spacing: 10) {
                     Button {
                         self.beginAdding()
                     } label: {
-                        Label {
-                            Text("ai.settings.endpoint.add", tableName: "AI")
-                        } icon: {
-                            Image(systemName: "plus")
-                        }
+                        Label("添加端点", systemImage: "plus")
                     }
+                    
+                    Menu {
+                        ForEach(Self.quickProviders, id: \.self) { provider in
+                            Button(provider.label) {
+                                self.beginAdding(preset: provider)
+                            }
+                        }
+                    } label: {
+                        Text("从模板新建")
+                    }
+                    .fixedSize()
                     
                     Spacer()
                     
-                    if !self.profiles.isEmpty {
-                        Text("点击列表行切换当前使用的端点")
+                    if let active = self.profiles.first(where: { $0.id == self.activeID }) {
+                        Text("当前生效：\(active.displayName) · \(active.displayModel ?? "未选模型")")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
             } header: {
-                Text("AI 服务端点")
+                Label("AI 服务端点", systemImage: "sparkles")
+            }
+            
+            Section {
+                Toggle("启用行内智能续写 (Ghost Text)", isOn: self.$inlineCompletionEnabled)
+                    .onChange(of: self.inlineCompletionEnabled) { _, val in
+                        CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.inlineCompletionEnabled)
+                        UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.inlineCompletionEnabled)
+                    }
+                
+                Toggle("接入 AI 大模型深度预测", isOn: self.$aiNextTokenEnabled)
+                    .disabled(!self.inlineCompletionEnabled)
+                    .onChange(of: self.aiNextTokenEnabled) { _, val in
+                        CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.aiNextTokenEnabled)
+                        UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.aiNextTokenEnabled)
+                    }
+                
+                LabeledContent {
+                    HStack(spacing: 6) {
+                        TextField("留空则跟随当前端点模型（建议 haiku / flash）", text: self.$aiNextTokenModelOverride)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: self.aiNextTokenModelOverride) { _, val in
+                                let trimmed = val.trimmingCharacters(in: .whitespacesAndNewlines)
+                                CotLocalDatabase.shared.set(trimmed, forKey: CotLocalDatabase.ConfigKey.aiNextTokenModelOverride)
+                                UserDefaults.standard.set(trimmed, forKey: CotLocalDatabase.ConfigKey.aiNextTokenModelOverride)
+                            }
+                        
+                        if !self.aiNextTokenModelOverride.isEmpty {
+                            Button {
+                                self.aiNextTokenModelOverride = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("恢复跟随当前端点默认模型")
+                        }
+                        
+                        Menu {
+                            Button("跟随当前端点默认模型") {
+                                self.aiNextTokenModelOverride = ""
+                            }
+                            Divider()
+                            ForEach(Self.nextTokenModelPresets, id: \.self) { modelID in
+                                Button(modelID) {
+                                    self.aiNextTokenModelOverride = modelID
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "chevron.up.chevron.down")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .help("快速选择轻量极速模型")
+                    }
+                    .frame(maxWidth: 330)
+                    .disabled(!self.inlineCompletionEnabled || !self.aiNextTokenEnabled)
+                } label: {
+                    Text("续写专用模型:")
+                }
+                
+                Picker("AI 触发节奏:", selection: self.$aiNextTokenDebounceMs) {
+                    Text("灵敏 (280ms)").tag(280)
+                    Text("均衡 (420ms)").tag(420)
+                    Text("沉稳 (680ms)").tag(680)
+                }
+                .pickerStyle(.segmented)
+                .disabled(!self.inlineCompletionEnabled || !self.aiNextTokenEnabled)
+                .onChange(of: self.aiNextTokenDebounceMs) { _, val in
+                    CotLocalDatabase.shared.set("\(val)", forKey: CotLocalDatabase.ConfigKey.aiNextTokenDebounceMs)
+                    UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.aiNextTokenDebounceMs)
+                }
+                
+                HStack(spacing: 8) {
+                    let activeConfig = self.effectiveNextTokenConfiguration
+                    Image(systemName: activeConfig.isUsable && self.aiNextTokenEnabled ? "checkmark.circle.fill" : "bolt.slash.circle")
+                        .foregroundStyle(activeConfig.isUsable && self.aiNextTokenEnabled ? Color.green : Color.secondary)
+                        .font(.caption)
+                    Text(self.nextTokenStatusDescription(config: activeConfig))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Tab 采纳 · ⌥→ 逐词 · Esc 忽略")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            } header: {
+                Label("AI 智能续写 (Next Token 预测)", systemImage: "wand.and.stars.inverse")
             }
             
             Section {
@@ -136,7 +246,7 @@ struct AISettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             } header: {
-                Text("本地数据库")
+                Label("本地数据库", systemImage: "internaldrive")
             }
         }
         .task { self.reload() }
@@ -170,30 +280,46 @@ struct AISettingsView: View {
     /// What is shown before any endpoint exists.
     private var emptyState: some View {
         
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             Image(systemName: "sparkles")
-                .font(.largeTitle)
+                .font(.title)
                 .foregroundStyle(.tertiary)
-            Text("ai.settings.endpoint.empty", tableName: "AI")
+            Text("暂未配置 AI 服务端点")
+                .font(.callout.weight(.medium))
+            Text("点击下方按钮快速接入 OpenAI、Claude、DeepSeek、通义千问或本地 Ollama。")
+                .font(.caption)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: Self.listHeight)
+        .padding(.vertical, 16)
     }
     
     
-    /// The list selection, which is the endpoint in use.
-    ///
-    /// A deselection is ignored: the list always has one row selected while it has any, so the
-    /// AI features never lose the service they are pointed at.
-    private var activeSelection: Binding<UUID?> {
+    private var effectiveNextTokenConfiguration: AIConfiguration {
         
-        Binding(get: { self.activeID }, set: { newValue in
-            guard let newValue, newValue != self.activeID else { return }
-            
-            self.activeID = newValue
-            AIEndpointStore.activeID = newValue
-        })
+        var config: AIConfiguration
+        if let active = self.profiles.first(where: { $0.id == self.activeID }) {
+            config = active.configuration(apiKey: AIEndpointStore.apiKey(for: active))
+        } else {
+            config = AIConfiguration.current
+        }
+        let override = self.aiNextTokenModelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !override.isEmpty {
+            config.model = override
+        }
+        return config
+    }
+    
+    
+    private func nextTokenStatusDescription(config: AIConfiguration) -> String {
+        
+        guard self.inlineCompletionEnabled else { return "行内智能续写已关闭" }
+        guard self.aiNextTokenEnabled else { return "仅使用本地习惯与上下文零延迟续写" }
+        if config.isUsable {
+            return "深度续写就绪：\(config.model)"
+        }
+        return "尚未配置可用端点，自动回退为本地上下文续写"
     }
     
     
@@ -207,7 +333,7 @@ struct AISettingsView: View {
     
     // MARK: Private Methods
     
-    /// Reads the stored list, importing a configuration saved before the list existed.
+    /// Reads the stored list and Next Token settings.
     private func reload() {
         
         AIEndpointStore.migrateLegacyConfigurationIfNeeded()
@@ -218,6 +344,21 @@ struct AISettingsView: View {
         if let activeID, AIEndpointStore.activeID != activeID {
             AIEndpointStore.activeID = activeID
         }
+        
+        let db = CotLocalDatabase.shared
+        self.inlineCompletionEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.inlineCompletionEnabled, default: true)
+        self.aiNextTokenEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.aiNextTokenEnabled, default: true)
+        self.aiNextTokenModelOverride = db.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenModelOverride, default: "")
+        let rawDebounce = db.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenDebounceMs, default: "420")
+        let parsedDebounce = Int(rawDebounce) ?? 420
+        self.aiNextTokenDebounceMs = [280, 420, 680].contains(parsedDebounce) ? parsedDebounce : 420
+    }
+    
+    
+    private func activate(_ profile: AIEndpointProfile) {
+        
+        self.activeID = profile.id
+        AIEndpointStore.activeID = profile.id
     }
     
     
@@ -259,29 +400,47 @@ struct AISettingsView: View {
     }
     
     
-    /// Opens the sheet on a new endpoint.
-    private func beginAdding() {
+    /// Opens the sheet on a new endpoint, optionally seeded from a provider template.
+    private func beginAdding(preset provider: AIProvider? = nil) {
         
-        self.editingTarget = EditingTarget(profile: AIEndpointProfile(), apiKey: "", isNew: true)
+        let profile: AIEndpointProfile
+        if let provider, provider != .custom {
+            profile = AIEndpointProfile(
+                name: provider.label,
+                endpoint: provider.endpoint,
+                baseURL: provider.defaultBaseURL,
+                model: provider.defaultModel
+            )
+        } else {
+            profile = AIEndpointProfile()
+        }
+        self.editingTarget = EditingTarget(profile: profile, apiKey: "", isNew: true)
     }
     
     
     /// Opens the sheet on an existing endpoint.
-    ///
-    /// - Parameter profile: The profile to edit.
     private func beginEditing(_ profile: AIEndpointProfile) {
         
-        self.editingTarget = EditingTarget(profile: profile,
-                                           apiKey: AIEndpointStore.apiKey(for: profile),
-                                           isNew: false)
+        self.editingTarget = EditingTarget(
+            profile: profile,
+            apiKey: AIEndpointStore.apiKey(for: profile),
+            isNew: false
+        )
+    }
+    
+    
+    /// Duplicates an existing endpoint (including its API key and headers) and opens the editor sheet.
+    private func duplicate(_ profile: AIEndpointProfile) {
+        
+        var copy = profile
+        copy.id = UUID()
+        copy.name = "\(profile.displayName) 副本"
+        let apiKey = AIEndpointStore.apiKey(for: profile)
+        self.editingTarget = EditingTarget(profile: copy, apiKey: apiKey, isNew: true)
     }
     
     
     /// Stores the endpoint the sheet returned.
-    ///
-    /// - Parameters:
-    ///   - profile: The edited profile.
-    ///   - apiKey: Its key.
     private func save(_ profile: AIEndpointProfile, apiKey: String) {
         
         AIEndpointStore.save(profile, apiKey: apiKey)
@@ -309,30 +468,51 @@ struct AISettingsView: View {
     }
     
     
+    /// Fetches available models directly from the endpoint row.
+    private func fetchModels(for profile: AIEndpointProfile) async {
+        
+        self.fetchingModelsIDs.insert(profile.id)
+        defer { self.fetchingModelsIDs.remove(profile.id) }
+        
+        let config = profile.configuration(apiKey: AIEndpointStore.apiKey(for: profile))
+        do {
+            let models = try await AIService.shared.fetchModels(configuration: config)
+            self.fetchedModels[profile.id] = models
+            var updated = profile
+            updated.rememberModels(models.prefix(12).map(\.id))
+            AIEndpointStore.save(updated, apiKey: AIEndpointStore.apiKey(for: profile))
+            self.reload()
+        } catch {
+            self.status[profile.id] = .failed("拉取模型列表失败：\(error.localizedDescription)")
+        }
+    }
+    
+    
     /// Removes an endpoint and forgets its test result.
-    ///
-    /// - Parameter profile: The profile to remove.
     private func delete(_ profile: AIEndpointProfile) {
         
         AIEndpointStore.delete(id: profile.id)
         self.status[profile.id] = nil
+        self.fetchedModels[profile.id] = nil
         self.pendingDeletion = nil
         self.reload()
     }
     
     
-    /// Tests one endpoint, without making it the one in use.
-    ///
-    /// - Parameter profile: The profile to try.
+    /// Tests one endpoint and records response latency + inline diagnostic status.
     private func test(_ profile: AIEndpointProfile) async {
         
         self.status[profile.id] = .running
+        let clock = ContinuousClock()
+        let start = clock.now
         
         do {
             let reply = try await AIService.shared.testConnection(
                 configuration: profile.configuration(apiKey: AIEndpointStore.apiKey(for: profile))
             )
-            self.status[profile.id] = .succeeded(reply)
+            let elapsed = start.duration(to: clock.now)
+            let ms = Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
+            self.status[profile.id] = .succeeded(reply, latencyMs: max(1, ms))
         } catch {
             self.status[profile.id] = .failed(error.localizedDescription)
         }
@@ -346,7 +526,7 @@ struct AISettingsView: View {
 private enum EndpointStatus: Equatable {
     
     case running
-    case succeeded(String)
+    case succeeded(String, latencyMs: Int)
     case failed(String)
 }
 
@@ -366,7 +546,7 @@ private struct EditingTarget: Identifiable {
 
 // MARK: -
 
-/// One row of the endpoint list.
+/// One row of the endpoint section (non-scrollable container row so outer Form scrolls seamlessly).
 private struct AIEndpointRow: View {
     
     private static let alternativeModels: [String] = [
@@ -382,141 +562,230 @@ private struct AIEndpointRow: View {
     let profile: AIEndpointProfile
     let isActive: Bool
     let status: EndpointStatus?
+    let fetchedModels: [AIModel]
+    let isFetchingModels: Bool
+    let onActivate: () -> Void
     let onSelectModel: (String) -> Void
+    let onFetchModels: () -> Void
     let onTest: () -> Void
+    let onDuplicate: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
     
     
     var body: some View {
         
-        HStack(spacing: 10) {
-            Image(systemName: "sparkles")
-                .foregroundStyle(self.isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                .frame(width: 18)
-            
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(self.profile.displayName)
-                        .fontWeight(.medium)
-                        .lineLimit(1)
-                    
-                    if self.isActive {
-                        Text("ai.settings.endpoint.inUse", tableName: "AI")
-                            .font(.caption2)
-                            .foregroundStyle(.tint)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(.tint.opacity(0.15)))
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Button(action: self.onActivate) {
+                    HStack(spacing: 10) {
+                        Image(systemName: self.isActive ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 15))
+                            .foregroundStyle(self.isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                            .frame(width: 18)
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(self.profile.displayName)
+                                    .fontWeight(.medium)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                
+                                if self.isActive {
+                                    Text("使用中")
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(.tint)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 1.5)
+                                        .background(Capsule().fill(.tint.opacity(0.14)))
+                                }
+                                
+                                Text(self.profile.endpoint.label)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.10)))
+                            }
+                            
+                            Text(self.profile.resolvedBaseURL)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        
+                        Spacer(minLength: 4)
                     }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .help("点击切换为当前使用的 AI 端点")
                 
-                Text(self.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            
-            Spacer(minLength: 8)
-            
-            self.statusView
-            
-            Menu {
-                let saved = self.profile.availableModelIDs
-                if !saved.isEmpty {
-                    Section("当前接口模型") {
-                        ForEach(saved, id: \.self) { modelID in
-                            Button {
-                                self.onSelectModel(modelID)
-                            } label: {
-                                if modelID == self.profile.model {
-                                    Label(modelID, systemImage: "checkmark")
-                                } else {
-                                    Text(modelID)
+                Menu {
+                    if !self.fetchedModels.isEmpty {
+                        Section("接口实时返回") {
+                            ForEach(self.fetchedModels) { model in
+                                Button {
+                                    self.onSelectModel(model.id)
+                                } label: {
+                                    if model.id == self.profile.model {
+                                        Label(model.name, systemImage: "checkmark")
+                                    } else {
+                                        Text(model.name)
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                let extras = Self.alternativeModels.filter { !saved.contains($0) }
-                if !extras.isEmpty {
-                    Section("切换其他模型") {
-                        ForEach(extras, id: \.self) { modelID in
-                            Button(modelID) {
-                                self.onSelectModel(modelID)
+                    let saved = self.profile.availableModelIDs
+                    if !saved.isEmpty {
+                        Section("已保存模型") {
+                            ForEach(saved, id: \.self) { modelID in
+                                Button {
+                                    self.onSelectModel(modelID)
+                                } label: {
+                                    if modelID == self.profile.model {
+                                        Label(modelID, systemImage: "checkmark")
+                                    } else {
+                                        Text(modelID)
+                                    }
+                                }
                             }
                         }
                     }
+                    let extras = Self.alternativeModels.filter { !saved.contains($0) }
+                    if !extras.isEmpty {
+                        Section("快捷切换模型") {
+                            ForEach(extras, id: \.self) { modelID in
+                                Button(modelID) {
+                                    self.onSelectModel(modelID)
+                                }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("从接口刷新模型列表", systemImage: "arrow.triangle.2.circlepath") {
+                        self.onFetchModels()
+                    }
+                    Button("编辑完整配置…", systemImage: "pencil") {
+                        self.onEdit()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        if self.isFetchingModels {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Image(systemName: "cpu")
+                                .font(.caption2)
+                        }
+                        Text(self.profile.displayModel ?? "未选模型")
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3.5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.secondary.opacity(0.11))
+                    )
+                    .frame(maxWidth: 165)
                 }
-                Divider()
-                Button("编辑 / 获取完整模型列表…") {
-                    self.onEdit()
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("快速切换模型或从端点拉取模型列表")
+                
+                HStack(spacing: 5) {
+                    Button(action: self.onTest) {
+                        if case .running = self.status {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 14, height: 14)
+                        } else {
+                            Image(systemName: "play.circle")
+                        }
+                    }
+                    .help("测试端点连通性与响应延迟")
+                    
+                    Button(action: self.onDuplicate) {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .help("复制端点配置")
+                    
+                    Button(action: self.onEdit) {
+                        Image(systemName: "pencil")
+                    }
+                    .help(Text("ai.settings.endpoint.edit", tableName: "AI"))
+                    
+                    Button(action: self.onDelete) {
+                        Image(systemName: "trash")
+                    }
+                    .help(Text("ai.settings.endpoint.delete", tableName: "AI"))
                 }
-            } label: {
-                Image(systemName: "cpu")
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("快速切换当前端点使用的模型（如 claude-haiku-5-5）")
             
-            HStack(spacing: 4) {
-                Button(action: self.onTest) {
-                    Image(systemName: "play.circle")
-                }
-                .help(Text("ai.settings.endpoint.test", tableName: "AI"))
-                
-                Button(action: self.onEdit) {
-                    Image(systemName: "pencil")
-                }
-                .help(Text("ai.settings.endpoint.edit", tableName: "AI"))
-                
-                Button(action: self.onDelete) {
-                    Image(systemName: "trash")
-                }
-                .help(Text("ai.settings.endpoint.delete", tableName: "AI"))
+            if let status = self.status {
+                self.inlineStatusBanner(status)
+                    .padding(.leading, 28)
             }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 3)
-        .contentShape(Rectangle())
+        .padding(.vertical, 4)
+        .padding(.horizontal, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(self.isActive ? Color.accentColor.opacity(0.06) : Color.clear)
+        )
     }
     
     
-    /// The address and the model, which is what tells two endpoints on the same service apart.
-    private var detail: String {
+    @ViewBuilder private func inlineStatusBanner(_ status: EndpointStatus) -> some View {
         
-        let address = self.profile.resolvedBaseURL
-        guard let model = self.profile.displayModel else {
-            let missing = String(localized: "ai.settings.model.missing",
-                                 defaultValue: "No model selected",
-                                 table: "AI")
-            
-            return "\(address) · \(missing)"
-        }
-        
-        return "\(address) · \(model)"
-    }
-    
-    
-    @ViewBuilder private var statusView: some View {
-        
-        switch self.status {
+        switch status {
             case .running:
-                ProgressView()
-                    .controlSize(.small)
-            case .succeeded(let reply):
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .help(reply)
+                Text("正在测速与校验响应…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                
+            case .succeeded(let reply, let latencyMs):
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("连通 · \(latencyMs) ms · 返回：\(reply)")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .font(.caption)
+                
             case .failed(let message):
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                    .help(message)
-            case .none:
-                EmptyView()
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(message)
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    Button("调整配置") {
+                        self.onEdit()
+                    }
+                    .controlSize(.mini)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.orange.opacity(0.09))
+                )
         }
     }
 }
@@ -630,6 +899,110 @@ private struct StoredDocumentsSheetView: View {
         }
         .padding(20)
         .frame(width: 600)
+        .environment(\.locale, AppLanguage.current.locale)
+    }
+}
+
+
+// MARK: - Scroll-Passthrough Text Editor for Grouped Settings Forms
+
+private final class PassthroughTextScrollView: NSScrollView {
+    
+    override func scrollWheel(with event: NSEvent) {
+        
+        guard let documentView = self.documentView else {
+            self.nextResponder?.scrollWheel(with: event)
+            return
+        }
+        let contentHeight = documentView.bounds.height
+        let visibleHeight = self.contentView.bounds.height
+        if contentHeight <= visibleHeight + 1 {
+            self.nextResponder?.scrollWheel(with: event)
+            return
+        }
+        let currentY = self.contentView.bounds.origin.y
+        let maxY = max(0, contentHeight - visibleHeight)
+        let atTop = currentY <= 0.5 && event.scrollingDeltaY > 0
+        let atBottom = currentY >= maxY - 0.5 && event.scrollingDeltaY < 0
+        if atTop || atBottom {
+            self.nextResponder?.scrollWheel(with: event)
+            return
+        }
+        super.scrollWheel(with: event)
+    }
+}
+
+
+private struct ScrollPassthroughTextEditor: NSViewRepresentable {
+    
+    @Binding var text: String
+    var font: NSFont
+    
+    
+    func makeCoordinator() -> Coordinator {
+        
+        Coordinator(self)
+    }
+    
+    
+    func makeNSView(context: Context) -> NSScrollView {
+        
+        let scrollView = PassthroughTextScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        
+        let textView = NSTextView()
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.drawsBackground = false
+        textView.font = self.font
+        textView.textColor = .labelColor
+        textView.textContainerInset = NSSize(width: 4, height: 6)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.delegate = context.coordinator
+        textView.string = self.text
+        
+        scrollView.documentView = textView
+        return scrollView
+    }
+    
+    
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        if textView.string != self.text {
+            let selected = textView.selectedRange()
+            textView.string = self.text
+            let clampedLoc = min(selected.location, (self.text as NSString).length)
+            textView.setSelectedRange(NSRange(location: clampedLoc, length: 0))
+        }
+        if textView.font != self.font {
+            textView.font = self.font
+        }
+    }
+    
+    
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        
+        var parent: ScrollPassthroughTextEditor
+        
+        init(_ parent: ScrollPassthroughTextEditor) {
+            self.parent = parent
+        }
+        
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            self.parent.text = textView.string
+        }
     }
 }
 
@@ -698,20 +1071,21 @@ struct AIPersonaSettingsView: View {
                     }
                     
                     ZStack(alignment: .topLeading) {
-                        TextEditor(text: self.$personaText)
-                            .font(.system(size: 12))
-                            .frame(height: 76)
-                            .padding(3)
-                            .background(Color(nsColor: .textBackgroundColor))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(Color.secondary.opacity(0.28), lineWidth: 1)
-                            )
-                            .onChange(of: self.personaText) { _, newValue in
-                                guard newValue != CotLocalDatabase.shared.aiPersona else { return }
-                                CotLocalDatabase.shared.aiPersona = newValue
-                            }
+                        ScrollPassthroughTextEditor(
+                            text: self.$personaText,
+                            font: .systemFont(ofSize: 12)
+                        )
+                        .frame(height: 76)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.secondary.opacity(0.28), lineWidth: 1)
+                        )
+                        .onChange(of: self.personaText) { _, newValue in
+                            guard newValue != CotLocalDatabase.shared.aiPersona else { return }
+                            CotLocalDatabase.shared.aiPersona = newValue
+                        }
                         
                         if self.personaText.isEmpty {
                             Text("输入自定义 AI 人设，例如：严谨架构师，所有输出保持分点简洁，优先给出可执行结论…")
@@ -762,22 +1136,23 @@ struct AIPersonaSettingsView: View {
                         .disabled(self.stagePromptText == self.selectedStageAction.defaultSystemPrompt)
                     }
                     
-                    TextEditor(text: self.$stagePromptText)
-                        .font(.system(size: 11.5, design: .monospaced))
-                        .frame(height: 168)
-                        .padding(3)
-                        .background(Color(nsColor: .textBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color.secondary.opacity(0.28), lineWidth: 1)
-                        )
-                        .onChange(of: self.stagePromptText) { _, newValue in
-                            let storedOrDefault = CotLocalDatabase.shared.customStagePrompt(forKey: self.selectedStageAction.databaseConfigKey)
-                                ?? self.selectedStageAction.defaultSystemPrompt
-                            guard newValue != storedOrDefault else { return }
-                            CotLocalDatabase.shared.set(newValue, forKey: self.selectedStageAction.databaseConfigKey)
-                        }
+                    ScrollPassthroughTextEditor(
+                        text: self.$stagePromptText,
+                        font: .monospacedSystemFont(ofSize: 11.5, weight: .regular)
+                    )
+                    .frame(height: 168)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.secondary.opacity(0.28), lineWidth: 1)
+                    )
+                    .onChange(of: self.stagePromptText) { _, newValue in
+                        let storedOrDefault = CotLocalDatabase.shared.customStagePrompt(forKey: self.selectedStageAction.databaseConfigKey)
+                            ?? self.selectedStageAction.defaultSystemPrompt
+                        guard newValue != storedOrDefault else { return }
+                        CotLocalDatabase.shared.set(newValue, forKey: self.selectedStageAction.databaseConfigKey)
+                    }
                 }
             } header: {
                 Label("阶段提示词 (Stage Prompt)", systemImage: "text.bubble")

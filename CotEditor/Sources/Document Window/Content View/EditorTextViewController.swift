@@ -104,6 +104,7 @@ final class EditorTextViewController: NSViewController, NSServicesMenuRequestor,
         
         let scrollView = BidiScrollView()
         scrollView.hasVerticalScroller = true
+        scrollView.usesModernOverlayScroller = true
         scrollView.documentView = textView
         scrollView.identifier = NSUserInterfaceItemIdentifier("EditorScrollView")
         scrollView.contentView.wantsLayer = true
@@ -664,6 +665,7 @@ private extension EditorTextView {
         self.isContinuousSpellCheckingEnabled = mode.continuousSpellChecking
         self.isGrammarCheckingEnabled = mode.grammarChecking
         self.isAutomaticSpellingCorrectionEnabled = mode.automaticSpellingCorrection
+        self.isAutomaticLinkDetectionEnabled = false
         
         self.completionWordTypes = mode.completionWordTypes
         self.isAutomaticCompletionEnabled = mode.automaticCompletion && !mode.completionWordTypes.isEmpty

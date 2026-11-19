@@ -222,7 +222,16 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.observers = [
             // observe theme change
             UserDefaults.standard.publisher(for: .theme, initial: false)
-                .sink { [weak self] in self?.setTheme(name: $0) },
+                .sink { [weak self] themeName in
+                    guard let self else { return }
+                    if let window = self.viewIfLoaded?.window, window.isVisible, !window.isAppearanceTransitionActive {
+                        window.performSmoothAppearanceTransition(duration: 0.22) {
+                            self.setTheme(name: themeName)
+                        }
+                    } else {
+                        self.setTheme(name: themeName)
+                    }
+                },
             NotificationCenter.default.publisher(for: .didUpdateSettingNotification, object: ThemeManager.shared)
                 .map { $0.userInfo!["change"] as! SettingChange }
                 .filter { [weak self] in $0.old == self?.themeName }
@@ -248,7 +257,13 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                         currentThemeName != themeName
                     else { return }
                     
-                    self.setTheme(name: themeName)
+                    if let window = self.viewIfLoaded?.window, window.isVisible, !window.isAppearanceTransitionActive {
+                        window.performSmoothAppearanceTransition(duration: 0.28) {
+                            self.setTheme(name: themeName)
+                        }
+                    } else {
+                        self.setTheme(name: themeName)
+                    }
                 },
             
             // observe focus change

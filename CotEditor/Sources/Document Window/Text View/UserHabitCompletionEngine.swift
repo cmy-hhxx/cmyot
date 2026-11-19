@@ -107,6 +107,21 @@ import Foundation
             ],
             candidate: "及解决方案："
         ),
+        HabitRule(
+            triggers: [
+                "下周重点",
+                "后续计划",
+            ],
+            candidate: "如下："
+        ),
+        HabitRule(
+            triggers: [
+                "单元测试",
+                "跑一遍测试",
+                "测试通过后",
+            ],
+            candidate: "提交并推送代码"
+        ),
     ]
     
     private struct PersistedHabitModel: Codable {
@@ -160,7 +175,12 @@ import Foundation
     
     /// Predicts the single highest-probability short continuation for the current caret location,
     /// or `nil` when confidence is below threshold.
-    func predictNextPhrase(in text: String, caretLocation: Int, syntaxWords: [String] = []) -> String? {
+    func predictNextPhrase(
+        in text: String,
+        caretLocation: Int,
+        syntaxWords: [String] = [],
+        siblingTexts: [String] = []
+    ) -> String? {
         
         self.warmUpFromDatabaseIfNeeded()
         
@@ -180,29 +200,127 @@ import Foundation
         guard prefixLength >= 2 else { return nil }
         
         let rawLinePrefix = nsText.substring(with: NSRange(location: lineRange.location, length: prefixLength))
+        let lineEnd = NSMaxRange(lineRange)
+        let rawLineSuffix = (caretLocation < lineEnd)
+            ? nsText.substring(with: NSRange(location: caretLocation, length: lineEnd - caretLocation))
+            : ""
+        let lineSuffix = rawLineSuffix.trimmingCharacters(in: .newlines)
         let window = String(rawLinePrefix.suffix(56))
         
         // 1. Exact or partial match against high-confidence built-in workflow habits
-        if let builtInMatch = self.matchBuiltInHabits(linePrefix: window) {
-            return builtInMatch
+        if let builtInMatch = self.matchBuiltInHabits(linePrefix: window),
+           let sanitized = Self.trimOverlapWithLineSuffix(builtInMatch, lineSuffix: lineSuffix)
+        {
+            return sanitized
         }
         
         // 2. Learned personal habit transitions (n-gram & compound phrase transitions)
-        if let learnedMatch = self.matchLearnedTransition(linePrefix: window) {
-            return learnedMatch
+        if let learnedMatch = self.matchLearnedTransition(linePrefix: window),
+           let sanitized = Self.trimOverlapWithLineSuffix(learnedMatch, lineSuffix: lineSuffix)
+        {
+            return sanitized
         }
         
-        // 3. Live in-document contextual n-gram / repeated phrase continuation
-        if let docContextMatch = self.matchLiveDocumentContext(in: nsText, caretLocation: caretLocation, linePrefix: window) {
-            return docContextMatch
+        // 3. Live in-document and sibling-tab contextual n-gram / repeated phrase continuation
+        if let docContextMatch = self.matchLiveDocumentContext(
+            in: nsText,
+            caretLocation: caretLocation,
+            linePrefix: window,
+            siblingTexts: siblingTexts
+        ),
+           let sanitized = Self.trimOverlapWithLineSuffix(docContextMatch, lineSuffix: lineSuffix)
+        {
+            return sanitized
         }
         
         // 4. Single best identifier / vocabulary prefix completion (replaces popup completion list)
-        if let wordCompletion = self.matchBestWordPrefix(in: nsText, caretLocation: caretLocation, linePrefix: window, syntaxWords: syntaxWords) {
-            return wordCompletion
+        if let wordCompletion = self.matchBestWordPrefix(in: nsText, caretLocation: caretLocation, linePrefix: window, syntaxWords: syntaxWords),
+           let sanitized = Self.trimOverlapWithLineSuffix(wordCompletion, lineSuffix: lineSuffix)
+        {
+            return sanitized
         }
         
         return nil
+    }
+    
+    
+    /// Strips any suffix of `candidate` that already duplicates the start of `lineSuffix`
+    /// (for example closing `)` or trailing clause text already after the caret).
+    static func trimOverlapWithLineSuffix(_ candidate: String, lineSuffix: String) -> String? {
+        
+        var trimmed = candidate
+        guard !trimmed.isEmpty else { return nil }
+        
+        let cleanSuffix = lineSuffix.trimmingCharacters(in: .newlines)
+        guard !cleanSuffix.isEmpty else { return trimmed }
+        
+        let maxOverlap = min(trimmed.count, cleanSuffix.count)
+        if maxOverlap > 0 {
+            for len in stride(from: maxOverlap, through: 1, by: -1) {
+                let suffixPart = String(cleanSuffix.prefix(len))
+                if trimmed.hasSuffix(suffixPart) {
+                    trimmed.removeLast(len)
+                    break
+                }
+            }
+        }
+        
+        let trimmedNoTrailingSpace = trimmed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedNoTrailingSpace.isEmpty ? nil : trimmed
+    }
+    
+    
+    /// Splits the first logical chunk (one ASCII word or short CJK clause unit) from a ghost suggestion
+    /// for progressive `Option + Right Arrow` acceptance.
+    static func splitFirstAcceptUnit(from suggestion: String) -> (accepted: String, remainder: String) {
+        
+        guard suggestion.count > 3 else {
+            return (suggestion, "")
+        }
+        
+        let chars = Array(suggestion)
+        var index = 0
+        
+        // Consume any leading whitespace/punctuation
+        while index < chars.count, chars[index].isWhitespace || chars[index].isPunctuation {
+            index += 1
+        }
+        
+        if index < chars.count {
+            let first = chars[index]
+            if first.isASCII && (first.isLetter || first.isNumber || first == "_") {
+                while index < chars.count,
+                      chars[index].isASCII && (chars[index].isLetter || chars[index].isNumber || chars[index] == "_")
+                {
+                    index += 1
+                }
+                // Include one trailing space with the word
+                if index < chars.count, chars[index] == " " {
+                    index += 1
+                }
+            } else {
+                // CJK or non-ASCII chunk: take a 2-character word unit up to boundary
+                var taken = 0
+                while index < chars.count, taken < 2,
+                      !chars[index].isASCII, !chars[index].isWhitespace, !chars[index].isPunctuation
+                {
+                    index += 1
+                    taken += 1
+                }
+                if taken == 0 {
+                    index = min(chars.count, index + 1)
+                }
+            }
+        }
+        
+        // Avoid leaving a tiny 1-char tail
+        if chars.count - index <= 1 {
+            return (suggestion, "")
+        }
+        
+        let accepted = String(chars[..<index])
+        let remainder = String(chars[index...])
+        return (accepted, remainder)
     }
     
     
@@ -398,47 +516,61 @@ import Foundation
     }
     
     
-    /// Scans the nearby document window (`±8000` chars) for repeated contextual continuations
-    /// following the exact phrase or CJK/word suffix the user just typed.
-    private func matchLiveDocumentContext(in nsText: NSString, caretLocation: Int, linePrefix: String) -> String? {
+    /// Scans the nearby document window (`±8000` chars) and optional sibling open documents for
+    /// contextual continuations following the exact phrase or CJK/word suffix the user just typed.
+    private func matchLiveDocumentContext(
+        in nsText: NSString,
+        caretLocation: Int,
+        linePrefix: String,
+        siblingTexts: [String]
+    ) -> String? {
         
         let cleanPrefix = self.trimTrailingClausePunctuation(linePrefix)
         guard cleanPrefix.count >= 3 else { return nil }
         
-        // Try matching a 4-to-8 char suffix in the preceding document text
         let anchorLen = min(6, cleanPrefix.count)
         let anchor = String(cleanPrefix.suffix(anchorLen))
         guard anchor.count >= 3 else { return nil }
         
         let windowStart = max(0, caretLocation - 8_000)
         let precedingLength = max(0, caretLocation - anchor.count - windowStart)
-        guard precedingLength >= anchor.count else { return nil }
         
-        let searchSpace = nsText.substring(with: NSRange(location: windowStart, length: precedingLength)) as NSString
-        var searchRange = NSRange(location: 0, length: searchSpace.length)
         var continuations: [String: Int] = [:]
         var lastSeenRank: [String: Int] = [:]
         var occurrence = 0
         
-        while searchRange.length >= anchor.count {
-            let found = searchSpace.range(of: anchor, options: [], range: searchRange)
-            if found.location == NSNotFound { break }
-            
-            let afterIdx = NSMaxRange(found)
-            let maxTake = min(14, searchSpace.length - afterIdx)
-            if maxTake >= 2 {
-                let rawFollow = searchSpace.substring(with: NSRange(location: afterIdx, length: maxTake))
-                if let cleanCont = self.extractCleanContinuation(from: rawFollow),
-                   cleanCont.count >= 2, cleanCont.count <= 12
-                {
-                    occurrence += 1
-                    continuations[cleanCont, default: 0] += 1
-                    lastSeenRank[cleanCont] = occurrence
+        func scan(haystack: NSString, weight: Int) {
+            var searchRange = NSRange(location: 0, length: haystack.length)
+            while searchRange.length >= anchor.count {
+                let found = haystack.range(of: anchor, options: [], range: searchRange)
+                if found.location == NSNotFound { break }
+                
+                let afterIdx = NSMaxRange(found)
+                let maxTake = min(14, haystack.length - afterIdx)
+                if maxTake >= 2 {
+                    let rawFollow = haystack.substring(with: NSRange(location: afterIdx, length: maxTake))
+                    if let cleanCont = self.extractCleanContinuation(from: rawFollow),
+                       cleanCont.count >= 2, cleanCont.count <= 12
+                    {
+                        occurrence += 1
+                        continuations[cleanCont, default: 0] += weight
+                        lastSeenRank[cleanCont] = occurrence
+                    }
                 }
+                
+                let nextStart = found.location + max(1, found.length)
+                searchRange = NSRange(location: nextStart, length: haystack.length - nextStart)
             }
-            
-            let nextStart = found.location + max(1, found.length)
-            searchRange = NSRange(location: nextStart, length: searchSpace.length - nextStart)
+        }
+        
+        if precedingLength >= anchor.count {
+            let searchSpace = nsText.substring(with: NSRange(location: windowStart, length: precedingLength)) as NSString
+            scan(haystack: searchSpace, weight: 2)
+        }
+        
+        for sibling in siblingTexts.prefix(5) where sibling.count >= anchor.count + 2 {
+            let slice = String(sibling.prefix(4_000)) as NSString
+            scan(haystack: slice, weight: 1)
         }
         
         guard !continuations.isEmpty else { return nil }
@@ -448,9 +580,11 @@ import Foundation
             return (lastSeenRank[lhs.key] ?? 0) < (lastSeenRank[rhs.key] ?? 0)
         }) else { return nil }
         
-        // Require at least 2 occurrences in document with >= 65% consistency
+        // Require >=2 weighted occurrences with >=65% consistency (or 1 exact match on >=6-char anchor).
+        let isLongSpecificAnchor = anchor.count >= 6
+        let minScore = isLongSpecificAnchor ? 2 : 3
         let confidence = Double(best.value) / Double(max(1, total))
-        guard best.value >= 2, confidence >= 0.65 else { return nil }
+        guard best.value >= minScore, confidence >= 0.65 else { return nil }
         return best.key
     }
     

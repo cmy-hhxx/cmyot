@@ -64,6 +64,7 @@ struct KeyBindingsSettingsView: View {
             self.model.load()
         }
         .frame(width: SettingsPaneLayout.width, height: SettingsPaneLayout.height)
+        .environment(\.locale, AppLanguage.current.locale)
     }
 }
 

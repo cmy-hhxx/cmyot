@@ -59,9 +59,10 @@ ditto "$PRODUCT" "$TARGET"
 codesign --verify --deep --strict "$TARGET"
 echo "签名 OK"
 
-# Delete the build product: a .app left in DerivedData is indexed by Spotlight and
-# shows up in Spotlight/Launchpad as a second, stale copy of the editor.
+# Delete all build products (Release and any Debug test hosts): any .app left in DerivedData
+# is indexed by Spotlight and shows up in Spotlight/Launchpad as a second, stale copy of the editor.
 rm -rf "$PRODUCT"
+rm -rf ~/Library/Developer/Xcode/DerivedData/CotEditor-*/Build/Products/*/*.app 2>/dev/null || true
 echo "已删除构建产物副本"
 
 echo

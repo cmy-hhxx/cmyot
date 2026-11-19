@@ -36,6 +36,8 @@ import Foundation
 nonisolated struct AIClient: Sendable {
     
     var configuration: AIConfiguration
+    var maxOutputTokens: Int? = nil
+    var timeoutInterval: TimeInterval = 120
     
     private var wireConfig: AIConfiguration { self.configuration.wireConfiguration }
     
@@ -138,7 +140,7 @@ nonisolated struct AIClient: Sendable {
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 120
+        request.timeoutInterval = self.timeoutInterval
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         for (field, value) in config.requestHeaders {
@@ -153,6 +155,10 @@ nonisolated struct AIClient: Sendable {
         let response: URLResponse
         do {
             (data, response) = try await URLSession.shared.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             throw AIError.transport(error)
         }
@@ -207,7 +213,7 @@ nonisolated struct AIClient: Sendable {
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 120
+        request.timeoutInterval = self.timeoutInterval
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         for (field, value) in config.requestHeaders {
@@ -221,6 +227,10 @@ nonisolated struct AIClient: Sendable {
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do {
             (bytes, response) = try await URLSession.shared.bytes(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             throw AIError.transport(error)
         }
@@ -336,6 +346,9 @@ nonisolated struct AIClient: Sendable {
                 if let effort = config.reasoningEffort, !effort.isEmpty {
                     body["reasoning"] = ["effort": effort]
                 }
+                if let maxTokens = self.maxOutputTokens {
+                    body["max_output_tokens"] = maxTokens
+                }
                 
                 return body
                 
@@ -353,8 +366,15 @@ nonisolated struct AIClient: Sendable {
                 if allowTemperature, Self.supportsTemperature(for: model), let temperature = config.temperature {
                     body["temperature"] = temperature
                 }
-                // For reasoning models (o1/o3/deepseek-reasoner), pass low reasoning effort to accelerate generation.
                 let lowerModel = model.lowercased()
+                if let maxTokens = self.maxOutputTokens {
+                    if lowerModel.contains("reasoner") || lowerModel.hasPrefix("o1") || lowerModel.hasPrefix("o3") || lowerModel.hasPrefix("o4") || lowerModel.hasPrefix("gpt-5") {
+                        body["max_completion_tokens"] = maxTokens
+                    } else {
+                        body["max_tokens"] = maxTokens
+                    }
+                }
+                // For reasoning models (o1/o3/deepseek-reasoner), pass low reasoning effort to accelerate generation.
                 if lowerModel.contains("reasoner") || lowerModel.hasPrefix("o1") || lowerModel.hasPrefix("o3") || lowerModel.hasPrefix("o4"),
                    let effort = config.reasoningEffort, !effort.isEmpty
                 {
@@ -366,7 +386,7 @@ nonisolated struct AIClient: Sendable {
             case .anthropicMessages:
                 var body: [String: Any] = [
                     "model": model,
-                    "max_tokens": 16384,
+                    "max_tokens": self.maxOutputTokens ?? 16384,
                     "stream": stream,
                     "messages": conversation.map { message in
                         [
@@ -412,11 +432,14 @@ nonisolated struct AIClient: Sendable {
                 if !system.isEmpty {
                     body["systemInstruction"] = ["parts": [["text": system]]]
                 }
+                if let maxTokens = self.maxOutputTokens {
+                    body["generationConfig"] = ["maxOutputTokens": maxTokens]
+                }
                 
                 return body
                 
             case .ollama:
-                return [
+                var body: [String: Any] = [
                     "model": model,
                     "stream": stream,
                     "messages": messages.map { message in
@@ -427,6 +450,10 @@ nonisolated struct AIClient: Sendable {
                         ]
                     },
                 ]
+                if let maxTokens = self.maxOutputTokens {
+                    body["options"] = ["num_predict": maxTokens]
+                }
+                return body
         }
     }
     

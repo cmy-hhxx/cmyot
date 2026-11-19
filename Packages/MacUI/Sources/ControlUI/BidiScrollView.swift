@@ -39,18 +39,92 @@ public final class BidiScrollView: NSScrollView {
         }
     }
     
+    public var usesModernOverlayScroller = false  {
+        
+        didSet {
+            guard self.usesModernOverlayScroller != oldValue else { return }
+            if self.usesModernOverlayScroller {
+                if !(self.verticalScroller is ModernVerticalScroller) {
+                    self.verticalScroller = ModernVerticalScroller()
+                }
+                self.scrollerStyle = .overlay
+                self.tile()
+            }
+        }
+    }
+    
+    private var lastObservedClipOrigin: NSPoint = .zero
+    
     
     // MARK: View Methods
     
+    public override var scrollerStyle: NSScroller.Style {
+        
+        didSet {
+            if self.usesModernOverlayScroller, self.scrollerStyle != .overlay {
+                self.scrollerStyle = .overlay
+            }
+        }
+    }
+    
+    
+    public override func reflectScrolledClipView(_ cview: NSClipView) {
+        
+        super.reflectScrolledClipView(cview)
+        
+        guard
+            self.usesModernOverlayScroller,
+            let modern = self.verticalScroller as? ModernVerticalScroller
+        else { return }
+        
+        let origin = cview.bounds.origin
+        if origin != self.lastObservedClipOrigin {
+            self.lastObservedClipOrigin = origin
+            modern.noteScrollActivity()
+        } else {
+            modern.refreshGeometry(animated: false)
+        }
+    }
+    
+    
+    public override func scrollWheel(with event: NSEvent) {
+        
+        super.scrollWheel(with: event)
+        
+        if self.usesModernOverlayScroller,
+           let modern = self.verticalScroller as? ModernVerticalScroller
+        {
+            modern.noteScrollActivity()
+        }
+    }
+    
+    
     public override func tile() {
+        
+        if self.usesModernOverlayScroller, self.scrollerStyle != .overlay {
+            self.scrollerStyle = .overlay
+        }
         
         super.tile()
         
-        guard self.isInconsistentContentDirection else { return }
+        if self.isInconsistentContentDirection {
+            self.tileScrollers()
+            self.tileVerticalRulerView()
+            self.adjustContentInsets()
+        }
         
-        self.tileScrollers()
-        self.tileVerticalRulerView()
-        self.adjustContentInsets()
+        if self.usesModernOverlayScroller, let verticalScroller {
+            let thickness = ModernVerticalScroller.preferredThickness
+            var frame = verticalScroller.frame
+            frame.size.width = thickness
+            if self.contentDirection == .leftToRight {
+                frame.origin.x = max(0, self.bounds.width - thickness)
+            } else {
+                frame.origin.x = self.contentInsets.left + self.scrollerInsets.left
+            }
+            verticalScroller.frame = frame
+            (verticalScroller as? ModernVerticalScroller)?.refreshGeometry(animated: false)
+        }
     }
     
     
@@ -178,6 +252,6 @@ private extension NSScroller {
     /// The scroller width calculated using the current settings.
     var thickness: CGFloat {
         
-        Self.scrollerWidth(for: self.controlSize, scrollerStyle: self.scrollerStyle)
+        type(of: self).scrollerWidth(for: self.controlSize, scrollerStyle: self.scrollerStyle)
     }
 }

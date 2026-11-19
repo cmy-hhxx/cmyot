@@ -71,11 +71,34 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
     var invisiblesColor: NSColor = .disabledControlTextColor
     var unemphasizedSelectedContentBackgroundColor: NSColor?
     
+    struct InlineGhostShift: Equatable {
+        
+        var caretLocation: Int
+        var shiftWidth: CGFloat
+    }
+    
     var showsIndentGuides = false  { didSet { self.invalidateDisplay(forCharacterRange: self.attributedString().range) } }
     var tabWidth = 0
     var lineHeightMultiple: CGFloat = 1.0
-    var rendersPlainTextInlineImages = false  { didSet { self.invalidateLayout(forCharacterRange: self.attributedString().range, actualCharacterRange: nil) } }
-    var inlineImageDocumentURL: URL?
+    var inlineGhostShift: InlineGhostShift? {
+        didSet {
+            guard inlineGhostShift != oldValue else { return }
+            self.invalidateLineDisplay(around: oldValue?.caretLocation)
+            self.invalidateLineDisplay(around: inlineGhostShift?.caretLocation)
+        }
+    }
+    var rendersPlainTextInlineImages = false {
+        didSet {
+            guard rendersPlainTextInlineImages != oldValue else { return }
+            self.invalidateInlineImageLayout()
+        }
+    }
+    var inlineImageDocumentURL: URL? {
+        didSet {
+            guard inlineImageDocumentURL != oldValue, self.rendersPlainTextInlineImages else { return }
+            self.invalidateInlineImageLayout()
+        }
+    }
     
     
     // MARK: Private Properties
@@ -134,6 +157,35 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
         
         if self.showsInvisibles {
             self.drawInvisibles(forGlyphRange: glyphsToShow, at: origin, baselineOffset: self.baselineOffset(for: .horizontal))
+        }
+        
+        if let shift = self.inlineGhostShift, shift.shiftWidth > 0,
+           shift.caretLocation >= 0, shift.caretLocation < self.attributedString().length
+        {
+            let nsString = self.attributedString().string as NSString
+            let nextCodeUnit = nsString.character(at: shift.caretLocation)
+            if nextCodeUnit != 0xA, nextCodeUnit != 0xD {
+                let caretGlyphIndex = self.glyphIndexForCharacter(at: shift.caretLocation)
+                if self.isValidGlyphIndex(caretGlyphIndex) {
+                    var lineGlyphRange = NSRange.notFound
+                    _ = self.lineFragmentRect(forGlyphAt: caretGlyphIndex, effectiveRange: &lineGlyphRange, withoutAdditionalLayout: true)
+                    let tailLength = max(0, lineGlyphRange.upperBound - caretGlyphIndex)
+                    let shiftedRange = NSIntersectionRange(glyphsToShow, NSRange(location: caretGlyphIndex, length: tailLength))
+                    if shiftedRange.length > 0 {
+                        if shiftedRange.location > glyphsToShow.location {
+                            let beforeRange = NSRange(location: glyphsToShow.location, length: shiftedRange.location - glyphsToShow.location)
+                            super.drawGlyphs(forGlyphRange: beforeRange, at: origin)
+                        }
+                        super.drawGlyphs(forGlyphRange: shiftedRange, at: NSPoint(x: origin.x + shift.shiftWidth, y: origin.y))
+                        if NSMaxRange(shiftedRange) < NSMaxRange(glyphsToShow) {
+                            let afterRange = NSRange(location: NSMaxRange(shiftedRange), length: NSMaxRange(glyphsToShow) - NSMaxRange(shiftedRange))
+                            super.drawGlyphs(forGlyphRange: afterRange, at: origin)
+                        }
+                        NSGraphicsContext.restoreGraphicsState()
+                        return
+                    }
+                }
+            }
         }
         
         super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
@@ -198,6 +250,30 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
             }
         }
         
+        if self.rendersPlainTextInlineImages, glyphRange.length > 0 {
+            let nsString = self.attributedString().string as NSString
+            if nsString.length > 0 {
+                let firstChar = min(max(0, charIndexes[0]), nsString.length - 1)
+                let lastChar = min(max(firstChar, charIndexes[glyphRange.length - 1]), nsString.length - 1)
+                let span = NSRange(location: firstChar, length: lastChar - firstChar + 1)
+                let lineRange = nsString.lineRange(for: span)
+                let lineSlice = nsString.substring(with: lineRange)
+                if lineSlice.contains("⟦🖼"), lineSlice.contains("⟧") {
+                    let resolvedTokens = PlainTextInlineImageStore.shared.findTokens(in: nsString, range: lineRange)
+                        .filter { PlainTextInlineImageStore.shared.image(for: $0.identifier, documentURL: self.inlineImageDocumentURL) != nil }
+                    if !resolvedTokens.isEmpty {
+                        for index in 0..<glyphRange.length {
+                            let charIndex = charIndexes[index]
+                            for token in resolvedTokens where NSLocationInRange(charIndex, token.range) {
+                                newProps[index] = (charIndex == token.range.location) ? .controlCharacter : .null
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         super.setGlyphs(glyphs, properties: newProps, characterIndexes: charIndexes, font: aFont, forGlyphRange: glyphRange)
     }
     
@@ -240,12 +316,62 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
             @unknown default: fatalError()
         }
     }
+    
+    
+    // MARK: Private Methods
+    
+    private func invalidateInlineImageLayout() {
+        
+        let wholeRange = self.attributedString().range
+        if wholeRange.length > 0 {
+            self.invalidateGlyphs(forCharacterRange: wholeRange, changeInLength: 0, actualCharacterRange: nil)
+        }
+        self.invalidateLayout(forCharacterRange: wholeRange, actualCharacterRange: nil)
+        self.invalidateDisplay(forCharacterRange: wholeRange)
+    }
+    
+    
+    private func invalidateLineDisplay(around charLocation: Int?) {
+        
+        guard let charLocation, charLocation >= 0 else { return }
+        let nsString = self.attributedString().string as NSString
+        guard nsString.length > 0 else { return }
+        let safeLoc = min(charLocation, max(0, nsString.length - 1))
+        let lineRange = nsString.lineRange(for: NSRange(location: safeLoc, length: 0))
+        self.invalidateDisplay(forCharacterRange: lineRange)
+        
+        guard Thread.isMainThread else { return }
+        let glyphRange = self.glyphRange(forCharacterRange: lineRange, actualCharacterRange: nil)
+        guard glyphRange.length > 0, self.isValidGlyphIndex(glyphRange.location) else { return }
+        let frag = self.lineFragmentRect(forGlyphAt: glyphRange.location, effectiveRange: nil, withoutAdditionalLayout: true)
+        MainActor.assumeIsolated {
+            guard let textView = self.firstTextView else { return }
+            var dirty = frag.offset(by: textView.textContainerOrigin)
+            dirty.origin.x = 0
+            dirty.size.width = max(textView.bounds.width, dirty.maxX + 400)
+            textView.setNeedsDisplay(dirty.insetBy(dx: -4, dy: -4), avoidAdditionalLayout: true)
+        }
+    }
+    
+    
+    private func resolvedInlineImageToken(startingAt charIndex: Int) -> (range: NSRange, identifier: String)? {
+        
+        guard self.rendersPlainTextInlineImages else { return nil }
+        let nsString = self.attributedString().string as NSString
+        guard charIndex >= 0, charIndex < nsString.length, nsString.character(at: charIndex) == 0x27E6 else { return nil }
+        let lineRange = nsString.lineRange(for: NSRange(location: charIndex, length: 0))
+        let tokens = PlainTextInlineImageStore.shared.findTokens(in: nsString, range: lineRange)
+        guard let match = tokens.first(where: { $0.range.location == charIndex }),
+              PlainTextInlineImageStore.shared.image(for: match.identifier, documentURL: self.inlineImageDocumentURL) != nil
+        else { return nil }
+        return match
+    }
 }
 
 
 extension LayoutManager: NSLayoutManagerDelegate {
     
-    /// Adjusts line height to be all the same (or taller when a Plain Text inline image token sits on the line).
+    /// Adjusts line height to be all the same (or expands cleanly to host inline images without a visible title row).
     func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>, lineFragmentUsedRect: UnsafeMutablePointer<NSRect>, baselineOffset: UnsafeMutablePointer<CGFloat>, in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
         
         // avoid inconsistent line height by a composite font
@@ -253,7 +379,7 @@ extension LayoutManager: NSLayoutManagerDelegate {
         //    but then, the drawing won't be update properly when the font or line height is changed.
         // -> NSParagraphStyle's `.lineHeightMultiple` can also control the line height,
         //    but it causes an issue when the first character of the string uses a fallback font.
-        var extraImageHeight: CGFloat = 0
+        var tallestCard: CGFloat = 0
         if self.rendersPlainTextInlineImages, textContainer.layoutOrientation == .horizontal {
             let charRange = self.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
             let string = self.attributedString().string as NSString
@@ -262,25 +388,21 @@ extension LayoutManager: NSLayoutManagerDelegate {
                 let lineSubstring = string.substring(with: safeRange)
                 if lineSubstring.contains("⟦🖼"), lineSubstring.contains("⟧") {
                     let tokens = PlainTextInlineImageStore.shared.findTokens(in: string, range: safeRange)
-                    var tallestCard: CGFloat = 0
+                    let maxCardWidth = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: lineFragmentRect.pointee.width, glyphX: 0)
                     for token in tokens {
                         if let size = PlainTextInlineImageStore.shared.cardSize(
                             for: token.identifier,
-                            documentURL: self.inlineImageDocumentURL
+                            documentURL: self.inlineImageDocumentURL,
+                            maxImageWidth: maxCardWidth
                         ) {
                             tallestCard = max(tallestCard, size.height)
                         }
-                    }
-                    if tallestCard > 0 {
-                        extraImageHeight = tallestCard + 10
-                    } else if !tokens.isEmpty {
-                        extraImageHeight = 148
                     }
                 }
             }
         }
         
-        lineFragmentRect.pointee.size.height = self.lineHeight + extraImageHeight
+        lineFragmentRect.pointee.size.height = (tallestCard > 0) ? max(self.lineHeight, tallestCard + 8) : self.lineHeight
         lineFragmentUsedRect.pointee.size.height = self.lineHeight
         
         // vertically center the glyphs in the top text line of the fragment
@@ -293,15 +415,31 @@ extension LayoutManager: NSLayoutManagerDelegate {
     /// Treats control characters as whitespace to draw replacement glyphs.
     func layoutManager(_ layoutManager: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction, forControlCharacterAt charIndex: Int) -> NSLayoutManager.ControlCharacterAction {
         
+        if self.rendersPlainTextInlineImages, self.resolvedInlineImageToken(startingAt: charIndex) != nil {
+            return .whitespace
+        }
+        
         // -> Then, the glyph width can be modified in `layoutManager(_:boundingBoxForControlGlyphAt:...)`.
-        self.showsControlCharacter(at: charIndex, proposedAction: action) ? .whitespace : action
+        return self.showsControlCharacter(at: charIndex, proposedAction: action) ? .whitespace : action
     }
     
     
     /// Makes a blank space to draw the replacement glyph in `drawGlyphs(forGlyphRange:at:)` later.
     func layoutManager(_ layoutManager: NSLayoutManager, boundingBoxForControlGlyphAt glyphIndex: Int, for textContainer: NSTextContainer, proposedLineFragment proposedRect: NSRect, glyphPosition: NSPoint, characterIndex charIndex: Int) -> NSRect {
         
-        self.boundingBoxForControlGlyph
+        if self.rendersPlainTextInlineImages,
+           textContainer.layoutOrientation == .horizontal,
+           let token = self.resolvedInlineImageToken(startingAt: charIndex),
+           let cardSize = PlainTextInlineImageStore.shared.cardSize(
+               for: token.identifier,
+               documentURL: self.inlineImageDocumentURL,
+               maxImageWidth: PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: proposedRect.width, glyphX: glyphPosition.x)
+           )
+        {
+            return NSRect(x: 0, y: 0, width: cardSize.width + 4, height: self.lineHeight)
+        }
+        
+        return self.boundingBoxForControlGlyph
     }
     
     
