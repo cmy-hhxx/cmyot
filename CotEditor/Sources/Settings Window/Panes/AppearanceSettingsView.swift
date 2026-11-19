@@ -229,6 +229,7 @@ private struct FontSettingView: View {
                 AntialiasingText(self.font.wrappedValue.displayNameAndSize)
                     .antialiasDisabled(!self.antialias)
                     .font(nsFont: self.font.wrappedValue.withSize(0))
+                    .lineLimit(1)
                     .help(self.font.wrappedValue.displayNameAndSize)
                     .frame(maxWidth: 260)
                     .alignmentGuide(.firstTextBaseline, computeValue: \.height)
@@ -240,7 +241,9 @@ private struct FontSettingView: View {
             }
             HStack {
                 Toggle(String(localized: "Antialias", table: "AppearanceSettings"), isOn: $antialias)
+                    .lineLimit(1)
                 Toggle(String(localized: "Ligatures", table: "AppearanceSettings"), isOn: $ligature)
+                    .lineLimit(1)
             }.controlSize(.small)
         }
     }
@@ -288,6 +291,8 @@ struct CustomCursorColorControl: View {
         
         HStack(spacing: 8) {
             Toggle("覆盖主题默认光标色", isOn: self.$usesCustomCursorColor)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .controlSize(.small)
                 .onChange(of: self.usesCustomCursorColor) { _, _ in
                     CotLocalDatabase.shared.syncUserPreferencesToDatabase()

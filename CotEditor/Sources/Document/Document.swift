@@ -557,6 +557,7 @@ extension NSAttributedString.Key {
         self.lastManualSaveDate = .now
         self.updateChangeCount(.changeCleared)
         self.viewController?.editorViewControllers.forEach { $0.updateTabState() }
+        AnalyticsManager.shared.recordDocumentSaved()
     }
     
     
@@ -648,6 +649,7 @@ extension NSAttributedString.Key {
                     self.hasUncommittedChanges = false
                     if !saveOperation.isAutosave {
                         self.lastManualSaveDate = .now
+                        AnalyticsManager.shared.recordDocumentSaved()
                     }
                     self.syncToLocalDatabase()
                     NotificationCenter.default.post(name: DidUpdateChangeMessage.name, object: self)

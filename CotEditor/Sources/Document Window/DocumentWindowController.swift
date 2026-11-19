@@ -740,7 +740,7 @@ private extension NSViewController {
 
 private extension NSToolbar.Identifier {
     
-    static let document = Self("Document.personal.8")
+    static let document = Self("Document.personal.9")
     static let directoryDocument = Self("DirectoryDocument")
 }
 
@@ -752,9 +752,11 @@ private extension NSToolbarItem.Identifier {
     
     static let syntax = Self(Self.prefix + "syntaxStyle")
     static let quickEmoji = Self(Self.prefix + "quickEmoji")
+    static let analyticsDashboard = Self(Self.prefix + "analyticsDashboard")
     static let appearanceMode = Self(Self.prefix + "appearanceMode")
     static let weeklyReportCenter = Self(Self.prefix + "weeklyReportCenter")
     static let documentCenter = Self(Self.prefix + "documentCenter")
+    static let userProfile = Self(Self.prefix + "userProfile")
     static let textScale = Self(Self.prefix + "textScale")
     static let more = Self(Self.prefix + "more")
     static let inspector = Self(Self.prefix + "inspector")
@@ -812,10 +814,12 @@ extension DocumentWindowController: NSToolbarDelegate {
         Set(self.directoryIdentifiers).union([
             .editable,
             .quickEmoji,
+            .analyticsDashboard,
             .appearanceMode,
             .weeklyReportCenter,
             .documentCenter,
             .flexibleSpace,
+            .userProfile,
         ])
     }
     
@@ -825,6 +829,7 @@ extension DocumentWindowController: NSToolbarDelegate {
         self.directoryIdentifiers + [
             .editable,
             .quickEmoji,
+            .analyticsDashboard,
             .appearanceMode,
             .weeklyReportCenter,
             .documentCenter,
@@ -835,16 +840,18 @@ extension DocumentWindowController: NSToolbarDelegate {
             .inspector,
             .more,
             .flexibleSpace,
+            .userProfile,
         ]
     }
     
     
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         
-        // Personal build: keep the toolbar minimal; Emoji, Appearance toggle, Weekly Report Center, and Document Center stay side-by-side.
+        // Personal build: keep the toolbar minimal; Emoji, Dashboard, Appearance toggle, Weekly Report Center, and Document Center stay side-by-side, with user avatar pinned trailing top-right.
         var identifiers = self.directoryIdentifiers + [
             .editable,
             .quickEmoji,
+            .analyticsDashboard,
             .appearanceMode,
             .weeklyReportCenter,
             .documentCenter,
@@ -857,6 +864,7 @@ extension DocumentWindowController: NSToolbarDelegate {
             .more,
             .space,
             .flexibleSpace,
+            .userProfile,
         ]
         
         if #available(macOS 15.2, *), NSWritingToolsCoordinator.isWritingToolsAvailable {
@@ -935,6 +943,27 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.image = NSImage(systemSymbolName: "face.smiling", accessibilityDescription: item.label)?
                     .withSymbolConfiguration(emojiConfig)
                 item.menu = Self.quickEmojiMenu()
+                return item
+                
+            case .analyticsDashboard:
+                let item = StatableToolbarItem(itemIdentifier: itemIdentifier)
+                item.isBordered = true
+                item.label = "数据看板"
+                item.toolTip = "在当前窗口打开/关闭数据看板"
+                item.stateImages[.off] = WorkspaceCenterIcons.analyticsDashboardIcon(isActive: false)
+                item.stateImages[.on] = WorkspaceCenterIcons.analyticsDashboardIcon(isActive: true)
+                item.action = #selector(ContentViewController.toggleAnalyticsDashboard(_:))
+                item.isNavigational = true
+                item.visibilityPriority = .high
+                return item
+                
+            case .userProfile:
+                let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+                item.label = "用户"
+                item.toolTip = "用户资料与本地多账户切换"
+                item.view = UserAvatarToolbarButtonView()
+                item.isNavigational = false
+                item.visibilityPriority = .high
                 return item
                 
             case .appearanceMode:

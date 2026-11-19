@@ -408,6 +408,7 @@ final class DocumentController: NSDocumentController {
         DocumentWindow.tabbingPreference = .manual
         self.newDocument(sender)
         DocumentWindow.tabbingPreference = nil
+        AnalyticsManager.shared.recordFileCreated()
     }
     
     
@@ -428,6 +429,7 @@ final class DocumentController: NSDocumentController {
         DocumentWindow.tabbingPreference = .manual
         self.newDocument(sender)
         DocumentWindow.tabbingPreference = nil
+        AnalyticsManager.shared.recordFileCreated()
     }
 
     

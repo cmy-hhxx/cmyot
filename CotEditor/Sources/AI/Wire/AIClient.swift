@@ -25,6 +25,15 @@
 
 import Foundation
 
+/// Response payload from ``AIClient`` containing answer text and optional provider-reported token counts.
+nonisolated struct AICompletionResponse: Sendable, Equatable {
+    
+    let text: String
+    let inputTokens: Int?
+    let outputTokens: Int?
+}
+
+
 /// Talks to the configured AI service.
 ///
 /// This is the `Wire` layer: the client only knows how to turn a list of messages into one
@@ -51,6 +60,16 @@ nonisolated struct AIClient: Sendable {
     /// - Returns: The answer as plain text.
     /// - Throws: ``AIError`` when the request cannot be made or the reply cannot be read.
     func send(_ messages: [AIMessage], onPartial: (@Sendable (String) async -> Void)? = nil) async throws -> String {
+        
+        try await self.sendWithUsage(messages, onPartial: onPartial).text
+    }
+    
+    
+    /// Sends the messages and returns both the final answer and any token usage reported by the provider.
+    func sendWithUsage(
+        _ messages: [AIMessage],
+        onPartial: (@Sendable (String) async -> Void)? = nil
+    ) async throws -> AICompletionResponse {
         
         var allowTemperature = Self.supportsTemperature(for: self.wireConfig.model)
         var allowThinkingControl = true
@@ -146,7 +165,7 @@ nonisolated struct AIClient: Sendable {
         allowTemperature: Bool,
         allowThinkingControl: Bool,
         onPartial: (@Sendable (String) async -> Void)?
-    ) async throws -> String {
+    ) async throws -> AICompletionResponse {
         
         let config = self.wireConfig
         guard config.isUsable else { throw AIError.notConfigured }
@@ -159,8 +178,13 @@ nonisolated struct AIClient: Sendable {
                     allowThinkingControl: allowThinkingControl,
                     onPartial: onPartial
                 )
-                if !streamed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return streamed.trimmingCharacters(in: .whitespacesAndNewlines)
+                let cleaned = streamed.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cleaned.isEmpty {
+                    return AICompletionResponse(
+                        text: cleaned,
+                        inputTokens: streamed.inputTokens,
+                        outputTokens: streamed.outputTokens
+                    )
                 }
             } catch let error as AIError where Self.shouldFallbackFromStreamingError(error) {
                 // Fall back to standard non-streaming request only when SSE itself is rejected
@@ -208,9 +232,9 @@ nonisolated struct AIClient: Sendable {
             throw AIError.http(status: httpResponse.statusCode, message: Self.errorMessage(from: data))
         }
         
-        let finalAnswer = try self.answer(from: data)
-        await onPartial?(finalAnswer)
-        return finalAnswer
+        let parsed = try self.answerAndUsage(from: data)
+        await onPartial?(parsed.text)
+        return parsed
     }
     
     
@@ -248,7 +272,7 @@ nonisolated struct AIClient: Sendable {
         allowTemperature: Bool,
         allowThinkingControl: Bool,
         onPartial: @Sendable (String) async -> Void
-    ) async throws -> String {
+    ) async throws -> AICompletionResponse {
         
         let config = self.wireConfig
         guard let url = config.requestURL else { throw AIError.invalidURL(config.resolvedBaseURL) }
@@ -292,19 +316,30 @@ nonisolated struct AIClient: Sendable {
         }
         
         var accumulated = ""
+        var inputTokens: Int?
+        var outputTokens: Int?
+        
         for try await line in bytes.lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
             
             if config.endpoint == .ollama {
                 if let data = trimmed.data(using: .utf8),
-                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let msg = obj["message"] as? [String: Any],
-                   let delta = msg["content"] as? String,
-                   !delta.isEmpty
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
                 {
-                    accumulated += delta
-                    await onPartial(accumulated)
+                    if let promptEval = obj["prompt_eval_count"] as? Int {
+                        inputTokens = promptEval
+                    }
+                    if let evalCount = obj["eval_count"] as? Int {
+                        outputTokens = evalCount
+                    }
+                    if let msg = obj["message"] as? [String: Any],
+                       let delta = msg["content"] as? String,
+                       !delta.isEmpty
+                    {
+                        accumulated += delta
+                        await onPartial(accumulated)
+                    }
                 }
                 continue
             }
@@ -320,6 +355,14 @@ nonisolated struct AIClient: Sendable {
             
             switch config.endpoint {
                 case .openAIChatCompletions:
+                    if let usage = obj["usage"] as? [String: Any] {
+                        if let prompt = (usage["prompt_tokens"] as? Int) ?? (usage["input_tokens"] as? Int) {
+                            inputTokens = prompt
+                        }
+                        if let completion = (usage["completion_tokens"] as? Int) ?? (usage["output_tokens"] as? Int) {
+                            outputTokens = completion
+                        }
+                    }
                     if let choices = obj["choices"] as? [[String: Any]],
                        let delta = choices.first?["delta"] as? [String: Any],
                        let text = delta["content"] as? String,
@@ -336,14 +379,34 @@ nonisolated struct AIClient: Sendable {
                         await onPartial(accumulated)
                     }
                 case .anthropicMessages:
-                    if obj["type"] as? String == "error" {
+                    let eventType = obj["type"] as? String
+                    if eventType == "error" {
                         throw AIError.http(status: 400, message: Self.errorMessage(from: data))
                     }
-                    if obj["type"] as? String == "content_block_delta",
-                       let delta = obj["delta"] as? [String: Any],
-                       (delta["type"] as? String == nil || delta["type"] as? String == "text_delta"),
-                       let text = delta["text"] as? String,
-                       !text.isEmpty
+                    if eventType == "message_start",
+                       let message = obj["message"] as? [String: Any],
+                       let usage = message["usage"] as? [String: Any]
+                    {
+                        if let inTok = usage["input_tokens"] as? Int {
+                            inputTokens = inTok
+                        }
+                        if let outTok = usage["output_tokens"] as? Int {
+                            outputTokens = outTok
+                        }
+                    } else if eventType == "message_delta",
+                              let usage = obj["usage"] as? [String: Any]
+                    {
+                        if let inTok = usage["input_tokens"] as? Int {
+                            inputTokens = inTok
+                        }
+                        if let outTok = usage["output_tokens"] as? Int {
+                            outputTokens = outTok
+                        }
+                    } else if eventType == "content_block_delta",
+                              let delta = obj["delta"] as? [String: Any],
+                              (delta["type"] as? String == nil || delta["type"] as? String == "text_delta"),
+                              let text = delta["text"] as? String,
+                              !text.isEmpty
                     {
                         accumulated += text
                         await onPartial(accumulated)
@@ -357,7 +420,7 @@ nonisolated struct AIClient: Sendable {
             throw AIError.emptyResponse
         }
         
-        return accumulated
+        return AICompletionResponse(text: accumulated, inputTokens: inputTokens, outputTokens: outputTokens)
     }
     
     
@@ -551,12 +614,8 @@ nonisolated struct AIClient: Sendable {
     }
     
     
-    /// Pulls the answer text out of a protocol reply.
-    ///
-    /// - Parameter data: The raw response body.
-    /// - Returns: The answer text.
-    /// - Throws: ``AIError`` when the body does not contain an answer.
-    private func answer(from data: Data) throws -> String {
+    /// Pulls the answer text and optional token counts out of a protocol reply.
+    private func answerAndUsage(from data: Data) throws -> AICompletionResponse {
         
         guard
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -592,7 +651,38 @@ nonisolated struct AIClient: Sendable {
             throw AIError.emptyResponse
         }
         
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let usage = Self.tokenUsage(from: object, endpoint: self.wireConfig.endpoint)
+        return AICompletionResponse(
+            text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens
+        )
+    }
+    
+    
+    /// Extracts input/output token counts from a parsed non-streaming JSON response.
+    private static func tokenUsage(from object: [String: Any], endpoint: AIEndpoint) -> (inputTokens: Int?, outputTokens: Int?) {
+        
+        switch endpoint {
+            case .openAIChatCompletions:
+                let usage = object["usage"] as? [String: Any]
+                let input = (usage?["prompt_tokens"] as? Int) ?? (usage?["input_tokens"] as? Int)
+                let output = (usage?["completion_tokens"] as? Int) ?? (usage?["output_tokens"] as? Int)
+                return (input, output)
+            case .openAIResponses:
+                let usage = object["usage"] as? [String: Any]
+                let input = (usage?["input_tokens"] as? Int) ?? (usage?["prompt_tokens"] as? Int)
+                let output = (usage?["output_tokens"] as? Int) ?? (usage?["completion_tokens"] as? Int)
+                return (input, output)
+            case .anthropicMessages:
+                let usage = object["usage"] as? [String: Any]
+                return (usage?["input_tokens"] as? Int, usage?["output_tokens"] as? Int)
+            case .googleGemini:
+                let usage = object["usageMetadata"] as? [String: Any]
+                return (usage?["promptTokenCount"] as? Int, usage?["candidatesTokenCount"] as? Int)
+            case .ollama:
+                return (object["prompt_eval_count"] as? Int, object["eval_count"] as? Int)
+        }
     }
     
     

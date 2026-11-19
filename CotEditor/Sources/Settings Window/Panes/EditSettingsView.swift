@@ -66,15 +66,20 @@ struct EditSettingsView: View {
                 }
                 
                 Toggle(String(localized: "Detect indent style on document opening", table: "EditSettings"), isOn: $detectsIndentStyle)
+                    .lineLimit(1)
                 Toggle(String(localized: "Automatically indent while typing", table: "EditSettings"), isOn: $autoIndent)
+                    .lineLimit(1)
                 Toggle(String(localized: "Indent selection with Tab key", table: "EditSettings"), isOn: $indentWithTabKey)
+                    .lineLimit(1)
             } header: {
                 Text("Indentation:", tableName: "EditSettings")
             }
             
             Section {
                 Toggle(String(localized: "Automatically trim trailing whitespace", table: "EditSettings"), isOn: $autoTrimsTrailingWhitespace)
+                    .lineLimit(1)
                 Toggle(String(localized: "Including whitespace-only lines", table: "EditSettings"), isOn: $trimsWhitespaceOnlyLines)
+                    .lineLimit(1)
                     .disabled(!self.autoTrimsTrailingWhitespace)
             } header: {
                 Text("Whitespace:", tableName: "EditSettings")
@@ -82,7 +87,9 @@ struct EditSettingsView: View {
             
             Section {
                 Toggle(String(localized: "Highlight matching braces", table: "EditSettings"), isOn: $highlightBraces)
+                    .lineLimit(1)
                 Toggle(String(localized: "Highlight instances of selected text", table: "EditSettings"), isOn: $highlightSelectionInstance)
+                    .lineLimit(1)
             } header: {
                 Text("Content parse:", tableName: "EditSettings")
             }

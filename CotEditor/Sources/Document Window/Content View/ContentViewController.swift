@@ -30,12 +30,30 @@ import SwiftUI
 enum WorkspaceCenterKind: String, CaseIterable, Identifiable {
     case weeklyReports = "周报中心"
     case documents = "文档中心"
+    case dashboard = "数据看板"
     
     var id: String { self.rawValue }
 }
 
 
 enum WorkspaceCenterIcons {
+    
+    /// Custom vector icon for 数据看板 (a crisp toolbar bar-chart symbol).
+    @MainActor
+    static func analyticsDashboardIcon(isActive: Bool, size: NSSize = NSSize(width: 18, height: 18)) -> NSImage {
+        
+        if let sf = NSImage(systemSymbolName: "chart.bar.xaxis", accessibilityDescription: "数据看板") {
+            let config = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
+            if let configured = sf.withSymbolConfiguration(config) {
+                configured.isTemplate = !isActive
+                return configured
+            }
+        }
+        let image = NSImage(size: size)
+        image.isTemplate = true
+        return image
+    }
+    
     
     /// Custom vector icon for 周报中心 (a crisp, pixel-aligned calendar report badge).
     @MainActor
@@ -193,7 +211,9 @@ final class ContentViewController: NSSplitViewController {
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         
         if let toolbarItem = item as? NSToolbarItem,
-           (toolbarItem.action == #selector(toggleWeeklyReportCenter(_:)) || toolbarItem.action == #selector(toggleDocumentCenter(_:)))
+           toolbarItem.action == #selector(toggleWeeklyReportCenter(_:))
+            || toolbarItem.action == #selector(toggleDocumentCenter(_:))
+            || toolbarItem.action == #selector(toggleAnalyticsDashboard(_:))
         {
             return self.validateCenterToolbarItem(toolbarItem)
         }
@@ -201,7 +221,7 @@ final class ContentViewController: NSSplitViewController {
     }
     
     
-    /// Updates the toggle state of the in-window Weekly Report Center and Document Center toolbar items.
+    /// Updates the toggle state of the in-window Weekly Report Center, Document Center, and Analytics Dashboard toolbar items.
     func validateCenterToolbarItem(_ item: NSToolbarItem) -> Bool {
         
         switch item.action {
@@ -211,13 +231,16 @@ final class ContentViewController: NSSplitViewController {
             case #selector(toggleDocumentCenter(_:)):
                 (item as? StatableToolbarItem)?.state = (self.activeCenter == .documents) ? .on : .off
                 return true
+            case #selector(toggleAnalyticsDashboard(_:)):
+                (item as? StatableToolbarItem)?.state = (self.activeCenter == .dashboard) ? .on : .off
+                return true
             default:
                 return true
         }
     }
     
     
-    // MARK: In-Window Workspace Centers (Weekly Reports & Documents)
+    // MARK: In-Window Workspace Centers (Weekly Reports, Documents & Analytics Dashboard)
     
     @IBAction func toggleWeeklyReportCenter(_ sender: Any?) {
         
@@ -239,7 +262,17 @@ final class ContentViewController: NSSplitViewController {
     }
     
     
-    /// Opens Weekly Report Center or Document Center directly inside this window (no separate window).
+    @IBAction func toggleAnalyticsDashboard(_ sender: Any?) {
+        
+        if self.activeCenter == .dashboard {
+            self.hideInWindowCenter()
+        } else {
+            self.showInWindowCenter(.dashboard)
+        }
+    }
+    
+    
+    /// Opens Weekly Report Center, Document Center, or Analytics Dashboard directly inside this window (no separate window).
     func showInWindowCenter(
         _ kind: WorkspaceCenterKind,
         weeklyMode: WeeklyReportWindowController.InitialMode = .history,
@@ -262,6 +295,9 @@ final class ContentViewController: NSSplitViewController {
                 self.weeklyReportState.refreshOpenSources()
             case .documents:
                 self.documentCenterState.refresh()
+            case .dashboard:
+                AnalyticsManager.shared.flushPendingStats()
+                AnalyticsManager.shared.reloadFromDatabase()
         }
         
         self.centerHostModel.selectedKind = kind
@@ -346,6 +382,7 @@ final class ContentViewController: NSSplitViewController {
                 guard let self, let docVC = self.documentViewController else { return }
                 if let created = try? (NSDocumentController.shared as? DocumentController)?.openUntitledDocumentAndDisplay(false) as? Document {
                     docVC.openOrFocusDocument(created, splitRight: false)
+                    AnalyticsManager.shared.recordFileCreated()
                 }
                 self.hideInWindowCenter()
             }
@@ -629,6 +666,11 @@ private struct WorkspaceCenterHostView: View {
                         onOpenAllDocuments: self.onOpenAllManagedDocuments,
                         onDeleteDocument: self.onDeleteManagedDocument,
                         onCreateNewDocument: self.onCreateNewDocument,
+                        onDismiss: self.onDismiss
+                    )
+                case .dashboard:
+                    AnalyticsDashboardView(
+                        isEmbeddedInSettings: false,
                         onDismiss: self.onDismiss
                     )
             }

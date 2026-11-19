@@ -53,6 +53,8 @@ struct KeyBindingsSettingsView: View {
                     Text(error.localizedDescription)
                         .foregroundStyle(.red)
                         .controlSize(.small)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
                 HelpLink(anchor: "settings_keybindings")
             }

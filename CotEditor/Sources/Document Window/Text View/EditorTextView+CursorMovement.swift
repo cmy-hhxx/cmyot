@@ -670,6 +670,7 @@ extension EditorTextView {
         
         guard self.isEditable else { return super.deleteForward(sender) }
         
+        self.clearGhostSuggestion(animated: false)
         self.dismissedGhostCaretLocation = nil
         
         if !self.hasMultipleInsertions,

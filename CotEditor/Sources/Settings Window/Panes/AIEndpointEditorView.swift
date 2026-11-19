@@ -286,8 +286,9 @@ struct AIEndpointEditorView: View {
                         Text(fetchError)
                             .font(.caption)
                             .foregroundStyle(.red)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(fetchError)
                             .frame(width: Self.controlWidth, alignment: .leading)
                     }
                 }
@@ -312,8 +313,9 @@ struct AIEndpointEditorView: View {
                     Label(testMessage, systemImage: self.testSucceeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                         .font(.callout)
                         .foregroundStyle(self.testSucceeded ? .green : .red)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help(testMessage)
                 }
                 
                 Spacer()

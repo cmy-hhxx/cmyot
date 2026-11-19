@@ -1724,6 +1724,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         let newEditorViewController = self.makeEditorViewController(document: document, copying: currentViewController)
         self.insertPane(newEditorViewController, beside: currentViewController, isVertical: isVertical)
+        AnalyticsManager.shared.recordFileCreated()
         
         self.splitState.isVertical = isVertical
         self.updateSplitState()
@@ -1841,6 +1842,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         }
         
         self.addTab(document, to: pane, copying: sourceTextView)
+        AnalyticsManager.shared.recordFileCreated()
         
         return true
     }
@@ -2974,6 +2976,61 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
+    /// Reloads this window's panes and tabs from the newly active user's `CotLocalDatabase`.
+    func reloadWorkspaceForActiveUser() {
+        
+        self.sessionSaveTask?.cancel()
+        self.sessionSaveTask = nil
+        
+        let outgoingDocs = self.paneDocuments
+        let outgoingTextViews = self.textViews
+        
+        self.isRestoringPersistedPaneTabs = true
+        defer {
+            self.isRestoringPersistedPaneTabs = false
+            self.updateSplitState()
+            self.focusedDocument.counter.refreshNow()
+            NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
+        }
+        
+        self.unzoomPane()
+        
+        for tv in outgoingTextViews {
+            NotificationCenter.default.removeObserver(self, name: EditorTextView.DidLiveChangeSelectionMessage.name, object: tv)
+        }
+        
+        if let freshDoc = try? self.makePaneDocument() {
+            self.promotePrimaryDocument(to: freshDoc)
+            let tabs = self.loadPersistedPaneTabItems()
+            if !tabs.isEmpty {
+                let layout = PersistedWindowLayout(
+                    root: .pane(tabs: tabs, selectedTabIndex: 0, showsLineNumber: self.showsLineNumber),
+                    focusedPaneIndex: 0,
+                    windowFrame: nil
+                )
+                self.applyPersistedWindowLayout(layout)
+            } else {
+                let paneVC = self.makeEditorViewController(document: freshDoc, copying: self.editorViewControllers.first)
+                let oldItems = self.splitViewItems
+                self.addSplitViewItem(self.makeSplitViewItem(for: paneVC))
+                for oldItem in oldItems {
+                    self.removeSplitViewItem(oldItem)
+                }
+                self.focusedChild = paneVC
+                self.view.window?.makeFirstResponderDiscardingMarkedText(paneVC.textView)
+            }
+        }
+        
+        let activeDocs = Set(self.paneDocuments.map(ObjectIdentifier.init))
+        for doc in outgoingDocs where !activeDocs.contains(ObjectIdentifier(doc)) {
+            self.stopObservingTextStorage(of: doc)
+            doc.updateChangeCount(.changeCleared)
+            doc.hasUncommittedChanges = false
+            doc.close()
+        }
+    }
+    
+    
     /// Restores the saved tabs from `CotLocalDatabase` once on launch.
     ///
     /// The previous split/window layout is deliberately flattened into a single pane: restarting
@@ -2991,6 +3048,20 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             self.focusedDocument.counter.refreshNow()
             NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
         }
+        
+        let tabs = self.loadPersistedPaneTabItems()
+        guard !tabs.isEmpty else { return }
+        
+        let layout = PersistedWindowLayout(
+            root: .pane(tabs: tabs, selectedTabIndex: 0, showsLineNumber: self.showsLineNumber),
+            focusedPaneIndex: 0,
+            windowFrame: nil
+        )
+        self.applyPersistedWindowLayout(layout)
+    }
+    
+    
+    private func loadPersistedPaneTabItems() -> [PersistedPaneTabItem] {
         
         var restoredItems: [PersistedPaneTabItem] = []
         
@@ -3025,24 +3096,16 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             }
         }
         
-        guard !restoredItems.isEmpty else { return }
+        guard !restoredItems.isEmpty else { return [] }
         
         var seen = Set<String>()
-        let tabs = restoredItems.compactMap { item -> PersistedPaneTabItem? in
+        return restoredItems.compactMap { item -> PersistedPaneTabItem? in
             let key = item.filePath ?? item.databaseID ?? item.title
             guard seen.insert(key).inserted else { return nil }
             var normalized = item
             normalized.paneIndex = 0
             return normalized
         }
-        guard !tabs.isEmpty else { return }
-        
-        let layout = PersistedWindowLayout(
-            root: .pane(tabs: tabs, selectedTabIndex: 0, showsLineNumber: self.showsLineNumber),
-            focusedPaneIndex: 0,
-            windowFrame: nil
-        )
-        self.applyPersistedWindowLayout(layout)
     }
     
     

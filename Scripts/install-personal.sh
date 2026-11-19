@@ -14,9 +14,10 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="Cot"
+APP_NAME="CoTEditor"
 TARGET="/Applications/${APP_NAME}.app"
 BUNDLE_IDS=("local.cmy.Cot" "com.coteditor.CotEditor")
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 MODE="${1:-install}"
 
 find_installs() {
@@ -53,33 +54,50 @@ PRODUCT="$(ls -dt ~/Library/Developer/Xcode/DerivedData/CotEditor-*/Build/Produc
 
 echo
 echo "== 2/4 安装到 $TARGET =="
-pkill -f "${TARGET}/Contents/MacOS/CotEditor" 2>/dev/null || true
+pkill -x CotEditor 2>/dev/null || true
+sleep 0.5
 rm -rf "$TARGET"
 ditto "$PRODUCT" "$TARGET"
 codesign --verify --deep --strict "$TARGET"
-echo "签名 OK"
+"$LSREGISTER" -f -R -trusted "$TARGET" 2>/dev/null || true
+mdimport "$TARGET" 2>/dev/null || true
+echo "签名与注册 OK"
 
-# Delete all build products (Release and any Debug test hosts): any .app left in DerivedData
-# is indexed by Spotlight and shows up in Spotlight/Launchpad as a second, stale copy of the editor.
-rm -rf "$PRODUCT"
-rm -rf ~/Library/Developer/Xcode/DerivedData/CotEditor-*/Build/Products/*/*.app 2>/dev/null || true
+# Delete all build products (DerivedData and temporary build dirs): any .app left behind
+# is indexed by Spotlight and shows up in Spotlight/Launchpad as a second, stale copy.
+for build_app in \
+    "$PRODUCT" \
+    ~/Library/Developer/Xcode/DerivedData/CotEditor-*/Build/Products/*/*.app \
+    /private/tmp/*/Build/Products/*/*.app \
+    /private/var/folders/*/*/*/cot-dd-*/Build/Products/*/*.app
+do
+    [[ -d "$build_app" ]] || continue
+    "$LSREGISTER" -u "$build_app" 2>/dev/null || true
+    rm -rf "$build_app"
+done
 echo "已删除构建产物副本"
 
 echo
 echo "== 3/4 清理其它副本（移到废纸篓，可恢复） =="
 mkdir -p "$HOME/.Trash"
+CURRENT_NOW="$(find_installs || true)"
+ALL_CANDIDATES="$(printf "%s\n%s\n/Applications/Cot.app\n" "$CURRENT" "$CURRENT_NOW" | awk 'NF && !seen[$0]++')"
+TARGET_LOWER="$(printf '%s' "$TARGET" | tr '[:upper:]' '[:lower:]')"
 while IFS= read -r app; do
     [[ -z "$app" ]] && continue
-    [[ "$app" == "$TARGET" ]] && continue
     [[ -d "$app" ]] || continue
+    APP_LOWER="$(printf '%s' "$app" | tr '[:upper:]' '[:lower:]')"
+    [[ "$APP_LOWER" == "$TARGET_LOWER" ]] && continue
+    [[ "$app" -ef "$TARGET" ]] && continue
     # skip anything that is not our editor
     id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$app/Contents/Info.plist" 2>/dev/null || echo "")
     if [[ " ${BUNDLE_IDS[*]} " == *" $id "* ]]; then
+        "$LSREGISTER" -u "$app" 2>/dev/null || true
         dest="$HOME/.Trash/$(basename "$app" .app)-$(date +%Y%m%d-%H%M%S).app"
         mv "$app" "$dest"
         echo "已移动：$app -> $dest"
     fi
-done <<< "$CURRENT"
+done <<< "$ALL_CANDIDATES"
 
 echo
 echo "== 4/4 验证 =="

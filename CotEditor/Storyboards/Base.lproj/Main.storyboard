@@ -10,10 +10,10 @@
                 <application id="hnw-xV-0zn" sceneMemberID="viewController">
                     <menu key="mainMenu" title="Main Menu" systemMenu="main" id="29">
                         <items>
-                            <menuItem title="Cot" id="56">
-                                <menu key="submenu" title="CotEditor" systemMenu="apple" id="57">
+                            <menuItem title="CoTEditor" id="56">
+                                <menu key="submenu" title="CoTEditor" systemMenu="apple" id="57">
                                     <items>
-                                        <menuItem title="About CotEditor" id="58">
+                                        <menuItem title="About CoTEditor" id="58">
                                             <modifierMask key="keyEquivalentModifierMask"/>
                                             <connections>
                                                 <action selector="showAboutPanel:" target="Ady-hI-5gd" id="u8D-Wn-gmq"/>
@@ -31,7 +31,7 @@
                                             <menu key="submenu" title="Services" systemMenu="services" id="130"/>
                                         </menuItem>
                                         <menuItem isSeparatorItem="YES" id="144"/>
-                                        <menuItem title="Hide CotEditor" keyEquivalent="h" id="134">
+                                        <menuItem title="Hide CoTEditor" keyEquivalent="h" id="134">
                                             <connections>
                                                 <action selector="hide:" target="Ady-hI-5gd" id="JrT-Ri-zBE"/>
                                             </connections>
@@ -49,7 +49,7 @@
                                             </connections>
                                         </menuItem>
                                         <menuItem isSeparatorItem="YES" id="149"/>
-                                        <menuItem title="Quit CotEditor" keyEquivalent="q" id="136">
+                                        <menuItem title="Quit CoTEditor" keyEquivalent="q" id="136">
                                             <connections>
                                                 <action selector="terminate:" target="Ady-hI-5gd" id="e2R-9T-s5O"/>
                                             </connections>

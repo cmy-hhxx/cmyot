@@ -120,7 +120,11 @@ import Observation
             .user(action.prompt(for: text, context: effectiveContext), images: images),
         ]
         
-        let rawResult = try await self.send(messages, onPartial: onPartial)
+        let rawResult = try await self.send(
+            messages,
+            analyticsFeature: action.analyticsKey,
+            onPartial: onPartial
+        )
         let result = action.outputsPlainDocumentText
             ? AIDocumentTextCleaner.clean(rawResult)
             : rawResult
@@ -214,6 +218,7 @@ import Observation
     private func send(
         _ messages: [AIMessage],
         configuration: AIConfiguration? = nil,
+        analyticsFeature: String? = nil,
         onPartial: (@MainActor @Sendable (String) -> Void)? = nil
     ) async throws -> String {
         
@@ -231,11 +236,32 @@ import Observation
             }
         }
         
+        let clock = ContinuousClock()
+        let start = clock.now
+        let effective = configuration.wireConfiguration
         do {
-            return try await AIClient(configuration: configuration).send(messages, onPartial: nonisolatedPartial)
+            let response = try await AIClient(configuration: configuration).sendWithUsage(
+                messages,
+                onPartial: nonisolatedPartial
+            )
+            if let analyticsFeature {
+                let elapsed = start.duration(to: clock.now)
+                let latencyMs = max(1, Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))
+                let inputTokens = response.inputTokens ?? AINextTokenPredictor.estimateTokens(in: messages.map(\.text).joined(separator: "\n"))
+                let outputTokens = response.outputTokens ?? AINextTokenPredictor.estimateTokens(in: response.text)
+                AnalyticsManager.shared.recordAIUsage(
+                    feature: analyticsFeature,
+                    model: effective.model,
+                    provider: effective.endpoint.label,
+                    inputTokens: inputTokens,
+                    outputTokens: outputTokens,
+                    latencyMs: latencyMs,
+                    success: true
+                )
+            }
+            return response.text
         } catch {
             if !(error is CancellationError) {
-                let effective = configuration.wireConfiguration
                 CotLogger.shared.error(
                     category: .ai,
                     "AI request failed",
@@ -246,6 +272,19 @@ import Observation
                         "model": effective.model,
                     ]
                 )
+                if let analyticsFeature {
+                    let elapsed = start.duration(to: clock.now)
+                    let latencyMs = max(1, Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))
+                    AnalyticsManager.shared.recordAIUsage(
+                        feature: analyticsFeature,
+                        model: effective.model,
+                        provider: effective.endpoint.label,
+                        inputTokens: 0,
+                        outputTokens: 0,
+                        latencyMs: latencyMs,
+                        success: false
+                    )
+                }
             }
             throw error
         }

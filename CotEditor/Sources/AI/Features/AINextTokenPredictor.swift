@@ -28,7 +28,6 @@ import SyntaxFormat
 nonisolated enum AINextTokenStrategy: String, CaseIterable, Sendable {
     
     case smart = "smart"
-    case manual = "manual"
     case proactive = "proactive"
 }
 
@@ -372,7 +371,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
                 baseModel: baseConfig.model,
                 isAutoRouted: false,
                 isReasoningBlocked: true,
-                statusNote: "主模型为推理模型，自动续写已转为本地 0 成本模式（按 ⌥\\ 可手动唤起，或指定轻量模型）"
+                statusNote: "主模型为推理模型，自动续写已转为本地 0 成本模式（可指定轻量续写模型）"
             )
         }
         
@@ -444,6 +443,19 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     }
     
     
+    /// Clears cached predictions and reloads daily stats after switching local users.
+    func reloadForActiveUser() {
+        
+        self.cancel()
+        self.cache.removeAll()
+        self.errorCooldownUntil = nil
+        self.consecutiveIgnores = 0
+        self.cachedTodayStats = nil
+        _ = self.todayStats
+        NotificationCenter.default.post(name: Self.statsDidChangeNotification, object: nil)
+    }
+    
+    
     /// Checks speculative positive cache (0ms type-through) and negative/empty cache (60s deduplication).
     func lookupCache(linePrefix: String, lineSuffix: String) -> CacheLookupResult {
         
@@ -494,29 +506,16 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
         linePrefix: String,
         lineSuffix: String,
         isCode: Bool,
-        strategy: AINextTokenStrategy,
-        isManual: Bool
+        strategy: AINextTokenStrategy
     ) -> TriggerDecision {
         
-        if !isManual,
-           let firstSuffixScalar = lineSuffix.unicodeScalars.first,
+        if let firstSuffixScalar = lineSuffix.unicodeScalars.first,
            CharacterSet.alphanumerics.contains(firstSuffixScalar) || firstSuffixScalar == "_"
         {
             return .skip(reason: "midWord")
         }
         
         let trimmedPrefix = linePrefix.trimmingCharacters(in: .whitespaces)
-        
-        if isManual {
-            return (trimmedPrefix.isEmpty && !isCode)
-                ? .skip(reason: "emptyLine")
-                : .schedule(delayMultiplier: 0)
-        }
-        
-        if strategy == .manual {
-            return .skip(reason: "manualOnly")
-        }
-        
         let hasNonASCII = trimmedPrefix.unicodeScalars.contains { !$0.isASCII }
         let minChars = isCode ? 3 : (hasNonASCII ? 2 : 4)
         guard trimmedPrefix.count >= minChars else {
@@ -603,19 +602,13 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     
     // MARK: Scheduling
     
-    /// Schedules a debounced (or immediate if `isManual`) AI Fill-in-the-Middle completion for `textView`.
+    /// Schedules a debounced AI Fill-in-the-Middle completion for `textView`.
     func schedulePrediction(
         for textView: EditorTextView,
         syntaxName: String = SyntaxName.none,
-        documentTitle: String = "",
-        isManual: Bool = false
+        documentTitle: String = ""
     ) {
         self.cancel()
-        
-        if isManual {
-            self.consecutiveIgnores = 0
-            self.errorCooldownUntil = nil
-        }
         
         guard
             Self.isInlineCompletionEnabled,
@@ -627,23 +620,18 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
             textView.selectedRange.isEmpty
         else { return }
         
-        if !isManual, let cooldown = self.errorCooldownUntil, Date() < cooldown {
+        if let cooldown = self.errorCooldownUntil, Date() < cooldown {
             return
         }
         
-        if !isManual {
-            let cap = Self.dailyCap
-            if cap > 0, self.todayStats.aiRequests >= cap {
-                return
-            }
+        let cap = Self.dailyCap
+        if cap > 0, self.todayStats.aiRequests >= cap {
+            return
         }
         
         let baseConfig = AIConfiguration.current
         let routing = self.resolveModelRouting(baseConfig: baseConfig)
-        guard !routing.effectiveModel.isEmpty else { return }
-        if !isManual, routing.isReasoningBlocked {
-            return
-        }
+        guard !routing.effectiveModel.isEmpty, !routing.isReasoningBlocked else { return }
         
         var effectiveConfig = baseConfig
         effectiveConfig.model = routing.effectiveModel
@@ -653,6 +641,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
         
         let nsText = textView.string as NSString
         let expectedRange = textView.selectedRange
+        let expectedTextVersion = textView.ghostTextVersion
         let caret = expectedRange.location
         guard caret >= 0, caret <= nsText.length else { return }
         
@@ -663,17 +652,16 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
             ? nsText.substring(with: NSRange(location: caret, length: lineEnd - caret)).trimmingCharacters(in: .newlines)
             : ""
         
-        if !isManual {
-            switch self.lookupCache(linePrefix: linePrefix, lineSuffix: lineSuffix) {
-                case .knownEmpty:
-                    return
-                case .hit(let cached):
-                    self.recordLocalHit()
-                    textView.applyAIGhostSuggestion(cached)
-                    return
-                case .miss:
-                    break
-            }
+        switch self.lookupCache(linePrefix: linePrefix, lineSuffix: lineSuffix) {
+            case .knownEmpty:
+                return
+            case .hit(let cached):
+                self.recordLocalHit()
+                AnalyticsManager.shared.recordLocalCompletionHit()
+                textView.applyAIGhostSuggestion(cached)
+                return
+            case .miss:
+                break
         }
         
         let isCode = (syntaxName != SyntaxName.none && syntaxName != "Plain Text")
@@ -682,8 +670,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
             linePrefix: linePrefix,
             lineSuffix: lineSuffix,
             isCode: isCode,
-            strategy: strategy,
-            isManual: isManual
+            strategy: strategy
         )
         let delayMultiplier: Double
         switch intent {
@@ -693,9 +680,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
                 delayMultiplier = mult
         }
         
-        let delayMs = isManual
-            ? 0
-            : max(120, Int(Double(Self.debounceMilliseconds) * delayMultiplier * self.effectiveBackoffMultiplier))
+        let delayMs = max(120, Int(Double(Self.debounceMilliseconds) * delayMultiplier * self.effectiveBackoffMultiplier))
         
         let context = Self.extractCompactContext(from: nsText, caret: caret, isCode: isCode, strategy: strategy)
         let messages = Self.buildMessages(
@@ -721,6 +706,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
             guard !Task.isCancelled, let self, let textView else { return }
             guard textView.window?.isKeyWindow == true,
                   !textView.hasMarkedText(),
+                  textView.ghostTextVersion == expectedTextVersion,
                   textView.selectedRange == expectedRange
             else { return }
             
@@ -732,25 +718,27 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
             }
             
             var activeRequestConfig = effectiveConfig
+            let clock = ContinuousClock()
+            let requestStart = clock.now
             do {
-                var raw: String
+                var completionResponse: AICompletionResponse
                 do {
-                    raw = try await self.performCompletionRequest(
+                    completionResponse = try await self.performCompletionRequest(
                         config: activeRequestConfig,
                         messages: messages,
                         maxOutputTokens: maxOut
                     )
                 } catch let AIError.http(status, _) where routing.isAutoRouted && [400, 403, 404].contains(status) {
                     self.markAutoRoutedModelUnavailable(routing.effectiveModel, baseURL: effectiveConfig.resolvedBaseURL)
-                    guard isManual || (!Self.isPureReasoningModel(baseConfig.model)
-                        && baseConfig.model.caseInsensitiveCompare(routing.effectiveModel) != .orderedSame)
+                    guard !Self.isPureReasoningModel(baseConfig.model)
+                        && baseConfig.model.caseInsensitiveCompare(routing.effectiveModel) != .orderedSame
                     else { return }
                     
                     var fallbackConfig = baseConfig
                     fallbackConfig.temperature = 0.15
                     fallbackConfig.reasoningEffort = "low"
                     activeRequestConfig = fallbackConfig
-                    raw = try await self.performCompletionRequest(
+                    completionResponse = try await self.performCompletionRequest(
                         config: activeRequestConfig,
                         messages: messages,
                         maxOutputTokens: maxOut
@@ -758,7 +746,22 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
                 }
                 
                 guard !Task.isCancelled else { return }
+                let raw = completionResponse.text
+                let elapsed = requestStart.duration(to: clock.now)
+                let latencyMs = max(1, Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))
+                let actualInputTokens = completionResponse.inputTokens ?? Self.estimateTokens(in: inputTextForAccounting)
+                let actualOutputTokens = completionResponse.outputTokens ?? Self.estimateTokens(in: raw)
+                
                 self.recordAIUsage(inputText: inputTextForAccounting, outputText: raw)
+                AnalyticsManager.shared.recordAIUsage(
+                    feature: "nextToken",
+                    model: activeRequestConfig.model,
+                    provider: activeRequestConfig.endpoint.label,
+                    inputTokens: actualInputTokens,
+                    outputTokens: actualOutputTokens,
+                    latencyMs: latencyMs,
+                    success: true
+                )
                 
                 guard let completion = Self.sanitizeCompletion(
                     raw: raw,
@@ -776,6 +779,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
                     textView.isEditable,
                     textView.window?.isKeyWindow == true,
                     !textView.hasMarkedText(),
+                    textView.ghostTextVersion == expectedTextVersion,
                     textView.selectedRange == expectedRange,
                     textView.activeGhostSuggestion == nil
                 else { return }
@@ -919,7 +923,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
         config: AIConfiguration,
         messages: [AIMessage],
         maxOutputTokens: Int
-    ) async throws -> String {
+    ) async throws -> AICompletionResponse {
         
         let client = AIClient(
             configuration: config,
@@ -927,7 +931,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
             timeoutInterval: 9,
             disablesThinking: !Self.isPureReasoningModel(config.model)
         )
-        return try await client.send(messages)
+        return try await client.sendWithUsage(messages)
     }
     
     

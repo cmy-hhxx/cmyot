@@ -145,16 +145,14 @@ struct Round16FeatureTests {
             linePrefix: "本周工作总结已完成。",
             lineSuffix: "",
             isCode: false,
-            strategy: .smart,
-            isManual: false
+            strategy: .smart
         ) == .skip(reason: "sentenceEnd"))
         
         #expect(AINextTokenPredictor.evaluateTriggerIntent(
             linePrefix: "return value;",
             lineSuffix: "",
             isCode: true,
-            strategy: .smart,
-            isManual: false
+            strategy: .smart
         ) == .skip(reason: "sentenceEnd"))
         
         // Smart mode fast-tracks high-intent continuation cues (including 2-char CJK openings)
@@ -162,36 +160,31 @@ struct Round16FeatureTests {
             linePrefix: "主要进展：",
             lineSuffix: "",
             isCode: false,
-            strategy: .smart,
-            isManual: false
+            strategy: .smart
         ) == .schedule(delayMultiplier: 0.85))
         #expect(AINextTokenPredictor.evaluateTriggerIntent(
             linePrefix: "背景：",
             lineSuffix: "",
             isCode: false,
-            strategy: .smart,
-            isManual: false
+            strategy: .smart
         ) == .schedule(delayMultiplier: 0.85))
         #expect(AINextTokenPredictor.evaluateTriggerIntent(
             linePrefix: "周报",
             lineSuffix: "",
             isCode: false,
-            strategy: .smart,
-            isManual: false
+            strategy: .smart
         ) == .schedule(delayMultiplier: 1.0))
         #expect(AINextTokenPredictor.evaluateTriggerIntent(
             linePrefix: "我",
             lineSuffix: "",
             isCode: false,
-            strategy: .smart,
-            isManual: false
+            strategy: .smart
         ) == .skip(reason: "tooShort"))
         #expect(AINextTokenPredictor.evaluateTriggerIntent(
             linePrefix: "abc",
             lineSuffix: "",
             isCode: false,
-            strategy: .smart,
-            isManual: false
+            strategy: .smart
         ) == .skip(reason: "tooShort"))
         
         // Numbered list item `1.` is NOT treated as finished prose sentence
@@ -199,8 +192,7 @@ struct Round16FeatureTests {
             linePrefix: "本周计划 1.",
             lineSuffix: "",
             isCode: false,
-            strategy: .smart,
-            isManual: false
+            strategy: .smart
         ) != .skip(reason: "sentenceEnd"))
         
         // URL and inline image lines are skipped
@@ -208,25 +200,22 @@ struct Round16FeatureTests {
             linePrefix: "查看 https://coteditor.com/docs",
             lineSuffix: "",
             isCode: false,
-            strategy: .smart,
-            isManual: false
+            strategy: .smart
         ) == .skip(reason: "urlInput"))
         
-        // Manual strategy skips automatic triggers, but explicit manual call fires with 0 delay multiplier
+        // Mid-word editing is skipped under both smart & proactive strategies
+        #expect(AINextTokenPredictor.evaluateTriggerIntent(
+            linePrefix: "hello",
+            lineSuffix: "world",
+            isCode: false,
+            strategy: .proactive
+        ) == .skip(reason: "midWord"))
         #expect(AINextTokenPredictor.evaluateTriggerIntent(
             linePrefix: "主要进展：",
             lineSuffix: "",
             isCode: false,
-            strategy: .manual,
-            isManual: false
-        ) == .skip(reason: "manualOnly"))
-        #expect(AINextTokenPredictor.evaluateTriggerIntent(
-            linePrefix: "主要进展：",
-            lineSuffix: "",
-            isCode: false,
-            strategy: .manual,
-            isManual: true
-        ) == .schedule(delayMultiplier: 0))
+            strategy: .proactive
+        ) == .schedule(delayMultiplier: 0.85))
         
         // Adaptive ignore backoff: 3 ignores -> 1.8x, acceptance resets to 1.0x
         let prevStrategy = UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.aiNextTokenStrategy)

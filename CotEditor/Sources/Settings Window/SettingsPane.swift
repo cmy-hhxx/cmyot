@@ -29,8 +29,8 @@ import ControlUI
 enum SettingsPaneLayout {
     
     /// Unified content size across every settings pane (roughly 4:3, matching macOS System Settings proportions).
-    static let width: CGFloat = 660
-    static let height: CGFloat = 500
+    static let width: CGFloat = 740
+    static let height: CGFloat = 540
 }
 
 
@@ -76,6 +76,7 @@ enum SettingsPane: String, ControlUI.SettingsPane {
     case keyBindings
     case ai
     case aiPersona
+    case dashboard
     
     
     /// The localized label.
@@ -119,6 +120,8 @@ enum SettingsPane: String, ControlUI.SettingsPane {
                 (currentLanguage == .simplifiedChinese) ? "AI 服务" : "AI"
             case .aiPersona:
                 (currentLanguage == .simplifiedChinese) ? "AI 人设" : "AI Persona"
+            case .dashboard:
+                (currentLanguage == .simplifiedChinese) ? "数据看板" : "Dashboard"
         }
     }
     
@@ -135,6 +138,7 @@ enum SettingsPane: String, ControlUI.SettingsPane {
             case .keyBindings: "keyboard"
             case .ai: "sparkles"
             case .aiPersona: "person.text.rectangle"
+            case .dashboard: "chart.bar.xaxis"
         }
     }
     
@@ -151,6 +155,7 @@ enum SettingsPane: String, ControlUI.SettingsPane {
             case .keyBindings: KeyBindingsSettingsView()
             case .ai: AISettingsView()
             case .aiPersona: AIPersonaSettingsView()
+            case .dashboard: DashboardSettingsView()
         }
     }
 }

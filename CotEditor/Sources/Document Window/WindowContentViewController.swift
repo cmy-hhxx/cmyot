@@ -316,7 +316,8 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
                 // validation of `toggleSidebar` is implemented in `validateToolbarItem`
                 return self.canToggleSidebar
             case #selector(ContentViewController.toggleWeeklyReportCenter(_:)),
-                 #selector(ContentViewController.toggleDocumentCenter(_:)):
+                 #selector(ContentViewController.toggleDocumentCenter(_:)),
+                 #selector(ContentViewController.toggleAnalyticsDashboard(_:)):
                 return self.contentViewController.validateCenterToolbarItem(item)
             default:
                 break

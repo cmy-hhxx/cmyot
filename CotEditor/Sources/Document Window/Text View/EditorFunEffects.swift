@@ -142,6 +142,9 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private var ghostContainerLayer: CALayer?
     private var ghostSweepLayer: CALayer?
     private(set) var isShowingGhostThinking = false
+    private(set) var lastGhostFrame: CGRect = .zero
+    private(set) var lastTabBadgeXInContainer: CGFloat?
+    private(set) var lastGhostShowsTabBadge = false
     
     // Persistent 120Hz Apple-style fluid spring Vim cursor + luminous wake trail
     private var vimRootLayer: CALayer?
@@ -772,9 +775,10 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         animateEntrance: Bool = true
     ) -> CGFloat {
         
+        _ = trailingLineAdvance
         guard !text.isEmpty,
               let textView = self.textView,
-              textView.window?.isKeyWindow == true,
+              textView.window != nil,
               let hostLayer = self.ensureClippedHostLayer(for: textView)
         else { return 0 }
         
@@ -793,23 +797,25 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         let rowHeight = max(lineHeight, ceil(font.ascender - font.descender + 2))
         
         let startX = caretRect.maxX + 1.5
-        let availableWidth = max(28, textView.bounds.width - startX - 10)
-        let trailingReserve = trailingLineAdvance > 0 ? ceil(trailingLineAdvance) : 0
+        let visibleRight = textView.visibleRect.width > 0 ? min(textView.bounds.maxX, textView.visibleRect.maxX) : textView.bounds.maxX
+        let availableWidth = max(28, visibleRight - startX - 10)
         
         let badgeFont = NSFont.systemFont(ofSize: 9, weight: .medium)
         let badgeText = "Tab"
         let badgeTextSize = (badgeText as NSString).size(withAttributes: [.font: badgeFont])
         let badgeWidth = ceil(badgeTextSize.width) + 9
         let badgeHeight = min(14.5, max(12.5, rowHeight - 4))
+        let badgeGap: CGFloat = 5
         
-        let maxTextWidth = max(24, availableWidth - (trailingReserve > 0 ? 4 : badgeWidth + 10))
+        let showsBadge = availableWidth >= (badgeWidth + badgeGap + 18)
+        let reservedBadgeSpace = showsBadge ? (badgeGap + badgeWidth + 2) : 2
+        let maxTextWidth = max(16, availableWidth - reservedBadgeSpace)
         let drawnTextWidth = min(rawTextWidth, maxTextWidth)
-        let ghostAdvanceFromStartX = drawnTextWidth + 2
+        let badgeX = drawnTextWidth + badgeGap
+        let containerWidth = ceil(showsBadge ? (badgeX + badgeWidth + 2) : (drawnTextWidth + 2))
         
-        let badgeGapAfterGhost: CGFloat = trailingReserve > 0 ? (trailingReserve + 6) : 5
-        let badgeX = ghostAdvanceFromStartX + badgeGapAfterGhost
-        let showsBadge = (trailingReserve <= 120) && (badgeX + badgeWidth <= availableWidth)
-        let containerWidth = ceil(showsBadge ? (badgeX + badgeWidth + 2) : ghostAdvanceFromStartX)
+        self.lastTabBadgeXInContainer = showsBadge ? badgeX : nil
+        self.lastGhostShowsTabBadge = showsBadge
         
         let cgBaselineY = max(2, rowHeight - baselineOffset)
         let imageSize = NSSize(width: containerWidth, height: rowHeight)
@@ -866,6 +872,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         let cgImage = renderedImage.cgImage(forProposedRect: &proposedRect, context: nil, hints: [.ctm: scaleTransform])
         
         let targetFrame = CGRect(x: startX, y: caretRect.minY, width: containerWidth, height: rowHeight)
+        self.lastGhostFrame = targetFrame
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -896,7 +903,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             container.add(group, forKey: "ghostEnter")
         }
         
-        return (startX - caretRect.minX) + drawnTextWidth + 2
+        return (startX - caretRect.minX) + containerWidth + 4
     }
     
     
@@ -976,11 +983,39 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         let wasThinking = self.isShowingGhostThinking
         self.isShowingGhostThinking = false
-        guard let container = self.ghostContainerLayer, (container.opacity > 0.01 || wasThinking) else { return }
+        self.lastGhostFrame = .zero
+        self.lastTabBadgeXInContainer = nil
+        self.lastGhostShowsTabBadge = false
         
+        guard let container = self.ghostContainerLayer else { return }
+        let sweep = self.ghostSweepLayer
+        
+        if !animated {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            container.removeAllAnimations()
+            container.opacity = 0
+            container.contents = nil
+            container.frame = .zero
+            sweep?.removeAllAnimations()
+            sweep?.opacity = 0
+            CATransaction.commit()
+            return
+        }
+        
+        guard container.opacity > 0.01 || wasThinking else { return }
         CATransaction.begin()
-        CATransaction.setDisableActions(!animated)
         CATransaction.setAnimationDuration(0.08)
+        CATransaction.setCompletionBlock { [weak self, weak container] in
+            Task { @MainActor in
+                guard let self, let container, container.opacity <= 0.01, !self.isShowingGhostThinking else { return }
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                container.contents = nil
+                container.frame = .zero
+                CATransaction.commit()
+            }
+        }
         container.removeAllAnimations()
         container.opacity = 0
         CATransaction.commit()

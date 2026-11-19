@@ -127,12 +127,14 @@ struct AISettingsView: View {
             
             Section {
                 Toggle("启用行内智能续写 (Ghost Text)", isOn: self.$inlineCompletionEnabled)
+                    .lineLimit(1)
                     .onChange(of: self.inlineCompletionEnabled) { _, val in
                         CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.inlineCompletionEnabled)
                         UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.inlineCompletionEnabled)
                     }
                 
                 Toggle("接入 AI 大模型深度预测", isOn: self.$aiNextTokenEnabled)
+                    .lineLimit(1)
                     .disabled(!self.inlineCompletionEnabled)
                     .onChange(of: self.aiNextTokenEnabled) { _, val in
                         CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.aiNextTokenEnabled)
@@ -141,7 +143,6 @@ struct AISettingsView: View {
                 
                 Picker("续写省流策略:", selection: self.$aiNextTokenStrategy) {
                     Text("智能省流 (推荐)").tag(AINextTokenStrategy.smart)
-                    Text("按需唤起 (⌥\\)").tag(AINextTokenStrategy.manual)
                     Text("积极伴写").tag(AINextTokenStrategy.proactive)
                 }
                 .pickerStyle(.segmented)
@@ -153,8 +154,11 @@ struct AISettingsView: View {
                 
                 LabeledContent {
                     HStack(spacing: 6) {
-                        TextField("留空则自动路由轻量省流模型", text: self.$aiNextTokenModelOverride)
+                        TextField(text: self.$aiNextTokenModelOverride, prompt: Text("留空则自动路由轻量省流模型"), label: EmptyView.init)
+                            .labelsHidden()
                             .textFieldStyle(.roundedBorder)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity)
                             .onChange(of: self.aiNextTokenModelOverride) { _, val in
                                 let trimmed = val.trimmingCharacters(in: .whitespacesAndNewlines)
                                 CotLocalDatabase.shared.set(trimmed, forKey: CotLocalDatabase.ConfigKey.aiNextTokenModelOverride)
@@ -203,10 +207,11 @@ struct AISettingsView: View {
                         .fixedSize()
                         .help("快速选择轻量极速模型")
                     }
-                    .frame(maxWidth: 330)
+                    .frame(width: 360)
                     .disabled(!self.inlineCompletionEnabled || !self.aiNextTokenEnabled)
                 } label: {
                     Text("续写专用模型:")
+                        .lineLimit(1)
                 }
                 
                 Picker("AI 触发节奏:", selection: self.$aiNextTokenDebounceMs) {
@@ -215,7 +220,7 @@ struct AISettingsView: View {
                     Text("沉稳 (680ms)").tag(680)
                 }
                 .pickerStyle(.segmented)
-                .disabled(!self.inlineCompletionEnabled || !self.aiNextTokenEnabled || self.aiNextTokenStrategy == .manual)
+                .disabled(!self.inlineCompletionEnabled || !self.aiNextTokenEnabled)
                 .onChange(of: self.aiNextTokenDebounceMs) { _, val in
                     CotLocalDatabase.shared.set("\(val)", forKey: CotLocalDatabase.ConfigKey.aiNextTokenDebounceMs)
                     UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.aiNextTokenDebounceMs)
@@ -235,14 +240,17 @@ struct AISettingsView: View {
                 
                 VStack(alignment: .leading, spacing: 5) {
                     let activeResolution = self.nextTokenRoutingResolution
+                    let statusDesc = self.nextTokenStatusDescription(resolution: activeResolution)
                     HStack(spacing: 6) {
                         Image(systemName: self.nextTokenStatusSymbol(resolution: activeResolution))
                             .foregroundStyle(self.nextTokenStatusColor(resolution: activeResolution))
                             .font(.caption)
-                        Text(self.nextTokenStatusDescription(resolution: activeResolution))
+                        Text(statusDesc)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(statusDesc)
                     }
                     
                     HStack(spacing: 8) {
@@ -264,9 +272,10 @@ struct AISettingsView: View {
                         
                         Spacer(minLength: 4)
                         
-                        Text("Tab 采纳 · ⌥→ 逐词 · ⌥\\ 唤起")
+                        Text("按 Tab 采纳 · Esc 隐藏")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
+                            .lineLimit(1)
                     }
                 }
             } header: {
@@ -315,6 +324,9 @@ struct AISettingsView: View {
         .task { self.reload() }
         .onReceive(NotificationCenter.default.publisher(for: AINextTokenPredictor.statsDidChangeNotification)) { _ in
             self.todayStats = AINextTokenPredictor.shared.todayStats
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
+            self.reload()
         }
         .sheet(item: self.$editingTarget) { target in
             AIEndpointEditorView(profile: target.profile, apiKey: target.apiKey, isNew: target.isNew) { profile, apiKey in
@@ -408,10 +420,7 @@ struct AISettingsView: View {
             return "尚未配置可用端点，自动回退为本地上下文续写"
         }
         if self.aiNextTokenDailyCap > 0, self.todayStats.aiRequests >= self.aiNextTokenDailyCap {
-            return "已达今日 \(self.aiNextTokenDailyCap) 次 AI 预算上限，自动转为本地 0 成本续写（按 ⌥\\ 可手动唤起）"
-        }
-        if self.aiNextTokenStrategy == .manual {
-            return "按需省流模式就绪：\(resolution.routing.effectiveModel)（日常 0 消耗，按 ⌥\\ 手动触发）"
+            return "已达今日 \(self.aiNextTokenDailyCap) 次 AI 预算上限，已自动转为本地 0 成本续写"
         }
         if resolution.routing.isAutoRouted {
             return "智能省流就绪：\(resolution.routing.effectiveModel)（已从 \(resolution.routing.baseModel) 自动降本路由）"
@@ -959,7 +968,8 @@ private struct StoredDocumentsSheetView: View {
                                 .frame(width: 180, alignment: .leading)
                             Text(entry.value)
                                 .font(.system(size: 11, design: .monospaced))
-                                .lineLimit(2)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
                                 .foregroundStyle(.secondary)
                             Spacer()
                             Button(role: .destructive) {
@@ -974,11 +984,15 @@ private struct StoredDocumentsSheetView: View {
                 .frame(height: 240)
                 
                 HStack(spacing: 8) {
-                    TextField("配置 Key (如 custom.signature)", text: self.$newConfigKey)
+                    TextField(text: self.$newConfigKey, prompt: Text("配置 Key (如 custom.signature)"), label: EmptyView.init)
+                        .labelsHidden()
                         .textFieldStyle(.roundedBorder)
+                        .lineLimit(1)
                         .frame(width: 190)
-                    TextField("配置 Value", text: self.$newConfigValue)
+                    TextField(text: self.$newConfigValue, prompt: Text("配置 Value"), label: EmptyView.init)
+                        .labelsHidden()
                         .textFieldStyle(.roundedBorder)
+                        .lineLimit(1)
                     Button("写入 DB") {
                         let key = self.newConfigKey.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !key.isEmpty else { return }
@@ -1156,6 +1170,8 @@ struct AIPersonaSettingsView: View {
                         Text("快捷人设:")
                             .font(.callout)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                         ForEach(Self.personaPresets) { preset in
                             let isSelected = self.personaText.trimmingCharacters(in: .whitespacesAndNewlines) == preset.prompt
                             Button(preset.title) {
@@ -1165,6 +1181,8 @@ struct AIPersonaSettingsView: View {
                             .buttonStyle(.bordered)
                             .tint(isSelected ? .accentColor : nil)
                             .controlSize(.small)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                         }
                         Spacer()
                         if !self.personaText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1173,6 +1191,8 @@ struct AIPersonaSettingsView: View {
                                 CotLocalDatabase.shared.aiPersona = ""
                             }
                             .controlSize(.small)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                         }
                     }
                     
@@ -1266,6 +1286,7 @@ struct AIPersonaSettingsView: View {
             
             Section {
                 Toggle("动感打字特效", isOn: self.$typewriterEnabled)
+                    .lineLimit(1)
                     .onChange(of: self.typewriterEnabled) { _, val in
                         CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
                         UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
@@ -1283,12 +1304,14 @@ struct AIPersonaSettingsView: View {
                 }
                 
                 Toggle("Vim 流体光标特效", isOn: self.$vimCursorTrailEnabled)
+                    .lineLimit(1)
                     .onChange(of: self.vimCursorTrailEnabled) { _, val in
                         CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
                         UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
                     }
                 
                 Toggle("纯文本内嵌图片预览", isOn: self.$plainTextImagesEnabled)
+                    .lineLimit(1)
                     .onChange(of: self.plainTextImagesEnabled) { _, val in
                         CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
                         UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
@@ -1302,6 +1325,9 @@ struct AIPersonaSettingsView: View {
             }
         }
         .task { self.reload() }
+        .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
+            self.reload()
+        }
     }
     
     

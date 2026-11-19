@@ -96,6 +96,22 @@ nonisolated enum AIAction: Sendable, CaseIterable {
     }
     
     
+    /// Short stable identifier used for analytics telemetry.
+    var analyticsKey: String {
+        
+        switch self {
+            case .translate: "translate"
+            case .summarize: "summarize"
+            case .explain: "explain"
+            case .weeklyReport: "weeklyReport"
+            case .weeklyReportItem: "weeklyReportItem"
+            case .interactiveChart: "interactiveChart"
+            case .ocrPolish: "ocrPolish"
+            case .organizeAndMerge: "organizeAndMerge"
+        }
+    }
+    
+    
     /// The database configuration key that overrides this action's prompt.
     var databaseConfigKey: String {
         

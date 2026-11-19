@@ -57,6 +57,7 @@ struct GeneralSettingsView: View {
                     }
                 } label: {
                     Text("settings.language.label", tableName: "Personal")
+                        .lineLimit(1)
                 }
                 .pickerStyle(.menu)
                 .onChange(of: self.language) { _, newValue in
@@ -78,6 +79,7 @@ struct GeneralSettingsView: View {
             
             Section {
                 Toggle(String(localized: "Reopen windows from last session", table: "GeneralSettings"), isOn: $quitAlwaysKeepsWindows)
+                    .lineLimit(1)
                     .onChange(of: self.quitAlwaysKeepsWindows) {
                         guard !self.suppressesQuitAlwaysKeepsWindowsChangeConfirmation else { return }
                         
@@ -92,9 +94,11 @@ struct GeneralSettingsView: View {
                 Picker(selection: $noDocumentOnLaunchOption) {
                     ForEach(NoDocumentOnLaunchOption.allCases, id: \.self) {
                         Text($0.label)
+                            .lineLimit(1)
                     }
                 } label: {
                     Text("When nothing else is open:", tableName: "GeneralSettings")
+                        .lineLimit(1)
                         .accessibilityLabeledPair(role: .label, id: "noDocumentOnLaunchOption", in: self.accessibility)
                 }
                 .pickerStyle(.menu)
@@ -105,6 +109,7 @@ struct GeneralSettingsView: View {
             
             Section {
                 Toggle(String(localized: "Enable Auto Save with Versions", table: "GeneralSettings"), isOn: $enablesAutosaveInPlace)
+                    .lineLimit(1)
                     .onChange(of: self.enablesAutosaveInPlace) { _, newValue in
                         if newValue != self.initialEnablesAutosaveInPlace {
                             self.isAutosaveChangeConfirmationPresented = true

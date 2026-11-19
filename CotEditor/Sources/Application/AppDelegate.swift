@@ -153,7 +153,9 @@ extension Logger {
         // The app used to be sandboxed; pull the old settings out of the container first,
         // so everything else here already sees the migrated values.
         LegacyContainerMigrator.migrateIfNeeded()
+        _ = UserProfileManager.shared
         _ = CotLocalDatabase.shared
+        _ = AnalyticsManager.shared
         
         // Disable macOS automatic window tabbing so documents stay in per-pane tabs, not double top tab bars.
         NSWindow.allowsAutomaticWindowTabbing = false
@@ -184,6 +186,10 @@ extension Logger {
             .sink { [weak self] _ in self?.rebuildWeeklyReportsMenu() }
             .store(in: &self.menuUpdateObservers)
         
+        NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)
+            .sink { [weak self] _ in self?.rebuildWeeklyReportsMenu() }
+            .store(in: &self.menuUpdateObservers)
+        
         #if SPARKLE
         UpdaterManager.shared.setup()
         #endif
@@ -193,6 +199,7 @@ extension Logger {
     func applicationDidFinishLaunching(_ notification: Notification) {
         
         KeyBindingManager.shared.applyShortcutsToMainMenu()
+        AnalyticsManager.shared.startBackgroundDigestScheduler()
         
         NSApp.servicesProvider = ServicesProvider()
         NSApp.registerServicesMenuSendTypes([.fileURL], returnTypes: [])
@@ -226,6 +233,9 @@ extension Logger {
     
     func applicationWillTerminate(_ notification: Notification) {
         
+        AnalyticsManager.shared.stopBackgroundDigestScheduler()
+        AnalyticsManager.shared.flushPendingStats()
+        
         // Snapshot every open document and window pane/tab session into CotLocalDatabase before termination
         for window in NSApp.windows {
             if let docVC = (window.windowController as? DocumentWindowController)?.documentViewController {
@@ -233,9 +243,11 @@ extension Logger {
             }
         }
         for case let document as Document in NSDocumentController.shared.documents {
-            document.syncToLocalDatabase()
+            document.syncToLocalDatabase(force: true)
         }
+        CotLocalDatabase.shared.syncAIEndpointsToDatabase()
         CotLocalDatabase.shared.syncUserPreferencesToDatabase()
+        CotLocalDatabase.shared.checkpointDatabase()
         
         if self.needsRelaunch {
             NSApp.relaunch()
@@ -388,6 +400,13 @@ extension Logger {
     @IBAction func showAIPreferences(_ sender: Any?) {
         
         self.settingsWindowController.openPane(.ai)
+    }
+    
+    
+    /// Opens the Analytics Dashboard inside the current editor window.
+    @IBAction func showAnalyticsDashboard(_ sender: Any?) {
+        
+        AnalyticsDashboardWindowController.shared.showWindow(sender)
     }
     
     
@@ -922,8 +941,16 @@ extension Logger {
                 )
                 openFolderItem.target = self
                 
+                let dashboardItem = NSMenuItem(
+                    title: "数据看板",
+                    action: #selector(showAnalyticsDashboard(_:)),
+                    keyEquivalent: ""
+                )
+                dashboardItem.target = self
+                
                 menu.insertItem(openLogItem, at: consoleIndex + 1)
                 menu.insertItem(openFolderItem, at: consoleIndex + 2)
+                menu.insertItem(dashboardItem, at: consoleIndex + 3)
                 return true
             }
             for item in menu.items {

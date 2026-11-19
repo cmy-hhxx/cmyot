@@ -157,6 +157,25 @@ import Foundation
     
     // MARK: Public API
     
+    /// Clears in-memory habit models and reloads them from the newly active user's database.
+    func reloadFromDatabase() {
+        
+        self.saveTask?.cancel()
+        self.saveTask = nil
+        self.transitions.removeAll()
+        self.compoundTransitions.removeAll()
+        self.vocabularyFrequencies.removeAll()
+        
+        if let persistenceKey = self.persistenceKey {
+            self.didWarmUpFromDatabase = false
+            self.loadPersistedTransitions(forKey: persistenceKey)
+            self.warmUpFromDatabaseIfNeeded()
+        } else {
+            self.didWarmUpFromDatabase = true
+        }
+    }
+    
+    
     /// Warms up habit transitions once from the user's stored documents in `CotLocalDatabase`.
     func warmUpFromDatabaseIfNeeded() {
         

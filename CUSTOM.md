@@ -11,7 +11,7 @@ opens in Xcode 26; upstream `main` already requires Xcode 27.2 + macOS 27).
 | Font | `FontType.systemFont(size:)` always returns the system monospaced font (SF Mono), ignoring the system-wide `userFont` / `userFixedPitchFont` preferences, which resolve to Helvetica (proportional) or Menlo. Ligatures default off. | `CotEditor/Sources/Application/Defaults/DefaultKey+FontType.swift`, `DefaultSettings.swift` |
 | Tabs | `New` (⌘N) now calls `newDocumentAsTab:`, and the default `windowTabbing` is `always`, so a new document joins the front window as a tab. `New Window` (⇧⌘N) still forces a separate window. The action stays enabled with no document open so ⌘N can create the first window. | `CotEditor/Storyboards/Base.lproj/Main.storyboard`, `DocumentController.swift`, `DefaultSettings.swift` |
 | Line numbers | View ▸ Show Line Numbers gets a shortcut and now persists: the toggle writes the shared `showLineNumbers` default, keeping it in sync with Settings ▸ Window. | `Main.storyboard`, `DocumentViewController.swift` |
-| Identity | Bundle id `local.cmy.Cot` (coexists with the App Store CotEditor), `CFBundleDisplayName = Cot`, new app icon generated from `~/Desktop/avata1.jpg` as a classic `AppIcon.appiconset` (the upstream Icon Composer `AppIcon.icon` bundle was removed). | `project.pbxproj`, `Info.plist`, `Assets.xcassets/AppIcon.appiconset` |
+| Identity | Bundle id `local.cmy.Cot` (coexists with the App Store CotEditor), `CFBundleDisplayName = CoTEditor` (`CFBundleName = CoTEditor`), new app icon generated from `~/Desktop/avata1.jpg` as a classic `AppIcon.appiconset` (the upstream Icon Composer `AppIcon.icon` bundle was removed). | `project.pbxproj`, `Info.plist`, `Assets.xcassets/AppIcon.appiconset` |
 | Distribution | Ad-hoc code signing (`CodeSigning-AdHoc.xcconfig`); the non-Sparkle `CotEditor` scheme/config is used, so auto-update is absent and cannot replace this build. | `Configurations/CodeSigning.xcconfig` |
 
 ## Second round: minimal editing experience
@@ -236,7 +236,7 @@ window open with the result. `Scripts/install-personal.sh` holds the implementat
 
 **One copy only.** `Scripts/install-personal.sh` is the supported way to build and install:
 it builds into Xcode's default DerivedData (`~/Library/Developer/Xcode/DerivedData`, outside
-Spotlight's index), installs to `/Applications/Cot.app`, moves any other bundle with the same
+Spotlight's index), installs to `/Applications/CoTEditor.app`, moves any other bundle with the same
 bundle id (`local.cmy.Cot`, `com.coteditor.CotEditor`) to the Trash, and fails unless exactly
 one copy is left. Do **not** build with `-derivedDataPath` inside the repo — an `.app` under
 `~/Desktop` is indexed by Spotlight and shows up as a second, stale editor.
@@ -246,6 +246,6 @@ The ad-hoc signature means macOS re-asks for formerly granted permissions
 
 ## Installed state
 
-- `/Applications/Cot.app` — the single installed build (`local.cmy.Cot`, display name `Cot`).
+- `/Applications/CoTEditor.app` — the single installed build (`local.cmy.Cot`, display name `CoTEditor`).
 - The App Store CotEditor (version 7.1.3) was moved to the Trash; it can be restored from
   there or re-downloaded from the App Store if ever needed.

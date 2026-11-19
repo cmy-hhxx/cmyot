@@ -126,6 +126,7 @@ struct FormatSettingsView: View {
                 }
                 
                 Toggle(String(localized: "Refer to encoding declaration in document", table: "FormatSettings"), isOn: $referToEncodingTag)
+                    .lineLimit(1)
             }
             
             Section {

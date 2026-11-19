@@ -56,13 +56,17 @@ struct WindowSettingsView: View {
         SettingsFormPane(helpAnchor: "settings_window") {
             Section {
                 Toggle(String(localized: "Line numbers", table: "WindowSettings"), isOn: $showLineNumbers)
+                    .lineLimit(1)
                 if #unavailable(macOS 26) {
                     Toggle(String(localized: "Draw separator", table: "WindowSettings"), isOn: $showLineNumberSeparator)
+                        .lineLimit(1)
                         .disabled(!self.showLineNumbers)
                         .padding(.leading, 20)
                 }
                 Toggle(String(localized: "Invisible characters", table: "WindowSettings"), isOn: $showInvisibles)
+                    .lineLimit(1)
                 Toggle(String(localized: "Indent guides", table: "WindowSettings"), isOn: $showIndentGuides)
+                    .lineLimit(1)
                 
                 LabeledContent {
                     StepperNumberField(value: $pageGuideColumn, default: UserDefaults.standard[initial: .pageGuideColumn], in: 1...999)
@@ -70,13 +74,17 @@ struct WindowSettingsView: View {
                         .disabled(!self.showPageGuide)
                 } label: {
                     Toggle(String(localized: "Page guide at column:", table: "WindowSettings"), isOn: $showPageGuide)
+                        .lineLimit(1)
                 }
                 
                 Toggle(isOn: $highlightCurrentLine) {
-                    Text("Current line:", tableName: "WindowSettings")
-                    Text("Change background color", tableName: "WindowSettings")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text("Current line:", tableName: "WindowSettings")
+                        Text("Change background color", tableName: "WindowSettings")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .lineLimit(1)
                 }
             } header: {
                 Text("Show:", tableName: "WindowSettings")
@@ -84,6 +92,7 @@ struct WindowSettingsView: View {
             
             Section {
                 Toggle(String(localized: "Wrap lines to editor width", table: "WindowSettings"), isOn: $wrapLines)
+                    .lineLimit(1)
                 
                 LabeledContent {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -92,9 +101,11 @@ struct WindowSettingsView: View {
                             .accessibilityLabel(String(localized: "wrapped line indent spaces", table: "WindowSettings", comment: "accessibility label"))
                         Text("spaces", tableName: "WindowSettings", comment: "unit for indentation")
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 } label: {
                     Toggle(String(localized: "Indent wrapped lines by", table: "WindowSettings"), isOn: $enablesHangingIndent)
+                        .lineLimit(1)
                 }
             } header: {
                 Text("Line wrapping:", tableName: "WindowSettings")
@@ -104,15 +115,21 @@ struct WindowSettingsView: View {
                 Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 8) {
                     GridRow {
                         Toggle(String(localized: "Line count", table: "WindowSettings"), isOn: $showStatusBarLines)
+                            .lineLimit(1)
                         Toggle(String(localized: "Location", table: "WindowSettings"), isOn: $showStatusBarLocation)
+                            .lineLimit(1)
                     }
                     GridRow {
                         Toggle(String(localized: "Character count", table: "WindowSettings"), isOn: $showStatusBarChars)
+                            .lineLimit(1)
                         Toggle(String(localized: "Current line", table: "WindowSettings"), isOn: $showStatusBarLine)
+                            .lineLimit(1)
                     }
                     GridRow {
                         Toggle(String(localized: "Word count", table: "WindowSettings"), isOn: $showStatusBarWords)
+                            .lineLimit(1)
                         Toggle(String(localized: "Current column", table: "WindowSettings"), isOn: $showStatusBarColumn)
+                            .lineLimit(1)
                     }
                 }
                 .accessibilityLabeledPair(role: .content, id: "sideBarShows", in: self.accessibility)
