@@ -141,6 +141,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private var ghostRootLayer: CALayer?
     private var ghostContainerLayer: CALayer?
     private var ghostSweepLayer: CALayer?
+    private(set) var isShowingGhostThinking = false
     
     // Persistent 120Hz Apple-style fluid spring Vim cursor + luminous wake trail
     private var vimRootLayer: CALayer?
@@ -779,6 +780,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         self.ensureGhostLayers(in: hostLayer)
         guard let container = self.ghostContainerLayer else { return 0 }
+        self.isShowingGhostThinking = false
         
         let scale = textView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         let ghostTextColor = (textView.theme?.text.color ?? NSColor.labelColor).withAlphaComponent(0.42)
@@ -898,10 +900,83 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     }
     
     
+    /// Displays a subtle breathing `"···"` indicator while an asynchronous AI Next Token request is in flight.
+    func showGhostThinkingIndicator(
+        at caretRect: NSRect,
+        font: NSFont,
+        lineHeight: CGFloat,
+        baselineOffset: CGFloat
+    ) {
+        guard let textView = self.textView,
+              textView.window?.isKeyWindow == true,
+              let hostLayer = self.ensureClippedHostLayer(for: textView)
+        else { return }
+        
+        self.ensureGhostLayers(in: hostLayer)
+        guard let container = self.ghostContainerLayer else { return }
+        
+        let scale = textView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        let tint = (textView.theme?.text.color ?? NSColor.labelColor).withAlphaComponent(0.38)
+        let attrText = NSAttributedString(string: "···", attributes: [
+            .font: font,
+            .foregroundColor: tint,
+        ])
+        let ctLine = CTLineCreateWithAttributedString(attrText)
+        let textWidth = ceil(CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil)))
+        let containerWidth = max(14, textWidth + 2)
+        let rowHeight = max(lineHeight, ceil(font.ascender - font.descender + 2))
+        let cgBaselineY = max(2, rowHeight - baselineOffset)
+        let imageSize = NSSize(width: containerWidth, height: rowHeight)
+        
+        let renderedImage = NSImage(size: imageSize, flipped: false) { _ in
+            if let ctx = NSGraphicsContext.current?.cgContext {
+                ctx.saveGState()
+                ctx.textMatrix = .identity
+                ctx.textPosition = CGPoint(x: 0, y: cgBaselineY)
+                CTLineDraw(ctLine, ctx)
+                ctx.restoreGState()
+            }
+            return true
+        }
+        
+        var proposedRect = NSRect(origin: .zero, size: imageSize)
+        let scaleTransform = NSAffineTransform()
+        scaleTransform.scale(by: scale)
+        let cgImage = renderedImage.cgImage(forProposedRect: &proposedRect, context: nil, hints: [.ctm: scaleTransform])
+        
+        let targetFrame = CGRect(x: caretRect.maxX + 2, y: caretRect.minY, width: containerWidth, height: rowHeight)
+        
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        container.removeAllAnimations()
+        container.frame = targetFrame
+        container.contentsScale = scale
+        container.contentsGravity = .resize
+        container.contents = cgImage
+        container.opacity = 0.45
+        CATransaction.commit()
+        
+        self.isShowingGhostThinking = true
+        
+        if !AnimationConstants.isReducedMotionEnabled {
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 0.18
+            pulse.toValue = 0.52
+            pulse.duration = 0.6
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            container.add(pulse, forKey: "ghostThinking")
+        }
+    }
+    
+    
     /// Hides the inline ghost candidate cleanly.
     func hideGhostSuggestion(animated: Bool = false) {
         
-        guard let container = self.ghostContainerLayer, container.opacity > 0.01 else { return }
+        let wasThinking = self.isShowingGhostThinking
+        self.isShowingGhostThinking = false
+        guard let container = self.ghostContainerLayer, (container.opacity > 0.01 || wasThinking) else { return }
         
         CATransaction.begin()
         CATransaction.setDisableActions(!animated)

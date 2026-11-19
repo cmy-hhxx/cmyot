@@ -39,11 +39,11 @@ struct AISettingsView: View {
     ]
     
     private static let nextTokenModelPresets: [String] = [
-        "claude-haiku-5-5",
-        "deepseek-v4.1-flash",
+        "deepseek-chat",
+        "qwen-turbo",
         "gpt-4o-mini",
         "gemini-2.5-flash",
-        "qwen-turbo",
+        "claude-3-5-haiku-latest",
     ]
     
     @State private var profiles: [AIEndpointProfile] = []
@@ -56,8 +56,11 @@ struct AISettingsView: View {
     
     @State private var inlineCompletionEnabled: Bool = true
     @State private var aiNextTokenEnabled: Bool = true
+    @State private var aiNextTokenStrategy: AINextTokenStrategy = .smart
     @State private var aiNextTokenModelOverride: String = ""
     @State private var aiNextTokenDebounceMs: Int = 420
+    @State private var aiNextTokenDailyCap: Int = 300
+    @State private var todayStats: AINextTokenDailyStats = AINextTokenPredictor.shared.todayStats
     
     @State private var dbStatusMessage: String?
     @State private var isShowingStoredDocs = false
@@ -136,9 +139,21 @@ struct AISettingsView: View {
                         UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.aiNextTokenEnabled)
                     }
                 
+                Picker("续写省流策略:", selection: self.$aiNextTokenStrategy) {
+                    Text("智能省流 (推荐)").tag(AINextTokenStrategy.smart)
+                    Text("按需唤起 (⌥\\)").tag(AINextTokenStrategy.manual)
+                    Text("积极伴写").tag(AINextTokenStrategy.proactive)
+                }
+                .pickerStyle(.segmented)
+                .disabled(!self.inlineCompletionEnabled || !self.aiNextTokenEnabled)
+                .onChange(of: self.aiNextTokenStrategy) { _, strategy in
+                    CotLocalDatabase.shared.set(strategy.rawValue, forKey: CotLocalDatabase.ConfigKey.aiNextTokenStrategy)
+                    UserDefaults.standard.set(strategy.rawValue, forKey: CotLocalDatabase.ConfigKey.aiNextTokenStrategy)
+                }
+                
                 LabeledContent {
                     HStack(spacing: 6) {
-                        TextField("留空则跟随当前端点模型（建议 haiku / flash）", text: self.$aiNextTokenModelOverride)
+                        TextField("留空则自动路由轻量省流模型", text: self.$aiNextTokenModelOverride)
                             .textFieldStyle(.roundedBorder)
                             .onChange(of: self.aiNextTokenModelOverride) { _, val in
                                 let trimmed = val.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -154,12 +169,25 @@ struct AISettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
                             .buttonStyle(.borderless)
-                            .help("恢复跟随当前端点默认模型")
+                            .help("恢复智能自动省流路由")
                         }
                         
                         Menu {
-                            Button("跟随当前端点默认模型") {
+                            Button("智能自动省流路由（推荐）") {
                                 self.aiNextTokenModelOverride = ""
+                            }
+                            if let active = self.profiles.first(where: { $0.id == self.activeID }) {
+                                let discovered = active.savedModels.filter { AINextTokenPredictor.isLightweightModel($0) }
+                                if !discovered.isEmpty {
+                                    Divider()
+                                    Section("当前端点可用轻量模型") {
+                                        ForEach(discovered, id: \.self) { modelID in
+                                            Button(modelID) {
+                                                self.aiNextTokenModelOverride = modelID
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             Divider()
                             ForEach(Self.nextTokenModelPresets, id: \.self) { modelID in
@@ -187,24 +215,59 @@ struct AISettingsView: View {
                     Text("沉稳 (680ms)").tag(680)
                 }
                 .pickerStyle(.segmented)
-                .disabled(!self.inlineCompletionEnabled || !self.aiNextTokenEnabled)
+                .disabled(!self.inlineCompletionEnabled || !self.aiNextTokenEnabled || self.aiNextTokenStrategy == .manual)
                 .onChange(of: self.aiNextTokenDebounceMs) { _, val in
                     CotLocalDatabase.shared.set("\(val)", forKey: CotLocalDatabase.ConfigKey.aiNextTokenDebounceMs)
                     UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.aiNextTokenDebounceMs)
                 }
                 
-                HStack(spacing: 8) {
-                    let activeConfig = self.effectiveNextTokenConfiguration
-                    Image(systemName: activeConfig.isUsable && self.aiNextTokenEnabled ? "checkmark.circle.fill" : "bolt.slash.circle")
-                        .foregroundStyle(activeConfig.isUsable && self.aiNextTokenEnabled ? Color.green : Color.secondary)
-                        .font(.caption)
-                    Text(self.nextTokenStatusDescription(config: activeConfig))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("Tab 采纳 · ⌥→ 逐词 · Esc 忽略")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                Picker("每日 AI 预算上限:", selection: self.$aiNextTokenDailyCap) {
+                    Text("100 次/天 (极省)").tag(100)
+                    Text("300 次/天 (推荐)").tag(300)
+                    Text("800 次/天").tag(800)
+                    Text("不限次数").tag(0)
+                }
+                .disabled(!self.inlineCompletionEnabled || !self.aiNextTokenEnabled)
+                .onChange(of: self.aiNextTokenDailyCap) { _, val in
+                    CotLocalDatabase.shared.set("\(val)", forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyCap)
+                    UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyCap)
+                }
+                
+                VStack(alignment: .leading, spacing: 5) {
+                    let activeResolution = self.nextTokenRoutingResolution
+                    HStack(spacing: 6) {
+                        Image(systemName: self.nextTokenStatusSymbol(resolution: activeResolution))
+                            .foregroundStyle(self.nextTokenStatusColor(resolution: activeResolution))
+                            .font(.caption)
+                        Text(self.nextTokenStatusDescription(resolution: activeResolution))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    
+                    HStack(spacing: 8) {
+                        let capText = self.aiNextTokenDailyCap > 0 ? "/\(self.aiNextTokenDailyCap)" : ""
+                        Text("今日账本：AI 请求 \(self.todayStats.aiRequests)\(capText) 次（约 \(self.todayStats.totalEstimatedTokens) Tokens） · 本地 0 成本命中 \(self.todayStats.localHits) 次")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        
+                        if self.todayStats.aiRequests > 0 || self.todayStats.localHits > 0 {
+                            Button("重置") {
+                                AINextTokenPredictor.shared.resetTodayStats()
+                                self.todayStats = AINextTokenPredictor.shared.todayStats
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.caption2)
+                        }
+                        
+                        Spacer(minLength: 4)
+                        
+                        Text("Tab 采纳 · ⌥→ 逐词 · ⌥\\ 唤起")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             } header: {
                 Label("AI 智能续写 (Next Token 预测)", systemImage: "wand.and.stars.inverse")
@@ -250,6 +313,9 @@ struct AISettingsView: View {
             }
         }
         .task { self.reload() }
+        .onReceive(NotificationCenter.default.publisher(for: AINextTokenPredictor.statsDidChangeNotification)) { _ in
+            self.todayStats = AINextTokenPredictor.shared.todayStats
+        }
         .sheet(item: self.$editingTarget) { target in
             AIEndpointEditorView(profile: target.profile, apiKey: target.apiKey, isNew: target.isNew) { profile, apiKey in
                 self.save(profile, apiKey: apiKey)
@@ -296,30 +362,64 @@ struct AISettingsView: View {
     }
     
     
-    private var effectiveNextTokenConfiguration: AIConfiguration {
+    private var nextTokenRoutingResolution: (config: AIConfiguration, routing: ModelRoutingResolution) {
         
-        var config: AIConfiguration
-        if let active = self.profiles.first(where: { $0.id == self.activeID }) {
-            config = active.configuration(apiKey: AIEndpointStore.apiKey(for: active))
-        } else {
-            config = AIConfiguration.current
+        let activeProfile = self.profiles.first(where: { $0.id == self.activeID })
+        let baseConfig = activeProfile.map { $0.configuration(apiKey: AIEndpointStore.apiKey(for: $0)) }
+            ?? AIConfiguration.current
+        let routing = AINextTokenPredictor.shared.resolveModelRouting(
+            profile: activeProfile,
+            baseConfig: baseConfig,
+            explicitOverride: self.aiNextTokenModelOverride
+        )
+        var effectiveConfig = baseConfig
+        if !routing.effectiveModel.isEmpty {
+            effectiveConfig.model = routing.effectiveModel
         }
-        let override = self.aiNextTokenModelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !override.isEmpty {
-            config.model = override
-        }
-        return config
+        return (effectiveConfig, routing)
     }
     
     
-    private func nextTokenStatusDescription(config: AIConfiguration) -> String {
+    private func nextTokenStatusSymbol(resolution: (config: AIConfiguration, routing: ModelRoutingResolution)) -> String {
+        
+        guard self.inlineCompletionEnabled, self.aiNextTokenEnabled else { return "bolt.slash.circle" }
+        if resolution.routing.isReasoningBlocked { return "bolt.badge.clock.fill" }
+        return resolution.config.isUsable ? "checkmark.circle.fill" : "bolt.slash.circle"
+    }
+    
+    
+    private func nextTokenStatusColor(resolution: (config: AIConfiguration, routing: ModelRoutingResolution)) -> Color {
+        
+        guard self.inlineCompletionEnabled, self.aiNextTokenEnabled else { return .secondary }
+        if resolution.routing.isReasoningBlocked { return .orange }
+        return resolution.config.isUsable ? .green : .secondary
+    }
+    
+    
+    private func nextTokenStatusDescription(resolution: (config: AIConfiguration, routing: ModelRoutingResolution)) -> String {
         
         guard self.inlineCompletionEnabled else { return "行内智能续写已关闭" }
-        guard self.aiNextTokenEnabled else { return "仅使用本地习惯与上下文零延迟续写" }
-        if config.isUsable {
-            return "深度续写就绪：\(config.model)"
+        guard self.aiNextTokenEnabled else { return "仅使用本地习惯与跨标签上下文零延迟续写（0 Token）" }
+        
+        if let note = resolution.routing.statusNote, resolution.routing.isReasoningBlocked {
+            return note
         }
-        return "尚未配置可用端点，自动回退为本地上下文续写"
+        if !resolution.config.isUsable {
+            return "尚未配置可用端点，自动回退为本地上下文续写"
+        }
+        if self.aiNextTokenDailyCap > 0, self.todayStats.aiRequests >= self.aiNextTokenDailyCap {
+            return "已达今日 \(self.aiNextTokenDailyCap) 次 AI 预算上限，自动转为本地 0 成本续写（按 ⌥\\ 可手动唤起）"
+        }
+        if self.aiNextTokenStrategy == .manual {
+            return "按需省流模式就绪：\(resolution.routing.effectiveModel)（日常 0 消耗，按 ⌥\\ 手动触发）"
+        }
+        if resolution.routing.isAutoRouted {
+            return "智能省流就绪：\(resolution.routing.effectiveModel)（已从 \(resolution.routing.baseModel) 自动降本路由）"
+        }
+        if let note = resolution.routing.statusNote {
+            return "\(resolution.routing.effectiveModel)：\(note)"
+        }
+        return "深度续写就绪：\(resolution.routing.effectiveModel)"
     }
     
     
@@ -348,10 +448,16 @@ struct AISettingsView: View {
         let db = CotLocalDatabase.shared
         self.inlineCompletionEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.inlineCompletionEnabled, default: true)
         self.aiNextTokenEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.aiNextTokenEnabled, default: true)
+        let rawStrategy = db.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenStrategy, default: AINextTokenStrategy.smart.rawValue)
+        self.aiNextTokenStrategy = AINextTokenStrategy(rawValue: rawStrategy) ?? .smart
         self.aiNextTokenModelOverride = db.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenModelOverride, default: "")
         let rawDebounce = db.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenDebounceMs, default: "420")
         let parsedDebounce = Int(rawDebounce) ?? 420
         self.aiNextTokenDebounceMs = [280, 420, 680].contains(parsedDebounce) ? parsedDebounce : 420
+        let rawCap = db.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyCap, default: "300")
+        let parsedCap = Int(rawCap) ?? 300
+        self.aiNextTokenDailyCap = [0, 100, 300, 800].contains(parsedCap) ? parsedCap : 300
+        self.todayStats = AINextTokenPredictor.shared.todayStats
     }
     
     

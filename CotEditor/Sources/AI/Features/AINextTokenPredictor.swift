@@ -24,25 +24,82 @@ import Foundation
 import StringUtils
 import SyntaxFormat
 
+/// User-facing cost/proactivity strategy for AI Next Token completion.
+nonisolated enum AINextTokenStrategy: String, CaseIterable, Sendable {
+    
+    case smart = "smart"
+    case manual = "manual"
+    case proactive = "proactive"
+}
+
+
+/// Daily token-conservation ledger persisted locally.
+nonisolated struct AINextTokenDailyStats: Codable, Equatable, Sendable {
+    
+    var dateKey: String
+    var aiRequests: Int = 0
+    var estimatedInputTokens: Int = 0
+    var estimatedOutputTokens: Int = 0
+    var localHits: Int = 0
+    
+    var totalEstimatedTokens: Int {
+        
+        self.estimatedInputTokens + self.estimatedOutputTokens
+    }
+}
+
+
+/// Result of routing Next Token requests to the most cost-effective model.
+nonisolated struct ModelRoutingResolution: Equatable, Sendable {
+    
+    var effectiveModel: String
+    var baseModel: String
+    var isAutoRouted: Bool
+    var isReasoningBlocked: Bool
+    var statusNote: String?
+}
+
+
 /// Tier-2 asynchronous Fill-in-the-Middle (FIM) Next Token predictor powered by the active AI endpoint.
 ///
-/// Sits seamlessly behind Tier-1 local habit prediction: when local heuristics stay silent and the user
-/// pauses mid-thought or mid-line, it sends a compact `<PREFIX>` + `<SUFFIX>` prompt (capped to low token
-/// budget and strict timeout) with speculative caching so typing forward hits in 0ms.
+/// Designed around zero-waste token discipline:
+/// 1. Local habit / cross-tab predictions and 90s speculative cache run first at 0 Token cost;
+/// 2. Heavy flagship or reasoning models automatically route to lightweight siblings (`deepseek-chat`, `gpt-4o-mini`, etc.);
+/// 3. Sentence-end / URL / image / mid-word triggers are skipped, ignored suggestions back off automatically,
+///    empty answers are negative-cached for 60s, and `Option + \` stays always available for on-demand completion.
 @MainActor final class AINextTokenPredictor {
     
     static let shared = AINextTokenPredictor()
     
+    static let statsDidChangeNotification = Notification.Name("AINextTokenPredictorStatsDidChange")
+    
+    enum CacheLookupResult: Equatable, Sendable {
+        case hit(String)
+        case knownEmpty
+        case miss
+    }
+    
+    enum TriggerDecision: Equatable, Sendable {
+        case skip(reason: String)
+        case schedule(delayMultiplier: Double)
+    }
+    
     private struct CacheEntry {
         let anchorLinePrefix: String
         let anchorLineSuffix: String
-        let completion: String
+        let completion: String?
         let createdAt: Date
     }
     
     private var cache: [CacheEntry] = []
     private var pendingTask: Task<Void, Never>?
     private var errorCooldownUntil: Date?
+    private var unavailableAutoRoutedModels: Set<String> = []
+    private var cachedTodayStats: AINextTokenDailyStats?
+    private(set) var consecutiveIgnores: Int = 0
+    
+    
+    private init() {}
     
     
     // MARK: Settings Helpers
@@ -82,12 +139,33 @@ import SyntaxFormat
     }
     
     
+    static var strategy: AINextTokenStrategy {
+        
+        let raw = UserDefaults.standard.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenStrategy)
+            ?? CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenStrategy, default: AINextTokenStrategy.smart.rawValue)
+        return AINextTokenStrategy(rawValue: raw) ?? .smart
+    }
+    
+    
+    static var dailyCap: Int {
+        
+        if let val = UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyCap) as? Int {
+            return max(0, val)
+        }
+        if let val = Int(CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyCap, default: "300")) {
+            return max(0, val)
+        }
+        return 300
+    }
+    
+    
     static var effectiveConfiguration: AIConfiguration {
         
-        var config = AIConfiguration.current
-        let override = Self.modelOverride
-        if !override.isEmpty {
-            config.model = override
+        let base = AIConfiguration.current
+        let routing = Self.shared.resolveModelRouting(baseConfig: base)
+        var config = base
+        if !routing.effectiveModel.isEmpty {
+            config.model = routing.effectiveModel
         }
         config.temperature = 0.15
         config.reasoningEffort = "low"
@@ -95,7 +173,269 @@ import SyntaxFormat
     }
     
     
-    // MARK: Public API
+    var effectiveBackoffMultiplier: Double {
+        
+        (Self.strategy == .smart && self.consecutiveIgnores >= 3) ? 1.8 : 1.0
+    }
+    
+    
+    var todayStats: AINextTokenDailyStats {
+        
+        let key = Self.currentDateKey()
+        if let existing = self.cachedTodayStats, existing.dateKey == key {
+            return existing
+        }
+        
+        let raw = UserDefaults.standard.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON)
+            ?? CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON, default: "")
+        if !raw.isEmpty,
+           let data = raw.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(AINextTokenDailyStats.self, from: data),
+           decoded.dateKey == key
+        {
+            self.cachedTodayStats = decoded
+            return decoded
+        }
+        
+        let fresh = AINextTokenDailyStats(dateKey: key)
+        self.persistStats(fresh)
+        return fresh
+    }
+    
+    
+    // MARK: Model Classification & Routing
+    
+    static func isPureReasoningModel(_ model: String) -> Bool {
+        
+        let m = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !m.isEmpty else { return false }
+        
+        if m.contains("reasoner")
+            || m.contains("deepseek-r1")
+            || m.contains("/r1")
+            || m.contains("-r1")
+            || m.contains("qwq")
+            || m.contains("-thinking")
+        {
+            return true
+        }
+        
+        return m.hasPrefix("o1") || m.hasPrefix("o3") || m.hasPrefix("o4")
+    }
+    
+    
+    static func isLightweightModel(_ model: String) -> Bool {
+        
+        guard !Self.isPureReasoningModel(model) else { return false }
+        
+        let m = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !m.isEmpty else { return false }
+        
+        let tokens = [
+            "mini", "nano", "flash", "haiku", "turbo", "lite",
+            "deepseek-chat", "moonshot-v1-8k", ":1.5b", ":3b", ":7b", ":8b",
+        ]
+        return tokens.contains { m.contains($0) }
+    }
+    
+    
+    static func isHeavyOrReasoningModel(_ model: String) -> Bool {
+        
+        if Self.isPureReasoningModel(model) { return true }
+        if Self.isLightweightModel(model) { return false }
+        
+        let m = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !m.isEmpty else { return false }
+        
+        let heavyTokens = [
+            "opus", "sonnet", "qwen-max", "yi-large",
+            "gemini-2.5-pro", "gemini-1.5-pro",
+            "gpt-4o", "gpt-4.1", "gpt-4.5", "gpt-5",
+            "claude-4", "claude-5",
+        ]
+        return heavyTokens.contains { m.contains($0) }
+    }
+    
+    
+    func markAutoRoutedModelUnavailable(_ model: String, baseURL: String) {
+        
+        let normalizedURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedModel.isEmpty else { return }
+        self.unavailableAutoRoutedModels.insert("\(normalizedURL)|\(normalizedModel)")
+    }
+    
+    
+    func clearUnavailableModels() {
+        
+        self.unavailableAutoRoutedModels.removeAll()
+    }
+    
+    
+    func resolveModelRouting(
+        profile: AIEndpointProfile? = AIEndpointStore.activeProfile,
+        baseConfig: AIConfiguration = .current,
+        explicitOverride: String = AINextTokenPredictor.modelOverride
+    ) -> ModelRoutingResolution {
+        
+        let resolvedBase = baseConfig.resolvedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let savedModels = profile?.savedModels ?? []
+        let cleanOverride = explicitOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if !cleanOverride.isEmpty,
+           !self.unavailableAutoRoutedModels.contains("\(resolvedBase)|\(cleanOverride.lowercased())")
+        {
+            if !savedModels.isEmpty,
+               !savedModels.contains(where: { $0.caseInsensitiveCompare(cleanOverride) == .orderedSame }),
+               let vendorPrefixed = savedModels.first(where: {
+                   $0.lowercased().hasSuffix("/" + cleanOverride.lowercased())
+                   && !self.unavailableAutoRoutedModels.contains("\(resolvedBase)|\($0.lowercased())")
+               })
+            {
+                return ModelRoutingResolution(
+                    effectiveModel: vendorPrefixed,
+                    baseModel: baseConfig.model,
+                    isAutoRouted: true,
+                    isReasoningBlocked: false,
+                    statusNote: "已匹配当前端点模型 \(vendorPrefixed)"
+                )
+            }
+            
+            let note = Self.isPureReasoningModel(cleanOverride)
+                ? "当前指定为推理模型，耗费思考 Token 且较慢，建议改用 flash / mini / chat 模型"
+                : nil
+            return ModelRoutingResolution(
+                effectiveModel: cleanOverride,
+                baseModel: baseConfig.model,
+                isAutoRouted: cleanOverride.caseInsensitiveCompare(baseConfig.model) != .orderedSame,
+                isReasoningBlocked: false,
+                statusNote: note
+            )
+        }
+        
+        if baseConfig.endpoint == .ollama || !Self.isHeavyOrReasoningModel(baseConfig.model) {
+            return ModelRoutingResolution(
+                effectiveModel: baseConfig.model,
+                baseModel: baseConfig.model,
+                isAutoRouted: false,
+                isReasoningBlocked: false,
+                statusNote: nil
+            )
+        }
+        
+        let isAvailable: (String) -> Bool = { candidate in
+            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            guard trimmed.caseInsensitiveCompare(baseConfig.model) != .orderedSame else { return false }
+            return !self.unavailableAutoRoutedModels.contains("\(resolvedBase)|\(trimmed.lowercased())")
+        }
+        
+        // Priority 1: Pick a lightweight (or non-heavy) saved model from the active endpoint's fetched catalog.
+        if let lightweightSaved = savedModels.first(where: { Self.isLightweightModel($0) && isAvailable($0) }) {
+            return ModelRoutingResolution(
+                effectiveModel: lightweightSaved,
+                baseModel: baseConfig.model,
+                isAutoRouted: true,
+                isReasoningBlocked: false,
+                statusNote: "已自动路由至轻量模型 \(lightweightSaved) 节省 Token"
+            )
+        }
+        if let standardSaved = savedModels.first(where: {
+            !Self.isHeavyOrReasoningModel($0) && !Self.isPureReasoningModel($0) && isAvailable($0)
+        }) {
+            return ModelRoutingResolution(
+                effectiveModel: standardSaved,
+                baseModel: baseConfig.model,
+                isAutoRouted: true,
+                isReasoningBlocked: false,
+                statusNote: "已自动路由至轻量模型 \(standardSaved) 节省 Token"
+            )
+        }
+        
+        // Priority 2: Map known providers (including both OpenAI Responses & Chat endpoints) to economy siblings.
+        let mappedModel = Self.economySiblingModel(for: baseConfig)
+        
+        if let mappedModel, isAvailable(mappedModel) {
+            return ModelRoutingResolution(
+                effectiveModel: mappedModel,
+                baseModel: baseConfig.model,
+                isAutoRouted: true,
+                isReasoningBlocked: false,
+                statusNote: "主模型较重，已自动省流路由至 \(mappedModel)"
+            )
+        }
+        
+        // Priority 3: Protect the user from wasting reasoning tokens automatically on custom gateways.
+        if Self.isPureReasoningModel(baseConfig.model) {
+            return ModelRoutingResolution(
+                effectiveModel: baseConfig.model,
+                baseModel: baseConfig.model,
+                isAutoRouted: false,
+                isReasoningBlocked: true,
+                statusNote: "主模型为推理模型，自动续写已转为本地 0 成本模式（按 ⌥\\ 可手动唤起，或指定轻量模型）"
+            )
+        }
+        
+        return ModelRoutingResolution(
+            effectiveModel: baseConfig.model,
+            baseModel: baseConfig.model,
+            isAutoRouted: false,
+            isReasoningBlocked: false,
+            statusNote: nil
+        )
+    }
+    
+    
+    // MARK: Stats & Backoff Accounting
+    
+    static func estimateTokens(in text: String) -> Int {
+        
+        guard !text.isEmpty else { return 0 }
+        var score = 0.0
+        for scalar in text.unicodeScalars {
+            score += scalar.isASCII ? 0.25 : 0.68
+        }
+        return max(1, Int(ceil(score)))
+    }
+    
+    
+    func resetTodayStats() {
+        
+        self.persistStats(AINextTokenDailyStats(dateKey: Self.currentDateKey()))
+    }
+    
+    
+    func recordLocalHit() {
+        
+        var stats = self.todayStats
+        stats.localHits += 1
+        self.persistStats(stats)
+    }
+    
+    
+    func recordAIUsage(inputText: String, outputText: String) {
+        
+        var stats = self.todayStats
+        stats.aiRequests += 1
+        stats.estimatedInputTokens += Self.estimateTokens(in: inputText)
+        stats.estimatedOutputTokens += Self.estimateTokens(in: outputText)
+        self.persistStats(stats)
+    }
+    
+    
+    func recordSuggestionIgnored() {
+        
+        self.consecutiveIgnores = min(10, self.consecutiveIgnores + 1)
+    }
+    
+    
+    func recordSuggestionAccepted() {
+        
+        self.consecutiveIgnores = 0
+    }
+    
+    
+    // MARK: Cache Lookup
     
     func cancel() {
         
@@ -104,38 +444,178 @@ import SyntaxFormat
     }
     
     
-    /// Checks the short-lived speculative cache for an instant 0ms hit or type-through continuation.
-    func lookupCachedContinuation(linePrefix: String, lineSuffix: String) -> String? {
+    /// Checks speculative positive cache (0ms type-through) and negative/empty cache (60s deduplication).
+    func lookupCache(linePrefix: String, lineSuffix: String) -> CacheLookupResult {
         
         let now = Date()
         let cleanSuffix = lineSuffix.trimmingCharacters(in: .newlines)
         
         for entry in self.cache.reversed() {
-            guard now.timeIntervalSince(entry.createdAt) < 90 else { continue }
             guard entry.anchorLineSuffix == cleanSuffix else { continue }
-            guard linePrefix.hasPrefix(entry.anchorLinePrefix) else { continue }
             
-            let typedSinceAnchor = String(linePrefix.dropFirst(entry.anchorLinePrefix.count))
-            if typedSinceAnchor.isEmpty {
-                return entry.completion
+            if let completion = entry.completion {
+                guard now.timeIntervalSince(entry.createdAt) < 90 else { continue }
+                guard linePrefix.hasPrefix(entry.anchorLinePrefix) else { continue }
+                
+                let typedSinceAnchor = String(linePrefix.dropFirst(entry.anchorLinePrefix.count))
+                if typedSinceAnchor.isEmpty {
+                    return .hit(completion)
+                }
+                if completion.hasPrefix(typedSinceAnchor),
+                   completion.count > typedSinceAnchor.count
+                {
+                    return .hit(String(completion.dropFirst(typedSinceAnchor.count)))
+                }
+            } else {
+                guard now.timeIntervalSince(entry.createdAt) < 60 else { continue }
+                if linePrefix == entry.anchorLinePrefix {
+                    return .knownEmpty
+                }
             }
-            if entry.completion.hasPrefix(typedSinceAnchor),
-               entry.completion.count > typedSinceAnchor.count
-            {
-                return String(entry.completion.dropFirst(typedSinceAnchor.count))
-            }
+        }
+        return .miss
+    }
+    
+    
+    /// Convenience wrapper preserved for callers & tests checking only positive cache hits.
+    func lookupCachedContinuation(linePrefix: String, lineSuffix: String) -> String? {
+        
+        if case .hit(let completion) = self.lookupCache(linePrefix: linePrefix, lineSuffix: lineSuffix) {
+            return completion
         }
         return nil
     }
     
     
-    /// Schedules a debounced AI Fill-in-the-Middle completion for `textView` at its current caret.
+    // MARK: Context Classification & Compact Slicing
+    
+    /// Decides whether the current cursor position warrants an AI completion request, and at what cadence.
+    static func evaluateTriggerIntent(
+        linePrefix: String,
+        lineSuffix: String,
+        isCode: Bool,
+        strategy: AINextTokenStrategy,
+        isManual: Bool
+    ) -> TriggerDecision {
+        
+        if !isManual,
+           let firstSuffixScalar = lineSuffix.unicodeScalars.first,
+           CharacterSet.alphanumerics.contains(firstSuffixScalar) || firstSuffixScalar == "_"
+        {
+            return .skip(reason: "midWord")
+        }
+        
+        let trimmedPrefix = linePrefix.trimmingCharacters(in: .whitespaces)
+        
+        if isManual {
+            return (trimmedPrefix.isEmpty && !isCode)
+                ? .skip(reason: "emptyLine")
+                : .schedule(delayMultiplier: 0)
+        }
+        
+        if strategy == .manual {
+            return .skip(reason: "manualOnly")
+        }
+        
+        let hasNonASCII = trimmedPrefix.unicodeScalars.contains { !$0.isASCII }
+        let minChars = isCode ? 3 : (hasNonASCII ? 2 : 4)
+        guard trimmedPrefix.count >= minChars else {
+            return .skip(reason: "tooShort")
+        }
+        
+        if trimmedPrefix.contains("⟦🖼") {
+            return .skip(reason: "inlineImage")
+        }
+        if let lastToken = trimmedPrefix.split(whereSeparator: \.isWhitespace).last?.lowercased(),
+           lastToken.hasPrefix("http://") || lastToken.hasPrefix("https://")
+        {
+            return .skip(reason: "urlInput")
+        }
+        
+        if let lastChar = trimmedPrefix.last {
+            let isTerminator: Bool
+            if isCode {
+                isTerminator = lastChar == ";" || lastChar == "}"
+            } else if lastChar == "." {
+                // Keep numeric list numbering like `1.` eligible while skipping finished English sentences.
+                let charBeforeDot = trimmedPrefix.dropLast().last
+                let isListDigit = (charBeforeDot?.isASCII == true && charBeforeDot?.isWholeNumber == true)
+                isTerminator = !isListDigit
+            } else {
+                isTerminator = ["。", "！", "？", "!", "?", "…"].contains(lastChar)
+            }
+            
+            if isTerminator {
+                return strategy == .smart
+                    ? .skip(reason: "sentenceEnd")
+                    : .schedule(delayMultiplier: 1.3)
+            }
+            
+            let highIntentChars: Set<Character> = ["，", ",", "：", ":", "、", "(", "（", "=", ">"]
+            if highIntentChars.contains(lastChar) || (linePrefix.hasSuffix(" ") && trimmedPrefix.count >= minChars) {
+                return .schedule(delayMultiplier: 0.85)
+            }
+        }
+        
+        return .schedule(delayMultiplier: 1.0)
+    }
+    
+    
+    /// Extracts compact, line-aligned `<PREFIX>` and `<SUFFIX>` slices tailored to strategy & syntax.
+    static func extractCompactContext(
+        from nsText: NSString,
+        caret: Int,
+        isCode: Bool,
+        strategy: AINextTokenStrategy
+    ) -> (prefix: String, suffix: String) {
+        
+        let safeCaret = min(max(0, caret), nsText.length)
+        let maxPrefix = strategy == .proactive ? (isCode ? 900 : 680) : (isCode ? 520 : 360)
+        let maxSuffix = strategy == .proactive ? (isCode ? 280 : 200) : (isCode ? 180 : 120)
+        
+        let rawPrefixStart = max(0, safeCaret - maxPrefix)
+        var prefix = nsText.substring(with: NSRange(location: rawPrefixStart, length: safeCaret - rawPrefixStart))
+        if rawPrefixStart > 0,
+           let firstNewline = prefix.firstIndex(of: "\n")
+        {
+            let headCount = prefix.distance(from: prefix.startIndex, to: firstNewline)
+            let afterNewline = prefix.index(after: firstNewline)
+            let remainingCount = prefix.distance(from: afterNewline, to: prefix.endIndex)
+            if headCount < 72, remainingCount >= 80 {
+                prefix = String(prefix[afterNewline...])
+            }
+        }
+        
+        let rawSuffixLength = min(maxSuffix, nsText.length - safeCaret)
+        var suffix = rawSuffixLength > 0
+            ? nsText.substring(with: NSRange(location: safeCaret, length: rawSuffixLength))
+            : ""
+        if safeCaret + rawSuffixLength < nsText.length,
+           let lastNewline = suffix.lastIndex(of: "\n"),
+           suffix.distance(from: suffix.startIndex, to: lastNewline) >= 40
+        {
+            suffix = String(suffix[..<lastNewline])
+        }
+        
+        return (prefix, suffix)
+    }
+    
+    
+    // MARK: Scheduling
+    
+    /// Schedules a debounced (or immediate if `isManual`) AI Fill-in-the-Middle completion for `textView`.
     func schedulePrediction(
         for textView: EditorTextView,
         syntaxName: String = SyntaxName.none,
-        documentTitle: String = ""
+        documentTitle: String = "",
+        isManual: Bool = false
     ) {
         self.cancel()
+        
+        if isManual {
+            self.consecutiveIgnores = 0
+            self.errorCooldownUntil = nil
+        }
         
         guard
             Self.isInlineCompletionEnabled,
@@ -147,12 +627,29 @@ import SyntaxFormat
             textView.selectedRange.isEmpty
         else { return }
         
-        if let cooldown = self.errorCooldownUntil, Date() < cooldown {
+        if !isManual, let cooldown = self.errorCooldownUntil, Date() < cooldown {
             return
         }
         
-        let config = Self.effectiveConfiguration
-        guard config.isUsable else { return }
+        if !isManual {
+            let cap = Self.dailyCap
+            if cap > 0, self.todayStats.aiRequests >= cap {
+                return
+            }
+        }
+        
+        let baseConfig = AIConfiguration.current
+        let routing = self.resolveModelRouting(baseConfig: baseConfig)
+        guard !routing.effectiveModel.isEmpty else { return }
+        if !isManual, routing.isReasoningBlocked {
+            return
+        }
+        
+        var effectiveConfig = baseConfig
+        effectiveConfig.model = routing.effectiveModel
+        effectiveConfig.temperature = 0.15
+        effectiveConfig.reasoningEffort = "low"
+        guard effectiveConfig.isUsable else { return }
         
         let nsText = textView.string as NSString
         let expectedRange = textView.selectedRange
@@ -166,39 +663,60 @@ import SyntaxFormat
             ? nsText.substring(with: NSRange(location: caret, length: lineEnd - caret)).trimmingCharacters(in: .newlines)
             : ""
         
-        let trimmedPrefix = linePrefix.trimmingCharacters(in: .whitespaces)
-        guard trimmedPrefix.count >= 4 else { return }
-        
-        // Avoid mid-word guesses when next char is alphanumeric
-        if let firstSuffixScalar = lineSuffix.unicodeScalars.first,
-           CharacterSet.alphanumerics.contains(firstSuffixScalar) || firstSuffixScalar == "_"
-        {
-            return
+        if !isManual {
+            switch self.lookupCache(linePrefix: linePrefix, lineSuffix: lineSuffix) {
+                case .knownEmpty:
+                    return
+                case .hit(let cached):
+                    self.recordLocalHit()
+                    textView.applyAIGhostSuggestion(cached)
+                    return
+                case .miss:
+                    break
+            }
         }
         
-        let prefixStart = max(0, caret - 1_000)
-        let prefixContext = nsText.substring(with: NSRange(location: prefixStart, length: caret - prefixStart))
-        let suffixLength = min(320, nsText.length - caret)
-        let suffixContext = suffixLength > 0
-            ? nsText.substring(with: NSRange(location: caret, length: suffixLength))
-            : ""
-        
         let isCode = (syntaxName != SyntaxName.none && syntaxName != "Plain Text")
-        let debounceMs = Self.debounceMilliseconds
+        let strategy = Self.strategy
+        let intent = Self.evaluateTriggerIntent(
+            linePrefix: linePrefix,
+            lineSuffix: lineSuffix,
+            isCode: isCode,
+            strategy: strategy,
+            isManual: isManual
+        )
+        let delayMultiplier: Double
+        switch intent {
+            case .skip:
+                return
+            case .schedule(let mult):
+                delayMultiplier = mult
+        }
         
+        let delayMs = isManual
+            ? 0
+            : max(120, Int(Double(Self.debounceMilliseconds) * delayMultiplier * self.effectiveBackoffMultiplier))
+        
+        let context = Self.extractCompactContext(from: nsText, caret: caret, isCode: isCode, strategy: strategy)
         let messages = Self.buildMessages(
-            prefix: prefixContext,
-            suffix: suffixContext,
+            prefix: context.prefix,
+            suffix: context.suffix,
             syntaxName: syntaxName,
             documentTitle: documentTitle,
             isCode: isCode
         )
+        let inputTextForAccounting = messages.map(\.text).joined(separator: "\n")
+        // Thinking is disabled via `disablesThinking` on non-reasoning models so actual output stays ~10-20 tokens,
+        // while keeping a 200-token ceiling avoids empty responses on hybrid gateways that still emit brief thoughts.
+        let maxOut = 200
         
         self.pendingTask = Task { [weak self, weak textView] in
-            do {
-                try await Task.sleep(for: .milliseconds(debounceMs))
-            } catch {
-                return
+            if delayMs > 0 {
+                do {
+                    try await Task.sleep(for: .milliseconds(delayMs))
+                } catch {
+                    return
+                }
             }
             guard !Task.isCancelled, let self, let textView else { return }
             guard textView.window?.isKeyWindow == true,
@@ -206,16 +724,51 @@ import SyntaxFormat
                   textView.selectedRange == expectedRange
             else { return }
             
+            if lineSuffix.isEmpty, textView.activeGhostSuggestion == nil {
+                textView.showAIGhostLoadingIndicator()
+            }
+            defer {
+                textView.hideAIGhostLoadingIndicatorIfNeeded()
+            }
+            
+            var activeRequestConfig = effectiveConfig
             do {
-                let client = AIClient(configuration: config, maxOutputTokens: 48, timeoutInterval: 8)
-                let raw = try await client.send(messages)
+                var raw: String
+                do {
+                    raw = try await self.performCompletionRequest(
+                        config: activeRequestConfig,
+                        messages: messages,
+                        maxOutputTokens: maxOut
+                    )
+                } catch let AIError.http(status, _) where routing.isAutoRouted && [400, 403, 404].contains(status) {
+                    self.markAutoRoutedModelUnavailable(routing.effectiveModel, baseURL: effectiveConfig.resolvedBaseURL)
+                    guard isManual || (!Self.isPureReasoningModel(baseConfig.model)
+                        && baseConfig.model.caseInsensitiveCompare(routing.effectiveModel) != .orderedSame)
+                    else { return }
+                    
+                    var fallbackConfig = baseConfig
+                    fallbackConfig.temperature = 0.15
+                    fallbackConfig.reasoningEffort = "low"
+                    activeRequestConfig = fallbackConfig
+                    raw = try await self.performCompletionRequest(
+                        config: activeRequestConfig,
+                        messages: messages,
+                        maxOutputTokens: maxOut
+                    )
+                }
+                
                 guard !Task.isCancelled else { return }
+                self.recordAIUsage(inputText: inputTextForAccounting, outputText: raw)
+                
                 guard let completion = Self.sanitizeCompletion(
                     raw: raw,
                     linePrefix: linePrefix,
                     lineSuffix: lineSuffix,
                     isCode: isCode
-                ) else { return }
+                ) else {
+                    self.storeEmptyCache(linePrefix: linePrefix, lineSuffix: lineSuffix)
+                    return
+                }
                 
                 self.storeCache(linePrefix: linePrefix, lineSuffix: lineSuffix, completion: completion)
                 
@@ -230,9 +783,21 @@ import SyntaxFormat
                 textView.applyAIGhostSuggestion(completion)
             } catch is CancellationError {
                 return
+            } catch AIError.emptyResponse {
+                self.storeEmptyCache(linePrefix: linePrefix, lineSuffix: lineSuffix)
+                return
             } catch {
-                // Quietly back off on failure so offline/invalid gateways never cause UI noise or spam
-                self.errorCooldownUntil = Date().addingTimeInterval(15)
+                CotLogger.shared.warning(
+                    category: .ai,
+                    "Next token prediction failed",
+                    error: error,
+                    context: [
+                        "model": activeRequestConfig.model,
+                        "endpoint": activeRequestConfig.endpoint.rawValue,
+                    ]
+                )
+                // Quietly back off briefly on failure so offline/invalid gateways never cause UI noise or spam
+                self.errorCooldownUntil = Date().addingTimeInterval(8)
             }
         }
     }
@@ -249,25 +814,16 @@ import SyntaxFormat
     ) -> [AIMessage] {
         
         let styleRule = isCode
-            ? "Complete the code naturally at <CURSOR>. Output a single short line or token tail (max 45 chars)."
-            : "Continue the user's sentence or note naturally at <CURSOR> in the same language and tone (max 24 chars)."
+            ? "Output one short code continuation (<=40 chars)."
+            : "Continue naturally in user's language (<=22 chars)."
         
         let system = """
-        You are an ultra-fast inline Fill-in-the-Middle autocomplete engine inside a text editor.
-        Rules:
-        1. Output ONLY the exact text to insert at <CURSOR>. Never explain, wrap in markdown fences, or repeat text from <PREFIX> or <SUFFIX>.
-        2. Pay strict attention to <SUFFIX>: if <SUFFIX> already begins with closing punctuation like ), ], }, or trailing words, do NOT duplicate them.
-        3. \(styleRule)
-        4. If context is too ambiguous to predict with high confidence, output exactly: EMPTY
+        Inline FIM autocomplete engine. Insert ONLY text at <CURSOR>; never explain or duplicate <PREFIX>/<SUFFIX> (watch closing punctuation in <SUFFIX>). \(styleRule) If unclear, reply EMPTY.
         """
         
-        let meta = [
-            documentTitle.isEmpty ? nil : "File: \(documentTitle)",
-            "Syntax: \(syntaxName)",
-        ].compactMap(\.self).joined(separator: " | ")
-        
+        let docTag = documentTitle.isEmpty ? "" : "\(documentTitle) | "
         let user = """
-        \(meta)
+        [\(docTag)\(syntaxName)]
         <PREFIX>\(prefix)</PREFIX><CURSOR><SUFFIX>\(suffix)</SUFFIX>
         """
         
@@ -359,7 +915,35 @@ import SyntaxFormat
     
     // MARK: Private Helpers
     
-    private func storeCache(linePrefix: String, lineSuffix: String, completion: String) {
+    private func performCompletionRequest(
+        config: AIConfiguration,
+        messages: [AIMessage],
+        maxOutputTokens: Int
+    ) async throws -> String {
+        
+        let client = AIClient(
+            configuration: config,
+            maxOutputTokens: maxOutputTokens,
+            timeoutInterval: 9,
+            disablesThinking: !Self.isPureReasoningModel(config.model)
+        )
+        return try await client.send(messages)
+    }
+    
+    
+    func storeCache(linePrefix: String, lineSuffix: String, completion: String) {
+        
+        self.storeCacheEntry(linePrefix: linePrefix, lineSuffix: lineSuffix, completion: completion)
+    }
+    
+    
+    func storeEmptyCache(linePrefix: String, lineSuffix: String) {
+        
+        self.storeCacheEntry(linePrefix: linePrefix, lineSuffix: lineSuffix, completion: nil)
+    }
+    
+    
+    private func storeCacheEntry(linePrefix: String, lineSuffix: String, completion: String?) {
         
         let cleanSuffix = lineSuffix.trimmingCharacters(in: .newlines)
         self.cache.removeAll { $0.anchorLinePrefix == linePrefix && $0.anchorLineSuffix == cleanSuffix }
@@ -372,5 +956,62 @@ import SyntaxFormat
         if self.cache.count > 48 {
             self.cache.removeFirst(self.cache.count - 48)
         }
+    }
+    
+    
+    private static func economySiblingModel(for config: AIConfiguration) -> String? {
+        
+        switch config.provider {
+            case .deepSeek: return "deepseek-chat"
+            case .openAI: return "gpt-4o-mini"
+            case .anthropic: return "claude-3-5-haiku-latest"
+            case .google: return "gemini-2.5-flash"
+            case .qwen: return "qwen-turbo"
+            case .moonshot: return "moonshot-v1-8k"
+            case .openRouter: return Self.openRouterEconomySibling(for: config.model)
+            case .ollama: return nil
+            case .custom: break
+        }
+        
+        let host = (URL(string: config.resolvedBaseURL)?.host ?? "").lowercased()
+        if host.contains("api.openai.com") { return "gpt-4o-mini" }
+        if host.contains("api.deepseek.com") { return "deepseek-chat" }
+        if host.contains("api.anthropic.com") { return "claude-3-5-haiku-latest" }
+        if host.contains("generativelanguage.googleapis.com") { return "gemini-2.5-flash" }
+        if host.contains("dashscope.aliyuncs.com") { return "qwen-turbo" }
+        if host.contains("api.moonshot.cn") { return "moonshot-v1-8k" }
+        if host.contains("openrouter.ai") { return Self.openRouterEconomySibling(for: config.model) }
+        return nil
+    }
+    
+    
+    private static func openRouterEconomySibling(for model: String) -> String {
+        
+        let lower = model.lowercased()
+        if lower.hasPrefix("deepseek/") { return "deepseek/deepseek-chat" }
+        if lower.hasPrefix("openai/") { return "openai/gpt-4o-mini" }
+        if lower.hasPrefix("anthropic/") { return "anthropic/claude-3.5-haiku" }
+        if lower.hasPrefix("google/") { return "google/gemini-2.5-flash" }
+        return "deepseek/deepseek-chat"
+    }
+    
+    
+    private static func currentDateKey(date: Date = Date()) -> String {
+        
+        let components = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+    }
+    
+    
+    private func persistStats(_ stats: AINextTokenDailyStats) {
+        
+        self.cachedTodayStats = stats
+        if let data = try? JSONEncoder().encode(stats),
+           let json = String(data: data, encoding: .utf8)
+        {
+            UserDefaults.standard.set(json, forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON)
+            CotLocalDatabase.shared.set(json, forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON)
+        }
+        NotificationCenter.default.post(name: Self.statsDidChangeNotification, object: nil)
     }
 }

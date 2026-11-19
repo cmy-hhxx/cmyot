@@ -38,6 +38,7 @@ nonisolated struct AIClient: Sendable {
     var configuration: AIConfiguration
     var maxOutputTokens: Int? = nil
     var timeoutInterval: TimeInterval = 120
+    var disablesThinking: Bool = false
     
     private var wireConfig: AIConfiguration { self.configuration.wireConfiguration }
     
@@ -51,15 +52,30 @@ nonisolated struct AIClient: Sendable {
     /// - Throws: ``AIError`` when the request cannot be made or the reply cannot be read.
     func send(_ messages: [AIMessage], onPartial: (@Sendable (String) async -> Void)? = nil) async throws -> String {
         
-        let shouldSendTemperature = Self.supportsTemperature(for: self.wireConfig.model)
-        do {
-            return try await self.sendAttempt(messages, allowTemperature: shouldSendTemperature, onPartial: onPartial)
-        } catch let error where shouldSendTemperature && Self.isTemperatureRejectedError(error) {
-            CotLogger.shared.info(
-                category: .ai,
-                "Model rejected temperature parameter; retrying without temperature: model=\(self.wireConfig.model)"
-            )
-            return try await self.sendAttempt(messages, allowTemperature: false, onPartial: onPartial)
+        var allowTemperature = Self.supportsTemperature(for: self.wireConfig.model)
+        var allowThinkingControl = true
+        
+        while true {
+            do {
+                return try await self.sendAttempt(
+                    messages,
+                    allowTemperature: allowTemperature,
+                    allowThinkingControl: allowThinkingControl,
+                    onPartial: onPartial
+                )
+            } catch let error where allowTemperature && Self.isTemperatureRejectedError(error) {
+                allowTemperature = false
+                CotLogger.shared.info(
+                    category: .ai,
+                    "Model rejected temperature parameter; retrying without temperature: model=\(self.wireConfig.model)"
+                )
+            } catch let error where allowThinkingControl && Self.isThinkingParameterRejectedError(error) {
+                allowThinkingControl = false
+                CotLogger.shared.info(
+                    category: .ai,
+                    "Model rejected thinking parameter; retrying without thinking control: model=\(self.wireConfig.model)"
+                )
+            }
         }
     }
     
@@ -111,9 +127,24 @@ nonisolated struct AIClient: Sendable {
     }
     
     
+    /// Detects provider HTTP 400 errors rejecting `thinking` / `reasoning` parameters so requests retry cleanly without them.
+    static func isThinkingParameterRejectedError(_ error: any Error) -> Bool {
+        
+        guard case AIError.http(let status, let message?) = error, status == 400 else {
+            return false
+        }
+        let lower = message.lowercased()
+        return lower.contains("thinking")
+            || lower.contains("thinkingconfig")
+            || lower.contains("thinking_budget")
+            || lower.contains("reasoning")
+    }
+    
+    
     private func sendAttempt(
         _ messages: [AIMessage],
         allowTemperature: Bool,
+        allowThinkingControl: Bool,
         onPartial: (@Sendable (String) async -> Void)?
     ) async throws -> String {
         
@@ -122,7 +153,12 @@ nonisolated struct AIClient: Sendable {
         
         if let onPartial, self.supportsSSEStreaming {
             do {
-                let streamed = try await self.sendStreaming(messages, allowTemperature: allowTemperature, onPartial: onPartial)
+                let streamed = try await self.sendStreaming(
+                    messages,
+                    allowTemperature: allowTemperature,
+                    allowThinkingControl: allowThinkingControl,
+                    onPartial: onPartial
+                )
                 if !streamed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     return streamed.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
@@ -148,7 +184,12 @@ nonisolated struct AIClient: Sendable {
         }
         
         request.httpBody = try JSONSerialization.data(
-            withJSONObject: self.body(for: messages, stream: false, allowTemperature: allowTemperature)
+            withJSONObject: self.body(
+                for: messages,
+                stream: false,
+                allowTemperature: allowTemperature,
+                allowThinkingControl: allowThinkingControl
+            )
         )
         
         let data: Data
@@ -177,7 +218,7 @@ nonisolated struct AIClient: Sendable {
     
     private static func shouldFallbackFromStreamingError(_ error: AIError) -> Bool {
         
-        if self.isTemperatureRejectedError(error) {
+        if self.isTemperatureRejectedError(error) || self.isThinkingParameterRejectedError(error) {
             return false
         }
         switch error {
@@ -205,6 +246,7 @@ nonisolated struct AIClient: Sendable {
     private func sendStreaming(
         _ messages: [AIMessage],
         allowTemperature: Bool,
+        allowThinkingControl: Bool,
         onPartial: @Sendable (String) async -> Void
     ) async throws -> String {
         
@@ -221,7 +263,12 @@ nonisolated struct AIClient: Sendable {
         }
         
         request.httpBody = try JSONSerialization.data(
-            withJSONObject: self.body(for: messages, stream: true, allowTemperature: allowTemperature)
+            withJSONObject: self.body(
+                for: messages,
+                stream: true,
+                allowTemperature: allowTemperature,
+                allowThinkingControl: allowThinkingControl
+            )
         )
         
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
@@ -322,7 +369,12 @@ nonisolated struct AIClient: Sendable {
     ///   - messages: The conversation to send.
     ///   - stream: Whether to request Server-Sent Events streaming.
     /// - Returns: A JSON-serializable body.
-    private func body(for messages: [AIMessage], stream: Bool = false, allowTemperature: Bool = true) -> [String: Any] {
+    private func body(
+        for messages: [AIMessage],
+        stream: Bool = false,
+        allowTemperature: Bool = true,
+        allowThinkingControl: Bool = true
+    ) -> [String: Any] {
         
         let config = self.wireConfig
         let model = config.model
@@ -343,7 +395,15 @@ nonisolated struct AIClient: Sendable {
                 if !system.isEmpty {
                     body["instructions"] = system
                 }
-                if let effort = config.reasoningEffort, !effort.isEmpty {
+                let lowerModel = model.lowercased()
+                let isReasoning = lowerModel.contains("reasoner")
+                    || lowerModel.hasPrefix("o1")
+                    || lowerModel.hasPrefix("o3")
+                    || lowerModel.hasPrefix("o4")
+                    || lowerModel.hasPrefix("gpt-5")
+                if allowThinkingControl, !self.disablesThinking, isReasoning,
+                   let effort = config.reasoningEffort, !effort.isEmpty
+                {
                     body["reasoning"] = ["effort": effort]
                 }
                 if let maxTokens = self.maxOutputTokens {
@@ -375,7 +435,8 @@ nonisolated struct AIClient: Sendable {
                     }
                 }
                 // For reasoning models (o1/o3/deepseek-reasoner), pass low reasoning effort to accelerate generation.
-                if lowerModel.contains("reasoner") || lowerModel.hasPrefix("o1") || lowerModel.hasPrefix("o3") || lowerModel.hasPrefix("o4"),
+                if allowThinkingControl, !self.disablesThinking,
+                   (lowerModel.contains("reasoner") || lowerModel.hasPrefix("o1") || lowerModel.hasPrefix("o3") || lowerModel.hasPrefix("o4")),
                    let effort = config.reasoningEffort, !effort.isEmpty
                 {
                     body["reasoning_effort"] = effort
@@ -410,6 +471,9 @@ nonisolated struct AIClient: Sendable {
                 if allowTemperature, Self.supportsTemperature(for: model), let temperature = config.temperature {
                     body["temperature"] = temperature
                 }
+                if allowThinkingControl, self.disablesThinking {
+                    body["thinking"] = ["type": "disabled"]
+                }
                 
                 return body
                 
@@ -432,8 +496,15 @@ nonisolated struct AIClient: Sendable {
                 if !system.isEmpty {
                     body["systemInstruction"] = ["parts": [["text": system]]]
                 }
+                var genConfig: [String: Any] = [:]
                 if let maxTokens = self.maxOutputTokens {
-                    body["generationConfig"] = ["maxOutputTokens": maxTokens]
+                    genConfig["maxOutputTokens"] = maxTokens
+                }
+                if allowThinkingControl, self.disablesThinking {
+                    genConfig["thinkingConfig"] = ["thinkingBudget": 0]
+                }
+                if !genConfig.isEmpty {
+                    body["generationConfig"] = genConfig
                 }
                 
                 return body

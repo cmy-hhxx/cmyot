@@ -580,11 +580,11 @@ import Foundation
             return (lastSeenRank[lhs.key] ?? 0) < (lastSeenRank[rhs.key] ?? 0)
         }) else { return nil }
         
-        // Require >=2 weighted occurrences with >=65% consistency (or 1 exact match on >=6-char anchor).
+        // Require >=2 weighted occurrences with >=50% consistency (or 1 exact match on >=6-char anchor).
         let isLongSpecificAnchor = anchor.count >= 6
         let minScore = isLongSpecificAnchor ? 2 : 3
         let confidence = Double(best.value) / Double(max(1, total))
-        guard best.value >= minScore, confidence >= 0.65 else { return nil }
+        guard best.value >= minScore, confidence >= 0.50 else { return nil }
         return best.key
     }
     
@@ -717,13 +717,21 @@ import Foundation
         let total = counts.values.reduce(0, +)
         guard total >= 2 else { return nil }
         
-        guard let best = counts.max(by: { lhs, rhs in
-            if lhs.value != rhs.value { return lhs.value < rhs.value }
+        let sorted = counts.sorted { lhs, rhs in
+            if lhs.value != rhs.value { return lhs.value > rhs.value }
             return lhs.key.count < rhs.key.count
-        }) else { return nil }
+        }
+        let best = sorted[0]
+        guard best.key.count <= 16 else { return nil }
         
+        let secondCount = sorted.count > 1 ? sorted[1].value : 0
         let confidence = Double(best.value) / Double(total)
-        guard best.value >= 2, confidence >= 0.62, best.key.count <= 14 else { return nil }
+        let isConfident =
+            (best.value >= 2 && confidence >= 0.55)
+            || (best.value >= 5 && confidence >= 0.34 && Double(best.value) >= Double(secondCount) * 1.3)
+            || (best.value >= 25 && confidence >= 0.28 && Double(best.value) >= Double(secondCount) * 1.2)
+        
+        guard isConfident else { return nil }
         return best.key
     }
     

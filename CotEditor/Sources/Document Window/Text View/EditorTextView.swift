@@ -189,6 +189,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     private lazy var completionDebouncer = Debouncer { [weak self] in self?.performCompletion() }
     private(set) var activeGhostSuggestion: String?
     private var isUpdatingGhostSuggestion = false
+    private var isCurrentGhostFromAI = false
+    private var lastLocalHitCaretLocation: Int = -1
     var dismissedGhostCaretLocation: Int?
     
     private lazy var trimTrailingWhitespaceTask = Debouncer { [weak self] in
@@ -391,7 +393,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     queue: .main
                 ) { [weak self] _ in
                     MainActor.assumeIsolated {
-                        self?.clearGhostSuggestion(animated: false)
+                        if self?.activeGhostSuggestion != nil || self?.funEffects.isShowingGhostThinking == true {
+                            self?.clearGhostSuggestion(animated: false, cancelAI: false)
+                        }
                     }
                 }
             }
@@ -738,8 +742,19 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return
         }
         
+        if !self.hasMarkedText(),
+           flags == [.option],
+           event.keyCode == 42,  // Option + \ triggers on-demand AI Next Token completion
+           self.triggerManualAINextTokenPrediction()
+        {
+            return
+        }
+        
         // Clear stale ghost suggestion when leaving Vim insert mode via Esc
         if event.keyCode == 53, self.activeGhostSuggestion != nil {
+            if self.isCurrentGhostFromAI {
+                AINextTokenPredictor.shared.recordSuggestionIgnored()
+            }
             self.dismissedGhostCaretLocation = self.selectedRange.location
             self.clearGhostSuggestion(animated: true)
         }
@@ -849,7 +864,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                self.textStorage?.attribute(.autoBalancedClosingBracket, at: self.selectedRange.location, effectiveRange: nil) as? Bool == true
             {
                 self.textStorage?.removeAttribute(.autoBalancedClosingBracket, range: NSRange(location: self.selectedRange.location, length: 1))
+                self.isUpdatingGhostSuggestion = true
                 self.selectedRange.location += 1
+                self.isUpdatingGhostSuggestion = false
+                self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: true)
                 return
             }
             
@@ -873,9 +891,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     }
                     
                     super.insertText(String(pair.begin) + String(pair.end), replacementRange: replacementRange)
+                    self.isUpdatingGhostSuggestion = true
                     self.setSelectedRangesWithUndo([NSRange(location: self.selectedRange.location - 1, length: 0)])
+                    self.isUpdatingGhostSuggestion = false
                     self.textStorage?.addAttribute(.autoBalancedClosingBracket, value: true,
                                                    range: NSRange(location: self.selectedRange.location, length: 1))
+                    self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: true)
                     return
                 }
             }
@@ -896,6 +917,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         let previousGhost = (!self.hasMarkedText() && replacementRange.isEmpty) ? self.activeGhostSuggestion : nil
+        let wasFromAI = previousGhost != nil ? self.isCurrentGhostFromAI : false
         self.dismissedGhostCaretLocation = nil
         
         self.isUpdatingGhostSuggestion = true
@@ -918,8 +940,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
            previousGhost.count > plainString.count
         {
             let remaining = String(previousGhost.dropFirst(plainString.count))
-            self.showGhostCandidate(remaining, animateEntrance: false)
+            self.showGhostCandidate(remaining, animateEntrance: false, isFromAI: wasFromAI)
         } else {
+            if previousGhost != nil, wasFromAI, !plainString.isEmpty {
+                AINextTokenPredictor.shared.recordSuggestionIgnored()
+            }
             self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: true)
         }
         
@@ -1042,7 +1067,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             caretRect.size.height = min(caretRect.height, self.singleLineHeight)
             self.funEffects.triggerTypewriterBurst(at: caretRect, color: self.effectiveCursorColor, intensityScale: 0.65)
         }
-        self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: false)
+        self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: true)
     }
     
     
@@ -1154,6 +1179,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         let currentRanges = self.rangesForUserTextChange ?? self.selectedRanges
+        let previousSelectedRanges = self.selectedRanges.map(\.rangeValue)
         let previousLocation = self.selectedRange.location
         let previousHadSelection = !self.selectedRange.isEmpty
         
@@ -1197,7 +1223,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         self.needsUpdateLineHighlight = true
         
-        if !self.isUpdatingGhostSuggestion {
+        if !self.isUpdatingGhostSuggestion, selectedRanges != previousSelectedRanges {
             self.clearGhostSuggestion(animated: false)
         }
         
@@ -2416,6 +2442,69 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     // MARK: Inline Habit Ghost Completion
     
+    /// Manually triggers an immediate on-demand AI Next Token prediction (`Option + \`).
+    @discardableResult
+    func triggerManualAINextTokenPrediction() -> Bool {
+        
+        guard
+            AINextTokenPredictor.isInlineCompletionEnabled,
+            AINextTokenPredictor.isAINextTokenEnabled,
+            self.isEditable,
+            self.window?.isKeyWindow == true,
+            !self.hasMarkedText(),
+            !self.hasMultipleInsertions,
+            self.selectedRange.isEmpty,
+            (!UserDefaults.standard[.vimMode] || VimState.shared.mode == .insert)
+        else { return false }
+        
+        self.dismissedGhostCaretLocation = nil
+        let doc = self.textStorage.flatMap { self.documentViewController?.document(for: $0) }
+        AINextTokenPredictor.shared.schedulePrediction(
+            for: self,
+            syntaxName: doc?.syntaxName ?? SyntaxName.none,
+            documentTitle: doc?.displayName ?? "",
+            isManual: true
+        )
+        return true
+    }
+    
+    
+    /// Shows a subtle `"···"` loading indicator while an asynchronous AI Next Token request is running.
+    func showAIGhostLoadingIndicator() {
+        
+        guard
+            AINextTokenPredictor.isInlineCompletionEnabled,
+            self.isEditable,
+            self.window?.isKeyWindow == true,
+            !self.hasMarkedText(),
+            !self.hasMultipleInsertions,
+            self.selectedRange.isEmpty,
+            (!UserDefaults.standard[.vimMode] || VimState.shared.mode == .insert),
+            self.activeGhostSuggestion == nil,
+            var caretRect = self.boundingRect(for: self.selectedRange)
+        else { return }
+        
+        caretRect.size.height = min(caretRect.height > 0 ? caretRect.height : self.singleLineHeight, self.singleLineHeight)
+        let font = self.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
+        let baselineOffset = (self.layoutManager as? LayoutManager)?.baselineOffset(for: .horizontal) ?? max(11, font.ascender)
+        self.funEffects.showGhostThinkingIndicator(
+            at: caretRect,
+            font: font,
+            lineHeight: self.singleLineHeight,
+            baselineOffset: baselineOffset
+        )
+    }
+    
+    
+    /// Hides the thinking indicator if no real ghost suggestion replaced it.
+    func hideAIGhostLoadingIndicatorIfNeeded() {
+        
+        if self.activeGhostSuggestion == nil, self.funEffects.isShowingGhostThinking {
+            self.funEffects.hideGhostSuggestion(animated: false)
+        }
+    }
+    
+    
     /// Displays an AI-predicted ghost continuation delivered asynchronously for the active caret.
     func applyAIGhostSuggestion(_ candidate: String) {
         
@@ -2431,7 +2520,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             !candidate.isEmpty
         else { return }
         
-        self.showGhostCandidate(candidate, animateEntrance: true)
+        self.showGhostCandidate(candidate, animateEntrance: true, isFromAI: true)
     }
     
     
@@ -2471,7 +2560,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             siblingTexts: siblingTexts
         ), !localCandidate.isEmpty {
             AINextTokenPredictor.shared.cancel()
-            self.showGhostCandidate(localCandidate, animateEntrance: animateEntrance)
+            self.showGhostCandidate(localCandidate, animateEntrance: animateEntrance, isFromAI: false)
+            if self.lastLocalHitCaretLocation != caretLocation {
+                self.lastLocalHitCaretLocation = caretLocation
+                AINextTokenPredictor.shared.recordLocalHit()
+            }
             return
         }
         
@@ -2484,11 +2577,19 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             let lineSuffix = (caretLocation < lineEnd)
                 ? nsText.substring(with: NSRange(location: caretLocation, length: lineEnd - caretLocation)).trimmingCharacters(in: .newlines)
                 : ""
-            if let cachedAI = AINextTokenPredictor.shared.lookupCachedContinuation(linePrefix: linePrefix, lineSuffix: lineSuffix),
-               !cachedAI.isEmpty
-            {
-                self.showGhostCandidate(cachedAI, animateEntrance: animateEntrance)
-                return
+            switch AINextTokenPredictor.shared.lookupCache(linePrefix: linePrefix, lineSuffix: lineSuffix) {
+                case .hit(let cachedAI) where !cachedAI.isEmpty:
+                    self.showGhostCandidate(cachedAI, animateEntrance: animateEntrance, isFromAI: false)
+                    if self.lastLocalHitCaretLocation != caretLocation {
+                        self.lastLocalHitCaretLocation = caretLocation
+                        AINextTokenPredictor.shared.recordLocalHit()
+                    }
+                    return
+                case .knownEmpty:
+                    self.clearGhostSuggestion(animated: false, cancelAI: false)
+                    return
+                case .hit, .miss:
+                    break
             }
         }
         
@@ -2505,7 +2606,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
-    private func showGhostCandidate(_ candidate: String, animateEntrance: Bool) {
+    func showGhostCandidate(_ candidate: String, animateEntrance: Bool, isFromAI: Bool = false) {
         
         guard !candidate.isEmpty, var caretRect = self.boundingRect(for: self.selectedRange) else {
             self.clearGhostSuggestion(animated: false, cancelAI: false)
@@ -2533,6 +2634,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         self.activeGhostSuggestion = candidate
+        self.isCurrentGhostFromAI = isFromAI
         let shiftWidth = self.funEffects.showGhostSuggestion(
             candidate,
             at: caretRect,
@@ -2558,6 +2660,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     func clearGhostSuggestion(animated: Bool = false, cancelAI: Bool = true) {
         
         self.activeGhostSuggestion = nil
+        self.isCurrentGhostFromAI = false
         (self.layoutManager as? LayoutManager)?.inlineGhostShift = nil
         self.funEffects.hideGhostSuggestion(animated: animated)
         if cancelAI {
@@ -2578,10 +2681,13 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             !suggestion.isEmpty
         else { return false }
         
+        let wasFromAI = self.isCurrentGhostFromAI
         let (accepted, remainder) = UserHabitPredictor.splitFirstAcceptUnit(from: suggestion)
         if remainder.isEmpty {
             return self.acceptGhostSuggestionIfPresent()
         }
+        
+        AINextTokenPredictor.shared.recordSuggestionAccepted()
         
         var startRect = self.boundingRect(for: self.selectedRange) ?? .zero
         startRect.size.height = min(startRect.height > 0 ? startRect.height : self.singleLineHeight, self.singleLineHeight)
@@ -2596,7 +2702,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         endRect.size.height = min(endRect.height > 0 ? endRect.height : self.singleLineHeight, self.singleLineHeight)
         self.funEffects.triggerTypewriterBurst(at: endRect, color: self.effectiveCursorColor, intensityScale: 0.75)
         
-        self.showGhostCandidate(remainder, animateEntrance: false)
+        self.showGhostCandidate(remainder, animateEntrance: false, isFromAI: wasFromAI)
         return true
     }
     
@@ -2621,6 +2727,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         var startRect = self.boundingRect(for: self.selectedRange) ?? .zero
         startRect.size.height = min(startRect.height > 0 ? startRect.height : self.singleLineHeight, self.singleLineHeight)
         
+        AINextTokenPredictor.shared.recordSuggestionAccepted()
         self.clearGhostSuggestion(animated: false, cancelAI: true)
         
         self.isUpdatingGhostSuggestion = true
@@ -2633,7 +2740,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         endRect.size.height = min(endRect.height > 0 ? endRect.height : self.singleLineHeight, self.singleLineHeight)
         self.funEffects.animateGhostCompletionAccept(from: startRect, to: endRect, color: self.effectiveCursorColor)
         
-        self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: true)
+        self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: false)
         return true
     }
     
