@@ -431,4 +431,91 @@ struct Round17FeatureTests {
         #expect(WorkspaceCenterIcons.analyticsDashboardIcon(isActive: false).isTemplate == true)
         #expect(WorkspaceCenterIcons.analyticsDashboardIcon(isActive: true).isTemplate == false)
     }
+    
+    
+    @Test func rollingHeatmapEndsAtTodayAndHumanDayStorySpeaksPlainChinese() throws {
+        
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot_rolling_story_\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "rolling.sqlite3"))
+        let manager = AnalyticsManager(database: db)
+        let now = Date()
+        let todayKey = AnalyticsManager.dateKey(for: now)
+        
+        manager.recordTypedCharacters(680)
+        manager.flushPendingStats()
+        manager.recordGhostCompletionAccepted(charCount: 160, isFromAI: true)
+        
+        let rolling = manager.rollingHeatmap(weeks: 26, referenceDate: now)
+        #expect(rolling.weeks.count == 26)
+        #expect(rolling.weeks.allSatisfy { $0.count == 7 })
+        
+        let visible = manager.orderedVisibleCells(in: rolling)
+        #expect(visible.last?.dateKey == todayKey)
+        #expect(visible.allSatisfy { !$0.isFuture })
+        let futureCells = rolling.weeks.flatMap(\.self).filter(\.isFuture)
+        let allFutureEmpty = futureCells.allSatisfy { $0.level == 0 && $0.typedChars == 0 }
+        #expect(allFutureEmpty)
+        
+        let todayCell = try #require(manager.cell(forDateKey: todayKey, in: rolling))
+        let todayStory = manager.humanDayStory(for: todayCell, referenceDate: now)
+        #expect(todayStory.dateBadge.hasPrefix("今天"))
+        #expect(!todayStory.headline.contains("Tokens"))
+        #expect(!todayStory.headline.contains("活跃度"))
+        #expect(!todayStory.headline.contains("累计输入"))
+        #expect(todayStory.highlights.allSatisfy { !$0.contains("Tokens") && !$0.contains("ms") })
+        
+        let pastEmptyCell = try #require(visible.first(where: { $0.dateKey != todayKey && $0.typedChars == 0 }))
+        let emptyStory = manager.humanDayStory(for: pastEmptyCell, referenceDate: now)
+        #expect(emptyStory.moodTag == "静心留白")
+        #expect(emptyStory.headline.contains("放空"))
+    }
+    
+    
+    @Test func paneNavigationBarHostsTabStripOutsideSwiftUIHosting() {
+        
+        let doc = Document()
+        doc.displayName = "测试文档"
+        let tab = PaneTab(document: doc)
+        let state = PaneTabState()
+        state.tabs = [tab]
+        state.selectedTab = tab
+        
+        let navVC = PaneNavigationBarViewController(
+            outlineNavigator: OutlineNavigator(),
+            splitState: SplitState(),
+            tabs: state
+        )
+        navVC.loadViewIfNeeded()
+        navVC.view.frame = NSRect(x: 0, y: 0, width: 640, height: 28)
+        navVC.view.layoutSubtreeIfNeeded()
+        navVC.reloadTabs()
+        
+        // Confirm PaneTabStripNSView is hosted directly in AppKit (no NSHostingView ancestor)
+        var ancestor: NSView? = navVC.tabStripView.superview
+        var hasHostingAncestor = false
+        while let current = ancestor {
+            if String(describing: type(of: current)).contains("NSHostingView") {
+                hasHostingAncestor = true
+            }
+            ancestor = current.superview
+        }
+        #expect(hasHostingAncestor == false)
+        
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 80),
+                              styleMask: [.titled],
+                              backing: .buffered,
+                              defer: false)
+        window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
+        window.contentView?.addSubview(navVC.view)
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        
+        navVC.tabStripView.beginInlineRename(for: tab)
+        #expect(navVC.isRenamingTab == true)
+    }
 }

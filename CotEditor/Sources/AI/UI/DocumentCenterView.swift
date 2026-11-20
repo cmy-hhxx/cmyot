@@ -417,6 +417,7 @@ struct DocumentCenterView: View {
     @State private var db = CotLocalDatabase.shared
     @State private var isRenaming = false
     @State private var renameDraft = ""
+    @FocusState private var isRenameFieldFocused: Bool
     @State private var isCreatingGroup = false
     @State private var newGroupDraft = ""
     @State private var pendingAssignAfterGroupCreate: DocumentCenterState.ManagedDocumentItem?
@@ -768,6 +769,9 @@ struct DocumentCenterView: View {
                                             self.state.selectedID = item.id
                                             self.renameDraft = item.title
                                             self.isRenaming = true
+                                            DispatchQueue.main.async {
+                                                self.isRenameFieldFocused = true
+                                            }
                                         },
                                         onMoveToGroup: { groupName in
                                             self.move(item: item, toGroup: groupName)
@@ -813,7 +817,11 @@ struct DocumentCenterView: View {
                 if self.isRenaming && !item.isTrashed {
                     TextField("文档标题", text: self.$renameDraft)
                         .textFieldStyle(.roundedBorder)
+                        .focused(self.$isRenameFieldFocused)
                         .frame(maxWidth: 240)
+                        .onAppear {
+                            self.isRenameFieldFocused = true
+                        }
                         .onSubmit {
                             self.commitRename(for: item)
                         }
@@ -837,6 +845,9 @@ struct DocumentCenterView: View {
                     Button {
                         self.renameDraft = item.title
                         self.isRenaming = true
+                        DispatchQueue.main.async {
+                            self.isRenameFieldFocused = true
+                        }
                     } label: {
                         Image(systemName: "pencil")
                             .font(.system(size: 11.5, weight: .medium))

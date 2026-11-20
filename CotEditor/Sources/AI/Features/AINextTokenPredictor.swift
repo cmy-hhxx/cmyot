@@ -166,7 +166,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
         if !routing.effectiveModel.isEmpty {
             config.model = routing.effectiveModel
         }
-        config.temperature = 0.15
+        config.temperature = 0.10
         config.reasoningEffort = "low"
         return config
     }
@@ -585,8 +585,8 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     ) -> (prefix: String, suffix: String) {
         
         let safeCaret = min(max(0, caret), nsText.length)
-        let maxPrefix = strategy == .proactive ? (isCode ? 900 : 680) : (isCode ? 520 : 360)
-        let maxSuffix = strategy == .proactive ? (isCode ? 280 : 200) : (isCode ? 180 : 120)
+        let maxPrefix = strategy == .proactive ? (isCode ? 1400 : 1100) : (isCode ? 800 : 640)
+        let maxSuffix = strategy == .proactive ? (isCode ? 320 : 280) : (isCode ? 240 : 200)
         
         let rawPrefixStart = max(0, safeCaret - maxPrefix)
         var prefix = nsText.substring(with: NSRange(location: rawPrefixStart, length: safeCaret - rawPrefixStart))
@@ -651,7 +651,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
         
         var effectiveConfig = baseConfig
         effectiveConfig.model = routing.effectiveModel
-        effectiveConfig.temperature = 0.15
+        effectiveConfig.temperature = 0.10
         effectiveConfig.reasoningEffort = "low"
         guard effectiveConfig.isUsable else { return }
         
@@ -751,7 +751,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
                     else { return }
                     
                     var fallbackConfig = baseConfig
-                    fallbackConfig.temperature = 0.15
+                    fallbackConfig.temperature = 0.10
                     fallbackConfig.reasoningEffort = "low"
                     activeRequestConfig = fallbackConfig
                     completionResponse = try await self.performCompletionRequest(
@@ -834,31 +834,57 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     ) -> [AIMessage] {
         
         let styleRule = isCode
-            ? "Output one short code continuation (<=40 chars)."
-            : "Continue naturally in user's language (<=22 chars)."
+            ? "Output one short single-line code continuation (<=48 chars)."
+            : "Continue seamlessly on the exact same line in the user's language (<=28 chars)."
         
         let system = """
-        Inline FIM autocomplete engine. Insert ONLY text at <CURSOR>; never explain or duplicate <PREFIX>/<SUFFIX> (watch closing punctuation in <SUFFIX>). \(styleRule) If unclear, reply EMPTY.
+        Inline FIM autocomplete engine. Output ONLY the exact text to insert at <CURSOR> inside <LINE> so <LINE> reads as one smooth, unbroken thought. NEVER emit newlines, NEVER jump to a new list item, and NEVER output numbered or bullet prefixes like "1. ", "2. ", "3、", "- ", or "• ". Never duplicate the end of prefix or start of suffix. \(styleRule) If the current thought is already complete or uncertain, reply EMPTY.
         """
         
+        let (beforeLines, currentLinePrefix): (String, String) = {
+            if let lastNL = prefix.lastIndex(of: "\n") {
+                return (String(prefix[..<lastNL]), String(prefix[prefix.index(after: lastNL)...]))
+            }
+            return ("", prefix)
+        }()
+        let (currentLineSuffix, afterLines): (String, String) = {
+            if let firstNL = suffix.firstIndex(of: "\n") {
+                return (String(suffix[..<firstNL]), String(suffix[suffix.index(after: firstNL)...]))
+            }
+            return (suffix, "")
+        }()
+        
         let docTag = documentTitle.isEmpty ? "" : "\(documentTitle) | "
-        let user = """
-        [\(docTag)\(syntaxName)]
-        <PREFIX>\(prefix)</PREFIX><CURSOR><SUFFIX>\(suffix)</SUFFIX>
-        """
+        var sections: [String] = ["[\(docTag)\(syntaxName)]"]
+        if !beforeLines.isEmpty {
+            sections.append("<BEFORE>\(beforeLines)</BEFORE>")
+        }
+        sections.append("<LINE>\(currentLinePrefix)<CURSOR>\(currentLineSuffix)</LINE>")
+        if !afterLines.isEmpty {
+            sections.append("<AFTER>\(afterLines)</AFTER>")
+        }
+        let user = sections.joined(separator: "\n")
         
         return [.system(system), .user(user)]
     }
     
     
     /// Cleans a raw AI FIM response into a crisp single-line inline ghost insertion,
-    /// stripping prefix echo, code fences, chatter, and `lineSuffix` overlap.
+    /// stripping prefix echo, code fences, chatter, disjointed list prefixes (`1. xxx`), and `lineSuffix` overlap.
     static func sanitizeCompletion(
         raw: String,
         linePrefix: String,
         lineSuffix: String,
         isCode: Bool = false
     ) -> String? {
+        
+        let trimmedLeadingSpaces = raw.drop { $0 == " " || $0 == "\t" }
+        let hadCodeFence = trimmedLeadingSpaces.hasPrefix("```")
+        
+        // If a non-fenced response opens with a newline, the model tried to start a new line/list item instead of continuing inline.
+        if !hadCodeFence, trimmedLeadingSpaces.first?.isNewline == true {
+            return nil
+        }
         
         var text = raw.trimmingCharacters(in: .newlines)
         guard !text.isEmpty else { return nil }
@@ -872,7 +898,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
         }
         
         // Strip XML tags if echoed
-        for tag in ["<CURSOR>", "</CURSOR>", "<COMPLETION>", "</COMPLETION>"] {
+        for tag in ["<CURSOR>", "</CURSOR>", "<COMPLETION>", "</COMPLETION>", "<LINE>", "</LINE>", "<BEFORE>", "</BEFORE>", "<AFTER>", "</AFTER>"] {
             text = text.replacingOccurrences(of: tag, with: "")
         }
         
@@ -884,7 +910,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
         
         var clean = firstLine
         let trimmedUpper = clean.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        if trimmedUpper == "EMPTY" || trimmedUpper == "NONE" || trimmedUpper == "[EMPTY]" || trimmedUpper == "N/A" {
+        if trimmedUpper == "EMPTY" || trimmedUpper == "NONE" || trimmedUpper == "[EMPTY]" || trimmedUpper == "N/A" || trimmedUpper == "NULL" {
             return nil
         }
         
@@ -904,10 +930,45 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
                 clean.removeFirst()
             }
         }
+        if let lastPrefixChar = linePrefix.trimmingCharacters(in: .whitespaces).last,
+           ["，", ",", "：", ":", "、", "(", "（", "《"].contains(lastPrefixChar)
+        {
+            while clean.first == lastPrefixChar, clean.count > 1 {
+                clean.removeFirst()
+            }
+        }
+        
+        // Block disjointed leading list markers like "1. xxx", "2. xxx", "3、xxx", "(1) xxx", "- xxx", "• xxx"
+        // while keeping genuine inline numbers like "2026年", "100%", "1步", "30天".
+        if clean.range(
+            of: #"^\s*(?:\d{1,2}\s*[\.、\)）](?!\d)\s*|[(（]\d{1,2}[)）]\s*|[-*•·▪︎‣]\s+)"#,
+            options: .regularExpression
+        ) != nil {
+            return nil
+        }
+        
+        // Trim any mid-line list item jump (e.g. "完成排版 2. 优化预测" -> "完成排版"), without breaking "Python 3.11".
+        if !isCode,
+           let trailingJump = clean.range(of: #"\s+\d{1,2}[\.、\)）](?!\d)\s*"#, options: .regularExpression)
+        {
+            let beforeJump = String(clean[..<trailingJump.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if beforeJump.isEmpty {
+                return nil
+            }
+            clean = String(clean[..<trailingJump.lowerBound])
+        }
         
         // Reject leading conversational meta-replies
-        let lowerClean = clean.trimmingCharacters(in: .whitespaces).lowercased()
-        if lowerClean.hasPrefix("here is") || lowerClean.hasPrefix("sure,") || lowerClean.hasPrefix("certainly") {
+        let trimmedClean = clean.trimmingCharacters(in: .whitespaces)
+        let lowerClean = trimmedClean.lowercased()
+        if lowerClean.hasPrefix("here is")
+            || lowerClean.hasPrefix("sure,")
+            || lowerClean.hasPrefix("certainly")
+            || trimmedClean.hasPrefix("好的，")
+            || trimmedClean.hasPrefix("好的：")
+            || trimmedClean.hasPrefix("以下是")
+            || trimmedClean.hasPrefix("建议补全")
+        {
             return nil
         }
         

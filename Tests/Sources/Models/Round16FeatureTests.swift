@@ -264,8 +264,8 @@ struct Round16FeatureTests {
             isCode: false,
             strategy: .smart
         )
-        #expect(smartSlice.prefix.count <= 360)
-        #expect(smartSlice.suffix.count <= 120)
+        #expect(smartSlice.prefix.count <= 640)
+        #expect(smartSlice.suffix.count <= 200)
         #expect(smartSlice.prefix.isEmpty == false)
         
         // Token estimator distinguishes CJK and ASCII cleanly
@@ -363,6 +363,45 @@ struct Round16FeatureTests {
         #expect(abs(size.width - SettingsPaneLayout.width) <= 1)
         #expect(abs(size.height - SettingsPaneLayout.height) <= 1)
         #expect(Self.descendants(ofType: NSTableView.self, in: host.view).isEmpty)
+    }
+    
+    
+    @Test func sanitizeCompletionBlocksDisjointedListMarkersAndPreservesNumbers() {
+        
+        // Reject leading newline jumps & disjointed numbered/bullet list prefixes
+        #expect(AINextTokenPredictor.sanitizeCompletion(raw: "\n2. 优化热力图", linePrefix: "优化数据看板", lineSuffix: "") == nil)
+        #expect(AINextTokenPredictor.sanitizeCompletion(raw: "1. 优化数据看板", linePrefix: "今天先", lineSuffix: "") == nil)
+        #expect(AINextTokenPredictor.sanitizeCompletion(raw: "2. 修复重命名", linePrefix: "完成排版", lineSuffix: "") == nil)
+        #expect(AINextTokenPredictor.sanitizeCompletion(raw: "3、补全测试", linePrefix: "推进任务", lineSuffix: "") == nil)
+        #expect(AINextTokenPredictor.sanitizeCompletion(raw: "(1) 清理杂项", linePrefix: "接下来", lineSuffix: "") == nil)
+        #expect(AINextTokenPredictor.sanitizeCompletion(raw: "- 新增页面", linePrefix: "计划", lineSuffix: "") == nil)
+        
+        // Trim trailing mid-line list jump while keeping legitimate inline text before it
+        let trimmedJump = AINextTokenPredictor.sanitizeCompletion(
+            raw: "排版与配色 2. 修复重命名",
+            linePrefix: "先优化",
+            lineSuffix: ""
+        )
+        #expect(trimmedJump == "排版与配色")
+        
+        // Preserve legitimate inline numbers & version numbers
+        #expect(AINextTokenPredictor.sanitizeCompletion(raw: "2026年目标", linePrefix: "制定", lineSuffix: "") == "2026年目标")
+        #expect(AINextTokenPredictor.sanitizeCompletion(raw: "100%覆盖", linePrefix: "保证", lineSuffix: "") == "100%覆盖")
+        #expect(AINextTokenPredictor.sanitizeCompletion(raw: "1步到位", linePrefix: "争取", lineSuffix: "") == "1步到位")
+        #expect(AINextTokenPredictor.sanitizeCompletion(raw: "Python 3.11 环境", linePrefix: "配置 ", lineSuffix: "") == "Python 3.11 环境")
+        
+        // Build messages frames the active line clearly with <BEFORE>/<LINE>/<AFTER>
+        let messages = AINextTokenPredictor.buildMessages(
+            prefix: "第一行背景\n当前正在写",
+            suffix: "结尾\n下一行内容",
+            syntaxName: "Plain Text",
+            documentTitle: "工作笔记",
+            isCode: false
+        )
+        #expect(messages.count == 2)
+        #expect(messages[1].text.contains("<BEFORE>第一行背景</BEFORE>"))
+        #expect(messages[1].text.contains("<LINE>当前正在写<CURSOR>结尾</LINE>"))
+        #expect(messages[1].text.contains("<AFTER>下一行内容</AFTER>"))
     }
     
     

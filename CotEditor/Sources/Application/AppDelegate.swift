@@ -199,7 +199,6 @@ extension Logger {
     func applicationDidFinishLaunching(_ notification: Notification) {
         
         KeyBindingManager.shared.applyShortcutsToMainMenu()
-        AnalyticsManager.shared.startBackgroundDigestScheduler()
         
         NSApp.servicesProvider = ServicesProvider()
         NSApp.registerServicesMenuSendTypes([.fileURL], returnTypes: [])
@@ -233,7 +232,6 @@ extension Logger {
     
     func applicationWillTerminate(_ notification: Notification) {
         
-        AnalyticsManager.shared.stopBackgroundDigestScheduler()
         AnalyticsManager.shared.flushPendingStats()
         
         // Snapshot every open document and window pane/tab session into CotLocalDatabase before termination

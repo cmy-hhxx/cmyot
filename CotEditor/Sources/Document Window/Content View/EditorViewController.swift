@@ -98,14 +98,23 @@ final class EditorViewController: NSSplitViewController {
     
     private lazy var outlineNavigator = OutlineNavigator()
     private lazy var contentViewController = PaneContentViewController()
+    private lazy var navigationBarViewController = PaneNavigationBarViewController(
+        outlineNavigator: self.outlineNavigator,
+        splitState: self.splitState,
+        tabs: self.tabState
+    )
     @ViewLoading private var navigationBarItem: NSSplitViewItem
     
     private var textViewControllers: [ObjectIdentifier: EditorTextViewController] = [:]
     private weak var contentChild: EditorTextViewController?
     private weak var dropOverlayView: PaneDropOverlayView?
+    private var dropOverlayGeneration = 0
     
     private var outlineObserver: AnyCancellable?
     private var defaultObservers: Set<AnyCancellable> = []
+    
+    var isRenamingTab: Bool { self.navigationBarViewController.isRenamingTab }
+    private(set) var suppressesEditorFocusOnTabSelect = false
     
     
     // MARK: Lifecycle
@@ -139,6 +148,7 @@ final class EditorViewController: NSSplitViewController {
         
         // setup the tab bar
         self.tabState.onSelect = { [weak self] tab in self?.select(tab: tab) }
+        self.tabState.onSelectForRename = { [weak self] tab in self?.select(tab: tab, focusEditor: false) }
         self.tabState.onClose = { [weak self] tab in self?.requestCloseTab?(tab) }
         self.tabState.onNewTab = { [weak self] in self?.requestNewTab?() }
         self.tabState.onTogglePin = { [weak self] tab in self?.togglePin(of: tab) }
@@ -167,13 +177,7 @@ final class EditorViewController: NSSplitViewController {
         self.tabState.onClosePane = { [weak self] in self?.requestClosePane?() }
         
         self.outlineNavigator.textView = self.textView
-        let navigationBar = NavigationBar(outlineNavigator: self.outlineNavigator,
-                                          splitState: self.splitState,
-                                          tabs: self.tabState)
-        let navHostingController = NSHostingController(rootView: navigationBar)
-        // Prevent SwiftUI's intrinsic min-width from fighting NSSplitView even-split proportions.
-        navHostingController.sizingOptions = []
-        self.navigationBarItem = NSSplitViewItem(viewController: navHostingController)
+        self.navigationBarItem = NSSplitViewItem(viewController: self.navigationBarViewController)
         self.navigationBarItem.isCollapsed = true  // reconsidered below
         let barHeight: CGFloat = isLiquidGlass ? 30 : 28
         self.navigationBarItem.minimumThickness = barHeight
@@ -320,12 +324,16 @@ final class EditorViewController: NSSplitViewController {
     
     /// Selects the given tab and shows its document.
     ///
-    /// - Parameter tab: The tab to select.
-    func select(tab: PaneTab) {
+    /// - Parameters:
+    ///   - tab: The tab to select.
+    ///   - focusEditor: Whether selecting the tab should move responder focus into the editor text view.
+    func select(tab: PaneTab, focusEditor: Bool = true) {
         
         guard self.tabs.contains(where: { $0 === tab }) else { return }
         
         let didChange = (tab !== self.selectedTab)
+        self.suppressesEditorFocusOnTabSelect = !focusEditor
+        defer { self.suppressesEditorFocusOnTabSelect = false }
         
         self.selectedTab = tab
         
@@ -335,7 +343,7 @@ final class EditorViewController: NSSplitViewController {
         tab.document.applyHighlightRendering()
         self.updateNavigationBarVisibility()
         
-        if let textView = self.textView {
+        if focusEditor, let textView = self.textView {
             textView.updateInsertionPointStateAndRestartTimer(true)
             textView.needsDisplay = true
         }
@@ -351,7 +359,7 @@ final class EditorViewController: NSSplitViewController {
     func beginInlineRename(for document: Document) -> Bool {
         
         guard let tab = self.tabs.first(where: { $0.document === document }) else { return false }
-        self.select(tab: tab)
+        self.select(tab: tab, focusEditor: false)
         DispatchQueue.main.async { [weak self] in
             self?.tabState.onRequestInlineRename?(tab)
         }
@@ -398,6 +406,7 @@ final class EditorViewController: NSSplitViewController {
         self.tabState.tabs = self.tabs
         self.tabState.selectedTab = self.selectedTab
         self.tabState.refreshRevision &+= 1
+        self.navigationBarViewController.reloadTabs()
         self.updateNavigationBarVisibility(animated: true)
     }
     
@@ -764,26 +773,62 @@ final class EditorViewController: NSSplitViewController {
     
     private func showDropOverlay(for zone: PaneDropZone) {
         
+        self.dropOverlayGeneration &+= 1
         let containerView = self.contentViewController.view
         let overlay: PaneDropOverlayView
+        let isNewOverlay: Bool
         if let existing = self.dropOverlayView, existing.superview === containerView {
             overlay = existing
+            isNewOverlay = false
         } else {
             let created = PaneDropOverlayView(frame: containerView.bounds)
             created.autoresizingMask = [.width, .height]
+            created.alphaValue = AnimationConstants.isReducedMotionEnabled ? 1 : 0
             containerView.addSubview(created, positioned: .above, relativeTo: nil)
             self.dropOverlayView = created
             overlay = created
+            isNewOverlay = true
         }
         overlay.frame = containerView.bounds
         overlay.zone = zone
+        
+        if !AnimationConstants.isReducedMotionEnabled && (isNewOverlay || overlay.alphaValue < 0.99) {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.16
+                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+                overlay.animator().alphaValue = 1
+            }
+        } else {
+            overlay.alphaValue = 1
+        }
     }
     
     
     private func hideDropOverlay() {
         
-        self.dropOverlayView?.removeFromSuperview()
-        self.dropOverlayView = nil
+        guard let overlay = self.dropOverlayView else { return }
+        self.dropOverlayGeneration &+= 1
+        let expectedGeneration = self.dropOverlayGeneration
+        
+        if AnimationConstants.isReducedMotionEnabled {
+            overlay.removeFromSuperview()
+            self.dropOverlayView = nil
+            return
+        }
+        
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.14
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            overlay.animator().alphaValue = 0
+        } completionHandler: { [weak self, weak overlay] in
+            MainActor.assumeIsolated {
+                guard let self, self.dropOverlayGeneration == expectedGeneration, let overlay else { return }
+                overlay.removeFromSuperview()
+                if self.dropOverlayView === overlay {
+                    self.dropOverlayView = nil
+                }
+            }
+        }
     }
     
     
@@ -909,12 +954,12 @@ private final class PaneDropOverlayView: NSView {
         }
         
         let accent = NSColor.controlAccentColor
-        let path = NSBezierPath(roundedRect: highlightRect, xRadius: 10, yRadius: 10)
-        accent.withAlphaComponent(0.16).setFill()
+        let path = NSBezierPath(roundedRect: highlightRect, xRadius: 12, yRadius: 12)
+        accent.withAlphaComponent(0.11).setFill()
         path.fill()
         
-        accent.withAlphaComponent(0.85).setStroke()
-        path.lineWidth = 2
+        accent.withAlphaComponent(0.75).setStroke()
+        path.lineWidth = 1.75
         path.stroke()
         
         let attrs: [NSAttributedString.Key: Any] = [
@@ -923,19 +968,45 @@ private final class PaneDropOverlayView: NSView {
         ]
         let attrString = NSAttributedString(string: label, attributes: attrs)
         let textSize = attrString.size()
+        let symbolImage = NSImage(systemSymbolName: "arrow.down.doc", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
+        let iconGap: CGFloat = symbolImage == nil ? 0 : 20
+        let badgeWidth = textSize.width + 28 + iconGap
+        let badgeHeight = max(34, textSize.height + 16)
         let badgeRect = NSRect(
-            x: highlightRect.midX - (textSize.width + 24) / 2,
-            y: highlightRect.midY - (textSize.height + 12) / 2,
-            width: textSize.width + 24,
-            height: textSize.height + 12
+            x: highlightRect.midX - badgeWidth / 2,
+            y: highlightRect.midY - badgeHeight / 2,
+            width: badgeWidth,
+            height: badgeHeight
         )
-        let badgePath = NSBezierPath(roundedRect: badgeRect, xRadius: 8, yRadius: 8)
-        NSColor.windowBackgroundColor.withAlphaComponent(0.92).setFill()
+        let badgePath = NSBezierPath(roundedRect: badgeRect, xRadius: badgeHeight / 2, yRadius: badgeHeight / 2)
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.16)
+        shadow.shadowBlurRadius = 10
+        shadow.shadowOffset = NSSize(width: 0, height: -2)
+        shadow.set()
+        NSColor.windowBackgroundColor.withAlphaComponent(0.96).setFill()
         badgePath.fill()
+        NSGraphicsContext.restoreGraphicsState()
+        
         accent.withAlphaComponent(0.45).setStroke()
         badgePath.lineWidth = 1
         badgePath.stroke()
         
-        attrString.draw(at: NSPoint(x: badgeRect.minX + 12, y: badgeRect.minY + 6))
+        var textOriginX = badgeRect.minX + 14
+        if let symbol = symbolImage {
+            let tinted = symbol.withSymbolConfiguration(.init(paletteColors: [accent])) ?? symbol
+            let iconSize = tinted.size
+            let iconRect = NSRect(
+                x: textOriginX,
+                y: badgeRect.midY - iconSize.height / 2,
+                width: iconSize.width,
+                height: iconSize.height
+            )
+            tinted.draw(in: iconRect)
+            textOriginX += iconSize.width + 6
+        }
+        attrString.draw(at: NSPoint(x: textOriginX, y: badgeRect.midY - textSize.height / 2))
     }
 }

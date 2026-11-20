@@ -3373,7 +3373,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         viewController.didSelectTab = { [weak self, weak viewController] _ in
             guard let self, let viewController else { return }
             self.focusedChild = viewController
-            self.view.window?.makeFirstResponderDiscardingMarkedText(viewController.textView)
+            if !viewController.isRenamingTab && !viewController.suppressesEditorFocusOnTabSelect {
+                self.view.window?.makeFirstResponderDiscardingMarkedText(viewController.textView)
+            }
             NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
             self.savePaneTabsSessionToDatabase()
         }

@@ -696,6 +696,12 @@ import Foundation
             trimmed = String(trimmed[..<stopRange.lowerBound])
         }
         trimmed = trimmed.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.range(
+            of: #"^\s*(?:\d{1,2}\s*[\.、\)）](?!\d)\s*|[(（]\d{1,2}[)）]\s*|[-*•·▪︎‣]\s+)"#,
+            options: .regularExpression
+        ) != nil {
+            return nil
+        }
         return trimmed.isEmpty ? nil : trimmed
     }
     

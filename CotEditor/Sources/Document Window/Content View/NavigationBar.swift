@@ -23,9 +23,181 @@
 //  limitations under the License.
 //
 
+import AppKit
 import SwiftUI
 import StringUtils
 import SyntaxParsers
+
+/// Pure AppKit host for the pane navigation bar so `PaneTabStripNSView` and its inline rename field
+/// live outside `NSHostingView`, preventing SwiftUI focus churn from cancelling inline tab renames.
+@MainActor final class PaneNavigationBarViewController: NSViewController {
+    
+    let outlineNavigator: OutlineNavigator
+    let splitState: SplitState
+    let tabs: PaneTabState
+    
+    let tabStripView = PaneTabStripNSView()
+    
+    private var trailingHostingView: NSHostingView<NavigationBarTrailingControls>?
+    private var backgroundContainer: PaneNavigationBarBackgroundView?
+    
+    var isRenamingTab: Bool { self.tabStripView.isRenaming }
+    
+    
+    init(outlineNavigator: OutlineNavigator, splitState: SplitState, tabs: PaneTabState) {
+        
+        self.outlineNavigator = outlineNavigator
+        self.splitState = splitState
+        self.tabs = tabs
+        super.init(nibName: nil, bundle: nil)
+    }
+    
+    
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    
+    override func loadView() {
+        
+        let container = PaneNavigationBarBackgroundView()
+        let horizontalInset: CGFloat = isLiquidGlass ? 6 : 4
+        
+        self.tabStripView.translatesAutoresizingMaskIntoConstraints = false
+        self.tabStripView.state = self.tabs
+        self.tabStripView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        self.tabStripView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        self.tabs.onRequestInlineRename = { [weak strip = self.tabStripView] tab in
+            strip?.beginInlineRename(for: tab)
+        }
+        container.addSubview(self.tabStripView)
+        
+        let trailingControls = NavigationBarTrailingControls(
+            outlineNavigator: self.outlineNavigator,
+            tabs: self.tabs
+        )
+        let trailingHost = NSHostingView(rootView: trailingControls)
+        trailingHost.translatesAutoresizingMaskIntoConstraints = false
+        trailingHost.sizingOptions = [.intrinsicContentSize]
+        trailingHost.setContentHuggingPriority(.required, for: .horizontal)
+        trailingHost.setContentCompressionResistancePriority(.required, for: .horizontal)
+        container.addSubview(trailingHost)
+        self.trailingHostingView = trailingHost
+        
+        NSLayoutConstraint.activate([
+            self.tabStripView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: horizontalInset),
+            self.tabStripView.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            self.tabStripView.heightAnchor.constraint(equalToConstant: 24),
+            self.tabStripView.trailingAnchor.constraint(equalTo: trailingHost.leadingAnchor, constant: -2),
+            
+            trailingHost.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -horizontalInset),
+            trailingHost.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            trailingHost.heightAnchor.constraint(lessThanOrEqualTo: container.heightAnchor),
+        ])
+        
+        container.setAccessibilityElement(false)
+        container.setAccessibilityLabel(String(localized: "Navigation Bar", table: "Document", comment: "accessibility label"))
+        
+        self.backgroundContainer = container
+        self.view = container
+    }
+    
+    
+    override func viewDidLoad() {
+        
+        super.viewDidLoad()
+        self.tabStripView.reloadTabs()
+    }
+    
+    
+    func reloadTabs() {
+        
+        guard self.isViewLoaded else { return }
+        self.tabStripView.state = self.tabs
+        self.tabs.onRequestInlineRename = { [weak strip = self.tabStripView] tab in
+            strip?.beginInlineRename(for: tab)
+        }
+        self.tabStripView.reloadTabs()
+    }
+}
+
+
+private final class PaneNavigationBarBackgroundView: NSView {
+    
+    private let separatorLayer = CALayer()
+    
+    override var mouseDownCanMoveWindow: Bool { false }
+    override var wantsUpdateLayer: Bool { true }
+    
+    
+    override init(frame frameRect: NSRect) {
+        
+        super.init(frame: frameRect)
+        self.wantsLayer = true
+        self.layer?.addSublayer(self.separatorLayer)
+    }
+    
+    
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    
+    override func updateLayer() {
+        
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            self.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            self.separatorLayer.backgroundColor = NSColor.separatorColor.cgColor
+        }
+    }
+    
+    
+    override func layout() {
+        
+        super.layout()
+        let scale = max(self.window?.backingScaleFactor ?? 2, 1)
+        let lineHeight = 1.0 / scale
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        self.separatorLayer.frame = CGRect(x: 0, y: 0, width: self.bounds.width, height: lineHeight)
+        CATransaction.commit()
+    }
+}
+
+
+private struct NavigationBarTrailingControls: View {
+    
+    @State var outlineNavigator: OutlineNavigator
+    @State var tabs: PaneTabState
+    
+    
+    var body: some View {
+        
+        HStack(alignment: .center, spacing: 2) {
+            if self.outlineNavigator.items?.isEmpty == false {
+                Divider()
+                    .frame(height: 14)
+                    .padding(.horizontal, 4)
+                
+                OutlineNavigationView(navigator: self.$outlineNavigator)
+                    .frame(maxWidth: 220)
+            }
+            
+            if self.tabs.canClosePane {
+                ClosePaneAnimatedButton(action: self.tabs.onClosePane)
+                    .frame(width: 22, height: 24, alignment: .center)
+                    .help(String(localized: "Close split editor", table: "Document", comment: "tooltip for button"))
+            }
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+    }
+}
+
 
 /// The tab bar of a pane, listing the documents the pane shows.
 struct NavigationBar: View {
@@ -91,10 +263,10 @@ private struct ClosePaneAnimatedButton: View {
     var body: some View {
         Button(action: self.action) {
             Image(systemName: "xmark")
-                .font(.system(size: 9.5, weight: .semibold))
+                .font(.system(size: 8.5, weight: .medium))
                 .foregroundStyle(self.isHovered ? Color.red : Color.secondary)
                 .rotationEffect(.degrees(self.isHovered ? 90 : 0))
-                .frame(width: 20, height: 20, alignment: .center)
+                .frame(width: 18, height: 18, alignment: .center)
                 .background(
                     Circle()
                         .fill(self.isHovered ? Color.red.opacity(0.12) : Color.clear)

@@ -216,6 +216,51 @@ nonisolated struct YearlyHeatmapData: Sendable, Equatable {
 }
 
 
+/// Month column marker along the top edge of a rolling activity heatmap.
+nonisolated struct RollingHeatmapMonthLabel: Identifiable, Sendable, Equatable {
+    
+    var year: Int
+    var month: Int
+    var weekIndex: Int
+    var label: String
+    
+    var id: String { "\(self.year)-\(self.month)-\(self.weekIndex)" }
+}
+
+
+/// Rolling backwards-from-today activity heatmap matrix (Monday-first week columns x 7 rows, zero future cells drawn).
+nonisolated struct RollingHeatmapData: Sendable, Equatable {
+    
+    var weeks: [[HeatmapDayCell]]
+    var monthLabels: [RollingHeatmapMonthLabel]
+    var activeDays: Int
+    var totalTypedChars: Int
+    var totalAIChars: Int
+    var startDate: Date
+    var endDate: Date
+}
+
+
+/// Warm, plain-Chinese daily story synthesized for the selected heatmap cell.
+nonisolated struct DailyHumanStory: Sendable, Equatable {
+    
+    var dateKey: String
+    var dateBadge: String
+    var moodTag: String
+    var headline: String
+    var highlights: [String]
+    var handTypedChars: Int
+    var aiChars: Int
+    var totalChars: Int
+    var aiSharePercent: Int
+    var savedCount: Int
+    var createdCount: Int
+    var aiRequests: Int
+    var documents: [StoredDocumentRecord]
+    var weeklyReports: [StoredWeeklyReport]
+}
+
+
 /// Lightweight candidate action item spotted in today's documents.
 nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
     
@@ -830,6 +875,101 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
     }
     
     
+    /// Builds a Monday-first rolling heatmap ending at the week containing `referenceDate` (no future months).
+    func rollingHeatmap(weeks: Int = 26, referenceDate: Date = Date()) -> RollingHeatmapData {
+        
+        let weekCount = max(4, min(53, weeks))
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: referenceDate)
+        let mondayIndex = (calendar.component(.weekday, from: todayStart) + 5) % 7
+        let currentWeekMonday = calendar.date(byAdding: .day, value: -mondayIndex, to: todayStart) ?? todayStart
+        let gridStart = calendar.date(byAdding: .day, value: -(weekCount - 1) * 7, to: currentWeekMonday) ?? currentWeekMonday
+        let totalCells = weekCount * 7
+        
+        let cells = self.buildHeatmapCells(
+            gridStart: gridStart,
+            totalCells: totalCells,
+            targetYear: nil,
+            todayStart: todayStart,
+            calendar: calendar
+        )
+        
+        let weekMatrix: [[HeatmapDayCell]] = stride(from: 0, to: cells.count, by: 7).map { start in
+            Array(cells[start..<min(start + 7, cells.count)])
+        }
+        
+        var monthLabels: [RollingHeatmapMonthLabel] = []
+        let startYear = calendar.component(.year, from: gridStart)
+        let endYear = calendar.component(.year, from: todayStart)
+        let spansYears = (startYear != endYear)
+        
+        for (weekIdx, column) in weekMatrix.enumerated() {
+            guard let firstDayCell = column.first(where: { !$0.isFuture && calendar.component(.day, from: $0.date) == 1 }) else {
+                continue
+            }
+            let year = calendar.component(.year, from: firstDayCell.date)
+            let month = calendar.component(.month, from: firstDayCell.date)
+            let labelText = (spansYears && month == 1 && weekIdx > 0)
+                ? "\(year % 100)年1月"
+                : "\(month)月"
+            monthLabels.append(RollingHeatmapMonthLabel(
+                year: year,
+                month: month,
+                weekIndex: weekIdx,
+                label: labelText
+            ))
+        }
+        
+        if let firstColumn = weekMatrix.first?.first {
+            let firstYear = calendar.component(.year, from: firstColumn.date)
+            let firstMonth = calendar.component(.month, from: firstColumn.date)
+            let hasRoomBeforeNext = monthLabels.first.map { $0.weekIndex >= 2 } ?? true
+            if hasRoomBeforeNext,
+               !monthLabels.contains(where: { $0.year == firstYear && $0.month == firstMonth && $0.weekIndex == 0 })
+            {
+                monthLabels.insert(
+                    RollingHeatmapMonthLabel(
+                        year: firstYear,
+                        month: firstMonth,
+                        weekIndex: 0,
+                        label: "\(firstMonth)月"
+                    ),
+                    at: 0
+                )
+            }
+        }
+        
+        let visibleCells = cells.filter { !$0.isFuture }
+        let activeDays = visibleCells.filter { $0.level > 0 }.count
+        let totalTypedChars = visibleCells.reduce(0) { $0 + $1.typedChars }
+        let totalAIChars = visibleCells.reduce(0) { $0 + $1.aiCompletedChars }
+        
+        return RollingHeatmapData(
+            weeks: weekMatrix,
+            monthLabels: monthLabels,
+            activeDays: activeDays,
+            totalTypedChars: totalTypedChars,
+            totalAIChars: totalAIChars,
+            startDate: gridStart,
+            endDate: todayStart
+        )
+    }
+    
+    
+    /// Returns chronological past-through-today cells from a rolling heatmap.
+    func orderedVisibleCells(in heatmap: RollingHeatmapData) -> [HeatmapDayCell] {
+        
+        heatmap.weeks.flatMap { $0 }.filter { !$0.isFuture }
+    }
+    
+    
+    /// Finds a visible (past or today) cell matching `dateKey` inside `heatmap`.
+    func cell(forDateKey dateKey: String, in heatmap: RollingHeatmapData) -> HeatmapDayCell? {
+        
+        heatmap.weeks.flatMap { $0 }.first { !$0.isFuture && $0.dateKey == dateKey }
+    }
+    
+    
     /// Calendar years available for the yearly heatmap switcher, sorted ascending.
     func availableHeatmapYears(referenceDate: Date = Date()) -> [Int] {
         
@@ -1105,6 +1245,176 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         let nextIdx = idx + deltaDays
         guard validCells.indices.contains(nextIdx) else { return nil }
         return validCells[nextIdx]
+    }
+    
+    
+    /// Synthesizes a warm, plain-Chinese daily story for the clicked heatmap cell (no jargon or database dumps).
+    func humanDayStory(
+        for cell: HeatmapDayCell,
+        referenceDate: Date = Date(),
+        baselineDailyChars: Int = 0
+    ) -> DailyHumanStory {
+        
+        let detail = self.dayDetail(for: cell)
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: referenceDate)
+        let todayKey = Self.dateKey(for: todayStart)
+        let yesterdayKey = calendar.date(byAdding: .day, value: -1, to: todayStart).map { Self.dateKey(for: $0) }
+        
+        let isToday = (cell.dateKey == todayKey)
+        let isYesterday = (cell.dateKey == yesterdayKey)
+        
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        let sameYear = calendar.component(.year, from: cell.date) == calendar.component(.year, from: todayStart)
+        formatter.dateFormat = sameYear ? "M 月 d 日 EEE" : "yyyy 年 M 月 d 日 EEE"
+        let shortDate = formatter.string(from: cell.date)
+        
+        let dateBadge: String = if isToday {
+            "今天 · \(shortDate)"
+        } else if isYesterday {
+            "昨天 · \(shortDate)"
+        } else {
+            shortDate
+        }
+        
+        let typed = cell.typedChars
+        let ai = cell.aiCompletedChars
+        let total = typed + ai
+        let aiShare = total > 0 ? Int((Double(ai) * 100 / Double(total)).rounded()) : 0
+        let docTitles = detail.documents.map(\.title) + detail.weeklyReports.map(\.title)
+        let firstTitle = docTitles.first
+        
+        let typedText = typed.formatted(.number.grouping(.automatic))
+        let aiText = ai.formatted(.number.grouping(.automatic))
+        
+        let moodTag: String
+        let headline: String
+        
+        if total == 0 && cell.filesCreated == 0 && docTitles.isEmpty {
+            moodTag = isToday ? "刚开局" : "静心留白"
+            headline = isToday
+                ? "今天还没动笔，倒杯水慢慢开始吧。"
+                : "这天彻底放空没写字，偶尔停下来歇歇也挺好。"
+        } else if typed == 0 && ai == 0 {
+            moodTag = "打好架子"
+            if let first = firstTitle {
+                headline = isToday
+                    ? "今天先新建了《\(first)》，先把框架铺开再慢慢填。"
+                    : "这天整理了《\(first)》，打好了架子但还没怎么往里写字。"
+            } else {
+                headline = isToday
+                    ? "今天开了新档，先把摊子支起来。"
+                    : "这天开了新档理了理文件，没留下太多正文。"
+            }
+        } else if typed == 0 && ai > 0 {
+            moodTag = "借力整理"
+            if let first = firstTitle {
+                headline = "主要靠 AI 帮忙在《\(first)》里整理和补全了 \(aiText) 字。"
+            } else {
+                headline = "主要让 AI 搭把手整理并补上了 \(aiText) 字。"
+            }
+        } else if total < 300 {
+            moodTag = "轻松打卡"
+            if let first = firstTitle {
+                headline = isToday
+                    ? "今天先轻手轻脚写了 \(typedText) 字，顺手改了改《\(first)》。"
+                    : "这天轻手轻脚写了 \(typedText) 字，顺手翻了翻《\(first)》，算是留了个脚印。"
+            } else {
+                headline = isToday
+                    ? "今天刚开个头，敲了 \(typedText) 字，手感慢慢热起来了。"
+                    : "这天零零散散写下 \(typedText) 字，给后面的想法留了个草稿头。"
+            }
+        } else if total >= 1500 || (baselineDailyChars > 0 && total > max(600, Int(Double(baselineDailyChars) * 1.4))) {
+            moodTag = "火力全开"
+            if ai > 0 {
+                headline = isToday
+                    ? "今天手感拉满！自己敲了 \(typedText) 字，AI 也顺手帮你接上了 \(aiText) 字。"
+                    : "手感拉满的一天！手写 \(typedText) 字，还让 AI 顺手帮你补了 \(aiText) 字。"
+            } else {
+                headline = isToday
+                    ? "今天进入心流状态了，一口气自己敲了 \(typedText) 字。"
+                    : "状态在线的一天，安安静静输出了 \(typedText) 字，思路相当顺畅。"
+            }
+        } else {
+            moodTag = "稳步输出"
+            if docTitles.count >= 2, let first = firstTitle {
+                headline = isToday
+                    ? "节奏挺稳，已经写了 \(typedText) 字，在《\(first)》等 \(docTitles.count) 篇之间推进。"
+                    : "节奏挺稳，自己敲了 \(typedText) 字，主要围着《\(first)》等 \(docTitles.count) 篇在打磨。"
+            } else if let first = firstTitle {
+                headline = "节奏挺稳，自己敲了 \(typedText) 字，主要都在打磨《\(first)》。"
+            } else if ai > 0 {
+                headline = isToday
+                    ? "边写边聊节奏不错，手写 \(typedText) 字，AI 顺手补了 \(aiText) 字。"
+                    : "稳稳推进的一天，自己写了 \(typedText) 字，AI 搭把手补了 \(aiText) 字。"
+            } else {
+                headline = "稳稳敲了 \(typedText) 字，不紧不慢刚刚好。"
+            }
+        }
+        
+        var highlights: [String] = []
+        let jargonTokens = ["累计输入", "编辑文档：", "Tokens", "token", "延迟", "ms", "活跃度"]
+        
+        if let digest = detail.digest {
+            let points = Self.structuredSummaryPoints(from: digest.summary, maxPoints: 3)
+            for point in points {
+                let clean = point.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !clean.isEmpty,
+                      !clean.hasPrefix("新建 "),
+                      !jargonTokens.contains(where: { clean.localizedCaseInsensitiveContains($0) })
+                else { continue }
+                if !highlights.contains(clean) {
+                    highlights.append(clean)
+                }
+            }
+        }
+        
+        func appendHighlight(_ text: String) {
+            guard highlights.count < 3, !highlights.contains(text) else { return }
+            highlights.append(text)
+        }
+        
+        if cell.filesCreated > 0 {
+            appendHighlight(isToday
+                ? "新开了 \(cell.filesCreated) 篇文档，新想法落地了"
+                : "新开了 \(cell.filesCreated) 篇文档，起草了新内容"
+            )
+        }
+        if !detail.weeklyReports.isEmpty {
+            let reportTitle = detail.weeklyReports[0].title
+            appendHighlight(detail.weeklyReports.count == 1
+                ? "整理了周报《\(reportTitle)》"
+                : "整理了 \(detail.weeklyReports.count) 份周报"
+            )
+        }
+        if cell.aiCompletionAccepts > 0 {
+            appendHighlight("顺手用 Tab 接纳了 \(cell.aiCompletionAccepts) 次续写，省了不少敲字功夫")
+        } else if cell.documentsSaved >= 3 {
+            appendHighlight("来回保存打磨了 \(cell.documentsSaved) 次，写得挺仔细")
+        }
+        if isToday && !self.todayReminders.isEmpty {
+            appendHighlight("今天还有 \(self.todayReminders.count) 件挂念的小事待收尾")
+        } else if isToday && !self.tomorrowReminders.isEmpty {
+            appendHighlight("已经记好明天要先处理「\(self.tomorrowReminders[0].title)」")
+        }
+        
+        return DailyHumanStory(
+            dateKey: cell.dateKey,
+            dateBadge: dateBadge,
+            moodTag: moodTag,
+            headline: headline,
+            highlights: highlights,
+            handTypedChars: typed,
+            aiChars: ai,
+            totalChars: total,
+            aiSharePercent: aiShare,
+            savedCount: cell.documentsSaved,
+            createdCount: cell.filesCreated,
+            aiRequests: cell.aiRequests,
+            documents: detail.documents,
+            weeklyReports: detail.weeklyReports
+        )
     }
     
     

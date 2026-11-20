@@ -118,6 +118,7 @@ enum PaneDropZone: Equatable {
     var refreshRevision: Int = 0
     
     var onSelect: (PaneTab) -> Void = { _ in }
+    var onSelectForRename: (PaneTab) -> Void = { _ in }
     var onClose: (PaneTab) -> Void = { _ in }
     var onNewTab: () -> Void = {}
     var onTogglePin: (PaneTab) -> Void = { _ in }
