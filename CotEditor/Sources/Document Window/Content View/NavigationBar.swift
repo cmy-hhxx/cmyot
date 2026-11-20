@@ -121,6 +121,19 @@ import SyntaxParsers
         }
         self.tabStripView.reloadTabs()
     }
+    
+    
+    func tabFrameInWindow(for tabID: UUID) -> NSRect? {
+        
+        self.isViewLoaded ? self.tabStripView.tabFrameInWindow(for: tabID) : nil
+    }
+    
+    
+    func animateTabDropArrival(for tabID: UUID, crossPane: Bool) {
+        
+        guard self.isViewLoaded else { return }
+        self.tabStripView.animateTabDropArrival(for: tabID, crossPane: crossPane)
+    }
 }
 
 

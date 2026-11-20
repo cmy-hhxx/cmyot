@@ -107,7 +107,13 @@ final class VimEngine {
     private var lastRepeatTimestamp: TimeInterval = 0
     private var currentEventIsRepeat = false
     private var currentEventTimestamp: TimeInterval = 0
+    private var wasKeyRepeat = false
     private var lastMoveWasContinuous = false
+    
+    // Count freshness tracking so stray digits expire cleanly.
+    private var countUpdatedTimestamp: TimeInterval = 0
+    private static let staleCountExpiration: TimeInterval = 3.0
+    private static let maxNumericCount = 99_999
     
     init(textView: NSTextView) {
         
@@ -126,7 +132,10 @@ final class VimEngine {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         
         // Command combinations stay native (⌘S, ⌘F, …).
-        if flags.contains(.command) { return false }
+        if flags.contains(.command) {
+            self.resetPending()
+            return false
+        }
         
         // The `:` command line is handled before anything else.
         if self.commandBuffer != nil {
@@ -178,8 +187,10 @@ final class VimEngine {
         
         if self.isEscape(event) {
             if state.mode == .visual {
-                self.visualAnchor = nil
-                self.enter(mode: .normal)
+                let active = (VimState.shared.visualOwnerID == ObjectIdentifier(textView))
+                    ? VimState.shared.visualActiveLocation
+                    : nil
+                self.endVisual(collapseTo: active)
             }
             self.resetPending()
             return true
@@ -187,6 +198,7 @@ final class VimEngine {
         
         // Control combinations: ⌃R (redo), ⌃D / ⌃U (half-page), ⌃F / ⌃B (full-page).
         if flags.contains(.control) {
+            self.resetPending()
             switch event.charactersIgnoringModifiers?.lowercased() {
                 case "r":
                     textView.undoManager?.redo()
@@ -207,11 +219,36 @@ final class VimEngine {
                     return false
             }
         }
-        if flags.contains(.option) { return false }
+        if flags.contains(.option) {
+            self.resetPending()
+            return false
+        }
         
-        // Special keys such as arrows keep their native behaviour.
+        // Special keys such as arrows extend Visual selection or keep native Normal behaviour.
         switch event.keyCode {
             case 123, 124, 125, 126:  // ← → ↓ ↑
+                if state.mode == .visual,
+                   !flags.contains(.shift),
+                   VimState.shared.visualOwnerID == ObjectIdentifier(textView),
+                   self.visualAnchor != nil
+                {
+                    self.currentEventIsRepeat = event.isARepeat
+                    self.currentEventTimestamp = event.timestamp
+                    defer {
+                        self.currentEventIsRepeat = false
+                        self.currentEventTimestamp = 0
+                    }
+                    self.expireStaleCountIfNeeded(now: self.effectiveEventTimestamp())
+                    let arrowMotion: Motion = switch event.keyCode {
+                        case 123: .left
+                        case 124: .right
+                        case 125: .lineDown
+                        default: .lineUp
+                    }
+                    self.move(arrowMotion)
+                    return true
+                }
+                self.resetPending()
                 return false
             default:
                 break
@@ -231,6 +268,8 @@ final class VimEngine {
             self.currentEventIsRepeat = false
             self.currentEventTimestamp = 0
         }
+        
+        self.expireStaleCountIfNeeded(now: self.effectiveEventTimestamp())
         
         for character in characters {
             guard self.handle(character: character) else { return true }
@@ -256,6 +295,7 @@ final class VimEngine {
                 self.lastReplaceChar = (character, count)
                 self.lastChange = nil
             }
+            self.updateStatus()
             return true
         }
         
@@ -263,16 +303,17 @@ final class VimEngine {
         if let markAction = self.pendingMarkAction {
             self.pendingMarkAction = nil
             if markAction == "m" {
-                self.marks[character] = textView.selectedRange().location
+                self.marks[character] = self.currentCursorLocation()
             } else if let target = self.marks[character] {
                 if markAction == "'" {
                     let nsString = textView.string as NSString
                     let lineLoc = self.firstNonBlank(in: self.lineRange(at: target), string: nsString)
-                    self.setCursor(lineLoc)
+                    self.moveCursorOrExtendVisual(to: lineLoc)
                 } else {
-                    self.setCursor(target)
+                    self.moveCursorOrExtendVisual(to: target)
                 }
             }
+            self.updateStatus()
             return true
         }
         
@@ -280,7 +321,11 @@ final class VimEngine {
         if let digit = character.wholeNumberValue, digit >= 0, digit <= 9,
            character != "0" || self.count != nil
         {
-            self.count = (self.count ?? 0) * 10 + digit
+            let now = self.effectiveEventTimestamp()
+            self.expireStaleCountIfNeeded(now: now)
+            self.count = min(Self.maxNumericCount, (self.count ?? 0) * 10 + digit)
+            self.countUpdatedTimestamp = now
+            self.updateStatus()
             return true
         }
         
@@ -289,6 +334,7 @@ final class VimEngine {
             self.pendingFindKind = nil
             self.lastFind = (character, findKind)
             self.performFind(findKind, character: character)
+            self.updateStatus()
             return true
         }
         
@@ -299,6 +345,8 @@ final class VimEngine {
                 self.apply(textObject.operator, range: range)
             }
             self.count = nil
+            self.countUpdatedTimestamp = 0
+            self.updateStatus()
             return true
         }
         
@@ -306,16 +354,19 @@ final class VimEngine {
         if let op = self.pendingOperator {
             if character == "i" || character == "a" {
                 self.pendingTextObject = (op, character == "i")
+                self.updateStatus()
                 return true
             }
             if let doubled = self.operatorKey(character), doubled == op {
                 self.pendingOperator = nil
                 self.applyLinewiseOperator(op)
+                self.updateStatus()
                 return true
             }
             if let motion = self.motion(for: character) {
                 self.pendingOperator = nil
                 self.apply(op, motion: motion)
+                self.updateStatus()
                 return true
             }
             self.resetPending()
@@ -333,6 +384,9 @@ final class VimEngine {
                 case "i": self.enter(mode: .insert)
                 default: break
             }
+            self.count = nil
+            self.countUpdatedTimestamp = 0
+            self.updateStatus()
             return true
         }
         
@@ -340,6 +394,9 @@ final class VimEngine {
         if self.pendingPrefix == "z" {
             self.pendingPrefix = nil
             self.scrollCursorLine(mode: character)
+            self.count = nil
+            self.countUpdatedTimestamp = 0
+            self.updateStatus()
             return true
         }
         if self.pendingPrefix == "Z" {
@@ -350,6 +407,9 @@ final class VimEngine {
             } else if character == "Q" {
                 self.textView?.window?.performClose(nil)
             }
+            self.count = nil
+            self.countUpdatedTimestamp = 0
+            self.updateStatus()
             return true
         }
         
@@ -357,10 +417,17 @@ final class VimEngine {
         if let prefix = self.pendingPrefix, prefix == ">" || prefix == "<" {
             self.pendingPrefix = nil
             if character == prefix { self.indentLines(outdent: prefix == "<") }
+            self.count = nil
+            self.countUpdatedTimestamp = 0
+            self.updateStatus()
             return true
         }
         
         if state.mode == .visual {
+            guard state.visualOwnerID == ObjectIdentifier(textView), self.visualAnchor != nil else {
+                self.endVisual()
+                return self.handle(character: character)
+            }
             return self.handleVisual(character: character)
         }
         
@@ -471,21 +538,23 @@ final class VimEngine {
             case "U":
                 self.textView?.undoManager?.undo()
             case "v":
-                let location = textView.selectedRange().location
+                let location = min(textView.selectedRange().location, max(0, (textView.string as NSString).length))
                 self.visualAnchor = location
                 self.visualLinewise = false
                 VimState.shared.visualActiveLocation = location
                 VimState.shared.visualOwnerID = ObjectIdentifier(textView)
                 self.enter(mode: .visual)
+                self.updateVisualSelection(to: location)
             case "V":
-                let location = textView.selectedRange().location
+                let location = min(textView.selectedRange().location, max(0, (textView.string as NSString).length))
                 let lineRange = self.lineRange(at: location) ?? NSRange(location: location, length: 0)
+                let active = max(lineRange.location, NSMaxRange(lineRange) - 1)
                 self.visualAnchor = lineRange.location
                 self.visualLinewise = true
-                VimState.shared.visualActiveLocation = max(lineRange.location, NSMaxRange(lineRange) - 1)
+                VimState.shared.visualActiveLocation = active
                 VimState.shared.visualOwnerID = ObjectIdentifier(textView)
-                textView.setSelectedRange(lineRange)
                 self.enter(mode: .visual)
+                self.updateVisualSelection(to: active)
                 
             case "i":
                 self.enter(mode: .insert)
@@ -518,7 +587,11 @@ final class VimEngine {
                 break
         }
         
-        self.count = (self.pendingOperator == nil && !self.pendingReplaceChar) ? nil : self.count
+        if self.pendingOperator == nil && !self.pendingReplaceChar && self.pendingPrefix != "g" && self.pendingFindKind == nil {
+            self.count = nil
+            self.countUpdatedTimestamp = 0
+        }
+        self.updateStatus()
         return true
     }
     
@@ -529,11 +602,14 @@ final class VimEngine {
         if let pendingTextObj = self.pendingTextObject {
             self.pendingTextObject = nil
             if let range = self.textObjectRange(inner: pendingTextObj.inner, character: character), range.length > 0 {
+                let activeLoc = NSMaxRange(range) - 1
                 self.visualAnchor = range.location
-                VimState.shared.visualActiveLocation = NSMaxRange(range) - 1
+                VimState.shared.visualActiveLocation = activeLoc
                 textView.setSelectedRange(range)
+                self.scrollLocationToVisible(activeLoc, in: textView)
                 self.refreshCursor()
             }
+            self.updateStatus()
             return true
         }
         
@@ -553,20 +629,47 @@ final class VimEngine {
             case "$": self.move(.lineEnd)
             case "{": self.move(.paragraphBackward)
             case "}": self.move(.paragraphForward)
-            case "g": self.pendingPrefix = "g"
+            case "H": self.moveToScreenLine(position: .top)
+            case "M": self.moveToScreenLine(position: .middle)
+            case "L": self.moveToScreenLine(position: .bottom)
+            case "f":
+                self.pendingFindKind = .forward
+                self.updateStatus()
+                return true
+            case "F":
+                self.pendingFindKind = .backward
+                self.updateStatus()
+                return true
+            case "t":
+                self.pendingFindKind = .tillForward
+                self.updateStatus()
+                return true
+            case "T":
+                self.pendingFindKind = .tillBackward
+                self.updateStatus()
+                return true
+            case ";": if let last = self.lastFind { self.performFind(last.kind, character: last.character) }
+            case ",": if let last = self.lastFind { self.performFind(Self.reversed(last.kind), character: last.character) }
+            case "g":
+                self.pendingPrefix = "g"
+                self.updateStatus()
+                return true
             case "G": self.move(.documentEnd)
             case "%": self.jumpToMatchingBracket()
             case "i", "a":
                 self.pendingTextObject = (.yank, character == "i")
+                self.updateStatus()
                 return true
             case "o", "O":
                 if let anchor = self.visualAnchor, let active = VimState.shared.visualActiveLocation {
                     self.visualAnchor = active
                     VimState.shared.visualActiveLocation = anchor
+                    self.scrollLocationToVisible(anchor, in: textView)
                     self.refreshCursor()
                 }
             case "r":
                 self.pendingReplaceChar = true
+                self.updateStatus()
                 return true
             case "~":
                 self.transformVisualCase(mode: .toggle)
@@ -587,7 +690,7 @@ final class VimEngine {
                 self.registerIsLinewise = self.visualLinewise
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(self.register, forType: .string)
-                self.endVisual()
+                self.endVisual(collapseTo: range.location)
             case "d", "D", "x", "X":
                 let range = self.visualRange()
                 self.register = (textView.string as NSString).substring(with: range)
@@ -604,13 +707,16 @@ final class VimEngine {
             case "p", "P":
                 let range = self.visualRange()
                 self.replace(range, with: self.register)
-                self.endVisual()
+                self.endVisual(collapseTo: range.location)
             case "v", "V":
-                self.endVisual()
+                let active = VimState.shared.visualActiveLocation
+                self.endVisual(collapseTo: active)
             default:
                 break
         }
         self.count = nil
+        self.countUpdatedTimestamp = 0
+        self.updateStatus()
         return true
     }
     
@@ -796,30 +902,38 @@ final class VimEngine {
         let count: Int
         if let explicitCount = self.count {
             self.count = nil
+            self.countUpdatedTimestamp = 0
             count = max(1, explicitCount)
             self.resetRepeatMotion()
         } else {
             count = self.resolveAcceleratedStep(for: motion)
         }
         let string = textView.string as NSString
-        // In visual mode the motion must continue from the active end of the
-        // selection, not from its start — otherwise `v` followed by `w` jumps around.
-        var location: Int
-        if VimState.shared.mode == .visual, let activeLocation = VimState.shared.visualActiveLocation {
-            location = activeLocation
-        } else {
-            location = textView.selectedRange().location
-        }
+        var location = self.currentCursorLocation()
         
         switch motion {
             case .left:
-                location = max(0, location - count)
+                for _ in 0..<count {
+                    guard location > 0 else { break }
+                    let prevIndex = min(location - 1, max(0, string.length - 1))
+                    location = string.rangeOfComposedCharacterSequence(at: prevIndex).location
+                }
             case .right:
-                location = min(string.length, location + count)
+                for _ in 0..<count {
+                    guard location < string.length else { break }
+                    let seq = string.rangeOfComposedCharacterSequence(at: location)
+                    location = min(string.length, NSMaxRange(seq))
+                }
             case .down, .lineDown:
                 location = self.verticalLocation(from: location, direction: count)
+                if location < string.length {
+                    location = string.rangeOfComposedCharacterSequence(at: location).location
+                }
             case .up, .lineUp:
                 location = self.verticalLocation(from: location, direction: -count)
+                if location < string.length {
+                    location = string.rangeOfComposedCharacterSequence(at: location).location
+                }
             case .wordForward:
                 for _ in 0..<count { location = self.forwardWord(from: location, big: false) }
             case .wordBackward:
@@ -846,6 +960,9 @@ final class VimEngine {
                         }
                     }
                     location = max(range.location, end - 1)
+                    if location < string.length {
+                        location = string.rangeOfComposedCharacterSequence(at: location).location
+                    }
                 } else {
                     location = 0
                 }
@@ -864,40 +981,9 @@ final class VimEngine {
                 }
         }
         
-        if VimState.shared.mode == .visual, let anchor = self.visualAnchor {
-            // Vim's visual selection includes the character under the cursor. Without it
-            // the block cursor is drawn one character outside the highlighted range,
-            // which reads as a stray highlight below the selection.
-            let oldRect = VimState.shared.visualActiveLocation.flatMap { (textView as? EditorTextView)?.vimCursorRect(at: $0) }
-            let selectionRange: NSRange
-            if self.visualLinewise {
-                let anchorLine = self.lineRange(at: anchor) ?? NSRange(location: anchor, length: 0)
-                let activeLine = self.lineRange(at: location) ?? NSRange(location: location, length: 0)
-                let lower = min(anchorLine.location, activeLine.location)
-                let upper = min(max(NSMaxRange(anchorLine), NSMaxRange(activeLine)), string.length)
-                selectionRange = NSRange(location: lower, length: max(0, upper - lower))
-            } else {
-                let lower = min(anchor, location)
-                let upper = min(max(anchor, location) + 1, string.length)
-                selectionRange = NSRange(location: lower, length: max(0, upper - lower))
-            }
-            textView.setSelectedRange(selectionRange)
-            VimState.shared.visualActiveLocation = location
-            VimState.shared.visualOwnerID = ObjectIdentifier(textView)
-            self.refreshCursor()
-            if let editorTextView = textView as? EditorTextView,
-               let newRect = editorTextView.vimCursorRect(at: location)
-            {
-                editorTextView.funEffects.animateVimCursorTransition(
-                    from: oldRect,
-                    to: newRect,
-                    color: editorTextView.effectiveCursorColor
-                )
-            }
-        } else {
-            self.setCursor(location)
-        }
+        self.moveCursorOrExtendVisual(to: location)
         self.count = nil
+        self.countUpdatedTimestamp = 0
     }
     
     
@@ -1136,7 +1222,7 @@ final class VimEngine {
         guard string.length > 0 else { return }
         
         let count = self.takeCount()
-        var location = textView.selectedRange().location
+        var location = self.currentCursorLocation()
         
         for _ in 0..<count {
             switch kind {
@@ -1147,7 +1233,12 @@ final class VimEngine {
                         if string.character(at: index) == target { found = index; break }
                         index += 1
                     }
-                    guard found >= 0 else { self.count = nil; return }
+                    guard found >= 0 else {
+                        self.count = nil
+                        self.countUpdatedTimestamp = 0
+                        self.updateStatus()
+                        return
+                    }
                     location = kind == .tillForward ? max(0, found - 1) : found
                 case .backward, .tillBackward:
                     var index = location - 1
@@ -1156,13 +1247,19 @@ final class VimEngine {
                         if string.character(at: index) == target { found = index; break }
                         index -= 1
                     }
-                    guard found >= 0 else { self.count = nil; return }
+                    guard found >= 0 else {
+                        self.count = nil
+                        self.countUpdatedTimestamp = 0
+                        self.updateStatus()
+                        return
+                    }
                     location = kind == .tillBackward ? min(string.length - 1, found + 1) : found
             }
         }
         
-        self.setCursor(location)
+        self.moveCursorOrExtendVisual(to: location)
         self.count = nil
+        self.countUpdatedTimestamp = 0
     }
     
     
@@ -1172,7 +1269,7 @@ final class VimEngine {
         guard let textView else { return nil }
         let string = textView.string as NSString
         guard string.length > 0 else { return nil }
-        let caret = textView.selectedRange().location
+        let caret = self.currentCursorLocation()
         
         switch character {
             case "w", "W":
@@ -1651,32 +1748,47 @@ final class VimEngine {
     /// Half-page jump used by ⌃D / ⌃U.
     private func moveHalfPage(down: Bool) {
         
-        guard let textView else { return }
-        let lineHeight = max(1, (textView.font?.pointSize ?? 13) * 1.3)
-        let lines = max(1, Int(textView.visibleRect.height / lineHeight / 2))
-        let string = textView.string as NSString
-        let location = self.verticalLocation(from: textView.selectedRange().location,
-                                             direction: down ? lines : -lines)
-        let clamped = max(0, min(location, string.length))
-        
-        self.setCursor(clamped)
-        textView.scrollRangeToVisible(NSRange(location: clamped, length: 0))
+        self.performPageJump(down: down, halfPage: true)
     }
     
     
     /// Full-page jump used by ⌃F / ⌃B.
     private func moveFullPage(down: Bool) {
         
+        self.performPageJump(down: down, halfPage: false)
+    }
+    
+    
+    private func performPageJump(down: Bool, halfPage: Bool) {
+        
         guard let textView else { return }
-        let lineHeight = max(1, (textView.font?.pointSize ?? 13) * 1.3)
-        let lines = max(1, Int(textView.visibleRect.height / lineHeight) - 2)
+        let layoutLineHeight = (textView.layoutManager as? LayoutManager)?.lineHeight
+        let lineHeight = max(1, layoutLineHeight ?? ((textView.font?.pointSize ?? 13) * 1.3))
+        let visible = textView.visibleRect
+        let rawLines = halfPage
+            ? Int(visible.height / lineHeight / 2)
+            : Int(visible.height / lineHeight) - 2
+        let lines = max(1, rawLines)
+        
         let string = textView.string as NSString
-        let location = self.verticalLocation(from: textView.selectedRange().location,
+        let location = self.verticalLocation(from: self.currentCursorLocation(),
                                              direction: down ? lines : -lines)
         let clamped = max(0, min(location, string.length))
         
-        self.setCursor(clamped)
-        textView.scrollRangeToVisible(NSRange(location: clamped, length: 0))
+        if visible.height > 0 {
+            let scrollAmount = halfPage
+                ? visible.height * 0.5
+                : max(lineHeight, visible.height - lineHeight * 2)
+            let maxY = max(0, textView.bounds.height - visible.height)
+            let deltaY = down ? scrollAmount : -scrollAmount
+            let targetOriginY = min(max(0, visible.minY + deltaY), maxY)
+            textView.scroll(NSPoint(x: visible.minX, y: targetOriginY))
+            if let scrollView = textView.enclosingScrollView {
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+            }
+        }
+        
+        self.moveCursorOrExtendVisual(to: clamped)
     }
     
     
@@ -1686,11 +1798,11 @@ final class VimEngine {
         guard let textView else { return }
         let count = self.takeCount()
         let nsString = textView.string as NSString
-        var location = textView.selectedRange().location
+        var location = self.currentCursorLocation()
         for _ in 0..<count {
             location = self.paragraphLocation(from: location, forward: forward, string: nsString)
         }
-        self.setCursor(location)
+        self.moveCursorOrExtendVisual(to: location)
     }
     
     
@@ -1775,7 +1887,7 @@ final class VimEngine {
         let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
         let nsString = textView.string as NSString
         let target = self.firstNonBlank(in: self.lineRange(at: charIndex), string: nsString)
-        self.setCursor(target)
+        self.moveCursorOrExtendVisual(to: target)
     }
     
     
@@ -1785,22 +1897,27 @@ final class VimEngine {
         guard let textView,
               let scrollView = textView.enclosingScrollView,
               let editorTextView = textView as? EditorTextView,
-              let cursorRect = editorTextView.vimCursorRect(at: textView.selectedRange().location)
+              let cursorRect = editorTextView.vimCursorRect(at: self.currentCursorLocation())
         else { return }
         
-        let visibleHeight = scrollView.contentView.bounds.height
-        let targetOriginY: CGFloat
+        let visible = textView.visibleRect
+        let visibleHeight = visible.height
+        guard visibleHeight > 0 else { return }
+        
+        let maxY = max(0, textView.bounds.height - visibleHeight)
+        let rawOriginY: CGFloat
         switch mode {
             case "z", ".":
-                targetOriginY = max(0, cursorRect.midY - visibleHeight / 2)
+                rawOriginY = cursorRect.midY - visibleHeight / 2
             case "t":
-                targetOriginY = max(0, cursorRect.minY - 8)
+                rawOriginY = cursorRect.minY - 8
             case "b":
-                targetOriginY = max(0, cursorRect.maxY - visibleHeight + 8)
+                rawOriginY = cursorRect.maxY - visibleHeight + 8
             default:
                 return
         }
-        scrollView.contentView.scroll(to: NSPoint(x: scrollView.contentView.bounds.origin.x, y: targetOriginY))
+        let targetOriginY = min(max(0, rawOriginY), maxY)
+        textView.scroll(NSPoint(x: visible.minX, y: targetOriginY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
     
@@ -1812,7 +1929,7 @@ final class VimEngine {
         let count = self.takeCount()
         let string = textView.string as NSString
         guard string.length > 0 else { return }
-        var index = textView.selectedRange().location
+        var index = self.currentCursorLocation()
         
         for _ in 0..<count {
             guard index > 0 else { break }
@@ -1845,7 +1962,7 @@ final class VimEngine {
             }
             index = found
         }
-        self.setCursor(index)
+        self.moveCursorOrExtendVisual(to: index)
     }
     
     
@@ -1854,7 +1971,7 @@ final class VimEngine {
         
         guard let textView else { return }
         let nsString = textView.string as NSString
-        guard let lineRange = self.lineRange(at: textView.selectedRange().location) else { return }
+        guard let lineRange = self.lineRange(at: self.currentCursorLocation()) else { return }
         var index = NSMaxRange(lineRange) - 1
         while index > lineRange.location {
             let char = nsString.character(at: index)
@@ -1863,7 +1980,7 @@ final class VimEngine {
             }
             index -= 1
         }
-        self.setCursor(max(lineRange.location, index))
+        self.moveCursorOrExtendVisual(to: max(lineRange.location, index))
     }
     
     
@@ -1893,9 +2010,10 @@ final class VimEngine {
         let string = textView.string as NSString
         guard string.length > 0 else { return }
         
+        let currentLoc = self.currentCursorLocation()
         let opens: Set<unichar> = [40, 91, 123]   // ( [ {
-        let lineRange = self.lineRange(at: textView.selectedRange().location) ?? NSRange(location: 0, length: 0)
-        let caret = min(textView.selectedRange().location, string.length - 1)
+        let lineRange = self.lineRange(at: currentLoc) ?? NSRange(location: 0, length: 0)
+        let caret = min(currentLoc, string.length - 1)
         
         var start: Int?
         var index = caret
@@ -1927,7 +2045,7 @@ final class VimEngine {
                 depth += 1
             } else if current == mate {
                 depth -= 1
-                if depth == 0 { self.setCursor(cursor); return }
+                if depth == 0 { self.moveCursorOrExtendVisual(to: cursor); return }
             }
             cursor += forward ? 1 : -1
         }
@@ -2049,8 +2167,44 @@ final class VimEngine {
         
         guard let textView else { return }
         if VimState.shared.visualOwnerID == ObjectIdentifier(textView), VimState.shared.mode == .visual {
+            let active = VimState.shared.visualActiveLocation
             self.endVisual()
+            if let active {
+                let editorTextView = textView as? EditorTextView
+                editorTextView?.isPerformingVimCursorMove = true
+                defer { editorTextView?.isPerformingVimCursorMove = false }
+                let length = (textView.string as NSString).length
+                let clamped = max(0, min(active, length))
+                textView.setSelectedRange(NSRange(location: clamped, length: 0))
+            }
         }
+    }
+    
+    
+    /// Exits Visual mode cleanly on mouse interaction without overriding the mouse-selected range,
+    /// and clears any stale pending counts or prefixes.
+    func handleExternalMouseInteraction() {
+        
+        if let textView,
+           VimState.shared.mode == .visual,
+           VimState.shared.visualOwnerID == ObjectIdentifier(textView)
+        {
+            self.visualAnchor = nil
+            self.visualLinewise = false
+            VimState.shared.visualActiveLocation = nil
+            VimState.shared.visualOwnerID = nil
+            VimState.shared.mode = .normal
+            self.refreshCursor()
+        }
+        self.resetPending()
+    }
+    
+    
+    /// Clears owned visual state and pending prefixes/counts when focus leaves the text view.
+    func handleFocusLost() {
+        
+        self.clearVisualSelectionIfNeeded()
+        self.resetPending()
     }
     
     
@@ -2085,13 +2239,20 @@ final class VimEngine {
     }
     
     
-    /// Shows the current mode (or the `:` command being typed) in the window subtitle,
+    /// Shows the current mode (or the `:` command / pending count/operator) in the window subtitle,
     /// so it is always obvious which mode the editor is in.
     private func updateStatus() {
         
         guard let window = self.textView?.window else { return }
         let state = VimState.shared
-        let text = state.commandLine ?? state.mode.label
+        let text: String
+        if let commandLine = state.commandLine {
+            text = commandLine
+        } else if let suffix = self.pendingStatusSuffix() {
+            text = "\(state.mode.label) · \(suffix)"
+        } else {
+            text = state.mode.label
+        }
         guard text != self.lastStatus else { return }
         
         self.lastStatus = text
@@ -2099,13 +2260,49 @@ final class VimEngine {
     }
     
     
-    private func endVisual() {
+    private func pendingStatusSuffix() -> String? {
+        
+        var parts = ""
+        if let count = self.count {
+            parts += "\(count)"
+        }
+        if let op = self.pendingOperator {
+            parts.append(op.rawValue)
+        }
+        if let textObj = self.pendingTextObject {
+            parts.append(textObj.inner ? "i" : "a")
+        }
+        if let prefix = self.pendingPrefix {
+            parts.append(prefix)
+        }
+        if let findKind = self.pendingFindKind {
+            switch findKind {
+                case .forward: parts.append("f")
+                case .backward: parts.append("F")
+                case .tillForward: parts.append("t")
+                case .tillBackward: parts.append("T")
+            }
+        }
+        if self.pendingReplaceChar {
+            parts.append("r")
+        }
+        if let mark = self.pendingMarkAction {
+            parts.append(mark)
+        }
+        return parts.isEmpty ? nil : parts
+    }
+    
+    
+    private func endVisual(collapseTo target: Int? = nil) {
         
         self.visualAnchor = nil
         self.visualLinewise = false
         VimState.shared.visualActiveLocation = nil
         VimState.shared.visualOwnerID = nil
         self.enter(mode: .normal)
+        if let target {
+            self.setCursor(target)
+        }
     }
     
     
@@ -2117,8 +2314,29 @@ final class VimEngine {
         self.pendingMarkAction = nil
         self.pendingFindKind = nil
         self.pendingTextObject = nil
-        if !keepCount { self.count = nil }
+        if !keepCount {
+            self.count = nil
+            self.countUpdatedTimestamp = 0
+        }
         self.resetRepeatMotion()
+        self.updateStatus()
+    }
+    
+    
+    private func effectiveEventTimestamp() -> TimeInterval {
+        
+        self.currentEventTimestamp > 0 ? self.currentEventTimestamp : ProcessInfo.processInfo.systemUptime
+    }
+    
+    
+    private func expireStaleCountIfNeeded(now: TimeInterval) {
+        
+        guard self.count != nil, self.countUpdatedTimestamp > 0 else { return }
+        if now < self.countUpdatedTimestamp || (now - self.countUpdatedTimestamp) > Self.staleCountExpiration {
+            self.count = nil
+            self.countUpdatedTimestamp = 0
+            self.updateStatus()
+        }
     }
     
     
@@ -2128,6 +2346,7 @@ final class VimEngine {
         self.repeatStreak = 0
         self.repeatStartTimestamp = 0
         self.lastRepeatTimestamp = 0
+        self.wasKeyRepeat = false
         self.lastMoveWasContinuous = false
     }
     
@@ -2145,8 +2364,8 @@ final class VimEngine {
     }
     
     
-    /// Computes progressive step acceleration when holding down (`fromKeyRepeat`) or rapidly
-    /// repeating `h`/`j`/`k`/`l` or `w`/`b`/`e`/`W`/`B`/`E` without disturbing deliberate single taps.
+    /// Computes progressive step acceleration when holding down (`fromKeyRepeat`) without
+    /// disturbing deliberate discrete manual taps (`!fromKeyRepeat` always steps by 1).
     static func acceleratedRepeatStep(
         for motion: Motion,
         streak: Int,
@@ -2155,11 +2374,11 @@ final class VimEngine {
     ) -> Int {
         
         guard Self.isAcceleratableMotion(motion) else { return 1 }
-        if !fromKeyRepeat && streak < 5 {
+        if !fromKeyRepeat {
             return 1
         }
         
-        let effectiveStreak = fromKeyRepeat ? streak : max(0, streak - 4)
+        let effectiveStreak = streak
         let clampedElapsed = max(0, elapsed)
         
         switch motion {
@@ -2190,9 +2409,13 @@ final class VimEngine {
             return 1
         }
         
-        let now = self.currentEventTimestamp > 0 ? self.currentEventTimestamp : ProcessInfo.processInfo.systemUptime
+        let now = self.effectiveEventTimestamp()
         if self.currentEventIsRepeat {
-            if self.repeatMotion == motion, (now - self.lastRepeatTimestamp) <= 0.35 {
+            if self.wasKeyRepeat,
+               self.repeatMotion == motion,
+               now >= self.lastRepeatTimestamp,
+               (now - self.lastRepeatTimestamp) <= 0.35
+            {
                 self.repeatStreak += 1
                 if self.repeatStreak == 1 {
                     self.repeatStartTimestamp = now
@@ -2202,13 +2425,15 @@ final class VimEngine {
                 self.repeatStreak = 1
                 self.repeatStartTimestamp = now
             }
+            self.wasKeyRepeat = true
             self.lastRepeatTimestamp = now
             self.lastMoveWasContinuous = true
             let elapsed = max(0, now - self.repeatStartTimestamp)
             return Self.acceleratedRepeatStep(for: motion, streak: self.repeatStreak, elapsed: elapsed, fromKeyRepeat: true)
         }
         
-        if self.repeatMotion == motion, (now - self.lastRepeatTimestamp) <= 0.14 {
+        self.wasKeyRepeat = false
+        if self.repeatMotion == motion, now >= self.lastRepeatTimestamp, (now - self.lastRepeatTimestamp) <= 0.14 {
             self.repeatStreak += 1
         } else {
             self.repeatMotion = motion
@@ -2217,8 +2442,7 @@ final class VimEngine {
         }
         self.lastRepeatTimestamp = now
         self.lastMoveWasContinuous = self.repeatStreak >= 2
-        let elapsed = max(0, now - self.repeatStartTimestamp)
-        return Self.acceleratedRepeatStep(for: motion, streak: self.repeatStreak, elapsed: elapsed, fromKeyRepeat: false)
+        return 1
     }
     
     
@@ -2233,7 +2457,125 @@ final class VimEngine {
         
         let count = max(1, self.count ?? 1)
         self.count = nil
+        self.countUpdatedTimestamp = 0
         return count
+    }
+    
+    
+    private func currentCursorLocation() -> Int {
+        
+        guard let textView else { return 0 }
+        let length = (textView.string as NSString).length
+        if VimState.shared.mode == .visual {
+            guard VimState.shared.visualOwnerID == ObjectIdentifier(textView), self.visualAnchor != nil else {
+                self.endVisual()
+                return min(max(0, textView.selectedRange().location), length)
+            }
+            return min(max(0, VimState.shared.visualActiveLocation ?? textView.selectedRange().location), length)
+        }
+        return min(max(0, textView.selectedRange().location), length)
+    }
+    
+    
+    private func scrollLocationToVisible(_ location: Int, in textView: NSTextView) {
+        
+        let length = (textView.string as NSString).length
+        let clamped = max(0, min(location, length))
+        let targetRange = NSRange(location: clamped, length: 0)
+        
+        if let editorTextView = textView as? EditorTextView {
+            let visible = editorTextView.visibleRect
+            guard visible.height > 0 else {
+                editorTextView.scrollRangeToVisible(targetRange)
+                return
+            }
+            let marginY = min(24, visible.height * 0.15)
+            if let probeRect = editorTextView.vimCursorRect(at: clamped) {
+                if !visible.contains(probeRect) {
+                    editorTextView.scrollRangeToVisible(targetRange)
+                }
+                let currentVisible = editorTextView.visibleRect
+                let settledRect = editorTextView.vimCursorRect(at: clamped) ?? probeRect
+                let comfortable = currentVisible.insetBy(dx: 0, dy: marginY)
+                if !comfortable.contains(settledRect) {
+                    let padded = settledRect.insetBy(dx: -8, dy: -marginY).intersection(editorTextView.bounds)
+                    if !padded.isEmpty {
+                        editorTextView.scrollToVisible(padded)
+                    } else {
+                        editorTextView.scrollRangeToVisible(targetRange)
+                    }
+                }
+            } else {
+                editorTextView.scrollRangeToVisible(targetRange)
+            }
+        } else {
+            textView.scrollRangeToVisible(targetRange)
+        }
+    }
+    
+    
+    private func updateVisualSelection(to location: Int) {
+        
+        guard let textView, let anchor = self.visualAnchor else { return }
+        let string = textView.string as NSString
+        let length = string.length
+        let clamped = max(0, min(location, length))
+        let clampedAnchor = max(0, min(anchor, length))
+        self.visualAnchor = clampedAnchor
+        
+        let oldRect = VimState.shared.visualActiveLocation.flatMap { (textView as? EditorTextView)?.vimCursorRect(at: $0) }
+        let selectionRange: NSRange
+        if self.visualLinewise {
+            let anchorLine = self.lineRange(at: clampedAnchor) ?? NSRange(location: clampedAnchor, length: 0)
+            let activeLine = self.lineRange(at: clamped) ?? NSRange(location: clamped, length: 0)
+            let lower = min(anchorLine.location, activeLine.location)
+            let upper = min(max(NSMaxRange(anchorLine), NSMaxRange(activeLine)), length)
+            selectionRange = NSRange(location: lower, length: max(0, upper - lower))
+        } else {
+            let lower = min(clampedAnchor, clamped)
+            let maxEnd = max(clampedAnchor, clamped)
+            let upper = maxEnd < length ? NSMaxRange(string.rangeOfComposedCharacterSequence(at: maxEnd)) : length
+            selectionRange = NSRange(location: lower, length: max(0, upper - lower))
+        }
+        
+        let editorTextView = textView as? EditorTextView
+        editorTextView?.isPerformingVimCursorMove = true
+        defer { editorTextView?.isPerformingVimCursorMove = false }
+        
+        textView.setSelectedRange(selectionRange)
+        VimState.shared.visualActiveLocation = clamped
+        VimState.shared.visualOwnerID = ObjectIdentifier(textView)
+        self.scrollLocationToVisible(clamped, in: textView)
+        
+        if let editorTextView {
+            if editorTextView.funEffects.ownsVimCursorDrawing,
+               let newRect = editorTextView.vimCursorRect(at: clamped)
+            {
+                editorTextView.syncNativeCaretVisibility()
+                editorTextView.funEffects.animateVimCursorTransition(
+                    from: oldRect,
+                    to: newRect,
+                    color: editorTextView.effectiveCursorColor,
+                    isContinuous: self.lastMoveWasContinuous
+                )
+            } else {
+                self.refreshCursor()
+            }
+        }
+    }
+    
+    
+    private func moveCursorOrExtendVisual(to location: Int) {
+        
+        guard let textView else { return }
+        if VimState.shared.mode == .visual,
+           self.visualAnchor != nil,
+           VimState.shared.visualOwnerID == ObjectIdentifier(textView)
+        {
+            self.updateVisualSelection(to: location)
+        } else {
+            self.setCursor(location)
+        }
     }
     
     
@@ -2245,27 +2587,25 @@ final class VimEngine {
         let length = (textView.string as NSString).length
         let clamped = max(0, min(location, length))
         let targetRange = NSRange(location: clamped, length: 0)
-        textView.setSelectedRange(targetRange)
         
-        if let editorTextView = textView as? EditorTextView {
-            if let probeRect = editorTextView.vimCursorRect(at: clamped) {
-                let comfortableVisible = editorTextView.visibleRect.insetBy(dx: 0, dy: min(24, editorTextView.visibleRect.height * 0.15))
-                if !comfortableVisible.contains(probeRect) {
-                    editorTextView.scrollRangeToVisible(targetRange)
-                }
-            } else {
-                editorTextView.scrollRangeToVisible(targetRange)
-            }
-            if let newRect = editorTextView.vimCursorRect(at: clamped) {
-                editorTextView.funEffects.animateVimCursorTransition(
-                    from: oldRect,
-                    to: newRect,
-                    color: editorTextView.effectiveCursorColor,
-                    isContinuous: self.lastMoveWasContinuous
-                )
-            }
-        } else {
-            textView.scrollRangeToVisible(targetRange)
+        let editorTextView = textView as? EditorTextView
+        editorTextView?.isPerformingVimCursorMove = true
+        defer { editorTextView?.isPerformingVimCursorMove = false }
+        
+        textView.setSelectedRange(targetRange)
+        self.scrollLocationToVisible(clamped, in: textView)
+        
+        if let editorTextView,
+           editorTextView.funEffects.ownsVimCursorDrawing,
+           let newRect = editorTextView.vimCursorRect(at: clamped)
+        {
+            editorTextView.syncNativeCaretVisibility()
+            editorTextView.funEffects.animateVimCursorTransition(
+                from: oldRect,
+                to: newRect,
+                color: editorTextView.effectiveCursorColor,
+                isContinuous: self.lastMoveWasContinuous
+            )
         }
     }
     
@@ -2677,17 +3017,21 @@ final class VimEngine {
         // The active end is the caret, not the selection's upper bound: the selection is
         // built upwards when moving with `k`, so NSMaxRange would be the fixed end.
         let active = VimState.shared.visualActiveLocation ?? textView.selectedRange().location
-        let length = (textView.string as NSString).length
+        let string = textView.string as NSString
+        let length = string.length
+        let clampedAnchor = min(max(0, anchor), length)
+        let clampedActive = min(max(0, active), length)
         if self.visualLinewise {
-            let anchorLine = self.lineRange(at: anchor) ?? NSRange(location: anchor, length: 0)
-            let activeLine = self.lineRange(at: active) ?? NSRange(location: active, length: 0)
+            let anchorLine = self.lineRange(at: clampedAnchor) ?? NSRange(location: clampedAnchor, length: 0)
+            let activeLine = self.lineRange(at: clampedActive) ?? NSRange(location: clampedActive, length: 0)
             let lower = min(anchorLine.location, activeLine.location)
             let upper = min(max(NSMaxRange(anchorLine), NSMaxRange(activeLine)), length)
             return NSRange(location: lower, length: max(0, upper - lower))
         }
-        let lower = min(anchor, active)
-        let upper = min(max(anchor, active) + 1, length)
-        return NSRange(location: lower, length: upper - lower)
+        let lower = min(clampedAnchor, clampedActive)
+        let maxEnd = max(clampedAnchor, clampedActive)
+        let upper = maxEnd < length ? NSMaxRange(string.rangeOfComposedCharacterSequence(at: maxEnd)) : length
+        return NSRange(location: lower, length: max(0, upper - lower))
     }
     
     

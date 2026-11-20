@@ -2724,6 +2724,12 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         // Same window, different pane
         if sourceWindowVC === self {
+            let sourcePaneRectInWindow = sourcePane.tabFrameInWindow(for: sourceTab)
+                ?? sourcePane.view.convert(sourcePane.view.bounds, to: nil)
+            let sourcePaneBoundsInWindow = sourcePane.view.convert(sourcePane.view.bounds, to: nil)
+            let sourcePaneCenterInWindow = CGPoint(x: sourcePaneBoundsInWindow.midX, y: sourcePaneBoundsInWindow.midY)
+            let dropPointInWindow = self.view.window?.convertPoint(fromScreen: NSEvent.mouseLocation)
+            
             if let oldTextView = sourcePane.textView(for: sourceTab) {
                 NotificationCenter.default.removeObserver(self, name: EditorTextView.DidLiveChangeSelectionMessage.name, object: oldTextView)
             }
@@ -2744,10 +2750,38 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             }
             self.updateSplitState()
             self.savePaneTabsSessionToDatabase()
+            
+            self.view.layoutSubtreeIfNeeded()
+            targetPane.view.layoutSubtreeIfNeeded()
+            if let window = self.view.window {
+                let targetPaneFrameInWindow = targetPane.view.convert(targetPane.view.bounds, to: nil)
+                let fallbackTargetRect = NSRect(
+                    x: targetPaneFrameInWindow.minX + 12,
+                    y: targetPaneFrameInWindow.maxY - 26,
+                    width: 110,
+                    height: 22
+                )
+                let targetTabRectInWindow = targetPane.tabFrameInWindow(for: newTab) ?? fallbackTargetRect
+                let resolvedDropPoint = dropPointInWindow ?? CGPoint(x: targetTabRectInWindow.midX, y: targetTabRectInWindow.midY)
+                PaneTransferTrailEffect.play(
+                    in: window,
+                    sourceTabRectInWindow: sourcePaneRectInWindow,
+                    dropPointInWindow: resolvedDropPoint,
+                    targetTabRectInWindow: targetTabRectInWindow
+                )
+                targetPane.animateTabDropArrival(for: newTab, crossPane: true)
+                let targetPaneCenterInWindow = CGPoint(x: targetPaneFrameInWindow.midX, y: targetPaneFrameInWindow.midY)
+                let delta = CGPoint(
+                    x: sourcePaneCenterInWindow.x - targetPaneCenterInWindow.x,
+                    y: sourcePaneCenterInWindow.y - targetPaneCenterInWindow.y
+                )
+                targetPane.animateCrossPaneArrival(fromDelta: delta)
+            }
             return true
         }
         
         // Cross-window tab move
+        let dropPointInWindow = self.view.window?.convertPoint(fromScreen: NSEvent.mouseLocation)
         let sourceTotalTabs = sourceWindowVC.editorViewControllers.reduce(0) { $0 + $1.tabs.count }
         if movedDocument === sourceWindowVC.document {
             if sourceTotalTabs > 1 {
@@ -2791,6 +2825,28 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.view.window?.makeFirstResponderDiscardingMarkedText(targetPane.textView)
         self.updateSplitState()
         self.savePaneTabsSessionToDatabase()
+        
+        self.view.layoutSubtreeIfNeeded()
+        targetPane.view.layoutSubtreeIfNeeded()
+        if let window = self.view.window {
+            let targetPaneFrameInWindow = targetPane.view.convert(targetPane.view.bounds, to: nil)
+            let fallbackTargetRect = NSRect(
+                x: targetPaneFrameInWindow.minX + 12,
+                y: targetPaneFrameInWindow.maxY - 26,
+                width: 110,
+                height: 22
+            )
+            let targetTabRectInWindow = targetPane.tabFrameInWindow(for: newTab) ?? fallbackTargetRect
+            let resolvedDropPoint = dropPointInWindow ?? CGPoint(x: targetTabRectInWindow.midX, y: targetTabRectInWindow.midY)
+            PaneTransferTrailEffect.play(
+                in: window,
+                sourceTabRectInWindow: nil,
+                dropPointInWindow: resolvedDropPoint,
+                targetTabRectInWindow: targetTabRectInWindow
+            )
+            targetPane.animateTabDropArrival(for: newTab, crossPane: true)
+            targetPane.animateCrossPaneArrival(fromDelta: .zero)
+        }
         return true
     }
     

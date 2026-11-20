@@ -816,14 +816,28 @@ struct DocumentCenterView: View {
             HStack(alignment: .center, spacing: 10) {
                 if self.isRenaming && !item.isTrashed {
                     TextField("文档标题", text: self.$renameDraft)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 15.5, weight: .semibold))
                         .focused(self.$isRenameFieldFocused)
-                        .frame(maxWidth: 240)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color(nsColor: .controlBackgroundColor))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .stroke(Color.accentColor.opacity(0.6), lineWidth: 1)
+                        )
+                        .frame(maxWidth: 260)
                         .onAppear {
                             self.isRenameFieldFocused = true
                         }
                         .onSubmit {
                             self.commitRename(for: item)
+                        }
+                        .onExitCommand {
+                            self.isRenaming = false
                         }
                     Button("确定") {
                         self.commitRename(for: item)
@@ -1247,10 +1261,23 @@ private struct DocumentGroupHeaderRow: View {
         HStack(spacing: 6) {
             if self.isRenaming {
                 TextField("分组名称", text: self.$renameDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11.5))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Color.accentColor.opacity(0.6), lineWidth: 1)
+                    )
                     .onSubmit {
                         self.onCommitRename()
+                    }
+                    .onExitCommand {
+                        self.onCancelRename()
                     }
                 Button("确定") {
                     self.onCommitRename()

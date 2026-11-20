@@ -368,10 +368,11 @@ struct PaneTabStripView: NSViewRepresentable {
         field.action = #selector(commitRenameFromFieldAction(_:))
         self.renameField = field
         
-        self.layoutTabViews(animated: false)
+        self.layoutTabViews(animated: true)
         self.documentContainer.layoutSubtreeIfNeeded()
         itemView.layoutSubtreeIfNeeded()
-        self.documentContainer.scrollToVisible(itemView.frame.insetBy(dx: -8, dy: 0))
+        let visibleFrame = (self.tabFrames[tab.id] ?? itemView.frame).insetBy(dx: -8, dy: 0)
+        self.documentContainer.scrollToVisible(visibleFrame)
         
         if self.window?.isKeyWindow == false {
             self.window?.makeKey()
@@ -426,8 +427,9 @@ struct PaneTabStripView: NSViewRepresentable {
                 event.window === self.window
             else { return event }
             
-            let pointInField = field.convert(event.locationInWindow, from: nil)
-            if !field.bounds.contains(pointInField) {
+            let hitView: NSView = self.renamingTabID.flatMap { self.tabViews[$0] } ?? field
+            let pointInHitView = hitView.convert(event.locationInWindow, from: nil)
+            if !hitView.bounds.contains(pointInHitView) {
                 self.didClickOutsideDuringRename = true
                 self.commitInlineRenameIfNeeded(restoreEditorFocus: false)
             }
@@ -478,12 +480,12 @@ struct PaneTabStripView: NSViewRepresentable {
             self.window?.endEditing(for: field)
         }
         self.tabViews[tabID]?.exitRenameMode()
-        self.layoutTabViews(animated: false)
+        self.layoutTabViews(animated: true)
         self.suppressControlEndEditing = false
         
         if !editedString.isEmpty, editedString != tab.title {
             self.state?.onRename(tab, editedString)
-            self.reloadTabs()
+            self.reloadTabs(animated: true)
         }
         
         if restoreEditorFocus {
@@ -508,7 +510,7 @@ struct PaneTabStripView: NSViewRepresentable {
         self.renamingTabID = nil
         self.renameField = nil
         if hadActiveRename {
-            self.layoutTabViews(animated: false)
+            self.layoutTabViews(animated: true)
         }
         self.suppressControlEndEditing = false
         
@@ -529,6 +531,24 @@ struct PaneTabStripView: NSViewRepresentable {
     
     
     // MARK: NSTextFieldDelegate
+    
+    func controlTextDidChange(_ obj: Notification) {
+        
+        guard
+            let tabID = self.renamingTabID,
+            let itemView = self.tabViews[tabID]
+        else { return }
+        
+        let newWidth = itemView.preferredWidth(minWidth: Self.minTabWidth, maxWidth: Self.maxTabWidth)
+        let currentWidth = self.tabFrames[tabID]?.width ?? itemView.frame.width
+        if abs(currentWidth - newWidth) >= 1 {
+            self.layoutTabViews(animated: true)
+            if let frame = self.tabFrames[tabID] {
+                self.documentContainer.scrollToVisible(frame.insetBy(dx: -8, dy: 0))
+            }
+        }
+    }
+    
     
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         
@@ -754,6 +774,7 @@ struct PaneTabStripView: NSViewRepresentable {
             return false
         }
         
+        let isLocalDrag = state.tabs.contains(where: { $0.id == draggedID })
         let accepted: Bool
         if let localTab = state.tabs.first(where: { $0.id == draggedID }) {
             state.onMoveToIndex(localTab, targetIndex)
@@ -763,13 +784,26 @@ struct PaneTabStripView: NSViewRepresentable {
         }
         
         self.reloadTabs(animated: true)
-        if accepted {
+        if accepted, isLocalDrag {
             let landedID = state.tabs.first(where: { $0.id == draggedID })?.id ?? state.selectedTab?.id
             if let landedID {
-                self.tabViews[landedID]?.animateDropArrival()
+                self.tabViews[landedID]?.animateDropArrival(crossPane: false)
             }
         }
         return accepted
+    }
+    
+    
+    func tabFrameInWindow(for tabID: UUID) -> NSRect? {
+        
+        guard let itemView = self.tabViews[tabID], itemView.window != nil else { return nil }
+        return itemView.convert(itemView.bounds, to: nil)
+    }
+    
+    
+    func animateTabDropArrival(for tabID: UUID, crossPane: Bool) {
+        
+        self.tabViews[tabID]?.animateDropArrival(crossPane: crossPane)
     }
     
     
@@ -861,13 +895,6 @@ struct PaneTabStripView: NSViewRepresentable {
 private final class NonDraggableLabel: NSTextField {
     
     override var mouseDownCanMoveWindow: Bool { false }
-}
-
-
-private final class TabRenameTextField: NSTextField {
-    
-    override var mouseDownCanMoveWindow: Bool { false }
-    override var acceptsFirstResponder: Bool { true }
 }
 
 
@@ -1147,6 +1174,7 @@ private final class TabStripContainerView: NSView {
     private var isHovered = false
     private var isRenaming = false
     private var isDragSourceActive = false
+    private var preRenamePreferredWidth: CGFloat = 0
     private var lastConfiguredTitle: String?
     private var lastConfiguredEdited: Bool?
     private var activeBreathingKey: String?
@@ -1177,6 +1205,7 @@ private final class TabStripContainerView: NSView {
     }
     var closeIconBoundsForTesting: CGRect { self.closeButton.renderedIconBounds }
     var statusDotSizeForTesting: CGSize { self.statusDotLayer.bounds.size }
+    var inlineTextFieldForTesting: NSTextField? { self.inlineTextField }
     
     
     override init(frame frameRect: NSRect) {
@@ -1205,7 +1234,7 @@ private final class TabStripContainerView: NSView {
             if let subhit = super.hitTest(point), subhit.isDescendant(of: inlineField) {
                 return subhit
             }
-            return self
+            return inlineField
         }
         if !self.closeButton.isHidden, self.closeButton.frame.contains(local) {
             return self.closeButton
@@ -1224,6 +1253,13 @@ private final class TabStripContainerView: NSView {
         if let tab = self.tab {
             self.updateBreathingAnimation(isEdited: tab.isEdited, isSelected: self.isSelected, isRenaming: self.isRenaming)
         }
+    }
+    
+    
+    override func viewDidChangeEffectiveAppearance() {
+        
+        super.viewDidChangeEffectiveAppearance()
+        self.updateBackground(animated: false)
     }
     
     
@@ -1339,15 +1375,79 @@ private final class TabStripContainerView: NSView {
     }
     
     
-    func animateDropArrival() {
+    func animateDropArrival(crossPane: Bool = false) {
         
         guard !AnimationConstants.isReducedMotionEnabled, let layer = self.layer else { return }
+        let ease = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+        
         let pop = CAKeyframeAnimation(keyPath: "transform.scale")
-        pop.values = [0.95, 1.03, 1.0]
+        pop.values = crossPane ? [0.93, 1.04, 1.0] : [0.95, 1.03, 1.0]
         pop.keyTimes = [0, 0.55, 1]
-        pop.duration = 0.24
-        pop.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+        pop.duration = crossPane ? 0.28 : 0.24
+        pop.timingFunction = ease
         layer.add(pop, forKey: "dropArrival")
+        
+        guard crossPane, self.bounds.width > 4, self.bounds.height > 4 else { return }
+        
+        let clipHost = CALayer()
+        clipHost.frame = self.bounds
+        clipHost.cornerRadius = 6
+        clipHost.cornerCurve = .continuous
+        clipHost.masksToBounds = true
+        clipHost.zPosition = 50
+        layer.addSublayer(clipHost)
+        
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            let accent = NSColor.controlAccentColor
+            
+            let sheen = CAGradientLayer()
+            sheen.frame = CGRect(
+                x: -self.bounds.width,
+                y: -4,
+                width: self.bounds.width * 1.15,
+                height: self.bounds.height + 8
+            )
+            sheen.startPoint = CGPoint(x: 0, y: 0)
+            sheen.endPoint = CGPoint(x: 1, y: 0.35)
+            sheen.colors = [
+                NSColor.clear.cgColor,
+                accent.withAlphaComponent(0.32).cgColor,
+                NSColor.white.withAlphaComponent(0.45).cgColor,
+                accent.withAlphaComponent(0.24).cgColor,
+                NSColor.clear.cgColor,
+            ]
+            sheen.locations = [0, 0.25, 0.5, 0.75, 1]
+            clipHost.addSublayer(sheen)
+            
+            let sweep = CABasicAnimation(keyPath: "transform.translation.x")
+            sweep.fromValue = 0
+            sweep.toValue = self.bounds.width * 2.15
+            sweep.duration = 0.36
+            sweep.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+            sweep.fillMode = .forwards
+            sweep.isRemovedOnCompletion = false
+            sheen.add(sweep, forKey: "crossPaneSheen")
+            
+            let ring = CAShapeLayer()
+            ring.frame = self.bounds
+            ring.path = CGPath(roundedRect: self.bounds.insetBy(dx: 0.75, dy: 0.75), cornerWidth: 6, cornerHeight: 6, transform: nil)
+            ring.fillColor = nil
+            ring.strokeColor = accent.withAlphaComponent(0.85).cgColor
+            ring.lineWidth = 1.5
+            ring.opacity = 0
+            clipHost.addSublayer(ring)
+            
+            let ringOpacity = CAKeyframeAnimation(keyPath: "opacity")
+            ringOpacity.values = [0, 0.85, 0]
+            ringOpacity.keyTimes = [0, 0.22, 1]
+            ringOpacity.duration = 0.40
+            ringOpacity.timingFunction = ease
+            ring.add(ringOpacity, forKey: "crossPaneRing")
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak clipHost] in
+            clipHost?.removeFromSuperlayer()
+        }
     }
     
     
@@ -1363,7 +1463,15 @@ private final class TabStripContainerView: NSView {
     func preferredWidth(minWidth: CGFloat, maxWidth: CGFloat) -> CGFloat {
         
         if self.isRenaming {
-            return max(136, min(maxWidth, 188))
+            let liveText = self.inlineTextField?.currentEditor()?.string
+                ?? self.inlineTextField?.stringValue
+                ?? self.tab?.title
+                ?? ""
+            let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+            let measuredWidth = ceil((liveText as NSString).size(withAttributes: [.font: font]).width)
+            let leading: CGFloat = 8 + ((self.tab?.isPinned == true) ? 13 : 0)
+            let dynamicWidth = measuredWidth + leading + 28
+            return min(maxWidth, max(minWidth, max(120, max(self.preRenamePreferredWidth, dynamicWidth))))
         }
         
         let previousFont = self.titleLabel.font
@@ -1438,10 +1546,9 @@ private final class TabStripContainerView: NSView {
         let lineHeight = ceil(self.titleLabel.intrinsicContentSize.height)
         let titleFrame = NSRect(x: x, y: (h - lineHeight) / 2, width: titleWidth, height: lineHeight)
         self.titleLabel.frame = titleFrame
-        let fieldHeight = min(h - 2, lineHeight + 4)
-        let fieldX = max(3, x - 4)
-        let fieldWidth = max(48, self.bounds.width - fieldX - 3)
-        self.inlineTextField?.frame = NSRect(x: fieldX, y: (h - fieldHeight) / 2, width: fieldWidth, height: fieldHeight)
+        let fieldWidth = max(48, self.bounds.width - x - 8)
+        self.inlineTextField?.frame = NSRect(x: x, y: 0, width: fieldWidth, height: h)
+        (self.inlineTextField?.cell as? TabRenameTextFieldCell)?.expectedLineHeight = lineHeight
     }
     
     
@@ -1517,6 +1624,7 @@ private final class TabStripContainerView: NSView {
     
     func enterRenameMode(initialTitle: String, delegate: any NSTextFieldDelegate) -> NSTextField {
         
+        self.preRenamePreferredWidth = self.preferredWidth(minWidth: 80, maxWidth: 600)
         self.isRenaming = true
         self.titleLabel.isHidden = true
         self.editedDot.isHidden = true
@@ -1524,30 +1632,30 @@ private final class TabStripContainerView: NSView {
         self.updateBreathingAnimation(isEdited: self.tab?.isEdited == true, isSelected: self.isSelected, isRenaming: true)
         self.inlineTextField?.removeFromSuperview()
         
-        let field = TabRenameTextField(string: initialTitle)
-        field.font = .systemFont(ofSize: 12)
+        let field = TabRenameTextField(initialTitle: initialTitle)
+        field.font = .systemFont(ofSize: 12, weight: .medium)
         field.textColor = .labelColor
         field.isEditable = true
         field.isSelectable = true
         field.usesSingleLineMode = true
         field.maximumNumberOfLines = 1
-        field.lineBreakMode = .byTruncatingTail
+        field.lineBreakMode = .byClipping
         if let cell = field.cell as? NSTextFieldCell {
             cell.wraps = false
             cell.isScrollable = true
             cell.sendsActionOnEndEditing = false
         }
         field.isBezeled = false
-        field.drawsBackground = true
-        field.backgroundColor = .textBackgroundColor
+        field.isBordered = false
+        field.drawsBackground = false
+        field.backgroundColor = .clear
         field.wantsLayer = true
-        field.layer?.cornerRadius = 4
-        field.layer?.borderWidth = 1.5
-        field.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        field.layer?.borderWidth = 0
         field.focusRingType = .none
         field.delegate = delegate
         self.addSubview(field)
         self.inlineTextField = field
+        self.updateBackground(animated: true)
         self.needsLayout = true
         return field
     }
@@ -1555,6 +1663,7 @@ private final class TabStripContainerView: NSView {
     
     func exitRenameMode() {
         
+        self.preRenamePreferredWidth = 0
         self.isRenaming = false
         self.inlineTextField?.delegate = nil
         self.inlineTextField?.removeFromSuperview()
@@ -1565,6 +1674,7 @@ private final class TabStripContainerView: NSView {
             self.closeButton.isHidden = tab.isPinned || !tab.isClosable
             self.updateBreathingAnimation(isEdited: tab.isEdited, isSelected: self.isSelected, isRenaming: false)
         }
+        self.updateBackground(animated: true)
         self.needsLayout = true
     }
     
@@ -1620,30 +1730,84 @@ private final class TabStripContainerView: NSView {
         guard let layer = self.layer else { return }
         let duration: CFTimeInterval = (animated && !AnimationConstants.isReducedMotionEnabled) ? 0.14 : 0
         let ease = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
+        let scale = max(self.window?.backingScaleFactor ?? 2, 1)
         
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
-            let fill: NSColor = self.isSelected
-                ? NSColor.labelColor.withAlphaComponent(0.09)
-                : (self.isHovered ? NSColor.labelColor.withAlphaComponent(0.05) : .clear)
-            let target = fill.cgColor
+            let targetFill: CGColor
+            let targetBorderColor: CGColor
+            let targetBorderWidth: CGFloat
+            let targetShadowColor: CGColor
+            let targetShadowOpacity: Float
+            let targetShadowRadius: CGFloat
+            let targetAccentOpacity: Float
+            
+            if self.isRenaming {
+                let surface: NSColor = self.effectiveAppearance.isDark
+                    ? (NSColor.controlBackgroundColor.blended(withFraction: 0.16, of: .white)?.withAlphaComponent(0.92) ?? .controlBackgroundColor)
+                    : (NSColor.textBackgroundColor.blended(withFraction: 0.18, of: .windowBackgroundColor) ?? .textBackgroundColor)
+                targetFill = surface.cgColor
+                targetBorderColor = NSColor.controlAccentColor.withAlphaComponent(0.68).cgColor
+                targetBorderWidth = 1.0
+                targetShadowColor = NSColor.controlAccentColor.cgColor
+                targetShadowOpacity = 0.22
+                targetShadowRadius = 2.5
+                targetAccentOpacity = 0
+            } else {
+                let fill: NSColor = self.isSelected
+                    ? NSColor.labelColor.withAlphaComponent(0.09)
+                    : (self.isHovered ? NSColor.labelColor.withAlphaComponent(0.05) : .clear)
+                targetFill = fill.cgColor
+                targetBorderColor = NSColor.separatorColor.cgColor
+                targetBorderWidth = self.isSelected ? 1 / scale : 0
+                targetShadowColor = NSColor.clear.cgColor
+                targetShadowOpacity = 0
+                targetShadowRadius = 0
+                targetAccentOpacity = self.isSelected ? 1 : 0
+            }
             
             if duration > 0 {
                 let fade = CABasicAnimation(keyPath: "backgroundColor")
                 fade.fromValue = layer.presentation()?.backgroundColor ?? layer.backgroundColor
-                fade.toValue = target
+                fade.toValue = targetFill
                 fade.duration = duration
                 fade.timingFunction = ease
                 layer.add(fade, forKey: "backgroundFade")
+                
+                let borderColorAnim = CABasicAnimation(keyPath: "borderColor")
+                borderColorAnim.fromValue = layer.presentation()?.borderColor ?? layer.borderColor
+                borderColorAnim.toValue = targetBorderColor
+                borderColorAnim.duration = duration
+                borderColorAnim.timingFunction = ease
+                layer.add(borderColorAnim, forKey: "borderColorFade")
+                
+                let borderWidthAnim = CABasicAnimation(keyPath: "borderWidth")
+                borderWidthAnim.fromValue = layer.presentation()?.borderWidth ?? layer.borderWidth
+                borderWidthAnim.toValue = targetBorderWidth
+                borderWidthAnim.duration = duration
+                borderWidthAnim.timingFunction = ease
+                layer.add(borderWidthAnim, forKey: "borderWidthFade")
+                
+                let shadowAnim = CABasicAnimation(keyPath: "shadowOpacity")
+                shadowAnim.fromValue = layer.presentation()?.shadowOpacity ?? layer.shadowOpacity
+                shadowAnim.toValue = targetShadowOpacity
+                shadowAnim.duration = duration
+                shadowAnim.timingFunction = ease
+                layer.add(shadowAnim, forKey: "shadowOpacityFade")
             }
-            layer.backgroundColor = target
-            layer.borderColor = NSColor.separatorColor.cgColor
-            layer.borderWidth = self.isSelected ? 1 / max(self.window?.backingScaleFactor ?? 2, 1) : 0
+            
+            layer.backgroundColor = targetFill
+            layer.borderColor = targetBorderColor
+            layer.borderWidth = targetBorderWidth
+            layer.shadowColor = targetShadowColor
+            layer.shadowOpacity = targetShadowOpacity
+            layer.shadowRadius = targetShadowRadius
+            layer.shadowOffset = .zero
             
             CATransaction.begin()
             CATransaction.setAnimationDuration(duration)
             CATransaction.setAnimationTimingFunction(ease)
             self.activeAccentBar.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.8).cgColor
-            self.activeAccentBar.opacity = self.isSelected ? 1 : 0
+            self.activeAccentBar.opacity = targetAccentOpacity
             CATransaction.commit()
         }
         self.titleLabel.textColor = (self.isSelected || self.isHovered) ? .labelColor : .secondaryLabelColor

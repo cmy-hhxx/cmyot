@@ -411,6 +411,84 @@ final class EditorViewController: NSSplitViewController {
     }
     
     
+    func tabFrameInWindow(for tab: PaneTab) -> NSRect? {
+        
+        self.navigationBarViewController.tabFrameInWindow(for: tab.id)
+    }
+    
+    
+    func animateTabDropArrival(for tab: PaneTab, crossPane: Bool) {
+        
+        self.navigationBarViewController.animateTabDropArrival(for: tab.id, crossPane: crossPane)
+    }
+    
+    
+    func animateCrossPaneArrival(fromDelta delta: CGPoint) {
+        
+        guard !AnimationConstants.isReducedMotionEnabled,
+              let contentView = self.contentViewController.viewIfLoaded
+        else { return }
+        
+        contentView.wantsLayer = true
+        guard let hostLayer = contentView.layer else { return }
+        
+        let ease = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+        
+        if let childView = self.contentChild?.view {
+            childView.wantsLayer = true
+            if let childLayer = childView.layer {
+                let maxShift: CGFloat = 8
+                let shiftX = max(-maxShift, min(maxShift, delta.x * 0.04))
+                let shiftY = max(-maxShift, min(maxShift, delta.y * 0.04))
+                let dx = (abs(shiftX) < 1 && abs(shiftY) < 1) ? -6 : shiftX
+                let dy = (abs(shiftX) < 1 && abs(shiftY) < 1) ? 0 : shiftY
+                
+                let slideX = CABasicAnimation(keyPath: "transform.translation.x")
+                slideX.fromValue = dx
+                slideX.toValue = 0
+                
+                let slideY = CABasicAnimation(keyPath: "transform.translation.y")
+                slideY.fromValue = dy
+                slideY.toValue = 0
+                
+                let slideGroup = CAAnimationGroup()
+                slideGroup.animations = [slideX, slideY]
+                slideGroup.duration = 0.22
+                slideGroup.timingFunction = ease
+                slideGroup.isRemovedOnCompletion = true
+                childLayer.add(slideGroup, forKey: "crossPaneContentSlide")
+            }
+        }
+        
+        let bounds = contentView.bounds
+        guard bounds.width > 8, bounds.height > 8 else { return }
+        let borderRing = CAShapeLayer()
+        borderRing.frame = bounds
+        borderRing.path = CGPath(roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5), cornerWidth: 6, cornerHeight: 6, transform: nil)
+        borderRing.fillColor = nil
+        borderRing.lineWidth = 1.75
+        borderRing.opacity = 0
+        borderRing.zPosition = 40
+        contentView.effectiveAppearance.performAsCurrentDrawingAppearance {
+            borderRing.strokeColor = NSColor.controlAccentColor.cgColor
+        }
+        hostLayer.addSublayer(borderRing)
+        
+        let pulse = CAKeyframeAnimation(keyPath: "opacity")
+        pulse.values = [0, 0.50, 0]
+        pulse.keyTimes = [0, 0.2, 1]
+        pulse.duration = 0.42
+        pulse.timingFunction = ease
+        pulse.fillMode = .forwards
+        pulse.isRemovedOnCompletion = false
+        borderRing.add(pulse, forKey: "crossPaneBorderPulse")
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.48) { [weak borderRing] in
+            borderRing?.removeFromSuperlayer()
+        }
+    }
+    
+    
     // MARK: Split View Controller Methods
     
     override func splitView(_ splitView: NSSplitView, effectiveRect proposedEffectiveRect: NSRect, forDrawnRect drawnRect: NSRect, ofDividerAt dividerIndex: Int) -> NSRect {

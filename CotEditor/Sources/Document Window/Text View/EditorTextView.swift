@@ -352,7 +352,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         self.clearGhostSuggestion(animated: false)
         self.funEffects.resetCursorTracking()
-        self.vimEngine.clearVisualSelectionIfNeeded()
+        self.vimEngine.handleFocusLost()
         
         defer {
             self.invalidateInsertionIndicatorDisplayMode()
@@ -461,6 +461,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         self.needsUpdateInsertionIndicators = true
         self.needsUpdateLineHighlight = true
+        if self.funEffects.ownsVimCursorDrawing {
+            self.funEffects.syncVimCursor(animated: false)
+        }
     }
     
     
@@ -495,6 +498,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     override func mouseDown(with event: NSEvent) {
         
         self.clearGhostSuggestion(animated: false)
+        if UserDefaults.standard[.vimMode] {
+            self.vimEngine.handleExternalMouseInteraction()
+        }
         self.mouseDownPoint = self.convert(event.locationInWindow, from: nil)
         
         // Cmd + Click on a URL jumps directly without highlighting links or showing tooltips
@@ -605,6 +611,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     /// Built-in CoreAnimation effects controller for typewriter burst and Neovide-style Vim cursor trails.
     private(set) lazy var funEffects = EditorFunEffectsController(textView: self)
+    
+    /// Guards against duplicate cursor animation passes while `VimEngine` executes a move + scroll.
+    var isPerformingVimCursorMove = false
     
     
     /// The active cursor color, honoring custom user cursor color when enabled.
@@ -1254,6 +1263,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         let shouldTrackVimCursor = !stillSelectingFlag
+            && !self.isPerformingVimCursorMove
             && self.window?.isKeyWindow == true
             && UserDefaults.standard[.vimMode]
             && (VimState.shared.mode == .normal || VimState.shared.mode == .replace)
@@ -1936,17 +1946,27 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         let index = min(clampedLoc, length - 1)
-        let charRange = NSRange(location: index, length: 1)
+        let charRange = string.rangeOfComposedCharacterSequence(at: index)
         layoutManager.ensureLayout(forCharacterRange: charRange)
         let glyphRange = layoutManager.glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
-        guard glyphRange.location != NSNotFound else { return nil }
+        guard glyphRange.location != NSNotFound, layoutManager.isValidGlyphIndex(glyphRange.location) else { return nil }
+        
+        if glyphRange.length == 0 {
+            let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphRange.location, effectiveRange: nil)
+            return NSRect(
+                x: usedRect.maxX + self.textContainerOrigin.x,
+                y: usedRect.minY + self.textContainerOrigin.y,
+                width: fallbackSpace,
+                height: min(usedRect.height > 0 ? usedRect.height : lineH, lineH)
+            )
+        }
         
         var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
         rect.origin.x += self.textContainerOrigin.x
         rect.origin.y += self.textContainerOrigin.y
         
         let character = string.substring(with: charRange)
-        let isLineBreak = (character == "\n" || character == "\r")
+        let isLineBreak = (character == "\n" || character == "\r" || character == "\r\n")
         
         if isLineBreak {
             let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphRange.location, effectiveRange: nil)
