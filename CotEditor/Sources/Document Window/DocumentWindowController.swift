@@ -939,9 +939,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.label = "Emoji"
                 item.toolTip = String(localized: "chrome.toolbar.emoji.tooltip",
                                       defaultValue: "Frequently used emoji", table: "Chrome")
-                let emojiConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
-                item.image = NSImage(systemSymbolName: "face.smiling", accessibilityDescription: item.label)?
-                    .withSymbolConfiguration(emojiConfig)
+                item.image = WorkspaceCenterIcons.quickEmojiIcon()
                 item.menu = Self.quickEmojiMenu()
                 return item
                 
@@ -972,11 +970,8 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.label = String(localized: "chrome.toolbar.appearance.label",
                                     defaultValue: "深浅外观", table: "Chrome")
                 item.toolTip = "切换深色 / 浅色外观"
-                let symConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
-                item.stateImages[.off] = NSImage(systemSymbolName: "sun.max", accessibilityDescription: "浅色模式")?
-                    .withSymbolConfiguration(symConfig)
-                item.stateImages[.on] = NSImage(systemSymbolName: "moon.stars.fill", accessibilityDescription: "深色模式")?
-                    .withSymbolConfiguration(symConfig)
+                item.stateImages[.off] = WorkspaceCenterIcons.appearanceModeIcon(isDark: false)
+                item.stateImages[.on] = WorkspaceCenterIcons.appearanceModeIcon(isDark: true)
                 item.action = #selector(DocumentViewController.toggleAppearanceMode(_:))
                 item.isNavigational = true
                 item.visibilityPriority = .high
@@ -1018,9 +1013,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                                     defaultValue: "More", table: "Chrome")
                 item.toolTip = String(localized: "chrome.toolbar.more.tooltip",
                                       defaultValue: "More actions", table: "Chrome")
-                let symConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
-                item.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: item.label)?
-                    .withSymbolConfiguration(symConfig)
+                item.image = WorkspaceCenterIcons.moreIcon()
                 item.menu = Self.moreMenu()
                 return item
                 
@@ -1031,9 +1024,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.toolTip = String(localized: "chrome.toolbar.ai.tooltip",
                                       defaultValue: "Configure AI: endpoint, model, and API key",
                                       table: "Chrome")
-                let symConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
-                item.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: item.label)?
-                    .withSymbolConfiguration(symConfig)
+                item.image = WorkspaceCenterIcons.aiSettingsIcon()
                 item.target = NSApp.delegate
                 item.action = #selector(AppDelegate.showAIPreferences(_:))
                 item.isNavigational = true
@@ -1048,9 +1039,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.toolTip = String(localized: "chrome.toolbar.terminal.tooltip",
                                       defaultValue: "Show or hide the terminal in this window",
                                       table: "Chrome")
-                let symConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
-                item.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: item.label)?
-                    .withSymbolConfiguration(symConfig)
+                item.image = WorkspaceCenterIcons.terminalIcon()
                 item.action = #selector(ContentViewController.toggleTerminal(_:))
                 // keep it next to the other leading controls, and out of the overflow menu
                 item.isNavigational = true
@@ -1064,10 +1053,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                                     defaultValue: "Inspector", table: "Document")
                 item.toolTip = String(localized: "Toolbar.inspector.tooltip",
                                       defaultValue: "Show inspector", table: "Document")
-                let symConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
-                item.image = NSImage(systemSymbolName: "sidebar.trailing", accessibilityDescription: item.label)?
-                    .withSymbolConfiguration(symConfig)
-                    ?? NSImage(systemSymbolName: "info.circle", accessibilityDescription: item.label)
+                item.image = WorkspaceCenterIcons.inspectorIcon()
                 item.action = #selector(NSSplitViewController.toggleInspector)
                 item.visibilityPriority = .high
                 return item
@@ -1285,11 +1271,8 @@ extension DocumentWindowController: NSToolbarDelegate {
                                     defaultValue: "Edit", table: "Document")
                 item.toolTip = String(localized: "Toolbar.editable.tooltip.off",
                                       defaultValue: "Prevent the document from being edited", table: "Document")
-                let symConfig = NSImage.SymbolConfiguration(pointSize: 13.5, weight: .medium)
-                item.stateImages[.on] = NSImage(systemSymbolName: "pencil", accessibilityDescription: item.label)?
-                    .withSymbolConfiguration(symConfig)
-                item.stateImages[.off] = NSImage(systemSymbolName: "pencil.slash", accessibilityDescription: item.label)?
-                    .withSymbolConfiguration(symConfig)
+                item.stateImages[.on] = WorkspaceCenterIcons.editableIcon(isEditable: true)
+                item.stateImages[.off] = WorkspaceCenterIcons.editableIcon(isEditable: false)
                 item.action = #selector(Document.toggleEditable)
                 item.isNavigational = true
                 return item

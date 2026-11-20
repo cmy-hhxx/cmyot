@@ -73,16 +73,45 @@ struct NavigationBar: View {
     
     private var closePaneButton: some View {
         
-        Button(action: self.tabs.onClosePane) {
+        ClosePaneAnimatedButton(action: self.tabs.onClosePane)
+            .frame(width: 22, height: 24, alignment: .center)
+            .help(String(localized: "Close split editor", table: "Document", comment: "tooltip for button"))
+    }
+}
+
+
+/// Tactile close-pane button with a soft crimson hover halo and 90° spring spin matching tab close buttons.
+private struct ClosePaneAnimatedButton: View {
+    
+    var action: () -> Void
+    
+    @State private var isHovered = false
+    
+    
+    var body: some View {
+        Button(action: self.action) {
             Image(systemName: "xmark")
                 .font(.system(size: 9.5, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 22, height: 22, alignment: .center)
-                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .foregroundStyle(self.isHovered ? Color.red : Color.secondary)
+                .rotationEffect(.degrees(self.isHovered ? 90 : 0))
+                .scaleEffect(self.isHovered ? 1.12 : 1.0)
+                .frame(width: 20, height: 20, alignment: .center)
+                .background(
+                    Circle()
+                        .fill(self.isHovered ? Color.red.opacity(0.15) : Color.clear)
+                )
+                .overlay(
+                    Circle()
+                        .strokeBorder(self.isHovered ? Color.red.opacity(0.28) : Color.clear, lineWidth: 0.75)
+                )
+                .contentShape(Circle())
         }
-        .frame(width: 22, height: 24, alignment: .center)
-        .buttonStyle(HoverPlainButtonStyle())
-        .help(String(localized: "Close split editor", table: "Document", comment: "tooltip for button"))
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.68)) {
+                self.isHovered = hovering
+            }
+        }
     }
 }
 

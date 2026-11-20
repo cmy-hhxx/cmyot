@@ -192,6 +192,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     private var isUpdatingGhostSuggestion = false
     private var isCurrentGhostFromAI = false
     private var lastLocalHitCaretLocation: Int = -1
+    private var lastFormattingTabUptime: TimeInterval = 0
     var dismissedGhostCaretLocation: Int?
     
     private lazy var trimTrailingWhitespaceTask = Debouncer { [weak self] in
@@ -739,12 +740,24 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     override func keyDown(with event: NSEvent) {
         
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if !self.hasMarkedText(),
-           flags.isEmpty,
-           event.keyCode == 48,  // Tab accepts inline habit completion when active
-           self.acceptGhostSuggestionIfPresent()
-        {
-            return
+        if !self.hasMarkedText(), event.keyCode == 48 {
+            // Option+Tab always forces literal Tab formatting even when a ghost candidate is visible.
+            if flags == .option {
+                self.dismissedGhostCaretLocation = self.selectedRange.location
+                self.lastFormattingTabUptime = ProcessInfo.processInfo.systemUptime
+                self.clearGhostSuggestion(animated: false, cancelAI: true)
+                self.performFormattingTab(nil)
+                return
+            }
+            if flags.isEmpty {
+                if self.shouldTabAcceptActiveGhost(), self.acceptGhostSuggestionIfPresent() {
+                    return
+                }
+                if self.activeGhostSuggestion != nil || self.funEffects.isShowingGhostThinking {
+                    self.lastFormattingTabUptime = ProcessInfo.processInfo.systemUptime
+                    self.clearGhostSuggestion(animated: false, cancelAI: true)
+                }
+            }
         }
         
         // Clear stale ghost suggestion when leaving Vim insert mode via Esc
@@ -940,6 +953,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         self.dismissedGhostCaretLocation = nil
+        if plainString.contains(where: { !$0.isWhitespace && !$0.isNewline }) {
+            self.lastFormattingTabUptime = 0
+        } else if plainString.contains("\t") {
+            self.lastFormattingTabUptime = ProcessInfo.processInfo.systemUptime
+        }
         
         self.isUpdatingGhostSuggestion = true
         super.insertText(plainString, replacementRange: replacementRange)
@@ -981,9 +999,18 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     override func insertTab(_ sender: Any?) {
         
-        if !self.hasMarkedText(), self.acceptGhostSuggestionIfPresent() {
+        if !self.hasMarkedText(), self.shouldTabAcceptActiveGhost(), self.acceptGhostSuggestionIfPresent() {
             return
         }
+        
+        self.lastFormattingTabUptime = ProcessInfo.processInfo.systemUptime
+        self.clearGhostSuggestion(animated: false, cancelAI: true)
+        self.performFormattingTab(sender)
+    }
+    
+    
+    /// Performs pure indentation / Tab insertion without triggering or accepting inline ghost completion.
+    private func performFormattingTab(_ sender: Any?) {
         
         // indent with the Tab key
         if self.indentsWithTabKey, !self.rangeForUserTextChange.isEmpty {
@@ -1006,6 +1033,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     /// The Shift + Tab keys are pressed.
     override func insertBacktab(_ sender: Any?) {
+        
+        self.lastFormattingTabUptime = ProcessInfo.processInfo.systemUptime
+        self.clearGhostSuggestion(animated: false, cancelAI: true)
         
         // outdent with the Tab key
         if self.indentsWithTabKey {
@@ -2563,6 +2593,84 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    /// Returns `true` when the caret sits in an indentation / alignment / list-formatting context
+    /// where `Tab` should format layout instead of accepting an inline ghost completion.
+    static func isFormattingTabContext(
+        linePrefix: String,
+        lineSuffix: String,
+        selectedRange: NSRange
+    ) -> Bool {
+        
+        if !selectedRange.isEmpty {
+            return true
+        }
+        // Start of line or inside leading whitespace indentation
+        if linePrefix.isEmpty || linePrefix.allSatisfy(\.isWhitespace) {
+            return true
+        }
+        // Immediately after a tab or consecutive spaces used for column alignment
+        if linePrefix.hasSuffix("\t") || linePrefix.hasSuffix("  ") {
+            return true
+        }
+        // Bare outline / bullet / numbered-list / quote / heading marker with no body text yet
+        if linePrefix.range(of: #"^\s*(?:[-*+•‣▪︎>]|\d+[\.、\)）]|#{1,6})\s*$"#, options: .regularExpression) != nil {
+            return true
+        }
+        // Cursor positioned before existing text after whitespace (pushing text right to align)
+        if !lineSuffix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           linePrefix.last?.isWhitespace == true
+        {
+            return true
+        }
+        return false
+    }
+    
+    
+    /// Extracts the current line's prefix and suffix around `caretLocation`.
+    private func currentLineContext(at caretLocation: Int) -> (linePrefix: String, lineSuffix: String) {
+        
+        let nsText = self.string as NSString
+        guard nsText.length > 0 else { return ("", "") }
+        let clampedCaret = max(0, min(caretLocation, nsText.length))
+        let safeIndex = min(clampedCaret, max(0, nsText.length - 1))
+        let lineRange = nsText.lineRange(for: NSRange(location: safeIndex, length: 0))
+        // When caret sits right after a trailing newline at EOF, it is on a new empty line.
+        if clampedCaret == NSMaxRange(lineRange),
+           lineRange.length > 0,
+           let lastChar = nsText.substring(with: NSRange(location: NSMaxRange(lineRange) - 1, length: 1)).first,
+           lastChar.isNewline
+        {
+            return ("", "")
+        }
+        let linePrefix = nsText.substring(with: NSRange(location: lineRange.location, length: max(0, clampedCaret - lineRange.location)))
+        let lineEnd = NSMaxRange(lineRange)
+        let lineSuffix = (clampedCaret < lineEnd)
+            ? nsText.substring(with: NSRange(location: clampedCaret, length: lineEnd - clampedCaret)).trimmingCharacters(in: .newlines)
+            : ""
+        return (linePrefix, lineSuffix)
+    }
+    
+    
+    /// Determines whether pressing `Tab` right now should accept the active ghost suggestion
+    /// or perform standard Tab indentation/alignment.
+    func shouldTabAcceptActiveGhost() -> Bool {
+        
+        guard
+            self.isEditable,
+            !self.hasMarkedText(),
+            self.selectedRange.isEmpty,
+            let suggestion = self.activeGhostSuggestion,
+            !suggestion.isEmpty
+        else { return false }
+        
+        let (linePrefix, lineSuffix) = self.currentLineContext(at: self.selectedRange.location)
+        if Self.isFormattingTabContext(linePrefix: linePrefix, lineSuffix: lineSuffix, selectedRange: self.selectedRange) {
+            return false
+        }
+        return true
+    }
+    
+    
     /// Recomputes and displays or hides the hybrid Tier-1 (local habit) + Tier-2 (AI FIM) ghost candidate.
     func refreshHabitGhostSuggestion(animateEntrance: Bool = true, allowAIRefresh: Bool = true) {
         
@@ -2579,9 +2687,21 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return
         }
         
+        // Respect active Tab/Shift+Tab formatting cadence so consecutive layout Tabs are never hijacked.
+        if ProcessInfo.processInfo.systemUptime - self.lastFormattingTabUptime < 1.5 {
+            self.clearGhostSuggestion(animated: false, cancelAI: true)
+            return
+        }
+        
         let caretLocation = self.selectedRange.location
         if self.dismissedGhostCaretLocation == caretLocation {
             self.clearGhostSuggestion(animated: false)
+            return
+        }
+        
+        let (linePrefix, lineSuffix) = self.currentLineContext(at: caretLocation)
+        if Self.isFormattingTabContext(linePrefix: linePrefix, lineSuffix: lineSuffix, selectedRange: self.selectedRange) {
+            self.clearGhostSuggestion(animated: false, cancelAI: true)
             return
         }
         

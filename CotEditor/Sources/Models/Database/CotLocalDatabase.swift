@@ -148,6 +148,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         static let documentGroups = "documentCenter.groups"
         static let syncAIProfiles = "sync.aiProfiles"
         static let syncAIActiveProfileID = "sync.aiActiveProfileID"
+        static let analyticsHistoricalBackfillV2 = "analytics.historicalBackfillV2"
     }
     
     static let weeklyReportsDidChangeNotification = Notification.Name("CotLocalDatabaseWeeklyReportsDidChange")
@@ -2081,6 +2082,49 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             sqlite3_bind_int64(stmt, 9, Int64(outputTokens))
             sqlite3_bind_int64(stmt, 10, Int64(localHits))
             sqlite3_bind_double(stmt, 11, now)
+            let rc = sqlite3_step(stmt)
+            if rc != SQLITE_DONE {
+                self.logSQLiteError(#function, code: rc)
+            }
+        }
+        sqlite3_finalize(stmt)
+    }
+    
+    
+    /// Inserts a backfilled `DailyWritingStats` row only if that `date_key` has no existing telemetry or all counters are zero.
+    func backfillDailyWritingStatsIfEmpty(_ stats: DailyWritingStats) {
+        
+        let sql = """
+        INSERT INTO daily_writing_stats (
+            date_key, typed_chars, ai_completed_chars, ai_completion_accepts,
+            files_created, documents_saved, ai_requests, input_tokens, output_tokens, local_hits, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(date_key) DO UPDATE SET
+            typed_chars = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.typed_chars ELSE daily_writing_stats.typed_chars END,
+            ai_completed_chars = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.ai_completed_chars ELSE daily_writing_stats.ai_completed_chars END,
+            ai_completion_accepts = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.ai_completion_accepts ELSE daily_writing_stats.ai_completion_accepts END,
+            files_created = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.files_created ELSE daily_writing_stats.files_created END,
+            documents_saved = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.documents_saved ELSE daily_writing_stats.documents_saved END,
+            ai_requests = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.ai_requests ELSE daily_writing_stats.ai_requests END,
+            input_tokens = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.input_tokens ELSE daily_writing_stats.input_tokens END,
+            output_tokens = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.output_tokens ELSE daily_writing_stats.output_tokens END,
+            local_hits = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.local_hits ELSE daily_writing_stats.local_hits END,
+            updated_at = excluded.updated_at;
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, stats.dateKey, -1, self.transientDestructor)
+            sqlite3_bind_int64(stmt, 2, Int64(stats.typedChars))
+            sqlite3_bind_int64(stmt, 3, Int64(stats.aiCompletedChars))
+            sqlite3_bind_int64(stmt, 4, Int64(stats.aiCompletionAccepts))
+            sqlite3_bind_int64(stmt, 5, Int64(stats.filesCreated))
+            sqlite3_bind_int64(stmt, 6, Int64(stats.documentsSaved))
+            sqlite3_bind_int64(stmt, 7, Int64(stats.aiRequests))
+            sqlite3_bind_int64(stmt, 8, Int64(stats.inputTokens))
+            sqlite3_bind_int64(stmt, 9, Int64(stats.outputTokens))
+            sqlite3_bind_int64(stmt, 10, Int64(stats.localHits))
+            sqlite3_bind_double(stmt, 11, stats.updatedAt.timeIntervalSince1970)
             let rc = sqlite3_step(stmt)
             if rc != SQLITE_DONE {
                 self.logSQLiteError(#function, code: rc)

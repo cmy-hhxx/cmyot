@@ -141,6 +141,12 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private var ghostRootLayer: CALayer?
     private var ghostContainerLayer: CALayer?
     private var ghostSweepLayer: CALayer?
+    private var ghostThinkingLayer: CALayer?
+    private var ghostThinkingBeamHostLayer: CALayer?
+    private var ghostThinkingBeamLayer: CAGradientLayer?
+    private var ghostThinkingBeamMaskLayer: CAShapeLayer?
+    private var ghostThinkingDots: [CALayer] = []
+    private var ghostThinkingLabelLayer: CALayer?
     private(set) var isShowingGhostThinking = false
     private(set) var lastGhostFrame: CGRect = .zero
     private(set) var lastTabBadgeXInContainer: CGFloat?
@@ -784,6 +790,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         self.ensureGhostLayers(in: hostLayer)
         guard let container = self.ghostContainerLayer else { return 0 }
+        self.hideGhostThinkingLayer(animated: false)
         self.isShowingGhostThinking = false
         
         let scale = textView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
@@ -907,74 +914,253 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     }
     
     
-    /// Displays a subtle breathing `"···"` indicator while an asynchronous AI Next Token request is in flight.
+    /// Displays a crisp LeiBox-inspired AI thinking pill (`thinking-particles` 3×3 wave matrix + `border-beam` edge glow)
+    /// while an asynchronous AI Next Token request is in flight.
     func showGhostThinkingIndicator(
         at caretRect: NSRect,
         font: NSFont,
         lineHeight: CGFloat,
         baselineOffset: CGFloat
     ) {
+        _ = baselineOffset
         guard let textView = self.textView,
               textView.window?.isKeyWindow == true,
               let hostLayer = self.ensureClippedHostLayer(for: textView)
         else { return }
         
         self.ensureGhostLayers(in: hostLayer)
-        guard let container = self.ghostContainerLayer else { return }
+        guard let pill = self.ghostThinkingLayer,
+              let beamHost = self.ghostThinkingBeamHostLayer,
+              let beam = self.ghostThinkingBeamLayer,
+              let beamMask = self.ghostThinkingBeamMaskLayer,
+              let labelLayer = self.ghostThinkingLabelLayer
+        else { return }
         
         let scale = textView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
-        let tint = (textView.theme?.text.color ?? NSColor.labelColor).withAlphaComponent(0.38)
-        let attrText = NSAttributedString(string: "···", attributes: [
-            .font: font,
-            .foregroundColor: tint,
-        ])
-        let ctLine = CTLineCreateWithAttributedString(attrText)
-        let textWidth = ceil(CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil)))
-        let containerWidth = max(14, textWidth + 2)
+        let isDark = textView.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let rowHeight = max(lineHeight, ceil(font.ascender - font.descender + 2))
-        let cgBaselineY = max(2, rowHeight - baselineOffset)
-        let imageSize = NSSize(width: containerWidth, height: rowHeight)
+        let pillHeight = min(17.5, max(14.5, rowHeight - 2.5))
+        let pillWidth: CGFloat = 39.0
+        let pillRadius = pillHeight * 0.5
+        let pillY = caretRect.minY + max(0, (rowHeight - pillHeight) * 0.5)
+        let targetFrame = CGRect(x: caretRect.maxX + 4.0, y: pillY, width: pillWidth, height: pillHeight)
         
-        let renderedImage = NSImage(size: imageSize, flipped: false) { _ in
-            if let ctx = NSGraphicsContext.current?.cgContext {
-                ctx.saveGState()
-                ctx.textMatrix = .identity
-                ctx.textPosition = CGPoint(x: 0, y: cgBaselineY)
-                CTLineDraw(ctLine, ctx)
-                ctx.restoreGState()
-            }
+        // Palette adapted from LeiBox `thinking-orbs` & `galaxy-effort-slider`
+        let indigo = NSColor(srgbRed: 0.47, green: 0.56, blue: 1.00, alpha: 1.0)    // #7797ff
+        let violet = NSColor(srgbRed: 0.71, green: 0.59, blue: 0.99, alpha: 1.0)    // #b696fd
+        let cyan   = NSColor(srgbRed: 0.50, green: 0.84, blue: 0.85, alpha: 1.0)    // #80d5d8
+        let pink   = NSColor(srgbRed: 0.91, green: 0.45, blue: 0.80, alpha: 1.0)    // #e773cb
+        
+        let bgFill = isDark
+            ? NSColor(srgbRed: 0.14, green: 0.15, blue: 0.24, alpha: 0.90)
+            : NSColor(srgbRed: 0.95, green: 0.95, blue: 1.00, alpha: 0.95)
+        let baseBorder = (isDark ? violet : indigo).withAlphaComponent(isDark ? 0.34 : 0.28)
+        let textColor = isDark
+            ? NSColor(srgbRed: 0.86, green: 0.84, blue: 1.00, alpha: 0.95)
+            : NSColor(srgbRed: 0.31, green: 0.25, blue: 0.64, alpha: 0.95)
+        
+        // Render crisp Retina "AI" micro-label
+        let labelFont = NSFont.systemFont(ofSize: 9.0, weight: .bold)
+        let labelAttr = NSAttributedString(string: "AI", attributes: [
+            .font: labelFont,
+            .foregroundColor: textColor,
+            .kern: 0.4,
+        ])
+        let labelSize = labelAttr.size()
+        let labelImageSize = NSSize(width: ceil(labelSize.width) + 2, height: ceil(labelSize.height) + 1)
+        let labelImg = NSImage(size: labelImageSize, flipped: true) { _ in
+            labelAttr.draw(at: NSPoint(x: 1, y: 0.5))
             return true
         }
-        
-        var proposedRect = NSRect(origin: .zero, size: imageSize)
+        var proposedRect = NSRect(origin: .zero, size: labelImageSize)
         let scaleTransform = NSAffineTransform()
         scaleTransform.scale(by: scale)
-        let cgImage = renderedImage.cgImage(forProposedRect: &proposedRect, context: nil, hints: [.ctm: scaleTransform])
+        let labelCGImage = labelImg.cgImage(forProposedRect: &proposedRect, context: nil, hints: [.ctm: scaleTransform])
         
-        let targetFrame = CGRect(x: caretRect.maxX + 2, y: caretRect.minY, width: containerWidth, height: rowHeight)
+        // 3×3 matrix geometry on the left inside the pill
+        let dotSize: CGFloat = 2.1
+        let dotGap: CGFloat = 1.1
+        let matrixExtent = dotSize * 3 + dotGap * 2
+        let matrixOriginX: CGFloat = 6.5
+        let matrixOriginY: CGFloat = (pillHeight - matrixExtent) * 0.5
+        let dotPalette: [NSColor] = [cyan, indigo, violet, indigo, violet, pink, violet, pink, cyan]
+        
+        let beamBounds = CGRect(x: 0, y: 0, width: pillWidth, height: pillHeight)
+        let beamInsetPath = CGPath(
+            roundedRect: beamBounds.insetBy(dx: 0.6, dy: 0.6),
+            cornerWidth: max(1, pillRadius - 0.6),
+            cornerHeight: max(1, pillRadius - 0.6),
+            transform: nil
+        )
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        container.removeAllAnimations()
-        container.frame = targetFrame
-        container.contentsScale = scale
-        container.contentsGravity = .resize
-        container.contents = cgImage
-        container.opacity = 0.45
+        self.ghostContainerLayer?.removeAllAnimations()
+        self.ghostContainerLayer?.opacity = 0
+        self.ghostContainerLayer?.contents = nil
+        
+        pill.removeAllAnimations()
+        pill.frame = targetFrame
+        pill.cornerRadius = pillRadius
+        pill.cornerCurve = .continuous
+        pill.backgroundColor = bgFill.cgColor
+        pill.borderWidth = 0.75
+        pill.borderColor = baseBorder.cgColor
+        pill.shadowColor = (isDark ? violet : indigo).cgColor
+        pill.shadowOpacity = isDark ? 0.38 : 0.22
+        pill.shadowRadius = 4.5
+        pill.shadowOffset = .zero
+        pill.opacity = 1.0
+        
+        // Rotating conic border-beam gradient clipped to the pill outline
+        beamHost.frame = beamBounds
+        beamHost.cornerRadius = pillRadius
+        beamHost.cornerCurve = .continuous
+        let beamDiag = hypot(pillWidth, pillHeight) + 6
+        beam.removeAllAnimations()
+        beam.bounds = CGRect(x: 0, y: 0, width: beamDiag, height: beamDiag)
+        beam.position = CGPoint(x: pillWidth * 0.5, y: pillHeight * 0.5)
+        beam.type = .conic
+        beam.startPoint = CGPoint(x: 0.5, y: 0.5)
+        beam.endPoint = CGPoint(x: 1.0, y: 0.5)
+        beam.colors = [
+            NSColor.clear.cgColor,
+            NSColor.clear.cgColor,
+            indigo.withAlphaComponent(0.65).cgColor,
+            violet.cgColor,
+            pink.withAlphaComponent(0.92).cgColor,
+            NSColor.white.withAlphaComponent(isDark ? 0.9 : 0.75).cgColor,
+            NSColor.clear.cgColor,
+        ]
+        beam.locations = [0.0, 0.58, 0.72, 0.83, 0.91, 0.96, 1.0]
+        
+        beamMask.frame = beamBounds
+        beamMask.path = beamInsetPath
+        beamMask.fillColor = nil
+        beamMask.strokeColor = NSColor.white.cgColor
+        beamMask.lineWidth = 1.35
+        
+        for (idx, dot) in self.ghostThinkingDots.enumerated() {
+            let row = idx / 3
+            let col = idx % 3
+            dot.removeAllAnimations()
+            dot.frame = CGRect(
+                x: matrixOriginX + CGFloat(col) * (dotSize + dotGap),
+                y: matrixOriginY + CGFloat(row) * (dotSize + dotGap),
+                width: dotSize,
+                height: dotSize
+            )
+            dot.cornerRadius = 0.75
+            dot.backgroundColor = dotPalette[idx % dotPalette.count].cgColor
+            dot.opacity = 0.85
+            dot.transform = CATransform3DIdentity
+        }
+        
+        let labelX = matrixOriginX + matrixExtent + 4.5
+        let labelY = (pillHeight - labelImageSize.height) * 0.5
+        labelLayer.removeAllAnimations()
+        labelLayer.frame = CGRect(x: labelX, y: labelY, width: labelImageSize.width, height: labelImageSize.height)
+        labelLayer.contents = labelCGImage
+        labelLayer.contentsScale = scale
+        labelLayer.contentsGravity = .resize
+        labelLayer.opacity = 0.95
         CATransaction.commit()
         
         self.isShowingGhostThinking = true
         
-        if !AnimationConstants.isReducedMotionEnabled {
-            let pulse = CABasicAnimation(keyPath: "opacity")
-            pulse.fromValue = 0.18
-            pulse.toValue = 0.52
-            pulse.duration = 0.6
-            pulse.autoreverses = true
-            pulse.repeatCount = .infinity
-            pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            container.add(pulse, forKey: "ghostThinking")
+        guard !AnimationConstants.isReducedMotionEnabled else { return }
+        
+        // Crisp entrance pop
+        let easeOut = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+        let enterFade = CABasicAnimation(keyPath: "opacity")
+        enterFade.fromValue = 0.0
+        enterFade.toValue = 1.0
+        let enterScale = CABasicAnimation(keyPath: "transform.scale")
+        enterScale.fromValue = 0.86
+        enterScale.toValue = 1.0
+        let enterSlide = CABasicAnimation(keyPath: "transform.translation.x")
+        enterSlide.fromValue = 4.0
+        enterSlide.toValue = 0.0
+        let enterGroup = CAAnimationGroup()
+        enterGroup.animations = [enterFade, enterScale, enterSlide]
+        enterGroup.duration = 0.16
+        enterGroup.timingFunction = easeOut
+        enterGroup.isRemovedOnCompletion = true
+        pill.add(enterGroup, forKey: "thinkingEnter")
+        
+        // Border-beam rotation
+        let beamSpin = CABasicAnimation(keyPath: "transform.rotation.z")
+        beamSpin.fromValue = 0.0
+        beamSpin.toValue = Double.pi * 2.0
+        beamSpin.duration = 1.65
+        beamSpin.repeatCount = .infinity
+        beam.add(beamSpin, forKey: "borderBeamSpin")
+        
+        // LeiBox `thinking-particles` 3×3 staggered diagonal breathing wave (1.05s cycle)
+        let cycle: CFTimeInterval = 1.05
+        let baseTime = CACurrentMediaTime()
+        for (idx, dot) in self.ghostThinkingDots.enumerated() {
+            let row = idx / 3
+            let col = idx % 3
+            let diagPhase = Double(row + col) * 0.12
+            
+            let opAnim = CAKeyframeAnimation(keyPath: "opacity")
+            opAnim.values = [0.22, 1.0, 0.38, 0.22]
+            opAnim.keyTimes = [0.0, 0.35, 0.72, 1.0]
+            
+            let scAnim = CAKeyframeAnimation(keyPath: "transform.scale")
+            scAnim.values = [0.70, 1.24, 0.85, 0.70]
+            scAnim.keyTimes = [0.0, 0.35, 0.72, 1.0]
+            
+            let dotGroup = CAAnimationGroup()
+            dotGroup.animations = [opAnim, scAnim]
+            dotGroup.duration = cycle
+            dotGroup.beginTime = baseTime + diagPhase
+            dotGroup.repeatCount = .infinity
+            dotGroup.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            dot.add(dotGroup, forKey: "matrixWave")
         }
+        
+        // Gentle shimmer on the "AI" label
+        let labelPulse = CABasicAnimation(keyPath: "opacity")
+        labelPulse.fromValue = 0.70
+        labelPulse.toValue = 1.0
+        labelPulse.duration = 0.75
+        labelPulse.autoreverses = true
+        labelPulse.repeatCount = .infinity
+        labelPulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        labelLayer.add(labelPulse, forKey: "labelShimmer")
+    }
+    
+    
+    private func hideGhostThinkingLayer(animated: Bool) {
+        
+        guard let pill = self.ghostThinkingLayer else { return }
+        if !animated {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            pill.removeAllAnimations()
+            pill.opacity = 0
+            pill.frame = .zero
+            self.ghostThinkingBeamLayer?.removeAllAnimations()
+            self.ghostThinkingLabelLayer?.removeAllAnimations()
+            for dot in self.ghostThinkingDots {
+                dot.removeAllAnimations()
+            }
+            CATransaction.commit()
+            return
+        }
+        
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.10)
+        CATransaction.setCompletionBlock { [weak self, weak pill] in
+            Task { @MainActor in
+                guard let self, let pill, !self.isShowingGhostThinking else { return }
+                self.hideGhostThinkingLayer(animated: false)
+            }
+        }
+        pill.opacity = 0
+        CATransaction.commit()
     }
     
     
@@ -986,6 +1172,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.lastGhostFrame = .zero
         self.lastTabBadgeXInContainer = nil
         self.lastGhostShowsTabBadge = false
+        self.hideGhostThinkingLayer(animated: animated && wasThinking)
         
         guard let container = self.ghostContainerLayer else { return }
         let sweep = self.ghostSweepLayer
@@ -1575,6 +1762,12 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.ghostRootLayer = nil
         self.ghostContainerLayer = nil
         self.ghostSweepLayer = nil
+        self.ghostThinkingLayer = nil
+        self.ghostThinkingBeamHostLayer = nil
+        self.ghostThinkingBeamLayer = nil
+        self.ghostThinkingBeamMaskLayer = nil
+        self.ghostThinkingDots.removeAll()
+        self.ghostThinkingLabelLayer = nil
         
         self.vimRootLayer?.removeFromSuperlayer()
         self.vimRootLayer = nil
@@ -1674,6 +1867,39 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         container.opacity = 0
         root.addSublayer(container)
         self.ghostContainerLayer = container
+        
+        // LeiBox-inspired AI Thinking Pill (3×3 staggered wave matrix + rotating conic border-beam)
+        let pill = CALayer()
+        pill.opacity = 0
+        pill.masksToBounds = false
+        root.addSublayer(pill)
+        self.ghostThinkingLayer = pill
+        
+        let beamHost = CALayer()
+        beamHost.masksToBounds = true
+        pill.addSublayer(beamHost)
+        self.ghostThinkingBeamHostLayer = beamHost
+        
+        let beam = CAGradientLayer()
+        beamHost.addSublayer(beam)
+        self.ghostThinkingBeamLayer = beam
+        
+        let beamMask = CAShapeLayer()
+        beamHost.mask = beamMask
+        self.ghostThinkingBeamMaskLayer = beamMask
+        
+        var dots: [CALayer] = []
+        dots.reserveCapacity(9)
+        for _ in 0..<9 {
+            let dot = CALayer()
+            pill.addSublayer(dot)
+            dots.append(dot)
+        }
+        self.ghostThinkingDots = dots
+        
+        let labelLayer = CALayer()
+        pill.addSublayer(labelLayer)
+        self.ghostThinkingLabelLayer = labelLayer
     }
     
     

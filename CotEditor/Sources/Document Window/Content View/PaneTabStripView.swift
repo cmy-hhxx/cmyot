@@ -64,7 +64,7 @@ struct PaneTabStripView: NSViewRepresentable {
     
     private let scrollView = NonDraggableScrollView()
     private let documentContainer = TabStripContainerView()
-    private let newTabButton = CenteredIconButton(symbolName: "plus", pointSize: 10.5, weight: .semibold, accessibilityDescription: "New Tab")
+    private let newTabButton = CenteredIconButton(symbolName: "plus", pointSize: 10.5, weight: .semibold, accessibilityDescription: "New Tab", hoverStyle: .newTab)
     private let insertionIndicator = NSView()
     
     private var tabViews: [UUID: PaneTabItemView] = [:]
@@ -679,23 +679,43 @@ private final class NonDraggableLabel: NSTextField {
 
 private final class CenteredIconButton: NSButton {
     
+    enum HoverStyle {
+        case standard
+        case close
+        case newTab
+        case pin
+    }
+    
     private let iconView = NSImageView()
+    private let hoverStyle: HoverStyle
+    private var baseTintColor: NSColor? = .secondaryLabelColor
+    private var trackingArea: NSTrackingArea?
+    private var isPointerHovered = false
     
     override var mouseDownCanMoveWindow: Bool { false }
     
     
-    init(symbolName: String, pointSize: CGFloat, weight: NSFont.Weight, accessibilityDescription: String) {
-        
+    init(
+        symbolName: String,
+        pointSize: CGFloat,
+        weight: NSFont.Weight,
+        accessibilityDescription: String,
+        hoverStyle: HoverStyle = .standard
+    ) {
+        self.hoverStyle = hoverStyle
         super.init(frame: .zero)
         self.isBordered = false
         self.bezelStyle = .regularSquare
         self.focusRingType = .none
         self.title = ""
         self.image = nil
+        self.wantsLayer = true
+        self.layer?.cornerCurve = .continuous
         
         self.iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription)?
             .withSymbolConfiguration(.init(pointSize: pointSize, weight: weight))
         self.iconView.imageScaling = .scaleNone
+        self.iconView.wantsLayer = true
         self.iconView.translatesAutoresizingMaskIntoConstraints = false
         self.addSubview(self.iconView)
         
@@ -714,8 +734,169 @@ private final class CenteredIconButton: NSButton {
     
     override var contentTintColor: NSColor? {
         didSet {
-            self.iconView.contentTintColor = self.contentTintColor
+            self.baseTintColor = self.contentTintColor
+            if !self.isPointerHovered {
+                self.iconView.contentTintColor = self.contentTintColor
+            }
         }
+    }
+    
+    
+    override func layout() {
+        
+        super.layout()
+        if self.hoverStyle == .close {
+            self.layer?.cornerRadius = min(self.bounds.width, self.bounds.height) * 0.5
+        }
+    }
+    
+    
+    override func updateTrackingAreas() {
+        
+        super.updateTrackingAreas()
+        if let existing = self.trackingArea {
+            self.removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(rect: self.bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        self.addTrackingArea(area)
+        self.trackingArea = area
+    }
+    
+    
+    override func mouseEntered(with event: NSEvent) {
+        
+        super.mouseEntered(with: event)
+        self.isPointerHovered = true
+        self.applyHoverState(hovered: true)
+    }
+    
+    
+    override func mouseExited(with event: NSEvent) {
+        
+        super.mouseExited(with: event)
+        self.isPointerHovered = false
+        self.applyHoverState(hovered: false)
+    }
+    
+    
+    override func mouseDown(with event: NSEvent) {
+        
+        self.animatePressScale(pressed: true)
+        super.mouseDown(with: event)
+        self.animatePressScale(pressed: false)
+    }
+    
+    
+    private func applyHoverState(hovered: Bool) {
+        
+        guard let iconLayer = self.iconView.layer else { return }
+        let reduceMotion = AnimationConstants.isReducedMotionEnabled
+        
+        // Anchor around the icon's visual center so rotation & scale stay dead-center.
+        let iconBounds = self.iconView.bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        iconLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        iconLayer.position = CGPoint(x: self.iconView.frame.midX, y: self.iconView.frame.midY)
+        iconLayer.bounds = iconBounds
+        CATransaction.commit()
+        
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(reduceMotion ? 0.0 : 0.16)
+            switch self.hoverStyle {
+                case .close:
+                    self.layer?.backgroundColor = hovered
+                        ? NSColor.systemRed.withAlphaComponent(0.16).cgColor
+                        : NSColor.clear.cgColor
+                    self.layer?.borderWidth = hovered ? 0.75 : 0
+                    self.layer?.borderColor = hovered
+                        ? NSColor.systemRed.withAlphaComponent(0.28).cgColor
+                        : NSColor.clear.cgColor
+                    self.iconView.contentTintColor = hovered ? .systemRed : (self.baseTintColor ?? .secondaryLabelColor)
+                case .newTab:
+                    self.layer?.backgroundColor = hovered
+                        ? NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
+                        : NSColor.clear.cgColor
+                    self.iconView.contentTintColor = hovered ? .controlAccentColor : (self.baseTintColor ?? .secondaryLabelColor)
+                case .pin:
+                    self.layer?.backgroundColor = hovered
+                        ? NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
+                        : NSColor.clear.cgColor
+                    self.iconView.contentTintColor = hovered ? .controlAccentColor : (self.baseTintColor ?? .controlAccentColor)
+                case .standard:
+                    self.layer?.backgroundColor = hovered
+                        ? NSColor.labelColor.withAlphaComponent(0.08).cgColor
+                        : NSColor.clear.cgColor
+                    self.iconView.contentTintColor = hovered ? .labelColor : (self.baseTintColor ?? .secondaryLabelColor)
+            }
+            CATransaction.commit()
+        }
+        
+        guard !reduceMotion else { return }
+        
+        let targetAngle: CGFloat
+        let targetScale: CGFloat
+        switch self.hoverStyle {
+            case .close:
+                targetAngle = hovered ? (.pi * 0.5) : 0.0
+                targetScale = hovered ? 1.15 : 1.0
+            case .newTab:
+                targetAngle = hovered ? (.pi * 0.5) : 0.0
+                targetScale = hovered ? 1.12 : 1.0
+            case .pin:
+                targetAngle = hovered ? -0.24 : 0.0
+                targetScale = hovered ? 1.14 : 1.0
+            case .standard:
+                targetAngle = 0.0
+                targetScale = hovered ? 1.08 : 1.0
+        }
+        
+        let rotSpring = CASpringAnimation(keyPath: "transform.rotation.z")
+        rotSpring.fromValue = iconLayer.presentation()?.value(forKeyPath: "transform.rotation.z") ?? (hovered ? 0.0 : targetAngle)
+        rotSpring.toValue = targetAngle
+        rotSpring.mass = 0.65
+        rotSpring.stiffness = 380
+        rotSpring.damping = 19
+        rotSpring.duration = min(0.36, rotSpring.settlingDuration)
+        
+        let scaleSpring = CASpringAnimation(keyPath: "transform.scale")
+        scaleSpring.fromValue = iconLayer.presentation()?.value(forKeyPath: "transform.scale") ?? 1.0
+        scaleSpring.toValue = targetScale
+        scaleSpring.mass = 0.6
+        scaleSpring.stiffness = 420
+        scaleSpring.damping = 21
+        scaleSpring.duration = min(0.30, scaleSpring.settlingDuration)
+        
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        var xform = CATransform3DIdentity
+        xform = CATransform3DRotate(xform, targetAngle, 0, 0, 1)
+        xform = CATransform3DScale(xform, targetScale, targetScale, 1)
+        iconLayer.transform = xform
+        CATransaction.commit()
+        
+        iconLayer.add(rotSpring, forKey: "hoverSpin")
+        iconLayer.add(scaleSpring, forKey: "hoverScale")
+    }
+    
+    
+    private func animatePressScale(pressed: Bool) {
+        
+        guard !AnimationConstants.isReducedMotionEnabled, let layer = self.layer else { return }
+        let target: CGFloat = pressed ? 0.85 : 1.0
+        let anim = CASpringAnimation(keyPath: "transform.scale")
+        anim.fromValue = pressed ? 1.0 : 0.85
+        anim.toValue = target
+        anim.mass = 0.5
+        anim.stiffness = 500
+        anim.damping = 22
+        anim.duration = min(0.22, anim.settlingDuration)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.transform = CATransform3DMakeScale(target, target, 1)
+        CATransaction.commit()
+        layer.add(anim, forKey: "pressBounce")
     }
     
     
@@ -754,15 +935,20 @@ private final class TabStripContainerView: NSView {
     private var isSelected = false
     private var isHovered = false
     private var isRenaming = false
+    private var lastConfiguredTitle: String?
+    private var lastConfiguredEdited: Bool?
     
-    private let pinButton = CenteredIconButton(symbolName: "pin.fill", pointSize: 9, weight: .semibold, accessibilityDescription: "Pinned")
+    private let activeAccentBar = CALayer()
+    private let editedHaloLayer = CALayer()
+    private let pinButton = CenteredIconButton(symbolName: "pin.fill", pointSize: 9, weight: .semibold, accessibilityDescription: "Pinned", hoverStyle: .pin)
     private let titleLabel: NonDraggableLabel = {
         let label = NonDraggableLabel(labelWithString: "")
+        label.wantsLayer = true
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return label
     }()
     private let editedDot = NSView()
-    private let closeButton = CenteredIconButton(symbolName: "xmark", pointSize: 9, weight: .semibold, accessibilityDescription: "Close")
+    private let closeButton = CenteredIconButton(symbolName: "xmark", pointSize: 9, weight: .semibold, accessibilityDescription: "Close", hoverStyle: .close)
     private var inlineTextField: NSTextField?
     
     private var trackingArea: NSTrackingArea?
@@ -816,6 +1002,13 @@ private final class TabStripContainerView: NSView {
         self.layer?.cornerRadius = 6
         self.layer?.cornerCurve = .continuous
         
+        self.activeAccentBar.cornerRadius = 1.0
+        self.activeAccentBar.opacity = 0
+        self.layer?.addSublayer(self.activeAccentBar)
+        
+        self.editedHaloLayer.opacity = 0
+        self.layer?.addSublayer(self.editedHaloLayer)
+        
         self.pinButton.contentTintColor = .controlAccentColor
         self.pinButton.target = self
         self.pinButton.action = #selector(pinClicked(_:))
@@ -837,7 +1030,7 @@ private final class TabStripContainerView: NSView {
         
         self.closeButton.contentTintColor = .secondaryLabelColor
         self.closeButton.wantsLayer = true
-        self.closeButton.layer?.cornerRadius = 4
+        self.closeButton.layer?.cornerRadius = 8
         self.closeButton.target = self
         self.closeButton.action = #selector(closeClicked(_:))
         self.closeButton.toolTip = String(localized: "chrome.tab.close", defaultValue: "Close Tab", table: "Chrome")
@@ -847,9 +1040,15 @@ private final class TabStripContainerView: NSView {
     
     func configure(tab: PaneTab, isSelected: Bool, isRenaming: Bool) {
         
+        let wasSelected = self.isSelected
+        let previousTitle = self.lastConfiguredTitle
+        let previousEdited = self.lastConfiguredEdited
+        
         self.tab = tab
         self.isSelected = isSelected
         self.isRenaming = isRenaming
+        self.lastConfiguredTitle = tab.title
+        self.lastConfiguredEdited = tab.isEdited
         
         self.titleLabel.stringValue = tab.title
         self.titleLabel.textColor = isSelected ? .labelColor : .secondaryLabelColor
@@ -861,12 +1060,22 @@ private final class TabStripContainerView: NSView {
         self.editedDot.isHidden = isRenaming
         self.editedDot.layer?.backgroundColor = tab.isEdited
             ? NSColor.systemOrange.cgColor
-            : NSColor.systemGreen.withAlphaComponent(0.6).cgColor
+            : NSColor.systemGreen.withAlphaComponent(0.72).cgColor
         self.editedDot.toolTip = tab.isEdited ? "未保存（按 ⌘S 保存）" : "已保存 (⌘S)"
         self.closeButton.isHidden = tab.isPinned || !tab.isClosable || isRenaming
         self.titleLabel.isHidden = isRenaming
         
-        self.updateBackground()
+        self.updateBackground(animated: wasSelected != isSelected)
+        self.updateStatusDotAnimation(isEdited: tab.isEdited, previousEdited: previousEdited, isRenaming: isRenaming)
+        
+        if !AnimationConstants.isReducedMotionEnabled && !isRenaming {
+            if !wasSelected && isSelected {
+                self.animateTitleSelectionPop()
+            } else if let previousTitle, previousTitle != tab.title {
+                self.animateTitleRenameCelebrate()
+            }
+        }
+        
         self.needsLayout = true
     }
     
@@ -918,9 +1127,24 @@ private final class TabStripContainerView: NSView {
         
         if !self.editedDot.isHidden {
             trailingX -= 6
-            self.editedDot.frame = NSRect(x: trailingX, y: (h - 6) / 2, width: 6, height: 6)
+            let dotFrame = NSRect(x: trailingX, y: (h - 6) / 2, width: 6, height: 6)
+            self.editedDot.frame = dotFrame
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            self.editedHaloLayer.bounds = CGRect(x: 0, y: 0, width: 6, height: 6)
+            self.editedHaloLayer.position = CGPoint(x: dotFrame.midX, y: dotFrame.midY)
+            self.editedHaloLayer.cornerRadius = 3
+            CATransaction.commit()
             trailingX -= 6
         }
+        
+        // Active tab subtle bottom accent indicator pill (inspired by LeiBox glass-tab-menu)
+        let barWidth = max(16, min(32, self.bounds.width * 0.34))
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        self.activeAccentBar.bounds = CGRect(x: 0, y: 0, width: barWidth, height: 1.8)
+        self.activeAccentBar.position = CGPoint(x: self.bounds.width * 0.5, y: h - 1.2)
+        CATransaction.commit()
         
         // vertically center the label on the exact same horizontal line as the status dot & close button
         let titleWidth = max(20, trailingX - x)
@@ -949,14 +1173,16 @@ private final class TabStripContainerView: NSView {
     override func mouseEntered(with event: NSEvent) {
         
         self.isHovered = true
-        self.updateBackground()
+        self.updateBackground(animated: true)
+        self.animateTabHoverMicroMotion(hovered: true)
     }
     
     
     override func mouseExited(with event: NSEvent) {
         
         self.isHovered = false
-        self.updateBackground()
+        self.updateBackground(animated: true)
+        self.animateTabHoverMicroMotion(hovered: false)
     }
     
     
@@ -1082,22 +1308,173 @@ private final class TabStripContainerView: NSView {
     }
     
     
-    private func updateBackground() {
+    private func updateBackground(animated: Bool = false) {
         
+        let duration: CFTimeInterval = (animated && !AnimationConstants.isReducedMotionEnabled) ? 0.16 : 0.0
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(duration)
             if self.isSelected {
-                self.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.09).cgColor
+                self.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.095).cgColor
                 self.layer?.borderColor = NSColor.separatorColor.cgColor
                 self.layer?.borderWidth = 1 / max(self.window?.backingScaleFactor ?? 2, 1)
+                self.activeAccentBar.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.85).cgColor
+                self.activeAccentBar.opacity = 1.0
+                self.activeAccentBar.transform = CATransform3DIdentity
             } else if self.isHovered {
-                self.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.05).cgColor
+                self.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.055).cgColor
                 self.layer?.borderWidth = 0
+                self.activeAccentBar.opacity = 0.0
+                self.activeAccentBar.transform = CATransform3DMakeScale(0.35, 1.0, 1.0)
             } else {
                 self.layer?.backgroundColor = NSColor.clear.cgColor
                 self.layer?.borderWidth = 0
+                self.activeAccentBar.opacity = 0.0
+                self.activeAccentBar.transform = CATransform3DMakeScale(0.35, 1.0, 1.0)
             }
+            CATransaction.commit()
         }
         self.titleLabel.textColor = (self.isSelected || self.isHovered) ? .labelColor : .secondaryLabelColor
+    }
+    
+    
+    /// Gentle playful micro-motion on the document name & save status dot when hovering a tab.
+    private func animateTabHoverMicroMotion(hovered: Bool) {
+        
+        guard !AnimationConstants.isReducedMotionEnabled, !self.isRenaming else { return }
+        
+        if let titleLayer = self.titleLabel.layer, !self.isSelected {
+            let glide = CASpringAnimation(keyPath: "transform.translation.x")
+            glide.fromValue = hovered ? 0.0 : 1.5
+            glide.toValue = hovered ? 1.5 : 0.0
+            glide.mass = 0.6
+            glide.stiffness = 380
+            glide.damping = 24
+            glide.duration = min(0.24, glide.settlingDuration)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            titleLayer.transform = CATransform3DMakeTranslation(hovered ? 1.5 : 0.0, 0, 0)
+            CATransaction.commit()
+            titleLayer.add(glide, forKey: "titleHoverGlide")
+        }
+        
+        if let dotLayer = self.editedDot.layer, !self.editedDot.isHidden, self.tab?.isEdited != true {
+            let dotScale: CGFloat = hovered ? 1.24 : 1.0
+            let pop = CASpringAnimation(keyPath: "transform.scale")
+            pop.fromValue = hovered ? 1.0 : 1.24
+            pop.toValue = dotScale
+            pop.mass = 0.55
+            pop.stiffness = 420
+            pop.damping = 20
+            pop.duration = min(0.26, pop.settlingDuration)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            dotLayer.transform = CATransform3DMakeScale(dotScale, dotScale, 1)
+            CATransaction.commit()
+            dotLayer.add(pop, forKey: "dotHoverPop")
+        }
+    }
+    
+    
+    /// Crisp upward settle & micro-pop on the document title when this tab becomes active.
+    private func animateTitleSelectionPop() {
+        
+        guard let titleLayer = self.titleLabel.layer else { return }
+        let lift = CASpringAnimation(keyPath: "transform.translation.y")
+        lift.fromValue = 1.8
+        lift.toValue = 0.0
+        lift.mass = 0.6
+        lift.stiffness = 420
+        lift.damping = 22
+        lift.duration = min(0.28, lift.settlingDuration)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        titleLayer.transform = CATransform3DIdentity
+        CATransaction.commit()
+        titleLayer.add(lift, forKey: "titleSelectSettle")
+    }
+    
+    
+    /// Celebratory subtle bounce after inline tab rename succeeds.
+    private func animateTitleRenameCelebrate() {
+        
+        guard let titleLayer = self.titleLabel.layer else { return }
+        let bounce = CAKeyframeAnimation(keyPath: "transform.scale")
+        bounce.values = [0.94, 1.06, 0.99, 1.0]
+        bounce.keyTimes = [0.0, 0.42, 0.76, 1.0]
+        bounce.duration = 0.34
+        bounce.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        titleLayer.add(bounce, forKey: "titleRenameBounce")
+    }
+    
+    
+    /// Living heartbeat pulse when unsaved (`isEdited == true`), and a crisp emerald celebration ripple on save (`true -> false`).
+    private func updateStatusDotAnimation(isEdited: Bool, previousEdited: Bool?, isRenaming: Bool) {
+        
+        guard let dotLayer = self.editedDot.layer else { return }
+        if isRenaming || AnimationConstants.isReducedMotionEnabled {
+            dotLayer.removeAnimation(forKey: "unsavedHeartbeat")
+            self.editedHaloLayer.removeAllAnimations()
+            self.editedHaloLayer.opacity = 0
+            return
+        }
+        
+        if isEdited {
+            if dotLayer.animation(forKey: "unsavedHeartbeat") == nil {
+                let beat = CAKeyframeAnimation(keyPath: "transform.scale")
+                beat.values = [1.0, 1.22, 0.96, 1.0, 1.0]
+                beat.keyTimes = [0.0, 0.22, 0.42, 0.60, 1.0]
+                beat.duration = 2.2
+                beat.repeatCount = .infinity
+                beat.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                dotLayer.add(beat, forKey: "unsavedHeartbeat")
+            }
+            if self.editedHaloLayer.animation(forKey: "unsavedHalo") == nil {
+                self.editedHaloLayer.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.50).cgColor
+                let scale = CABasicAnimation(keyPath: "transform.scale")
+                scale.fromValue = 1.0
+                scale.toValue = 2.5
+                let fade = CAKeyframeAnimation(keyPath: "opacity")
+                fade.values = [0.52, 0.16, 0.0, 0.0]
+                fade.keyTimes = [0.0, 0.45, 0.68, 1.0]
+                let group = CAAnimationGroup()
+                group.animations = [scale, fade]
+                group.duration = 2.2
+                group.repeatCount = .infinity
+                group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                self.editedHaloLayer.add(group, forKey: "unsavedHalo")
+            }
+        } else {
+            dotLayer.removeAnimation(forKey: "unsavedHeartbeat")
+            self.editedHaloLayer.removeAnimation(forKey: "unsavedHalo")
+            
+            // Transitioning from unsaved -> saved: play a joyful emerald save confirmation pop + ripple!
+            if previousEdited == true {
+                let pop = CAKeyframeAnimation(keyPath: "transform.scale")
+                pop.values = [0.65, 1.48, 0.94, 1.0]
+                pop.keyTimes = [0.0, 0.36, 0.72, 1.0]
+                pop.duration = 0.38
+                pop.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                dotLayer.add(pop, forKey: "savedPop")
+                
+                self.editedHaloLayer.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.62).cgColor
+                let rippleScale = CABasicAnimation(keyPath: "transform.scale")
+                rippleScale.fromValue = 1.0
+                rippleScale.toValue = 3.0
+                let rippleFade = CABasicAnimation(keyPath: "opacity")
+                rippleFade.fromValue = 0.68
+                rippleFade.toValue = 0.0
+                let rippleGroup = CAAnimationGroup()
+                rippleGroup.animations = [rippleScale, rippleFade]
+                rippleGroup.duration = 0.44
+                rippleGroup.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                rippleGroup.isRemovedOnCompletion = true
+                self.editedHaloLayer.opacity = 0
+                self.editedHaloLayer.add(rippleGroup, forKey: "savedRipple")
+            } else {
+                self.editedHaloLayer.opacity = 0
+            }
+        }
     }
     
     

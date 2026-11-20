@@ -515,6 +515,22 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
             return .skip(reason: "midWord")
         }
         
+        // Respect Tab/space alignment and bare outline/list indentation contexts.
+        if linePrefix.isEmpty || linePrefix.allSatisfy(\.isWhitespace) {
+            return .skip(reason: "leadingIndent")
+        }
+        if linePrefix.hasSuffix("\t") || linePrefix.hasSuffix("  ") {
+            return .skip(reason: "tabFormatting")
+        }
+        if linePrefix.range(of: #"^\s*(?:[-*+•‣▪︎>]|\d+[\.、\)）]|#{1,6})\s*$"#, options: .regularExpression) != nil {
+            return .skip(reason: "listPrefix")
+        }
+        if !lineSuffix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           linePrefix.last?.isWhitespace == true
+        {
+            return .skip(reason: "tabAlignment")
+        }
+        
         let trimmedPrefix = linePrefix.trimmingCharacters(in: .whitespaces)
         let hasNonASCII = trimmedPrefix.unicodeScalars.contains { !$0.isASCII }
         let minChars = isCode ? 3 : (hasNonASCII ? 2 : 4)

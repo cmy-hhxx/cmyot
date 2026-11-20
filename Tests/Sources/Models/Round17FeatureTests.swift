@@ -327,4 +327,108 @@ struct Round17FeatureTests {
         #expect(reloaded.deleteProfile(id: workProfile.id) == true)
         #expect(reloaded.profiles.count == 1)
     }
+    
+    
+    // MARK: 5. Historical Analytics Backfill, Heatmap Day Detail & Tab Formatting Protection
+    
+    @Test func historicalBackfillPopulatesNonZeroHeatmapAndDayDetail() throws {
+        
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot_backfill_test_\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "backfill.sqlite3"))
+        let calendar = Calendar.current
+        let now = Date()
+        let pastDate = try #require(calendar.date(byAdding: .day, value: -5, to: calendar.startOfDay(for: now)))
+        let pastKey = AnalyticsManager.dateKey(for: pastDate)
+        
+        db.saveWeeklyReport(
+            id: "202611/20261109-1113",
+            periodLabel: "20261109-1113",
+            yearMonth: "202611",
+            title: "测试-周报-20261109-1113",
+            content: String(repeating: "完成核心功能开发与测试验证。", count: 40),
+            createdAt: pastDate,
+            reloadAfter: true
+        )
+        
+        let manager = AnalyticsManager(database: db)
+        manager.backfillHistoricalStatsIfNeeded(referenceDate: now, force: true)
+        manager.reloadFromDatabase()
+        
+        let currentYear = calendar.component(.year, from: now)
+        let yearly = manager.yearlyHeatmap(year: currentYear, referenceDate: now)
+        let coloredCells = yearly.weeks.flatMap { $0 }.filter { !$0.isOutOfYear && !$0.isFuture && $0.level > 0 }
+        #expect(!coloredCells.isEmpty)
+        for cell in coloredCells {
+            #expect(cell.typedChars > 0 || cell.aiCompletedChars > 0 || cell.aiRequests > 0, "Colored cell \(cell.dateKey) should never show 0")
+        }
+        
+        if let sampleCell = coloredCells.first {
+            let detail = manager.dayDetail(for: sampleCell)
+            #expect(detail.cell.dateKey == sampleCell.dateKey)
+        }
+        
+        let series14 = manager.dailySeries(days: 14, referenceDate: now)
+        #expect(series14.count == 14)
+        let rhythm = manager.weekdayActivityDistribution(days: 90, referenceDate: now)
+        #expect(rhythm.count == 7)
+        _ = pastKey
+    }
+    
+    
+    @Test func formattingTabContextProtectsIndentationAndAlignmentFromGhostCompletion() {
+        
+        let emptySel = NSRange(location: 0, length: 0)
+        // Start of line & leading indentation
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "", lineSuffix: "", selectedRange: emptySel) == true)
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "    ", lineSuffix: "hello", selectedRange: emptySel) == true)
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "\t\t", lineSuffix: "", selectedRange: emptySel) == true)
+        // After tab or consecutive spaces for column alignment
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "项目名称\t", lineSuffix: "", selectedRange: emptySel) == true)
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "项目名称  ", lineSuffix: "", selectedRange: emptySel) == true)
+        // Bare list / outline / heading markers
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "  - ", lineSuffix: "", selectedRange: emptySel) == true)
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "\t1. ", lineSuffix: "", selectedRange: emptySel) == true)
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "## ", lineSuffix: "", selectedRange: emptySel) == true)
+        // Pushing existing trailing text right after whitespace
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "标题 ", lineSuffix: "内容", selectedRange: emptySel) == true)
+        // Non-empty selection always indents
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "hello", lineSuffix: "", selectedRange: NSRange(location: 0, length: 5)) == true)
+        
+        // Active prose / code typing should still allow Tab to accept ghost completion
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "今天完成了数据看板", lineSuffix: "", selectedRange: emptySel) == false)
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "let value = ", lineSuffix: "", selectedRange: emptySel) == false)
+        #expect(EditorTextView.isFormattingTabContext(linePrefix: "\t1. 优化数据看板", lineSuffix: "", selectedRange: emptySel) == false)
+    }
+    
+    
+    @Test func customToolbarVectorIconsRenderCrispImages() {
+        
+        let icons: [NSImage] = [
+            WorkspaceCenterIcons.editableIcon(isEditable: true),
+            WorkspaceCenterIcons.editableIcon(isEditable: false),
+            WorkspaceCenterIcons.quickEmojiIcon(),
+            WorkspaceCenterIcons.analyticsDashboardIcon(isActive: false),
+            WorkspaceCenterIcons.analyticsDashboardIcon(isActive: true),
+            WorkspaceCenterIcons.appearanceModeIcon(isDark: false),
+            WorkspaceCenterIcons.appearanceModeIcon(isDark: true),
+            WorkspaceCenterIcons.weeklyReportIcon(isActive: false),
+            WorkspaceCenterIcons.weeklyReportIcon(isActive: true),
+            WorkspaceCenterIcons.documentCenterIcon(isActive: false),
+            WorkspaceCenterIcons.documentCenterIcon(isActive: true),
+            WorkspaceCenterIcons.terminalIcon(),
+            WorkspaceCenterIcons.aiSettingsIcon(),
+            WorkspaceCenterIcons.inspectorIcon(),
+            WorkspaceCenterIcons.moreIcon(),
+        ]
+        for icon in icons {
+            #expect(icon.size.width == 18)
+            #expect(icon.size.height == 18)
+        }
+        #expect(WorkspaceCenterIcons.analyticsDashboardIcon(isActive: false).isTemplate == true)
+        #expect(WorkspaceCenterIcons.analyticsDashboardIcon(isActive: true).isTemplate == false)
+    }
 }
