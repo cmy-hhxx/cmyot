@@ -638,4 +638,28 @@ struct Round17FeatureTests {
         let futureEmpty = futureCells.allSatisfy { $0.level == 0 }
         #expect(futureEmpty)
     }
+    
+    
+    @Test func paneTabIconSizesStayCompactAndTitleNeverTruncates() {
+        
+        for title in ["工作待办", "偷懒的狐狸", "cot优化roadmap"] {
+            let doc = Document()
+            doc.displayName = title
+            let tab = PaneTab(document: doc)
+            let itemView = PaneTabItemView(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
+            itemView.configure(tab: tab, isSelected: true, isRenaming: false)
+            
+            let width = itemView.preferredWidth(minWidth: 80, maxWidth: 600)
+            itemView.frame = NSRect(x: 0, y: 0, width: width, height: 22)
+            itemView.layoutSubtreeIfNeeded()
+            
+            #expect(itemView.titleLineBreakModeForTesting == .byClipping)
+            #expect(itemView.titleLabelFrameForTesting.width >= itemView.titleCellWidthForTesting)
+            #expect(itemView.closeIconBoundsForTesting.width > 0)
+            #expect(itemView.closeIconBoundsForTesting.width <= 9)
+            #expect(itemView.closeIconBoundsForTesting.height <= 9)
+            #expect(itemView.statusDotSizeForTesting.width <= 5.5)
+            #expect(itemView.statusDotSizeForTesting.height <= 5.5)
+        }
+    }
 }

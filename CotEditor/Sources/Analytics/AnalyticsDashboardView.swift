@@ -127,7 +127,7 @@ private enum DashMotion {
 }
 
 
-/// Frosted sage-mint & deep forest-pine Bento palette (paired with an atmospheric dark counterpart).
+/// Calm architectural neutrals with charcoal ink, muted sage charts, and a single botanical pine-sage accent.
 private struct DashPalette {
     
     let isDark: Bool
@@ -139,97 +139,82 @@ private struct DashPalette {
     
     var canvasTop: Color {
         self.isDark
-            ? Color(red: 0.067, green: 0.086, blue: 0.082)
-            : Color(red: 0.945, green: 0.965, blue: 0.955)
+            ? Color(red: 0.067, green: 0.075, blue: 0.078)
+            : Color(red: 0.965, green: 0.969, blue: 0.969)
     }
     var canvasBottom: Color {
         self.isDark
-            ? Color(red: 0.075, green: 0.094, blue: 0.090)
-            : Color(red: 0.969, green: 0.980, blue: 0.974)
+            ? Color(red: 0.078, green: 0.086, blue: 0.090)
+            : Color(red: 0.976, green: 0.980, blue: 0.980)
     }
     var mistMint: Color {
         self.isDark
-            ? Color(red: 0.14, green: 0.42, blue: 0.30).opacity(0.22)
-            : Color(red: 0.72, green: 0.89, blue: 0.79).opacity(0.42)
-    }
-    var mistWarm: Color {
-        self.isDark
-            ? Color(red: 0.48, green: 0.38, blue: 0.22).opacity(0.10)
-            : Color(red: 0.98, green: 0.92, blue: 0.76).opacity(0.45)
+            ? Color(red: 0.22, green: 0.44, blue: 0.35).opacity(0.11)
+            : Color(red: 0.76, green: 0.85, blue: 0.80).opacity(0.16)
     }
     
     var card: Color {
         self.isDark
-            ? Color(red: 0.102, green: 0.129, blue: 0.122)
-            : Color.white.opacity(0.95)
+            ? Color(red: 0.105, green: 0.115, blue: 0.118)
+            : Color.white
     }
     var cardShadow: Color {
         self.isDark
             ? Color.black.opacity(0.26)
-            : Color(red: 0.06, green: 0.18, blue: 0.14).opacity(0.055)
+            : Color.black.opacity(0.045)
     }
     var inset: Color {
         self.isDark
-            ? Color.white.opacity(0.048)
-            : Color(red: 0.953, green: 0.969, blue: 0.961)
+            ? Color.white.opacity(0.045)
+            : Color(red: 0.955, green: 0.960, blue: 0.960)
     }
     var insetHover: Color {
         self.isDark
             ? Color.white.opacity(0.075)
-            : Color(red: 0.925, green: 0.953, blue: 0.941)
+            : Color(red: 0.925, green: 0.933, blue: 0.933)
     }
     var hairline: Color {
         self.isDark ? Color.white.opacity(0.085) : Color.black.opacity(0.06)
     }
     var hairlineStrong: Color {
-        self.isDark ? self.emerald.opacity(0.55) : self.pine.opacity(0.32)
+        self.isDark ? self.emerald.opacity(0.55) : self.pine.opacity(0.28)
     }
     var topSpecular: Color {
-        self.isDark ? Color.white.opacity(0.075) : Color.white.opacity(0.88)
+        self.isDark ? Color.white.opacity(0.07) : Color.white.opacity(0.88)
     }
     var architecturalDot: Color {
-        self.isDark ? Color.white.opacity(0.055) : self.pine.opacity(0.048)
+        self.isDark ? Color.white.opacity(0.045) : Color.black.opacity(0.04)
     }
     
     var pine: Color {
         self.isDark
-            ? Color(red: 0.43, green: 0.91, blue: 0.72)
-            : Color(red: 0.059, green: 0.180, blue: 0.153)
+            ? Color(red: 0.88, green: 0.91, blue: 0.90)
+            : Color(red: 0.125, green: 0.155, blue: 0.150)
     }
     var emerald: Color {
         self.isDark
-            ? Color(red: 0.20, green: 0.83, blue: 0.60)
-            : Color(red: 0.176, green: 0.541, blue: 0.384)
+            ? Color(red: 0.40, green: 0.74, blue: 0.59)
+            : Color(red: 0.21, green: 0.45, blue: 0.35)
     }
     var mint: Color {
         self.isDark
-            ? Color(red: 0.12, green: 0.54, blue: 0.38)
-            : Color(red: 0.388, green: 0.725, blue: 0.557)
+            ? Color(red: 0.28, green: 0.50, blue: 0.41)
+            : Color(red: 0.52, green: 0.69, blue: 0.61)
     }
     var paleMint: Color {
         self.isDark
-            ? Color(red: 0.11, green: 0.32, blue: 0.24)
-            : Color(red: 0.710, green: 0.875, blue: 0.780)
+            ? Color(red: 0.17, green: 0.29, blue: 0.24)
+            : Color(red: 0.80, green: 0.88, blue: 0.84)
     }
     var emptyDot: Color {
         self.isDark
-            ? Color.white.opacity(0.075)
-            : Color(red: 0.898, green: 0.933, blue: 0.914)
-    }
-    var coral: Color {
-        self.isDark
-            ? Color(red: 0.97, green: 0.44, blue: 0.44)
-            : Color(red: 0.878, green: 0.424, blue: 0.424)
+            ? Color.white.opacity(0.07)
+            : Color(red: 0.905, green: 0.915, blue: 0.912)
     }
     var positivePillBg: Color {
         self.isDark
-            ? Color(red: 0.18, green: 0.58, blue: 0.42).opacity(0.24)
-            : Color(red: 0.86, green: 0.95, blue: 0.90)
-    }
-    var negativePillBg: Color {
-        self.isDark
-            ? Color(red: 0.90, green: 0.35, blue: 0.35).opacity(0.20)
-            : Color(red: 0.98, green: 0.90, blue: 0.90)
+            ? Color(red: 0.21, green: 0.45, blue: 0.35).opacity(0.22)
+            : Color(red: 0.91, green: 0.95, blue: 0.93)
     }
     var neutralPillBg: Color {
         self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.045)
@@ -240,18 +225,18 @@ private struct DashPalette {
         
         if self.isDark {
             switch level {
-                case 4: Color(red: 0.43, green: 0.91, blue: 0.72)
-                case 3: Color(red: 0.20, green: 0.72, blue: 0.52)
-                case 2: Color(red: 0.13, green: 0.48, blue: 0.35)
-                case 1: Color(red: 0.10, green: 0.29, blue: 0.22)
+                case 4: Color(red: 0.373, green: 0.722, blue: 0.576)
+                case 3: Color(red: 0.231, green: 0.455, blue: 0.369)
+                case 2: Color(red: 0.157, green: 0.294, blue: 0.243)
+                case 1: Color(red: 0.110, green: 0.184, blue: 0.157)
                 default: self.emptyDot
             }
         } else {
             switch level {
-                case 4: Color(red: 0.059, green: 0.180, blue: 0.153)
-                case 3: Color(red: 0.176, green: 0.541, blue: 0.384)
-                case 2: Color(red: 0.388, green: 0.725, blue: 0.557)
-                case 1: Color(red: 0.710, green: 0.875, blue: 0.780)
+                case 4: Color(red: 0.141, green: 0.294, blue: 0.235)
+                case 3: Color(red: 0.302, green: 0.502, blue: 0.416)
+                case 2: Color(red: 0.573, green: 0.714, blue: 0.643)
+                case 1: Color(red: 0.831, green: 0.890, blue: 0.859)
                 default: self.emptyDot
             }
         }
@@ -491,21 +476,9 @@ struct AnalyticsDashboardView: View {
             GeometryReader { proxy in
                 RadialGradient(
                     colors: [self.palette.mistMint, .clear],
-                    center: .topLeading,
-                    startRadius: 20,
-                    endRadius: max(360, proxy.size.width * 0.58)
-                )
-                RadialGradient(
-                    colors: [self.palette.mistWarm, .clear],
                     center: .top,
                     startRadius: 10,
-                    endRadius: max(300, proxy.size.width * 0.45)
-                )
-                RadialGradient(
-                    colors: [self.palette.mistMint.opacity(0.65), .clear],
-                    center: .topTrailing,
-                    startRadius: 20,
-                    endRadius: max(340, proxy.size.width * 0.5)
+                    endRadius: max(380, proxy.size.width * 0.56)
                 )
             }
             
@@ -655,7 +628,7 @@ struct AnalyticsDashboardView: View {
                     )
                     .overlay(
                         Circle()
-                            .strokeBorder(self.palette.paleMint, lineWidth: 1.5)
+                            .strokeBorder(self.palette.hairline, lineWidth: 1)
                     )
                 
                 Text(profile.displayName)
@@ -688,19 +661,18 @@ struct AnalyticsDashboardView: View {
         let typedBadge: (String, Color, Color) = {
             guard s.typedBaseline7 > 0 else { return ("刚刚开始", .secondary, self.palette.neutralPillBg) }
             let pct = Int((Double(today.typedChars - s.typedBaseline7) * 100 / Double(s.typedBaseline7)).rounded())
-            if pct >= 0 {
-                return ("+\(pct)%", self.palette.emerald, self.palette.positivePillBg)
-            } else {
-                return ("\(pct)%", self.palette.coral, self.palette.negativePillBg)
+            if pct > 0 {
+                return ("+\(pct)%", self.palette.emerald, self.palette.neutralPillBg)
             }
+            return ("\(pct)%", .secondary, self.palette.neutralPillBg)
         }()
         
         let completionBadge: (String, Color, Color) = today.aiCompletionAccepts > 0
-            ? ("采纳 \(today.aiCompletionAccepts) 次 · \(aiShare)%", self.palette.emerald, self.palette.positivePillBg)
+            ? ("采纳 \(today.aiCompletionAccepts) 次 · \(aiShare)%", .primary, self.palette.neutralPillBg)
             : ("暂无采纳", .secondary, self.palette.neutralPillBg)
         
         let consumptionBadge: (String, Color, Color) = today.aiRequests > 0
-            ? ("\(today.aiRequests) 次调用", self.palette.pine, self.palette.positivePillBg)
+            ? ("\(today.aiRequests) 次调用", .primary, self.palette.neutralPillBg)
             : ("暂无调用", .secondary, self.palette.neutralPillBg)
         
         let typedSpark = s.days7.map { Double($0.typed) }
@@ -716,7 +688,7 @@ struct AnalyticsDashboardView: View {
                 badgeTextColor: typedBadge.1,
                 badgeBackground: typedBadge.2,
                 sparkValues: typedSpark,
-                sparkTint: .emerald,
+                sparkTint: .ink,
                 isExpanded: self.expandedKPI == .typed,
                 compact: self.compact,
                 padding: self.cardPadding,
@@ -732,7 +704,7 @@ struct AnalyticsDashboardView: View {
                 badgeTextColor: completionBadge.1,
                 badgeBackground: completionBadge.2,
                 sparkValues: aiSpark,
-                sparkTint: .mint,
+                sparkTint: .sage,
                 isExpanded: self.expandedKPI == .completion,
                 compact: self.compact,
                 padding: self.cardPadding,
@@ -748,7 +720,7 @@ struct AnalyticsDashboardView: View {
                 badgeTextColor: consumptionBadge.1,
                 badgeBackground: consumptionBadge.2,
                 sparkValues: tokenSpark,
-                sparkTint: .coralSplit,
+                sparkTint: .ink,
                 isExpanded: self.expandedKPI == .consumption,
                 compact: self.compact,
                 padding: self.cardPadding,
@@ -846,10 +818,10 @@ struct AnalyticsDashboardView: View {
                 Spacer()
                 Text(story.totalChars > 0 ? "人机协作" : "留白")
                     .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(self.palette.emerald)
+                    .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2.5)
-                    .background(self.palette.positivePillBg, in: Capsule())
+                    .background(self.palette.neutralPillBg, in: Capsule())
             }
             
             DotArcGauge(
@@ -903,10 +875,10 @@ struct AnalyticsDashboardView: View {
                     Text("\(entries.count) 篇")
                         .font(.system(size: 10.5, weight: .medium))
                         .monospacedDigit()
-                        .foregroundStyle(self.palette.emerald)
+                        .foregroundStyle(.secondary)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2.5)
-                        .background(self.palette.positivePillBg, in: Capsule())
+                        .background(self.palette.neutralPillBg, in: Capsule())
                 }
             }
             
@@ -914,7 +886,7 @@ struct AnalyticsDashboardView: View {
                 VStack(spacing: 6) {
                     Image(systemName: "leaf")
                         .font(.system(size: 15))
-                        .foregroundStyle(self.palette.mint)
+                        .foregroundStyle(.secondary)
                     Text("这天没有留下文档改动记录")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
@@ -1039,7 +1011,7 @@ struct AnalyticsDashboardView: View {
                     ForEach(Array(story.highlights.enumerated()), id: \.offset) { _, point in
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Circle()
-                                .fill(self.palette.emerald)
+                                .fill(self.palette.mint)
                                 .frame(width: 5, height: 5)
                                 .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 4 }
                             Text(point)
@@ -1162,7 +1134,7 @@ struct AnalyticsDashboardView: View {
                 HStack(spacing: 10) {
                     Image(systemName: self.entry.symbolName)
                         .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(self.isHovered ? self.palette.emerald : self.palette.pine)
+                        .foregroundStyle(self.isHovered ? self.palette.pine : .secondary)
                         .frame(width: 28, height: 28)
                         .background(self.palette.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .overlay(
@@ -1187,11 +1159,11 @@ struct AnalyticsDashboardView: View {
                         Text(self.entry.countLabel)
                             .font(.system(size: 11, weight: .medium))
                             .monospacedDigit()
-                            .foregroundStyle(self.palette.emerald)
+                            .foregroundStyle(self.isHovered ? .primary : .secondary)
                         Image(systemName: "arrow.up.right")
                             .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(self.isHovered ? self.palette.emerald : .secondary)
-                            .opacity(self.isHovered ? 1 : 0.4)
+                            .foregroundStyle(self.isHovered ? self.palette.pine : .secondary)
+                            .opacity(self.isHovered ? 0.9 : 0.35)
                     }
                 }
                 .padding(.horizontal, 10)
@@ -1202,7 +1174,7 @@ struct AnalyticsDashboardView: View {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .strokeBorder(self.isHovered ? self.palette.emerald.opacity(0.35) : self.palette.hairline, lineWidth: 0.75)
+                        .strokeBorder(self.isHovered ? self.palette.hairlineStrong : self.palette.hairline, lineWidth: 0.75)
                 )
                 .contentShape(Rectangle())
             }
@@ -1319,9 +1291,8 @@ private struct BackPillButton: View {
 
 private enum SparkTint {
     
-    case emerald
-    case mint
-    case coralSplit
+    case ink
+    case sage
 }
 
 
@@ -1458,12 +1429,10 @@ private struct PixelSparkMatrix: View {
                     if row < activeRows {
                         let frac = Double(row + 1) / Double(rows)
                         switch self.tint {
-                            case .emerald:
+                            case .ink:
+                                color = (col == cols - 1) ? self.palette.pine : (frac >= 0.65 ? self.palette.pine.opacity(0.75) : self.palette.mint)
+                            case .sage:
                                 color = self.palette.matrixStep(fraction: frac, isPeak: row == rows - 1 && val >= peak * 0.92)
-                            case .mint:
-                                color = frac >= 0.8 ? self.palette.emerald : (frac >= 0.45 ? self.palette.mint : self.palette.paleMint)
-                            case .coralSplit:
-                                color = (col == cols - 1) ? self.palette.pine : (frac >= 0.7 ? self.palette.coral.opacity(0.82) : self.palette.coral.opacity(0.35))
                         }
                     } else {
                         color = self.palette.emptyDot.opacity(0.75)
@@ -2088,7 +2057,7 @@ private struct BentoRankList: View {
                     HStack(spacing: 8) {
                         Image(systemName: row.symbol)
                             .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(self.palette.emerald)
+                            .foregroundStyle(.secondary)
                             .frame(width: 24, height: 24)
                             .background(self.palette.card, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                         
@@ -2101,8 +2070,11 @@ private struct BentoRankList: View {
                         
                         HStack(spacing: 2) {
                             ForEach(0..<8, id: \.self) { idx in
+                                let dotColor: Color = idx < activeDots
+                                    ? (idx >= 5 ? self.palette.pine : self.palette.mint)
+                                    : self.palette.emptyDot
                                 Circle()
-                                    .fill(idx < activeDots ? self.palette.emerald : self.palette.emptyDot)
+                                    .fill(dotColor)
                                     .frame(width: 4, height: 4)
                             }
                         }

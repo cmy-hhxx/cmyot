@@ -63,7 +63,7 @@ struct PaneTabStripView: NSViewRepresentable {
     
     private let scrollView = NonDraggableScrollView()
     private let documentContainer = TabStripContainerView()
-    private let newTabButton = CenteredIconButton(symbolName: "plus", pointSize: 10.5, weight: .semibold, accessibilityDescription: "New Tab", hoverStyle: .newTab)
+    private let newTabButton = CenteredIconButton(symbolName: "plus", pointSize: 9.5, weight: .medium, accessibilityDescription: "New Tab", hoverStyle: .newTab)
     private let insertionIndicator = NSView()
     
     private var tabViews: [UUID: PaneTabItemView] = [:]
@@ -90,7 +90,7 @@ struct PaneTabStripView: NSViewRepresentable {
     private static let tabHeight: CGFloat = 24
     private static let tabSpacing: CGFloat = 4
     private static let minTabWidth: CGFloat = 80
-    private static let maxTabWidth: CGFloat = 240
+    private static let maxTabWidth: CGFloat = 600
     private static let externalDragGapWidth: CGFloat = 26
     
     
@@ -883,7 +883,9 @@ private final class CenteredIconButton: NSButton {
     /// Standalone layers (not view-backed), so transforms rotate around their true center and implicit fades work.
     private let hoverLayer = CALayer()
     private let iconLayer = CALayer()
-    private let baseImage: NSImage?
+    private let rawImage: NSImage?
+    private let symbolConfig: NSImage.SymbolConfiguration
+    private let sizedImage: NSImage?
     private let hoverStyle: HoverStyle
     private var baseTintColor: NSColor = .secondaryLabelColor
     private var trackingArea: NSTrackingArea?
@@ -892,6 +894,7 @@ private final class CenteredIconButton: NSButton {
     private static let ease = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
     
     override var mouseDownCanMoveWindow: Bool { false }
+    var renderedIconBounds: CGRect { self.iconLayer.bounds }
     
     
     init(
@@ -902,8 +905,10 @@ private final class CenteredIconButton: NSButton {
         hoverStyle: HoverStyle = .standard
     ) {
         self.hoverStyle = hoverStyle
-        self.baseImage = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription)?
-            .withSymbolConfiguration(.init(pointSize: pointSize, weight: weight))
+        self.symbolConfig = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+        let raw = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription)
+        self.rawImage = raw
+        self.sizedImage = raw?.withSymbolConfiguration(self.symbolConfig)
         super.init(frame: .zero)
         self.isBordered = false
         self.bezelStyle = .regularSquare
@@ -940,7 +945,7 @@ private final class CenteredIconButton: NSButton {
         super.layout()
         
         let scale = self.window?.backingScaleFactor ?? 2
-        let size = self.baseImage?.size ?? .zero
+        let size = self.sizedImage?.size ?? .zero
         let side = min(self.bounds.width, self.bounds.height)
         
         CATransaction.begin()
@@ -1060,12 +1065,15 @@ private final class CenteredIconButton: NSButton {
     
     private func refreshIcon() {
         
-        guard let baseImage = self.baseImage else { return }
+        guard let rawImage = self.rawImage else { return }
         let scale = self.window?.backingScaleFactor ?? 2
         var image: CGImage?
+        var targetSize = self.sizedImage?.size ?? .zero
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
             let resolved = NSColor(cgColor: self.currentTint.cgColor) ?? self.currentTint
-            guard let tinted = baseImage.withSymbolConfiguration(.init(paletteColors: [resolved])) else { return }
+            let config = self.symbolConfig.applying(.init(paletteColors: [resolved]))
+            guard let tinted = rawImage.withSymbolConfiguration(config) else { return }
+            targetSize = tinted.size
             var rect = NSRect(origin: .zero, size: tinted.size)
             let transform = NSAffineTransform()
             transform.scale(by: scale)
@@ -1074,6 +1082,7 @@ private final class CenteredIconButton: NSButton {
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.14)
         CATransaction.setAnimationTimingFunction(Self.ease)
+        self.iconLayer.bounds = CGRect(origin: .zero, size: targetSize)
         self.iconLayer.contents = image
         CATransaction.commit()
     }
@@ -1146,7 +1155,7 @@ private final class TabStripContainerView: NSView {
     private let breathingAuraLayer = CALayer()
     private let editedHaloLayer = CALayer()
     private let statusDotLayer = CALayer()
-    private let pinButton = CenteredIconButton(symbolName: "pin.fill", pointSize: 8.5, weight: .semibold, accessibilityDescription: "Pinned", hoverStyle: .pin)
+    private let pinButton = CenteredIconButton(symbolName: "pin.fill", pointSize: 8.0, weight: .semibold, accessibilityDescription: "Pinned", hoverStyle: .pin)
     private let titleLabel: NonDraggableLabel = {
         let label = NonDraggableLabel(labelWithString: "")
         label.wantsLayer = true
@@ -1154,12 +1163,20 @@ private final class TabStripContainerView: NSView {
         return label
     }()
     private let editedDot = NSView()
-    private let closeButton = CenteredIconButton(symbolName: "xmark", pointSize: 7.5, weight: .medium, accessibilityDescription: "Close", hoverStyle: .close)
+    private let closeButton = CenteredIconButton(symbolName: "xmark", pointSize: 6.5, weight: .medium, accessibilityDescription: "Close", hoverStyle: .close)
     private var inlineTextField: NSTextField?
     
     private var trackingArea: NSTrackingArea?
     private var mouseDownLocation: NSPoint?
     private var didStartDrag = false
+    
+    var titleLabelFrameForTesting: NSRect { self.titleLabel.frame }
+    var titleLineBreakModeForTesting: NSLineBreakMode { self.titleLabel.lineBreakMode }
+    var titleCellWidthForTesting: CGFloat {
+        ceil(self.titleLabel.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: 10000, height: 40)).width ?? 0)
+    }
+    var closeIconBoundsForTesting: CGRect { self.closeButton.renderedIconBounds }
+    var statusDotSizeForTesting: CGSize { self.statusDotLayer.bounds.size }
     
     
     override init(frame frameRect: NSRect) {
@@ -1234,20 +1251,20 @@ private final class TabStripContainerView: NSView {
         self.addSubview(self.pinButton)
         
         self.titleLabel.font = .systemFont(ofSize: 12)
-        self.titleLabel.cell?.truncatesLastVisibleLine = true
-        self.titleLabel.lineBreakMode = .byTruncatingMiddle
+        self.titleLabel.cell?.truncatesLastVisibleLine = false
+        self.titleLabel.lineBreakMode = .byClipping
         self.titleLabel.maximumNumberOfLines = 1
         self.titleLabel.isEditable = false
         self.titleLabel.isSelectable = false
         self.addSubview(self.titleLabel)
         
         self.addSubview(self.editedDot)
-        self.statusDotLayer.cornerRadius = 3.25
+        self.statusDotLayer.cornerRadius = 2.5
         self.layer?.addSublayer(self.statusDotLayer)
         
         self.closeButton.contentTintColor = .secondaryLabelColor
         self.closeButton.wantsLayer = true
-        self.closeButton.layer?.cornerRadius = 7
+        self.closeButton.layer?.cornerRadius = 6
         self.closeButton.target = self
         self.closeButton.action = #selector(closeClicked(_:))
         self.closeButton.toolTip = String(localized: "chrome.tab.close", defaultValue: "Close Tab", table: "Chrome")
@@ -1334,6 +1351,15 @@ private final class TabStripContainerView: NSView {
     }
     
     
+    private static func layoutMetrics(isPinned: Bool, showsClose: Bool) -> (leading: CGFloat, trailing: CGFloat) {
+        
+        let leading: CGFloat = 8 + (isPinned ? 13 : 0)
+        // Right pad (5) + optional close slot (12 + 3 gap) or non-closable pad (2) + status slot (10) + gap before status (4)
+        let trailing: CGFloat = 5 + (showsClose ? 15 : 2) + 10 + 4
+        return (leading, trailing)
+    }
+    
+    
     func preferredWidth(minWidth: CGFloat, maxWidth: CGFloat) -> CGFloat {
         
         if self.isRenaming {
@@ -1342,16 +1368,16 @@ private final class TabStripContainerView: NSView {
         
         let previousFont = self.titleLabel.font
         self.titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        let labelWidth = ceil(self.titleLabel.intrinsicContentSize.width)
+        let labelWidth = ceil(
+            self.titleLabel.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: 10000, height: 40)).width
+                ?? self.titleLabel.intrinsicContentSize.width
+        )
         self.titleLabel.font = previousFont
         
         let isPinned = (self.tab?.isPinned == true)
         let showsClose = !isPinned && (self.tab?.isClosable == true)
-        
-        // Leading (8 + optional pin) + trailing (14 status slot + 4 gap + optional 14 close slot + 10 breath)
-        let leadingOverhead: CGFloat = 8 + (isPinned ? 14 : 0)
-        let trailingOverhead: CGFloat = 14 + (showsClose ? 24 : 10)
-        let neededWidth = labelWidth + leadingOverhead + trailingOverhead + 4
+        let metrics = Self.layoutMetrics(isPinned: isPinned, showsClose: showsClose)
+        let neededWidth = labelWidth + metrics.leading + metrics.trailing + 4
         return min(maxWidth, max(minWidth, neededWidth))
     }
     
@@ -1364,36 +1390,36 @@ private final class TabStripContainerView: NSView {
         let h = self.bounds.height
         
         if !self.pinButton.isHidden {
-            self.pinButton.frame = NSRect(x: x - 2, y: ((h - 14) / 2).rounded(), width: 14, height: 14)
-            x += 14
+            self.pinButton.frame = NSRect(x: x - 2, y: ((h - 12) / 2).rounded(), width: 12, height: 12)
+            x += 13
         }
         
-        // Unified 14x14 optical slots for status jewel & close icon along the exact midline.
+        // Compact 12x12 close slot & 10x10 status dot slot aligned along the exact midline.
         var trailingX = self.bounds.width - 5
         if !self.closeButton.isHidden {
-            trailingX -= 14
-            self.closeButton.frame = NSRect(x: trailingX, y: ((h - 14) / 2).rounded(), width: 14, height: 14)
-            trailingX -= 4
+            trailingX -= 12
+            self.closeButton.frame = NSRect(x: trailingX, y: ((h - 12) / 2).rounded(), width: 12, height: 12)
+            trailingX -= 3
         } else {
             trailingX -= 2
         }
         
         if !self.editedDot.isHidden {
-            trailingX -= 14
-            let slotFrame = NSRect(x: trailingX, y: ((h - 14) / 2).rounded(), width: 14, height: 14)
+            trailingX -= 10
+            let slotFrame = NSRect(x: trailingX, y: ((h - 10) / 2).rounded(), width: 10, height: 10)
             self.editedDot.frame = slotFrame
             let center = CGPoint(x: slotFrame.midX, y: slotFrame.midY)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            self.breathingAuraLayer.bounds = CGRect(x: 0, y: 0, width: 12, height: 12)
+            self.breathingAuraLayer.bounds = CGRect(x: 0, y: 0, width: 9, height: 9)
             self.breathingAuraLayer.position = center
-            self.breathingAuraLayer.cornerRadius = 6
-            self.editedHaloLayer.bounds = CGRect(x: 0, y: 0, width: 6.5, height: 6.5)
+            self.breathingAuraLayer.cornerRadius = 4.5
+            self.editedHaloLayer.bounds = CGRect(x: 0, y: 0, width: 5, height: 5)
             self.editedHaloLayer.position = center
-            self.editedHaloLayer.cornerRadius = 3.25
-            self.statusDotLayer.bounds = CGRect(x: 0, y: 0, width: 6.5, height: 6.5)
+            self.editedHaloLayer.cornerRadius = 2.5
+            self.statusDotLayer.bounds = CGRect(x: 0, y: 0, width: 5, height: 5)
             self.statusDotLayer.position = center
-            self.statusDotLayer.cornerRadius = 3.25
+            self.statusDotLayer.cornerRadius = 2.5
             CATransaction.commit()
             trailingX -= 4
         }
@@ -1568,7 +1594,7 @@ private final class TabStripContainerView: NSView {
             path.lineWidth = 1.1
             path.stroke()
             
-            let dotRect = NSRect(x: cardRect.maxX - 15, y: cardRect.midY - 3, width: 6, height: 6)
+            let dotRect = NSRect(x: cardRect.maxX - 14, y: cardRect.midY - 2.5, width: 5, height: 5)
             (isEdited ? NSColor.systemOrange : NSColor.systemGreen.withAlphaComponent(0.85)).setFill()
             NSBezierPath(ovalIn: dotRect).fill()
             
@@ -1580,10 +1606,10 @@ private final class TabStripContainerView: NSView {
             let textRect = NSRect(
                 x: cardRect.minX + 9,
                 y: cardRect.minY + ((cardRect.height - lineHeight) / 2).rounded(),
-                width: max(20, cardRect.width - 30),
+                width: max(20, cardRect.width - 28),
                 height: lineHeight
             )
-            title.draw(with: textRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attrs)
+            title.draw(with: textRect, options: [.usesLineFragmentOrigin], attributes: attrs)
             return true
         }
     }
