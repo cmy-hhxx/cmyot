@@ -825,11 +825,16 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
     }
     
     
-    /// Builds a full calendar-year Monday-first activity heatmap matrix (52–54 week columns x 7 rows).
-    func yearlyHeatmap(year: Int, referenceDate: Date = Date()) -> YearlyHeatmapData {
+    /// Builds a calendar-year Monday-first activity heatmap matrix (full year or trimmed after today's week).
+    func yearlyHeatmap(
+        year: Int,
+        referenceDate: Date = Date(),
+        trimFutureWeeks: Bool = false
+    ) -> YearlyHeatmapData {
         
         let calendar = Calendar.current
         let todayStart = calendar.startOfDay(for: referenceDate)
+        let currentYear = calendar.component(.year, from: todayStart)
         let jan1 = calendar.date(from: DateComponents(year: year, month: 1, day: 1)) ?? todayStart
         let dec31 = calendar.date(from: DateComponents(year: year, month: 12, day: 31)) ?? todayStart
         
@@ -838,9 +843,16 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         }
         
         let leadingPad = mondayIndex(jan1)
-        let trailingPad = 6 - mondayIndex(dec31)
+        let dec31GridEnd = calendar.date(byAdding: .day, value: 6 - mondayIndex(dec31), to: dec31) ?? dec31
+        let gridEnd: Date
+        if trimFutureWeeks && year == currentYear {
+            let currentWeekSunday = calendar.date(byAdding: .day, value: 6 - mondayIndex(todayStart), to: todayStart) ?? todayStart
+            gridEnd = min(dec31GridEnd, currentWeekSunday)
+        } else {
+            gridEnd = dec31GridEnd
+        }
+        
         let gridStart = calendar.date(byAdding: .day, value: -leadingPad, to: jan1) ?? jan1
-        let gridEnd = calendar.date(byAdding: .day, value: trailingPad, to: dec31) ?? dec31
         let totalCells = max(7, (calendar.dateComponents([.day], from: gridStart, to: gridEnd).day ?? 0) + 1)
         
         let cells = self.buildHeatmapCells(
@@ -855,7 +867,10 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
             Array(cells[start..<min(start + 7, cells.count)])
         }
         
-        let monthLabels: [HeatmapMonthLabel] = (1...12).compactMap { month in
+        let maxMonth = (trimFutureWeeks && year == currentYear)
+            ? max(1, calendar.component(.month, from: todayStart))
+            : 12
+        let monthLabels: [HeatmapMonthLabel] = (1...maxMonth).compactMap { month in
             guard let firstOfMonth = calendar.date(from: DateComponents(year: year, month: month, day: 1)) else { return nil }
             let dayOffset = calendar.dateComponents([.day], from: gridStart, to: firstOfMonth).day ?? 0
             return HeatmapMonthLabel(month: month, weekIndex: max(0, dayOffset / 7))
@@ -881,22 +896,146 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         let weekCount = max(4, min(53, weeks))
         let calendar = Calendar.current
         let todayStart = calendar.startOfDay(for: referenceDate)
-        let mondayIndex = (calendar.component(.weekday, from: todayStart) + 5) % 7
-        let currentWeekMonday = calendar.date(byAdding: .day, value: -mondayIndex, to: todayStart) ?? todayStart
-        let gridStart = calendar.date(byAdding: .day, value: -(weekCount - 1) * 7, to: currentWeekMonday) ?? currentWeekMonday
-        let totalCells = weekCount * 7
+        let gridStart = Self.rollingGridStart(weeks: weekCount, todayStart: todayStart, calendar: calendar)
         
         let cells = self.buildHeatmapCells(
             gridStart: gridStart,
-            totalCells: totalCells,
+            totalCells: weekCount * 7,
             targetYear: nil,
             todayStart: todayStart,
             calendar: calendar
         )
         
-        let weekMatrix: [[HeatmapDayCell]] = stride(from: 0, to: cells.count, by: 7).map { start in
+        let weekMatrix = Self.chunkWeeks(cells)
+        let monthLabels = Self.buildRollingMonthLabels(
+            weekMatrix: weekMatrix,
+            gridStart: gridStart,
+            todayStart: todayStart,
+            calendar: calendar
+        )
+        
+        let visibleCells = cells.filter { !$0.isFuture }
+        let activeDays = visibleCells.filter { $0.level > 0 }.count
+        let totalTypedChars = visibleCells.reduce(0) { $0 + $1.typedChars }
+        let totalAIChars = visibleCells.reduce(0) { $0 + $1.aiCompletedChars }
+        
+        return RollingHeatmapData(
+            weeks: weekMatrix,
+            monthLabels: monthLabels,
+            activeDays: activeDays,
+            totalTypedChars: totalTypedChars,
+            totalAIChars: totalAIChars,
+            startDate: gridStart,
+            endDate: todayStart
+        )
+    }
+    
+    
+    /// Builds a Monday-first rolling mini heatmap scored strictly by daily AI token & request usage.
+    func aiConsumptionHeatmap(weeks: Int = 12, referenceDate: Date = Date()) -> RollingHeatmapData {
+        
+        let weekCount = max(4, min(53, weeks))
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: referenceDate)
+        let gridStart = Self.rollingGridStart(weeks: weekCount, todayStart: todayStart, calendar: calendar)
+        let totalCells = weekCount * 7
+        
+        var statsByDay = Dictionary(self.recentDailyStats.map { ($0.dateKey, $0) }, uniquingKeysWith: { first, _ in first })
+        statsByDay[self.todayStats.dateKey] = self.todayStats
+        
+        struct RawAIDay {
+            let key: String
+            let date: Date
+            let stat: DailyWritingStats?
+            let score: Int
+            let isFuture: Bool
+        }
+        
+        var rawDays: [RawAIDay] = []
+        rawDays.reserveCapacity(totalCells)
+        
+        for offset in 0..<totalCells {
+            let day = calendar.date(byAdding: .day, value: offset, to: gridStart) ?? gridStart
+            let key = Self.dateKey(for: day)
+            let isFuture = day > todayStart
+            let stat = isFuture ? nil : statsByDay[key]
+            let tokens = (stat?.inputTokens ?? 0) + (stat?.outputTokens ?? 0)
+            let requests = stat?.aiRequests ?? 0
+            let aiChars = stat?.aiCompletedChars ?? 0
+            let score: Int = if isFuture {
+                0
+            } else if tokens > 0 {
+                tokens + requests * 60 + aiChars * 2
+            } else {
+                requests * 120 + aiChars * 4
+            }
+            rawDays.append(RawAIDay(key: key, date: day, stat: stat, score: score, isFuture: isFuture))
+        }
+        
+        let maxScore = max(120, rawDays.filter { !$0.isFuture && $0.score > 0 }.map(\.score).max() ?? 120)
+        let cells = rawDays.map { item in
+            let level = item.isFuture ? 0 : Self.heatmapLevel(for: item.score, maxScore: maxScore)
+            return HeatmapDayCell(
+                dateKey: item.key,
+                date: item.date,
+                typedChars: item.stat?.typedChars ?? 0,
+                aiCompletedChars: item.stat?.aiCompletedChars ?? 0,
+                aiCompletionAccepts: item.stat?.aiCompletionAccepts ?? 0,
+                filesCreated: item.stat?.filesCreated ?? 0,
+                documentsSaved: item.stat?.documentsSaved ?? 0,
+                aiRequests: item.stat?.aiRequests ?? 0,
+                inputTokens: item.stat?.inputTokens ?? 0,
+                outputTokens: item.stat?.outputTokens ?? 0,
+                localHits: item.stat?.localHits ?? 0,
+                level: level,
+                isFuture: item.isFuture,
+                isOutOfYear: false
+            )
+        }
+        
+        let weekMatrix = Self.chunkWeeks(cells)
+        let monthLabels = Self.buildRollingMonthLabels(
+            weekMatrix: weekMatrix,
+            gridStart: gridStart,
+            todayStart: todayStart,
+            calendar: calendar
+        )
+        
+        let visibleCells = cells.filter { !$0.isFuture }
+        return RollingHeatmapData(
+            weeks: weekMatrix,
+            monthLabels: monthLabels,
+            activeDays: visibleCells.filter { $0.level > 0 }.count,
+            totalTypedChars: visibleCells.reduce(0) { $0 + $1.typedChars },
+            totalAIChars: visibleCells.reduce(0) { $0 + $1.aiCompletedChars },
+            startDate: gridStart,
+            endDate: todayStart
+        )
+    }
+    
+    
+    private static func rollingGridStart(weeks: Int, todayStart: Date, calendar: Calendar) -> Date {
+        
+        let mondayIndex = (calendar.component(.weekday, from: todayStart) + 5) % 7
+        let currentWeekMonday = calendar.date(byAdding: .day, value: -mondayIndex, to: todayStart) ?? todayStart
+        return calendar.date(byAdding: .day, value: -(weeks - 1) * 7, to: currentWeekMonday) ?? currentWeekMonday
+    }
+    
+    
+    private static func chunkWeeks(_ cells: [HeatmapDayCell]) -> [[HeatmapDayCell]] {
+        
+        stride(from: 0, to: cells.count, by: 7).map { start in
             Array(cells[start..<min(start + 7, cells.count)])
         }
+    }
+    
+    
+    private static func buildRollingMonthLabels(
+        weekMatrix: [[HeatmapDayCell]],
+        gridStart: Date,
+        todayStart: Date,
+        calendar: Calendar
+    ) -> [RollingHeatmapMonthLabel] {
         
         var monthLabels: [RollingHeatmapMonthLabel] = []
         let startYear = calendar.component(.year, from: gridStart)
@@ -939,20 +1078,18 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
             }
         }
         
-        let visibleCells = cells.filter { !$0.isFuture }
-        let activeDays = visibleCells.filter { $0.level > 0 }.count
-        let totalTypedChars = visibleCells.reduce(0) { $0 + $1.typedChars }
-        let totalAIChars = visibleCells.reduce(0) { $0 + $1.aiCompletedChars }
+        return monthLabels
+    }
+    
+    
+    private static func heatmapLevel(for score: Int, maxScore: Int) -> Int {
         
-        return RollingHeatmapData(
-            weeks: weekMatrix,
-            monthLabels: monthLabels,
-            activeDays: activeDays,
-            totalTypedChars: totalTypedChars,
-            totalAIChars: totalAIChars,
-            startDate: gridStart,
-            endDate: todayStart
-        )
+        guard score > 0 else { return 0 }
+        let ratio = Double(score) / Double(max(1, maxScore))
+        if ratio >= 0.75 { return 4 }
+        if ratio >= 0.45 { return 3 }
+        if ratio >= 0.18 { return 2 }
+        return 1
     }
     
     
@@ -1210,25 +1347,29 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         let validLatencies = dayEvents.map(\.latencyMs).filter { $0 > 0 }
         let avgLatency = validLatencies.isEmpty ? 0 : validLatencies.reduce(0, +) / validLatencies.count
         
-        let docs = self.database.documents.filter { doc in
-            !doc.id.hasPrefix("weekly:") && (
-                Self.dateKey(for: doc.updatedAt) == cell.dateKey ||
-                doc.createdAt.map { Self.dateKey(for: $0) == cell.dateKey } == true
-            )
-        }
+        let docs = self.database.documents
+            .filter { doc in
+                !doc.id.hasPrefix("weekly:") && (
+                    Self.dateKey(for: doc.updatedAt) == cell.dateKey ||
+                    doc.createdAt.map { Self.dateKey(for: $0) == cell.dateKey } == true
+                )
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
         let calendar = Calendar.current
-        let reports = self.database.weeklyReports.filter { report in
-            if Self.dateKey(for: report.updatedAt) == cell.dateKey { return true }
-            return Self.datesFromWeeklyPeriodLabel(report.periodLabel, calendar: calendar)
-                .contains { Self.dateKey(for: $0) == cell.dateKey }
-        }
+        let reports = self.database.weeklyReports
+            .filter { report in
+                if Self.dateKey(for: report.updatedAt) == cell.dateKey { return true }
+                return Self.datesFromWeeklyPeriodLabel(report.periodLabel, calendar: calendar)
+                    .contains { Self.dateKey(for: $0) == cell.dateKey }
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
         let digest = self.database.fetchDailyAIDigest(forDateKey: cell.dateKey)
         
         return HeatmapDayDetail(
             cell: cell,
             models: models,
             features: features,
-            documents: Array(docs.prefix(6)),
+            documents: Array(docs.prefix(8)),
             weeklyReports: Array(reports.prefix(4)),
             digest: digest,
             averageLatencyMs: avgLatency

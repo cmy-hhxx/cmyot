@@ -235,9 +235,9 @@ struct UserProfilePopoverView: View {
     @State private var didJustSaveName = false
     @State private var isAvatarHovered = false
     @State private var isAvatarDropTargeted = false
-    @State private var isProfileCardHovered = false
     @State private var isNameHovered = false
     @State private var isDashboardHovered = false
+    @State private var greeting = Self.nextRandomGreeting()
     @State private var isCreateButtonHovered = false
     @State private var isCreatingUser = false
     @State private var newUserName = ""
@@ -261,11 +261,17 @@ struct UserProfilePopoverView: View {
         VStack(spacing: 10) {
             // Active Profile Card
             VStack(spacing: 10) {
-                // Warm greeting + live today pulse pill
+                // Playful rotating greeting + live today pulse pill
                 HStack(spacing: 6) {
-                    Text(Self.greetingText())
+                    Text(self.greeting)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
+                        .contentTransition(.numericText())
+                        .onTapGesture {
+                            withAnimation(Self.quick) {
+                                self.greeting = Self.nextRandomGreeting()
+                            }
+                        }
                     
                     Spacer()
                     
@@ -410,19 +416,6 @@ struct UserProfilePopoverView: View {
                     }
                     .help("点击修改昵称")
                 }
-                
-                if active.avatarData != nil && (self.isAvatarHovered || self.isProfileCardHovered) {
-                    Button("还原默认头像") {
-                        withAnimation(Self.spring) {
-                            self.manager.updateProfile(id: active.id, avatarData: .some(nil))
-                        }
-                    }
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    .transition(.opacity)
-                }
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 12)
@@ -433,9 +426,6 @@ struct UserProfilePopoverView: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(self.cardStroke, lineWidth: 1)
             )
-            .onHover { hovering in
-                withAnimation(Self.quick) { self.isProfileCardHovered = hovering }
-            }
             
             // Inviting Dashboard Launch Card with Mini Pixel Sparkbar
             Button {
@@ -551,6 +541,7 @@ struct UserProfilePopoverView: View {
         .frame(width: 272)
         .onAppear {
             self.editingName = self.manager.activeProfile.displayName
+            self.greeting = Self.nextRandomGreeting()
             if !AnimationConstants.isReducedMotionEnabled {
                 withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) {
                     self.isDotBreathing = true
@@ -783,16 +774,32 @@ struct UserProfilePopoverView: View {
     
     // MARK: Actions
     
-    private static func greetingText(date: Date = Date()) -> String {
+    private static var lastGreetingIndex: Int?
+    
+    private static let randomGreetings: [String] = [
+        "灵感已上线",
+        "键盘热好了",
+        "先写第一行",
+        "草稿不怕丑",
+        "敲字胜发呆",
+        "状态正加载",
+        "大脑营业中",
+        "别卡在标题",
+        "手感在升温",
+        "思路已就位",
+        "摸会鱼再写",
+        "写完这句歇",
+    ]
+    
+    private static func nextRandomGreeting() -> String {
         
-        let hour = Calendar.current.component(.hour, from: date)
-        switch hour {
-            case 5..<11: return "早安，开始今天"
-            case 11..<14: return "午安，顺便歇口气"
-            case 14..<18: return "下午好，状态在线"
-            case 18..<23: return "晚上好，慢慢梳理"
-            default: return "夜深了，注意休息"
+        var candidates = Array(Self.randomGreetings.indices)
+        if let last = Self.lastGreetingIndex, candidates.count > 1 {
+            candidates.removeAll { $0 == last }
         }
+        let picked = candidates.randomElement() ?? 0
+        Self.lastGreetingIndex = picked
+        return Self.randomGreetings[picked]
     }
     
     

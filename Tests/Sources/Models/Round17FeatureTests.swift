@@ -518,4 +518,124 @@ struct Round17FeatureTests {
         navVC.tabStripView.beginInlineRename(for: tab)
         #expect(navVC.isRenamingTab == true)
     }
+    
+    
+    @Test func paneNavigationBarRespectsToolbarSafeAreaAndZeroScrollInsets() throws {
+        
+        let doc = Document()
+        doc.displayName = "安全区标签"
+        let tab = PaneTab(document: doc)
+        let state = PaneTabState()
+        state.tabs = [tab]
+        state.selectedTab = tab
+        
+        let navVC = PaneNavigationBarViewController(
+            outlineNavigator: OutlineNavigator(),
+            splitState: SplitState(),
+            tabs: state
+        )
+        navVC.loadViewIfNeeded()
+        navVC.reloadTabs()
+        
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 220),
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
+        window.toolbar = NSToolbar(identifier: "Round17SafeAreaTestToolbar")
+        window.toolbarStyle = .unifiedCompact
+        window.titlebarAppearsTransparent = true
+        
+        let contentView = try #require(window.contentView)
+        navVC.view.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(navVC.view)
+        NSLayoutConstraint.activate([
+            navVC.view.topAnchor.constraint(equalTo: contentView.topAnchor),
+            navVC.view.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            navVC.view.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            navVC.view.heightAnchor.constraint(equalToConstant: 70),
+        ])
+        
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        window.layoutIfNeeded()
+        
+        let safeFrame = navVC.view.safeAreaLayoutGuide.frame
+        let tabFrame = navVC.tabStripView.convert(navVC.tabStripView.bounds, to: navVC.view)
+        #expect(tabFrame.minY >= safeFrame.minY - 1)
+        #expect(tabFrame.maxY <= safeFrame.maxY + 1)
+        
+        let scrollView = try #require(navVC.tabStripView.subviews.compactMap { $0 as? NSScrollView }.first)
+        #expect(scrollView.automaticallyAdjustsContentInsets == false)
+        #expect(abs(scrollView.contentInsets.top) < 0.5)
+    }
+    
+    
+    @Test func yearlyHeatmapTrimsFutureMonthsForCurrentYearAndKeepsFullPastYear() throws {
+        
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot_yearly_trim_\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "yearly.sqlite3"))
+        let manager = AnalyticsManager(database: db)
+        let calendar = Calendar.current
+        let ref = try #require(calendar.date(from: DateComponents(year: 2026, month: 11, day: 20, hour: 12)))
+        
+        let trimmed2026 = manager.yearlyHeatmap(year: 2026, referenceDate: ref, trimFutureWeeks: true)
+        let trimmedMonths = trimmed2026.monthLabels.map(\.month)
+        #expect(trimmedMonths == Array(1...11))
+        
+        let all2026Cells = trimmed2026.weeks.flatMap { $0 }
+        let decVisibleCells = all2026Cells.filter {
+            !$0.isOutOfYear && !$0.isFuture && calendar.component(.month, from: $0.date) == 12
+        }
+        #expect(decVisibleCells.isEmpty)
+        
+        let full2025 = manager.yearlyHeatmap(year: 2025, referenceDate: ref, trimFutureWeeks: true)
+        let months2025 = full2025.monthLabels.map(\.month)
+        #expect(months2025 == Array(1...12))
+    }
+    
+    
+    @Test func aiConsumptionHeatmapTracksAIUsageWithoutFutureCells() throws {
+        
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot_ai_heat_\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "ai_heat.sqlite3"))
+        let manager = AnalyticsManager(database: db)
+        let now = Date()
+        let todayKey = AnalyticsManager.dateKey(for: now)
+        
+        manager.recordAIUsage(
+            feature: "completion",
+            model: "gpt-4o-mini",
+            provider: "OpenAI",
+            inputTokens: 1200,
+            outputTokens: 320,
+            latencyMs: 410,
+            at: now
+        )
+        manager.flushPendingStats()
+        
+        let heatmap = manager.aiConsumptionHeatmap(weeks: 12, referenceDate: now)
+        #expect(heatmap.weeks.count == 12)
+        
+        let todayCell = try #require(manager.cell(forDateKey: todayKey, in: heatmap))
+        #expect(todayCell.level > 0)
+        #expect(todayCell.inputTokens == 1200)
+        #expect(todayCell.outputTokens == 320)
+        
+        let allCells = heatmap.weeks.flatMap { $0 }
+        let futureCells = allCells.filter { $0.isFuture }
+        let futureEmpty = futureCells.allSatisfy { $0.level == 0 }
+        #expect(futureEmpty)
+    }
 }

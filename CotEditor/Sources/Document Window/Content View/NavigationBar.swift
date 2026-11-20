@@ -87,13 +87,13 @@ import SyntaxParsers
         self.trailingHostingView = trailingHost
         
         NSLayoutConstraint.activate([
-            self.tabStripView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: horizontalInset),
-            self.tabStripView.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            self.tabStripView.leadingAnchor.constraint(equalTo: container.safeAreaLayoutGuide.leadingAnchor, constant: horizontalInset),
+            self.tabStripView.centerYAnchor.constraint(equalTo: container.safeAreaLayoutGuide.centerYAnchor),
             self.tabStripView.heightAnchor.constraint(equalToConstant: 24),
             self.tabStripView.trailingAnchor.constraint(equalTo: trailingHost.leadingAnchor, constant: -2),
             
-            trailingHost.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -horizontalInset),
-            trailingHost.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            trailingHost.trailingAnchor.constraint(equalTo: container.safeAreaLayoutGuide.trailingAnchor, constant: -horizontalInset),
+            trailingHost.centerYAnchor.constraint(equalTo: container.safeAreaLayoutGuide.centerYAnchor),
             trailingHost.heightAnchor.constraint(lessThanOrEqualTo: container.heightAnchor),
         ])
         

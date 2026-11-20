@@ -127,7 +127,13 @@ struct PaneTabStripView: NSViewRepresentable {
         
         self.wantsLayer = true
         
-        self.scrollView.contentView = NonDraggableClipView()
+        let clipView = NonDraggableClipView()
+        clipView.automaticallyAdjustsContentInsets = false
+        clipView.contentInsets = NSEdgeInsetsZero
+        
+        self.scrollView.contentView = clipView
+        self.scrollView.automaticallyAdjustsContentInsets = false
+        self.scrollView.contentInsets = NSEdgeInsetsZero
         self.scrollView.drawsBackground = false
         self.scrollView.hasVerticalScroller = false
         self.scrollView.hasHorizontalScroller = false

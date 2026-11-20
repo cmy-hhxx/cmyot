@@ -1024,7 +1024,11 @@ private struct WorkspaceCenterHostView: View {
                 case .dashboard:
                     AnalyticsDashboardView(
                         isEmbeddedInSettings: false,
-                        onDismiss: self.onDismiss
+                        onDismiss: self.onDismiss,
+                        onOpenDocument: { record in
+                            self.onOpenManagedDocument(nil, record)
+                        },
+                        onOpenWeeklyReport: self.onOpenWeeklyReport
                     )
             }
         }
