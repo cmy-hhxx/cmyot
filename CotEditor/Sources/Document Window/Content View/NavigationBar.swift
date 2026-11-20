@@ -80,7 +80,7 @@ struct NavigationBar: View {
 }
 
 
-/// Tactile close-pane button with a soft crimson hover halo and 90° spring spin matching tab close buttons.
+/// Close-pane button: a quarter turn and a soft red fill on hover, matching the tab close buttons.
 private struct ClosePaneAnimatedButton: View {
     
     var action: () -> Void
@@ -94,21 +94,16 @@ private struct ClosePaneAnimatedButton: View {
                 .font(.system(size: 9.5, weight: .semibold))
                 .foregroundStyle(self.isHovered ? Color.red : Color.secondary)
                 .rotationEffect(.degrees(self.isHovered ? 90 : 0))
-                .scaleEffect(self.isHovered ? 1.12 : 1.0)
                 .frame(width: 20, height: 20, alignment: .center)
                 .background(
                     Circle()
-                        .fill(self.isHovered ? Color.red.opacity(0.15) : Color.clear)
-                )
-                .overlay(
-                    Circle()
-                        .strokeBorder(self.isHovered ? Color.red.opacity(0.28) : Color.clear, lineWidth: 0.75)
+                        .fill(self.isHovered ? Color.red.opacity(0.12) : Color.clear)
                 )
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .onHover { hovering in
-            withAnimation(.spring(response: 0.26, dampingFraction: 0.68)) {
+            withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.22)) {
                 self.isHovered = hovering
             }
         }

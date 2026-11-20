@@ -870,11 +870,11 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         var historicalDocsByDay: [String: Int] = [:]
         for doc in self.database.documents {
             let key = Self.dateKey(for: doc.updatedAt)
-            historicalDocsByDay[key, default: 0] += max(1, min(600, doc.content.count / 4))
+            historicalDocsByDay[key, default: 0] += max(1, min(600, doc.content.utf16.count / 4))
         }
         for report in self.database.weeklyReports {
             let key = Self.dateKey(for: report.updatedAt)
-            historicalDocsByDay[key, default: 0] += max(1, min(600, report.content.count / 4))
+            historicalDocsByDay[key, default: 0] += max(1, min(600, report.content.utf16.count / 4))
         }
         
         struct RawDay {

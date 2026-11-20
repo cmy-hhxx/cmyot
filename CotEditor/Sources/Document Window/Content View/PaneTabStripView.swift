@@ -686,11 +686,16 @@ private final class CenteredIconButton: NSButton {
         case pin
     }
     
-    private let iconView = NSImageView()
+    /// Standalone layers (not view-backed), so transforms rotate around their true center and implicit fades work.
+    private let hoverLayer = CALayer()
+    private let iconLayer = CALayer()
+    private let baseImage: NSImage?
     private let hoverStyle: HoverStyle
-    private var baseTintColor: NSColor? = .secondaryLabelColor
+    private var baseTintColor: NSColor = .secondaryLabelColor
     private var trackingArea: NSTrackingArea?
     private var isPointerHovered = false
+    
+    private static let ease = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
     
     override var mouseDownCanMoveWindow: Bool { false }
     
@@ -703,6 +708,8 @@ private final class CenteredIconButton: NSButton {
         hoverStyle: HoverStyle = .standard
     ) {
         self.hoverStyle = hoverStyle
+        self.baseImage = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription)?
+            .withSymbolConfiguration(.init(pointSize: pointSize, weight: weight))
         super.init(frame: .zero)
         self.isBordered = false
         self.bezelStyle = .regularSquare
@@ -710,19 +717,13 @@ private final class CenteredIconButton: NSButton {
         self.title = ""
         self.image = nil
         self.wantsLayer = true
-        self.layer?.cornerCurve = .continuous
+        self.setAccessibilityLabel(accessibilityDescription)
         
-        self.iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription)?
-            .withSymbolConfiguration(.init(pointSize: pointSize, weight: weight))
-        self.iconView.imageScaling = .scaleNone
-        self.iconView.wantsLayer = true
-        self.iconView.translatesAutoresizingMaskIntoConstraints = false
-        self.addSubview(self.iconView)
-        
-        NSLayoutConstraint.activate([
-            self.iconView.centerXAnchor.constraint(equalTo: self.centerXAnchor),
-            self.iconView.centerYAnchor.constraint(equalTo: self.centerYAnchor),
-        ])
+        self.hoverLayer.opacity = 0
+        self.hoverLayer.cornerCurve = .continuous
+        self.layer?.addSublayer(self.hoverLayer)
+        self.iconLayer.contentsGravity = .center
+        self.layer?.addSublayer(self.iconLayer)
     }
     
     
@@ -734,10 +735,8 @@ private final class CenteredIconButton: NSButton {
     
     override var contentTintColor: NSColor? {
         didSet {
-            self.baseTintColor = self.contentTintColor
-            if !self.isPointerHovered {
-                self.iconView.contentTintColor = self.contentTintColor
-            }
+            self.baseTintColor = self.contentTintColor ?? .secondaryLabelColor
+            self.refreshIcon()
         }
     }
     
@@ -745,9 +744,41 @@ private final class CenteredIconButton: NSButton {
     override func layout() {
         
         super.layout()
-        if self.hoverStyle == .close {
-            self.layer?.cornerRadius = min(self.bounds.width, self.bounds.height) * 0.5
+        
+        let scale = self.window?.backingScaleFactor ?? 2
+        let size = self.baseImage?.size ?? .zero
+        let side = min(self.bounds.width, self.bounds.height)
+        
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        self.hoverLayer.frame = (self.hoverStyle == .close)
+            ? CGRect(x: (self.bounds.width - side) / 2, y: (self.bounds.height - side) / 2, width: side, height: side)
+            : self.bounds
+        self.hoverLayer.cornerRadius = (self.hoverStyle == .close) ? side / 2 : 6
+        self.iconLayer.bounds = CGRect(origin: .zero, size: size)
+        self.iconLayer.position = CGPoint(x: self.bounds.midX, y: self.bounds.midY)
+        self.iconLayer.contentsScale = scale
+        CATransaction.commit()
+        
+        if self.iconLayer.contents == nil {
+            self.refreshIcon()
         }
+    }
+    
+    
+    override func viewDidChangeEffectiveAppearance() {
+        
+        super.viewDidChangeEffectiveAppearance()
+        self.refreshIcon()
+        self.refreshHoverFill()
+    }
+    
+    
+    override func viewDidMoveToWindow() {
+        
+        super.viewDidMoveToWindow()
+        self.needsLayout = true
+        self.refreshIcon()
     }
     
     
@@ -766,137 +797,31 @@ private final class CenteredIconButton: NSButton {
     override func mouseEntered(with event: NSEvent) {
         
         super.mouseEntered(with: event)
-        self.isPointerHovered = true
-        self.applyHoverState(hovered: true)
+        self.setHovered(true)
     }
     
     
     override func mouseExited(with event: NSEvent) {
         
         super.mouseExited(with: event)
-        self.isPointerHovered = false
-        self.applyHoverState(hovered: false)
+        self.setHovered(false)
     }
     
     
     override func mouseDown(with event: NSEvent) {
         
-        self.animatePressScale(pressed: true)
-        super.mouseDown(with: event)
-        self.animatePressScale(pressed: false)
-    }
-    
-    
-    private func applyHoverState(hovered: Bool) {
-        
-        guard let iconLayer = self.iconView.layer else { return }
-        let reduceMotion = AnimationConstants.isReducedMotionEnabled
-        
-        // Anchor around the icon's visual center so rotation & scale stay dead-center.
-        let iconBounds = self.iconView.bounds
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        iconLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        iconLayer.position = CGPoint(x: self.iconView.frame.midX, y: self.iconView.frame.midY)
-        iconLayer.bounds = iconBounds
-        CATransaction.commit()
-        
+        // pressed: deepen the fill instead of scaling the view
+        let previous = self.hoverLayer.backgroundColor
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
-            CATransaction.begin()
-            CATransaction.setAnimationDuration(reduceMotion ? 0.0 : 0.16)
-            switch self.hoverStyle {
-                case .close:
-                    self.layer?.backgroundColor = hovered
-                        ? NSColor.systemRed.withAlphaComponent(0.16).cgColor
-                        : NSColor.clear.cgColor
-                    self.layer?.borderWidth = hovered ? 0.75 : 0
-                    self.layer?.borderColor = hovered
-                        ? NSColor.systemRed.withAlphaComponent(0.28).cgColor
-                        : NSColor.clear.cgColor
-                    self.iconView.contentTintColor = hovered ? .systemRed : (self.baseTintColor ?? .secondaryLabelColor)
-                case .newTab:
-                    self.layer?.backgroundColor = hovered
-                        ? NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
-                        : NSColor.clear.cgColor
-                    self.iconView.contentTintColor = hovered ? .controlAccentColor : (self.baseTintColor ?? .secondaryLabelColor)
-                case .pin:
-                    self.layer?.backgroundColor = hovered
-                        ? NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
-                        : NSColor.clear.cgColor
-                    self.iconView.contentTintColor = hovered ? .controlAccentColor : (self.baseTintColor ?? .controlAccentColor)
-                case .standard:
-                    self.layer?.backgroundColor = hovered
-                        ? NSColor.labelColor.withAlphaComponent(0.08).cgColor
-                        : NSColor.clear.cgColor
-                    self.iconView.contentTintColor = hovered ? .labelColor : (self.baseTintColor ?? .secondaryLabelColor)
-            }
-            CATransaction.commit()
+            self.hoverLayer.backgroundColor = self.hoverFillColor(pressed: true).cgColor
         }
-        
-        guard !reduceMotion else { return }
-        
-        let targetAngle: CGFloat
-        let targetScale: CGFloat
-        switch self.hoverStyle {
-            case .close:
-                targetAngle = hovered ? (.pi * 0.5) : 0.0
-                targetScale = hovered ? 1.15 : 1.0
-            case .newTab:
-                targetAngle = hovered ? (.pi * 0.5) : 0.0
-                targetScale = hovered ? 1.12 : 1.0
-            case .pin:
-                targetAngle = hovered ? -0.24 : 0.0
-                targetScale = hovered ? 1.14 : 1.0
-            case .standard:
-                targetAngle = 0.0
-                targetScale = hovered ? 1.08 : 1.0
+        self.hoverLayer.opacity = 1
+        CATransaction.flush()
+        super.mouseDown(with: event)
+        self.hoverLayer.backgroundColor = previous
+        if !self.isPointerHovered {
+            self.hoverLayer.opacity = 0
         }
-        
-        let rotSpring = CASpringAnimation(keyPath: "transform.rotation.z")
-        rotSpring.fromValue = iconLayer.presentation()?.value(forKeyPath: "transform.rotation.z") ?? (hovered ? 0.0 : targetAngle)
-        rotSpring.toValue = targetAngle
-        rotSpring.mass = 0.65
-        rotSpring.stiffness = 380
-        rotSpring.damping = 19
-        rotSpring.duration = min(0.36, rotSpring.settlingDuration)
-        
-        let scaleSpring = CASpringAnimation(keyPath: "transform.scale")
-        scaleSpring.fromValue = iconLayer.presentation()?.value(forKeyPath: "transform.scale") ?? 1.0
-        scaleSpring.toValue = targetScale
-        scaleSpring.mass = 0.6
-        scaleSpring.stiffness = 420
-        scaleSpring.damping = 21
-        scaleSpring.duration = min(0.30, scaleSpring.settlingDuration)
-        
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        var xform = CATransform3DIdentity
-        xform = CATransform3DRotate(xform, targetAngle, 0, 0, 1)
-        xform = CATransform3DScale(xform, targetScale, targetScale, 1)
-        iconLayer.transform = xform
-        CATransaction.commit()
-        
-        iconLayer.add(rotSpring, forKey: "hoverSpin")
-        iconLayer.add(scaleSpring, forKey: "hoverScale")
-    }
-    
-    
-    private func animatePressScale(pressed: Bool) {
-        
-        guard !AnimationConstants.isReducedMotionEnabled, let layer = self.layer else { return }
-        let target: CGFloat = pressed ? 0.85 : 1.0
-        let anim = CASpringAnimation(keyPath: "transform.scale")
-        anim.fromValue = pressed ? 1.0 : 0.85
-        anim.toValue = target
-        anim.mass = 0.5
-        anim.stiffness = 500
-        anim.damping = 22
-        anim.duration = min(0.22, anim.settlingDuration)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        layer.transform = CATransform3DMakeScale(target, target, 1)
-        CATransaction.commit()
-        layer.add(anim, forKey: "pressBounce")
     }
     
     
@@ -904,6 +829,91 @@ private final class CenteredIconButton: NSButton {
         
         let local = self.convert(point, from: self.superview)
         return (!self.isHidden && self.bounds.contains(local)) ? self : nil
+    }
+    
+    
+    // MARK: Private
+    
+    private var currentTint: NSColor {
+        
+        guard self.isPointerHovered else { return self.baseTintColor }
+        switch self.hoverStyle {
+            case .close: return .systemRed
+            case .newTab, .standard: return .labelColor
+            case .pin: return .controlAccentColor
+        }
+    }
+    
+    
+    private func hoverFillColor(pressed: Bool = false) -> NSColor {
+        
+        switch self.hoverStyle {
+            case .close: NSColor.systemRed.withAlphaComponent(pressed ? 0.2 : 0.12)
+            default: NSColor.labelColor.withAlphaComponent(pressed ? 0.14 : 0.08)
+        }
+    }
+    
+    
+    private func refreshHoverFill() {
+        
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            self.hoverLayer.backgroundColor = self.hoverFillColor().cgColor
+            CATransaction.commit()
+        }
+    }
+    
+    
+    private func refreshIcon() {
+        
+        guard let baseImage = self.baseImage else { return }
+        let scale = self.window?.backingScaleFactor ?? 2
+        var image: CGImage?
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            let resolved = NSColor(cgColor: self.currentTint.cgColor) ?? self.currentTint
+            guard let tinted = baseImage.withSymbolConfiguration(.init(paletteColors: [resolved])) else { return }
+            var rect = NSRect(origin: .zero, size: tinted.size)
+            let transform = NSAffineTransform()
+            transform.scale(by: scale)
+            image = tinted.cgImage(forProposedRect: &rect, context: nil, hints: [.ctm: transform])
+        }
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.14)
+        CATransaction.setAnimationTimingFunction(Self.ease)
+        self.iconLayer.contents = image
+        CATransaction.commit()
+    }
+    
+    
+    private func setHovered(_ hovered: Bool) {
+        
+        self.isPointerHovered = hovered
+        self.refreshHoverFill()
+        self.refreshIcon()
+        
+        let reduceMotion = AnimationConstants.isReducedMotionEnabled
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(reduceMotion ? 0 : 0.14)
+        CATransaction.setAnimationTimingFunction(Self.ease)
+        self.hoverLayer.opacity = hovered ? 1 : 0
+        CATransaction.commit()
+        
+        // Only the close button moves: a quarter turn that says "this closes".
+        guard self.hoverStyle == .close else { return }
+        let angle: CGFloat = hovered ? .pi / 2 : 0
+        let from = self.iconLayer.presentation()?.value(forKeyPath: "transform.rotation.z") as? CGFloat ?? (hovered ? 0 : .pi / 2)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        self.iconLayer.transform = CATransform3DMakeRotation(angle, 0, 0, 1)
+        CATransaction.commit()
+        guard !reduceMotion else { return }
+        let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+        spin.fromValue = from
+        spin.toValue = angle
+        spin.duration = 0.22
+        spin.timingFunction = Self.ease
+        self.iconLayer.add(spin, forKey: "hoverSpin")
     }
 }
 
@@ -940,6 +950,7 @@ private final class TabStripContainerView: NSView {
     
     private let activeAccentBar = CALayer()
     private let editedHaloLayer = CALayer()
+    private let statusDotLayer = CALayer()
     private let pinButton = CenteredIconButton(symbolName: "pin.fill", pointSize: 9, weight: .semibold, accessibilityDescription: "Pinned", hoverStyle: .pin)
     private let titleLabel: NonDraggableLabel = {
         let label = NonDraggableLabel(labelWithString: "")
@@ -1023,10 +1034,10 @@ private final class TabStripContainerView: NSView {
         self.titleLabel.isSelectable = false
         self.addSubview(self.titleLabel)
         
-        self.editedDot.wantsLayer = true
-        self.editedDot.layer?.cornerRadius = 3
-        self.editedDot.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.75).cgColor
+        // The dot itself is a standalone layer so it scales around its center; the view only reserves space.
         self.addSubview(self.editedDot)
+        self.statusDotLayer.cornerRadius = 3
+        self.layer?.addSublayer(self.statusDotLayer)
         
         self.closeButton.contentTintColor = .secondaryLabelColor
         self.closeButton.wantsLayer = true
@@ -1058,7 +1069,7 @@ private final class TabStripContainerView: NSView {
         
         self.pinButton.isHidden = !tab.isPinned
         self.editedDot.isHidden = isRenaming
-        self.editedDot.layer?.backgroundColor = tab.isEdited
+        self.statusDotLayer.backgroundColor = tab.isEdited
             ? NSColor.systemOrange.cgColor
             : NSColor.systemGreen.withAlphaComponent(0.72).cgColor
         self.editedDot.toolTip = tab.isEdited ? "未保存（按 ⌘S 保存）" : "已保存 (⌘S)"
@@ -1134,16 +1145,20 @@ private final class TabStripContainerView: NSView {
             self.editedHaloLayer.bounds = CGRect(x: 0, y: 0, width: 6, height: 6)
             self.editedHaloLayer.position = CGPoint(x: dotFrame.midX, y: dotFrame.midY)
             self.editedHaloLayer.cornerRadius = 3
+            self.statusDotLayer.bounds = CGRect(x: 0, y: 0, width: 6, height: 6)
+            self.statusDotLayer.position = CGPoint(x: dotFrame.midX, y: dotFrame.midY)
             CATransaction.commit()
             trailingX -= 6
         }
         
-        // Active tab subtle bottom accent indicator pill (inspired by LeiBox glass-tab-menu)
+        // Active tab: a short accent hairline under the name
         let barWidth = max(16, min(32, self.bounds.width * 0.34))
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        self.activeAccentBar.bounds = CGRect(x: 0, y: 0, width: barWidth, height: 1.8)
-        self.activeAccentBar.position = CGPoint(x: self.bounds.width * 0.5, y: h - 1.2)
+        self.statusDotLayer.isHidden = self.editedDot.isHidden
+        self.editedHaloLayer.isHidden = self.editedDot.isHidden
+        self.activeAccentBar.bounds = CGRect(x: 0, y: 0, width: barWidth, height: 1.5)
+        self.activeAccentBar.position = CGPoint(x: self.bounds.width * 0.5, y: h - 1)
         CATransaction.commit()
         
         // vertically center the label on the exact same horizontal line as the status dot & close button
@@ -1174,7 +1189,6 @@ private final class TabStripContainerView: NSView {
         
         self.isHovered = true
         self.updateBackground(animated: true)
-        self.animateTabHoverMicroMotion(hovered: true)
     }
     
     
@@ -1182,7 +1196,6 @@ private final class TabStripContainerView: NSView {
         
         self.isHovered = false
         self.updateBackground(animated: true)
-        self.animateTabHoverMicroMotion(hovered: false)
     }
     
     
@@ -1310,171 +1323,110 @@ private final class TabStripContainerView: NSView {
     
     private func updateBackground(animated: Bool = false) {
         
-        let duration: CFTimeInterval = (animated && !AnimationConstants.isReducedMotionEnabled) ? 0.16 : 0.0
+        guard let layer = self.layer else { return }
+        let duration: CFTimeInterval = (animated && !AnimationConstants.isReducedMotionEnabled) ? 0.14 : 0
+        let ease = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
+        
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            let fill: NSColor = self.isSelected
+                ? NSColor.labelColor.withAlphaComponent(0.09)
+                : (self.isHovered ? NSColor.labelColor.withAlphaComponent(0.05) : .clear)
+            let target = fill.cgColor
+            
+            // View-backed layers don't animate implicitly, so fade the fill explicitly.
+            if duration > 0 {
+                let fade = CABasicAnimation(keyPath: "backgroundColor")
+                fade.fromValue = layer.presentation()?.backgroundColor ?? layer.backgroundColor
+                fade.toValue = target
+                fade.duration = duration
+                fade.timingFunction = ease
+                layer.add(fade, forKey: "backgroundFade")
+            }
+            layer.backgroundColor = target
+            layer.borderColor = NSColor.separatorColor.cgColor
+            layer.borderWidth = self.isSelected ? 1 / max(self.window?.backingScaleFactor ?? 2, 1) : 0
+            
             CATransaction.begin()
             CATransaction.setAnimationDuration(duration)
-            if self.isSelected {
-                self.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.095).cgColor
-                self.layer?.borderColor = NSColor.separatorColor.cgColor
-                self.layer?.borderWidth = 1 / max(self.window?.backingScaleFactor ?? 2, 1)
-                self.activeAccentBar.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.85).cgColor
-                self.activeAccentBar.opacity = 1.0
-                self.activeAccentBar.transform = CATransform3DIdentity
-            } else if self.isHovered {
-                self.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.055).cgColor
-                self.layer?.borderWidth = 0
-                self.activeAccentBar.opacity = 0.0
-                self.activeAccentBar.transform = CATransform3DMakeScale(0.35, 1.0, 1.0)
-            } else {
-                self.layer?.backgroundColor = NSColor.clear.cgColor
-                self.layer?.borderWidth = 0
-                self.activeAccentBar.opacity = 0.0
-                self.activeAccentBar.transform = CATransform3DMakeScale(0.35, 1.0, 1.0)
-            }
+            CATransaction.setAnimationTimingFunction(ease)
+            self.activeAccentBar.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.8).cgColor
+            self.activeAccentBar.opacity = self.isSelected ? 1 : 0
             CATransaction.commit()
         }
         self.titleLabel.textColor = (self.isSelected || self.isHovered) ? .labelColor : .secondaryLabelColor
     }
     
     
-    /// Gentle playful micro-motion on the document name & save status dot when hovering a tab.
-    private func animateTabHoverMicroMotion(hovered: Bool) {
-        
-        guard !AnimationConstants.isReducedMotionEnabled, !self.isRenaming else { return }
-        
-        if let titleLayer = self.titleLabel.layer, !self.isSelected {
-            let glide = CASpringAnimation(keyPath: "transform.translation.x")
-            glide.fromValue = hovered ? 0.0 : 1.5
-            glide.toValue = hovered ? 1.5 : 0.0
-            glide.mass = 0.6
-            glide.stiffness = 380
-            glide.damping = 24
-            glide.duration = min(0.24, glide.settlingDuration)
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            titleLayer.transform = CATransform3DMakeTranslation(hovered ? 1.5 : 0.0, 0, 0)
-            CATransaction.commit()
-            titleLayer.add(glide, forKey: "titleHoverGlide")
-        }
-        
-        if let dotLayer = self.editedDot.layer, !self.editedDot.isHidden, self.tab?.isEdited != true {
-            let dotScale: CGFloat = hovered ? 1.24 : 1.0
-            let pop = CASpringAnimation(keyPath: "transform.scale")
-            pop.fromValue = hovered ? 1.0 : 1.24
-            pop.toValue = dotScale
-            pop.mass = 0.55
-            pop.stiffness = 420
-            pop.damping = 20
-            pop.duration = min(0.26, pop.settlingDuration)
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            dotLayer.transform = CATransform3DMakeScale(dotScale, dotScale, 1)
-            CATransaction.commit()
-            dotLayer.add(pop, forKey: "dotHoverPop")
-        }
-    }
-    
-    
-    /// Crisp upward settle & micro-pop on the document title when this tab becomes active.
+    /// The document name settles in from 2pt below when its tab becomes active.
     private func animateTitleSelectionPop() {
         
         guard let titleLayer = self.titleLabel.layer else { return }
-        let lift = CASpringAnimation(keyPath: "transform.translation.y")
-        lift.fromValue = 1.8
-        lift.toValue = 0.0
-        lift.mass = 0.6
-        lift.stiffness = 420
-        lift.damping = 22
-        lift.duration = min(0.28, lift.settlingDuration)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        titleLayer.transform = CATransform3DIdentity
-        CATransaction.commit()
-        titleLayer.add(lift, forKey: "titleSelectSettle")
+        let settle = CABasicAnimation(keyPath: "transform.translation.y")
+        settle.fromValue = 2
+        settle.toValue = 0
+        settle.duration = 0.2
+        settle.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
+        titleLayer.add(settle, forKey: "titleSelectSettle")
     }
     
     
-    /// Celebratory subtle bounce after inline tab rename succeeds.
+    /// After a rename, the new name fades up once.
     private func animateTitleRenameCelebrate() {
         
         guard let titleLayer = self.titleLabel.layer else { return }
-        let bounce = CAKeyframeAnimation(keyPath: "transform.scale")
-        bounce.values = [0.94, 1.06, 0.99, 1.0]
-        bounce.keyTimes = [0.0, 0.42, 0.76, 1.0]
-        bounce.duration = 0.34
-        bounce.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        titleLayer.add(bounce, forKey: "titleRenameBounce")
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.2
+        fade.toValue = 1
+        fade.duration = 0.24
+        fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
+        titleLayer.add(fade, forKey: "titleRenameFade")
+        
+        let rise = CABasicAnimation(keyPath: "transform.translation.y")
+        rise.fromValue = 3
+        rise.toValue = 0
+        rise.duration = 0.24
+        rise.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
+        titleLayer.add(rise, forKey: "titleRenameRise")
     }
     
     
-    /// Living heartbeat pulse when unsaved (`isEdited == true`), and a crisp emerald celebration ripple on save (`true -> false`).
+    /// One-shot status feedback: the dot pops when a document becomes unsaved, and sends out a single green ring on save.
     private func updateStatusDotAnimation(isEdited: Bool, previousEdited: Bool?, isRenaming: Bool) {
         
-        guard let dotLayer = self.editedDot.layer else { return }
-        if isRenaming || AnimationConstants.isReducedMotionEnabled {
-            dotLayer.removeAnimation(forKey: "unsavedHeartbeat")
-            self.editedHaloLayer.removeAllAnimations()
-            self.editedHaloLayer.opacity = 0
-            return
-        }
+        guard !isRenaming, !AnimationConstants.isReducedMotionEnabled,
+              let previousEdited, previousEdited != isEdited
+        else { return }
         
-        if isEdited {
-            if dotLayer.animation(forKey: "unsavedHeartbeat") == nil {
-                let beat = CAKeyframeAnimation(keyPath: "transform.scale")
-                beat.values = [1.0, 1.22, 0.96, 1.0, 1.0]
-                beat.keyTimes = [0.0, 0.22, 0.42, 0.60, 1.0]
-                beat.duration = 2.2
-                beat.repeatCount = .infinity
-                beat.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                dotLayer.add(beat, forKey: "unsavedHeartbeat")
-            }
-            if self.editedHaloLayer.animation(forKey: "unsavedHalo") == nil {
-                self.editedHaloLayer.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.50).cgColor
-                let scale = CABasicAnimation(keyPath: "transform.scale")
-                scale.fromValue = 1.0
-                scale.toValue = 2.5
-                let fade = CAKeyframeAnimation(keyPath: "opacity")
-                fade.values = [0.52, 0.16, 0.0, 0.0]
-                fade.keyTimes = [0.0, 0.45, 0.68, 1.0]
-                let group = CAAnimationGroup()
-                group.animations = [scale, fade]
-                group.duration = 2.2
-                group.repeatCount = .infinity
-                group.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                self.editedHaloLayer.add(group, forKey: "unsavedHalo")
-            }
-        } else {
-            dotLayer.removeAnimation(forKey: "unsavedHeartbeat")
-            self.editedHaloLayer.removeAnimation(forKey: "unsavedHalo")
-            
-            // Transitioning from unsaved -> saved: play a joyful emerald save confirmation pop + ripple!
-            if previousEdited == true {
-                let pop = CAKeyframeAnimation(keyPath: "transform.scale")
-                pop.values = [0.65, 1.48, 0.94, 1.0]
-                pop.keyTimes = [0.0, 0.36, 0.72, 1.0]
-                pop.duration = 0.38
-                pop.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                dotLayer.add(pop, forKey: "savedPop")
-                
-                self.editedHaloLayer.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.62).cgColor
-                let rippleScale = CABasicAnimation(keyPath: "transform.scale")
-                rippleScale.fromValue = 1.0
-                rippleScale.toValue = 3.0
-                let rippleFade = CABasicAnimation(keyPath: "opacity")
-                rippleFade.fromValue = 0.68
-                rippleFade.toValue = 0.0
-                let rippleGroup = CAAnimationGroup()
-                rippleGroup.animations = [rippleScale, rippleFade]
-                rippleGroup.duration = 0.44
-                rippleGroup.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                rippleGroup.isRemovedOnCompletion = true
-                self.editedHaloLayer.opacity = 0
-                self.editedHaloLayer.add(rippleGroup, forKey: "savedRipple")
-            } else {
-                self.editedHaloLayer.opacity = 0
-            }
-        }
+        let ease = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
+        
+        let pop = CAKeyframeAnimation(keyPath: "transform.scale")
+        pop.values = isEdited ? [0.4, 1.25, 1.0] : [0.6, 1.3, 1.0]
+        pop.keyTimes = [0, 0.5, 1]
+        pop.duration = 0.28
+        pop.timingFunction = ease
+        self.statusDotLayer.add(pop, forKey: "statusPop")
+        
+        guard !isEdited else { return }
+        
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        self.editedHaloLayer.backgroundColor = nil
+        self.editedHaloLayer.borderWidth = 1
+        self.editedHaloLayer.borderColor = NSColor.systemGreen.withAlphaComponent(0.7).cgColor
+        self.editedHaloLayer.opacity = 0
+        CATransaction.commit()
+        
+        let grow = CABasicAnimation(keyPath: "transform.scale")
+        grow.fromValue = 1
+        grow.toValue = 2.6
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.9
+        fade.toValue = 0
+        let ring = CAAnimationGroup()
+        ring.animations = [grow, fade]
+        ring.duration = 0.42
+        ring.timingFunction = ease
+        self.editedHaloLayer.add(ring, forKey: "savedRing")
     }
     
     

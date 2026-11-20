@@ -91,27 +91,193 @@ struct DashboardSettingsView: View {
 }
 
 
-/// Interactive Bento analytics dashboard powered by native Swift Charts and LeiBox-inspired micro-interactions.
-struct AnalyticsDashboardView: View {
+// MARK: - Design Tokens
+
+/// One easing curve, three durations.
+private enum DashMotion {
     
-    private enum KPICardKind: String, CaseIterable, Identifiable {
+    static let quick = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.14)
+    static let standard = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.22)
+    static let enter = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.32)
+}
+
+
+/// Graphite neutrals plus a single ink-green accent borrowed from the heatmap.
+private struct DashPalette {
+    
+    let isDark: Bool
+    
+    init(_ scheme: ColorScheme) {
         
-        case typedChars
-        case aiCompletion
-        case aiConsumption
+        self.isDark = (scheme == .dark)
+    }
+    
+    var canvas: Color { Color(nsColor: .windowBackgroundColor) }
+    var card: Color { self.isDark ? Color.white.opacity(0.035) : Color(nsColor: .controlBackgroundColor) }
+    var hover: Color { self.isDark ? Color.white.opacity(0.03) : Color.black.opacity(0.02) }
+    var inset: Color { self.isDark ? Color.white.opacity(0.03) : Color.black.opacity(0.025) }
+    var hairline: Color { self.isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.08) }
+    var hairlineStrong: Color { self.isDark ? Color.white.opacity(0.24) : Color.black.opacity(0.22) }
+    var neutralMark: Color { self.isDark ? Color.white.opacity(0.20) : Color.black.opacity(0.14) }
+    var modal: Color { self.isDark ? Color(white: 0.155) : Color(nsColor: .controlBackgroundColor) }
+    var accent: Color { self.isDark ? Color(red: 0.40, green: 0.78, blue: 0.54) : Color(red: 0.12, green: 0.48, blue: 0.29) }
+    
+    
+    func heat(_ level: Int) -> Color {
         
-        var id: String { self.rawValue }
-        
-        var accentColor: Color {
-            switch self {
-                case .typedChars: Color(red: 0.23, green: 0.54, blue: 0.98)
-                case .aiCompletion: Color(red: 0.46, green: 0.38, blue: 0.96)
-                case .aiConsumption: Color(red: 0.95, green: 0.55, blue: 0.18)
+        if self.isDark {
+            switch level {
+                case 4: Color(red: 0.40, green: 0.78, blue: 0.54)
+                case 3: Color(red: 0.26, green: 0.58, blue: 0.40)
+                case 2: Color(red: 0.17, green: 0.40, blue: 0.28)
+                case 1: Color(red: 0.12, green: 0.25, blue: 0.19)
+                default: Color.white.opacity(0.06)
+            }
+        } else {
+            switch level {
+                case 4: Color(red: 0.12, green: 0.48, blue: 0.29)
+                case 3: Color(red: 0.25, green: 0.63, blue: 0.40)
+                case 2: Color(red: 0.52, green: 0.79, blue: 0.60)
+                case 1: Color(red: 0.80, green: 0.91, blue: 0.83)
+                default: Color.black.opacity(0.055)
             }
         }
     }
     
-    private enum AIRange: String, CaseIterable, Identifiable {
+    
+    var futureCell: Color { self.isDark ? Color.white.opacity(0.02) : Color.black.opacity(0.02) }
+}
+
+
+// MARK: - Precomputed Snapshot
+
+/// Everything the dashboard draws, computed once per data revision so hovering never recomputes analytics.
+private struct DashboardSnapshot {
+    
+    struct ChartDay: Identifiable {
+        
+        var id: String
+        var date: Date
+        var typed: Int
+        var ai: Int
+        var input: Int
+        var output: Int
+        var isToday: Bool
+    }
+    
+    struct AISlice {
+        
+        var totals: AIUsageTotals
+        var models: [ModelUsageSummary]
+        var features: [FeatureUsageSummary]
+        var latencyMs: Int
+    }
+    
+    var today: DailyWritingStats
+    var typedBaseline7: Int
+    var days14: [ChartDay]
+    var days7: [ChartDay]
+    var series7: [DailyWritingStats]
+    var touchedDocTitles: [String]
+    var streak: Int
+    var years: [Int]
+    var heatmap: YearlyHeatmapData
+    var orderedCells: [HeatmapDayCell]
+    var longestStreak: Int
+    var rhythm: [WeekdayActivityPoint]
+    var aiToday: AISlice
+    var ai30: AISlice
+    var digest: DailyAIDigest?
+    var reminders: [UserReminder]
+    var detectedTodos: [DetectedNoteTodo]
+    
+    
+    @MainActor static func build(analytics: AnalyticsManager, year: Int) -> DashboardSnapshot {
+        
+        let today = analytics.todayStats
+        let series14 = analytics.dailySeries(days: 14)
+        let series7 = Array(series14.suffix(7))
+        let prior = series7.dropLast()
+        let baseline = prior.isEmpty ? 0 : prior.reduce(0) { $0 + $1.typedChars } / prior.count
+        
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd"
+        let chartDays: [ChartDay] = series14.map { item in
+            ChartDay(
+                id: item.dateKey,
+                date: formatter.date(from: item.dateKey) ?? Date(),
+                typed: item.typedChars,
+                ai: item.aiCompletedChars,
+                input: item.inputTokens,
+                output: item.outputTokens,
+                isToday: item.dateKey == today.dateKey
+            )
+        }
+        
+        let heatmap = analytics.yearlyHeatmap(year: year)
+        let ordered = heatmap.weeks.flatMap { $0 }.filter { !$0.isOutOfYear && !$0.isFuture }
+        var longest = 0
+        var current = 0
+        for cell in ordered {
+            if cell.level > 0 {
+                current += 1
+                longest = max(longest, current)
+            } else {
+                current = 0
+            }
+        }
+        
+        let reminders = Array((analytics.overdueReminders + analytics.todayReminders + analytics.tomorrowReminders).prefix(4))
+        
+        return DashboardSnapshot(
+            today: today,
+            typedBaseline7: baseline,
+            days14: chartDays,
+            days7: Array(chartDays.suffix(7)),
+            series7: series7,
+            touchedDocTitles: analytics.todayTouchedDocuments().prefix(5).map(\.title),
+            streak: analytics.currentWritingStreak,
+            years: analytics.availableHeatmapYears(),
+            heatmap: heatmap,
+            orderedCells: ordered,
+            longestStreak: longest,
+            rhythm: analytics.weekdayActivityDistribution(days: 90),
+            aiToday: AISlice(
+                totals: analytics.aiUsageTotals(forTodayOnly: true),
+                models: analytics.todayModelDistribution(),
+                features: analytics.todayFeatureDistribution(),
+                latencyMs: analytics.averageLatencyMs(forTodayOnly: true)
+            ),
+            ai30: AISlice(
+                totals: analytics.aiUsageTotals(forTodayOnly: false, days: 30),
+                models: analytics.modelDistribution(days: 30),
+                features: analytics.featureDistribution(days: 30),
+                latencyMs: analytics.averageLatencyMs(forTodayOnly: false, days: 30)
+            ),
+            digest: analytics.todayDigest,
+            reminders: reminders,
+            detectedTodos: reminders.isEmpty ? analytics.detectedNoteTodos(limit: 3) : []
+        )
+    }
+}
+
+
+// MARK: - Dashboard
+
+/// A quiet writing ledger: three figures, one heatmap, and today's notes.
+struct AnalyticsDashboardView: View {
+    
+    fileprivate enum KPIKind: String, Identifiable {
+        
+        case typed
+        case completion
+        case consumption
+        
+        var id: String { self.rawValue }
+    }
+    
+    fileprivate enum AIRange: String, CaseIterable, Identifiable {
         
         case today = "今日"
         case thirtyDays = "30 天"
@@ -123,17 +289,14 @@ struct AnalyticsDashboardView: View {
     var onDismiss: (() -> Void)?
     
     @Environment(\.colorScheme) private var colorScheme
-    @Namespace private var rangeSwitchNamespace
     
     @State private var analytics = AnalyticsManager.shared
     @State private var profileManager = UserProfileManager.shared
-    @State private var expandedKPI: KPICardKind? = nil
-    @State private var hoveredKPI: KPICardKind? = nil
-    @State private var hoveredCell: HeatmapDayCell? = nil
-    @State private var selectedHeatmapCell: HeatmapDayCell? = nil
-    @State private var selectedYear: Int = Calendar.current.component(.year, from: Date())
+    @State private var snapshot: DashboardSnapshot?
+    @State private var expandedKPI: KPIKind?
     @State private var aiRange: AIRange = .thirtyDays
-    @State private var heatmapContentWidth: CGFloat
+    @State private var selectedYear: Int = Calendar.current.component(.year, from: Date())
+    @State private var selectedDetail: HeatmapDayDetail?
     @State private var hasAppeared = false
     
     
@@ -141,86 +304,67 @@ struct AnalyticsDashboardView: View {
         
         self.isEmbeddedInSettings = isEmbeddedInSettings
         self.onDismiss = onDismiss
-        self._heatmapContentWidth = State(initialValue: isEmbeddedInSettings ? 676 : 920)
     }
     
     
-    private var outerPadding: CGFloat {
-        
-        self.isEmbeddedInSettings ? 14 : 24
-    }
-    
-    
-    private var gridSpacing: CGFloat {
-        
-        self.isEmbeddedInSettings ? 12 : 16
-    }
-    
-    
-    private var cardPadding: CGFloat {
-        
-        self.isEmbeddedInSettings ? 13 : 16
-    }
+    private var palette: DashPalette { DashPalette(self.colorScheme) }
+    private var compact: Bool { self.isEmbeddedInSettings }
+    private var outerPadding: CGFloat { self.compact ? 16 : 24 }
+    private var gap: CGFloat { self.compact ? 12 : 16 }
+    private var cardPadding: CGFloat { self.compact ? 16 : 20 }
     
     
     var body: some View {
+        
         ZStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: self.gridSpacing) {
-                    self.topBar
-                        .opacity(self.hasAppeared ? 1 : 0)
-                        .offset(y: self.hasAppeared ? 0 : 6)
-                        .animation(.spring(response: 0.42, dampingFraction: 0.86), value: self.hasAppeared)
-                    
-                    self.kpiSection
-                        .opacity(self.hasAppeared ? 1 : 0)
-                        .offset(y: self.hasAppeared ? 0 : 10)
-                        .animation(.spring(response: 0.46, dampingFraction: 0.84).delay(0.04), value: self.hasAppeared)
-                    
-                    self.yearlyHeatmapCard
-                        .opacity(self.hasAppeared ? 1 : 0)
-                        .offset(y: self.hasAppeared ? 0 : 12)
-                        .animation(.spring(response: 0.50, dampingFraction: 0.84).delay(0.08), value: self.hasAppeared)
-                    
-                    self.bottomBentoRow
-                        .opacity(self.hasAppeared ? 1 : 0)
-                        .offset(y: self.hasAppeared ? 0 : 14)
-                        .animation(.spring(response: 0.54, dampingFraction: 0.84).delay(0.12), value: self.hasAppeared)
+                Group {
+                    if let snapshot = self.snapshot {
+                        self.content(snapshot)
+                            .opacity(self.hasAppeared ? 1 : 0)
+                            .offset(y: self.hasAppeared ? 0 : 6)
+                    } else {
+                        Color.clear.frame(height: 480)
+                    }
                 }
                 .padding(self.outerPadding)
-                .frame(maxWidth: 1060, alignment: .leading)
+                .frame(maxWidth: 1120, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .center)
             }
-            .background(self.canvasBackground)
-            .blur(radius: self.selectedHeatmapCell == nil ? 0 : 2.5)
-            .animation(.easeOut(duration: 0.22), value: self.selectedHeatmapCell != nil)
+            .background(self.palette.canvas)
             
-            if let cell = self.selectedHeatmapCell {
-                self.heatmapModalOverlay(for: cell)
+            if let detail = self.selectedDetail {
+                self.detailOverlay(detail)
                     .transition(.opacity)
-                    .zIndex(50)
+                    .zIndex(10)
             }
         }
         .onAppear {
             self.analytics.flushPendingStats()
             self.analytics.reloadFromDatabase()
-            let currentYear = Calendar.current.component(.year, from: Date())
             if !self.analytics.availableHeatmapYears().contains(self.selectedYear) {
-                self.selectedYear = currentYear
+                self.selectedYear = Calendar.current.component(.year, from: Date())
             }
+            self.rebuild()
             if !self.hasAppeared {
-                self.hasAppeared = true
+                withAnimation(DashMotion.enter) {
+                    self.hasAppeared = true
+                }
             }
         }
+        .onChange(of: self.analytics.revision) { _, _ in
+            self.rebuild()
+        }
+        .onChange(of: self.selectedYear) { _, _ in
+            self.rebuild()
+        }
         .onKeyPress(.escape) {
-            if self.selectedHeatmapCell != nil {
-                withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
-                    self.selectedHeatmapCell = nil
-                }
+            if self.selectedDetail != nil {
+                self.closeDetail()
                 return .handled
             }
             if self.expandedKPI != nil {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                withAnimation(DashMotion.standard) {
                     self.expandedKPI = nil
                 }
                 return .handled
@@ -230,1986 +374,1446 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    // MARK: Band 0 — Top Bar
-    
-    private var topBar: some View {
-        let profile = self.profileManager.activeProfile
-        let streak = self.analytics.currentWritingStreak
-        let yearly = self.analytics.yearlyHeatmap(year: self.selectedYear)
+    private func rebuild() {
         
-        return HStack(spacing: 10) {
-            UserAvatarCircleView(profile: profile, size: 26)
-                .shadow(color: Color(hexString: profile.avatarColorHex).opacity(0.28), radius: 6, y: 2)
+        self.snapshot = DashboardSnapshot.build(analytics: self.analytics, year: self.selectedYear)
+    }
+    
+    
+    // MARK: Layout
+    
+    private func content(_ s: DashboardSnapshot) -> some View {
+        
+        VStack(alignment: .leading, spacing: self.gap) {
+            self.header(s)
+                .padding(.bottom, 4)
             
-            Text("数据看板")
-                .font(.system(size: 15.5, weight: .semibold, design: .rounded))
-                .lineLimit(1)
+            self.kpiRow(s)
             
-            Text(profile.displayName)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            
-            LiveTelemetryPulseBadge()
-            
-            Spacer(minLength: 8)
-            
-            if !self.isEmbeddedInSettings {
-                HStack(spacing: 5) {
-                    Image(systemName: "text.word.spacing")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.23, green: 0.54, blue: 0.98))
-                    Text("\(self.selectedYear) 累计 \(Self.formattedCompactChars(yearly.totalTypedChars))")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(self.cardBackground, in: Capsule())
-                .overlay(Capsule().strokeBorder(self.cardBorder, lineWidth: 1))
+            if let kind = self.expandedKPI {
+                self.detailPanel(kind, s)
+                    .id(kind)
+                    .transition(.opacity.combined(with: .offset(y: -4)))
             }
             
-            HStack(spacing: 5) {
-                Image(systemName: "flame.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(streak > 0 ? Color.orange : Color.secondary)
-                Text("连续 \(streak) 天")
-                    .font(.system(size: 12, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(streak > 0 ? Color.primary : Color.secondary)
+            HeatmapCard(
+                heatmap: s.heatmap,
+                longestStreak: s.longestStreak,
+                canGoBack: self.selectedYear > (s.years.first ?? self.selectedYear),
+                canGoForward: self.selectedYear < (s.years.last ?? self.selectedYear),
+                selectedKey: self.selectedDetail?.cell.dateKey,
+                palette: self.palette,
+                compact: self.compact,
+                padding: self.cardPadding,
+                onPreviousYear: { self.selectedYear -= 1 },
+                onNextYear: { self.selectedYear += 1 },
+                onSelect: { self.openDetail($0) }
+            )
+            
+            HStack(alignment: .top, spacing: self.gap) {
+                self.summaryCard(s)
+                self.rhythmCard(s)
+                    .frame(width: self.compact ? 256 : 320)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    
+    
+    // MARK: Header
+    
+    private func header(_ s: DashboardSnapshot) -> some View {
+        
+        let profile = self.profileManager.activeProfile
+        
+        return HStack(alignment: .center, spacing: 12) {
+            UserAvatarCircleView(profile: profile, size: 32)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("数据看板")
+                    .font(.system(size: self.compact ? 17 : 20, weight: .semibold))
+                Text("\(profile.displayName) · \(Self.todayTitle())")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(self.cardBackground, in: Capsule())
-            .overlay(Capsule().strokeBorder(streak > 0 ? Color.orange.opacity(0.28) : self.cardBorder, lineWidth: 1))
+            
+            Spacer(minLength: 12)
+            
+            HStack(spacing: 24) {
+                self.headerFigure(label: "连续写作", value: "\(s.streak) 天")
+                if !self.compact {
+                    self.headerFigure(label: "\(self.selectedYear) 年累计", value: Self.compactChars(s.heatmap.totalTypedChars))
+                }
+            }
             
             if let onDismiss = self.onDismiss {
-                Button {
-                    onDismiss()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text("返回")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(self.cardBackground, in: Capsule())
-                    .overlay(Capsule().strokeBorder(self.cardBorder, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .help("返回编辑器 (Esc)")
+                QuietButton(title: "返回", systemImage: "chevron.left", palette: self.palette, action: onDismiss)
+                    .help("返回编辑器 (Esc)")
+                    .padding(.leading, 8)
             }
         }
     }
     
     
-    // MARK: Band 1 — 3-Column Expandable KPI Bento Row + Animated Sub-Card Drawer
-    
-    private var kpiSection: some View {
-        let today = self.analytics.todayStats
-        let series7 = self.analytics.dailySeries(days: 7)
-        let avgTyped7 = max(0, series7.dropLast().reduce(0) { $0 + $1.typedChars } / max(1, series7.count - 1))
-        let typedDeltaText = Self.deltaLabel(current: today.typedChars, baseline: avgTyped7)
-        let completionRate = today.typedChars + today.aiCompletedChars > 0
-            ? Int(round(Double(today.aiCompletedChars) * 100.0 / Double(today.typedChars + today.aiCompletedChars)))
-            : 0
+    private func headerFigure(label: String, value: String) -> some View {
         
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: self.gridSpacing) {
-                self.kpiCard(
-                    kind: .typedChars,
-                    title: "今日输入",
-                    symbol: "character.cursor.ibeam",
-                    value: Self.formattedInt(today.typedChars),
-                    unit: "字",
-                    badgeText: typedDeltaText,
-                    sparkValues: series7.map { Double($0.typedChars) }
-                )
-                
-                self.kpiCard(
-                    kind: .aiCompletion,
-                    title: "AI 补全",
-                    symbol: "sparkles",
-                    value: Self.formattedInt(today.aiCompletedChars),
-                    unit: "字",
-                    badgeText: completionRate > 0 ? "占比 \(completionRate)%" : "\(today.aiCompletionAccepts) 次采纳",
-                    sparkValues: series7.map { Double($0.aiCompletedChars) }
-                )
-                
-                self.kpiCard(
-                    kind: .aiConsumption,
-                    title: "AI 消耗",
-                    symbol: "bolt.fill",
-                    value: AnalyticsManager.formatCompactTokenCount(today.totalTokens),
-                    unit: "Tokens",
-                    badgeText: "\(today.aiRequests) 次调用",
-                    sparkValues: series7.map { Double($0.totalTokens) }
-                )
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            
-            if let expanded = self.expandedKPI {
-                self.expandedSubCardContainer(for: expanded)
-                    .id(expanded.id)
-                    .transition(
-                        .asymmetric(
-                            insertion: .opacity
-                                .combined(with: .scale(scale: 0.975, anchor: .top))
-                                .combined(with: .offset(y: -8)),
-                            removal: .opacity
-                                .combined(with: .scale(scale: 0.985, anchor: .top))
-                        )
-                    )
-            }
-        }
-    }
-    
-    
-    private func kpiCard(
-        kind: KPICardKind,
-        title: String,
-        symbol: String,
-        value: String,
-        unit: String,
-        badgeText: String,
-        sparkValues: [Double]
-    ) -> some View {
-        let isExpanded = (self.expandedKPI == kind)
-        let isHovered = (self.hoveredKPI == kind)
-        let tint = kind.accentColor
-        
-        return Button {
-            withAnimation(.spring(response: 0.40, dampingFraction: 0.78)) {
-                self.expandedKPI = (self.expandedKPI == kind) ? nil : kind
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(tint.opacity(isExpanded || isHovered ? 0.18 : 0.11))
-                            .frame(width: 22, height: 22)
-                        Image(systemName: symbol)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(tint)
-                    }
-                    
-                    Text(title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(isExpanded ? Color.primary : Color.secondary)
-                        .lineLimit(1)
-                    
-                    Spacer(minLength: 4)
-                    
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(isExpanded ? tint : Color.secondary.opacity(0.75))
-                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
-                        .animation(.spring(response: 0.34, dampingFraction: 0.76), value: isExpanded)
-                }
-                
-                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Text(value)
-                        .font(.system(size: self.isEmbeddedInSettings ? 23 : 26, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .contentTransition(.numericText())
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                    
-                    Text(unit)
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    
-                    Spacer(minLength: 2)
-                }
-                
-                HStack(alignment: .bottom, spacing: 8) {
-                    Text(badgeText)
-                        .font(.system(size: 10.5, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(isExpanded ? tint : .secondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2.5)
-                        .background(tint.opacity(isExpanded ? 0.14 : 0.08), in: Capsule())
-                        .lineLimit(1)
-                    
-                    Spacer(minLength: 2)
-                    
-                    MiniSparklineChart(values: sparkValues, tint: tint)
-                        .frame(width: self.isEmbeddedInSettings ? 62 : 84, height: 24)
-                }
-            }
-            .padding(self.cardPadding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(self.cardBackground)
-                    .overlay(
-                        LinearGradient(
-                            colors: [
-                                tint.opacity(isExpanded ? 0.09 : (isHovered ? 0.045 : 0.0)),
-                                Color.clear,
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(
-                        isExpanded ? tint.opacity(0.45) : (isHovered ? tint.opacity(0.24) : self.cardBorder),
-                        lineWidth: isExpanded ? 1.25 : 1
-                    )
-            )
-            .overlay {
-                if isExpanded || isHovered {
-                    BorderBeamOverlay(
-                        cornerRadius: 14,
-                        accent: tint,
-                        speed: isExpanded ? 4.2 : 5.5,
-                        opacity: isExpanded ? 0.72 : 0.42
-                    )
-                }
-            }
-            .shadow(
-                color: isExpanded ? tint.opacity(self.colorScheme == .dark ? 0.16 : 0.10) : Color.black.opacity(self.colorScheme == .dark ? 0.12 : 0.03),
-                radius: isExpanded ? 12 : 3,
-                y: isExpanded ? 4 : 1
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.18)) {
-                if hovering {
-                    self.hoveredKPI = kind
-                } else if self.hoveredKPI == kind {
-                    self.hoveredKPI = nil
-                }
-            }
-        }
-    }
-    
-    
-    // MARK: Expanded KPI Detail Sub-Cards (Native Swift Charts, Zero Progress Bars)
-    
-    @ViewBuilder
-    private func expandedSubCardContainer(for kind: KPICardKind) -> some View {
-        let tint = kind.accentColor
-        
-        VStack(alignment: .leading, spacing: 14) {
-            switch kind {
-                case .typedChars:
-                    self.typedCharsDetailSubCard(tint: tint)
-                case .aiCompletion:
-                    self.aiCompletionDetailSubCard(tint: tint)
-                case .aiConsumption:
-                    self.aiConsumptionDetailSubCard(tint: tint)
-            }
-        }
-        .padding(self.cardPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(self.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(tint.opacity(0.32), lineWidth: 1)
-        )
-        .shadow(
-            color: tint.opacity(self.colorScheme == .dark ? 0.12 : 0.06),
-            radius: 14,
-            y: 5
-        )
-    }
-    
-    
-    private func typedCharsDetailSubCard(tint: Color) -> some View {
-        let series14 = self.analytics.dailySeries(days: 14)
-        let total14 = series14.reduce(0) { $0 + $1.typedChars }
-        let activeCount14 = max(1, series14.filter { $0.typedChars > 0 }.count)
-        let avg14 = total14 / activeCount14
-        let peakDay = series14.max(by: { $0.typedChars < $1.typedChars })
-        let today = self.analytics.todayStats
-        let touchedDocs = self.analytics.todayTouchedDocuments()
-        
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Label("输入趋势与产出拆解", systemImage: "chart.bar.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(tint)
-                Spacer()
-                Text("近 14 天 · 累计 \(Self.formattedInt(total14)) 字 · 日均 \(Self.formattedInt(avg14)) 字")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                self.closeSubCardButton
-            }
-            
-            HStack(alignment: .top, spacing: 14) {
-                // Left: 14-day Swift Charts BarMark + average RuleMark
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("近 14 天每日手打字数")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    
-                    Chart {
-                        ForEach(series14) { item in
-                            BarMark(
-                                x: .value("日期", Self.shortMonthDay(item.dateKey)),
-                                y: .value("字数", item.typedChars)
-                            )
-                            .foregroundStyle(
-                                LinearGradient(
-                                    colors: [
-                                        item.dateKey == today.dateKey ? tint : tint.opacity(0.76),
-                                        tint.opacity(0.32),
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                            .cornerRadius(4)
-                        }
-                        if avg14 > 0 {
-                            RuleMark(y: .value("日均", avg14))
-                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                                .foregroundStyle(tint.opacity(0.55))
-                                .annotation(position: .top, alignment: .trailing) {
-                                    Text("均值 \(Self.formattedInt(avg14))")
-                                        .font(.system(size: 9.5, weight: .medium))
-                                        .monospacedDigit()
-                                        .foregroundStyle(.secondary)
-                                }
-                        }
-                    }
-                    .chartXAxis {
-                        AxisMarks(values: .automatic(desiredCount: 7)) { _ in
-                            AxisValueLabel()
-                                .font(.system(size: 9.5))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .chartYAxis {
-                        AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
-                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
-                                .foregroundStyle(Color.primary.opacity(0.08))
-                            AxisValueLabel()
-                                .font(.system(size: 9.5))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .frame(height: 148)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(self.subCardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(self.subCardBorder, lineWidth: 0.5))
-                
-                // Right: Key Telemetry Tiles + Today's Touched Documents
-                VStack(alignment: .leading, spacing: 10) {
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                        self.metricTile(title: "新建文档", value: "\(today.filesCreated)", unit: "篇", tint: tint)
-                        self.metricTile(title: "今日保存", value: "\(today.documentsSaved)", unit: "次", tint: tint)
-                        self.metricTile(title: "14日峰值", value: Self.formattedInt(peakDay?.typedChars ?? 0), unit: "字", tint: tint)
-                        self.metricTile(title: "活跃天数", value: "\(activeCount14)/14", unit: "天", tint: tint)
-                    }
-                    
-                    if !touchedDocs.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("今日编辑文档")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.secondary)
-                            StackedMetadataPills(items: touchedDocs.prefix(4).map(\.title), tint: tint)
-                        }
-                    }
-                }
-                .frame(width: self.isEmbeddedInSettings ? 228 : 290)
-            }
-        }
-    }
-    
-    
-    private func aiCompletionDetailSubCard(tint: Color) -> some View {
-        let today = self.analytics.todayStats
-        let series7 = self.analytics.dailySeries(days: 7)
-        let totalAccepts7 = series7.reduce(0) { $0 + $1.aiCompletionAccepts }
-        let totalLocal7 = series7.reduce(0) { $0 + $1.localHits }
-        let totalAIChars7 = series7.reduce(0) { $0 + $1.aiCompletedChars }
-        let totalTyped7 = series7.reduce(0) { $0 + $1.typedChars }
-        let avgCharsPerAccept = totalAccepts7 > 0 ? totalAIChars7 / totalAccepts7 : 0
-        let localHitShare = (totalAccepts7 + totalLocal7) > 0
-            ? Int(round(Double(totalLocal7) * 100.0 / Double(totalAccepts7 + totalLocal7)))
-            : 0
-        
-        let shareSlices: [(label: String, value: Int, color: Color)] = [
-            ("手动输入", max(0, totalTyped7), Color(red: 0.23, green: 0.54, blue: 0.98)),
-            ("AI 补全", max(0, totalAIChars7), tint),
-        ].filter { $0.value > 0 }
-        let aiRatioPct = (totalTyped7 + totalAIChars7) > 0
-            ? Int(round(Double(totalAIChars7) * 100.0 / Double(totalTyped7 + totalAIChars7)))
-            : 0
-        
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Label("AI 补全效率与协同占比", systemImage: "sparkles")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(tint)
-                Spacer()
-                Text("近 7 天采纳 \(totalAccepts7) 次 · 补全 \(Self.formattedInt(totalAIChars7)) 字 · 本地 0 成本命中 \(totalLocal7) 次")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                self.closeSubCardButton
-            }
-            
-            HStack(alignment: .top, spacing: 12) {
-                // Left: Donut chart (Manual vs AI Collaboration)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("近 7 天人机协同占比")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    
-                    HStack(spacing: 14) {
-                        ZStack {
-                            if shareSlices.isEmpty {
-                                Circle()
-                                    .stroke(Color.primary.opacity(0.08), lineWidth: 16)
-                                    .frame(width: 112, height: 112)
-                            } else {
-                                Chart(shareSlices, id: \.label) { slice in
-                                    SectorMark(
-                                        angle: .value("字数", slice.value),
-                                        innerRadius: .ratio(0.64),
-                                        angularInset: 2.0
-                                    )
-                                    .cornerRadius(4)
-                                    .foregroundStyle(slice.color)
-                                }
-                                .chartLegend(.hidden)
-                                .frame(width: 116, height: 116)
-                            }
-                            
-                            VStack(spacing: 1) {
-                                Text("\(aiRatioPct)%")
-                                    .font(.system(size: 17, weight: .bold, design: .rounded))
-                                    .monospacedDigit()
-                                Text("AI 贡献")
-                                    .font(.system(size: 9.5, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        
-                        VStack(alignment: .leading, spacing: 10) {
-                            self.donutLegendRow(
-                                color: tint,
-                                title: "AI 补全",
-                                detail: "\(Self.formattedInt(totalAIChars7)) 字"
-                            )
-                            self.donutLegendRow(
-                                color: Color(red: 0.23, green: 0.54, blue: 0.98),
-                                title: "手动输入",
-                                detail: "\(Self.formattedInt(totalTyped7)) 字"
-                            )
-                            self.donutLegendRow(
-                                color: .teal,
-                                title: "本地命中率",
-                                detail: "\(localHitShare)% (0 Token)"
-                            )
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(self.subCardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(self.subCardBorder, lineWidth: 0.5))
-                
-                // Right: 7-day completion trend Area/Line chart + compact metrics
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("近 7 天补全字数走势")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    
-                    Chart(series7) { item in
-                        AreaMark(
-                            x: .value("日期", Self.shortMonthDay(item.dateKey)),
-                            y: .value("补全", item.aiCompletedChars)
-                        )
-                        .interpolationMethod(.catmullRom)
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [tint.opacity(0.28), tint.opacity(0.02)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        
-                        LineMark(
-                            x: .value("日期", Self.shortMonthDay(item.dateKey)),
-                            y: .value("补全", item.aiCompletedChars)
-                        )
-                        .interpolationMethod(.catmullRom)
-                        .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
-                        .foregroundStyle(tint)
-                        
-                        PointMark(
-                            x: .value("日期", Self.shortMonthDay(item.dateKey)),
-                            y: .value("补全", item.aiCompletedChars)
-                        )
-                        .symbolSize(24)
-                        .foregroundStyle(tint)
-                    }
-                    .chartXAxis {
-                        AxisMarks { _ in
-                            AxisValueLabel()
-                                .font(.system(size: 9.5))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .chartYAxis(.hidden)
-                    .frame(height: 82)
-                    
-                    HStack(spacing: 8) {
-                        self.metricTile(title: "今日采纳", value: "\(today.aiCompletionAccepts)", unit: "次", tint: tint)
-                        self.metricTile(title: "单次均长", value: "\(avgCharsPerAccept)", unit: "字", tint: tint)
-                        self.metricTile(title: "今日省流", value: "\(today.localHits)", unit: "次", tint: .teal)
-                    }
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(self.subCardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(self.subCardBorder, lineWidth: 0.5))
-            }
-        }
-    }
-    
-    
-    /// Replaces the removed standalone AI Usage card — uses native Swift Charts Donut & Grouped Bars (zero progress bars).
-    private func aiConsumptionDetailSubCard(tint: Color) -> some View {
-        let isToday = (self.aiRange == .today)
-        let totals = self.analytics.aiUsageTotals(forTodayOnly: isToday, days: 30)
-        let models = isToday ? self.analytics.todayModelDistribution() : self.analytics.modelDistribution(days: 30)
-        let features = isToday ? self.analytics.todayFeatureDistribution() : self.analytics.featureDistribution(days: 30)
-        let avgLatency = self.analytics.averageLatencyMs(forTodayOnly: isToday, days: 30)
-        let series7 = self.analytics.dailySeries(days: 7)
-        
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Label("AI 消耗与分布透视", systemImage: "bolt.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(tint)
-                
-                Spacer(minLength: 6)
-                
-                Text("\(totals.requests) 次 · 入 \(AnalyticsManager.formatCompactTokenCount(totals.inputTokens)) · 出 \(AnalyticsManager.formatCompactTokenCount(totals.outputTokens))\(avgLatency > 0 ? " · \(avgLatency)ms" : "")")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                
-                // LeiBox glass-tab-menu style sliding capsule switcher
-                HStack(spacing: 2) {
-                    ForEach(AIRange.allCases) { range in
-                        let selected = (self.aiRange == range)
-                        Button {
-                            withAnimation(.spring(response: 0.30, dampingFraction: 0.80)) {
-                                self.aiRange = range
-                            }
-                        } label: {
-                            Text(range.rawValue)
-                                .font(.system(size: 11, weight: selected ? .semibold : .regular))
-                                .foregroundStyle(selected ? Color.primary : Color.secondary)
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 3)
-                                .background {
-                                    if selected {
-                                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                            .fill(self.cardBackground)
-                                            .matchedGeometryEffect(id: "aiRangePill", in: self.rangeSwitchNamespace)
-                                            .shadow(color: Color.black.opacity(0.08), radius: 2, y: 1)
-                                    }
-                                }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(2)
-                .background(self.subCardBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(self.subCardBorder, lineWidth: 0.5))
-                
-                self.closeSubCardButton
-            }
-            
-            // Dual Swift Charts Donut Cards (Model & Feature Distribution — ZERO progress bars)
-            HStack(alignment: .top, spacing: 12) {
-                self.donutDistributionCard(
-                    title: "模型分布",
-                    centerPrimary: AnalyticsManager.formatCompactTokenCount(totals.totalTokens),
-                    centerSecondary: "总 Tokens",
-                    items: models.prefix(5).enumerated().map { idx, item in
-                        DonutItem(
-                            id: item.id,
-                            label: item.model,
-                            value: max(1, item.totalTokens),
-                            shareText: "\(Int(round(item.share * 100)))%",
-                            metricText: AnalyticsManager.formatCompactTokenCount(item.totalTokens),
-                            color: Self.seriesColor(at: idx)
-                        )
-                    }
-                )
-                
-                self.donutDistributionCard(
-                    title: "功能分布",
-                    centerPrimary: "\(totals.requests)",
-                    centerSecondary: "总调用",
-                    items: features.prefix(5).enumerated().map { idx, item in
-                        DonutItem(
-                            id: item.id,
-                            label: item.displayName,
-                            value: max(1, item.requests),
-                            shareText: "\(Int(round(item.share * 100)))%",
-                            metricText: "\(item.requests) 次",
-                            color: Self.seriesColor(at: idx)
-                        )
-                    }
-                )
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            
-            // 7-day Input vs Output Token Stacked Bar Chart
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("近 7 天输入 / 输出 Token 对比")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    HStack(spacing: 10) {
-                        self.legendDot(color: Color(red: 0.95, green: 0.55, blue: 0.18), label: "输入 Tokens")
-                        self.legendDot(color: Color(red: 0.46, green: 0.38, blue: 0.96), label: "输出 Tokens")
-                    }
-                }
-                
-                Chart {
-                    ForEach(series7) { item in
-                        BarMark(
-                            x: .value("日期", Self.shortMonthDay(item.dateKey)),
-                            y: .value("Tokens", item.inputTokens)
-                        )
-                        .foregroundStyle(Color(red: 0.95, green: 0.55, blue: 0.18).opacity(0.85))
-                        .cornerRadius(3)
-                        
-                        BarMark(
-                            x: .value("日期", Self.shortMonthDay(item.dateKey)),
-                            y: .value("Tokens", item.outputTokens)
-                        )
-                        .foregroundStyle(Color(red: 0.46, green: 0.38, blue: 0.96).opacity(0.88))
-                        .cornerRadius(3)
-                    }
-                }
-                .chartXAxis {
-                    AxisMarks { _ in
-                        AxisValueLabel()
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .chartYAxis {
-                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
-                            .foregroundStyle(Color.primary.opacity(0.08))
-                        AxisValueLabel()
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .frame(height: 92)
-            }
-            .padding(12)
-            .background(self.subCardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(self.subCardBorder, lineWidth: 0.5))
-        }
-    }
-    
-    
-    private struct DonutItem: Identifiable {
-        let id: String
-        let label: String
-        let value: Int
-        let shareText: String
-        let metricText: String
-        let color: Color
-    }
-    
-    
-    private func donutDistributionCard(
-        title: String,
-        centerPrimary: String,
-        centerSecondary: String,
-        items: [DonutItem]
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-            
-            if items.isEmpty {
-                Text("暂无数据")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, minHeight: 96, alignment: .center)
-            } else {
-                HStack(alignment: .center, spacing: 14) {
-                    ZStack {
-                        Chart(items) { item in
-                            SectorMark(
-                                angle: .value("占比", item.value),
-                                innerRadius: .ratio(0.62),
-                                angularInset: 2.0
-                            )
-                            .cornerRadius(4)
-                            .foregroundStyle(item.color)
-                        }
-                        .chartLegend(.hidden)
-                        .frame(width: self.isEmbeddedInSettings ? 96 : 112, height: self.isEmbeddedInSettings ? 96 : 112)
-                        
-                        VStack(spacing: 1) {
-                            Text(centerPrimary)
-                                .font(.system(size: self.isEmbeddedInSettings ? 13 : 15, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                            Text(centerSecondary)
-                                .font(.system(size: 9, weight: .medium))
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: 64)
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(items) { item in
-                            HStack(spacing: 6) {
-                                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                                    .fill(item.color)
-                                    .frame(width: 8, height: 8)
-                                Text(item.label)
-                                    .font(.system(size: 11.5, weight: .medium))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Spacer(minLength: 4)
-                                Text(item.shareText)
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .monospacedDigit()
-                                    .foregroundStyle(item.color)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1.5)
-                                    .background(item.color.opacity(0.12), in: Capsule())
-                                Text(item.metricText)
-                                    .font(.system(size: 10.5))
-                                    .monospacedDigit()
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(self.subCardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(self.subCardBorder, lineWidth: 0.5))
-    }
-    
-    
-    private var closeSubCardButton: some View {
-        Button {
-            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                self.expandedKPI = nil
-            }
-        } label: {
-            Image(systemName: "xmark")
-                .font(.system(size: 9.5, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 22, height: 22)
-                .background(self.subCardBackground, in: Circle())
-                .overlay(Circle().strokeBorder(self.subCardBorder, lineWidth: 0.5))
-        }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-        .help("收起详情")
-    }
-    
-    
-    private func metricTile(title: String, value: String, unit: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.system(size: 10.5, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(value)
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                Text(unit)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(self.cardBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(tint.opacity(0.14), lineWidth: 0.75)
-        )
-    }
-    
-    
-    private func donutLegendRow(color: Color, title: String, detail: String) -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text(detail)
-                    .font(.system(size: 12, weight: .semibold))
-                    .monospacedDigit()
-            }
-        }
-    }
-    
-    
-    private func legendDot(color: Color, label: String) -> some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(color)
-                .frame(width: 6, height: 6)
+        VStack(alignment: .trailing, spacing: 2) {
             Text(label)
-                .font(.system(size: 10))
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 14, weight: .medium))
+                .monospacedDigit()
         }
     }
     
     
-    // MARK: Band 2 — Yearly Activity Heatmap (Interactive Click -> Center Modal)
+    // MARK: KPI Row
     
-    private var yearlyHeatmapCard: some View {
-        let years = self.analytics.availableHeatmapYears()
-        let minYear = years.first ?? self.selectedYear
-        let maxYear = years.last ?? self.selectedYear
-        let heatmap = self.analytics.yearlyHeatmap(year: self.selectedYear)
-        let longestStreak = self.analytics.longestWritingStreak(year: self.selectedYear)
-        let avgActiveDayChars = heatmap.activeDays > 0 ? (heatmap.totalTypedChars / heatmap.activeDays) : 0
+    private func kpiRow(_ s: DashboardSnapshot) -> some View {
         
-        let weekdayColWidth: CGFloat = 14
-        let weekdayGap: CGFloat = 8
-        let weekCount = max(1, heatmap.weeks.count)
-        let gridWidth = max(240, self.heatmapContentWidth - weekdayColWidth - weekdayGap)
-        let cellGap: CGFloat = gridWidth >= 780 ? 3.0 : 2.0
-        let cellSize = max(6.0, min(16.0, (gridWidth - CGFloat(weekCount - 1) * cellGap) / CGFloat(weekCount)))
-        let pitch = cellSize + cellGap
-        let cellRadius = max(1.8, min(3.2, cellSize * 0.24))
+        let today = s.today
+        let produced = today.typedChars + today.aiCompletedChars
+        let aiShare = produced > 0 ? Int((Double(today.aiCompletedChars) * 100 / Double(produced)).rounded()) : 0
         
-        return VStack(alignment: .leading, spacing: 12) {
-            // Header
-            HStack(spacing: 10) {
-                Text("年度热力图")
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .lineLimit(1)
-                
-                Spacer(minLength: 8)
-                
-                if let hovered = self.hoveredCell, !hovered.isOutOfYear, !hovered.isFuture {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(self.heatmapLevelColor(level: hovered.level))
-                            .frame(width: 7, height: 7)
-                        Text("\(hovered.dateKey) · 输入 \(Self.formattedInt(hovered.typedChars)) 字 · 补全 \(Self.formattedInt(hovered.aiCompletedChars)) 字 · AI \(hovered.aiRequests) 次")
-                            .font(.system(size: 11.5, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 3)
-                    .background(self.subCardBackground, in: Capsule())
-                    .overlay(Capsule().strokeBorder(self.subCardBorder, lineWidth: 0.5))
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                } else {
-                    Text("\(heatmap.activeDays) 活跃天 · 最长连续 \(longestStreak) 天 · 活跃日均 \(Self.formattedInt(avgActiveDayChars)) 字")
-                        .font(.system(size: 11.5))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                
-                HStack(spacing: 4) {
-                    Button {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            self.hoveredCell = nil
-                            self.selectedYear = max(minYear, self.selectedYear - 1)
-                        }
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 10, weight: .semibold))
-                            .frame(width: 18, height: 18)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(self.selectedYear <= minYear)
-                    .opacity(self.selectedYear <= minYear ? 0.35 : 1)
-                    
-                    Text(String(self.selectedYear))
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .monospacedDigit()
-                        .frame(minWidth: 34)
-                    
-                    Button {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            self.hoveredCell = nil
-                            self.selectedYear = min(maxYear, self.selectedYear + 1)
-                        }
-                    } label: {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .frame(width: 18, height: 18)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(self.selectedYear >= maxYear)
-                    .opacity(self.selectedYear >= maxYear ? 0.35 : 1)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(self.subCardBackground, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(self.subCardBorder, lineWidth: 0.5)
-                )
-            }
+        let typedNote: (String, Color) = {
+            guard s.typedBaseline7 > 0 else { return ("近 7 天暂无记录", .secondary) }
+            let pct = Int((Double(today.typedChars - s.typedBaseline7) * 100 / Double(s.typedBaseline7)).rounded())
+            return pct >= 0
+                ? ("较 7 日均值 +\(pct)%", self.palette.accent)
+                : ("较 7 日均值 \(pct)%", .secondary)
+        }()
+        
+        let completionNote = today.aiCompletionAccepts > 0
+            ? "采纳 \(today.aiCompletionAccepts) 次 · 占今日产出 \(aiShare)%"
+            : "今日暂无采纳"
+        
+        let latency = s.aiToday.latencyMs
+        let consumptionNote = today.aiRequests > 0
+            ? "\(today.aiRequests) 次调用" + (latency > 0 ? " · 平均 \(latency) ms" : "")
+            : "今日暂无调用"
+        
+        return HStack(alignment: .top, spacing: self.gap) {
+            KPICard(
+                title: "今日输入",
+                value: Self.int(today.typedChars),
+                unit: "字",
+                note: typedNote.0,
+                noteColor: typedNote.1,
+                isExpanded: self.expandedKPI == .typed,
+                compact: self.compact,
+                padding: self.cardPadding,
+                palette: self.palette
+            ) { self.toggle(.typed) }
             
-            // Full calendar-year grid
-            VStack(alignment: .leading, spacing: 4) {
-                // Month axis
-                HStack(spacing: weekdayGap) {
-                    Color.clear
-                        .frame(width: weekdayColWidth, height: 13)
-                    
-                    ZStack(alignment: .topLeading) {
-                        ForEach(heatmap.monthLabels) { label in
-                            Text("\(label.month)月")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                                .fixedSize()
-                                .offset(x: CGFloat(label.weekIndex) * pitch)
-                        }
-                    }
-                    .frame(width: gridWidth, height: 13, alignment: .topLeading)
-                }
-                
-                // Weekday axis + 52–54 x 7 cells
-                HStack(alignment: .top, spacing: weekdayGap) {
-                    VStack(alignment: .trailing, spacing: cellGap) {
-                        ForEach(0..<7, id: \.self) { row in
-                            if let label = Self.weekdayAxisLabel(for: row) {
-                                Text(label)
-                                    .font(.system(size: 9.5))
-                                    .foregroundStyle(.tertiary)
-                                    .frame(width: weekdayColWidth, height: cellSize, alignment: .trailing)
-                            } else {
-                                Color.clear
-                                    .frame(width: weekdayColWidth, height: cellSize)
-                            }
-                        }
-                    }
-                    
-                    HStack(spacing: cellGap) {
-                        ForEach(Array(heatmap.weeks.enumerated()), id: \.offset) { _, weekCells in
-                            VStack(spacing: cellGap) {
-                                ForEach(weekCells) { cell in
-                                    if cell.isOutOfYear {
-                                        Color.clear
-                                            .frame(width: cellSize, height: cellSize)
-                                    } else {
-                                        let isHovered = self.hoveredCell?.id == cell.id && !cell.isFuture
-                                        let isSelected = self.selectedHeatmapCell?.id == cell.id
-                                        RoundedRectangle(cornerRadius: cellRadius, style: .continuous)
-                                            .fill(self.heatmapColor(for: cell))
-                                            .frame(width: cellSize, height: cellSize)
-                                            .scaleEffect(isHovered || isSelected ? 1.24 : 1.0)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: cellRadius, style: .continuous)
-                                                    .strokeBorder(
-                                                        isSelected ? Color.accentColor : (isHovered ? Color.primary.opacity(0.65) : Color.clear),
-                                                        lineWidth: isSelected ? 1.5 : 1
-                                                    )
-                                            )
-                                            .zIndex(isHovered || isSelected ? 2 : 0)
-                                            .animation(.spring(response: 0.22, dampingFraction: 0.72), value: isHovered)
-                                            .onHover { hovering in
-                                                if hovering && !cell.isFuture {
-                                                    self.hoveredCell = cell
-                                                } else if self.hoveredCell?.id == cell.id {
-                                                    self.hoveredCell = nil
-                                                }
-                                            }
-                                            .onTapGesture {
-                                                guard !cell.isFuture else { return }
-                                                withAnimation(.spring(response: 0.36, dampingFraction: 0.80)) {
-                                                    self.selectedHeatmapCell = cell
-                                                }
-                                            }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                proxy.size.width
-            } action: { newWidth in
-                if newWidth > 100 && abs(newWidth - self.heatmapContentWidth) > 0.5 {
-                    self.heatmapContentWidth = newWidth
-                }
-            }
+            KPICard(
+                title: "AI 补全",
+                value: Self.int(today.aiCompletedChars),
+                unit: "字",
+                note: completionNote,
+                noteColor: .secondary,
+                isExpanded: self.expandedKPI == .completion,
+                compact: self.compact,
+                padding: self.cardPadding,
+                palette: self.palette
+            ) { self.toggle(.completion) }
             
-            // Footer: clickable hint + intensity legend
-            HStack {
-                Text("点击任意日期方块查看当日详情")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.tertiary)
-                Spacer()
-                HStack(spacing: 4) {
-                    Text("少")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                    ForEach(0..<5, id: \.self) { level in
-                        RoundedRectangle(cornerRadius: 2.2, style: .continuous)
-                            .fill(self.heatmapLevelColor(level: level))
-                            .frame(width: 9.5, height: 9.5)
-                    }
-                    Text("多")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-        }
-        .padding(self.cardPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(self.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(self.cardBorder, lineWidth: 1)
-        )
-    }
-    
-    
-    // MARK: Band 3 — Dual-Column Bento Insights Row (Daily Digest + Writing Rhythm & Tasks)
-    
-    private var bottomBentoRow: some View {
-        HStack(alignment: .top, spacing: self.gridSpacing) {
-            self.dailySummaryCard
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            
-            self.writingRhythmAndTasksCard
-                .frame(width: self.isEmbeddedInSettings ? 276 : 368)
-                .frame(maxHeight: .infinity, alignment: .topLeading)
+            KPICard(
+                title: "AI 消耗",
+                value: AnalyticsManager.formatCompactTokenCount(today.totalTokens),
+                unit: "Tokens",
+                note: consumptionNote,
+                noteColor: .secondary,
+                isExpanded: self.expandedKPI == .consumption,
+                compact: self.compact,
+                padding: self.cardPadding,
+                palette: self.palette
+            ) { self.toggle(.consumption) }
         }
         .fixedSize(horizontal: false, vertical: true)
     }
     
     
-    private var dailySummaryCard: some View {
-        let digest = self.analytics.todayDigest
-        let points = digest.map { AnalyticsManager.structuredSummaryPoints(from: $0.summary, maxPoints: 4) } ?? []
-        let topics = digest?.topics ?? []
-        let tomorrowFocus = digest?.tomorrowFocus.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    private func toggle(_ kind: KPIKind) {
         
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Text("今日总结")
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .lineLimit(1)
-                
-                if !topics.isEmpty {
-                    StackedMetadataPills(
-                        items: Array(topics.prefix(self.isEmbeddedInSettings ? 2 : 4)),
-                        tint: Color(red: 0.46, green: 0.38, blue: 0.96)
-                    )
-                }
-                
-                Spacer(minLength: 8)
-                
-                if let error = self.analytics.digestErrorMessage, !error.isEmpty {
-                    Text(error)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.orange)
-                        .lineLimit(1)
-                }
-                
-                if self.analytics.isSummarizingDigest {
-                    MiniThinkingMatrixView(tint: Color(red: 0.46, green: 0.38, blue: 0.96))
-                }
-                
-                Button {
-                    Task {
-                        await self.analytics.refreshDailyDigest(force: true)
-                    }
-                } label: {
-                    Text(digest == nil ? "生成" : "刷新")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(Color.accentColor)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 3.5)
-                        .background(Color.accentColor.opacity(0.11), in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .disabled(self.analytics.isSummarizingDigest)
-            }
-            
-            if digest != nil, !points.isEmpty || !tomorrowFocus.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    if !points.isEmpty {
-                        self.summaryBulletList(points: points)
-                    }
-                    
-                    if !tomorrowFocus.isEmpty {
-                        self.tomorrowFocusBox(focus: tomorrowFocus)
-                    }
-                }
-            } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("暂无今日总结")
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Text("点击右上角「生成」即可提炼今日文档脉络与明日聚焦项。")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 8)
-            }
+        withAnimation(DashMotion.standard) {
+            self.expandedKPI = (self.expandedKPI == kind) ? nil : kind
         }
-        .padding(self.cardPadding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(self.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(self.cardBorder, lineWidth: 1)
-        )
     }
     
     
-    /// Right Bento Card: Weekly Writing Rhythm Swift Chart (`BarMark`) + Quick Reminders / Detected TODOs.
-    private var writingRhythmAndTasksCard: some View {
-        let rhythm = self.analytics.weekdayActivityDistribution(days: 90)
-        let peakWeekday = rhythm.max(by: { $0.averageChars < $1.averageChars })
-        let pendingReminders = Array((self.analytics.todayReminders + self.analytics.tomorrowReminders).prefix(3))
-        let detectedTodos = pendingReminders.isEmpty ? self.analytics.detectedNoteTodos(limit: 2) : []
+    // MARK: Detail Panels
+    
+    @ViewBuilder
+    private func detailPanel(_ kind: KPIKind, _ s: DashboardSnapshot) -> some View {
         
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 6) {
-                Text("星期写作节奏")
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .lineLimit(1)
-                Spacer()
-                if let peak = peakWeekday, peak.averageChars > 0 {
-                    Text("高峰 \(peak.label)")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.20, green: 0.72, blue: 0.56))
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2.5)
-                        .background(Color(red: 0.20, green: 0.72, blue: 0.56).opacity(0.13), in: Capsule())
+        VStack(alignment: .leading, spacing: 16) {
+            switch kind {
+                case .typed: self.typedPanel(s)
+                case .completion: self.completionPanel(s)
+                case .consumption: self.consumptionPanel(s)
+            }
+        }
+        .modifier(DashCard(palette: self.palette, padding: self.cardPadding))
+    }
+    
+    
+    private func panelHeader<Trailing: View>(
+        _ title: String,
+        meta: String,
+        @ViewBuilder trailing: () -> Trailing = { EmptyView() }
+    ) -> some View {
+        
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+            Text(meta)
+                .font(.system(size: 12))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            trailing()
+            IconButton(systemImage: "xmark", palette: self.palette, isClose: true) {
+                withAnimation(DashMotion.standard) {
+                    self.expandedKPI = nil
                 }
             }
+            .help("收起")
+        }
+    }
+    
+    
+    private func typedPanel(_ s: DashboardSnapshot) -> some View {
+        
+        let total = s.days14.reduce(0) { $0 + $1.typed }
+        let activeDays = s.days14.filter { $0.typed > 0 }.count
+        let average = activeDays > 0 ? total / activeDays : 0
+        let peak = s.days14.map(\.typed).max() ?? 0
+        
+        return VStack(alignment: .leading, spacing: 16) {
+            self.panelHeader("近 14 天输入", meta: "合计 \(Self.int(total)) 字 · 活跃日均 \(Self.int(average)) 字")
             
-            Chart(rhythm) { point in
-                let isPeak = (peakWeekday?.weekdayIndex == point.weekdayIndex && point.averageChars > 0)
+            HStack(alignment: .top, spacing: 24) {
+                Chart {
+                    ForEach(s.days14) { day in
+                        BarMark(
+                            x: .value("日期", day.date, unit: .day),
+                            y: .value("字数", day.typed),
+                            width: .ratio(0.62)
+                        )
+                        .foregroundStyle(day.isToday ? self.palette.accent : self.palette.neutralMark)
+                        .cornerRadius(3)
+                    }
+                    if average > 0 {
+                        RuleMark(y: .value("日均", average))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                            .foregroundStyle(Color.secondary.opacity(0.6))
+                    }
+                }
+                .chartXAxis { self.dayAxis(stride: 2) }
+                .chartYAxis { self.valueAxis() }
+                .frame(height: 176)
+                .frame(maxWidth: .infinity)
+                
+                VStack(alignment: .leading, spacing: 16) {
+                    StatTable(rows: [
+                        ("新建文档", "\(s.today.filesCreated) 篇"),
+                        ("今日保存", "\(s.today.documentsSaved) 次"),
+                        ("14 日峰值", "\(Self.int(peak)) 字"),
+                        ("活跃天数", "\(activeDays) / 14"),
+                    ], palette: self.palette)
+                    
+                    if !s.touchedDocTitles.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("今日编辑")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                            ForEach(Array(s.touchedDocTitles.enumerated()), id: \.offset) { _, title in
+                                Text(title)
+                                    .font(.system(size: 12))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                    }
+                }
+                .frame(width: self.compact ? 200 : 240)
+            }
+        }
+    }
+    
+    
+    private func completionPanel(_ s: DashboardSnapshot) -> some View {
+        
+        let accepts7 = s.series7.reduce(0) { $0 + $1.aiCompletionAccepts }
+        let ai7 = s.series7.reduce(0) { $0 + $1.aiCompletedChars }
+        let typed7 = s.series7.reduce(0) { $0 + $1.typedChars }
+        let local7 = s.series7.reduce(0) { $0 + $1.localHits }
+        let share7 = (ai7 + typed7) > 0 ? Int((Double(ai7) * 100 / Double(ai7 + typed7)).rounded()) : 0
+        let perAccept = accepts7 > 0 ? ai7 / accepts7 : 0
+        
+        return VStack(alignment: .leading, spacing: 16) {
+            self.panelHeader("近 7 天补全", meta: "补全 \(Self.int(ai7)) 字 · 采纳 \(accepts7) 次")
+            
+            HStack(alignment: .top, spacing: 24) {
+                Chart {
+                    ForEach(s.days7) { day in
+                        AreaMark(
+                            x: .value("日期", day.date, unit: .day),
+                            y: .value("补全", day.ai)
+                        )
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(self.palette.accent.opacity(0.08))
+                        
+                        LineMark(
+                            x: .value("日期", day.date, unit: .day),
+                            y: .value("补全", day.ai)
+                        )
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.75, lineCap: .round, lineJoin: .round))
+                        .foregroundStyle(self.palette.accent)
+                        
+                        if day.isToday {
+                            PointMark(
+                                x: .value("日期", day.date, unit: .day),
+                                y: .value("补全", day.ai)
+                            )
+                            .symbolSize(28)
+                            .foregroundStyle(self.palette.accent)
+                        }
+                    }
+                }
+                .chartXAxis { self.dayAxis(stride: 1) }
+                .chartYAxis { self.valueAxis() }
+                .frame(height: 176)
+                .frame(maxWidth: .infinity)
+                
+                StatTable(rows: [
+                    ("今日采纳", "\(s.today.aiCompletionAccepts) 次"),
+                    ("单次平均", "\(perAccept) 字"),
+                    ("7 日 AI 占比", "\(share7)%"),
+                    ("本地命中", "\(local7) 次"),
+                ], palette: self.palette)
+                .frame(width: self.compact ? 200 : 240)
+            }
+        }
+    }
+    
+    
+    private func consumptionPanel(_ s: DashboardSnapshot) -> some View {
+        
+        let slice = (self.aiRange == .today) ? s.aiToday : s.ai30
+        let totals = slice.totals
+        let meta = "\(totals.requests) 次 · 输入 \(AnalyticsManager.formatCompactTokenCount(totals.inputTokens)) · 输出 \(AnalyticsManager.formatCompactTokenCount(totals.outputTokens))"
+            + (slice.latencyMs > 0 ? " · \(slice.latencyMs) ms" : "")
+        
+        return VStack(alignment: .leading, spacing: 16) {
+            self.panelHeader("AI 消耗", meta: meta) {
+                Picker("", selection: self.$aiRange) {
+                    ForEach(AIRange.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 112)
+            }
+            
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 16) {
+                    Text("近 7 天 Tokens")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    LegendSwatch(color: self.palette.neutralMark, label: "输入")
+                    LegendSwatch(color: self.palette.accent, label: "输出")
+                }
+                
+                Chart {
+                    ForEach(s.days7) { day in
+                        BarMark(
+                            x: .value("日期", day.date, unit: .day),
+                            y: .value("Tokens", day.input),
+                            width: .ratio(0.5)
+                        )
+                        .foregroundStyle(self.palette.neutralMark)
+                        
+                        BarMark(
+                            x: .value("日期", day.date, unit: .day),
+                            y: .value("Tokens", day.output),
+                            width: .ratio(0.5)
+                        )
+                        .foregroundStyle(self.palette.accent)
+                    }
+                }
+                .chartXAxis { self.dayAxis(stride: 1) }
+                .chartYAxis { self.valueAxis(compactTokens: true) }
+                .frame(height: 136)
+            }
+            
+            HStack(alignment: .top, spacing: 24) {
+                RankTable(
+                    title: "模型",
+                    rows: slice.models.prefix(5).map {
+                        ($0.model, "\(Int(($0.share * 100).rounded()))%", AnalyticsManager.formatCompactTokenCount($0.totalTokens))
+                    },
+                    palette: self.palette
+                )
+                RankTable(
+                    title: "功能",
+                    rows: slice.features.prefix(5).map {
+                        ($0.displayName, "\(Int(($0.share * 100).rounded()))%", "\($0.requests) 次")
+                    },
+                    palette: self.palette
+                )
+            }
+        }
+    }
+    
+    
+    private func dayAxis(stride: Int) -> some AxisContent {
+        
+        AxisMarks(values: .stride(by: .day, count: stride)) { _ in
+            AxisValueLabel(format: .dateTime.month(.defaultDigits).day(), centered: true)
+                .font(.system(size: 10).monospacedDigit())
+                .foregroundStyle(Color.secondary)
+        }
+    }
+    
+    
+    private func valueAxis(compactTokens: Bool = false) -> some AxisContent {
+        
+        AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
+            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                .foregroundStyle(self.palette.hairline)
+            AxisValueLabel {
+                if let number = value.as(Int.self) {
+                    Text(compactTokens ? AnalyticsManager.formatCompactTokenCount(number) : Self.int(number))
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(Color.secondary)
+                }
+            }
+        }
+    }
+    
+    
+    // MARK: Bottom Row
+    
+    private func summaryCard(_ s: DashboardSnapshot) -> some View {
+        
+        let digest = s.digest
+        let points = digest.map { AnalyticsManager.structuredSummaryPoints(from: $0.summary, maxPoints: 4) } ?? []
+        let focus = digest?.tomorrowFocus.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let topics = digest?.topics.prefix(4).joined(separator: " · ") ?? ""
+        
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("今日总结")
+                    .font(.system(size: 14, weight: .semibold))
+                if let digest {
+                    Text("\(Self.timeString(digest.generatedAt)) 更新")
+                        .font(.system(size: 11))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if self.analytics.isSummarizingDigest {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                QuietButton(title: digest == nil ? "生成" : "刷新", systemImage: nil, palette: self.palette) {
+                    Task { await self.analytics.refreshDailyDigest(force: true) }
+                }
+                .disabled(self.analytics.isSummarizingDigest)
+            }
+            
+            if let error = self.analytics.digestErrorMessage, !error.isEmpty {
+                Text(error)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+            }
+            
+            if points.isEmpty && focus.isEmpty {
+                Text("还没有今天的总结")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Circle()
+                                .fill(Color.secondary.opacity(0.6))
+                                .frame(width: 4, height: 4)
+                                .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 4 }
+                            Text(point)
+                                .font(.system(size: 13))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                
+                if !focus.isEmpty {
+                    Rectangle()
+                        .fill(self.palette.hairline)
+                        .frame(height: 1)
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text("明日优先")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        Text(focus)
+                            .font(.system(size: 13, weight: .medium))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                
+                if !topics.isEmpty {
+                    Text(topics)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .modifier(DashCard(palette: self.palette, padding: self.cardPadding))
+    }
+    
+    
+    private func rhythmCard(_ s: DashboardSnapshot) -> some View {
+        
+        let peak = s.rhythm.max(by: { $0.averageChars < $1.averageChars })
+        let hasPeak = (peak?.averageChars ?? 0) > 0
+        
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("星期节奏")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Text(hasPeak ? "\(peak?.label ?? "") 最高" : "近 90 天")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            
+            Chart(s.rhythm) { point in
                 BarMark(
-                    x: .value("星期", point.label),
-                    y: .value("日均字数", point.averageChars)
+                    x: .value("星期", String(point.label.suffix(1))),
+                    y: .value("日均", point.averageChars),
+                    width: .ratio(0.56)
                 )
-                .foregroundStyle(
-                    isPeak
-                        ? Color(red: 0.20, green: 0.72, blue: 0.56)
-                        : Color(red: 0.23, green: 0.54, blue: 0.98).opacity(0.62)
-                )
-                .cornerRadius(4)
+                .foregroundStyle(hasPeak && point.weekdayIndex == peak?.weekdayIndex ? self.palette.accent : self.palette.neutralMark)
+                .cornerRadius(3)
             }
             .chartXAxis {
                 AxisMarks { _ in
                     AxisValueLabel()
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.secondary)
                 }
             }
             .chartYAxis(.hidden)
-            .frame(height: 88)
+            .frame(height: 96)
             
-            if !pendingReminders.isEmpty {
-                Divider().opacity(0.45)
-                VStack(alignment: .leading, spacing: 6) {
+            if !s.reminders.isEmpty {
+                Rectangle().fill(self.palette.hairline).frame(height: 1)
+                VStack(alignment: .leading, spacing: 4) {
                     Text("近期提醒")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                    
-                    ForEach(pendingReminders) { reminder in
-                        Button {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.76)) {
-                                self.analytics.toggleReminderCompleted(id: reminder.id)
-                            }
-                        } label: {
-                            HStack(spacing: 7) {
-                                Image(systemName: reminder.isCompleted ? "checkmark.circle.fill" : "circle")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(reminder.priority == .high ? .orange : .secondary)
-                                Text(reminder.title)
-                                    .font(.system(size: 11.5))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                Spacer(minLength: 4)
-                            }
-                            .contentShape(Rectangle())
+                    ForEach(s.reminders) { reminder in
+                        ReminderRow(reminder: reminder, palette: self.palette) {
+                            self.analytics.toggleReminderCompleted(id: reminder.id)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
-            } else if !detectedTodos.isEmpty {
-                Divider().opacity(0.45)
+            } else if !s.detectedTodos.isEmpty {
+                Rectangle().fill(self.palette.hairline).frame(height: 1)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("笔记待办发现")
-                        .font(.system(size: 11, weight: .semibold))
+                    Text("笔记里的待办")
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                    
-                    ForEach(detectedTodos) { todo in
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(Color.orange.opacity(0.8))
-                                .frame(width: 5, height: 5)
+                    ForEach(s.detectedTodos) { todo in
+                        HStack(spacing: 8) {
                             Text(todo.text)
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(.primary)
+                                .font(.system(size: 12))
                                 .lineLimit(1)
                             Spacer(minLength: 4)
                             Button("加入提醒") {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
-                                    _ = self.analytics.addReminder(
-                                        title: todo.text,
-                                        dueDate: todo.suggestedForTomorrow ? AnalyticsManager.tomorrowDate() : Date()
-                                    )
-                                }
+                                _ = self.analytics.addReminder(
+                                    title: todo.text,
+                                    dueDate: todo.suggestedForTomorrow ? AnalyticsManager.tomorrowDate() : Date()
+                                )
                             }
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(Color.accentColor)
                             .buttonStyle(.plain)
+                            .font(.system(size: 11))
+                            .foregroundStyle(self.palette.accent)
                             .pointerStyle(.link)
                         }
                     }
                 }
             }
         }
-        .padding(self.cardPadding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(self.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(self.cardBorder, lineWidth: 1)
-        )
+        .modifier(DashCard(palette: self.palette, padding: self.cardPadding))
     }
     
     
-    private func summaryBulletList(points: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(points.enumerated()), id: \.offset) { _, point in
-                HStack(alignment: .top, spacing: 8) {
-                    Circle()
-                        .fill(Color.accentColor.opacity(0.85))
-                        .frame(width: 5.5, height: 5.5)
-                        .padding(.top, 5.5)
-                    
-                    Text(point)
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
+    // MARK: Day Detail Overlay
     
-    
-    private func tomorrowFocusBox(focus: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 5) {
-                Image(systemName: "arrow.forward.circle.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.orange)
-                Text("明日优先")
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-            }
-            
-            Text(focus)
-                .font(.system(size: 12.5))
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(11)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(self.colorScheme == .dark ? 0.08 : 0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.orange.opacity(0.22), lineWidth: 0.75)
-        )
-    }
-    
-    
-    // MARK: Center Modal Popup for Clicked Heatmap Day (LeiBox transfer-glow + share-invite style)
-    
-    private func heatmapModalOverlay(for cell: HeatmapDayCell) -> some View {
+    private func openDetail(_ cell: HeatmapDayCell) {
+        
         let detail = self.analytics.dayDetail(for: cell)
-        let prevCell = self.analytics.adjacentHeatmapCell(from: cell.dateKey, deltaDays: -1, in: self.selectedYear)
-        let nextCell = self.analytics.adjacentHeatmapCell(from: cell.dateKey, deltaDays: 1, in: self.selectedYear)
+        withAnimation(DashMotion.standard) {
+            self.selectedDetail = detail
+        }
+    }
+    
+    
+    private func closeDetail() {
+        
+        withAnimation(DashMotion.standard) {
+            self.selectedDetail = nil
+        }
+    }
+    
+    
+    private func stepDetail(by delta: Int) {
+        
+        guard let current = self.selectedDetail,
+              let cells = self.snapshot?.orderedCells,
+              let index = cells.firstIndex(where: { $0.dateKey == current.cell.dateKey }),
+              cells.indices.contains(index + delta)
+        else { return }
+        self.selectedDetail = self.analytics.dayDetail(for: cells[index + delta])
+    }
+    
+    
+    private func detailOverlay(_ detail: HeatmapDayDetail) -> some View {
+        
+        let cells = self.snapshot?.orderedCells ?? []
+        let index = cells.firstIndex(where: { $0.dateKey == detail.cell.dateKey })
         
         return ZStack {
-            Color.black.opacity(self.colorScheme == .dark ? 0.56 : 0.28)
+            Color.black.opacity(self.palette.isDark ? 0.36 : 0.14)
                 .ignoresSafeArea()
-                .onTapGesture {
-                    withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
-                        self.selectedHeatmapCell = nil
-                    }
-                }
+                .contentShape(Rectangle())
+                .onTapGesture { self.closeDetail() }
             
-            HeatmapDayDetailModalCard(
+            DayDetailCard(
                 detail: detail,
-                levelColor: self.heatmapLevelColor(level: detail.cell.level),
-                cardBackground: self.colorScheme == .dark
-                    ? Color(nsColor: .windowBackgroundColor).opacity(0.96)
-                    : Color(nsColor: .controlBackgroundColor),
-                subCardBackground: self.subCardBackground,
-                cardBorder: self.cardBorder,
-                subCardBorder: self.subCardBorder,
-                canStepPrev: prevCell != nil,
-                canStepNext: nextCell != nil,
-                onStepPrev: {
-                    if let prevCell {
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
-                            self.selectedHeatmapCell = prevCell
-                        }
-                    }
-                },
-                onStepNext: {
-                    if let nextCell {
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
-                            self.selectedHeatmapCell = nextCell
-                        }
-                    }
-                },
-                onClose: {
-                    withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
-                        self.selectedHeatmapCell = nil
-                    }
-                }
+                palette: self.palette,
+                canGoBack: (index ?? 0) > 0,
+                canGoForward: index.map { $0 < cells.count - 1 } ?? false,
+                onBack: { self.stepDetail(by: -1) },
+                onForward: { self.stepDetail(by: 1) },
+                onClose: { self.closeDetail() }
             )
-            .frame(maxWidth: self.isEmbeddedInSettings ? 520 : 560)
-            .padding(20)
-            .transition(
-                .asymmetric(
-                    insertion: .scale(scale: 0.90).combined(with: .opacity),
-                    removal: .scale(scale: 0.94).combined(with: .opacity)
-                )
-            )
+            .frame(maxWidth: self.compact ? 500 : 540)
+            .padding(24)
+            .transition(.opacity.combined(with: .scale(scale: 0.98)))
         }
     }
     
     
-    // MARK: Visual Tokens & Helpers
+    // MARK: Formatting
     
-    private var canvasBackground: Color {
-        
-        Color(nsColor: .windowBackgroundColor)
-    }
-    
-    
-    private var cardBackground: Color {
-        
-        if self.colorScheme == .dark {
-            Color.white.opacity(0.048)
-        } else {
-            Color(nsColor: .controlBackgroundColor)
-        }
-    }
-    
-    
-    private var cardBorder: Color {
-        
-        if self.colorScheme == .dark {
-            Color.white.opacity(0.095)
-        } else {
-            Color.black.opacity(0.075)
-        }
-    }
-    
-    
-    private var subCardBackground: Color {
-        
-        if self.colorScheme == .dark {
-            Color.black.opacity(0.24)
-        } else {
-            Color.primary.opacity(0.032)
-        }
-    }
-    
-    
-    private var subCardBorder: Color {
-        
-        if self.colorScheme == .dark {
-            Color.white.opacity(0.065)
-        } else {
-            Color.black.opacity(0.055)
-        }
-    }
-    
-    
-    private func heatmapColor(for cell: HeatmapDayCell) -> Color {
-        
-        if cell.isFuture {
-            return (self.colorScheme == .dark) ? Color.white.opacity(0.025) : Color.black.opacity(0.025)
-        }
-        return self.heatmapLevelColor(level: cell.level)
-    }
-    
-    
-    private func heatmapLevelColor(level: Int) -> Color {
-        
-        if self.colorScheme == .dark {
-            switch level {
-                case 4: Color(red: 0.24, green: 0.84, blue: 0.45)
-                case 3: Color(red: 0.17, green: 0.65, blue: 0.35)
-                case 2: Color(red: 0.11, green: 0.45, blue: 0.25)
-                case 1: Color(red: 0.08, green: 0.28, blue: 0.17)
-                default: Color.white.opacity(0.06)
-            }
-        } else {
-            switch level {
-                case 4: Color(red: 0.13, green: 0.50, blue: 0.24)
-                case 3: Color(red: 0.24, green: 0.68, blue: 0.36)
-                case 2: Color(red: 0.49, green: 0.82, blue: 0.56)
-                case 1: Color(red: 0.78, green: 0.93, blue: 0.81)
-                default: Color.black.opacity(0.055)
-            }
-        }
-    }
-    
-    
-    private static func weekdayAxisLabel(for row: Int) -> String? {
-        
-        switch row {
-            case 0: "一"
-            case 2: "三"
-            case 4: "五"
-            default: nil
-        }
-    }
-    
-    
-    private static func seriesColor(at index: Int) -> Color {
-        
-        let palette: [Color] = [
-            Color(red: 0.23, green: 0.54, blue: 0.98),
-            Color(red: 0.46, green: 0.38, blue: 0.96),
-            Color(red: 0.18, green: 0.72, blue: 0.60),
-            Color(red: 0.95, green: 0.55, blue: 0.18),
-            Color(red: 0.91, green: 0.36, blue: 0.62),
-        ]
-        return palette[index % palette.count]
-    }
-    
-    
-    private static func formattedInt(_ value: Int) -> String {
+    fileprivate static func int(_ value: Int) -> String {
         
         value.formatted(.number.grouping(.automatic))
     }
     
     
-    private static func formattedCompactChars(_ value: Int) -> String {
+    private static func compactChars(_ value: Int) -> String {
         
-        if value >= 10_000 {
-            return String(format: "%.1f 万字", Double(value) / 10_000.0)
-        }
-        return "\(Self.formattedInt(value)) 字"
+        value >= 10_000
+            ? String(format: "%.1f 万字", Double(value) / 10_000)
+            : "\(Self.int(value)) 字"
     }
     
     
-    private static func shortMonthDay(_ dateKey: String) -> String {
-        
-        let parts = dateKey.split(separator: "-")
-        guard parts.count == 3 else { return dateKey }
-        let m = Int(parts[1]) ?? 0
-        let d = Int(parts[2]) ?? 0
-        return "\(m)/\(d)"
-    }
-    
-    
-    private static func deltaLabel(current: Int, baseline: Int) -> String {
-        
-        guard baseline > 0 else {
-            return current > 0 ? "今日已开启" : "待开始写作"
-        }
-        let pct = Int(round(Double(current - baseline) * 100.0 / Double(baseline)))
-        if pct >= 0 {
-            return "较均 +\(pct)%"
-        } else {
-            return "较均 \(pct)%"
-        }
-    }
-}
-
-
-// MARK: - LeiBox-Inspired Reusable Effects & Subviews
-
-/// Compact Swift Charts Catmull-Rom Sparkline embedded inside KPI Bento cards.
-private struct MiniSparklineChart: View {
-    
-    let values: [Double]
-    let tint: Color
-    
-    var body: some View {
-        let points = self.values.enumerated().map { (index: $0.offset, value: $0.element) }
-        Chart(points, id: \.index) { pt in
-            AreaMark(
-                x: .value("Day", pt.index),
-                y: .value("Val", pt.value)
-            )
-            .interpolationMethod(.catmullRom)
-            .foregroundStyle(
-                LinearGradient(
-                    colors: [self.tint.opacity(0.28), self.tint.opacity(0.01)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
-            
-            LineMark(
-                x: .value("Day", pt.index),
-                y: .value("Val", pt.value)
-            )
-            .interpolationMethod(.catmullRom)
-            .lineStyle(StrokeStyle(lineWidth: 1.6, lineCap: .round))
-            .foregroundStyle(self.tint)
-        }
-        .chartXAxis(.hidden)
-        .chartYAxis(.hidden)
-        .allowsHitTesting(false)
-    }
-}
-
-
-/// LeiBox `border-beam` inspired traveling luminous edge highlight along a rounded card border.
-private struct BorderBeamOverlay: View {
-    
-    let cornerRadius: CGFloat
-    let accent: Color
-    var speed: Double = 4.5
-    var opacity: Double = 0.65
-    
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-            let angle = Angle.degrees((context.date.timeIntervalSinceReferenceDate * (360.0 / self.speed)).truncatingRemainder(dividingBy: 360.0))
-            RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
-                .strokeBorder(
-                    AngularGradient(
-                        gradient: Gradient(stops: [
-                            .init(color: .clear, location: 0.0),
-                            .init(color: .clear, location: 0.68),
-                            .init(color: self.accent.opacity(self.opacity * 0.6), location: 0.82),
-                            .init(color: self.accent.opacity(self.opacity), location: 0.92),
-                            .init(color: Color.white.opacity(self.opacity * 0.9), location: 0.96),
-                            .init(color: .clear, location: 1.0),
-                        ]),
-                        center: .center,
-                        angle: angle
-                    ),
-                    lineWidth: 1.4
-                )
-        }
-        .allowsHitTesting(false)
-    }
-}
-
-
-/// Subtle live recording pill inspired by LeiBox `ai-generating` pulse dot.
-private struct LiveTelemetryPulseBadge: View {
-    
-    @State private var pulse = false
-    
-    var body: some View {
-        HStack(spacing: 5) {
-            ZStack {
-                Circle()
-                    .fill(Color.green.opacity(0.28))
-                    .frame(width: 10, height: 10)
-                    .scaleEffect(self.pulse ? 1.45 : 0.75)
-                    .opacity(self.pulse ? 0.0 : 0.85)
-                Circle()
-                    .fill(Color.green)
-                    .frame(width: 5.5, height: 5.5)
-            }
-            Text("实时记录")
-                .font(.system(size: 10.5, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Color.green.opacity(0.08), in: Capsule())
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: false)) {
-                self.pulse = true
-            }
-        }
-    }
-}
-
-
-/// LeiBox `thinking-particles` inspired 3×3 staggered breathing dot matrix indicator.
-private struct MiniThinkingMatrixView: View {
-    
-    let tint: Color
-    
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            let grid = [0, 1, 2]
-            VStack(spacing: 1.5) {
-                ForEach(grid, id: \.self) { row in
-                    HStack(spacing: 1.5) {
-                        ForEach(grid, id: \.self) { col in
-                            let idx = Double(row + col)
-                            let wave = 0.5 + 0.5 * sin(t * 5.4 - idx * 0.65)
-                            RoundedRectangle(cornerRadius: 0.8)
-                                .fill(self.tint.opacity(0.22 + 0.78 * wave))
-                                .frame(width: 3, height: 3)
-                                .scaleEffect(0.75 + 0.30 * wave)
-                        }
-                    }
-                }
-            }
-        }
-        .frame(width: 14, height: 14)
-    }
-}
-
-
-/// LeiBox `stacked-metadata` inspired pill strip that gently fans apart on hover.
-private struct StackedMetadataPills: View {
-    
-    let items: [String]
-    let tint: Color
-    
-    @State private var isHovered = false
-    
-    var body: some View {
-        HStack(spacing: self.isHovered ? 6 : 3) {
-            ForEach(Array(self.items.enumerated()), id: \.offset) { _, label in
-                Text(label)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(self.isHovered ? self.tint : Color.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2.5)
-                    .background(self.tint.opacity(self.isHovered ? 0.14 : 0.08), in: Capsule())
-                    .overlay(Capsule().strokeBorder(self.tint.opacity(self.isHovered ? 0.30 : 0.14), lineWidth: 0.6))
-                    .lineLimit(1)
-            }
-        }
-        .animation(.spring(response: 0.32, dampingFraction: 0.76), value: self.isHovered)
-        .onHover { self.isHovered = $0 }
-    }
-}
-
-
-/// Center detail modal opened when clicking a heatmap day cell (inspired by LeiBox `transfer-glow` & `share-invite`).
-private struct HeatmapDayDetailModalCard: View {
-    
-    let detail: HeatmapDayDetail
-    let levelColor: Color
-    let cardBackground: Color
-    let subCardBackground: Color
-    let cardBorder: Color
-    let subCardBorder: Color
-    let canStepPrev: Bool
-    let canStepNext: Bool
-    let onStepPrev: () -> Void
-    let onStepNext: () -> Void
-    let onClose: () -> Void
-    
-    @State private var isCloseHovered = false
-    
-    var body: some View {
-        let cell = self.detail.cell
-        
-        VStack(alignment: .leading, spacing: 14) {
-            // Header
-            HStack(spacing: 10) {
-                HStack(spacing: 7) {
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(self.levelColor)
-                        .frame(width: 12, height: 12)
-                    
-                    Text(Self.formattedFullDate(cell.date))
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
-                    
-                    Text(Self.activityLevelTitle(for: cell.level))
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(cell.level > 0 ? self.levelColor : .secondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(
-                            (cell.level > 0 ? self.levelColor : Color.secondary).opacity(0.14),
-                            in: Capsule()
-                        )
-                }
-                
-                Spacer(minLength: 8)
-                
-                HStack(spacing: 4) {
-                    Button(action: self.onStepPrev) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 10, weight: .semibold))
-                            .frame(width: 24, height: 24)
-                            .background(self.subCardBackground, in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!self.canStepPrev)
-                    .opacity(self.canStepPrev ? 1 : 0.35)
-                    .help("上一天")
-                    
-                    Button(action: self.onStepNext) {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .frame(width: 24, height: 24)
-                            .background(self.subCardBackground, in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!self.canStepNext)
-                    .opacity(self.canStepNext ? 1 : 0.35)
-                    .help("下一天")
-                }
-                
-                Button(action: self.onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(self.isCloseHovered ? Color.red : Color.secondary)
-                        .rotationEffect(.degrees(self.isCloseHovered ? 90 : 0))
-                        .frame(width: 26, height: 26)
-                        .background(
-                            self.isCloseHovered ? Color.red.opacity(0.14) : self.subCardBackground,
-                            in: Circle()
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .onHover { hovering in
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.68)) {
-                        self.isCloseHovered = hovering
-                    }
-                }
-                .help("关闭 (Esc)")
-            }
-            
-            // Core 6-Metric Grid (Tabular Numbers, Zero Progress Bars)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
-                self.modalStatTile(title: "手动输入", value: cell.typedChars.formatted(), unit: "字", tint: Color(red: 0.23, green: 0.54, blue: 0.98))
-                self.modalStatTile(title: "AI 补全", value: cell.aiCompletedChars.formatted(), unit: "字", tint: Color(red: 0.46, green: 0.38, blue: 0.96))
-                self.modalStatTile(title: "AI 调用", value: "\(cell.aiRequests)", unit: "次", tint: Color(red: 0.95, green: 0.55, blue: 0.18))
-                self.modalStatTile(title: "Token 消耗", value: AnalyticsManager.formatCompactTokenCount(cell.totalTokens), unit: "入\(AnalyticsManager.formatCompactTokenCount(cell.inputTokens))/出\(AnalyticsManager.formatCompactTokenCount(cell.outputTokens))", tint: Color(red: 0.95, green: 0.55, blue: 0.18))
-                self.modalStatTile(title: "文档动态", value: "\(cell.filesCreated) / \(cell.documentsSaved)", unit: "新建·保存", tint: .teal)
-                self.modalStatTile(title: "采纳与省流", value: "\(cell.aiCompletionAccepts) / \(cell.localHits)", unit: "采纳·本地", tint: .green)
-            }
-            
-            // Visual Breakdown when the day has writing or AI data
-            if cell.typedChars + cell.aiCompletedChars > 0 || !self.detail.models.isEmpty {
-                HStack(alignment: .top, spacing: 12) {
-                    if cell.typedChars + cell.aiCompletedChars > 0 {
-                        let mix: [(label: String, value: Int, color: Color)] = [
-                            ("手打", cell.typedChars, Color(red: 0.23, green: 0.54, blue: 0.98)),
-                            ("AI补全", cell.aiCompletedChars, Color(red: 0.46, green: 0.38, blue: 0.96)),
-                        ].filter { $0.value > 0 }
-                        
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("产出构成")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                            HStack(spacing: 12) {
-                                Chart(mix, id: \.label) { item in
-                                    SectorMark(
-                                        angle: .value("字数", item.value),
-                                        innerRadius: .ratio(0.60),
-                                        angularInset: 2
-                                    )
-                                    .cornerRadius(3)
-                                    .foregroundStyle(item.color)
-                                }
-                                .chartLegend(.hidden)
-                                .frame(width: 68, height: 68)
-                                
-                                VStack(alignment: .leading, spacing: 5) {
-                                    ForEach(mix, id: \.label) { item in
-                                        HStack(spacing: 5) {
-                                            Circle().fill(item.color).frame(width: 6, height: 6)
-                                            Text("\(item.label) \(item.value.formatted()) 字")
-                                                .font(.system(size: 11))
-                                                .monospacedDigit()
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(self.subCardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(self.subCardBorder, lineWidth: 0.5))
-                    }
-                    
-                    if !self.detail.models.isEmpty || !self.detail.features.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("AI 使用明细")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                            
-                            ForEach(self.detail.models.prefix(3)) { model in
-                                HStack(spacing: 6) {
-                                    Circle().fill(Color.orange).frame(width: 5, height: 5)
-                                    Text(model.model)
-                                        .font(.system(size: 11, weight: .medium))
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                    Spacer()
-                                    Text("\(model.requests) 次 · \(AnalyticsManager.formatCompactTokenCount(model.totalTokens))")
-                                        .font(.system(size: 10.5))
-                                        .monospacedDigit()
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            if self.detail.averageLatencyMs > 0 {
-                                Text("平均响应 \(self.detail.averageLatencyMs) ms")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(self.subCardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(self.subCardBorder, lineWidth: 0.5))
-                    }
-                }
-            }
-            
-            // Documents / Weekly Reports touched on that date
-            if !self.detail.documents.isEmpty || !self.detail.weeklyReports.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("关联文档与周报")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    
-                    let titles = self.detail.documents.map(\.title) + self.detail.weeklyReports.map(\.title)
-                    StackedMetadataPills(items: Array(titles.prefix(5)), tint: Color.accentColor)
-                }
-            }
-            
-            // Daily AI Digest if available for this date
-            if let digest = self.detail.digest {
-                let pts = AnalyticsManager.structuredSummaryPoints(from: digest.summary, maxPoints: 3)
-                if !pts.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("当日总结")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        ForEach(Array(pts.enumerated()), id: \.offset) { _, pt in
-                            HStack(alignment: .top, spacing: 6) {
-                                Circle().fill(Color.accentColor).frame(width: 4.5, height: 4.5).padding(.top, 5)
-                                Text(pt)
-                                    .font(.system(size: 11.5))
-                                    .foregroundStyle(.primary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                    }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(self.subCardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-            }
-        }
-        .padding(18)
-        .background(self.cardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(self.cardBorder, lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.24), radius: 28, y: 12)
-    }
-    
-    
-    private func modalStatTile(title: String, value: String, unit: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 10.5, weight: .medium))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 16, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-            Text(unit)
-                .font(.system(size: 9.5))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(self.subCardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(tint.opacity(0.16), lineWidth: 0.75)
-        )
-    }
-    
-    
-    private static func formattedFullDate(_ date: Date) -> String {
+    private static func todayTitle() -> String {
         
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy年M月d日 · EEEE"
-        return formatter.string(from: date)
+        formatter.dateFormat = "M 月 d 日 EEEE"
+        return formatter.string(from: Date())
     }
     
     
-    private static func activityLevelTitle(for level: Int) -> String {
+    private static func timeString(_ date: Date) -> String {
         
-        switch level {
-            case 4: "高能爆发"
-            case 3: "深度专注"
-            case 2: "稳定产出"
-            case 1: "轻度记录"
-            default: "休息日"
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
+
+// MARK: - Building Blocks
+
+/// Card surface with an optional hover step and a hairline that strengthens when selected.
+private struct DashCard: ViewModifier {
+    
+    var palette: DashPalette
+    var padding: CGFloat
+    var isHighlighted = false
+    var isHovered = false
+    
+    
+    func body(content: Content) -> some View {
+        
+        content
+            .padding(self.padding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(self.palette.card)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(self.palette.hover)
+                            .opacity(self.isHovered ? 1 : 0)
+                    )
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(self.isHighlighted ? self.palette.hairlineStrong : self.palette.hairline, lineWidth: 1)
+            )
+    }
+}
+
+
+/// A figure card: label, number, and what the number compares to. Clicking opens its detail panel.
+private struct KPICard: View {
+    
+    let title: String
+    let value: String
+    let unit: String
+    let note: String
+    let noteColor: Color
+    let isExpanded: Bool
+    let compact: Bool
+    let padding: CGFloat
+    let palette: DashPalette
+    let action: () -> Void
+    
+    @State private var isHovered = false
+    
+    
+    var body: some View {
+        
+        Button(action: self.action) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Text(self.title)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(self.isExpanded || self.isHovered ? Color.primary.opacity(0.7) : Color.secondary.opacity(0.6))
+                        .rotationEffect(.degrees(self.isExpanded ? 180 : 0))
+                }
+                
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(self.value)
+                        .font(.system(size: self.compact ? 24 : 28, weight: .semibold))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Text(self.unit)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                
+                Text(self.note)
+                    .font(.system(size: 11.5))
+                    .monospacedDigit()
+                    .foregroundStyle(self.noteColor)
+                    .lineLimit(1)
+            }
+            .modifier(DashCard(palette: self.palette, padding: self.padding, isHighlighted: self.isExpanded, isHovered: self.isHovered))
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
+        .buttonStyle(PressStyle())
+        .onHover { hovering in
+            withAnimation(DashMotion.quick) {
+                self.isHovered = hovering
+            }
+        }
+    }
+}
+
+
+/// Tiny press feedback, no bounce.
+private struct PressStyle: ButtonStyle {
+    
+    func makeBody(configuration: Configuration) -> some View {
+        
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.99 : 1)
+            .animation(DashMotion.quick, value: configuration.isPressed)
+    }
+}
+
+
+/// Quiet bordered text button used for secondary actions.
+private struct QuietButton: View {
+    
+    let title: String
+    let systemImage: String?
+    let palette: DashPalette
+    let action: () -> Void
+    
+    @State private var isHovered = false
+    
+    
+    var body: some View {
+        
+        Button(action: self.action) {
+            HStack(spacing: 4) {
+                if let systemImage = self.systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                Text(self.title)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(self.isHovered ? Color.primary : Color.secondary)
+            .padding(.horizontal, 10)
+            .frame(height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(self.isHovered ? self.palette.inset : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(self.palette.hairline, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
+        .onHover { hovering in
+            withAnimation(DashMotion.quick) {
+                self.isHovered = hovering
+            }
+        }
+    }
+}
+
+
+/// Round icon button; the close variant turns a quarter and warms to red on hover.
+private struct IconButton: View {
+    
+    let systemImage: String
+    let palette: DashPalette
+    var isClose = false
+    let action: () -> Void
+    
+    @State private var isHovered = false
+    
+    
+    var body: some View {
+        
+        Button(action: self.action) {
+            Image(systemName: self.systemImage)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(self.isHovered ? (self.isClose ? Color.red : Color.primary) : Color.secondary)
+                .rotationEffect(.degrees(self.isClose && self.isHovered ? 90 : 0))
+                .frame(width: 24, height: 24)
+                .background(
+                    Circle().fill(
+                        self.isHovered
+                            ? (self.isClose ? Color.red.opacity(0.10) : self.palette.inset)
+                            : Color.clear
+                    )
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(PressStyle())
+        .onHover { hovering in
+            withAnimation(DashMotion.standard) {
+                self.isHovered = hovering
+            }
+        }
+    }
+}
+
+
+/// Label/value rows separated by hairlines.
+private struct StatTable: View {
+    
+    let rows: [(String, String)]
+    let palette: DashPalette
+    
+    
+    var body: some View {
+        
+        VStack(spacing: 0) {
+            ForEach(Array(self.rows.enumerated()), id: \.offset) { index, row in
+                HStack {
+                    Text(row.0)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Text(row.1)
+                        .font(.system(size: 13, weight: .medium))
+                        .monospacedDigit()
+                }
+                .frame(height: 32)
+                
+                if index < self.rows.count - 1 {
+                    Rectangle().fill(self.palette.hairline).frame(height: 1)
+                }
+            }
+        }
+    }
+}
+
+
+/// Ranked list: name, share, metric. No bars.
+private struct RankTable: View {
+    
+    let title: String
+    let rows: [(String, String, String)]
+    let palette: DashPalette
+    
+    
+    var body: some View {
+        
+        VStack(alignment: .leading, spacing: 0) {
+            Text(self.title)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 4)
+            
+            if self.rows.isEmpty {
+                Text("暂无记录")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(height: 32)
+            } else {
+                ForEach(Array(self.rows.enumerated()), id: \.offset) { index, row in
+                    HStack(spacing: 8) {
+                        Text(row.0)
+                            .font(.system(size: 12.5))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        Text(row.1)
+                            .font(.system(size: 12))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 40, alignment: .trailing)
+                        Text(row.2)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .monospacedDigit()
+                            .frame(width: 64, alignment: .trailing)
+                    }
+                    .frame(height: 32)
+                    
+                    if index < self.rows.count - 1 {
+                        Rectangle().fill(self.palette.hairline).frame(height: 1)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+
+private struct LegendSwatch: View {
+    
+    let color: Color
+    let label: String
+    
+    
+    var body: some View {
+        
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(self.color)
+                .frame(width: 8, height: 8)
+            Text(self.label)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+
+private struct ReminderRow: View {
+    
+    let reminder: UserReminder
+    let palette: DashPalette
+    let toggle: () -> Void
+    
+    @State private var isHovered = false
+    
+    
+    var body: some View {
+        
+        Button(action: self.toggle) {
+            HStack(spacing: 8) {
+                Image(systemName: self.reminder.isCompleted ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 12))
+                    .foregroundStyle(self.reminder.isCompleted ? self.palette.accent : Color.secondary)
+                Text(self.reminder.title)
+                    .font(.system(size: 12))
+                    .foregroundStyle(self.reminder.isCompleted ? Color.secondary : Color.primary)
+                    .strikethrough(self.reminder.isCompleted, color: .secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if self.reminder.priority == .high {
+                    Text("重要")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 6)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(self.isHovered ? self.palette.inset : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, -6)
+        .onHover { hovering in
+            withAnimation(DashMotion.quick) {
+                self.isHovered = hovering
+            }
+        }
+    }
+}
+
+
+// MARK: - Heatmap
+
+/// The year's writing drawn in a single `Canvas`; hover and click are hit-tested, so only this card redraws on hover.
+private struct HeatmapCard: View {
+    
+    let heatmap: YearlyHeatmapData
+    let longestStreak: Int
+    let canGoBack: Bool
+    let canGoForward: Bool
+    let selectedKey: String?
+    let palette: DashPalette
+    let compact: Bool
+    let padding: CGFloat
+    let onPreviousYear: () -> Void
+    let onNextYear: () -> Void
+    let onSelect: (HeatmapDayCell) -> Void
+    
+    @State private var hovered: HeatmapDayCell?
+    @State private var width: CGFloat = 0
+    
+    
+    private struct Layout {
+        
+        var gridX: CGFloat
+        var gridY: CGFloat
+        var cell: CGFloat
+        var gap: CGFloat
+        var radius: CGFloat
+        var height: CGFloat
+        
+        var pitch: CGFloat { self.cell + self.gap }
+    }
+    
+    
+    private func layout(for width: CGFloat) -> Layout {
+        
+        let labelColumn: CGFloat = 16
+        let labelGap: CGFloat = 6
+        let monthBand: CGFloat = 16
+        let weeks = CGFloat(max(1, self.heatmap.weeks.count))
+        let gridWidth = max(200, width - labelColumn - labelGap)
+        let gap: CGFloat = gridWidth > 760 ? 3 : 2
+        let raw = (gridWidth - gap * (weeks - 1)) / weeks
+        let cell = max(6, min(15, (raw * 2).rounded(.down) / 2))
+        
+        return Layout(
+            gridX: labelColumn + labelGap,
+            gridY: monthBand,
+            cell: cell,
+            gap: gap,
+            radius: max(1.5, min(3, cell * 0.22)),
+            height: monthBand + cell * 7 + gap * 6
+        )
+    }
+    
+    
+    private func cell(at point: CGPoint, layout: Layout) -> HeatmapDayCell? {
+        
+        let x = point.x - layout.gridX
+        let y = point.y - layout.gridY
+        guard x >= 0, y >= 0 else { return nil }
+        let week = Int(x / layout.pitch)
+        let row = Int(y / layout.pitch)
+        guard x - CGFloat(week) * layout.pitch <= layout.cell,
+              y - CGFloat(row) * layout.pitch <= layout.cell,
+              self.heatmap.weeks.indices.contains(week),
+              self.heatmap.weeks[week].indices.contains(row)
+        else { return nil }
+        let cell = self.heatmap.weeks[week][row]
+        return cell.isOutOfYear ? nil : cell
+    }
+    
+    
+    var body: some View {
+        
+        let layout = self.layout(for: self.width > 0 ? self.width : (self.compact ? 660 : 960))
+        
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("\(String(self.heatmap.year)) 年写作")
+                    .font(.system(size: 14, weight: .semibold))
+                
+                Spacer(minLength: 8)
+                
+                Text(self.statusLine)
+                    .font(.system(size: 12))
+                    .monospacedDigit()
+                    .foregroundStyle(self.hovered == nil ? Color.secondary : Color.primary)
+                    .lineLimit(1)
+                
+                HStack(spacing: 0) {
+                    YearStepButton(systemImage: "chevron.left", isEnabled: self.canGoBack, palette: self.palette, action: self.onPreviousYear)
+                    YearStepButton(systemImage: "chevron.right", isEnabled: self.canGoForward, palette: self.palette, action: self.onNextYear)
+                }
+            }
+            
+            Canvas { context, _ in
+                self.draw(in: &context, layout: layout)
+            }
+            .frame(height: layout.height)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onContinuousHover { phase in
+                switch phase {
+                    case .active(let point):
+                        let target = self.cell(at: point, layout: layout).flatMap { $0.isFuture ? nil : $0 }
+                        if target?.id != self.hovered?.id {
+                            self.hovered = target
+                        }
+                    case .ended:
+                        if self.hovered != nil {
+                            self.hovered = nil
+                        }
+                }
+            }
+            .onTapGesture { point in
+                if let target = self.cell(at: point, layout: layout), !target.isFuture {
+                    self.onSelect(target)
+                }
+            }
+            .pointerStyle(self.hovered == nil ? nil : .link)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
+                if abs(newWidth - self.width) > 0.5 {
+                    self.width = newWidth
+                }
+            }
+            
+            HStack(spacing: 4) {
+                Text("点击日期查看当天")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("少")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                ForEach(0..<5, id: \.self) { level in
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(self.palette.heat(level))
+                        .frame(width: 10, height: 10)
+                }
+                Text("多")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .modifier(DashCard(palette: self.palette, padding: self.padding))
+    }
+    
+    
+    private var statusLine: String {
+        
+        if let cell = self.hovered {
+            return "\(Self.shortDate(cell.date)) · 输入 \(AnalyticsDashboardView.int(cell.typedChars)) 字 · 补全 \(AnalyticsDashboardView.int(cell.aiCompletedChars)) 字 · AI \(cell.aiRequests) 次"
+        }
+        return "\(self.heatmap.activeDays) 个活跃日 · 最长连续 \(self.longestStreak) 天"
+    }
+    
+    
+    private func draw(in context: inout GraphicsContext, layout: Layout) {
+        
+        let labelColor = Color.secondary
+        
+        for label in self.heatmap.monthLabels {
+            let text = context.resolve(Text("\(label.month)月").font(.system(size: 10)).foregroundStyle(labelColor))
+            context.draw(text, at: CGPoint(x: layout.gridX + CGFloat(label.weekIndex) * layout.pitch, y: 0), anchor: .topLeading)
+        }
+        
+        for (row, name) in [(0, "一"), (2, "三"), (4, "五")] {
+            let text = context.resolve(Text(name).font(.system(size: 9.5)).foregroundStyle(labelColor))
+            let y = layout.gridY + CGFloat(row) * layout.pitch + layout.cell / 2
+            context.draw(text, at: CGPoint(x: 0, y: y), anchor: .leading)
+        }
+        
+        var hoveredRect: CGRect?
+        var selectedRect: CGRect?
+        
+        for (week, days) in self.heatmap.weeks.enumerated() {
+            for (row, cell) in days.enumerated() where !cell.isOutOfYear {
+                let rect = CGRect(
+                    x: layout.gridX + CGFloat(week) * layout.pitch,
+                    y: layout.gridY + CGFloat(row) * layout.pitch,
+                    width: layout.cell,
+                    height: layout.cell
+                )
+                let color = cell.isFuture ? self.palette.futureCell : self.palette.heat(cell.level)
+                context.fill(Path(roundedRect: rect, cornerRadius: layout.radius, style: .continuous), with: .color(color))
+                
+                if cell.id == self.hovered?.id { hoveredRect = rect }
+                if cell.dateKey == self.selectedKey { selectedRect = rect }
+            }
+        }
+        
+        if let rect = hoveredRect {
+            context.stroke(
+                Path(roundedRect: rect.insetBy(dx: -1, dy: -1), cornerRadius: layout.radius + 1, style: .continuous),
+                with: .color(Color.primary.opacity(0.55)),
+                lineWidth: 1
+            )
+        }
+        if let rect = selectedRect {
+            context.stroke(
+                Path(roundedRect: rect.insetBy(dx: -1.5, dy: -1.5), cornerRadius: layout.radius + 1.5, style: .continuous),
+                with: .color(Color.primary.opacity(0.85)),
+                lineWidth: 1.5
+            )
+        }
+    }
+    
+    
+    private static func shortDate(_ date: Date) -> String {
+        
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M月d日 EEE"
+        return formatter.string(from: date)
+    }
+}
+
+
+private struct YearStepButton: View {
+    
+    let systemImage: String
+    let isEnabled: Bool
+    let palette: DashPalette
+    let action: () -> Void
+    
+    @State private var isHovered = false
+    
+    
+    var body: some View {
+        
+        Button(action: self.action) {
+            Image(systemName: self.systemImage)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(self.isHovered ? Color.primary : Color.secondary)
+                .frame(width: 24, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(self.isHovered ? self.palette.inset : Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!self.isEnabled)
+        .opacity(self.isEnabled ? 1 : 0.3)
+        .onHover { hovering in
+            withAnimation(DashMotion.quick) {
+                self.isHovered = hovering && self.isEnabled
+            }
+        }
+    }
+}
+
+
+// MARK: - Day Detail Card
+
+private struct DayDetailCard: View {
+    
+    let detail: HeatmapDayDetail
+    let palette: DashPalette
+    let canGoBack: Bool
+    let canGoForward: Bool
+    let onBack: () -> Void
+    let onForward: () -> Void
+    let onClose: () -> Void
+    
+    
+    var body: some View {
+        
+        let cell = self.detail.cell
+        
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(Self.fullDate(cell.date))
+                        .font(.system(size: 16, weight: .semibold))
+                    HStack(spacing: 3) {
+                        ForEach(1...4, id: \.self) { level in
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(level <= cell.level ? self.palette.heat(level) : self.palette.heat(0))
+                                .frame(width: 10, height: 10)
+                        }
+                        Text(cell.level == 0 ? "没有记录" : "活跃度 \(cell.level) / 4")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 6)
+                    }
+                }
+                
+                Spacer()
+                
+                IconButton(systemImage: "chevron.left", palette: self.palette, action: self.onBack)
+                    .disabled(!self.canGoBack)
+                    .opacity(self.canGoBack ? 1 : 0.3)
+                    .help("前一天")
+                IconButton(systemImage: "chevron.right", palette: self.palette, action: self.onForward)
+                    .disabled(!self.canGoForward)
+                    .opacity(self.canGoForward ? 1 : 0.3)
+                    .help("后一天")
+                IconButton(systemImage: "xmark", palette: self.palette, isClose: true, action: self.onClose)
+                    .help("关闭 (Esc)")
+            }
+            
+            Grid(horizontalSpacing: 8, verticalSpacing: 8) {
+                GridRow {
+                    self.figure("手动输入", AnalyticsDashboardView.int(cell.typedChars), "字")
+                    self.figure("AI 补全", AnalyticsDashboardView.int(cell.aiCompletedChars), "字")
+                    self.figure("AI 调用", "\(cell.aiRequests)", "次")
+                }
+                GridRow {
+                    self.figure("Tokens", AnalyticsManager.formatCompactTokenCount(cell.totalTokens), "")
+                    self.figure("新建 / 保存", "\(cell.filesCreated) / \(cell.documentsSaved)", "")
+                    self.figure("采纳 / 本地命中", "\(cell.aiCompletionAccepts) / \(cell.localHits)", "")
+                }
+            }
+            
+            if !self.detail.models.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Text("模型")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if self.detail.averageLatencyMs > 0 {
+                            Text("平均 \(self.detail.averageLatencyMs) ms")
+                                .font(.system(size: 11))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.bottom, 4)
+                    ForEach(Array(self.detail.models.prefix(3).enumerated()), id: \.offset) { index, model in
+                        HStack {
+                            Text(model.model)
+                                .font(.system(size: 12.5))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Text("\(model.requests) 次 · \(AnalyticsManager.formatCompactTokenCount(model.totalTokens))")
+                                .font(.system(size: 12))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(height: 28)
+                        if index < min(3, self.detail.models.count) - 1 {
+                            Rectangle().fill(self.palette.hairline).frame(height: 1)
+                        }
+                    }
+                }
+            }
+            
+            let titles = self.detail.documents.map(\.title) + self.detail.weeklyReports.map(\.title)
+            if !titles.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("相关文档")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(titles.prefix(5).enumerated()), id: \.offset) { _, title in
+                        Text(title)
+                            .font(.system(size: 12.5))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+            
+            if let digest = self.detail.digest {
+                let points = AnalyticsManager.structuredSummaryPoints(from: digest.summary, maxPoints: 3)
+                if !points.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("当天总结")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                            Text(point)
+                                .font(.system(size: 12.5))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(24)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(self.palette.modal)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(self.palette.hairline, lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(self.palette.isDark ? 0.4 : 0.12), radius: 24, y: 8)
+    }
+    
+    
+    private func figure(_ label: String, _ value: String, _ unit: String) -> some View {
+        
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value)
+                    .font(.system(size: 17, weight: .semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                if !unit.isEmpty {
+                    Text(unit)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(self.palette.inset))
+    }
+    
+    
+    private static func fullDate(_ date: Date) -> String {
+        
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy 年 M 月 d 日 EEEE"
+        return formatter.string(from: date)
     }
 }
