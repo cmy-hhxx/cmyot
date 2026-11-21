@@ -521,11 +521,6 @@ private struct SidebarGeneralSettingsPane: View {
                                 .buttonStyle(.plain)
                             }
                         }
-                        Text("当前账户 · 数据文件 \(active.dbFilename)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
                     }
                     
                     Spacer()
@@ -629,15 +624,10 @@ private struct SidebarGeneralSettingsPane: View {
             }
             
             // 2. Full Database Backup & Migration
-            SettingsGroupCard(title: "完整数据迁移") {
+            SettingsGroupCard(title: "数据迁移") {
                 HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("单文件全量备份与恢复")
-                            .font(.system(size: 13, weight: .medium))
-                        Text("自动打包文档、周报、AI 端点与 API Key、用户头像昵称、Bots 与看板统计")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text("全量备份与恢复")
+                        .font(.system(size: 13, weight: .medium))
                     Spacer()
                     HStack(spacing: 8) {
                         Button("导出备份…") {
@@ -1058,24 +1048,14 @@ private struct SidebarLabsSettingsPane: View {
                     }
             }
             
-            SettingsGroupCard(title: "头像性格弹幕（后台每 6 小时自动洞察）") {
-                Toggle("开启后台自动提炼用户性格标签（<= 8 字弹幕）", isOn: self.$autoPersonalityEnabled)
-                    .onChange(of: self.autoPersonalityEnabled) { _, val in
-                        CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.aiPersonalityAutoEnabled)
-                    }
-                
+            SettingsGroupCard(title: "性格弹幕") {
                 HStack {
-                    if let profile = self.analytics.personalityProfile {
-                        Text("最近画像：\(profile.conceptTitle)（\(profile.tags.count) 个标签）")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("尚未生成过性格画像")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Toggle("后台自动提炼性格弹幕", isOn: self.$autoPersonalityEnabled)
+                        .onChange(of: self.autoPersonalityEnabled) { _, val in
+                            CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.aiPersonalityAutoEnabled)
+                        }
                     Spacer()
-                    Button(self.analytics.isAnalyzingPersonality ? "分析中…" : "立即分析一次") {
+                    Button(self.analytics.isAnalyzingPersonality ? "分析中…" : "立即分析") {
                         Task {
                             await self.analytics.refreshPersonalityProfile(force: true)
                         }
@@ -1117,11 +1097,6 @@ private struct SidebarAboutSettingsPane: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
-                
-                Text("个人深度定制版 · 集成多用户隔离、GrokBot AI 矩阵、创作工作室看板与通行证")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
                 
                 HStack(spacing: 12) {
                     Button("打开完整致谢与开源许可…") {

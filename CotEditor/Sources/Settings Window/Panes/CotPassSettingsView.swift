@@ -341,15 +341,15 @@ struct CotPassSettingsView: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 20)
                         
-                        Text("License 与激活")
+                        Text("License 与设备")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(.primary)
                         
                         Spacer()
                         
-                        Text(self.activeTier.summaryLabel)
+                        Text(self.activeTier == .explorer ? "1/1" : "3/3")
                             .font(.system(size: 12))
-                            .foregroundStyle(self.activeTier == .explorer ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color(hexString: self.theme.matrixColorHex)))
+                            .foregroundStyle(.secondary)
                             .monospacedDigit()
                         
                         Image(systemName: "chevron.right")
@@ -375,7 +375,7 @@ struct CotPassSettingsView: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 20)
                         
-                        Text("迁移全部数据到新 Mac（含端点、Key 与头像）")
+                        Text("再加一台 Mac")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(.primary)
                         
@@ -777,13 +777,8 @@ private struct CotPassLicenseSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("CotEditor 通行证与授权")
-                        .font(.headline)
-                    Text("编号 \(self.serialCode) · 当前档位：\(self.activeTier.summaryLabel)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("License 与设备")
+                    .font(.headline)
                 Spacer()
                 Text(self.activeTier.badgeTitle)
                     .font(.system(size: 10.5, weight: .bold, design: .monospaced))
@@ -794,10 +789,6 @@ private struct CotPassLicenseSheet: View {
             }
             
             VStack(alignment: .leading, spacing: 8) {
-                Text("输入授权码（支持格式：`COT-PRO-XXXX-XXXX` 或 `COT-FOUNDER-XXXX-XXXX`）")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                
                 HStack(spacing: 8) {
                     TextField("COT-PRO-2026-PASS", text: self.$draftKey)
                         .textFieldStyle(.roundedBorder)
@@ -808,7 +799,7 @@ private struct CotPassLicenseSheet: View {
                             self.onSaveKey(self.draftKey)
                             self.validationMessage = "✓ 已激活 \(tier.badgeTitle)"
                         } else {
-                            self.validationMessage = "格式无效，请检查授权码前缀（COT-PRO- / COT-FOUNDER-）"
+                            self.validationMessage = "无效授权码"
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -821,19 +812,6 @@ private struct CotPassLicenseSheet: View {
                         .foregroundStyle(validationMessage.hasPrefix("✓") ? Color.green : Color.orange)
                 }
             }
-            
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Pro / Founder 规划权益（本地优先，无强制联网锁）")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text("• 全套 ASCII 通行证样式与个性化高清导出\n• 完整 SQLite 单文件跨机迁移（含端点、API Key、头像与 Bots 配置）\n• 后续云端实时同步与团队周报协作配额")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(3)
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             
             HStack {
                 if self.activeTier != .explorer {

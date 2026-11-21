@@ -182,10 +182,6 @@ struct AIBotsSettingsView: View {
                         .foregroundStyle(.secondary)
                     Text("全局共享人设")
                         .font(.system(size: 12.5, weight: .semibold))
-                    Text("所有未单独覆盖性格的 Bot 默认继承此气质")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
                     Spacer()
                     Button(self.isEditingGlobalPersona ? "收起" : "编辑") {
                         withAnimation(.easeOut(duration: 0.16)) {
@@ -272,11 +268,8 @@ struct AIBotsSettingsView: View {
                         Image(systemName: "network.slash")
                             .font(.title2)
                             .foregroundStyle(.tertiary)
-                        Text("尚未配置任何 AI 服务端点")
+                        Text("尚未配置 AI 服务端点")
                             .font(.system(size: 13, weight: .semibold))
-                        Text("所有 Bot 共用这里激活的端点与 API Key（支持全量导出/导入迁移）。")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 28)
@@ -311,10 +304,6 @@ struct AIBotsSettingsView: View {
                 .fixedSize()
                 
                 Spacer()
-                
-                Text("端点配置与 API Key 均会随数据库迁移完整备份")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
             }
         }
     }
@@ -667,12 +656,6 @@ private struct BotCardView: View {
                 .controlSize(.mini)
             }
             
-            Text(self.botID.tagline)
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-            
             HStack(spacing: 6) {
                 Text(modelText)
                     .font(.system(size: 10, design: .monospaced))
@@ -767,17 +750,12 @@ private struct AIBotInspectorSheet: View {
                             .foregroundStyle(.white)
                     )
                 
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(self.botID.displayName)
-                            .font(.headline)
-                        Text(self.botID.handle)
-                            .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(accent)
-                    }
-                    Text(self.botID.tagline)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(self.botID.displayName)
+                        .font(.headline)
+                    Text(self.botID.handle)
+                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(accent)
                 }
                 
                 Spacer()
@@ -845,9 +823,6 @@ private struct AIBotInspectorSheet: View {
                         HStack {
                             Text("专属语气 / 人设")
                                 .font(.system(size: 12.5, weight: .medium))
-                            Text(self.config.customPersona.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "（当前继承全局人设）" : "（已覆写）")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                             Spacer()
                             if !self.config.customPersona.isEmpty {
                                 Button("恢复继承") {
@@ -1015,27 +990,19 @@ private struct AIBotInspectorSheet: View {
     
     
     private var personaControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("每 6 小时自动在后台梳理近期文本并更新头像弹幕")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button(self.analytics.isAnalyzingPersonality ? "分析中…" : "立即分析") {
-                    Task {
-                        await self.analytics.refreshPersonalityProfile(force: true)
-                    }
-                }
-                .controlSize(.small)
-                .disabled(self.analytics.isAnalyzingPersonality)
-            }
-            
+        HStack {
             if let profile = self.analytics.personalityProfile {
-                Text("当前概念：\(profile.conceptTitle) · \(profile.tags.map(\.label).joined(separator: " / "))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                Text(profile.conceptTitle)
+                    .font(.system(size: 12, weight: .medium))
             }
+            Spacer()
+            Button(self.analytics.isAnalyzingPersonality ? "分析中…" : "立即分析") {
+                Task {
+                    await self.analytics.refreshPersonalityProfile(force: true)
+                }
+            }
+            .controlSize(.small)
+            .disabled(self.analytics.isAnalyzingPersonality)
         }
         .padding(10)
         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
