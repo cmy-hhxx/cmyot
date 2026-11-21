@@ -37,10 +37,73 @@ nonisolated struct DailyWritingStats: Identifiable, Codable, Sendable, Equatable
     var inputTokens: Int = 0
     var outputTokens: Int = 0
     var localHits: Int = 0
+    var localAcceptedChars: Int = 0
+    var maxSingleAcceptChars: Int = 0
+    var hourlyTypedChars: [Int] = Array(repeating: 0, count: 24)
     var updatedAt: Date = Date()
     
     var id: String { self.dateKey }
     var totalTokens: Int { self.inputTokens + self.outputTokens }
+    
+    
+    init(
+        dateKey: String,
+        typedChars: Int = 0,
+        aiCompletedChars: Int = 0,
+        aiCompletionAccepts: Int = 0,
+        filesCreated: Int = 0,
+        documentsSaved: Int = 0,
+        aiRequests: Int = 0,
+        inputTokens: Int = 0,
+        outputTokens: Int = 0,
+        localHits: Int = 0,
+        localAcceptedChars: Int = 0,
+        maxSingleAcceptChars: Int = 0,
+        hourlyTypedChars: [Int] = Array(repeating: 0, count: 24),
+        updatedAt: Date = Date()
+    ) {
+        self.dateKey = dateKey
+        self.typedChars = typedChars
+        self.aiCompletedChars = aiCompletedChars
+        self.aiCompletionAccepts = aiCompletionAccepts
+        self.filesCreated = filesCreated
+        self.documentsSaved = documentsSaved
+        self.aiRequests = aiRequests
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.localHits = localHits
+        self.localAcceptedChars = localAcceptedChars
+        self.maxSingleAcceptChars = maxSingleAcceptChars
+        self.hourlyTypedChars = hourlyTypedChars.count == 24 ? hourlyTypedChars : Array(repeating: 0, count: 24)
+        self.updatedAt = updatedAt
+    }
+    
+    
+    enum CodingKeys: String, CodingKey {
+        case dateKey, typedChars, aiCompletedChars, aiCompletionAccepts, filesCreated, documentsSaved
+        case aiRequests, inputTokens, outputTokens, localHits, localAcceptedChars, maxSingleAcceptChars
+        case hourlyTypedChars, updatedAt
+    }
+    
+    
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.dateKey = try c.decode(String.self, forKey: .dateKey)
+        self.typedChars = try c.decodeIfPresent(Int.self, forKey: .typedChars) ?? 0
+        self.aiCompletedChars = try c.decodeIfPresent(Int.self, forKey: .aiCompletedChars) ?? 0
+        self.aiCompletionAccepts = try c.decodeIfPresent(Int.self, forKey: .aiCompletionAccepts) ?? 0
+        self.filesCreated = try c.decodeIfPresent(Int.self, forKey: .filesCreated) ?? 0
+        self.documentsSaved = try c.decodeIfPresent(Int.self, forKey: .documentsSaved) ?? 0
+        self.aiRequests = try c.decodeIfPresent(Int.self, forKey: .aiRequests) ?? 0
+        self.inputTokens = try c.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0
+        self.outputTokens = try c.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0
+        self.localHits = try c.decodeIfPresent(Int.self, forKey: .localHits) ?? 0
+        self.localAcceptedChars = try c.decodeIfPresent(Int.self, forKey: .localAcceptedChars) ?? 0
+        self.maxSingleAcceptChars = try c.decodeIfPresent(Int.self, forKey: .maxSingleAcceptChars) ?? 0
+        let decodedHourly = try c.decodeIfPresent([Int].self, forKey: .hourlyTypedChars)
+        self.hourlyTypedChars = (decodedHourly?.count == 24) ? decodedHourly! : Array(repeating: 0, count: 24)
+        self.updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+    }
 }
 
 
@@ -69,6 +132,22 @@ nonisolated struct ModelUsageSummary: Identifiable, Sendable, Equatable {
     var requests: Int
     var inputTokens: Int
     var outputTokens: Int
+    var share: Double
+    
+    var id: String { self.model }
+    var totalTokens: Int { self.inputTokens + self.outputTokens }
+}
+
+
+/// Aggregated request, token, latency, and success rate per model over a lookback window.
+nonisolated struct ModelPerformanceSummary: Identifiable, Sendable, Equatable {
+    
+    var model: String
+    var requests: Int
+    var inputTokens: Int
+    var outputTokens: Int
+    var averageLatencyMs: Int
+    var successRate: Double
     var share: Double
     
     var id: String { self.model }
@@ -124,7 +203,7 @@ nonisolated enum ReminderPriority: Int, Codable, CaseIterable, Sendable {
 }
 
 
-/// A local reminder item created by the user or promoted from notes.
+/// A local reminder or pinned todo item created by the user or promoted from notes.
 nonisolated struct UserReminder: Identifiable, Codable, Sendable, Equatable {
     
     var id: String = UUID().uuidString
@@ -136,6 +215,56 @@ nonisolated struct UserReminder: Identifiable, Codable, Sendable, Equatable {
     var isCompleted: Bool = false
     var createdAt: Date = Date()
     var completedAt: Date?
+    var isPinned: Bool = false
+    var hasDeadline: Bool = true
+    
+    
+    init(
+        id: String = UUID().uuidString,
+        title: String,
+        notes: String = "",
+        dueDate: Date,
+        dueDayKey: String,
+        priority: ReminderPriority = .normal,
+        isCompleted: Bool = false,
+        createdAt: Date = Date(),
+        completedAt: Date? = nil,
+        isPinned: Bool = false,
+        hasDeadline: Bool = true
+    ) {
+        self.id = id
+        self.title = title
+        self.notes = notes
+        self.dueDate = dueDate
+        self.dueDayKey = dueDayKey
+        self.priority = priority
+        self.isCompleted = isCompleted
+        self.createdAt = createdAt
+        self.completedAt = completedAt
+        self.isPinned = isPinned
+        self.hasDeadline = hasDeadline
+    }
+    
+    
+    enum CodingKeys: String, CodingKey {
+        case id, title, notes, dueDate, dueDayKey, priority, isCompleted, createdAt, completedAt, isPinned, hasDeadline
+    }
+    
+    
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        self.title = try c.decode(String.self, forKey: .title)
+        self.notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        self.dueDate = try c.decodeIfPresent(Date.self, forKey: .dueDate) ?? Date()
+        self.dueDayKey = try c.decodeIfPresent(String.self, forKey: .dueDayKey) ?? ""
+        self.priority = try c.decodeIfPresent(ReminderPriority.self, forKey: .priority) ?? .normal
+        self.isCompleted = try c.decodeIfPresent(Bool.self, forKey: .isCompleted) ?? false
+        self.createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        self.completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
+        self.isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+        self.hasDeadline = try c.decodeIfPresent(Bool.self, forKey: .hasDeadline) ?? true
+    }
 }
 
 
@@ -287,6 +416,9 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
     private(set) var isSummarizingDigest: Bool = false
     private(set) var digestErrorMessage: String?
     private(set) var reminders: [UserReminder] = []
+    private(set) var personalityProfile: UserPersonalityProfile?
+    private(set) var isAnalyzingPersonality: Bool = false
+    private(set) var personalityErrorMessage: String?
     private(set) var revision: Int = 0
     
     // MARK: Private Properties
@@ -358,6 +490,7 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
             case "ocrPolish": "OCR 整理"
             case "organizeAndMerge": "整理合并"
             case "dailyDigest": "每日摘要"
+            case "personalityAnalyze": "性格弹幕画像"
             default: feature
         }
     }
@@ -371,6 +504,13 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         guard count > 0 else { return }
         self.pendingTypedCharsDelta += count
         self.todayStats.typedChars += count
+        let hour = Calendar.current.component(.hour, from: Date())
+        if (0..<24).contains(hour) {
+            if self.todayStats.hourlyTypedChars.count != 24 {
+                self.todayStats.hourlyTypedChars = Array(repeating: 0, count: 24)
+            }
+            self.todayStats.hourlyTypedChars[hour] += count
+        }
         self.revision &+= 1
         
         self.flushTask?.cancel()
@@ -391,8 +531,10 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         guard self.pendingTypedCharsDelta > 0 else { return }
         let delta = self.pendingTypedCharsDelta
         self.pendingTypedCharsDelta = 0
-        let todayKey = Self.dateKey()
-        self.database.incrementDailyWritingStats(dateKey: todayKey, typedChars: delta)
+        let now = Date()
+        let todayKey = Self.dateKey(for: now)
+        let hour = Calendar.current.component(.hour, from: now)
+        self.database.incrementDailyWritingStats(dateKey: todayKey, typedChars: delta, hourBucket: hour)
         self.reloadFromDatabase()
     }
     
@@ -406,10 +548,11 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         self.database.incrementDailyWritingStats(
             dateKey: todayKey,
             aiCompletedChars: charCount,
-            aiCompletionAccepts: 1
+            aiCompletionAccepts: 1,
+            localAcceptedChars: isFromAI ? 0 : charCount,
+            singleAcceptChars: charCount
         )
         self.reloadFromDatabase()
-        _ = isFromAI
     }
     
     
@@ -506,6 +649,17 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         self.todayDigest = self.database.fetchDailyAIDigest(forDateKey: todayKey)
             ?? self.database.fetchRecentDailyAIDigests(limit: 1).first
         self.reminders = self.database.fetchAllReminders()
+        
+        let rawPersonality = self.database.string(forKey: CotLocalDatabase.ConfigKey.userPersonalityProfileJSON)
+        if !rawPersonality.isEmpty,
+           let pData = rawPersonality.data(using: .utf8),
+           let decodedProfile = try? JSONDecoder().decode(UserPersonalityProfile.self, from: pData)
+        {
+            self.personalityProfile = decodedProfile
+        } else {
+            self.personalityProfile = nil
+        }
+        
         self.revision &+= 1
     }
     
@@ -1429,69 +1583,39 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         let typedText = typed.formatted(.number.grouping(.automatic))
         let aiText = ai.formatted(.number.grouping(.automatic))
         
-        let moodTag: String
+        let moodTag = ""
         let headline: String
         
         if total == 0 && cell.filesCreated == 0 && docTitles.isEmpty {
-            moodTag = isToday ? "刚开局" : "静心留白"
             headline = isToday
-                ? "今天还没动笔，倒杯水慢慢开始吧。"
-                : "这天彻底放空没写字，偶尔停下来歇歇也挺好。"
+                ? "今日尚未开始记录。"
+                : "当日没有留下文本记录。"
         } else if typed == 0 && ai == 0 {
-            moodTag = "打好架子"
             if let first = firstTitle {
                 headline = isToday
-                    ? "今天先新建了《\(first)》，先把框架铺开再慢慢填。"
-                    : "这天整理了《\(first)》，打好了架子但还没怎么往里写字。"
+                    ? "今日新建《\(first)》，当前处于结构起草阶段。"
+                    : "当日新建或整理了《\(first)》。"
             } else {
                 headline = isToday
-                    ? "今天开了新档，先把摊子支起来。"
-                    : "这天开了新档理了理文件，没留下太多正文。"
+                    ? "今日新建了空白文档。"
+                    : "当日新建过空白文档。"
             }
         } else if typed == 0 && ai > 0 {
-            moodTag = "借力整理"
             if let first = firstTitle {
-                headline = "主要靠 AI 帮忙在《\(first)》里整理和补全了 \(aiText) 字。"
+                headline = "当日在《\(first)》中通过补全与整理写入 \(aiText) 字。"
             } else {
-                headline = "主要让 AI 搭把手整理并补上了 \(aiText) 字。"
+                headline = "当日通过补全与整理写入 \(aiText) 字。"
             }
-        } else if total < 300 {
-            moodTag = "轻松打卡"
-            if let first = firstTitle {
-                headline = isToday
-                    ? "今天先轻手轻脚写了 \(typedText) 字，顺手改了改《\(first)》。"
-                    : "这天轻手轻脚写了 \(typedText) 字，顺手翻了翻《\(first)》，算是留了个脚印。"
+        } else if let first = firstTitle {
+            if docTitles.count >= 2 {
+                headline = "手写 \(typedText) 字\(ai > 0 ? "、补全 \(aiText) 字" : "")，主要围绕《\(first)》等 \(docTitles.count) 篇推进。"
             } else {
-                headline = isToday
-                    ? "今天刚开个头，敲了 \(typedText) 字，手感慢慢热起来了。"
-                    : "这天零零散散写下 \(typedText) 字，给后面的想法留了个草稿头。"
+                headline = "手写 \(typedText) 字\(ai > 0 ? "、补全 \(aiText) 字" : "")，集中落笔于《\(first)》。"
             }
-        } else if total >= 1500 || (baselineDailyChars > 0 && total > max(600, Int(Double(baselineDailyChars) * 1.4))) {
-            moodTag = "火力全开"
-            if ai > 0 {
-                headline = isToday
-                    ? "今天手感拉满！自己敲了 \(typedText) 字，AI 也顺手帮你接上了 \(aiText) 字。"
-                    : "手感拉满的一天！手写 \(typedText) 字，还让 AI 顺手帮你补了 \(aiText) 字。"
-            } else {
-                headline = isToday
-                    ? "今天进入心流状态了，一口气自己敲了 \(typedText) 字。"
-                    : "状态在线的一天，安安静静输出了 \(typedText) 字，思路相当顺畅。"
-            }
+        } else if ai > 0 {
+            headline = "当日手写 \(typedText) 字，辅助补全 \(aiText) 字。"
         } else {
-            moodTag = "稳步输出"
-            if docTitles.count >= 2, let first = firstTitle {
-                headline = isToday
-                    ? "节奏挺稳，已经写了 \(typedText) 字，在《\(first)》等 \(docTitles.count) 篇之间推进。"
-                    : "节奏挺稳，自己敲了 \(typedText) 字，主要围着《\(first)》等 \(docTitles.count) 篇在打磨。"
-            } else if let first = firstTitle {
-                headline = "节奏挺稳，自己敲了 \(typedText) 字，主要都在打磨《\(first)》。"
-            } else if ai > 0 {
-                headline = isToday
-                    ? "边写边聊节奏不错，手写 \(typedText) 字，AI 顺手补了 \(aiText) 字。"
-                    : "稳稳推进的一天，自己写了 \(typedText) 字，AI 搭把手补了 \(aiText) 字。"
-            } else {
-                headline = "稳稳敲了 \(typedText) 字，不紧不慢刚刚好。"
-            }
+            headline = "当日累计手写 \(typedText) 字。"
         }
         
         var highlights: [String] = []
@@ -1733,6 +1857,71 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
     }
     
     
+    var pinnedTodos: [UserReminder] {
+        
+        self.reminders
+            .filter { !$0.isCompleted && $0.isPinned }
+            .sorted { lhs, rhs in
+                if lhs.hasDeadline != rhs.hasDeadline {
+                    return lhs.hasDeadline
+                }
+                if lhs.hasDeadline && lhs.dueDate != rhs.dueDate {
+                    return lhs.dueDate < rhs.dueDate
+                }
+                return lhs.createdAt > rhs.createdAt
+            }
+    }
+    
+    
+    @discardableResult
+    func addPinnedTodo(title: String, deadline: Date?) -> UserReminder? {
+        
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        
+        let now = Date()
+        let resolvedDue = deadline ?? now
+        let todo = UserReminder(
+            id: UUID().uuidString,
+            title: trimmed,
+            notes: "",
+            dueDate: resolvedDue,
+            dueDayKey: Self.dateKey(for: resolvedDue),
+            priority: deadline != nil ? .high : .normal,
+            isCompleted: false,
+            createdAt: now,
+            completedAt: nil,
+            isPinned: true,
+            hasDeadline: deadline != nil
+        )
+        self.database.saveReminder(todo)
+        self.reloadFromDatabase()
+        return todo
+    }
+    
+    
+    func unpinReminder(id: String) {
+        
+        self.database.setReminderPinned(id: id, isPinned: false)
+        self.reloadFromDatabase()
+    }
+    
+    
+    func snoozeReminder(id: String, by interval: TimeInterval) {
+        
+        guard let item = self.reminders.first(where: { $0.id == id }) else { return }
+        let base = max(Date(), item.hasDeadline ? item.dueDate : Date())
+        let newDue = base.addingTimeInterval(interval)
+        self.database.updateReminderDeadline(
+            id: id,
+            dueDate: newDue,
+            dueDayKey: Self.dateKey(for: newDue),
+            hasDeadline: true
+        )
+        self.reloadFromDatabase()
+    }
+    
+    
     @discardableResult
     func addReminder(
         title: String,
@@ -1831,6 +2020,7 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
             try? await Task.sleep(for: .seconds(45))
             while !Task.isCancelled {
                 await self?.refreshDailyDigest(force: false)
+                await self?.refreshPersonalityProfile(force: false)
                 try? await Task.sleep(for: .seconds(30 * 60))
             }
         }
@@ -2144,5 +2334,374 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
             modelUsed: "本地摘要",
             generatedAt: Date()
         )
+    }
+    
+    
+    // MARK: Studio Ledger Analytics Helpers
+    
+    /// Highest single-day typed character record across all history (or within a specific year).
+    func personalRecordTypedChars(inYear year: Int? = nil) -> (chars: Int, dateKey: String)? {
+        
+        var allStats = self.recentDailyStats
+        if !allStats.contains(where: { $0.dateKey == self.todayStats.dateKey }) {
+            allStats.append(self.todayStats)
+        } else {
+            allStats = allStats.map { $0.dateKey == self.todayStats.dateKey ? self.todayStats : $0 }
+        }
+        
+        let prefix = year.map { String(format: "%04d-", $0) }
+        let candidates = allStats.filter { stat in
+            stat.typedChars > 0 && (prefix.map { stat.dateKey.hasPrefix($0) } ?? true)
+        }
+        guard let best = candidates.max(by: { $0.typedChars < $1.typedChars }) else { return nil }
+        return (best.typedChars, best.dateKey)
+    }
+    
+    
+    /// Historical percentile rank (0–100) of `chars` among active writing days.
+    func typedPercentile(for chars: Int) -> Int {
+        
+        guard chars > 0 else { return 0 }
+        let activeCounts = self.recentDailyStats
+            .filter { $0.typedChars > 0 && $0.dateKey != self.todayStats.dateKey }
+            .map(\.typedChars)
+        guard !activeCounts.isEmpty else { return 100 }
+        let beaten = activeCounts.filter { $0 < chars }.count
+        return Int((Double(beaten) * 100.0 / Double(activeCounts.count)).rounded())
+    }
+    
+    
+    /// Returns a 24-element hourly activity array (`0...23`) for `dateKey`, falling back to document/AI timestamps.
+    func hourlyWritingPulse(for dateKey: String) -> [Int] {
+        
+        let stat: DailyWritingStats? = (dateKey == self.todayStats.dateKey)
+            ? self.todayStats
+            : self.recentDailyStats.first(where: { $0.dateKey == dateKey })
+        
+        if let hourly = stat?.hourlyTypedChars, hourly.count == 24, hourly.contains(where: { $0 > 0 }) {
+            return hourly
+        }
+        
+        var fallback = Array(repeating: 0, count: 24)
+        let calendar = Calendar.current
+        for doc in self.database.documents where !doc.id.hasPrefix("weekly:") {
+            if Self.dateKey(for: doc.updatedAt) == dateKey {
+                let hr = calendar.component(.hour, from: doc.updatedAt)
+                if (0..<24).contains(hr) {
+                    fallback[hr] += max(120, min(1800, doc.content.count / 2))
+                }
+            }
+        }
+        for event in self.recentAIEvents where event.dateKey == dateKey {
+            let hr = calendar.component(.hour, from: event.timestamp)
+            if (0..<24).contains(hr) {
+                fallback[hr] += 80
+            }
+        }
+        return fallback
+    }
+    
+    
+    /// Aggregates model latency, success rate, request count, and token breakdown.
+    func modelPerformanceSummaries(
+        forTodayOnly: Bool,
+        days: Int = 30,
+        referenceDate: Date = Date()
+    ) -> [ModelPerformanceSummary] {
+        
+        let events: [AIUsageEvent]
+        if forTodayOnly {
+            let key = Self.dateKey(for: referenceDate)
+            events = self.recentAIEvents.filter { $0.dateKey == key }
+        } else {
+            let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: referenceDate) ?? referenceDate
+            events = self.recentAIEvents.filter { $0.timestamp >= cutoff }
+        }
+        guard !events.isEmpty else { return [] }
+        
+        let totalRequests = max(1, events.count)
+        let grouped = Dictionary(grouping: events, by: \.model)
+        return grouped.map { model, items in
+            let latencies = items.map(\.latencyMs).filter { $0 > 0 }
+            let avgLatency = latencies.isEmpty ? 0 : latencies.reduce(0, +) / latencies.count
+            let okCount = items.filter(\.success).count
+            return ModelPerformanceSummary(
+                model: model,
+                requests: items.count,
+                inputTokens: items.reduce(0) { $0 + $1.inputTokens },
+                outputTokens: items.reduce(0) { $0 + $1.outputTokens },
+                averageLatencyMs: avgLatency,
+                successRate: Double(okCount) / Double(max(1, items.count)),
+                share: Double(items.count) / Double(totalRequests)
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.requests != rhs.requests { return lhs.requests > rhs.requests }
+            return lhs.totalTokens > rhs.totalTokens
+        }
+    }
+    
+    
+    /// Computes how many requests local zero-cost completions intercepted and how many tokens that saved.
+    func estimatedTokensSavedByLocalHits(
+        forTodayOnly: Bool,
+        days: Int = 30,
+        referenceDate: Date = Date()
+    ) -> (localHits: Int, estimatedTokens: Int) {
+        
+        let localHits: Int
+        if forTodayOnly {
+            localHits = self.todayStats.localHits
+        } else {
+            let series = self.dailySeries(days: days, referenceDate: referenceDate)
+            localHits = series.reduce(0) { $0 + $1.localHits }
+        }
+        
+        let nextTokenEvents = self.recentAIEvents.filter { $0.feature == "nextToken" && $0.totalTokens > 0 }
+        let avgNextTokens = nextTokenEvents.isEmpty
+            ? 350
+            : max(120, nextTokenEvents.reduce(0) { $0 + $1.totalTokens } / nextTokenEvents.count)
+        return (localHits: localHits, estimatedTokens: localHits * avgNextTokens)
+    }
+    
+    
+    /// Returns recent AI invocations newest first for the compute receipt feed.
+    func recentAIEventsSlice(
+        forTodayOnly: Bool,
+        days: Int = 30,
+        limit: Int = 8,
+        referenceDate: Date = Date()
+    ) -> [AIUsageEvent] {
+        
+        let filtered: [AIUsageEvent]
+        if forTodayOnly {
+            let key = Self.dateKey(for: referenceDate)
+            filtered = self.recentAIEvents.filter { $0.dateKey == key }
+        } else {
+            let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: referenceDate) ?? referenceDate
+            filtered = self.recentAIEvents.filter { $0.timestamp >= cutoff }
+        }
+        return Array(filtered.sorted(by: { $0.timestamp > $1.timestamp }).prefix(max(0, limit)))
+    }
+    
+    
+    /// Extracts a concise single-line preview from a stored document's content.
+    static func documentFirstLinePreview(_ content: String) -> String {
+        
+        for rawLine in content.components(separatedBy: .newlines) {
+            var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("#") {
+                line = line.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+            }
+            guard !line.isEmpty else { continue }
+            if line.count > 56 {
+                return String(line.prefix(55)) + "…"
+            }
+            return line
+        }
+        return ""
+    }
+    
+    
+    // MARK: 6-Hour Background AI Personality Analyzer
+    
+    /// Collects recent writing samples and uses AI (every 6 hours automatically, or on demand)
+    /// to synthesize personality tags (<= 8 chars) and a deeper portrait of the user.
+    func refreshPersonalityProfile(force: Bool) async {
+        
+        guard !self.isAnalyzingPersonality else { return }
+        if !force {
+            let autoEnabled = self.database.bool(forKey: CotLocalDatabase.ConfigKey.aiPersonalityAutoEnabled, default: true)
+            guard autoEnabled else { return }
+        }
+        
+        self.flushPendingStats()
+        let corpus = self.collectPersonalityCorpus()
+        let existing = self.personalityProfile
+        
+        if !force {
+            guard UserPersonalityAnalyzer.shouldAutoRun(
+                now: Date(),
+                lastProfile: existing,
+                currentFingerprint: corpus.fingerprint,
+                currentCharCount: corpus.charCount
+            ) else { return }
+        }
+        
+        if corpus.charCount < 20 && self.database.documents.isEmpty && self.database.weeklyReports.isEmpty {
+            if force {
+                self.personalityErrorMessage = "先写几段文字再来分析你的性格画像吧。"
+            }
+            return
+        }
+        
+        self.isAnalyzingPersonality = true
+        self.personalityErrorMessage = nil
+        defer { self.isAnalyzingPersonality = false }
+        
+        let baseConfig = AIConfiguration.current
+        let resolvedConfig = AIBotStore.shared.resolvedConfiguration(for: .persona, baseConfig: baseConfig)
+        
+        if !resolvedConfig.isUsable {
+            let fallback = UserPersonalityAnalyzer.makeLocalHeuristicFallback(
+                documents: self.database.documents,
+                weeklyReports: self.database.weeklyReports,
+                stats: self.recentDailyStats,
+                streak: self.currentWritingStreak,
+                fingerprint: corpus.fingerprint
+            )
+            self.savePersonalityProfile(fallback)
+            if force {
+                self.personalityErrorMessage = "未配置可用 AI 端点，已根据本地写作轨迹生成初判。"
+            }
+            return
+        }
+        
+        var config = resolvedConfig
+        config.temperature = config.temperature ?? 0.5
+        config.reasoningEffort = "low"
+        
+        let systemPrompt = AIBotStore.shared.systemPrompt(for: .persona)
+        let userPrompt = """
+        请仔细阅读用户近期在编辑器中写下的内容与记录，提炼用户性格、表达气质与思维特点。
+        严格输出一个合法 JSON 对象（不要包含 Markdown 代码围栏或额外说明），结构如下：
+        {
+          "concept_title": "10字以内对这个人的整体概念概括",
+          "concept_summary": "100~180字：用真诚、深刻且稍微带点温度与幽默的口吻，写出AI眼中这个人的性格底色、思维习惯和创作风格",
+          "writing_style_notes": ["风格观察1", "风格观察2", "风格观察3"],
+          "tags": [
+            {"label": "8字以内个性标签", "explanation": "从输入中看出的具体原因", "tone": "warm|sharp|playful|calm"}
+          ]
+        }
+        硬性约束：
+        1. tags 输出 5~7 个；每个 label 必须严格 <= 8 个汉字/字符（比如：说人话专家、深夜代码狂、极简主义者、细节拉满、爱复盘的实干家），禁止超过 8 个字！
+        2. 不要编造文本里完全不存在的职业或经历；如果内容偏向日常笔记或代码注释，就从行文语气、关注点、用词直白度等真实细节洞察。
+
+        用户近期写作样本：
+        \(corpus.promptText)
+        """
+        
+        let messages: [AIMessage] = [
+            .system(systemPrompt),
+            .user(userPrompt),
+        ]
+        
+        let clock = ContinuousClock()
+        let start = clock.now
+        do {
+            let client = AIClient(
+                configuration: config,
+                maxOutputTokens: 700,
+                timeoutInterval: 35,
+                disablesThinking: !AINextTokenPredictor.isPureReasoningModel(config.model)
+            )
+            let response = try await client.sendWithUsage(messages)
+            let elapsed = start.duration(to: clock.now)
+            let latencyMs = max(1, Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))
+            
+            let inputTokens = response.inputTokens ?? AINextTokenPredictor.estimateTokens(in: messages.map(\.text).joined(separator: "\n"))
+            let outputTokens = response.outputTokens ?? AINextTokenPredictor.estimateTokens(in: response.text)
+            self.recordAIUsage(
+                feature: AIBotID.persona.analyticsFeatureKey,
+                model: config.model,
+                provider: config.endpoint.label,
+                inputTokens: inputTokens,
+                outputTokens: outputTokens,
+                latencyMs: latencyMs,
+                success: true
+            )
+            
+            if let parsed = UserPersonalityAnalyzer.parseResponse(
+                response.text,
+                sourceFingerprint: corpus.fingerprint,
+                modelUsed: config.model
+            ) {
+                self.savePersonalityProfile(parsed)
+            } else if existing == nil || force {
+                let fallback = UserPersonalityAnalyzer.makeLocalHeuristicFallback(
+                    documents: self.database.documents,
+                    weeklyReports: self.database.weeklyReports,
+                    stats: self.recentDailyStats,
+                    streak: self.currentWritingStreak,
+                    fingerprint: corpus.fingerprint
+                )
+                self.savePersonalityProfile(fallback)
+                if force {
+                    self.personalityErrorMessage = "AI 返回格式未能解析，已保留本地初判。"
+                }
+            }
+        } catch {
+            if existing == nil || force {
+                let fallback = UserPersonalityAnalyzer.makeLocalHeuristicFallback(
+                    documents: self.database.documents,
+                    weeklyReports: self.database.weeklyReports,
+                    stats: self.recentDailyStats,
+                    streak: self.currentWritingStreak,
+                    fingerprint: corpus.fingerprint
+                )
+                self.savePersonalityProfile(fallback)
+            }
+            if force {
+                self.personalityErrorMessage = "性格分析请求失败：\(error.localizedDescription)"
+            }
+            CotLogger.shared.warning(category: .ai, "Personality analysis failed", error: error)
+        }
+    }
+    
+    
+    func savePersonalityProfile(_ profile: UserPersonalityProfile) {
+        
+        if let data = try? JSONEncoder().encode(profile),
+           let json = String(data: data, encoding: .utf8)
+        {
+            self.database.set(json, forKey: CotLocalDatabase.ConfigKey.userPersonalityProfileJSON)
+            self.personalityProfile = profile
+            self.revision &+= 1
+        }
+    }
+    
+    
+    private func collectPersonalityCorpus() -> (promptText: String, charCount: Int, fingerprint: String) {
+        
+        var segments: [String] = []
+        var usedTitles = Set<String>()
+        var totalChars = 0
+        
+        if self.database === CotLocalDatabase.shared {
+            for case let doc as Document in NSDocumentController.shared.documents {
+                let text = doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+                let title = doc.displayName ?? "未命名"
+                usedTitles.insert(title)
+                let excerpt = String(text.prefix(650))
+                totalChars += excerpt.count
+                segments.append("[\(title) · \(doc.syntaxName)]\n\(excerpt)")
+                if totalChars >= 2200 || segments.count >= 5 { break }
+            }
+        }
+        
+        for record in self.database.documents where !record.id.hasPrefix("weekly:") {
+            guard !usedTitles.contains(record.title) else { continue }
+            let trimmed = record.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            usedTitles.insert(record.title)
+            let excerpt = String(trimmed.prefix(550))
+            totalChars += excerpt.count
+            segments.append("[\(record.title) · \(record.syntax)]\n\(excerpt)")
+            if totalChars >= 3600 || segments.count >= 8 { break }
+        }
+        
+        for report in self.database.weeklyReports.prefix(2) {
+            let trimmed = report.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let excerpt = String(trimmed.prefix(500))
+            totalChars += excerpt.count
+            segments.append("[周报：\(report.title)]\n\(excerpt)")
+        }
+        
+        let combined = segments.joined(separator: "\n\n")
+        let fp = UserPersonalityAnalyzer.sha256Hex(combined)
+        return (combined, totalChars, fp)
     }
 }

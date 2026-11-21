@@ -114,7 +114,7 @@ private struct UserAvatarToolbarBadgeLabel: View {
 }
 
 
-/// Top-right toolbar avatar control that opens the local user profile & account switcher popover.
+/// Top-right toolbar avatar control that opens the local user profile & quick pin-todo popover.
 @MainActor final class UserAvatarToolbarButtonView: NSView {
     
     private let hostingView: NSHostingView<UserAvatarToolbarBadgeLabel>
@@ -220,7 +220,194 @@ private struct UserAvatarToolbarBadgeLabel: View {
 }
 
 
-/// Playful, soft-rounded popover for managing the active profile and switching local accounts.
+// MARK: - Apple Music Style Avatar Accent Extractor
+
+@MainActor
+private enum AvatarColorExtractor {
+    
+    struct Palette: Equatable {
+        let primary: Color
+        let secondary: Color
+    }
+    
+    private static var cache: [String: Palette] = [:]
+    
+    
+    static func extractPalette(for profile: UserProfile, image: NSImage?) -> Palette {
+        
+        let key = "\(profile.id)|\(profile.avatarData?.count ?? 0)|\(profile.avatarColorHex)"
+        if let cached = self.cache[key] {
+            return cached
+        }
+        
+        let fallbackPrimary = Color(hexString: profile.avatarColorHex)
+        let fallbackSecondary = Self.hueShiftedFallback(from: profile.avatarColorHex)
+        let fallback = Palette(primary: fallbackPrimary, secondary: fallbackSecondary)
+        
+        guard let image,
+              let bitmap = Self.downsample24x24(image)
+        else {
+            self.cache[key] = fallback
+            return fallback
+        }
+        
+        struct Bucket {
+            var rSum: Double = 0
+            var gSum: Double = 0
+            var bSum: Double = 0
+            var weightSum: Double = 0
+        }
+        
+        var buckets = Array(repeating: Bucket(), count: 12)
+        for y in 0..<24 {
+            for x in 0..<24 {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                if color.alphaComponent < 0.25 { continue }
+                
+                var hue: CGFloat = 0
+                var sat: CGFloat = 0
+                var bri: CGFloat = 0
+                var alpha: CGFloat = 0
+                color.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alpha)
+                
+                // Penalize extreme shadows/highlights while retaining warm tint
+                let lumaWeight: Double = (bri < 0.08 || bri > 0.96) ? 0.15 : 1.0
+                let chromaWeight = max(0.08, Double(sat) * 1.8) * lumaWeight
+                let idx = min(11, max(0, Int(hue * 12.0)))
+                
+                buckets[idx].rSum += Double(color.redComponent) * chromaWeight
+                buckets[idx].gSum += Double(color.greenComponent) * chromaWeight
+                buckets[idx].bSum += Double(color.blueComponent) * chromaWeight
+                buckets[idx].weightSum += chromaWeight
+            }
+        }
+        
+        let ranked = buckets.enumerated()
+            .filter { $0.element.weightSum > 0 }
+            .sorted { $0.element.weightSum > $1.element.weightSum }
+        
+        guard let top = ranked.first else {
+            self.cache[key] = fallback
+            return fallback
+        }
+        
+        let primaryNS = NSColor(
+            srgbRed: top.element.rSum / top.element.weightSum,
+            green: top.element.gSum / top.element.weightSum,
+            blue: top.element.bSum / top.element.weightSum,
+            alpha: 1
+        )
+        let primary = Self.vibrantAmbientColor(from: primaryNS)
+        
+        let second = ranked.first { candidate in
+            let dist = min(abs(candidate.offset - top.offset), 12 - abs(candidate.offset - top.offset))
+            return dist >= 2
+        }
+        let secondary: Color
+        if let second {
+            let ns = NSColor(
+                srgbRed: second.element.rSum / second.element.weightSum,
+                green: second.element.gSum / second.element.weightSum,
+                blue: second.element.bSum / second.element.weightSum,
+                alpha: 1
+            )
+            secondary = Self.vibrantAmbientColor(from: ns)
+        } else {
+            var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            primaryNS.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+            let shifted = NSColor(hue: (h + 0.12).truncatingRemainder(dividingBy: 1.0),
+                                  saturation: min(0.85, max(0.35, s * 1.15)),
+                                  brightness: min(0.88, max(0.45, b)),
+                                  alpha: 1)
+            secondary = Color(nsColor: shifted)
+        }
+        
+        let palette = Palette(primary: primary, secondary: secondary)
+        self.cache[key] = palette
+        return palette
+    }
+    
+    
+    private static func downsample24x24(_ image: NSImage) -> NSBitmapImageRep? {
+        
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 24,
+            pixelsHigh: 24,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return nil }
+        
+        rep.size = NSSize(width: 24, height: 24)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(x: 0, y: 0, width: 24, height: 24), from: .zero, operation: .copy, fraction: 1.0)
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
+    }
+    
+    
+    private static func vibrantAmbientColor(from color: NSColor) -> Color {
+        
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        let srgb = color.usingColorSpace(.sRGB) ?? color
+        srgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        let tuned = NSColor(
+            hue: h,
+            saturation: min(0.82, max(0.32, s * 1.25)),
+            brightness: min(0.84, max(0.38, b)),
+            alpha: 1.0
+        )
+        return Color(nsColor: tuned)
+    }
+    
+    
+    private static func hueShiftedFallback(from hex: String) -> Color {
+        
+        let base = NSColor(Color(hexString: hex)).usingColorSpace(.sRGB) ?? .systemBlue
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        return Color(nsColor: NSColor(
+            hue: (h + 0.14).truncatingRemainder(dividingBy: 1.0),
+            saturation: min(0.85, max(0.40, s)),
+            brightness: min(0.86, max(0.45, b)),
+            alpha: 1.0
+        ))
+    }
+}
+
+
+// MARK: - Main Profile & Quick Todo Popover
+
+private enum QuickTodoDeadlineOption: String, CaseIterable, Identifiable {
+    
+    case none
+    case min15
+    case hour1
+    case tonight
+    case custom
+    
+    var id: String { self.rawValue }
+    
+    var label: String {
+        switch self {
+            case .none: "无期限"
+            case .min15: "15分"
+            case .hour1: "1小时"
+            case .tonight: "今晚"
+            case .custom: "自定义"
+        }
+    }
+}
+
+
+/// Ambient user hero with AI personality danmaku, playful avatar/name interactions,
+/// and ultra-simple quick todo pinning to the top-right corner of the editor.
 struct UserProfilePopoverView: View {
     
     var hostWindow: NSWindow?
@@ -230,513 +417,523 @@ struct UserProfilePopoverView: View {
     
     @State private var manager = UserProfileManager.shared
     @State private var analytics = AnalyticsManager.shared
-    @State private var editingName = ""
-    @State private var isEditingName = false
-    @State private var didJustSaveName = false
-    @State private var isAvatarHovered = false
-    @State private var isAvatarDropTargeted = false
-    @State private var isNameHovered = false
-    @State private var isDashboardHovered = false
-    @State private var greeting = Self.nextRandomGreeting()
-    @State private var isCreateButtonHovered = false
-    @State private var isCreatingUser = false
-    @State private var newUserName = ""
-    @State private var newUserAvatarData: Data?
-    @State private var copyCurrentAIConfig = true
-    @State private var hoveredProfileID: String?
-    @State private var confirmDeleteUserID: String?
-    @State private var isDotBreathing = false
     
+    // Avatar & Name Playful State
+    @State private var avatarTapCount = 0
+    @State private var avatarSquish = false
+    @State private var avatarSpinAngle: Double = 0
+    @State private var avatarRingScale: CGFloat = 0.8
+    @State private var avatarRingOpacity: Double = 0
+    @State private var avatarEasterEggText: String?
+    @State private var isAvatarDropTargeted = false
+    
+    @State private var nameWiggleAngle: Double = 0
+    @State private var nameEpithet: String?
+    @State private var isEditingName = false
+    @State private var editingName = ""
     @FocusState private var isNameFieldFocused: Bool
-    @FocusState private var isNewUserFieldFocused: Bool
-    @Namespace private var activeSwitchNamespace
+    
+    // AI Personality Danmaku State
+    @State private var selectedPersonalityTag: UserPersonalityTag?
+    @State private var isConceptCardOpen = false
+    
+    // Quick Pin Todo State
+    @State private var todoDraft = ""
+    @State private var deadlineOption: QuickTodoDeadlineOption = .none
+    @State private var customDeadline = Date().addingTimeInterval(3600)
+    @FocusState private var isTodoFieldFocused: Bool
+    
+    private static let easterEggLines = [
+        "✨ 灵感充能 +1%",
+        "⚡ 键盘正在预热",
+        "🪐 别戳啦，头像都要晕了",
+        "☕ 写累了记得喝口水",
+        "🏆 解锁连戳小成就",
+        "🧠 今日脑洞已就位",
+    ]
+    
+    private static let playEpithets = [
+        "Tab 键守护者",
+        "键盘侠本侠",
+        "深夜赶稿冠军",
+        "字数永动机",
+        "细节控本人",
+        "写完再睡星人",
+    ]
     
     
     var body: some View {
         let active = self.manager.activeProfile
-        let recent5 = self.analytics.dailySeries(days: 5).map { Double($0.typedChars) }
-        let activeDays7 = self.analytics.dailySeries(days: 7).filter { $0.typedChars > 0 }.count
-        let todayChars = self.analytics.todayStats.typedChars
+        let avatarImage = self.manager.avatarImage(for: active)
+        let accentPalette = AvatarColorExtractor.extractPalette(for: active, image: avatarImage)
         
-        VStack(spacing: 10) {
-            // Active Profile Card
-            VStack(spacing: 10) {
-                // Playful rotating greeting + live today pulse pill
-                HStack(spacing: 6) {
-                    Text(self.greeting)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .contentTransition(.numericText())
-                        .onTapGesture {
-                            withAnimation(Self.quick) {
-                                self.greeting = Self.nextRandomGreeting()
-                            }
-                        }
-                    
-                    Spacer()
-                    
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(self.mintAccent)
-                            .frame(width: 5.5, height: 5.5)
-                            .scaleEffect(self.isDotBreathing ? 1.25 : 0.85)
-                            .opacity(self.isDotBreathing ? 1.0 : 0.55)
-                        
-                        Text(todayChars > 0 ? "今天已写 \(todayChars.formatted(.number.grouping(.automatic))) 字" : "准备开写")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(self.mintAccent)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(self.mintSoftBg, in: Capsule())
-                }
-                
-                // Tactile Avatar (click or drop image!)
-                Button {
-                    self.pickAvatarForActiveUser()
-                } label: {
-                    ZStack(alignment: .bottom) {
-                        UserAvatarCircleView(profile: active, size: 68)
-                            .overlay(
-                                Circle()
-                                    .strokeBorder(
-                                        self.mintAccent.opacity(self.isAvatarDropTargeted ? 0.9 : (self.isAvatarHovered ? 0.55 : 0)),
-                                        lineWidth: self.isAvatarDropTargeted ? 2.5 : 1.75
-                                    )
-                            )
-                            .scaleEffect(self.isAvatarDropTargeted ? 1.09 : (self.isAvatarHovered ? 1.05 : 1.0))
-                            .shadow(
-                                color: self.mintAccent.opacity(self.isAvatarHovered || self.isAvatarDropTargeted ? 0.22 : 0),
-                                radius: 10,
-                                y: 3
-                            )
-                        
-                        if self.isAvatarHovered || self.isAvatarDropTargeted {
-                            Text(self.isAvatarDropTargeted ? "松手换头像" : "换头像")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2.5)
-                                .background(.ultraThinMaterial, in: Capsule())
-                                .background(Color.black.opacity(0.45), in: Capsule())
-                                .offset(y: 4)
-                                .transition(.move(edge: .bottom).combined(with: .opacity))
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .onHover { hovering in
-                    withAnimation(Self.spring) { self.isAvatarHovered = hovering }
-                }
-                .onDrop(of: [.image, .fileURL], isTargeted: self.$isAvatarDropTargeted) { providers in
-                    self.handleAvatarDrop(providers: providers, forActiveUser: true)
-                }
-                .help("点击或拖入图片更换头像")
-                
-                // Centered Inline-Editable Name
-                if self.isEditingName {
-                    HStack(spacing: 6) {
-                        TextField("昵称", text: self.$editingName)
-                            .textFieldStyle(.plain)
-                            .multilineTextAlignment(.center)
-                            .font(.system(size: 14, weight: .medium))
-                            .focused(self.$isNameFieldFocused)
-                            .padding(.horizontal, 10)
-                            .frame(height: 28)
-                            .background(self.surfaceFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(self.mintAccent.opacity(0.65), lineWidth: 1.25))
-                            .frame(maxWidth: 158)
-                            .onSubmit {
-                                self.commitNameEdit()
-                            }
-                            .onExitCommand {
-                                self.cancelNameEdit()
-                            }
-                            .onAppear {
-                                DispatchQueue.main.async {
-                                    self.isNameFieldFocused = true
-                                }
-                            }
-                            .onChange(of: self.isNameFieldFocused) { _, focused in
-                                if !focused && self.isEditingName {
-                                    self.commitNameEdit()
-                                }
-                            }
-                        
-                        Button("完成") {
-                            self.commitNameEdit()
-                        }
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(Color(nsColor: .windowBackgroundColor))
-                        .padding(.horizontal, 9)
-                        .frame(height: 28)
-                        .background(self.mintAccent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                    }
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                } else {
-                    Button {
-                        withAnimation(Self.spring) {
-                            self.editingName = active.displayName
-                            self.isEditingName = true
-                        }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text(active.displayName)
-                                .font(.system(size: 15.5, weight: .semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                            
-                            if self.didJustSaveName {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(self.mintAccent)
-                                    .transition(.scale.combined(with: .opacity))
-                            } else if self.isNameHovered {
-                                Image(systemName: "pencil")
-                                    .font(.system(size: 10.5, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                    .transition(.opacity.combined(with: .move(edge: .leading)))
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .frame(height: 28)
-                        .background(
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(self.isNameHovered ? self.surfaceFill : Color.clear)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    .onHover { hovering in
-                        withAnimation(Self.quick) { self.isNameHovered = hovering }
-                    }
-                    .help("点击修改昵称")
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.top, 12)
-            .padding(.bottom, 14)
-            .padding(.horizontal, 12)
-            .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(self.cardStroke, lineWidth: 1)
-            )
+        VStack(alignment: .leading, spacing: 12) {
+            self.ambientHeroCard(active: active, avatarImage: avatarImage, palette: accentPalette)
             
-            // Inviting Dashboard Launch Card with Mini Pixel Sparkbar
-            Button {
-                let targetWindow = self.hostWindow
-                self.closePopover()
-                AnalyticsDashboardWindowController.shared.showInWindow(preferredWindow: targetWindow)
-            } label: {
-                HStack(spacing: 10) {
-                    MiniPopoverSparkMatrix(values: recent5, accent: self.mintAccent, emptyColor: self.surfaceFill)
-                        .frame(width: 30, height: 22)
-                        .padding(6)
-                        .background(self.mintSoftBg, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("数据看板")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.primary)
-                        Text(activeDays7 > 0 ? "近 7 天动笔 \(activeDays7) 天" : "查看最近写作节奏")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    Spacer()
-                    
-                    Circle()
-                        .fill(self.isDashboardHovered ? self.mintAccent : self.surfaceFill)
-                        .frame(width: 24, height: 24)
-                        .overlay(
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(self.isDashboardHovered ? Color(nsColor: .windowBackgroundColor) : .secondary)
-                                .offset(x: self.isDashboardHovered ? 0.5 : 0, y: self.isDashboardHovered ? -0.5 : 0)
-                        )
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(
-                    self.isDashboardHovered ? self.surfaceFill : self.cardSurface,
-                    in: RoundedRectangle(cornerRadius: 13, style: .continuous)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .strokeBorder(self.isDashboardHovered ? self.mintAccent.opacity(0.35) : self.cardStroke, lineWidth: 1)
-                )
-                .scaleEffect(self.isDashboardHovered ? 1.01 : 1.0)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            .onHover { hovering in
-                withAnimation(Self.spring) {
-                    self.isDashboardHovered = hovering
-                }
+            if self.isConceptCardOpen {
+                self.personalityConceptCard(palette: accentPalette)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
             
-            // Fluid Account Switcher List
             if self.manager.profiles.count > 1 {
-                ScrollView {
-                    VStack(spacing: 2) {
-                        ForEach(self.manager.profiles) { profile in
-                            self.userSwitchRow(profile, isActive: profile.id == active.id)
-                        }
-                    }
-                    .padding(4)
-                }
-                .frame(maxHeight: 136)
-                .fixedSize(horizontal: false, vertical: true)
-                .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .strokeBorder(self.cardStroke, lineWidth: 1)
-                )
+                self.compactAccountSwitcher()
             }
             
-            // Create New Local User Drawer
-            if self.isCreatingUser {
-                self.createUserCard
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)))
-            } else {
-                Button {
-                    withAnimation(Self.spring) {
-                        self.isCreatingUser = true
-                        DispatchQueue.main.async {
-                            self.isNewUserFieldFocused = true
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("新建本地用户")
-                            .font(.system(size: 12.5, weight: .medium))
-                    }
-                    .foregroundStyle(self.isCreateButtonHovered ? self.mintAccent : .secondary)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 32)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(self.isCreateButtonHovered ? self.mintSoftBg : Color.clear)
-                    )
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .onHover { hovering in
-                    withAnimation(Self.quick) {
-                        self.isCreateButtonHovered = hovering
-                    }
-                }
-            }
+            self.quickPinTodoSection()
+            
+            Divider()
+            
+            self.footerBar()
         }
-        .padding(12)
-        .frame(width: 272)
+        .padding(14)
+        .frame(width: 344)
         .onAppear {
             self.editingName = self.manager.activeProfile.displayName
-            self.greeting = Self.nextRandomGreeting()
-            if !AnimationConstants.isReducedMotionEnabled {
-                withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) {
-                    self.isDotBreathing = true
-                }
-            } else {
-                self.isDotBreathing = true
+            Task {
+                await self.analytics.refreshPersonalityProfile(force: false)
             }
-        }
-        .onChange(of: self.manager.activeProfile.id) { _, _ in
-            self.editingName = self.manager.activeProfile.displayName
-            self.isEditingName = false
-            self.confirmDeleteUserID = nil
         }
     }
     
     
-    private var createUserCard: some View {
+    // MARK: Apple Music Ambient Hero + Danmaku
+    
+    @ViewBuilder
+    private func ambientHeroCard(
+        active: UserProfile,
+        avatarImage: NSImage?,
+        palette: AvatarColorExtractor.Palette
+    ) -> some View {
+        let profile = self.analytics.personalityProfile
+        let tags = profile?.tags ?? []
         
-        let previewHex = UserProfileManager.avatarPresetColors[self.manager.profiles.count % UserProfileManager.avatarPresetColors.count]
-        
-        return VStack(spacing: 10) {
-            Button {
-                self.pickAvatarForNewUser()
-            } label: {
-                UserAvatarCircleView(
-                    profile: UserProfile(
-                        id: "preview",
-                        displayName: self.newUserName.isEmpty ? "新" : self.newUserName,
-                        avatarData: self.newUserAvatarData,
-                        avatarColorHex: previewHex,
-                        dbFilename: "",
-                        accountKind: "local",
-                        email: nil,
-                        remoteUserID: nil,
-                        createdAt: Date(),
-                        lastActiveAt: Date()
-                    ),
-                    size: 46,
-                    customImage: self.newUserAvatarData.flatMap { NSImage(data: $0) }
+        ZStack(alignment: .topTrailing) {
+            // Apple Music-inspired blurred color wash extracted from avatar
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        palette.primary.opacity(self.colorScheme == .dark ? 0.52 : 0.34),
+                        palette.secondary.opacity(self.colorScheme == .dark ? 0.38 : 0.24),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                
+                Circle()
+                    .fill(palette.primary.opacity(self.colorScheme == .dark ? 0.55 : 0.42))
+                    .frame(width: 170, height: 170)
+                    .blur(radius: 34)
+                    .offset(x: -75, y: -32)
+                
+                Circle()
+                    .fill(palette.secondary.opacity(self.colorScheme == .dark ? 0.48 : 0.36))
+                    .frame(width: 150, height: 150)
+                    .blur(radius: 30)
+                    .offset(x: 90, y: 38)
+            }
+            .background(.ultraThinMaterial)
+            
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 12) {
+                    // Playful clickable avatar (drop or right-click to change photo)
+                    Button {
+                        self.triggerAvatarFunReaction()
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .strokeBorder(Color.white.opacity(self.avatarRingOpacity), lineWidth: 2)
+                                .frame(width: 58, height: 58)
+                                .scaleEffect(self.avatarRingScale)
+                            
+                            UserAvatarCircleView(profile: active, size: 52, customImage: avatarImage)
+                                .scaleEffect(self.avatarSquish ? 0.84 : 1.0)
+                                .rotationEffect(.degrees(self.avatarSpinAngle))
+                                .shadow(color: palette.primary.opacity(0.45), radius: 8, y: 3)
+                                .overlay(
+                                    Circle()
+                                        .strokeBorder(
+                                            self.isAvatarDropTargeted ? Color.white : Color.white.opacity(0.28),
+                                            lineWidth: self.isAvatarDropTargeted ? 2.5 : 1
+                                        )
+                                )
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("点一点头像试试看（拖入图片或右键可换头像）")
+                    .onDrop(of: [.fileURL, .image], isTargeted: self.$isAvatarDropTargeted) { providers in
+                        self.handleAvatarDrop(providers: providers)
+                    }
+                    .contextMenu {
+                        Button("更换头像…") { self.pickAvatarForActiveUser() }
+                        if avatarImage != nil {
+                            Button("恢复默认头像") {
+                                self.manager.updateProfile(id: active.id, avatarData: .some(nil))
+                            }
+                        }
+                        Divider()
+                        Button("修改昵称") { self.beginNameEdit() }
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        if self.isEditingName {
+                            TextField("你的名字", text: self.$editingName)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .focused(self.$isNameFieldFocused)
+                                .onSubmit { self.commitNameEdit() }
+                                .onExitCommand { self.cancelNameEdit() }
+                        } else {
+                            Button {
+                                self.triggerNameFunReaction()
+                            } label: {
+                                Text(active.displayName)
+                                    .font(.system(size: 15.5, weight: .bold))
+                                    .foregroundStyle(self.colorScheme == .dark ? .white : Color(red: 0.11, green: 0.11, blue: 0.12))
+                                    .lineLimit(1)
+                                    .rotationEffect(.degrees(self.nameWiggleAngle))
+                            }
+                            .buttonStyle(.plain)
+                            .help("点一点昵称换个头衔")
+                        }
+                        
+                        if let egg = self.avatarEasterEggText {
+                            Text(egg)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(self.colorScheme == .dark ? .white.opacity(0.92) : .primary)
+                                .transition(.opacity)
+                        } else if let epithet = self.nameEpithet {
+                            Text("「\(epithet)」")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(self.colorScheme == .dark ? .white.opacity(0.90) : .primary)
+                                .transition(.opacity)
+                        } else {
+                            let streak = self.analytics.currentWritingStreak
+                            Text(streak > 0
+                                 ? "今日 \(self.analytics.todayStats.typedChars.formatted()) 字 · 连续 \(streak) 天"
+                                 : "今日手写 \(self.analytics.todayStats.typedChars.formatted()) 字")
+                                .font(.system(size: 11).monospacedDigit())
+                                .foregroundStyle(self.colorScheme == .dark ? .white.opacity(0.80) : .secondary)
+                        }
+                    }
+                    
+                    Spacer(minLength: 20)
+                }
+                
+                // Personality Danmaku Strip (AI analyzes inputs every 6 hours)
+                PersonalityDanmakuStrip(
+                    tags: tags,
+                    selectedTagID: self.selectedPersonalityTag?.id,
+                    isAnalyzing: self.analytics.isAnalyzingPersonality,
+                    palette: palette,
+                    onTapTag: { tag in
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                            if self.isConceptCardOpen && self.selectedPersonalityTag?.id == tag.id {
+                                self.isConceptCardOpen = false
+                                self.selectedPersonalityTag = nil
+                            } else {
+                                self.selectedPersonalityTag = tag
+                                self.isConceptCardOpen = true
+                            }
+                        }
+                    },
+                    onTapAnalyzePlaceholder: {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                            self.isConceptCardOpen = true
+                        }
+                        Task {
+                            await self.analytics.refreshPersonalityProfile(force: true)
+                        }
+                    }
                 )
             }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            .help("选择头像")
+            .padding(12)
             
-            HStack(spacing: 6) {
-                TextField("起个昵称", text: self.$newUserName)
-                    .textFieldStyle(.plain)
-                    .multilineTextAlignment(.center)
-                    .font(.system(size: 13))
-                    .focused(self.$isNewUserFieldFocused)
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
-                    .background(self.surfaceFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .onSubmit {
-                        self.submitNewUser()
+            // Subtle overflow actions menu in top-right of hero
+            Menu {
+                Button("更换头像…") { self.pickAvatarForActiveUser() }
+                if avatarImage != nil {
+                    Button("恢复默认头像") {
+                        self.manager.updateProfile(id: active.id, avatarData: .some(nil))
                     }
-                
-                Button {
-                    withAnimation(Self.spring) {
-                        self.newUserName = GeneratedDocumentName.generateCandidate()
-                    }
-                } label: {
-                    Image(systemName: "dice")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(self.mintAccent)
-                        .frame(width: 28, height: 28)
-                        .background(self.mintSoftBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .help("摇一个有趣昵称")
+                Button("修改昵称") { self.beginNameEdit() }
+                Divider()
+                Button("查看 / 更新 AI 性格理解") {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                        self.isConceptCardOpen = true
+                    }
+                    Task { await self.analytics.refreshPersonalityProfile(force: true) }
+                }
+                Button("打开设置与多账户管理…") {
+                    self.closePopover()
+                    NSApp.sendAction(#selector(AppDelegate.showSettingsWindow(_:)), to: nil, from: nil)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(self.colorScheme == .dark ? .white.opacity(0.85) : .primary.opacity(0.75))
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(Color.primary.opacity(self.colorScheme == .dark ? 0.16 : 0.08)))
             }
-            
-            Toggle("沿用当前 AI 配置", isOn: self.$copyCurrentAIConfig)
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-            
-            HStack(spacing: 8) {
-                Button {
-                    withAnimation(Self.spring) {
-                        self.resetNewUserDraft()
-                    }
-                } label: {
-                    Text("取消")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 28)
-                        .background(self.surfaceFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                
-                Button {
-                    self.submitNewUser()
-                } label: {
-                    Text("创建")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color(nsColor: .windowBackgroundColor))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 28)
-                        .background(self.mintAccent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .padding(10)
         }
-        .padding(12)
-        .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .strokeBorder(self.cardStroke, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(palette.primary.opacity(0.32), lineWidth: 1)
         )
     }
     
     
+    // MARK: AI Concept Portrait Expansion Card
+    
     @ViewBuilder
-    private func userSwitchRow(_ profile: UserProfile, isActive: Bool) -> some View {
-        let isRowHovered = (self.hoveredProfileID == profile.id)
+    private func personalityConceptCard(palette: AvatarColorExtractor.Palette) -> some View {
+        let profile = self.analytics.personalityProfile
         
-        HStack(spacing: 8) {
-            Button {
-                guard !isActive else { return }
-                self.confirmDeleteUserID = nil
-                withAnimation(Self.spring) {
-                    self.manager.switchToProfile(id: profile.id)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                HStack(spacing: 5) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(palette.primary)
+                    Text(profile?.conceptTitle ?? "AI 眼中的你")
+                        .font(.system(size: 12.5, weight: .semibold))
                 }
-            } label: {
-                HStack(spacing: 8) {
-                    UserAvatarCircleView(profile: profile, size: 22)
-                    Text(profile.displayName)
-                        .font(.system(size: 12.5, weight: isActive ? .semibold : .regular))
-                        .foregroundStyle(isActive ? Color.primary : Color.secondary)
-                        .lineLimit(1)
-                    Spacer()
-                    if isActive {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(self.mintAccent)
+                
+                Spacer()
+                
+                if self.analytics.isAnalyzingPersonality {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Button("重新洞察") {
+                        Task { await self.analytics.refreshPersonalityProfile(force: true) }
                     }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(palette.primary)
                 }
-                .contentShape(Rectangle())
+                
+                Button {
+                    withAnimation(.spring(response: 0.26, dampingFraction: 0.85)) {
+                        self.isConceptCardOpen = false
+                        self.selectedPersonalityTag = nil
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
             
-            if self.manager.profiles.count > 1 && !isActive && (isRowHovered || self.confirmDeleteUserID == profile.id) {
-                let isConfirming = (self.confirmDeleteUserID == profile.id)
-                Button(isConfirming ? "确认删除" : "删除") {
-                    withAnimation(Self.spring) {
-                        if isConfirming {
-                            self.manager.deleteProfile(id: profile.id)
-                            self.confirmDeleteUserID = nil
-                        } else {
-                            self.confirmDeleteUserID = profile.id
+            if let tag = self.selectedPersonalityTag {
+                HStack(alignment: .top, spacing: 6) {
+                    Text("#\(tag.label)")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(palette.primary))
+                    
+                    Text(tag.explanation)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(palette.primary.opacity(self.colorScheme == .dark ? 0.16 : 0.09))
+                )
+            }
+            
+            if let profile {
+                Text(profile.conceptSummary)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                
+                if !profile.writingStyleNotes.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(profile.writingStyleNotes.prefix(3), id: \.self) { note in
+                            Text("· \(note)")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
-                .font(.system(size: 10.5, weight: isConfirming ? .semibold : .medium))
-                .foregroundStyle(isConfirming ? Color.white : Color.red)
-                .padding(.horizontal, isConfirming ? 8 : 6)
-                .padding(.vertical, 2.5)
-                .background(
-                    Capsule().fill(isConfirming ? Color.red : Color.red.opacity(0.10))
-                )
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .transition(.scale(scale: 0.9).combined(with: .opacity))
+                
+                HStack {
+                    Text("模型：\(profile.modelUsed)")
+                    Spacer()
+                    Text("更新于 \(profile.generatedAt.formatted(date: .omitted, time: .shortened)) · 每 6 小时自动洞察")
+                }
+                .font(.system(size: 9.5))
+                .foregroundStyle(.tertiary)
+            } else {
+                Text(self.analytics.personalityErrorMessage ?? "后台每隔 6 小时会自动阅读你近期写下的文字，提炼 8 字以内的个性弹幕标签与人物印象。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 32)
-        .background {
-            if isActive {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(self.surfaceFill)
-                    .matchedGeometryEffect(id: "activeProfilePill", in: self.activeSwitchNamespace)
-            } else if isRowHovered {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(self.surfaceFill.opacity(0.65))
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.05 : 0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+    }
+    
+    
+    // MARK: Ultra-Simple Account Switcher (when > 1 account exists)
+    
+    @ViewBuilder
+    private func compactAccountSwitcher() -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(self.manager.profiles) { profile in
+                    let isActive = (profile.id == self.manager.activeProfile.id)
+                    Button {
+                        if !isActive {
+                            self.manager.switchToProfile(id: profile.id)
+                            self.editingName = self.manager.activeProfile.displayName
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            UserAvatarCircleView(profile: profile, size: 16)
+                            Text(profile.displayName)
+                                .font(.system(size: 11, weight: isActive ? .semibold : .regular))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(isActive ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.05))
+                        )
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(isActive ? Color.accentColor.opacity(0.45) : Color.clear, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
-        .onHover { hovering in
-            withAnimation(Self.quick) {
-                if hovering {
-                    self.hoveredProfileID = profile.id
-                } else if self.hoveredProfileID == profile.id {
-                    self.hoveredProfileID = nil
-                    if self.confirmDeleteUserID == profile.id {
-                        self.confirmDeleteUserID = nil
+    }
+    
+    
+    // MARK: Ultra-Simple Quick Pin Todo Composer
+    
+    @ViewBuilder
+    private func quickPinTodoSection() -> some View {
+        let pinned = self.analytics.pinnedTodos
+        
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("置顶 Todo", systemImage: "pin.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("设了 DDL 会随时间逼近越来越大")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+            
+            HStack(spacing: 6) {
+                TextField("写一件要紧事，回车 Pin 到右上角…", text: self.$todoDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                    .focused(self.$isTodoFieldFocused)
+                    .onSubmit {
+                        self.submitPinnedTodo()
+                    }
+                
+                Button("Pin") {
+                    self.submitPinnedTodo()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(self.todoDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            
+            HStack(spacing: 5) {
+                ForEach(QuickTodoDeadlineOption.allCases) { option in
+                    let isSelected = (self.deadlineOption == option)
+                    Button {
+                        withAnimation(.easeOut(duration: 0.14)) {
+                            self.deadlineOption = option
+                        }
+                    } label: {
+                        Text(option.label)
+                            .font(.system(size: 10.5, weight: isSelected ? .semibold : .regular))
+                            .foregroundStyle(isSelected ? .white : .secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(
+                                Capsule()
+                                    .fill(isSelected ? Color.accentColor : Color.primary.opacity(0.06))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            
+            if self.deadlineOption == .custom {
+                DatePicker("截止", selection: self.$customDeadline, in: Date()..., displayedComponents: [.date, .hourAndMinute])
+                    .font(.system(size: 11))
+                    .datePickerStyle(.compact)
+            }
+            
+            if !pinned.isEmpty {
+                VStack(spacing: 5) {
+                    ForEach(pinned.prefix(4)) { item in
+                        HStack(spacing: 7) {
+                            Button {
+                                self.analytics.toggleReminderCompleted(id: item.id)
+                            } label: {
+                                Image(systemName: "circle")
+                                    .font(.system(size: 12.5))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("标记完成")
+                            
+                            Text(item.title)
+                                .font(.system(size: 11.5, weight: .medium))
+                                .lineLimit(1)
+                            
+                            Spacer()
+                            
+                            if item.hasDeadline {
+                                let remaining = item.dueDate.timeIntervalSince(Date())
+                                Text(PinnedTodoUrgency.formatRemaining(remaining))
+                                    .font(.system(size: 10, weight: .medium).monospacedDigit())
+                                    .foregroundStyle(remaining <= 600 ? Color.red : Color.secondary)
+                            }
+                            
+                            Button {
+                                self.analytics.unpinReminder(id: item.id)
+                            } label: {
+                                Image(systemName: "pin.slash")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("取消置顶")
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.05 : 0.035))
+                        )
                     }
                 }
             }
@@ -744,141 +941,181 @@ struct UserProfilePopoverView: View {
     }
     
     
-    // MARK: Visual Tokens
+    // MARK: Footer
     
-    private static let quick = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.14)
-    private static let spring = Animation.spring(response: 0.30, dampingFraction: 0.80)
-    
-    private var mintAccent: Color {
-        self.colorScheme == .dark
-            ? Color(red: 0.25, green: 0.84, blue: 0.62)
-            : Color(red: 0.16, green: 0.54, blue: 0.38)
-    }
-    
-    private var mintSoftBg: Color {
-        self.mintAccent.opacity(self.colorScheme == .dark ? 0.18 : 0.12)
-    }
-    
-    private var cardSurface: Color {
-        self.colorScheme == .dark ? Color.white.opacity(0.04) : Color.black.opacity(0.025)
-    }
-    
-    private var cardStroke: Color {
-        self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.065)
-    }
-    
-    private var surfaceFill: Color {
-        self.colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.045)
-    }
-    
-    
-    // MARK: Actions
-    
-    private static var lastGreetingIndex: Int?
-    
-    private static let randomGreetings: [String] = [
-        "灵感已上线",
-        "键盘热好了",
-        "先写第一行",
-        "草稿不怕丑",
-        "敲字胜发呆",
-        "状态正加载",
-        "大脑营业中",
-        "别卡在标题",
-        "手感在升温",
-        "思路已就位",
-        "摸会鱼再写",
-        "写完这句歇",
-    ]
-    
-    private static func nextRandomGreeting() -> String {
-        
-        var candidates = Array(Self.randomGreetings.indices)
-        if let last = Self.lastGreetingIndex, candidates.count > 1 {
-            candidates.removeAll { $0 == last }
+    @ViewBuilder
+    private func footerBar() -> some View {
+        HStack {
+            Button {
+                self.closePopover()
+                AnalyticsDashboardWindowController.shared.showInWindow(preferredWindow: self.hostWindow)
+            } label: {
+                Label("打开创作案头", systemImage: "square.grid.2x2")
+                    .font(.system(size: 11.5, weight: .medium))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            
+            Spacer()
+            
+            Button("新建用户 / 设置") {
+                self.closePopover()
+                NSApp.sendAction(#selector(AppDelegate.showSettingsWindow(_:)), to: nil, from: nil)
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
         }
-        let picked = candidates.randomElement() ?? 0
-        Self.lastGreetingIndex = picked
-        return Self.randomGreetings[picked]
+    }
+    
+    
+    // MARK: Actions & Playful Animations
+    
+    private func triggerAvatarFunReaction() {
+        
+        self.avatarTapCount += 1
+        
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.42)) {
+            self.avatarSquish = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.55)) {
+                self.avatarSquish = false
+            }
+        }
+        
+        if self.avatarTapCount % 3 == 0 {
+            withAnimation(.spring(response: 0.52, dampingFraction: 0.72)) {
+                self.avatarSpinAngle += 360
+            }
+        }
+        
+        self.avatarRingScale = 0.85
+        self.avatarRingOpacity = 0.75
+        withAnimation(.easeOut(duration: 0.45)) {
+            self.avatarRingScale = 1.45
+            self.avatarRingOpacity = 0
+        }
+        
+        let msg = Self.easterEggLines[(self.avatarTapCount - 1) % Self.easterEggLines.count]
+        withAnimation(.easeOut(duration: 0.15)) {
+            self.nameEpithet = nil
+            self.avatarEasterEggText = msg
+        }
+        let capturedCount = self.avatarTapCount
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+            if self.avatarTapCount == capturedCount {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    self.avatarEasterEggText = nil
+                }
+            }
+        }
+    }
+    
+    
+    private func triggerNameFunReaction() {
+        
+        withAnimation(.spring(response: 0.18, dampingFraction: 0.35)) {
+            self.nameWiggleAngle = -4
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.45)) {
+                self.nameWiggleAngle = 0
+            }
+        }
+        
+        let nextEpithet = Self.playEpithets.randomElement() ?? "写作中"
+        withAnimation(.easeOut(duration: 0.15)) {
+            self.avatarEasterEggText = nil
+            self.nameEpithet = nextEpithet
+        }
+    }
+    
+    
+    private func beginNameEdit() {
+        
+        self.editingName = self.manager.activeProfile.displayName
+        self.isEditingName = true
+        self.isNameFieldFocused = true
     }
     
     
     private func commitNameEdit() {
         
         let trimmed = self.editingName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let changed = !trimmed.isEmpty && trimmed != self.manager.activeProfile.displayName
-        if changed {
+        if !trimmed.isEmpty, trimmed != self.manager.activeProfile.displayName {
             self.manager.updateProfile(id: self.manager.activeProfile.id, displayName: trimmed)
         } else {
             self.editingName = self.manager.activeProfile.displayName
         }
-        withAnimation(Self.spring) {
-            self.isEditingName = false
-            if changed {
-                self.didJustSaveName = true
-            }
-        }
-        if changed {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                withAnimation(Self.quick) {
-                    self.didJustSaveName = false
-                }
-            }
-        }
+        self.isEditingName = false
     }
     
     
     private func cancelNameEdit() {
         
         self.editingName = self.manager.activeProfile.displayName
-        withAnimation(Self.spring) {
-            self.isEditingName = false
-        }
+        self.isEditingName = false
     }
     
     
-    private func submitNewUser() {
+    private func submitPinnedTodo() {
         
-        let assignedHex = UserProfileManager.avatarPresetColors[self.manager.profiles.count % UserProfileManager.avatarPresetColors.count]
-        withAnimation(Self.spring) {
-            self.manager.createProfile(
-                displayName: self.newUserName,
-                avatarData: self.newUserAvatarData,
-                avatarColorHex: assignedHex,
-                copyCurrentAIEndpoints: self.copyCurrentAIConfig,
-                switchImmediately: true
-            )
-            self.resetNewUserDraft()
-            self.editingName = self.manager.activeProfile.displayName
+        let trimmed = self.todoDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        
+        let deadline: Date? = switch self.deadlineOption {
+            case .none:
+                nil
+            case .min15:
+                Date().addingTimeInterval(15 * 60)
+            case .hour1:
+                Date().addingTimeInterval(3600)
+            case .tonight:
+                Self.tonightDeadline()
+            case .custom:
+                self.customDeadline
         }
+        
+        self.analytics.addPinnedTodo(title: trimmed, deadline: deadline)
+        self.todoDraft = ""
+        self.deadlineOption = .none
     }
     
     
-    private func resetNewUserDraft() {
+    private static func tonightDeadline(from now: Date = Date()) -> Date {
         
-        self.isCreatingUser = false
-        self.newUserName = ""
-        self.newUserAvatarData = nil
+        let cal = Calendar.current
+        if let today22 = cal.date(bySettingHour: 22, minute: 0, second: 0, of: now),
+           today22.timeIntervalSince(now) > 30 * 60
+        {
+            return today22
+        }
+        return now.addingTimeInterval(3 * 3600)
     }
     
     
     private func pickAvatarForActiveUser() {
         
-        self.chooseAvatarData { data in
-            self.manager.updateProfile(id: self.manager.activeProfile.id, avatarData: .some(data))
+        let panel = NSOpenPanel()
+        panel.title = "选择头像图片"
+        panel.allowedContentTypes = [.image, .png, .jpeg, .heic, .tiff]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.begin { response in
+            guard response == .OK,
+                  let url = panel.url,
+                  let image = NSImage(contentsOf: url),
+                  let data = UserProfileManager.processedAvatarPNGData(from: image)
+            else { return }
+            Task { @MainActor in
+                self.manager.updateProfile(id: self.manager.activeProfile.id, avatarData: .some(data))
+            }
         }
     }
     
     
-    private func pickAvatarForNewUser() {
-        
-        self.chooseAvatarData { data in
-            self.newUserAvatarData = data
-        }
-    }
-    
-    
-    private func handleAvatarDrop(providers: [NSItemProvider], forActiveUser: Bool) -> Bool {
+    private func handleAvatarDrop(providers: [NSItemProvider]) -> Bool {
         
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
@@ -893,11 +1130,7 @@ struct UserProfilePopoverView: View {
                           let png = UserProfileManager.processedAvatarPNGData(from: image)
                     else { return }
                     Task { @MainActor in
-                        if forActiveUser {
-                            self.manager.updateProfile(id: self.manager.activeProfile.id, avatarData: .some(png))
-                        } else {
-                            self.newUserAvatarData = png
-                        }
+                        self.manager.updateProfile(id: self.manager.activeProfile.id, avatarData: .some(png))
                     }
                 }
                 return true
@@ -908,11 +1141,7 @@ struct UserProfilePopoverView: View {
                           let png = UserProfileManager.processedAvatarPNGData(from: image)
                     else { return }
                     Task { @MainActor in
-                        if forActiveUser {
-                            self.manager.updateProfile(id: self.manager.activeProfile.id, avatarData: .some(png))
-                        } else {
-                            self.newUserAvatarData = png
-                        }
+                        self.manager.updateProfile(id: self.manager.activeProfile.id, avatarData: .some(png))
                     }
                 }
                 return true
@@ -920,60 +1149,152 @@ struct UserProfilePopoverView: View {
         }
         return false
     }
+}
+
+
+// MARK: - Personality Danmaku Strip
+
+private struct DanmakuTrackWidthKey: PreferenceKey {
     
-    
-    private func chooseAvatarData(_ completion: @escaping @MainActor (Data) -> Void) {
-        
-        let panel = NSOpenPanel()
-        panel.title = "选择头像图片"
-        panel.allowedContentTypes = [.image, .png, .jpeg, .heic, .tiff]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.begin { response in
-            guard response == .OK,
-                  let url = panel.url,
-                  let image = NSImage(contentsOf: url),
-                  let data = UserProfileManager.processedAvatarPNGData(from: image)
-            else { return }
-            Task { @MainActor in
-                completion(data)
-            }
-        }
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
 
-private struct MiniPopoverSparkMatrix: View {
+private struct PersonalityDanmakuStrip: View {
     
-    let values: [Double]
-    let accent: Color
-    let emptyColor: Color
+    let tags: [UserPersonalityTag]
+    let selectedTagID: String?
+    let isAnalyzing: Bool
+    let palette: AvatarColorExtractor.Palette
+    let onTapTag: (UserPersonalityTag) -> Void
+    let onTapAnalyzePlaceholder: () -> Void
+    
+    @State private var isHovered = false
+    @State private var accumulatedOffset: TimeInterval = 0
+    @State private var anchorDate = Date()
+    @State private var laneWidths: [Int: CGFloat] = [:]
+    @Environment(\.colorScheme) private var colorScheme
     
     
     var body: some View {
-        
-        Canvas { context, size in
-            let cols = max(1, self.values.count)
-            let rows = 4
-            let gap: CGFloat = 1.8
-            let side = max(2.2, min((size.width - gap * CGFloat(cols - 1)) / CGFloat(cols), (size.height - gap * CGFloat(rows - 1)) / CGFloat(rows)))
-            let peak = max(1.0, self.values.max() ?? 1.0)
+        if self.tags.isEmpty {
+            Button {
+                self.onTapAnalyzePlaceholder()
+            } label: {
+                HStack(spacing: 5) {
+                    if self.isAnalyzing {
+                        ProgressView().controlSize(.mini)
+                        Text("正在根据近期输入分析性格弹幕…")
+                    } else {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 10))
+                        Text("每 6 小时自动提炼性格弹幕 · 点此立即生成")
+                    }
+                }
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(self.colorScheme == .dark ? .white.opacity(0.88) : .primary.opacity(0.75))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.primary.opacity(self.colorScheme == .dark ? 0.16 : 0.08)))
+            }
+            .buttonStyle(.plain)
+        } else {
+            let lane0 = Array(self.tags.enumerated().filter { $0.offset % 2 == 0 }.map(\.element))
+            let lane1 = Array(self.tags.enumerated().filter { $0.offset % 2 == 1 }.map(\.element))
             
-            for col in 0..<cols {
-                let val = self.values[col]
-                let active = val > 0 ? max(1, Int((val / peak * Double(rows)).rounded(.up))) : 0
-                for row in 0..<rows {
-                    let yIdx = rows - 1 - row
-                    let rect = CGRect(
-                        x: CGFloat(col) * (side + gap),
-                        y: CGFloat(yIdx) * (side + gap),
-                        width: side,
-                        height: side
-                    )
-                    let color = row < active ? self.accent.opacity(0.45 + 0.55 * Double(row + 1) / Double(rows)) : self.emptyColor
-                    context.fill(Path(roundedRect: rect, cornerRadius: 1.2, style: .continuous), with: .color(color))
+            TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
+                let elapsed = self.isHovered
+                    ? self.accumulatedOffset
+                    : self.accumulatedOffset + max(0, context.date.timeIntervalSince(self.anchorDate))
+                VStack(alignment: .leading, spacing: 5) {
+                    self.danmakuLane(laneIndex: 0, tags: lane0, phase: elapsed, speed: 20)
+                    if !lane1.isEmpty {
+                        self.danmakuLane(laneIndex: 1, tags: lane1, phase: elapsed + 2.4, speed: 15)
+                    }
+                }
+            }
+            .onHover { hovering in
+                guard hovering != self.isHovered else { return }
+                if hovering {
+                    self.accumulatedOffset += max(0, Date().timeIntervalSince(self.anchorDate))
+                } else {
+                    self.anchorDate = Date()
+                }
+                self.isHovered = hovering
+            }
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func danmakuLane(laneIndex: Int, tags: [UserPersonalityTag], phase: TimeInterval, speed: CGFloat) -> some View {
+        let viewportW: CGFloat = 296
+        let measured = self.laneWidths[laneIndex] ?? CGFloat(max(1, tags.count)) * 84
+        let unitW = max(20, measured + 10)
+        let travel = CGFloat(phase) * speed
+        let xOffset = -(travel.truncatingRemainder(dividingBy: unitW))
+        
+        HStack(spacing: 10) {
+            HStack(spacing: 8) {
+                ForEach(tags) { tag in
+                    self.danmakuPill(tag: tag)
+                }
+            }
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: DanmakuTrackWidthKey.self, value: geo.size.width)
+                }
+            )
+            .onPreferenceChange(DanmakuTrackWidthKey.self) { width in
+                if width > 0 {
+                    self.laneWidths[laneIndex] = width
+                }
+            }
+            
+            ForEach(0..<3, id: \.self) { _ in
+                HStack(spacing: 8) {
+                    ForEach(tags) { tag in
+                        self.danmakuPill(tag: tag)
+                    }
                 }
             }
         }
+        .offset(x: xOffset)
+        .frame(width: viewportW, height: 22, alignment: .leading)
+        .clipped()
+    }
+    
+    
+    @ViewBuilder
+    private func danmakuPill(tag: UserPersonalityTag) -> some View {
+        let isSelected = (self.selectedTagID == tag.id)
+        
+        Button {
+            self.onTapTag(tag)
+        } label: {
+            Text(tag.label)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(isSelected ? .white : (self.colorScheme == .dark ? .white.opacity(0.95) : .primary))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule()
+                        .fill(
+                            isSelected
+                                ? self.palette.primary
+                                : Color.primary.opacity(self.colorScheme == .dark ? 0.22 : 0.10)
+                        )
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(Color.white.opacity(isSelected ? 0.55 : 0.20), lineWidth: 0.8)
+                )
+                .fixedSize()
+        }
+        .buttonStyle(.plain)
+        .help("点击查看 AI 理解：\(tag.label)")
     }
 }

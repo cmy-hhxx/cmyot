@@ -250,10 +250,44 @@ nonisolated struct UserProfile: Identifiable, Codable, Sendable, Equatable {
         self.upsertUserRow(target)
         self.reloadProfiles()
         
-        if self === Self.shared, target.id == self.activeProfile.id, nameChanged {
-            CotLocalDatabase.shared.weeklyReportAuthor = target.displayName
+        if self === Self.shared, target.id == self.activeProfile.id {
+            if nameChanged {
+                CotLocalDatabase.shared.weeklyReportAuthor = target.displayName
+            }
+            CotLocalDatabase.shared.syncUserProfileToDatabase(target)
         }
         
+        NotificationCenter.default.post(name: Self.activeProfileDidChangeNotification, object: self)
+    }
+    
+    
+    /// Applies a portable profile snapshot restored from an imported SQLite database to the active profile.
+    func applyImportedProfileSnapshot(_ snapshot: PortableUserProfileSnapshot) {
+        
+        var target = self.activeProfile
+        let trimmedName = snapshot.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty {
+            target.displayName = trimmedName
+        }
+        if let avatar = snapshot.decodedAvatarData, !avatar.isEmpty {
+            target.avatarData = avatar
+        } else if snapshot.avatarDataBase64 == nil {
+            target.avatarData = nil
+        }
+        if !snapshot.avatarColorHex.isEmpty {
+            target.avatarColorHex = snapshot.avatarColorHex
+        }
+        target.accountKind = snapshot.accountKind
+        target.email = snapshot.email
+        target.remoteUserID = snapshot.remoteUserID
+        
+        self.avatarCache.removeValue(forKey: target.id)
+        self.upsertUserRow(target)
+        self.reloadProfiles()
+        
+        if self === Self.shared {
+            CotLocalDatabase.shared.weeklyReportAuthor = target.displayName
+        }
         NotificationCenter.default.post(name: Self.activeProfileDidChangeNotification, object: self)
     }
     
@@ -291,16 +325,31 @@ nonisolated struct UserProfile: Identifiable, Codable, Sendable, Equatable {
         let targetURL = self.databaseURL(for: profile)
         let targetDB = CotLocalDatabase(customURL: targetURL)
         targetDB.weeklyReportAuthor = resolvedName
+        targetDB.syncUserProfileToDatabase(profile)
         if copyCurrentAIEndpoints, self === Self.shared {
-            if let profilesData = try? JSONEncoder().encode(AIEndpointStore.profiles),
+            let currentProfiles = AIEndpointStore.profiles
+            if let profilesData = try? JSONEncoder().encode(currentProfiles),
                let json = String(data: profilesData, encoding: .utf8)
             {
                 targetDB.set(json, forKey: CotLocalDatabase.ConfigKey.syncAIProfiles)
             }
             targetDB.set(AIEndpointStore.activeID?.uuidString ?? "", forKey: CotLocalDatabase.ConfigKey.syncAIActiveProfileID)
+            var keyMap: [String: String] = [:]
+            for ep in currentProfiles {
+                let key = AIKeychain.apiKey(for: ep.id).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !key.isEmpty {
+                    keyMap[ep.id.uuidString] = key
+                }
+            }
+            if let keysData = try? JSONEncoder().encode(keyMap),
+               let keysJSON = String(data: keysData, encoding: .utf8)
+            {
+                targetDB.set(keysJSON, forKey: CotLocalDatabase.ConfigKey.syncAIProfileAPIKeys)
+            }
         } else {
             targetDB.set("[]", forKey: CotLocalDatabase.ConfigKey.syncAIProfiles)
             targetDB.set("", forKey: CotLocalDatabase.ConfigKey.syncAIActiveProfileID)
+            targetDB.set("{}", forKey: CotLocalDatabase.ConfigKey.syncAIProfileAPIKeys)
         }
         targetDB.checkpointDatabase()
         
@@ -339,6 +388,7 @@ nonisolated struct UserProfile: Identifiable, Codable, Sendable, Equatable {
                 }
             }
             CotLocalDatabase.shared.syncAIEndpointsToDatabase()
+            CotLocalDatabase.shared.syncUserProfileToDatabase()
             CotLocalDatabase.shared.syncUserPreferencesToDatabase()
             CotLocalDatabase.shared.checkpointDatabase()
         }
@@ -355,6 +405,7 @@ nonisolated struct UserProfile: Identifiable, Codable, Sendable, Equatable {
             CotLocalDatabase.shared.restoreAIEndpointsFromDatabase(resetIfMissing: true)
             CotLocalDatabase.shared.restoreUserPreferencesFromDatabase(overwriteExisting: true)
             
+            AIBotStore.shared.reloadFromDatabase()
             UserHabitPredictor.shared.reloadFromDatabase()
             AINextTokenPredictor.shared.reloadForActiveUser()
             AnalyticsManager.shared.reloadFromDatabase()

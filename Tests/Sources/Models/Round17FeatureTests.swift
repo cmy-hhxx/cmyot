@@ -470,8 +470,9 @@ struct Round17FeatureTests {
         
         let pastEmptyCell = try #require(visible.first(where: { $0.dateKey != todayKey && $0.typedChars == 0 }))
         let emptyStory = manager.humanDayStory(for: pastEmptyCell, referenceDate: now)
-        #expect(emptyStory.moodTag == "静心留白")
-        #expect(emptyStory.headline.contains("放空"))
+        #expect(emptyStory.moodTag.isEmpty)
+        #expect(!emptyStory.headline.isEmpty)
+        #expect(!emptyStory.headline.contains("火力全开"))
     }
     
     

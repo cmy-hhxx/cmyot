@@ -474,6 +474,7 @@ struct AISettingsView: View {
         
         self.activeID = profile.id
         AIEndpointStore.activeID = profile.id
+        CotLocalDatabase.shared.syncAIEndpointsToDatabase()
     }
     
     
@@ -565,6 +566,7 @@ struct AISettingsView: View {
             AIEndpointStore.activeID = profile.id
         }
         
+        CotLocalDatabase.shared.syncAIEndpointsToDatabase()
         self.status[profile.id] = nil
         self.reload()
     }
@@ -578,6 +580,7 @@ struct AISettingsView: View {
         updated.rememberModels([modelID])
         let apiKey = AIEndpointStore.apiKey(for: profile)
         AIEndpointStore.save(updated, apiKey: apiKey)
+        CotLocalDatabase.shared.syncAIEndpointsToDatabase()
         self.status[profile.id] = nil
         self.reload()
     }
@@ -596,6 +599,7 @@ struct AISettingsView: View {
             var updated = profile
             updated.rememberModels(models.prefix(12).map(\.id))
             AIEndpointStore.save(updated, apiKey: AIEndpointStore.apiKey(for: profile))
+            CotLocalDatabase.shared.syncAIEndpointsToDatabase()
             self.reload()
         } catch {
             self.status[profile.id] = .failed("拉取模型列表失败：\(error.localizedDescription)")
@@ -607,6 +611,7 @@ struct AISettingsView: View {
     private func delete(_ profile: AIEndpointProfile) {
         
         AIEndpointStore.delete(id: profile.id)
+        CotLocalDatabase.shared.syncAIEndpointsToDatabase()
         self.status[profile.id] = nil
         self.fetchedModels[profile.id] = nil
         self.pendingDeletion = nil
@@ -908,7 +913,7 @@ private struct AIEndpointRow: View {
 
 // MARK: - Stored Documents & Custom Config Sheet
 
-private struct StoredDocumentsSheetView: View {
+struct StoredDocumentsSheetView: View {
     
     @Environment(\.dismiss) private var dismiss
     @State private var selectedTab = 0

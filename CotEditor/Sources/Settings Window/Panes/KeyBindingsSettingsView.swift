@@ -30,6 +30,8 @@ import Shortcut
 
 struct KeyBindingsSettingsView: View {
     
+    var usesFlexibleFrame: Bool = false
+    
     @State private var model = KeyBindingModel()
     
     
@@ -38,7 +40,7 @@ struct KeyBindingsSettingsView: View {
         VStack(spacing: 0) {
             KeyBindingTreeView(model: $model)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(20)
+                .padding(self.usesFlexibleFrame ? 12 : 20)
             
             Divider()
             
@@ -65,7 +67,14 @@ struct KeyBindingsSettingsView: View {
         .onAppear {
             self.model.load()
         }
-        .frame(width: SettingsPaneLayout.width, height: SettingsPaneLayout.height)
+        .frame(
+            width: self.usesFlexibleFrame ? nil : SettingsPaneLayout.width,
+            height: self.usesFlexibleFrame ? nil : SettingsPaneLayout.height
+        )
+        .frame(
+            maxWidth: self.usesFlexibleFrame ? .infinity : nil,
+            maxHeight: self.usesFlexibleFrame ? .infinity : nil
+        )
         .environment(\.locale, AppLanguage.current.locale)
     }
 }

@@ -116,2436 +116,1782 @@ struct DashboardSettingsView: View {
 }
 
 
-// MARK: - Design Tokens
+// MARK: - Editorial Studio Palette & Tokens
 
-private enum DashMotion {
-    
-    static let quick = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.14)
-    static let standard = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.24)
-    static let spring = Animation.spring(response: 0.34, dampingFraction: 0.84)
-    static let enter = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.32)
-}
-
-
-/// Calm architectural neutrals with charcoal ink, muted sage charts, and a single botanical pine-sage accent.
-private struct DashPalette {
+private struct StudioPalette {
     
     let isDark: Bool
     
-    init(_ scheme: ColorScheme) {
-        
-        self.isDark = (scheme == .dark)
+    init(colorScheme: ColorScheme) {
+        self.isDark = (colorScheme == .dark)
     }
     
-    var canvasTop: Color {
+    var paper: Color {
         self.isDark
-            ? Color(red: 0.067, green: 0.075, blue: 0.078)
-            : Color(red: 0.965, green: 0.969, blue: 0.969)
-    }
-    var canvasBottom: Color {
-        self.isDark
-            ? Color(red: 0.078, green: 0.086, blue: 0.090)
-            : Color(red: 0.976, green: 0.980, blue: 0.980)
-    }
-    var mistMint: Color {
-        self.isDark
-            ? Color(red: 0.22, green: 0.44, blue: 0.35).opacity(0.11)
-            : Color(red: 0.76, green: 0.85, blue: 0.80).opacity(0.16)
+            ? Color(red: 0.075, green: 0.075, blue: 0.071)   // #131312
+            : Color(red: 0.976, green: 0.969, blue: 0.953)   // #F9F7F3
     }
     
     var card: Color {
         self.isDark
-            ? Color(red: 0.105, green: 0.115, blue: 0.118)
-            : Color.white
+            ? Color(red: 0.106, green: 0.106, blue: 0.098)   // #1B1B19
+            : Color.white                                     // #FFFFFF
     }
-    var cardShadow: Color {
+    
+    var subtle: Color {
         self.isDark
-            ? Color.black.opacity(0.26)
-            : Color.black.opacity(0.045)
+            ? Color(red: 0.133, green: 0.133, blue: 0.125)   // #222220
+            : Color(red: 0.937, green: 0.925, blue: 0.902)   // #EFECE6
     }
-    var inset: Color {
-        self.isDark
-            ? Color.white.opacity(0.045)
-            : Color(red: 0.955, green: 0.960, blue: 0.960)
-    }
-    var insetHover: Color {
-        self.isDark
-            ? Color.white.opacity(0.075)
-            : Color(red: 0.925, green: 0.933, blue: 0.933)
-    }
+    
     var hairline: Color {
-        self.isDark ? Color.white.opacity(0.085) : Color.black.opacity(0.06)
-    }
-    var hairlineStrong: Color {
-        self.isDark ? self.emerald.opacity(0.55) : self.pine.opacity(0.28)
-    }
-    var topSpecular: Color {
-        self.isDark ? Color.white.opacity(0.07) : Color.white.opacity(0.88)
-    }
-    var architecturalDot: Color {
-        self.isDark ? Color.white.opacity(0.045) : Color.black.opacity(0.04)
+        self.isDark
+            ? Color(red: 0.173, green: 0.169, blue: 0.157)   // #2C2B28
+            : Color(red: 0.898, green: 0.878, blue: 0.843)   // #E5E0D7
     }
     
-    var pine: Color {
+    var ink: Color {
         self.isDark
-            ? Color(red: 0.88, green: 0.91, blue: 0.90)
-            : Color(red: 0.125, green: 0.155, blue: 0.150)
-    }
-    var emerald: Color {
-        self.isDark
-            ? Color(red: 0.40, green: 0.74, blue: 0.59)
-            : Color(red: 0.21, green: 0.45, blue: 0.35)
-    }
-    var mint: Color {
-        self.isDark
-            ? Color(red: 0.28, green: 0.50, blue: 0.41)
-            : Color(red: 0.52, green: 0.69, blue: 0.61)
-    }
-    var paleMint: Color {
-        self.isDark
-            ? Color(red: 0.17, green: 0.29, blue: 0.24)
-            : Color(red: 0.80, green: 0.88, blue: 0.84)
-    }
-    var emptyDot: Color {
-        self.isDark
-            ? Color.white.opacity(0.07)
-            : Color(red: 0.905, green: 0.915, blue: 0.912)
-    }
-    var positivePillBg: Color {
-        self.isDark
-            ? Color(red: 0.21, green: 0.45, blue: 0.35).opacity(0.22)
-            : Color(red: 0.91, green: 0.95, blue: 0.93)
-    }
-    var neutralPillBg: Color {
-        self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.045)
+            ? Color(red: 0.949, green: 0.937, blue: 0.914)   // #F2EFE9
+            : Color(red: 0.102, green: 0.102, blue: 0.094)   // #1A1A18
     }
     
+    var secondaryInk: Color {
+        self.isDark
+            ? Color(red: 0.647, green: 0.631, blue: 0.596)   // #A5A198
+            : Color(red: 0.361, green: 0.353, blue: 0.329)   // #5C5A54
+    }
     
-    func heat(_ level: Int) -> Color {
-        
+    var tertiaryInk: Color {
+        self.isDark
+            ? Color(red: 0.451, green: 0.435, blue: 0.404)   // #736F67
+            : Color(red: 0.541, green: 0.525, blue: 0.490)   // #8A867D
+    }
+    
+    var cinnabar: Color {
+        self.isDark
+            ? Color(red: 0.878, green: 0.427, blue: 0.325)   // #E06D53
+            : Color(red: 0.722, green: 0.231, blue: 0.157)   // #B83B28
+    }
+    
+    var pineGreen: Color {
+        self.isDark
+            ? Color(red: 0.459, green: 0.722, blue: 0.557)   // #75B88E
+            : Color(red: 0.184, green: 0.365, blue: 0.275)   // #2F5D46
+    }
+    
+    var heatmapLevels: [Color] {
         if self.isDark {
-            switch level {
-                case 4: Color(red: 0.373, green: 0.722, blue: 0.576)
-                case 3: Color(red: 0.231, green: 0.455, blue: 0.369)
-                case 2: Color(red: 0.157, green: 0.294, blue: 0.243)
-                case 1: Color(red: 0.110, green: 0.184, blue: 0.157)
-                default: self.emptyDot
-            }
-        } else {
-            switch level {
-                case 4: Color(red: 0.141, green: 0.294, blue: 0.235)
-                case 3: Color(red: 0.302, green: 0.502, blue: 0.416)
-                case 2: Color(red: 0.573, green: 0.714, blue: 0.643)
-                case 1: Color(red: 0.831, green: 0.890, blue: 0.859)
-                default: self.emptyDot
-            }
+            return [
+                Color(red: 0.133, green: 0.133, blue: 0.122), // #22221F
+                Color(red: 0.145, green: 0.220, blue: 0.173), // #25382C
+                Color(red: 0.208, green: 0.361, blue: 0.271), // #355C45
+                Color(red: 0.298, green: 0.522, blue: 0.388), // #4C8563
+                Color(red: 0.459, green: 0.722, blue: 0.557), // #75B88E
+            ]
         }
+        return [
+            Color(red: 0.925, green: 0.914, blue: 0.886),     // #ECE9E2
+            Color(red: 0.788, green: 0.827, blue: 0.780),     // #C9D3C7
+            Color(red: 0.537, green: 0.639, blue: 0.553),     // #89A38D
+            Color(red: 0.278, green: 0.431, blue: 0.329),     // #476E54
+            Color(red: 0.114, green: 0.251, blue: 0.173),     // #1D402C
+        ]
     }
     
-    
-    func matrixStep(fraction: Double, isPeak: Bool) -> Color {
-        
-        if isPeak { return self.pine }
-        if fraction >= 0.75 { return self.emerald }
-        if fraction >= 0.40 { return self.mint }
-        return self.paleMint
+    func heatmapColor(for level: Int) -> Color {
+        let clamped = min(max(0, level), self.heatmapLevels.count - 1)
+        return self.heatmapLevels[clamped]
     }
 }
 
 
-// MARK: - Precomputed Snapshot
-
-private struct DashboardSnapshot {
+private enum StudioLens: String, CaseIterable, Identifiable {
     
-    struct ChartDay: Identifiable {
-        
-        var id: String
-        var date: Date
-        var typed: Int
-        var ai: Int
-        var input: Int
-        var output: Int
-        var isToday: Bool
-    }
+    case typed
+    case completion
+    case consumption
     
-    struct AISlice {
-        
-        var totals: AIUsageTotals
-        var models: [ModelUsageSummary]
-        var features: [FeatureUsageSummary]
-        var latencyMs: Int
-    }
+    var id: String { self.rawValue }
     
-    var today: DailyWritingStats
-    var typedBaseline7: Int
-    var days14: [ChartDay]
-    var days7: [ChartDay]
-    var series7: [DailyWritingStats]
-    var yearlyHeatmap: YearlyHeatmapData
-    var availableYears: [Int]
-    var orderedCells: [HeatmapDayCell]
-    var aiHeatmap12: RollingHeatmapData
-    var aiToday: AISlice
-    var ai30: AISlice
-    
-    
-    @MainActor static func build(analytics: AnalyticsManager, selectedYear: Int) -> DashboardSnapshot {
-        
-        let today = analytics.todayStats
-        let series14 = analytics.dailySeries(days: 14)
-        let series7 = Array(series14.suffix(7))
-        let prior = series7.dropLast()
-        let baseline = prior.isEmpty ? 0 : prior.reduce(0) { $0 + $1.typedChars } / prior.count
-        
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.dateFormat = "yyyy-MM-dd"
-        let chartDays: [ChartDay] = series14.map { item in
-            ChartDay(
-                id: item.dateKey,
-                date: formatter.date(from: item.dateKey) ?? Date(),
-                typed: item.typedChars,
-                ai: item.aiCompletedChars,
-                input: item.inputTokens,
-                output: item.outputTokens,
-                isToday: item.dateKey == today.dateKey
-            )
+    var title: String {
+        switch self {
+            case .typed: "今日手写"
+            case .completion: "Tab 帮写"
+            case .consumption: "AI 用量"
         }
-        
-        let availableYears = analytics.availableHeatmapYears()
-        let resolvedYear = availableYears.contains(selectedYear)
-            ? selectedYear
-            : (availableYears.last ?? Calendar.current.component(.year, from: Date()))
-        let yearly = analytics.yearlyHeatmap(year: resolvedYear, trimFutureWeeks: true)
-        let ordered = yearly.weeks.flatMap { $0 }.filter { !$0.isOutOfYear && !$0.isFuture }
-        let aiHeatmap = analytics.aiConsumptionHeatmap(weeks: 12)
-        
-        return DashboardSnapshot(
-            today: today,
-            typedBaseline7: baseline,
-            days14: chartDays,
-            days7: Array(chartDays.suffix(7)),
-            series7: series7,
-            yearlyHeatmap: yearly,
-            availableYears: availableYears,
-            orderedCells: ordered,
-            aiHeatmap12: aiHeatmap,
-            aiToday: AISlice(
-                totals: analytics.aiUsageTotals(forTodayOnly: true),
-                models: analytics.todayModelDistribution(),
-                features: analytics.todayFeatureDistribution(),
-                latencyMs: analytics.averageLatencyMs(forTodayOnly: true)
-            ),
-            ai30: AISlice(
-                totals: analytics.aiUsageTotals(forTodayOnly: false, days: 30),
-                models: analytics.modelDistribution(days: 30),
-                features: analytics.featureDistribution(days: 30),
-                latencyMs: analytics.averageLatencyMs(forTodayOnly: false, days: 30)
-            )
-        )
+    }
+    
+    var symbolName: String {
+        switch self {
+            case .typed: "pencil.line"
+            case .completion: "keyboard.badge.ellipsis"
+            case .consumption: "cpu"
+        }
     }
 }
 
 
-// MARK: - Dashboard
+private enum CadenceMode: String, CaseIterable, Identifiable {
+    
+    case fourteenDays
+    case todayHourly
+    
+    var id: String { self.rawValue }
+    
+    var label: String {
+        switch self {
+            case .fourteenDays: "近 14 天节奏"
+            case .todayHourly: "今日 24 小时脉搏"
+        }
+    }
+}
 
-/// Frosted sage-mint architectural Bento writing dashboard with yearly calendar heatmap, miniature AI heatmap, clickable documents, and editorial daily story.
+
+private enum ConsumptionScope: String, CaseIterable, Identifiable {
+    
+    case today
+    case thirtyDays
+    
+    var id: String { self.rawValue }
+    
+    var label: String {
+        switch self {
+            case .today: "今日"
+            case .thirtyDays: "近 30 天"
+        }
+    }
+}
+
+
+// MARK: - Main Studio Ledger View
+
+/// Editorial Studio Ledger analytics dashboard rendered inside the editor workspace or settings pane.
 struct AnalyticsDashboardView: View {
     
-    fileprivate enum KPIKind: String, Identifiable {
-        
-        case typed
-        case completion
-        case consumption
-        
-        var id: String { self.rawValue }
-    }
-    
-    fileprivate enum AIRange: String, CaseIterable, Identifiable {
-        
-        case today = "今日"
-        case thirtyDays = "近 30 天"
-        
-        var id: String { self.rawValue }
-    }
-    
-    let isEmbeddedInSettings: Bool
-    var onDismiss: (() -> Void)?
-    var onOpenDocument: ((StoredDocumentRecord) -> Void)?
-    var onOpenWeeklyReport: ((StoredWeeklyReport) -> Void)?
+    var isEmbeddedInSettings: Bool = false
+    var onDismiss: (() -> Void)? = nil
+    var onOpenDocument: ((StoredDocumentRecord) -> Void)? = nil
+    var onOpenWeeklyReport: ((StoredWeeklyReport) -> Void)? = nil
     
     @Environment(\.colorScheme) private var colorScheme
-    
     @State private var analytics = AnalyticsManager.shared
-    @State private var profileManager = UserProfileManager.shared
-    @State private var snapshot: DashboardSnapshot?
-    @State private var expandedKPI: KPIKind?
-    @State private var aiRange: AIRange = .thirtyDays
+    @State private var userManager = UserProfileManager.shared
+    @State private var predictor = AINextTokenPredictor.shared
+    
+    @State private var selectedLens: StudioLens? = nil
     @State private var selectedYear: Int = Calendar.current.component(.year, from: Date())
-    @State private var selectedDateKey: String = AnalyticsManager.dateKey()
-    @State private var canvasWidth: CGFloat = 1040
-    @State private var hasAppeared = false
+    @State private var selectedDateKey: String = AnalyticsManager.dateKey(for: Date())
+    @State private var cadenceMode: CadenceMode = .fourteenDays
+    @State private var consumptionScope: ConsumptionScope = .today
+    @State private var refreshSpin = false
     
     
-    init(
-        isEmbeddedInSettings: Bool,
-        onDismiss: (() -> Void)? = nil,
-        onOpenDocument: ((StoredDocumentRecord) -> Void)? = nil,
-        onOpenWeeklyReport: ((StoredWeeklyReport) -> Void)? = nil
-    ) {
-        
-        self.isEmbeddedInSettings = isEmbeddedInSettings
-        self.onDismiss = onDismiss
-        self.onOpenDocument = onOpenDocument
-        self.onOpenWeeklyReport = onOpenWeeklyReport
+    private var palette: StudioPalette {
+        StudioPalette(colorScheme: self.colorScheme)
     }
     
     
-    private var palette: DashPalette { DashPalette(self.colorScheme) }
-    private var compact: Bool { self.isEmbeddedInSettings }
-    private var useAsymmetricBento: Bool { !self.compact && self.canvasWidth >= 860 }
-    private var outerPadding: CGFloat { self.compact ? 16 : 24 }
-    private var gap: CGFloat { self.compact ? 12 : 16 }
-    private var cardPadding: CGFloat { self.compact ? 14 : 18 }
-    private var cornerRadius: CGFloat { self.compact ? 16 : 20 }
+    private var openDocHandler: (StoredDocumentRecord) -> Void {
+        self.onOpenDocument ?? { AnalyticsDashboardWindowController.shared.openDocument($0) }
+    }
+    
+    
+    private var openReportHandler: (StoredWeeklyReport) -> Void {
+        self.onOpenWeeklyReport ?? { AnalyticsDashboardWindowController.shared.openWeeklyReport($0) }
+    }
     
     
     var body: some View {
+        let p = self.palette
+        let outerPad: CGFloat = self.isEmbeddedInSettings ? 14 : 20
         
-        ZStack {
-            self.ambientBackground
-                .ignoresSafeArea()
+        VStack(spacing: 0) {
+            self.headerBar(palette: p)
+                .padding(.horizontal, outerPad)
+                .frame(height: 48)
             
-            ScrollView {
-                Group {
-                    if let snapshot = self.snapshot {
-                        self.content(snapshot)
-                            .opacity(self.hasAppeared ? 1 : 0)
-                            .offset(y: self.hasAppeared ? 0 : 8)
-                    } else {
-                        Color.clear.frame(height: 480)
-                    }
+            Divider().overlay(p.hairline)
+            
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 14) {
+                    self.unifiedLensStrip(palette: p)
+                    
+                    self.stageContent(palette: p)
+                        .animation(.easeOut(duration: 0.18), value: self.selectedLens)
                 }
-                .padding(self.outerPadding)
-                .frame(maxWidth: 1120, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, outerPad)
+                .padding(.vertical, 14)
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
-            if abs(newWidth - self.canvasWidth) > 2 {
-                self.canvasWidth = newWidth
-            }
-        }
+        .background(p.paper)
+        .foregroundStyle(p.ink)
         .onAppear {
             self.analytics.flushPendingStats()
             self.analytics.reloadFromDatabase()
-            self.rebuild()
-            if !self.hasAppeared {
-                withAnimation(DashMotion.enter) {
-                    self.hasAppeared = true
-                }
-            }
-        }
-        .onChange(of: self.analytics.revision) { _, _ in
-            self.rebuild()
-        }
-        .onChange(of: self.selectedYear) { _, _ in
-            self.rebuild()
-        }
-        .onKeyPress(.escape) {
-            if self.expandedKPI != nil {
-                withAnimation(DashMotion.standard) {
-                    self.expandedKPI = nil
-                }
-                return .handled
-            }
-            return .ignored
-        }
-    }
-    
-    
-    private var ambientBackground: some View {
-        
-        ZStack {
-            LinearGradient(
-                colors: [self.palette.canvasTop, self.palette.canvasBottom],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            
-            GeometryReader { proxy in
-                RadialGradient(
-                    colors: [self.palette.mistMint, .clear],
-                    center: .top,
-                    startRadius: 10,
-                    endRadius: max(380, proxy.size.width * 0.56)
-                )
-            }
-            
-            // Subtle architectural drafting dot grid for Plane-0 spatial depth
-            Canvas { context, size in
-                let step: CGFloat = 20
-                let radius: CGFloat = 0.85
-                let dotColor = self.palette.architecturalDot
-                var y: CGFloat = 12
-                while y < size.height {
-                    var x: CGFloat = 12
-                    while x < size.width {
-                        let rect = CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)
-                        context.fill(Path(ellipseIn: rect), with: .color(dotColor))
-                        x += step
-                    }
-                    y += step
-                }
-            }
-            .allowsHitTesting(false)
-        }
-    }
-    
-    
-    private func rebuild() {
-        
-        let built = DashboardSnapshot.build(analytics: self.analytics, selectedYear: self.selectedYear)
-        if built.yearlyHeatmap.year != self.selectedYear {
-            self.selectedYear = built.yearlyHeatmap.year
-        }
-        self.snapshot = built
-        if !built.orderedCells.contains(where: { $0.dateKey == self.selectedDateKey }) {
-            if built.orderedCells.contains(where: { $0.dateKey == built.today.dateKey }) {
-                self.selectedDateKey = built.today.dateKey
-            } else if let latestActive = built.orderedCells.last(where: { $0.level > 0 }) ?? built.orderedCells.last {
-                self.selectedDateKey = latestActive.dateKey
+            let years = self.analytics.availableHeatmapYears()
+            if !years.contains(self.selectedYear), let latest = years.first {
+                self.selectedYear = latest
             }
         }
     }
     
     
-    // MARK: Layout
-    
-    private func content(_ s: DashboardSnapshot) -> some View {
-        
-        let activeCell = self.resolvedSelectedCell(in: s)
-        let story = self.analytics.humanDayStory(for: activeCell, baselineDailyChars: s.typedBaseline7)
-        
-        return VStack(alignment: .leading, spacing: self.gap) {
-            self.header
-                .padding(.bottom, self.compact ? 2 : 4)
-            
-            self.kpiRow(s)
-            
-            if let kind = self.expandedKPI {
-                self.detailPanel(kind, s)
-                    .id(kind)
-                    .transition(.opacity.combined(with: .scale(scale: 0.985, anchor: .top)))
-            }
-            
-            if self.useAsymmetricBento {
-                // Asymmetric 2-column Bento Architecture:
-                // Left (~66%): Calendar-Year Heatmap on top + Balanced Twin Row below (DotArcGauge & Clickable Docs)
-                // Right (~34%): Full-height Editorial Daily Story Pillar with bottom-anchored 2x2 Footprints
-                HStack(alignment: .top, spacing: self.gap) {
-                    VStack(alignment: .leading, spacing: self.gap) {
-                        self.yearlyHeatmapCard(s, activeCell: activeCell)
-                        
-                        self.twinBentoRow(story)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    
-                    self.editorialStoryPillar(story, snapshot: s, isSidePillar: true)
-                        .frame(width: 332, alignment: .topLeading)
-                }
-                .fixedSize(horizontal: false, vertical: true)
-            } else {
-                self.yearlyHeatmapCard(s, activeCell: activeCell)
-                
-                self.twinBentoRow(story)
-                
-                self.editorialStoryPillar(story, snapshot: s, isSidePillar: false)
-            }
-        }
-    }
-    
-    
-    private func yearlyHeatmapCard(_ s: DashboardSnapshot, activeCell: HeatmapDayCell) -> some View {
-        
-        YearlyHeatmapCard(
-            heatmap: s.yearlyHeatmap,
-            availableYears: s.availableYears,
-            selectedYear: self.$selectedYear,
-            selectedKey: activeCell.dateKey,
-            palette: self.palette,
-            compact: self.compact,
-            padding: self.cardPadding,
-            cornerRadius: self.cornerRadius
-        ) { tappedCell in
-            withAnimation(DashMotion.spring) {
-                self.selectedDateKey = tappedCell.dateKey
-            }
-        }
-    }
-    
-    
-    private func resolvedSelectedCell(in s: DashboardSnapshot) -> HeatmapDayCell {
-        
-        if let matched = s.orderedCells.first(where: { $0.dateKey == self.selectedDateKey }) {
-            return matched
-        }
-        if let todayCell = s.orderedCells.first(where: { $0.dateKey == s.today.dateKey }) {
-            return todayCell
-        }
-        return s.orderedCells.last ?? HeatmapDayCell(
-            dateKey: s.today.dateKey,
-            date: Date(),
-            typedChars: s.today.typedChars,
-            aiCompletedChars: s.today.aiCompletedChars,
-            aiCompletionAccepts: s.today.aiCompletionAccepts,
-            filesCreated: s.today.filesCreated,
-            documentsSaved: s.today.documentsSaved,
-            aiRequests: s.today.aiRequests,
-            inputTokens: s.today.inputTokens,
-            outputTokens: s.today.outputTokens,
-            localHits: s.today.localHits,
-            level: 0,
-            isFuture: false
-        )
-    }
-    
-    
-    // MARK: Header (Centered Identity + Left Back Pill)
-    
-    private var header: some View {
-        
-        let profile = self.profileManager.activeProfile
-        
-        return ZStack(alignment: .topLeading) {
-            VStack(spacing: self.compact ? 6 : 8) {
-                UserAvatarCircleView(profile: profile, size: self.compact ? 42 : 52)
-                    .padding(3)
-                    .background(
-                        Circle()
-                            .fill(self.palette.card)
-                            .shadow(color: self.palette.cardShadow, radius: 10, y: 4)
-                    )
-                    .overlay(
-                        Circle()
-                            .strokeBorder(self.palette.hairline, lineWidth: 1)
-                    )
-                
-                Text(profile.displayName)
-                    .font(.system(size: self.compact ? 16 : 18, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                
-                Text(Self.todayTitle())
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            
-            if let onDismiss = self.onDismiss {
-                BackPillButton(palette: self.palette, action: onDismiss)
-                    .help("返回编辑器 (Esc)")
-            }
-        }
-    }
-    
-    
-    // MARK: KPI Bento Row
-    
-    private func kpiRow(_ s: DashboardSnapshot) -> some View {
-        
-        let today = s.today
-        let produced = today.typedChars + today.aiCompletedChars
-        let aiShare = produced > 0 ? Int((Double(today.aiCompletedChars) * 100 / Double(produced)).rounded()) : 0
-        
-        let typedBadge: (String, Color, Color) = {
-            guard s.typedBaseline7 > 0 else { return ("刚刚开始", .secondary, self.palette.neutralPillBg) }
-            let pct = Int((Double(today.typedChars - s.typedBaseline7) * 100 / Double(s.typedBaseline7)).rounded())
-            if pct > 0 {
-                return ("+\(pct)%", self.palette.emerald, self.palette.neutralPillBg)
-            }
-            return ("\(pct)%", .secondary, self.palette.neutralPillBg)
-        }()
-        
-        let completionBadge: (String, Color, Color) = today.aiCompletionAccepts > 0
-            ? ("采纳 \(today.aiCompletionAccepts) 次 · \(aiShare)%", .primary, self.palette.neutralPillBg)
-            : ("暂无采纳", .secondary, self.palette.neutralPillBg)
-        
-        let consumptionBadge: (String, Color, Color) = today.aiRequests > 0
-            ? ("\(today.aiRequests) 次调用", .primary, self.palette.neutralPillBg)
-            : ("暂无调用", .secondary, self.palette.neutralPillBg)
-        
-        let typedSpark = s.days7.map { Double($0.typed) }
-        let aiSpark = s.days7.map { Double($0.ai) }
-        let tokenSpark = s.days7.map { Double($0.input + $0.output) }
-        
-        return HStack(alignment: .top, spacing: self.gap) {
-            KPICard(
-                title: "今日手写",
-                value: Self.int(today.typedChars),
-                unit: "字",
-                badgeText: typedBadge.0,
-                badgeTextColor: typedBadge.1,
-                badgeBackground: typedBadge.2,
-                sparkValues: typedSpark,
-                sparkTint: .ink,
-                isExpanded: self.expandedKPI == .typed,
-                compact: self.compact,
-                padding: self.cardPadding,
-                cornerRadius: self.cornerRadius,
-                palette: self.palette
-            ) { self.toggle(.typed) }
-            
-            KPICard(
-                title: "AI 帮写",
-                value: Self.int(today.aiCompletedChars),
-                unit: "字",
-                badgeText: completionBadge.0,
-                badgeTextColor: completionBadge.1,
-                badgeBackground: completionBadge.2,
-                sparkValues: aiSpark,
-                sparkTint: .sage,
-                isExpanded: self.expandedKPI == .completion,
-                compact: self.compact,
-                padding: self.cardPadding,
-                cornerRadius: self.cornerRadius,
-                palette: self.palette
-            ) { self.toggle(.completion) }
-            
-            KPICard(
-                title: "AI 用量",
-                value: AnalyticsManager.formatCompactTokenCount(today.totalTokens),
-                unit: "Tokens",
-                badgeText: consumptionBadge.0,
-                badgeTextColor: consumptionBadge.1,
-                badgeBackground: consumptionBadge.2,
-                sparkValues: tokenSpark,
-                sparkTint: .ink,
-                isExpanded: self.expandedKPI == .consumption,
-                compact: self.compact,
-                padding: self.cardPadding,
-                cornerRadius: self.cornerRadius,
-                palette: self.palette
-            ) { self.toggle(.consumption) }
-        }
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    
-    
-    private func toggle(_ kind: KPIKind) {
-        
-        withAnimation(DashMotion.spring) {
-            self.expandedKPI = (self.expandedKPI == kind) ? nil : kind
-        }
-    }
-    
-    
-    // MARK: Expanded KPI Detail Panels
+    // MARK: Compact 48pt Header
     
     @ViewBuilder
-    private func detailPanel(_ kind: KPIKind, _ s: DashboardSnapshot) -> some View {
+    private func headerBar(palette p: StudioPalette) -> some View {
+        let streak = self.analytics.currentWritingStreak
+        let availableYears = self.analytics.availableHeatmapYears()
         
-        VStack(alignment: .leading, spacing: 14) {
-            switch kind {
-                case .typed:
-                    TypedDetailPanel(days: s.days14, today: s.today, compact: self.compact, palette: self.palette) {
-                        withAnimation(DashMotion.standard) { self.expandedKPI = nil }
-                    }
-                case .completion:
-                    CompletionDetailPanel(days: s.days7, series7: s.series7, today: s.today, compact: self.compact, palette: self.palette) {
-                        withAnimation(DashMotion.standard) { self.expandedKPI = nil }
-                    }
-                case .consumption:
-                    ConsumptionDetailPanel(
-                        aiHeatmap: s.aiHeatmap12,
-                        slice: (self.aiRange == .today) ? s.aiToday : s.ai30,
-                        aiRange: self.$aiRange,
-                        compact: self.compact,
-                        palette: self.palette
-                    ) {
-                        withAnimation(DashMotion.standard) { self.expandedKPI = nil }
-                    }
-            }
-        }
-        .modifier(DashCard(palette: self.palette, padding: self.cardPadding, cornerRadius: self.cornerRadius))
-    }
-    
-    
-    // MARK: Asymmetric Left Twin Row (Balance Gauge + Clickable Documents)
-    
-    private func twinBentoRow(_ story: DailyHumanStory) -> some View {
-        
-        let entries = self.documentEntries(for: story)
-        let primaryShare = story.totalChars > 0 ? Double(story.handTypedChars) / Double(story.totalChars) : 0
-        let handPercent = story.totalChars > 0 ? Int((primaryShare * 100).rounded()) : 0
-        let aiPercent = story.totalChars > 0 ? max(0, 100 - handPercent) : 0
-        
-        return Group {
-            if self.compact {
-                HStack(alignment: .top, spacing: self.gap) {
-                    self.dayBalanceCard(story, primaryShare: primaryShare, handPercent: handPercent, aiPercent: aiPercent)
-                        .frame(width: 210)
-                    
-                    self.dayDocumentsCard(entries)
-                        .frame(maxWidth: .infinity)
-                }
-                .fixedSize(horizontal: false, vertical: true)
-            } else {
-                HStack(alignment: .top, spacing: self.gap) {
-                    self.dayBalanceCard(story, primaryShare: primaryShare, handPercent: handPercent, aiPercent: aiPercent)
-                        .frame(width: self.canvasWidth >= 980 ? 228 : 204)
-                    
-                    self.dayDocumentsCard(entries)
-                        .frame(maxWidth: .infinity)
-                }
-                .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-    
-    
-    private func dayBalanceCard(
-        _ story: DailyHumanStory,
-        primaryShare: Double,
-        handPercent: Int,
-        aiPercent: Int
-    ) -> some View {
-        
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Text("写作构成")
-                    .font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Text(story.totalChars > 0 ? "人机协作" : "留白")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2.5)
-                    .background(self.palette.neutralPillBg, in: Capsule())
-            }
-            
-            DotArcGauge(
-                primaryShare: primaryShare,
-                totalLabel: Self.int(story.totalChars),
-                subtitle: story.totalChars > 0 ? "当天总产出" : "未落笔",
-                palette: self.palette
-            )
-            .frame(height: 106)
-            .frame(maxWidth: .infinity)
-            
-            Spacer(minLength: 0)
-            
+        HStack(spacing: 12) {
             HStack(spacing: 8) {
-                HStack(spacing: 4) {
-                    Circle().fill(self.palette.pine).frame(width: 6, height: 6)
-                    Text("手写 \(handPercent)%")
-                }
-                Spacer(minLength: 4)
-                HStack(spacing: 4) {
-                    Circle().fill(self.palette.mint).frame(width: 6, height: 6)
-                    Text("AI \(aiPercent)%")
-                }
-            }
-            .font(.system(size: 11, weight: .medium))
-            .monospacedDigit()
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(self.palette.hairline, lineWidth: 0.75)
-            )
-        }
-        .modifier(DashCard(palette: self.palette, padding: self.cardPadding, cornerRadius: self.cornerRadius))
-    }
-    
-    
-    private func dayDocumentsCard(_ entries: [DocumentEntry]) -> some View {
-        
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 6) {
-                Text("这天动过的文档")
-                    .font(.system(size: 13, weight: .semibold))
-                Spacer()
-                if !entries.isEmpty {
-                    Text("点击跳转")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.tertiary)
-                    Text("\(entries.count) 篇")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2.5)
-                        .background(self.palette.neutralPillBg, in: Capsule())
-                }
-            }
-            
-            if entries.isEmpty {
-                VStack(spacing: 6) {
-                    Image(systemName: "leaf")
-                        .font(.system(size: 15))
-                        .foregroundStyle(.secondary)
-                    Text("这天没有留下文档改动记录")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 132)
-                .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(self.palette.hairline, lineWidth: 0.75)
-                )
-            } else {
-                VStack(spacing: 6) {
-                    ForEach(entries.prefix(self.compact ? 3 : 4)) { entry in
-                        TransactionDocRow(entry: entry, palette: self.palette) {
-                            self.openDocumentEntry(entry)
-                        }
-                    }
-                }
-            }
-            
-            Spacer(minLength: 0)
-        }
-        .modifier(DashCard(palette: self.palette, padding: self.cardPadding, cornerRadius: self.cornerRadius))
-    }
-    
-    
-    // MARK: Asymmetric Right Editorial Daily Story Pillar
-    
-    private func editorialStoryPillar(
-        _ story: DailyHumanStory,
-        snapshot s: DashboardSnapshot,
-        isSidePillar: Bool
-    ) -> some View {
-        
-        let cells = s.orderedCells
-        let index = cells.firstIndex(where: { $0.dateKey == story.dateKey })
-        let canStepBack = (index ?? 0) > 0
-        let canStepForward = index.map { $0 < cells.count - 1 } ?? false
-        let isToday = (story.dateKey == s.today.dateKey)
-        let docTotal = story.documents.count + story.weeklyReports.count
-        
-        return VStack(alignment: .leading, spacing: 14) {
-            // Top bar: date + mood badge + day steppers
-            HStack(alignment: .center, spacing: 6) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(story.dateBadge)
-                        .font(.system(size: self.compact ? 13.5 : 14.5, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    
-                    HStack(spacing: 6) {
-                        Text(story.moodTag)
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(self.palette.emerald)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(self.palette.positivePillBg, in: Capsule())
-                        
-                        if !isToday {
-                            Button {
-                                withAnimation(DashMotion.spring) {
-                                    self.selectedYear = Calendar.current.component(.year, from: Date())
-                                    self.selectedDateKey = s.today.dateKey
-                                }
-                            } label: {
-                                Text("回到今天")
-                                    .font(.system(size: 10.5, weight: .medium))
-                                    .foregroundStyle(self.palette.pine)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 2)
-                                    .background(self.palette.inset, in: Capsule())
-                            }
-                            .buttonStyle(PressStyle())
-                            .pointerStyle(.link)
-                        }
-                    }
-                }
+                Text("创作案头")
+                    .font(.system(size: 16, weight: .semibold, design: .serif))
+                    .foregroundStyle(p.ink)
                 
-                Spacer(minLength: 4)
+                Text("·")
+                    .foregroundStyle(p.tertiaryInk)
                 
-                HStack(spacing: 4) {
-                    StepCircleButton(systemImage: "chevron.left", isEnabled: canStepBack, palette: self.palette) {
-                        if let index, cells.indices.contains(index - 1) {
-                            withAnimation(DashMotion.spring) {
-                                self.selectedDateKey = cells[index - 1].dateKey
-                            }
-                        }
-                    }
-                    .help("前一天")
-                    
-                    StepCircleButton(systemImage: "chevron.right", isEnabled: canStepForward, palette: self.palette) {
-                        if let index, cells.indices.contains(index + 1) {
-                            withAnimation(DashMotion.spring) {
-                                self.selectedDateKey = cells[index + 1].dateKey
-                            }
-                        }
-                    }
-                    .help("后一天")
-                }
-            }
-            
-            Rectangle()
-                .fill(self.palette.hairline)
-                .frame(height: 1)
-            
-            // Editorial spine headline
-            HStack(alignment: .top, spacing: 10) {
-                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                    .fill(self.palette.emerald)
-                    .frame(width: 3)
-                
-                Text(story.headline)
-                    .font(.system(size: self.compact ? 14 : 15.5, weight: .medium))
-                    .foregroundStyle(.primary)
-                    .lineSpacing(4.5)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            
-            if !story.highlights.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(story.highlights.enumerated()), id: \.offset) { _, point in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Circle()
-                                .fill(self.palette.mint)
-                                .frame(width: 5, height: 5)
-                                .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 4 }
-                            Text(point)
-                                .font(.system(size: 12.5))
-                                .foregroundStyle(.secondary)
-                                .lineSpacing(2)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-            }
-            
-            if isSidePillar {
-                Spacer(minLength: 10)
-            }
-            
-            // Bottom-anchored Plane-2 recessed Day Footprints well
-            VStack(alignment: .leading, spacing: 9) {
-                DotCompositionBar(
-                    primaryRatio: story.totalChars > 0 ? Double(story.handTypedChars) / Double(story.totalChars) : 0,
-                    secondaryRatio: story.totalChars > 0 ? Double(story.aiChars) / Double(story.totalChars) : 0,
-                    palette: self.palette
-                )
-                
-                LazyVGrid(
-                    columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
-                    spacing: 8
-                ) {
-                    MiniStatTile(label: "手写字数", value: "\(Self.int(story.handTypedChars)) 字", palette: self.palette)
-                    MiniStatTile(label: "AI 帮补", value: "\(Self.int(story.aiChars)) 字", palette: self.palette)
-                    MiniStatTile(label: "保存打磨", value: "\(story.savedCount) 次", palette: self.palette)
-                    MiniStatTile(label: "涉及文档", value: "\(docTotal) 篇", palette: self.palette)
-                }
-            }
-        }
-        .frame(maxHeight: isSidePillar ? .infinity : nil, alignment: .topLeading)
-        .modifier(DashCard(palette: self.palette, padding: self.cardPadding, cornerRadius: self.cornerRadius))
-        .id(story.dateKey)
-        .transition(.opacity)
-    }
-    
-    
-    private struct DocumentEntry: Identifiable {
-        
-        enum Payload {
-            case document(StoredDocumentRecord)
-            case weeklyReport(StoredWeeklyReport)
-        }
-        
-        let id: String
-        let title: String
-        let subtitle: String
-        let countLabel: String
-        let symbolName: String
-        let payload: Payload
-    }
-    
-    
-    private func openDocumentEntry(_ entry: DocumentEntry) {
-        
-        switch entry.payload {
-            case .document(let record):
-                if let onOpenDocument = self.onOpenDocument {
-                    onOpenDocument(record)
-                } else {
-                    AnalyticsDashboardWindowController.shared.openDocument(record)
-                }
-            case .weeklyReport(let report):
-                if let onOpenWeeklyReport = self.onOpenWeeklyReport {
-                    onOpenWeeklyReport(report)
-                } else {
-                    AnalyticsDashboardWindowController.shared.openWeeklyReport(report)
-                }
-        }
-    }
-    
-    
-    private func documentEntries(for story: DailyHumanStory) -> [DocumentEntry] {
-        
-        var items: [DocumentEntry] = []
-        for doc in story.documents {
-            let isCreatedSameDay = doc.createdAt.map { AnalyticsManager.dateKey(for: $0) == story.dateKey } ?? false
-            let subtitle = isCreatedSameDay ? "这天新建" : "改过内容"
-            let chars = doc.content.count
-            let countLabel = chars >= 1000 ? String(format: "%.1fk 字", Double(chars) / 1000.0) : "\(chars) 字"
-            items.append(DocumentEntry(
-                id: "doc:\(doc.id)",
-                title: doc.title,
-                subtitle: subtitle,
-                countLabel: countLabel,
-                symbolName: isCreatedSameDay ? "doc.badge.plus" : "doc.text",
-                payload: .document(doc)
-            ))
-        }
-        for report in story.weeklyReports {
-            let chars = report.content.count
-            let countLabel = chars >= 1000 ? String(format: "%.1fk 字", Double(chars) / 1000.0) : "\(chars) 字"
-            items.append(DocumentEntry(
-                id: "rep:\(report.id)",
-                title: report.title,
-                subtitle: "周报记录",
-                countLabel: countLabel,
-                symbolName: "calendar",
-                payload: .weeklyReport(report)
-            ))
-        }
-        return items
-    }
-    
-    
-    private struct TransactionDocRow: View {
-        
-        let entry: DocumentEntry
-        let palette: DashPalette
-        let onOpen: () -> Void
-        @State private var isHovered = false
-        
-        var body: some View {
-            Button(action: self.onOpen) {
-                HStack(spacing: 10) {
-                    Image(systemName: self.entry.symbolName)
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(self.isHovered ? self.palette.pine : .secondary)
-                        .frame(width: 28, height: 28)
-                        .background(self.palette.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(self.palette.hairline, lineWidth: 0.75)
-                        )
-                    
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(self.entry.title)
-                            .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(self.entry.subtitle)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    Spacer(minLength: 6)
-                    
-                    HStack(spacing: 4) {
-                        Text(self.entry.countLabel)
-                            .font(.system(size: 11, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(self.isHovered ? .primary : .secondary)
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(self.isHovered ? self.palette.pine : .secondary)
-                            .opacity(self.isHovered ? 0.9 : 0.35)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(self.isHovered ? self.palette.insetHover : self.palette.inset)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .strokeBorder(self.isHovered ? self.palette.hairlineStrong : self.palette.hairline, lineWidth: 0.75)
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(PressStyle())
-            .pointerStyle(.link)
-            .onHover { hovering in
-                withAnimation(DashMotion.quick) { self.isHovered = hovering }
-            }
-        }
-    }
-    
-    
-    // MARK: Formatting
-    
-    fileprivate static func int(_ value: Int) -> String {
-        
-        value.formatted(.number.grouping(.automatic))
-    }
-    
-    
-    private static func todayTitle() -> String {
-        
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M 月 d 日 · EEEE"
-        return formatter.string(from: Date())
-    }
-}
-
-
-// MARK: - Bento Card & Controls
-
-private struct DashCard: ViewModifier {
-    
-    var palette: DashPalette
-    var padding: CGFloat
-    var cornerRadius: CGFloat = 20
-    var isHighlighted = false
-    var isHovered = false
-    
-    
-    func body(content: Content) -> some View {
-        
-        content
-            .padding(self.padding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background {
-                RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
-                    .fill(self.palette.card)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [self.palette.topSpecular, .clear],
-                                    startPoint: .top,
-                                    endPoint: .center
-                                )
-                            )
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
-                            .fill(self.palette.emerald.opacity(self.isHovered ? 0.025 : 0))
-                    )
-                    .shadow(color: self.palette.cardShadow, radius: self.isHovered ? 18 : 14, y: self.isHovered ? 7 : 5)
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
-                    .strokeBorder(self.isHighlighted ? self.palette.hairlineStrong : self.palette.hairline, lineWidth: self.isHighlighted ? 1.25 : 1)
-            )
-    }
-}
-
-
-/// Top-left ergonomic back pill button.
-private struct BackPillButton: View {
-    
-    let palette: DashPalette
-    let action: () -> Void
-    @State private var isHovered = false
-    
-    
-    var body: some View {
-        
-        Button(action: self.action) {
-            HStack(spacing: 5) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 11, weight: .semibold))
-                    .offset(x: self.isHovered ? -2 : 0)
-                Text("返回")
+                Text(self.userManager.activeProfile.displayName)
                     .font(.system(size: 12.5, weight: .medium))
-            }
-            .foregroundStyle(self.isHovered ? self.palette.pine : .secondary)
-            .padding(.horizontal, 12)
-            .frame(height: 30)
-            .background(
-                Capsule()
-                    .fill(self.palette.card)
-                    .shadow(color: self.palette.cardShadow, radius: 8, y: 3)
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(self.palette.hairline, lineWidth: 1)
-            )
-            .contentShape(Capsule())
-        }
-        .buttonStyle(PressStyle())
-        .pointerStyle(.link)
-        .onHover { hovering in
-            withAnimation(DashMotion.quick) { self.isHovered = hovering }
-        }
-    }
-}
-
-
-private enum SparkTint {
-    
-    case ink
-    case sage
-}
-
-
-/// Bento KPI card: title + delta badge + ↗ action circle + hero value + 7-day pixel-matrix sparkbar.
-private struct KPICard: View {
-    
-    let title: String
-    let value: String
-    let unit: String
-    let badgeText: String
-    let badgeTextColor: Color
-    let badgeBackground: Color
-    let sparkValues: [Double]
-    let sparkTint: SparkTint
-    let isExpanded: Bool
-    let compact: Bool
-    let padding: CGFloat
-    let cornerRadius: CGFloat
-    let palette: DashPalette
-    let action: () -> Void
-    
-    @State private var isHovered = false
-    
-    
-    var body: some View {
-        
-        Button(action: self.action) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .center, spacing: 6) {
-                    Text(self.title)
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    
-                    Text(self.badgeText)
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(self.badgeTextColor)
+                    .foregroundStyle(p.secondaryInk)
+                
+                if streak > 0 {
+                    Text("连续 \(streak) 天")
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(p.cinnabar)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
-                        .background(self.badgeBackground, in: Capsule())
-                        .lineLimit(1)
-                    
-                    Spacer(minLength: 4)
-                    
-                    Circle()
-                        .fill(self.isExpanded ? self.palette.pine : (self.isHovered ? self.palette.insetHover : self.palette.inset))
-                        .frame(width: 24, height: 24)
-                        .overlay(
-                            Image(systemName: self.isExpanded ? "chevron.up" : "arrow.up.right")
+                        .background(
+                            Capsule()
+                                .fill(p.cinnabar.opacity(self.colorScheme == .dark ? 0.14 : 0.09))
+                        )
+                }
+            }
+            
+            Spacer(minLength: 8)
+            
+            HStack(spacing: 8) {
+                if self.selectedLens != nil {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            self.selectedLens = nil
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
                                 .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(self.isExpanded ? Color(nsColor: .windowBackgroundColor) : .secondary)
+                            Text("返回年鉴")
+                                .font(.system(size: 11.5, weight: .medium))
+                        }
+                        .foregroundStyle(p.cinnabar)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(p.cinnabar.opacity(self.colorScheme == .dark ? 0.14 : 0.08))
                         )
-                }
-                
-                HStack(alignment: .lastTextBaseline, spacing: 8) {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(self.value)
-                            .font(.system(size: self.compact ? 23 : 27, weight: .bold))
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Text(self.unit)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
                     }
-                    
-                    Spacer(minLength: 4)
-                    
-                    PixelSparkMatrix(
-                        values: self.sparkValues,
-                        tint: self.sparkTint,
-                        palette: self.palette
-                    )
-                    .frame(width: self.compact ? 48 : 58, height: 26)
-                }
-            }
-            .modifier(DashCard(
-                palette: self.palette,
-                padding: self.padding,
-                cornerRadius: self.cornerRadius,
-                isHighlighted: self.isExpanded,
-                isHovered: self.isHovered
-            ))
-            .contentShape(RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous))
-        }
-        .buttonStyle(PressStyle())
-        .pointerStyle(.link)
-        .onHover { hovering in
-            withAnimation(DashMotion.quick) {
-                self.isHovered = hovering
-            }
-        }
-    }
-}
-
-
-/// Mini 7-column × 5-row stacked pixel-matrix sparkbar matching the reference image's top strip.
-private struct PixelSparkMatrix: View {
-    
-    let values: [Double]
-    let tint: SparkTint
-    let palette: DashPalette
-    
-    
-    var body: some View {
-        
-        Canvas { context, size in
-            let cols = max(1, self.values.count)
-            let rows = 5
-            let gap: CGFloat = 2
-            let cellW = (size.width - gap * CGFloat(cols - 1)) / CGFloat(cols)
-            let cellH = (size.height - gap * CGFloat(rows - 1)) / CGFloat(rows)
-            let cellSide = max(2.5, min(cellW, cellH))
-            let radius = max(1, cellSide * 0.28)
-            
-            let peak = max(1.0, self.values.max() ?? 1.0)
-            let totalWidth = CGFloat(cols) * cellSide + CGFloat(cols - 1) * gap
-            let startX = size.width - totalWidth
-            let startY = size.height - (CGFloat(rows) * cellSide + CGFloat(rows - 1) * gap)
-            
-            for col in 0..<cols {
-                let val = self.values[col]
-                let activeRows = val > 0 ? max(1, Int((val / peak * Double(rows)).rounded(.up))) : 0
-                for row in 0..<rows {
-                    let yIndex = rows - 1 - row
-                    let rect = CGRect(
-                        x: startX + CGFloat(col) * (cellSide + gap),
-                        y: startY + CGFloat(yIndex) * (cellSide + gap),
-                        width: cellSide,
-                        height: cellSide
-                    )
-                    let color: Color
-                    if row < activeRows {
-                        let frac = Double(row + 1) / Double(rows)
-                        switch self.tint {
-                            case .ink:
-                                color = (col == cols - 1) ? self.palette.pine : (frac >= 0.65 ? self.palette.pine.opacity(0.75) : self.palette.mint)
-                            case .sage:
-                                color = self.palette.matrixStep(fraction: frac, isPeak: row == rows - 1 && val >= peak * 0.92)
-                        }
-                    } else {
-                        color = self.palette.emptyDot.opacity(0.75)
-                    }
-                    context.fill(Path(roundedRect: rect, cornerRadius: radius, style: .continuous), with: .color(color))
-                }
-            }
-        }
-    }
-}
-
-
-// MARK: - Detail Panels (Reference-Inspired Visualizations)
-
-/// Panel 1: Stacked pixel-matrix 14-day overview ("Monthly Overview" style) + 2x2 Bento stat tiles.
-private struct TypedDetailPanel: View {
-    
-    let days: [DashboardSnapshot.ChartDay]
-    let today: DailyWritingStats
-    let compact: Bool
-    let palette: DashPalette
-    let onClose: () -> Void
-    
-    @State private var hoveredIndex: Int?
-    
-    
-    var body: some View {
-        
-        let total = self.days.reduce(0) { $0 + $1.typed }
-        let activeDays = self.days.filter { $0.typed > 0 }.count
-        let average = activeDays > 0 ? total / activeDays : 0
-        let peak = self.days.map(\.typed).max() ?? 0
-        
-        let statusNote: String = {
-            if let idx = self.hoveredIndex, self.days.indices.contains(idx) {
-                let d = self.days[idx]
-                return "\(Self.shortDate(d.date)) · 手写 \(AnalyticsDashboardView.int(d.typed)) 字"
-            }
-            return "近 14 天合计 \(AnalyticsDashboardView.int(total)) 字 · 活跃日均 \(AnalyticsDashboardView.int(average)) 字"
-        }()
-        
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 10) {
-                Text("近两周手写节奏")
-                    .font(.system(size: 14, weight: .semibold))
-                Text(statusNote)
-                    .font(.system(size: 12))
-                    .monospacedDigit()
-                    .foregroundStyle(self.hoveredIndex == nil ? .secondary : .primary)
-                    .lineLimit(1)
-                
-                Spacer(minLength: 8)
-                
-                if !self.compact {
-                    HStack(spacing: 10) {
-                        HStack(spacing: 4) {
-                            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                .fill(self.palette.pine)
-                                .frame(width: 7, height: 7)
-                            Text("跃升")
-                        }
-                        HStack(spacing: 4) {
-                            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                .strokeBorder(self.palette.emerald, lineWidth: 1.4)
-                                .frame(width: 7, height: 7)
-                            Text("回落")
-                        }
-                    }
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .padding(.trailing, 4)
-                }
-                
-                IconButton(systemImage: "xmark", palette: self.palette, isClose: true, action: self.onClose)
-            }
-            
-            HStack(alignment: .top, spacing: self.compact ? 14 : 22) {
-                PixelMatrixBarChart(
-                    days: self.days,
-                    palette: self.palette,
-                    hoveredIndex: self.$hoveredIndex
-                )
-                .frame(height: 156)
-                .frame(maxWidth: .infinity)
-                
-                LazyVGrid(
-                    columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
-                    spacing: 8
-                ) {
-                    MiniStatTile(label: "今天新建", value: "\(self.today.filesCreated) 篇", palette: self.palette)
-                    MiniStatTile(label: "今日保存", value: "\(self.today.documentsSaved) 次", palette: self.palette)
-                    MiniStatTile(label: "两周峰值", value: "\(AnalyticsDashboardView.int(peak)) 字", palette: self.palette)
-                    MiniStatTile(label: "动笔天数", value: "\(activeDays) / 14", palette: self.palette)
-                }
-                .frame(width: self.compact ? 196 : 236)
-            }
-        }
-    }
-    
-    
-    private static func shortDate(_ date: Date) -> String {
-        
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M 月 d 日"
-        return formatter.string(from: date)
-    }
-}
-
-
-/// Canvas-drawn stacked micro-square bar matrix with jump/drop caps and column hover.
-private struct PixelMatrixBarChart: View {
-    
-    let days: [DashboardSnapshot.ChartDay]
-    let palette: DashPalette
-    @Binding var hoveredIndex: Int?
-    
-    
-    var body: some View {
-        
-        GeometryReader { proxy in
-            let cols = max(1, self.days.count)
-            let rows = 9
-            let labelHeight: CGFloat = 18
-            let gap: CGFloat = 4
-            let gridHeight = max(40, proxy.size.height - labelHeight)
-            let rawCellW = (proxy.size.width - gap * CGFloat(cols - 1)) / CGFloat(cols)
-            let rawCellH = (gridHeight - gap * CGFloat(rows - 1)) / CGFloat(rows)
-            let cellSize = max(5, min(14, min(rawCellW, rawCellH)))
-            let colStep = (proxy.size.width - cellSize) / CGFloat(max(1, cols - 1))
-            let topOffset = max(0, gridHeight - (CGFloat(rows) * cellSize + CGFloat(rows - 1) * gap))
-            
-            Canvas { context, size in
-                let maxVal = max(120, self.days.map(\.typed).max() ?? 120)
-                let radius = max(1.5, cellSize * 0.24)
-                
-                for col in 0..<cols {
-                    let day = self.days[col]
-                    let x = CGFloat(col) * colStep
-                    let isHovered = (self.hoveredIndex == col)
-                    let prevVal = col > 0 ? self.days[col - 1].typed : day.typed
-                    let isJump = col > 0 && day.typed > max(120, Int(Double(prevVal) * 1.25))
-                    let isDrop = col > 0 && prevVal > 0 && day.typed < Int(Double(prevVal) * 0.72)
-                    
-                    let filledCount = day.typed > 0
-                        ? max(1, min(rows, Int((Double(day.typed) / Double(maxVal) * Double(rows)).rounded(.up))))
-                        : 0
-                    
-                    for row in 0..<rows {
-                        let yIndex = rows - 1 - row
-                        let y = topOffset + CGFloat(yIndex) * (cellSize + gap)
-                        let rect = CGRect(x: x, y: y, width: cellSize, height: cellSize)
-                        let path = Path(roundedRect: rect, cornerRadius: radius, style: .continuous)
-                        
-                        if row < filledCount {
-                            let isTop = (row == filledCount - 1)
-                            if isTop && isDrop && filledCount >= 2 {
-                                context.fill(path, with: .color(self.palette.card))
-                                context.stroke(
-                                    Path(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), cornerRadius: max(1, radius - 0.5), style: .continuous),
-                                    with: .color(self.palette.emerald),
-                                    lineWidth: 1.5
-                                )
-                            } else {
-                                let frac = Double(row + 1) / Double(rows)
-                                let color = self.palette.matrixStep(fraction: frac, isPeak: isTop && (isJump || day.isToday))
-                                context.fill(path, with: .color(isHovered ? self.palette.pine : color))
+                    .buttonStyle(.plain)
+                } else if availableYears.count > 1 {
+                    Menu {
+                        ForEach(availableYears, id: \.self) { year in
+                            Button("\(String(year)) 年") {
+                                self.selectedYear = year
+                                let hm = self.analytics.yearlyHeatmap(year: year, trimFutureWeeks: false)
+                                if let latest = hm.weeks.flatMap(\.self).last(where: { !$0.isOutOfYear && !$0.isFuture && $0.typedChars > 0 }) {
+                                    self.selectedDateKey = latest.dateKey
+                                }
                             }
-                        } else {
-                            context.fill(path, with: .color(self.palette.emptyDot.opacity(isHovered ? 0.95 : 0.65)))
                         }
-                    }
-                    
-                    if col % 2 == 1 || col == cols - 1 {
-                        let cal = Calendar.current
-                        let labelStr = day.isToday ? "今" : "\(cal.component(.day, from: day.date))"
-                        let text = context.resolve(
-                            Text(labelStr)
-                                .font(.system(size: 9.5, weight: day.isToday || isHovered ? .semibold : .regular))
-                                .foregroundStyle(day.isToday || isHovered ? self.palette.pine : .secondary)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("\(String(self.selectedYear)) 年")
+                                .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                        .foregroundStyle(p.secondaryInk)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(p.subtle)
                         )
-                        context.draw(text, at: CGPoint(x: x + cellSize / 2, y: size.height - 2), anchor: .bottom)
                     }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                } else {
+                    Text("\(String(self.selectedYear)) 年")
+                        .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                        .foregroundStyle(p.tertiaryInk)
                 }
-            }
-            .onContinuousHover { phase in
-                switch phase {
-                    case .active(let pt):
-                        let idx = Int((pt.x / max(1, colStep)).rounded())
-                        if self.days.indices.contains(idx) {
-                            self.hoveredIndex = idx
-                        }
-                    case .ended:
-                        self.hoveredIndex = nil
+                
+                Button {
+                    self.analytics.flushPendingStats()
+                    self.analytics.reloadFromDatabase()
+                    withAnimation(.easeInOut(duration: 0.35)) {
+                        self.refreshSpin.toggle()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(p.secondaryInk)
+                        .rotationEffect(.degrees(self.refreshSpin ? 360 : 0))
+                        .frame(width: 26, height: 26)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(p.subtle))
+                }
+                .buttonStyle(.plain)
+                .help("刷新本地统计数据")
+                
+                if let onDismiss = self.onDismiss {
+                    Button {
+                        onDismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(p.secondaryInk)
+                            .frame(width: 26, height: 26)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(p.subtle))
+                    }
+                    .buttonStyle(.plain)
+                    .help("关闭创作案头 (Esc)")
                 }
             }
         }
     }
-}
-
-
-/// Panel 2: Semi-circular concentric dot-arch gauge ("Spending" style) + 7-day proportional bubbles.
-private struct CompletionDetailPanel: View {
-    
-    let days: [DashboardSnapshot.ChartDay]
-    let series7: [DailyWritingStats]
-    let today: DailyWritingStats
-    let compact: Bool
-    let palette: DashPalette
-    let onClose: () -> Void
     
     
-    var body: some View {
+    // MARK: Unified Top Lens Strip (42% / 29% / 29%)
+    
+    @ViewBuilder
+    private func unifiedLensStrip(palette p: StudioPalette) -> some View {
+        let today = self.analytics.todayStats
+        let todayAI = self.analytics.aiUsageTotals(forTodayOnly: true)
+        let percentile = self.analytics.typedPercentile(for: today.typedChars)
+        let pages = Double(today.typedChars) / 500.0
         
-        let accepts7 = self.series7.reduce(0) { $0 + $1.aiCompletionAccepts }
-        let ai7 = self.series7.reduce(0) { $0 + $1.aiCompletedChars }
-        let typed7 = self.series7.reduce(0) { $0 + $1.typedChars }
-        let local7 = self.series7.reduce(0) { $0 + $1.localHits }
-        let produced7 = ai7 + typed7
-        let handPct = produced7 > 0 ? Int((Double(typed7) * 100 / Double(produced7)).rounded()) : 0
-        let aiPct = produced7 > 0 ? (100 - handPct) : 0
-        let perAccept = accepts7 > 0 ? ai7 / accepts7 : 0
+        let totalCompleted = today.aiCompletedChars
+        let localRatio: Int = totalCompleted > 0
+            ? Int((Double(min(today.localAcceptedChars, totalCompleted)) * 100.0 / Double(totalCompleted)).rounded())
+            : (today.localHits > 0 ? 100 : 0)
         
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("近 7 天人机协作比例")
-                    .font(.system(size: 14, weight: .semibold))
-                Text("共采纳 \(accepts7) 次 · 帮写 \(AnalyticsDashboardView.int(ai7)) 字")
-                    .font(.system(size: 12))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                Spacer()
-                IconButton(systemImage: "xmark", palette: self.palette, isClose: true, action: self.onClose)
-            }
+        let typedSubtitle = today.typedChars > 0
+            ? String(format: "约 %.1f 页纸书 · 超过 %d%% 创作日", pages, percentile)
+            : "500 字折合 1 页纸书 · 准备起笔"
+        
+        let completionSubtitle = today.aiCompletionAccepts > 0
+            ? "省敲 \(today.aiCompletionAccepts) 次 · 本地占 \(localRatio)%"
+            : "尚未接纳续写 · 支持 Tab 一键采纳"
+        
+        let consumptionSubtitle = "\(todayAI.requests) 次调用 · 本地拦截 \(today.localHits) 次"
+        
+        GeometryReader { geo in
+            let w = geo.size.width
+            let w1 = w * 0.42
+            let w2 = w * 0.29
+            let w3 = max(0, w - w1 - w2 - 2)
             
-            HStack(alignment: .center, spacing: self.compact ? 16 : 28) {
-                VStack(spacing: 10) {
-                    DotArcGauge(
-                        primaryShare: produced7 > 0 ? Double(typed7) / Double(produced7) : 0,
-                        totalLabel: AnalyticsDashboardView.int(produced7),
-                        subtitle: "近 7 天共写出",
-                        palette: self.palette
-                    )
-                    .frame(width: self.compact ? 186 : 214, height: self.compact ? 104 : 118)
-                    
-                    HStack(spacing: 16) {
-                        HStack(spacing: 5) {
-                            Circle().fill(self.palette.pine).frame(width: 7, height: 7)
-                            Text("\(handPct)% 自己敲的")
-                        }
-                        HStack(spacing: 5) {
-                            Circle().fill(self.palette.mint).frame(width: 7, height: 7)
-                            Text("\(aiPct)% AI 帮补")
-                        }
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 4)
-                .frame(maxWidth: .infinity)
+            HStack(spacing: 0) {
+                self.lensCell(
+                    lens: .typed,
+                    value: today.typedChars.formatted(),
+                    unit: "字",
+                    subtitle: typedSubtitle,
+                    width: w1,
+                    isHero: true,
+                    palette: p
+                )
                 
-                VStack(alignment: .leading, spacing: 12) {
-                    ProportionalBubbleStrip(
-                        days: self.days,
-                        palette: self.palette
-                    )
-                    .frame(height: 62)
-                    
-                    LazyVGrid(
-                        columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
-                        spacing: 8
-                    ) {
-                        MiniStatTile(label: "今天采纳", value: "\(self.today.aiCompletionAccepts) 次", palette: self.palette)
-                        MiniStatTile(label: "平均每次", value: "\(perAccept) 字", palette: self.palette)
-                        MiniStatTile(label: "本地秒出", value: "\(local7) 次", palette: self.palette)
-                        MiniStatTile(label: "7 日手写", value: "\(AnalyticsDashboardView.int(typed7)) 字", palette: self.palette)
-                    }
-                }
-                .frame(width: self.compact ? 250 : 320)
+                Rectangle().fill(p.hairline).frame(width: 1)
+                
+                self.lensCell(
+                    lens: .completion,
+                    value: today.aiCompletedChars.formatted(),
+                    unit: "字",
+                    subtitle: completionSubtitle,
+                    width: w2,
+                    isHero: false,
+                    palette: p
+                )
+                
+                Rectangle().fill(p.hairline).frame(width: 1)
+                
+                self.lensCell(
+                    lens: .consumption,
+                    value: AnalyticsManager.formatCompactTokenCount(todayAI.totalTokens),
+                    unit: "Tokens",
+                    subtitle: consumptionSubtitle,
+                    width: w3,
+                    isHero: false,
+                    palette: p
+                )
             }
         }
+        .frame(height: 86)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(p.card)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(p.hairline, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
-}
-
-
-/// Semi-circular concentric dot-matrix gauge inspired by the "Spending" card in the reference image.
-private struct DotArcGauge: View {
-    
-    let primaryShare: Double
-    let totalLabel: String
-    let subtitle: String
-    let palette: DashPalette
     
     
-    var body: some View {
+    @ViewBuilder
+    private func lensCell(
+        lens: StudioLens,
+        value: String,
+        unit: String,
+        subtitle: String,
+        width: CGFloat,
+        isHero: Bool,
+        palette p: StudioPalette
+    ) -> some View {
+        let isActive = (self.selectedLens == lens)
         
-        ZStack(alignment: .bottom) {
-            Canvas { context, size in
-                let center = CGPoint(x: size.width / 2, y: size.height - 6)
-                let ringCount = 4
-                let maxRadius = min(size.width * 0.45, size.height - 14)
-                let ringSpacing: CGFloat = max(8, maxRadius * 0.145)
-                let dotCounts = [19, 16, 13, 10]
-                let dotRadius: CGFloat = 3.1
-                
-                for ring in 0..<ringCount {
-                    let count = dotCounts[ring]
-                    let radius = maxRadius - CGFloat(ring) * ringSpacing
-                    for i in 0..<count {
-                        let frac = Double(i) / Double(max(1, count - 1))
-                        let angle = Double.pi * (1.0 - frac) // π (left) -> 0 (right)
-                        let pt = CGPoint(
-                            x: center.x + CGFloat(cos(angle)) * radius,
-                            y: center.y - CGFloat(sin(angle)) * radius
-                        )
-                        let rect = CGRect(x: pt.x - dotRadius, y: pt.y - dotRadius, width: dotRadius * 2, height: dotRadius * 2)
-                        let color: Color
-                        if self.primaryShare <= 0 {
-                            color = self.palette.emptyDot
-                        } else if frac <= self.primaryShare {
-                            color = self.palette.pine
-                        } else {
-                            color = self.palette.mint
-                        }
-                        context.fill(Path(ellipseIn: rect), with: .color(color))
-                    }
-                }
+        Button {
+            withAnimation(.easeOut(duration: 0.18)) {
+                self.selectedLens = (self.selectedLens == lens) ? nil : lens
             }
-            
-            VStack(spacing: 1) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(self.palette.emerald)
-                Text(self.subtitle)
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text(self.totalLabel)
-                    .font(.system(size: 16, weight: .bold))
-                    .monospacedDigit()
-            }
-            .padding(.bottom, 2)
-        }
-    }
-}
-
-
-private struct ProportionalBubbleStrip: View {
-    
-    let days: [DashboardSnapshot.ChartDay]
-    let palette: DashPalette
-    
-    
-    var body: some View {
-        
-        let maxAI = max(20, self.days.map(\.ai).max() ?? 20)
-        
-        HStack(alignment: .bottom, spacing: 0) {
-            ForEach(self.days) { day in
-                let ratio = Double(day.ai) / Double(maxAI)
-                let diameter = day.ai > 0 ? max(10, min(32, 10 + 22 * sqrt(ratio))) : 6
-                let cal = Calendar.current
-                
-                VStack(spacing: 4) {
+        } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 5) {
+                    Image(systemName: lens.symbolName)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(isActive ? p.cinnabar : p.secondaryInk)
+                    Text(lens.title)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(isActive ? p.ink : p.secondaryInk)
                     Spacer(minLength: 0)
-                    Circle()
-                        .fill(day.ai == 0 ? self.palette.emptyDot : (day.isToday ? self.palette.pine : self.palette.mint))
-                        .frame(width: diameter, height: diameter)
-                    Text(day.isToday ? "今" : "\(cal.component(.day, from: day.date))")
-                        .font(.system(size: 9.5, weight: day.isToday ? .semibold : .regular))
-                        .foregroundStyle(day.isToday ? self.palette.pine : .secondary)
+                    if isActive {
+                        Circle()
+                            .fill(p.cinnabar)
+                            .frame(width: 5, height: 5)
+                    }
+                }
+                
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text(value)
+                        .font(.system(size: isHero ? 26 : 22, weight: .semibold, design: .serif).monospacedDigit())
+                        .foregroundStyle(p.ink)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                    Text(unit)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(p.tertiaryInk)
+                }
+                
+                Text(subtitle)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(p.tertiaryInk)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(width: max(0, width), height: 86, alignment: .leading)
+            .background(isActive ? p.cinnabar.opacity(self.colorScheme == .dark ? 0.08 : 0.04) : Color.clear)
+            .overlay(alignment: .bottom) {
+                if isActive {
+                    Rectangle()
+                        .fill(p.cinnabar)
+                        .frame(height: 2.5)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+    
+    
+    // MARK: Single-Focus Stage
+    
+    @ViewBuilder
+    private func stageContent(palette p: StudioPalette) -> some View {
+        switch self.selectedLens {
+            case nil:
+                self.overviewStage(palette: p)
+            case .typed:
+                self.typedStage(palette: p)
+            case .completion:
+                self.completionStage(palette: p)
+            case .consumption:
+                self.consumptionStage(palette: p)
+        }
+    }
+    
+    
+    // MARK: Stage 0 — 年鉴总览
+    
+    @ViewBuilder
+    private func overviewStage(palette p: StudioPalette) -> some View {
+        let heatmap = self.analytics.yearlyHeatmap(year: self.selectedYear, trimFutureWeeks: false)
+        let longest = self.analytics.longestWritingStreak(year: self.selectedYear)
+        let allCells = heatmap.weeks.flatMap(\.self).filter { !$0.isOutOfYear }
+        let selectedCell = allCells.first(where: { $0.dateKey == self.selectedDateKey })
+            ?? allCells.last(where: { !$0.isFuture && $0.typedChars > 0 })
+            ?? allCells.last(where: { !$0.isFuture })
+            ?? HeatmapDayCell(dateKey: self.selectedDateKey, date: Date(), typedChars: 0, aiCompletedChars: 0, filesCreated: 0, aiRequests: 0, level: 0, isFuture: false)
+        let detail = self.analytics.dayDetail(for: selectedCell)
+        let story = self.analytics.humanDayStory(for: selectedCell)
+        
+        VStack(alignment: .leading, spacing: 14) {
+            // 1. Full-width 53-week Pine-Soot Ink Heatmap
+            StudioCard(palette: p) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("\(String(self.selectedYear)) 创作年鉴")
+                            .font(.system(size: 13.5, weight: .semibold, design: .serif))
+                            .foregroundStyle(p.ink)
+                        
+                        Spacer(minLength: 8)
+                        
+                        Text("活跃 \(heatmap.activeDays) 天 · \(heatmap.totalTypedChars.formatted()) 字 · 最长连续 \(longest) 天")
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundStyle(p.secondaryInk)
+                    }
+                    
+                    PineSootHeatmapGrid(
+                        heatmap: heatmap,
+                        selectedDateKey: selectedCell.dateKey,
+                        palette: p,
+                        onSelectCell: { cell in
+                            self.selectedDateKey = cell.dateKey
+                        }
+                    )
+                    
+                    HStack(spacing: 6) {
+                        Text("点击任意方格回溯当日文稿与记录")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(p.tertiaryInk)
+                        Spacer()
+                        HStack(spacing: 3) {
+                            Text("浅")
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(p.tertiaryInk)
+                            ForEach(0..<5, id: \.self) { level in
+                                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                    .fill(p.heatmapColor(for: level))
+                                    .frame(width: 9, height: 9)
+                            }
+                            Text("深")
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(p.tertiaryInk)
+                        }
+                    }
+                }
+            }
+            
+            // 2. 58 / 42 Asymmetric Document Directory & Daily Ledger
+            HStack(alignment: .top, spacing: 14) {
+                self.dayDocumentsDirectoryCard(story: story, detail: detail, palette: p)
+                    .frame(maxWidth: .infinity)
+                
+                self.dayFactualLedgerCard(story: story, detail: detail, palette: p)
+                    .frame(width: self.isEmbeddedInSettings ? 276 : 336)
+            }
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func dayDocumentsDirectoryCard(
+        story: DailyHumanStory,
+        detail: HeatmapDayDetail,
+        palette p: StudioPalette
+    ) -> some View {
+        StudioCard(palette: p) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("\(story.dateBadge) · 落笔目录")
+                        .font(.system(size: 13, weight: .semibold, design: .serif))
+                        .foregroundStyle(p.ink)
+                    Spacer()
+                    let count = detail.documents.count + detail.weeklyReports.count
+                    if count > 0 {
+                        Text("\(count) 份存档")
+                            .font(.system(size: 10.5).monospacedDigit())
+                            .foregroundStyle(p.tertiaryInk)
+                    }
+                }
+                
+                if detail.documents.isEmpty && detail.weeklyReports.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("当日暂无本地存档记录")
+                            .font(.system(size: 12))
+                            .foregroundStyle(p.secondaryInk)
+                        Text("你在编辑器中保存或编辑的文档会按日期沉淀在这里，方便随时回翻。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(p.tertiaryInk)
+                    }
+                    .padding(.vertical, 18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    VStack(spacing: 6) {
+                        ForEach(detail.documents) { doc in
+                            self.documentDirectoryRow(doc: doc, palette: p)
+                        }
+                        ForEach(detail.weeklyReports) { report in
+                            self.weeklyReportDirectoryRow(report: report, palette: p)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func documentDirectoryRow(doc: StoredDocumentRecord, palette p: StudioPalette) -> some View {
+        let preview = AnalyticsManager.documentFirstLinePreview(doc.content)
+        
+        Button {
+            self.openDocHandler(doc)
+        } label: {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(p.cinnabar)
+                    .frame(width: 18, height: 18)
+                    .padding(.top, 1)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(doc.title.isEmpty ? "未命名文稿" : doc.title)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(p.ink)
+                            .lineLimit(1)
+                        
+                        if !doc.syntax.isEmpty && doc.syntax != "Plain Text" {
+                            Text(doc.syntax)
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(p.secondaryInk)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(RoundedRectangle(cornerRadius: 4).fill(p.subtle))
+                        }
+                    }
+                    
+                    if !preview.isEmpty {
+                        Text(preview)
+                            .font(.system(size: 11))
+                            .foregroundStyle(p.tertiaryInk)
+                            .lineLimit(1)
+                    }
+                }
+                
+                Spacer(minLength: 6)
+                
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(doc.content.count.formatted()) 字")
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(p.secondaryInk)
+                    Text(Self.shortTimeString(doc.updatedAt))
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(p.tertiaryInk)
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(p.subtle.opacity(0.65))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+    
+    
+    @ViewBuilder
+    private func weeklyReportDirectoryRow(report: StoredWeeklyReport, palette p: StudioPalette) -> some View {
+        Button {
+            self.openReportHandler(report)
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(p.pineGreen)
+                    .frame(width: 18)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(report.title)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(p.ink)
+                        .lineLimit(1)
+                    Text("周报归档 · \(report.periodLabel)")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(p.tertiaryInk)
+                }
+                
+                Spacer()
+                
+                Text("\(report.content.count.formatted()) 字")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(p.secondaryInk)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(p.subtle.opacity(0.65))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+    
+    
+    @ViewBuilder
+    private func dayFactualLedgerCard(
+        story: DailyHumanStory,
+        detail: HeatmapDayDetail,
+        palette p: StudioPalette
+    ) -> some View {
+        StudioCard(palette: p) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("当日笔录")
+                    .font(.system(size: 13, weight: .semibold, design: .serif))
+                    .foregroundStyle(p.ink)
+                
+                Text(story.headline)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(p.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                
+                if !story.highlights.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(story.highlights, id: \.self) { point in
+                            HStack(alignment: .top, spacing: 6) {
+                                Text("—")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(p.cinnabar)
+                                Text(point)
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(p.secondaryInk)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+                
+                Divider().overlay(p.hairline)
+                
+                VStack(spacing: 6) {
+                    self.ledgerKeyValueRow(label: "手写字数", value: "\(story.handTypedChars.formatted()) 字", palette: p)
+                    self.ledgerKeyValueRow(label: "Tab 补全", value: "\(story.aiChars.formatted()) 字", palette: p)
+                    self.ledgerKeyValueRow(label: "新建 / 保存", value: "\(story.createdCount) 篇 / \(story.savedCount) 次", palette: p)
+                    if detail.averageLatencyMs > 0 {
+                        self.ledgerKeyValueRow(label: "AI 平均响应", value: "\(detail.averageLatencyMs) ms", palette: p)
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func ledgerKeyValueRow(label: String, value: String, palette p: StudioPalette) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(p.tertiaryInk)
+            Spacer()
+            Text(value)
+                .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                .foregroundStyle(p.ink)
+        }
+    }
+    
+    
+    // MARK: Stage 1 — .typed 手稿刻度 · 作品与心流档案
+    
+    @ViewBuilder
+    private func typedStage(palette p: StudioPalette) -> some View {
+        let series14 = self.analytics.dailySeries(days: 14)
+        let prior14 = series14.dropLast().filter { $0.typedChars > 0 }
+        let avg14 = prior14.isEmpty ? 0 : prior14.reduce(0) { $0 + $1.typedChars } / prior14.count
+        let todayChars = self.analytics.todayStats.typedChars
+        let record = self.analytics.personalRecordTypedChars()
+        let hourly = self.analytics.hourlyWritingPulse(for: self.analytics.todayStats.dateKey)
+        let weekdayPoints = self.analytics.weekdayActivityDistribution(days: 90)
+        
+        let todayKey = self.analytics.todayStats.dateKey
+        let todayDocs = CotLocalDatabase.shared.documents
+            .filter { doc in
+                !doc.id.hasPrefix("weekly:") && (
+                    AnalyticsManager.dateKey(for: doc.updatedAt) == todayKey ||
+                    doc.createdAt.map { AnalyticsManager.dateKey(for: $0) == todayKey } == true
+                )
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .prefix(6)
+        
+        VStack(alignment: .leading, spacing: 14) {
+            // 1. Manuscript Scale Ruler
+            StudioCard(palette: p) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("手稿字数标尺")
+                            .font(.system(size: 13.5, weight: .semibold, design: .serif))
+                        Spacer()
+                        HStack(spacing: 12) {
+                            Text("14 日均笔 \(avg14.formatted()) 字")
+                                .font(.system(size: 11).monospacedDigit())
+                                .foregroundStyle(p.secondaryInk)
+                            if let record {
+                                Text("历史单日峰值 \(record.chars.formatted()) 字 (\(record.dateKey.suffix(5)))")
+                                    .font(.system(size: 11).monospacedDigit())
+                                    .foregroundStyle(p.cinnabar)
+                            }
+                        }
+                    }
+                    
+                    ManuscriptScaleRuler(
+                        todayChars: todayChars,
+                        averageChars: avg14,
+                        recordChars: record?.chars ?? 0,
+                        palette: p
+                    )
+                    .frame(height: 68)
+                }
+            }
+            
+            // 2. Cadence Chart (14-Day vs 24-Hour Pulse)
+            StudioCard(palette: p) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text(self.cadenceMode == .fourteenDays ? "近 14 天产出节奏" : "今日 24 小时输入脉搏")
+                            .font(.system(size: 13, weight: .semibold, design: .serif))
+                        Spacer()
+                        Picker("", selection: self.$cadenceMode) {
+                            ForEach(CadenceMode.allCases) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 240)
+                    }
+                    
+                    if self.cadenceMode == .fourteenDays {
+                        FourteenDayTypedChart(series: series14, averageChars: avg14, palette: p)
+                            .frame(height: 150)
+                    } else {
+                        HourlyPulseChart(hourlyValues: hourly, palette: p)
+                            .frame(height: 150)
+                    }
+                }
+            }
+            
+            // 3. Weekday Rhythm + Today's Documents
+            HStack(alignment: .top, spacing: 14) {
+                StudioCard(palette: p) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("周内写作习惯（近 90 天均笔）")
+                            .font(.system(size: 13, weight: .semibold, design: .serif))
+                        
+                        let peakWeekday = weekdayPoints.max(by: { $0.averageChars < $1.averageChars })?.averageChars ?? 1
+                        let peakDenom = max(1, peakWeekday)
+                        
+                        VStack(spacing: 7) {
+                            ForEach(weekdayPoints) { point in
+                                HStack(spacing: 8) {
+                                    Text(point.label)
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(p.secondaryInk)
+                                        .frame(width: 28, alignment: .leading)
+                                    
+                                    GeometryReader { geo in
+                                        let ratio = min(1.0, Double(point.averageChars) / Double(peakDenom))
+                                        ZStack(alignment: .leading) {
+                                            RoundedRectangle(cornerRadius: 3)
+                                                .fill(p.subtle)
+                                            RoundedRectangle(cornerRadius: 3)
+                                                .fill(point.averageChars == peakWeekday && peakWeekday > 0 ? p.cinnabar : p.pineGreen.opacity(0.75))
+                                                .frame(width: max(point.averageChars > 0 ? 4 : 0, geo.size.width * ratio))
+                                        }
+                                    }
+                                    .frame(height: 8)
+                                    
+                                    Text("\(point.averageChars.formatted())")
+                                        .font(.system(size: 10.5).monospacedDigit())
+                                        .foregroundStyle(p.tertiaryInk)
+                                        .frame(width: 46, alignment: .trailing)
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                
+                StudioCard(palette: p) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("今日动笔篇目")
+                                .font(.system(size: 13, weight: .semibold, design: .serif))
+                            Spacer()
+                            Text("\(todayDocs.count) 篇")
+                                .font(.system(size: 10.5).monospacedDigit())
+                                .foregroundStyle(p.tertiaryInk)
+                        }
+                        
+                        if todayDocs.isEmpty {
+                            Text("今日还没有保存到本地库的文稿。")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(p.tertiaryInk)
+                                .padding(.vertical, 24)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            VStack(spacing: 6) {
+                                ForEach(Array(todayDocs)) { doc in
+                                    self.documentDirectoryRow(doc: doc, palette: p)
+                                }
+                            }
+                        }
+                    }
                 }
                 .frame(maxWidth: .infinity)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
-}
-
-
-/// Panel 3: 12-week miniature AI consumption heatmap + Input/Output token composition + ranked Model/Feature breakdowns.
-private struct ConsumptionDetailPanel: View {
-    
-    let aiHeatmap: RollingHeatmapData
-    let slice: DashboardSnapshot.AISlice
-    @Binding var aiRange: AnalyticsDashboardView.AIRange
-    let compact: Bool
-    let palette: DashPalette
-    let onClose: () -> Void
-    
-    @State private var hoveredDay: HeatmapDayCell?
     
     
-    var body: some View {
-        
-        let totals = self.slice.totals
-        let totalTokens = max(1, totals.inputTokens + totals.outputTokens)
-        let inputShare = Double(totals.inputTokens) / Double(totalTokens)
-        let outputShare = Double(totals.outputTokens) / Double(totalTokens)
-        
-        let meta: String = {
-            if let cell = self.hoveredDay {
-                let dayTokens = cell.inputTokens + cell.outputTokens
-                if dayTokens > 0 || cell.aiRequests > 0 {
-                    return "\(Self.shortDate(cell.date)) · \(cell.aiRequests) 次调用 · \(AnalyticsManager.formatCompactTokenCount(dayTokens)) Tokens（输入 \(AnalyticsManager.formatCompactTokenCount(cell.inputTokens)) / 输出 \(AnalyticsManager.formatCompactTokenCount(cell.outputTokens))）"
-                }
-                return "\(Self.shortDate(cell.date)) · 这天没有调用 AI"
-            }
-            return "近 12 周 \(self.aiHeatmap.activeDays) 天用过 AI · 当前范围 \(totals.requests) 次 · 共 \(AnalyticsManager.formatCompactTokenCount(totals.inputTokens + totals.outputTokens)) Tokens"
-        }()
+    // MARK: Stage 2 — .completion Tab 减负银行 · 双引擎直觉图谱
+    
+    @ViewBuilder
+    private func completionStage(palette p: StudioPalette) -> some View {
+        let today = self.analytics.todayStats
+        let localChars = min(today.localAcceptedChars, today.aiCompletedChars)
+        let cloudChars = max(0, today.aiCompletedChars - localChars)
+        let localSharePct: Int = today.aiCompletedChars > 0
+            ? Int((Double(localChars) * 100.0 / Double(today.aiCompletedChars)).rounded())
+            : (today.localHits > 0 ? 100 : 0)
+        let series14 = self.analytics.dailySeries(days: 14)
+        let habitSnapshot = UserHabitPredictor.shared.habitSnapshot(limit: 6)
         
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 10) {
-                Text("AI 消耗热力图")
-                    .font(.system(size: 14, weight: .semibold))
-                Text(meta)
-                    .font(.system(size: 12))
-                    .monospacedDigit()
-                    .foregroundStyle(self.hoveredDay == nil ? .secondary : .primary)
-                    .lineLimit(1)
-                
-                Spacer(minLength: 8)
-                
-                Picker("", selection: self.$aiRange) {
-                    ForEach(AnalyticsDashboardView.AIRange.allCases) { Text($0.rawValue).tag($0) }
+            // 1. Tactile Tab Keycap + 4 Concrete Telemetry Figures
+            StudioCard(palette: p) {
+                HStack(spacing: 16) {
+                    VStack(spacing: 4) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.right.to.line")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Tab")
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        }
+                        .foregroundStyle(p.ink)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(p.paper)
+                                .shadow(color: .black.opacity(self.colorScheme == .dark ? 0.35 : 0.08), radius: 1, y: 1.5)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .strokeBorder(p.hairline, lineWidth: 1.2)
+                        )
+                        
+                        Text("减负键")
+                            .font(.system(size: 10))
+                            .foregroundStyle(p.tertiaryInk)
+                    }
+                    
+                    Divider().frame(height: 52).overlay(p.hairline)
+                    
+                    HStack(spacing: 0) {
+                        self.telemetryColumn(
+                            label: "少敲字符",
+                            value: "\(today.aiCompletedChars.formatted())",
+                            note: "本地 \(localChars) / 云端 \(cloudChars)",
+                            palette: p
+                        )
+                        self.telemetryColumn(
+                            label: "接纳次数",
+                            value: "\(today.aiCompletionAccepts)",
+                            note: "次即时落笔",
+                            palette: p
+                        )
+                        self.telemetryColumn(
+                            label: "单次最长",
+                            value: "\(today.maxSingleAcceptChars)",
+                            note: "字一整句补全",
+                            palette: p
+                        )
+                        self.telemetryColumn(
+                            label: "本地发动机",
+                            value: "\(localSharePct)%",
+                            note: "\(today.localHits) 次零消耗命中",
+                            palette: p
+                        )
+                    }
+                }
+            }
+            
+            // 2. 14-Day Dual-Engine Mirrored / Stacked Relay Chart
+            StudioCard(palette: p) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("14 天双引擎补全接力（本地直觉 vs 云端 FIM）")
+                            .font(.system(size: 13, weight: .semibold, design: .serif))
+                        Spacer()
+                        HStack(spacing: 12) {
+                            HStack(spacing: 4) {
+                                RoundedRectangle(cornerRadius: 2).fill(p.pineGreen).frame(width: 8, height: 8)
+                                Text("本地零耗时").font(.system(size: 10.5)).foregroundStyle(p.secondaryInk)
+                            }
+                            HStack(spacing: 4) {
+                                RoundedRectangle(cornerRadius: 2).fill(p.cinnabar).frame(width: 8, height: 8)
+                                Text("云端续写").font(.system(size: 10.5)).foregroundStyle(p.secondaryInk)
+                            }
+                        }
+                    }
+                    
+                    DualEngineCompletionChart(series: series14, palette: p)
+                        .frame(height: 150)
+                }
+            }
+            
+            // 3. Learned User Habit Chains
+            StudioCard(palette: p) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("已养成的写作直觉图谱")
+                            .font(.system(size: 13, weight: .semibold, design: .serif))
+                        Spacer()
+                        Text("衔接规则 \(habitSnapshot.transitionCount) 条 · 记忆词汇 \(habitSnapshot.vocabularyCount) 个")
+                            .font(.system(size: 10.5).monospacedDigit())
+                            .foregroundStyle(p.secondaryInk)
+                    }
+                    
+                    if habitSnapshot.topChains.isEmpty {
+                        Text("随着日常写作和 Tab 采纳，系统会在本地静默记住你的常用前文与接续习惯（全程不上云）。")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(p.tertiaryInk)
+                            .padding(.vertical, 8)
+                    } else {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 8)], spacing: 8) {
+                            ForEach(habitSnapshot.topChains) { chain in
+                                HStack(spacing: 6) {
+                                    Text(chain.trigger)
+                                        .font(.system(size: 11.5, weight: .medium))
+                                        .foregroundStyle(p.secondaryInk)
+                                        .lineLimit(1)
+                                    Image(systemName: "arrow.right")
+                                        .font(.system(size: 9.5, weight: .semibold))
+                                        .foregroundStyle(p.cinnabar)
+                                    Text(chain.candidate)
+                                        .font(.system(size: 11.5, weight: .semibold))
+                                        .foregroundStyle(p.ink)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    Text("×\(chain.count)")
+                                        .font(.system(size: 10).monospacedDigit())
+                                        .foregroundStyle(p.pineGreen)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(p.subtle.opacity(0.75))
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func telemetryColumn(label: String, value: String, note: String, palette p: StudioPalette) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 10.5))
+                .foregroundStyle(p.tertiaryInk)
+            Text(value)
+                .font(.system(size: 20, weight: .semibold, design: .serif).monospacedDigit())
+                .foregroundStyle(p.ink)
+            Text(note)
+                .font(.system(size: 10))
+                .foregroundStyle(p.secondaryInk)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    
+    
+    // MARK: Stage 3 — .consumption 精密算力小票 · 省流护盾与效能雷达
+    
+    @ViewBuilder
+    private func consumptionStage(palette p: StudioPalette) -> some View {
+        let isToday = (self.consumptionScope == .today)
+        let saved = self.analytics.estimatedTokensSavedByLocalHits(forTodayOnly: isToday, days: 30)
+        let routing = self.predictor.resolveModelRouting(baseConfig: AIConfiguration.current)
+        let dailyCap = AINextTokenPredictor.dailyCap
+        let sentToday = self.predictor.todayStats.aiRequests
+        let features = isToday
+            ? self.analytics.todayFeatureDistribution()
+            : self.analytics.featureDistribution(days: 30)
+        let models = self.analytics.modelPerformanceSummaries(forTodayOnly: isToday, days: 30)
+        let events = self.analytics.recentAIEventsSlice(forTodayOnly: isToday, days: 30, limit: 8)
+        
+        VStack(alignment: .leading, spacing: 14) {
+            // Scope Switcher Bar
+            HStack {
+                Text("算力明细与省流路由")
+                    .font(.system(size: 13.5, weight: .semibold, design: .serif))
+                Spacer()
+                Picker("", selection: self.$consumptionScope) {
+                    ForEach(ConsumptionScope.allCases) { scope in
+                        Text(scope.label).tag(scope)
+                    }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .controlSize(.small)
-                .frame(width: 124)
-                
-                IconButton(systemImage: "xmark", palette: self.palette, isClose: true, action: self.onClose)
+                .frame(width: 150)
             }
             
-            if self.compact {
-                VStack(alignment: .leading, spacing: 12) {
-                    self.heatmapColumn(totals: totals, inputShare: inputShare, outputShare: outputShare)
-                    self.rankingsRow
-                }
-            } else {
-                HStack(alignment: .top, spacing: 16) {
-                    self.heatmapColumn(totals: totals, inputShare: inputShare, outputShare: outputShare)
-                        .frame(width: 310)
-                    
-                    self.rankingsRow
-                        .frame(maxWidth: .infinity)
-                }
-            }
-        }
-    }
-    
-    
-    private func heatmapColumn(
-        totals: AIUsageTotals,
-        inputShare: Double,
-        outputShare: Double
-    ) -> some View {
-        
-        VStack(alignment: .leading, spacing: 10) {
-            MiniAIHeatmap(heatmap: self.aiHeatmap, palette: self.palette, hovered: self.$hoveredDay)
-            
-            VStack(alignment: .leading, spacing: 6) {
-                DotCompositionBar(
-                    primaryRatio: totals.requests > 0 ? inputShare : 0,
-                    secondaryRatio: totals.requests > 0 ? outputShare : 0,
-                    palette: self.palette
-                )
-                
-                HStack(spacing: 10) {
-                    HStack(spacing: 4) {
-                        Circle().fill(self.palette.pine).frame(width: 6, height: 6)
-                        Text("输入 \(AnalyticsManager.formatCompactTokenCount(totals.inputTokens))")
+            // 1. Zero-Waste Local Shield + Daily Cap
+            StudioCard(palette: p) {
+                HStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "shield.lefthalf.filled")
+                                .font(.system(size: 12))
+                                .foregroundStyle(p.pineGreen)
+                            Text("本地零消耗护盾")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("\(saved.localHits)")
+                                .font(.system(size: 22, weight: .semibold, design: .serif).monospacedDigit())
+                            Text("次拦截 · 约省下 \(AnalyticsManager.formatCompactTokenCount(saved.estimatedTokens)) Tokens")
+                                .font(.system(size: 11).monospacedDigit())
+                                .foregroundStyle(p.secondaryInk)
+                        }
                     }
-                    HStack(spacing: 4) {
-                        Circle().fill(self.palette.mint).frame(width: 6, height: 6)
-                        Text("输出 \(AnalyticsManager.formatCompactTokenCount(totals.outputTokens))")
-                    }
-                    Spacer()
-                    if self.slice.latencyMs > 0 {
-                        Text("\(self.slice.latencyMs)ms")
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .font(.system(size: 11))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(self.palette.hairline, lineWidth: 0.75)
-            )
-        }
-    }
-    
-    
-    private var rankingsRow: some View {
-        
-        HStack(alignment: .top, spacing: 12) {
-            BentoRankList(
-                title: "主力模型",
-                rows: self.slice.models.prefix(4).map {
-                    (
-                        id: $0.model,
-                        name: $0.model,
-                        share: $0.share,
-                        value: AnalyticsManager.formatCompactTokenCount($0.totalTokens),
-                        symbol: "cpu"
-                    )
-                },
-                palette: self.palette
-            )
-            
-            BentoRankList(
-                title: "常用功能",
-                rows: self.slice.features.prefix(4).map {
-                    (
-                        id: $0.feature,
-                        name: $0.displayName,
-                        share: $0.share,
-                        value: "\($0.requests) 次",
-                        symbol: "wand.and.stars"
-                    )
-                },
-                palette: self.palette
-            )
-        }
-    }
-    
-    
-    private static func shortDate(_ date: Date) -> String {
-        
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M 月 d 日"
-        return formatter.string(from: date)
-    }
-}
-
-
-/// Compact 12-week Monday-first AI token consumption heatmap embedded in ConsumptionDetailPanel.
-private struct MiniAIHeatmap: View {
-    
-    let heatmap: RollingHeatmapData
-    let palette: DashPalette
-    @Binding var hovered: HeatmapDayCell?
-    
-    
-    var body: some View {
-        
-        VStack(alignment: .leading, spacing: 8) {
-            ActivityHeatmapCanvas(
-                weeks: self.heatmap.weeks,
-                monthLabels: self.heatmap.monthLabels.map { .init(weekIndex: $0.weekIndex, text: $0.label) },
-                selectedKey: nil,
-                hideOutOfYear: false,
-                maxCellSize: 16,
-                minGap: 3,
-                palette: self.palette,
-                hovered: self.$hovered,
-                onSelect: nil
-            )
-            
-            HStack(spacing: 4) {
-                Text("近 12 周调用热力")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                Spacer()
-                Text("少")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
-                ForEach(0..<5, id: \.self) { level in
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(self.palette.heat(level))
-                        .frame(width: 9, height: 9)
-                }
-                Text("多")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(10)
-        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(self.palette.hairline, lineWidth: 0.75)
-        )
-    }
-}
-
-
-private struct BentoRankList: View {
-    
-    typealias Row = (id: String, name: String, share: Double, value: String, symbol: String)
-    
-    let title: String
-    let rows: [Row]
-    let palette: DashPalette
-    
-    
-    var body: some View {
-        
-        VStack(alignment: .leading, spacing: 6) {
-            Text(self.title)
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(.secondary)
-            
-            if self.rows.isEmpty {
-                Text("暂无记录")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            } else {
-                ForEach(self.rows, id: \.id) { row in
-                    let activeDots = max(1, min(8, Int((row.share * 8).rounded())))
-                    HStack(spacing: 8) {
-                        Image(systemName: row.symbol)
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 24, height: 24)
-                            .background(self.palette.card, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        
-                        Text(row.name)
-                            .font(.system(size: 12, weight: .medium))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        
-                        Spacer(minLength: 4)
-                        
-                        HStack(spacing: 2) {
-                            ForEach(0..<8, id: \.self) { idx in
-                                let dotColor: Color = idx < activeDots
-                                    ? (idx >= 5 ? self.palette.pine : self.palette.mint)
-                                    : self.palette.emptyDot
-                                Circle()
-                                    .fill(dotColor)
-                                    .frame(width: 4, height: 4)
-                            }
+                    
+                    Divider().frame(height: 44).overlay(p.hairline)
+                    
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("续写当前路由")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(p.secondaryInk)
+                            Spacer()
+                            Text(routing.effectiveModel.isEmpty ? "未配置模型" : routing.effectiveModel)
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(routing.isAutoRouted ? p.pineGreen : p.ink)
                         }
                         
-                        Text(row.value)
-                            .font(.system(size: 11.5, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .frame(width: 48, alignment: .trailing)
+                        let capDenom = max(1, dailyCap)
+                        let capRatio = dailyCap > 0 ? min(1.0, Double(sentToday) / Double(capDenom)) : 0
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 3).fill(p.subtle)
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(capRatio >= 0.85 ? p.cinnabar : p.pineGreen)
+                                    .frame(width: geo.size.width * capRatio)
+                            }
+                        }
+                        .frame(height: 6)
+                        
+                        Text(dailyCap > 0 ? "今日智能续写配额 \(sentToday) / \(dailyCap) 次" : "今日已发送 \(sentToday) 次（无上限）")
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundStyle(p.tertiaryInk)
                     }
-                    .padding(.horizontal, 8)
-                    .frame(height: 34)
-                    .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-}
-
-
-private struct MiniStatTile: View {
-    
-    let label: String
-    let value: String
-    let palette: DashPalette
-    
-    
-    var body: some View {
-        
-        VStack(alignment: .leading, spacing: 3) {
-            Text(self.label)
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(self.value)
-                .font(.system(size: 14, weight: .semibold))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(self.palette.hairline, lineWidth: 0.75)
-        )
-    }
-}
-
-
-private struct DotCompositionBar: View {
-    
-    let primaryRatio: Double
-    let secondaryRatio: Double
-    let palette: DashPalette
-    
-    
-    var body: some View {
-        
-        GeometryReader { proxy in
-            let count = max(12, Int(proxy.size.width / 11))
-            let primaryCount = Int((self.primaryRatio * Double(count)).rounded())
-            let secondaryCount = min(count - primaryCount, max(0, Int((self.secondaryRatio * Double(count)).rounded())))
             
-            HStack(spacing: 4) {
-                ForEach(0..<count, id: \.self) { index in
-                    let color: Color = if index < primaryCount {
-                        self.palette.pine
-                    } else if index < primaryCount + secondaryCount {
-                        self.palette.mint
-                    } else {
-                        self.palette.emptyDot
+            // 2. Feature Breakdown + Model Performance Table
+            HStack(alignment: .top, spacing: 14) {
+                StudioCard(palette: p) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("各能力 Token 分布")
+                            .font(.system(size: 12.5, weight: .semibold, design: .serif))
+                        
+                        if features.isEmpty {
+                            Text("该时段暂无云端 AI 调用记录。")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(p.tertiaryInk)
+                                .padding(.vertical, 14)
+                        } else {
+                            VStack(spacing: 7) {
+                                ForEach(features.prefix(6)) { item in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack {
+                                            Text(item.displayName)
+                                                .font(.system(size: 11.5, weight: .medium))
+                                            Spacer()
+                                            Text("\(item.requests) 次 · \(AnalyticsManager.formatCompactTokenCount(item.totalTokens))")
+                                                .font(.system(size: 10.5).monospacedDigit())
+                                                .foregroundStyle(p.secondaryInk)
+                                        }
+                                        GeometryReader { geo in
+                                            ZStack(alignment: .leading) {
+                                                RoundedRectangle(cornerRadius: 2).fill(p.subtle)
+                                                RoundedRectangle(cornerRadius: 2)
+                                                    .fill(p.cinnabar.opacity(0.85))
+                                                    .frame(width: max(3, geo.size.width * min(1.0, item.share)))
+                                            }
+                                        }
+                                        .frame(height: 5)
+                                    }
+                                }
+                            }
+                        }
                     }
-                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                        .fill(color)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 7)
+                }
+                .frame(maxWidth: .infinity)
+                
+                StudioCard(palette: p) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("模型效能台账")
+                            .font(.system(size: 12.5, weight: .semibold, design: .serif))
+                        
+                        if models.isEmpty {
+                            Text("该时段暂无模型响应样本。")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(p.tertiaryInk)
+                                .padding(.vertical, 14)
+                        } else {
+                            VStack(spacing: 6) {
+                                ForEach(models.prefix(5)) { model in
+                                    HStack(spacing: 6) {
+                                        Text(model.model)
+                                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                        Spacer()
+                                        Text("\(model.requests)x")
+                                            .font(.system(size: 10.5).monospacedDigit())
+                                            .foregroundStyle(p.secondaryInk)
+                                        Text(model.averageLatencyMs > 0 ? "\(model.averageLatencyMs)ms" : "-")
+                                            .font(.system(size: 10.5).monospacedDigit())
+                                            .foregroundStyle(p.tertiaryInk)
+                                            .frame(width: 48, alignment: .trailing)
+                                        Text("\(Int((model.successRate * 100).rounded()))%")
+                                            .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                                            .foregroundStyle(model.successRate >= 0.9 ? p.pineGreen : p.cinnabar)
+                                            .frame(width: 34, alignment: .trailing)
+                                    }
+                                    .padding(.vertical, 2)
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+            
+            // 3. Recent Compute Receipt Tape
+            StudioCard(palette: p) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("最近算力小票")
+                            .font(.system(size: 12.5, weight: .semibold, design: .serif))
+                        Spacer()
+                        Text("按时间倒序保留最近 \(events.count) 笔")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(p.tertiaryInk)
+                    }
+                    
+                    if events.isEmpty {
+                        Text("尚未产生近期调用流水。")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(p.tertiaryInk)
+                            .padding(.vertical, 10)
+                    } else {
+                        VStack(spacing: 4) {
+                            ForEach(events) { event in
+                                HStack(spacing: 8) {
+                                    Circle()
+                                        .fill(event.success ? p.pineGreen : p.cinnabar)
+                                        .frame(width: 6, height: 6)
+                                    Text(Self.shortTimeString(event.timestamp))
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .foregroundStyle(p.tertiaryInk)
+                                    Text(AnalyticsManager.featureDisplayName(for: event.feature))
+                                        .font(.system(size: 11, weight: .medium))
+                                        .frame(width: 68, alignment: .leading)
+                                        .lineLimit(1)
+                                    Text(event.model)
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .foregroundStyle(p.secondaryInk)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Spacer()
+                                    Text("\(event.inputTokens)↑ / \(event.outputTokens)↓")
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .foregroundStyle(p.secondaryInk)
+                                    Text("\(event.latencyMs)ms")
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .foregroundStyle(p.tertiaryInk)
+                                        .frame(width: 48, alignment: .trailing)
+                                }
+                                .padding(.vertical, 3)
+                            }
+                        }
+                    }
                 }
             }
         }
-        .frame(height: 7)
+    }
+    
+    
+    private static func shortTimeString(_ date: Date) -> String {
+        
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f.string(from: date)
     }
 }
 
 
-// MARK: - Calendar-Year Heatmap & Shared Grid Canvas
+// MARK: - Editorial Card Shell
 
-/// Calendar-year Monday-first activity heatmap with year switcher (< YYYY >).
-private struct YearlyHeatmapCard: View {
+private struct StudioCard<Content: View>: View {
+    
+    let palette: StudioPalette
+    @ViewBuilder var content: () -> Content
+    
+    var body: some View {
+        self.content()
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(self.palette.card)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(self.palette.hairline, lineWidth: 1)
+            )
+    }
+}
+
+
+// MARK: - Pine-Soot Ink 53-Week Heatmap
+
+private struct PineSootHeatmapGrid: View {
     
     let heatmap: YearlyHeatmapData
-    let availableYears: [Int]
-    @Binding var selectedYear: Int
-    let selectedKey: String
-    let palette: DashPalette
-    let compact: Bool
-    let padding: CGFloat
-    let cornerRadius: CGFloat
-    let onSelect: (HeatmapDayCell) -> Void
+    let selectedDateKey: String
+    let palette: StudioPalette
+    let onSelectCell: (HeatmapDayCell) -> Void
     
-    @State private var hovered: HeatmapDayCell?
+    @State private var hoveredCell: HeatmapDayCell?
+    
+    private let cellSize: CGFloat = 11
+    private let cellGap: CGFloat = 3
+    private let leftAxisWidth: CGFloat = 20
+    private let topLabelHeight: CGFloat = 16
     
     
     var body: some View {
+        let weekCount = max(1, self.heatmap.weeks.count)
+        let gridWidth = self.leftAxisWidth + CGFloat(weekCount) * self.cellSize + CGFloat(max(0, weekCount - 1)) * self.cellGap
+        let gridHeight = self.topLabelHeight + 7 * self.cellSize + 6 * self.cellGap
         
-        let currentIndex = self.availableYears.firstIndex(of: self.selectedYear)
-        let canStepBack = currentIndex.map { $0 > 0 } ?? false
-        let canStepForward = currentIndex.map { $0 < self.availableYears.count - 1 } ?? false
-        
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 10) {
-                Text(self.statusLine)
-                    .font(.system(size: 12.5, weight: self.hovered == nil ? .regular : .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(self.hovered == nil ? .secondary : .primary)
-                    .lineLimit(1)
-                
-                Spacer(minLength: 8)
-                
-                HStack(spacing: 4) {
-                    StepCircleButton(systemImage: "chevron.left", isEnabled: canStepBack, palette: self.palette) {
-                        if let currentIndex, self.availableYears.indices.contains(currentIndex - 1) {
-                            withAnimation(DashMotion.spring) {
-                                self.selectedYear = self.availableYears[currentIndex - 1]
+        VStack(alignment: .leading, spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                ZStack(alignment: .topLeading) {
+                    Canvas { context, _ in
+                        // Month labels along top edge
+                        for label in self.heatmap.monthLabels {
+                            let x = self.leftAxisWidth + CGFloat(label.weekIndex) * (self.cellSize + self.cellGap)
+                            let text = Text("\(label.month)月")
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(self.palette.tertiaryInk)
+                            context.draw(text, at: CGPoint(x: x, y: 0), anchor: .topLeading)
+                        }
+                        
+                        // Weekday guides (Mon, Wed, Fri)
+                        let dayMarkers: [(Int, String)] = [(0, "一"), (2, "三"), (4, "五")]
+                        for (row, title) in dayMarkers {
+                            let y = self.topLabelHeight + CGFloat(row) * (self.cellSize + self.cellGap) + self.cellSize * 0.5
+                            let text = Text(title)
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(self.palette.tertiaryInk)
+                            context.draw(text, at: CGPoint(x: 0, y: y), anchor: .leading)
+                        }
+                        
+                        // Cells
+                        for (weekIdx, week) in self.heatmap.weeks.enumerated() {
+                            for (dayIdx, cell) in week.enumerated() where !cell.isOutOfYear {
+                                let rect = CGRect(
+                                    x: self.leftAxisWidth + CGFloat(weekIdx) * (self.cellSize + self.cellGap),
+                                    y: self.topLabelHeight + CGFloat(dayIdx) * (self.cellSize + self.cellGap),
+                                    width: self.cellSize,
+                                    height: self.cellSize
+                                )
+                                let path = Path(roundedRect: rect, cornerRadius: 2.2, style: .continuous)
+                                let fillColor: Color = cell.isFuture
+                                    ? self.palette.heatmapColor(for: 0).opacity(0.35)
+                                    : self.palette.heatmapColor(for: cell.level)
+                                context.fill(path, with: .color(fillColor))
+                                
+                                if cell.dateKey == self.selectedDateKey {
+                                    context.stroke(path, with: .color(self.palette.cinnabar), lineWidth: 1.5)
+                                } else if self.hoveredCell?.dateKey == cell.dateKey {
+                                    context.stroke(path, with: .color(self.palette.ink.opacity(0.65)), lineWidth: 1.0)
+                                }
                             }
                         }
                     }
-                    .help("上一年")
-                    
-                    Text("\(String(self.heatmap.year)) 年")
-                        .font(.system(size: 12, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(.primary)
-                        .frame(minWidth: 52)
-                    
-                    StepCircleButton(systemImage: "chevron.right", isEnabled: canStepForward, palette: self.palette) {
-                        if let currentIndex, self.availableYears.indices.contains(currentIndex + 1) {
-                            withAnimation(DashMotion.spring) {
-                                self.selectedYear = self.availableYears[currentIndex + 1]
-                            }
+                    .frame(width: gridWidth, height: gridHeight)
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                            case .active(let location):
+                                self.hoveredCell = self.cell(at: location)
+                            case .ended:
+                                self.hoveredCell = nil
                         }
                     }
-                    .help("下一年")
+                    .onTapGesture { location in
+                        if let tapped = self.cell(at: location), !tapped.isFuture {
+                            self.onSelectCell(tapped)
+                        }
+                    }
                 }
-                .padding(.horizontal, 4)
-                .padding(.vertical, 3)
-                .background(self.palette.inset, in: Capsule())
-                .overlay(
-                    Capsule()
-                        .strokeBorder(self.palette.hairline, lineWidth: 0.75)
-                )
             }
             
-            ActivityHeatmapCanvas(
-                weeks: self.heatmap.weeks,
-                monthLabels: self.heatmap.monthLabels.map { .init(weekIndex: $0.weekIndex, text: "\($0.month)月") },
-                selectedKey: self.selectedKey,
-                hideOutOfYear: true,
-                maxCellSize: self.compact ? 11.5 : 14,
-                minGap: self.compact ? 2 : 2.5,
-                palette: self.palette,
-                hovered: self.$hovered,
-                onSelect: self.onSelect
-            )
-            
-            HStack(spacing: 4) {
-                Text("点击格子切换右侧日报与当天文档")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                Spacer()
-                Text("少")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                ForEach(0..<5, id: \.self) { level in
-                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                        .fill(self.palette.heat(level))
-                        .frame(width: 10, height: 10)
+            if let hovered = self.hoveredCell {
+                HStack(spacing: 10) {
+                    Text(hovered.dateKey)
+                        .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                    Text("手写 \(hovered.typedChars.formatted()) 字")
+                        .font(.system(size: 10.5).monospacedDigit())
+                        .foregroundStyle(self.palette.secondaryInk)
+                    if hovered.aiCompletedChars > 0 {
+                        Text("补全 \(hovered.aiCompletedChars.formatted()) 字")
+                            .font(.system(size: 10.5).monospacedDigit())
+                            .foregroundStyle(self.palette.secondaryInk)
+                    }
+                    if hovered.filesCreated > 0 {
+                        Text("新建 \(hovered.filesCreated) 篇")
+                            .font(.system(size: 10.5).monospacedDigit())
+                            .foregroundStyle(self.palette.secondaryInk)
+                    }
                 }
-                Text("多")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                .transition(.opacity)
             }
         }
-        .modifier(DashCard(palette: self.palette, padding: self.padding, cornerRadius: self.cornerRadius))
     }
     
     
-    private var statusLine: String {
+    private func cell(at point: CGPoint) -> HeatmapDayCell? {
         
-        if let cell = self.hovered {
-            let total = cell.typedChars + cell.aiCompletedChars
-            if total > 0 {
-                return "\(Self.shortDate(cell.date)) · 共 \(AnalyticsDashboardView.int(total)) 字（手写 \(AnalyticsDashboardView.int(cell.typedChars)) + AI \(AnalyticsDashboardView.int(cell.aiCompletedChars))）"
-            }
-            return "\(Self.shortDate(cell.date)) · 静心留白的一天"
-        }
-        let charsText = self.heatmap.totalTypedChars >= 1000
-            ? String(format: "%.1fk", Double(self.heatmap.totalTypedChars) / 1000.0)
-            : AnalyticsDashboardView.int(self.heatmap.totalTypedChars)
-        return "\(self.heatmap.year) 年 · \(self.heatmap.activeDays) 天动过笔 · 累计手写 \(charsText) 字"
-    }
-    
-    
-    private static func shortDate(_ date: Date) -> String {
-        
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M 月 d 日 EEE"
-        return formatter.string(from: date)
-    }
-}
-
-
-/// Shared Monday-first Canvas heatmap renderer powering both YearlyHeatmapCard and MiniAIHeatmap.
-private struct ActivityHeatmapCanvas: View {
-    
-    struct MonthMarker {
-        let weekIndex: Int
-        let text: String
-    }
-    
-    let weeks: [[HeatmapDayCell]]
-    let monthLabels: [MonthMarker]
-    let selectedKey: String?
-    let hideOutOfYear: Bool
-    let maxCellSize: CGFloat
-    let minGap: CGFloat
-    let palette: DashPalette
-    @Binding var hovered: HeatmapDayCell?
-    let onSelect: ((HeatmapDayCell) -> Void)?
-    
-    @State private var width: CGFloat = 0
-    
-    
-    private struct Layout {
-        var gridX: CGFloat
-        var gridY: CGFloat
-        var cell: CGFloat
-        var gap: CGFloat
-        var radius: CGFloat
-        var height: CGFloat
-        var pitch: CGFloat { self.cell + self.gap }
-    }
-    
-    
-    private func layout(for width: CGFloat) -> Layout {
-        
-        let labelColumn: CGFloat = 15
-        let labelGap: CGFloat = 6
-        let monthBand: CGFloat = 16
-        let weekCount = CGFloat(max(1, self.weeks.count))
-        let gridWidth = max(140, width - labelColumn - labelGap)
-        let gap: CGFloat = self.weeks.count <= 20 ? max(self.minGap, 3) : (gridWidth > 620 ? max(self.minGap, 2.5) : self.minGap)
-        let raw = (gridWidth - gap * (weekCount - 1)) / weekCount
-        let cell = max(6.5, min(self.maxCellSize, (raw * 2).rounded(.down) / 2))
-        
-        return Layout(
-            gridX: labelColumn + labelGap,
-            gridY: monthBand,
-            cell: cell,
-            gap: gap,
-            radius: max(2, min(4, cell * 0.25)),
-            height: monthBand + cell * 7 + gap * 6
-        )
-    }
-    
-    
-    private func cell(at point: CGPoint, layout: Layout) -> HeatmapDayCell? {
-        
-        let x = point.x - layout.gridX
-        let y = point.y - layout.gridY
-        guard x >= 0, y >= 0 else { return nil }
-        let week = Int(x / layout.pitch)
-        let row = Int(y / layout.pitch)
-        guard x - CGFloat(week) * layout.pitch <= layout.cell,
-              y - CGFloat(row) * layout.pitch <= layout.cell,
-              self.weeks.indices.contains(week),
-              self.weeks[week].indices.contains(row)
+        let relX = point.x - self.leftAxisWidth
+        let relY = point.y - self.topLabelHeight
+        guard relX >= 0, relY >= 0 else { return nil }
+        let step = self.cellSize + self.cellGap
+        let weekIdx = Int(relX / step)
+        let dayIdx = Int(relY / step)
+        guard self.heatmap.weeks.indices.contains(weekIdx),
+              self.heatmap.weeks[weekIdx].indices.contains(dayIdx)
         else { return nil }
-        let cell = self.weeks[week][row]
-        guard !cell.isFuture, (!self.hideOutOfYear || !cell.isOutOfYear) else { return nil }
-        return cell
+        let candidate = self.heatmap.weeks[weekIdx][dayIdx]
+        return candidate.isOutOfYear ? nil : candidate
     }
+}
+
+
+// MARK: - Manuscript Scale Ruler (今日手写刻度)
+
+private struct ManuscriptScaleRuler: View {
     
+    let todayChars: Int
+    let averageChars: Int
+    let recordChars: Int
+    let palette: StudioPalette
     
     var body: some View {
-        
-        let resolvedWidth = self.width > 0 ? self.width : 600
-        let layout = self.layout(for: resolvedWidth)
-        
-        Canvas { context, _ in
-            self.draw(in: &context, layout: layout)
-        }
-        .frame(height: layout.height)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .onContinuousHover { phase in
-            switch phase {
-                case .active(let point):
-                    let target = self.cell(at: point, layout: layout)
-                    if target?.id != self.hovered?.id {
-                        self.hovered = target
-                    }
-                case .ended:
-                    if self.hovered != nil {
-                        self.hovered = nil
-                    }
-            }
-        }
-        .onTapGesture { point in
-            if let onSelect = self.onSelect, let target = self.cell(at: point, layout: layout) {
-                onSelect(target)
-            }
-        }
-        .pointerStyle(self.onSelect != nil && self.hovered != nil ? .link : nil)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
-            if abs(newWidth - self.width) > 0.5 {
-                self.width = newWidth
-            }
-        }
-    }
-    
-    
-    private func draw(in context: inout GraphicsContext, layout: Layout) {
-        
-        let todayKey = AnalyticsManager.dateKey()
-        
-        var lastLabelX: CGFloat = -40
-        for label in self.monthLabels {
-            let x = layout.gridX + CGFloat(label.weekIndex) * layout.pitch
-            guard x - lastLabelX >= 22 else { continue }
-            lastLabelX = x
-            let text = context.resolve(Text(label.text).font(.system(size: 9.5, weight: .medium)).foregroundStyle(.secondary))
-            context.draw(text, at: CGPoint(x: x, y: 0), anchor: .topLeading)
-        }
-        
-        for (row, name) in [(0, "一"), (2, "三"), (4, "五")] {
-            let text = context.resolve(Text(name).font(.system(size: 9)).foregroundStyle(.secondary))
-            let y = layout.gridY + CGFloat(row) * layout.pitch + layout.cell / 2
-            context.draw(text, at: CGPoint(x: 0, y: y), anchor: .leading)
-        }
-        
-        var todayRect: CGRect?
-        var hoveredRect: CGRect?
-        var selectedRect: CGRect?
-        
-        for (week, days) in self.weeks.enumerated() {
-            for (row, cell) in days.enumerated() where !cell.isFuture && (!self.hideOutOfYear || !cell.isOutOfYear) {
-                let rect = CGRect(
-                    x: layout.gridX + CGFloat(week) * layout.pitch,
-                    y: layout.gridY + CGFloat(row) * layout.pitch,
-                    width: layout.cell,
-                    height: layout.cell
-                )
-                context.fill(
-                    Path(roundedRect: rect, cornerRadius: layout.radius, style: .continuous),
-                    with: .color(self.palette.heat(cell.level))
-                )
+        Canvas { context, size in
+            let leftPad: CGFloat = 10
+            let rightPad: CGFloat = 10
+            let trackW = max(60, size.width - leftPad - rightPad)
+            let maxDomain = max(2000, max(self.todayChars, max(self.averageChars, self.recordChars)) + 400)
+            let baselineY: CGFloat = 38
+            
+            // Progress fill bar for today's typed chars
+            let todayRatio = min(1.0, CGFloat(self.todayChars) / CGFloat(maxDomain))
+            let barRect = CGRect(x: leftPad, y: baselineY - 12, width: trackW * todayRatio, height: 10)
+            context.fill(
+                Path(roundedRect: barRect, cornerRadius: 2),
+                with: .color(self.palette.cinnabar.opacity(0.20))
+            )
+            
+            // Main baseline hairline
+            var baseline = Path()
+            baseline.move(to: CGPoint(x: leftPad, y: baselineY))
+            baseline.addLine(to: CGPoint(x: leftPad + trackW, y: baselineY))
+            context.stroke(baseline, with: .color(self.palette.hairline), lineWidth: 1.2)
+            
+            // Paperback page ticks (every 500 chars = 1 page)
+            let stepChars = maxDomain > 8000 ? 1000 : 500
+            var cursor = 0
+            while cursor <= maxDomain {
+                let x = leftPad + trackW * CGFloat(cursor) / CGFloat(maxDomain)
+                let isMajor = (cursor % 1000 == 0)
+                var tick = Path()
+                tick.move(to: CGPoint(x: x, y: baselineY))
+                tick.addLine(to: CGPoint(x: x, y: baselineY + (isMajor ? 8 : 4.5)))
+                context.stroke(tick, with: .color(isMajor ? self.palette.secondaryInk : self.palette.tertiaryInk), lineWidth: 1)
                 
-                if cell.dateKey == todayKey { todayRect = rect }
-                if cell.id == self.hovered?.id { hoveredRect = rect }
-                if cell.dateKey == self.selectedKey { selectedRect = rect }
+                if isMajor && cursor > 0 && cursor < maxDomain - 250 {
+                    let pageLabel = "\(cursor / 500)页"
+                    let txt = Text(pageLabel).font(.system(size: 9)).foregroundStyle(self.palette.tertiaryInk)
+                    context.draw(txt, at: CGPoint(x: x, y: baselineY + 11), anchor: .top)
+                }
+                cursor += stepChars
             }
-        }
-        
-        if let rect = todayRect, self.selectedKey != todayKey, self.hovered?.dateKey != todayKey {
-            context.stroke(
-                Path(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerRadius: layout.radius, style: .continuous),
-                with: .color(self.palette.emerald.opacity(0.6)),
-                lineWidth: 1.1
-            )
-        }
-        if let rect = hoveredRect, self.hovered?.dateKey != self.selectedKey {
-            context.stroke(
-                Path(roundedRect: rect.insetBy(dx: -1.3, dy: -1.3), cornerRadius: layout.radius + 1.2, style: .continuous),
-                with: .color(self.palette.emerald.opacity(0.75)),
-                lineWidth: 1.3
-            )
-        }
-        if let rect = selectedRect {
-            context.stroke(
-                Path(roundedRect: rect.insetBy(dx: -1.8, dy: -1.8), cornerRadius: layout.radius + 1.8, style: .continuous),
-                with: .color(self.palette.pine),
-                lineWidth: 1.8
-            )
+            
+            // 14-day average dashed marker
+            if self.averageChars > 0 {
+                let avgX = leftPad + trackW * min(1.0, CGFloat(self.averageChars) / CGFloat(maxDomain))
+                var avgLine = Path()
+                avgLine.move(to: CGPoint(x: avgX, y: 12))
+                avgLine.addLine(to: CGPoint(x: avgX, y: baselineY))
+                context.stroke(avgLine, with: .color(self.palette.pineGreen), style: StrokeStyle(lineWidth: 1.2, dash: [3, 2]))
+                let label = Text("均值").font(.system(size: 9, weight: .medium)).foregroundStyle(self.palette.pineGreen)
+                context.draw(label, at: CGPoint(x: avgX, y: 1), anchor: .top)
+            }
+            
+            // Record notch
+            if self.recordChars > 0 {
+                let recX = leftPad + trackW * min(1.0, CGFloat(self.recordChars) / CGFloat(maxDomain))
+                var recLine = Path()
+                recLine.move(to: CGPoint(x: recX, y: 14))
+                recLine.addLine(to: CGPoint(x: recX, y: baselineY))
+                context.stroke(recLine, with: .color(self.palette.secondaryInk.opacity(0.65)), lineWidth: 1)
+                let label = Text("峰值").font(.system(size: 9)).foregroundStyle(self.palette.secondaryInk)
+                context.draw(label, at: CGPoint(x: recX, y: 2), anchor: .topTrailing)
+            }
+            
+            // Today cinnabar needle
+            let todayX = leftPad + trackW * todayRatio
+            var needle = Path()
+            needle.move(to: CGPoint(x: todayX, y: 18))
+            needle.addLine(to: CGPoint(x: todayX, y: baselineY + 2))
+            context.stroke(needle, with: .color(self.palette.cinnabar), lineWidth: 2)
+            let dot = Path(ellipseIn: CGRect(x: todayX - 3.5, y: 15, width: 7, height: 7))
+            context.fill(dot, with: .color(self.palette.cinnabar))
         }
     }
 }
 
 
-// MARK: - Small UI Helpers
+// MARK: - 14-Day Typed Bar Chart
 
-private struct PressStyle: ButtonStyle {
+private struct FourteenDayTypedChart: View {
     
-    func makeBody(configuration: Configuration) -> some View {
-        
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
-            .animation(DashMotion.quick, value: configuration.isPressed)
-    }
-}
-
-
-private struct IconButton: View {
+    let series: [DailyWritingStats]
+    let averageChars: Int
+    let palette: StudioPalette
     
-    let systemImage: String
-    let palette: DashPalette
-    var isClose = false
-    let action: () -> Void
-    
-    @State private var isHovered = false
-    
+    @State private var hoveredIdx: Int?
     
     var body: some View {
+        let peak = max(1, max(self.series.map(\.typedChars).max() ?? 1, self.averageChars))
         
-        Button(action: self.action) {
-            Image(systemName: self.systemImage)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(self.isHovered ? (self.isClose ? Color.red : self.palette.pine) : .secondary)
-                .rotationEffect(.degrees(self.isClose && self.isHovered ? 90 : 0))
-                .frame(width: 24, height: 24)
-                .background(
-                    Circle().fill(
-                        self.isHovered
-                            ? (self.isClose ? Color.red.opacity(0.10) : self.palette.insetHover)
-                            : self.palette.inset
-                    )
-                )
-                .contentShape(Circle())
-        }
-        .buttonStyle(PressStyle())
-        .pointerStyle(.link)
-        .onHover { hovering in
-            withAnimation(DashMotion.standard) {
-                self.isHovered = hovering
+        VStack(alignment: .leading, spacing: 6) {
+            GeometryReader { geo in
+                let count = max(1, self.series.count)
+                let gap: CGFloat = 6
+                let barW = max(8, (geo.size.width - CGFloat(count - 1) * gap) / CGFloat(count))
+                let plotH = max(40, geo.size.height - 20)
+                
+                ZStack(alignment: .bottomLeading) {
+                    // Average hairline
+                    if self.averageChars > 0 {
+                        let avgY = 20 + plotH * (1.0 - CGFloat(self.averageChars) / CGFloat(peak))
+                        Path { path in
+                            path.move(to: CGPoint(x: 0, y: avgY))
+                            path.addLine(to: CGPoint(x: geo.size.width, y: avgY))
+                        }
+                        .stroke(self.palette.pineGreen.opacity(0.65), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    }
+                    
+                    HStack(alignment: .bottom, spacing: gap) {
+                        ForEach(Array(self.series.enumerated()), id: \.offset) { idx, stat in
+                            let hRatio = CGFloat(stat.typedChars) / CGFloat(peak)
+                            let barH = stat.typedChars > 0 ? max(4, plotH * hRatio) : 2
+                            let isToday = (idx == self.series.count - 1)
+                            
+                            VStack(spacing: 4) {
+                                Spacer(minLength: 0)
+                                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                    .fill(
+                                        stat.typedChars == 0
+                                            ? self.palette.subtle
+                                            : (isToday ? self.palette.cinnabar : self.palette.pineGreen.opacity(0.8))
+                                    )
+                                    .frame(width: barW, height: barH)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                            .strokeBorder(self.hoveredIdx == idx ? self.palette.ink : Color.clear, lineWidth: 1)
+                                    )
+                                
+                                Text(String(stat.dateKey.suffix(2)))
+                                    .font(.system(size: 9).monospacedDigit())
+                                    .foregroundStyle(isToday ? self.palette.cinnabar : self.palette.tertiaryInk)
+                            }
+                            .frame(width: barW, height: geo.size.height)
+                            .onHover { inside in
+                                self.hoveredIdx = inside ? idx : (self.hoveredIdx == idx ? nil : self.hoveredIdx)
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if let idx = self.hoveredIdx, self.series.indices.contains(idx) {
+                let s = self.series[idx]
+                Text("\(s.dateKey)：手写 \(s.typedChars.formatted()) 字（约 \(String(format: "%.1f", Double(s.typedChars) / 500.0)) 页纸书）")
+                    .font(.system(size: 10.5).monospacedDigit())
+                    .foregroundStyle(self.palette.secondaryInk)
             }
         }
     }
 }
 
 
-private struct StepCircleButton: View {
+// MARK: - 24-Hour Pulse Chart
+
+private struct HourlyPulseChart: View {
     
-    let systemImage: String
-    let isEnabled: Bool
-    let palette: DashPalette
-    let action: () -> Void
+    let hourlyValues: [Int]
+    let palette: StudioPalette
     
-    @State private var isHovered = false
-    
+    @State private var hoveredHour: Int?
     
     var body: some View {
+        let peak = max(1, self.hourlyValues.max() ?? 1)
+        let currentHour = Calendar.current.component(.hour, from: Date())
         
-        Button(action: self.action) {
-            Image(systemName: self.systemImage)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(self.isHovered && self.isEnabled ? self.palette.pine : .secondary)
-                .frame(width: 24, height: 24)
-                .background(
-                    Circle().fill(self.isHovered && self.isEnabled ? self.palette.insetHover : self.palette.inset)
-                )
-                .contentShape(Circle())
+        VStack(alignment: .leading, spacing: 6) {
+            GeometryReader { geo in
+                let gap: CGFloat = 3
+                let barW = max(4, (geo.size.width - CGFloat(23) * gap) / 24.0)
+                let plotH = max(40, geo.size.height - 20)
+                
+                HStack(alignment: .bottom, spacing: gap) {
+                    ForEach(0..<24, id: \.self) { hr in
+                        let val = self.hourlyValues.indices.contains(hr) ? self.hourlyValues[hr] : 0
+                        let barH = val > 0 ? max(4, plotH * CGFloat(val) / CGFloat(peak)) : 2
+                        
+                        VStack(spacing: 4) {
+                            Spacer(minLength: 0)
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(
+                                    val == 0
+                                        ? self.palette.subtle
+                                        : (hr == currentHour ? self.palette.cinnabar : self.palette.pineGreen.opacity(0.78))
+                                )
+                                .frame(width: barW, height: barH)
+                            
+                            Text(hr % 6 == 0 ? "\(hr)" : "")
+                                .font(.system(size: 9).monospacedDigit())
+                                .foregroundStyle(self.palette.tertiaryInk)
+                                .frame(height: 12)
+                        }
+                        .frame(width: barW, height: geo.size.height)
+                        .onHover { inside in
+                            self.hoveredHour = inside ? hr : (self.hoveredHour == hr ? nil : self.hoveredHour)
+                        }
+                    }
+                }
+            }
+            
+            if let hr = self.hoveredHour, self.hourlyValues.indices.contains(hr) {
+                Text(String(format: "%02d:00 – %02d:59：活跃 %d 字", hr, hr, self.hourlyValues[hr]))
+                    .font(.system(size: 10.5).monospacedDigit())
+                    .foregroundStyle(self.palette.secondaryInk)
+            }
         }
-        .buttonStyle(PressStyle())
-        .disabled(!self.isEnabled)
-        .opacity(self.isEnabled ? 1 : 0.32)
-        .onHover { hovering in
-            withAnimation(DashMotion.quick) {
-                self.isHovered = hovering && self.isEnabled
+    }
+}
+
+
+// MARK: - 14-Day Dual-Engine Relay Chart
+
+private struct DualEngineCompletionChart: View {
+    
+    let series: [DailyWritingStats]
+    let palette: StudioPalette
+    
+    @State private var hoveredIdx: Int?
+    
+    var body: some View {
+        let peak = max(1, self.series.map { max($0.aiCompletedChars, $0.localAcceptedChars) }.max() ?? 1)
+        
+        VStack(alignment: .leading, spacing: 6) {
+            GeometryReader { geo in
+                let count = max(1, self.series.count)
+                let gap: CGFloat = 6
+                let barW = max(8, (geo.size.width - CGFloat(count - 1) * gap) / CGFloat(count))
+                let plotH = max(40, geo.size.height - 20)
+                
+                HStack(alignment: .bottom, spacing: gap) {
+                    ForEach(Array(self.series.enumerated()), id: \.offset) { idx, stat in
+                        let local = min(stat.localAcceptedChars, stat.aiCompletedChars)
+                        let cloud = max(0, stat.aiCompletedChars - local)
+                        let localH = local > 0 ? max(3, plotH * CGFloat(local) / CGFloat(peak)) : 0
+                        let cloudH = cloud > 0 ? max(3, plotH * CGFloat(cloud) / CGFloat(peak)) : 0
+                        
+                        VStack(spacing: 4) {
+                            Spacer(minLength: 0)
+                            if local + cloud == 0 {
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(self.palette.subtle)
+                                    .frame(width: barW, height: 2)
+                            } else {
+                                VStack(spacing: 1) {
+                                    if cloudH > 0 {
+                                        RoundedRectangle(cornerRadius: 2)
+                                            .fill(self.palette.cinnabar)
+                                            .frame(width: barW, height: cloudH)
+                                    }
+                                    if localH > 0 {
+                                        RoundedRectangle(cornerRadius: 2)
+                                            .fill(self.palette.pineGreen)
+                                            .frame(width: barW, height: localH)
+                                    }
+                                }
+                            }
+                            
+                            Text(String(stat.dateKey.suffix(2)))
+                                .font(.system(size: 9).monospacedDigit())
+                                .foregroundStyle(self.palette.tertiaryInk)
+                        }
+                        .frame(width: barW, height: geo.size.height)
+                        .onHover { inside in
+                            self.hoveredIdx = inside ? idx : (self.hoveredIdx == idx ? nil : self.hoveredIdx)
+                        }
+                    }
+                }
+            }
+            
+            if let idx = self.hoveredIdx, self.series.indices.contains(idx) {
+                let s = self.series[idx]
+                let local = min(s.localAcceptedChars, s.aiCompletedChars)
+                let cloud = max(0, s.aiCompletedChars - local)
+                Text("\(s.dateKey)：共补全 \(s.aiCompletedChars.formatted()) 字（本地 \(local) 字 + 云端 \(cloud) 字）")
+                    .font(.system(size: 10.5).monospacedDigit())
+                    .foregroundStyle(self.palette.secondaryInk)
             }
         }
     }

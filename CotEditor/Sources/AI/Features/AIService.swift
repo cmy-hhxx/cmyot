@@ -80,7 +80,20 @@ import Observation
     ) async throws -> String {
         
         let db = CotLocalDatabase.shared
-        let persona = db.aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+        let botID = AIBotID(action: action)
+        let botStore = AIBotStore.shared
+        let botConfig = botStore.config(for: botID)
+        guard botConfig.isEnabled else {
+            throw AIError.http(
+                status: 403,
+                message: "\(botID.displayName)（\(botID.handle)）已在设置中停用，请在「设置 → AI 助手」重新开启。"
+            )
+        }
+        
+        let customBotPersona = botConfig.customPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+        let persona = customBotPersona.isEmpty
+            ? db.aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+            : customBotPersona
         let stagePrompt = db.customStagePrompt(forKey: action.databaseConfigKey) ?? action.defaultSystemPrompt
         let fullSystemPrompt = persona.isEmpty ? stagePrompt : "\(persona)\n\n\(stagePrompt)"
         
@@ -120,8 +133,10 @@ import Observation
             .user(action.prompt(for: text, context: effectiveContext), images: images),
         ]
         
+        let resolvedConfig = botStore.resolvedConfiguration(for: botID)
         let rawResult = try await self.send(
             messages,
+            configuration: resolvedConfig,
             analyticsFeature: action.analyticsKey,
             onPartial: onPartial
         )
@@ -134,6 +149,34 @@ import Observation
         }
         
         return result
+    }
+    
+    
+    /// Runs an inline GrokBot-style test turn for any bot using its current persona, prompt, and model override.
+    func testBot(_ botID: AIBotID, sampleInput: String) async throws -> String {
+        
+        let trimmedInput = sampleInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveInput = trimmedInput.isEmpty ? botID.defaultSampleInput : trimmedInput
+        
+        if let action = botID.linkedAction {
+            return try await self.run(action, on: effectiveInput)
+        }
+        
+        let botStore = AIBotStore.shared
+        let botConfig = botStore.config(for: botID)
+        let customBotPersona = botConfig.customPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+        let persona = customBotPersona.isEmpty
+            ? CotLocalDatabase.shared.aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+            : customBotPersona
+        let stagePrompt = botStore.systemPrompt(for: botID)
+        let fullSystem = persona.isEmpty ? stagePrompt : "\(persona)\n\n\(stagePrompt)"
+        let resolvedConfig = botStore.resolvedConfiguration(for: botID)
+        
+        return try await self.send(
+            [.system(fullSystem), .user(effectiveInput)],
+            configuration: resolvedConfig,
+            analyticsFeature: botID.analyticsFeatureKey
+        )
     }
     
     

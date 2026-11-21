@@ -47,18 +47,11 @@ extension CurrentLineHighlighting {
     ///   - dirtyRect: The rectangle defining the portion of the view that requires redrawing.
     func drawCurrentLine(range dirtyRange: NSRange, in dirtyRect: NSRect) {
         
-        // calculate rects but only when needed
-        // to avoid unneeded high-cost calculation for a latter part of a large document
+        // calculate rects whenever invalidated so dirty sub-rects never stale-cache old rects
         if self.needsUpdateLineHighlight {
             let lineRanges = self.selectedLineRanges()
-            
-            if lineRanges.contains(where: { $0.touches(dirtyRange) }) {
-                self.lineHighlightRects = lineRanges.map(self.lineRect(for:))
-                self.needsUpdateLineHighlight = false
-            } else {
-                // remove outdated rects anyway
-                self.lineHighlightRects.removeAll()
-            }
+            self.lineHighlightRects = lineRanges.map(self.lineRect(for:))
+            self.needsUpdateLineHighlight = false
         }
         
         let rects = self.lineHighlightRects
@@ -144,10 +137,24 @@ private extension NSLayoutManager {
         var effectiveRange: NSRange = .notFound
         let lowerRect = self.lineFragmentRect(forGlyphAt: safeLowerIndex, effectiveRange: &effectiveRange)
         
-        guard !effectiveRange.contains(glyphRange.upperBound) else { return lowerRect }
+        guard !effectiveRange.contains(glyphRange.upperBound) else {
+            if self.extraLineFragmentTextContainer != nil,
+               range.upperBound == self.attributedString().length,
+               self.attributedString().string.hasSuffix("\n")
+            {
+                return lowerRect.union(self.extraLineFragmentRect)
+            }
+            return lowerRect
+        }
         
         let upperRect = self.lineFragmentRect(forGlyphAt: glyphRange.upperBound - 1, effectiveRange: nil)
-        
-        return lowerRect.union(upperRect)
+        var combined = lowerRect.union(upperRect)
+        if self.extraLineFragmentTextContainer != nil,
+           range.upperBound == self.attributedString().length,
+           self.attributedString().string.hasSuffix("\n")
+        {
+            combined = combined.union(self.extraLineFragmentRect)
+        }
+        return combined
     }
 }

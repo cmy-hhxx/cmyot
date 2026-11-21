@@ -49,6 +49,13 @@ nonisolated enum AIKeychain {
     }
     
     
+    /// Stores the legacy single-endpoint API key when migrating/restoring old configurations.
+    static func setLegacyAPIKey(_ key: String) {
+        
+        self.set(key, account: self.legacyAccount)
+    }
+    
+    
     // MARK: Public Methods
     
     /// Returns the stored API key for one endpoint profile.
@@ -69,6 +76,39 @@ nonisolated enum AIKeychain {
     static func removeAPIKey(for id: UUID) {
         
         self.set("", account: id.uuidString)
+    }
+    
+    
+    /// Returns a snapshot of all non-empty stored API keys keyed by account identifier.
+    static func allAPIKeys() -> [String: String] {
+        
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.loadSecretsLocked()
+    }
+    
+    
+    /// Merges a dictionary of account -> API key entries into the local secret store.
+    static func mergeAPIKeys(_ keys: [String: String], overwriteExisting: Bool = true) {
+        
+        guard !keys.isEmpty else { return }
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        
+        var map = self.loadSecretsLocked()
+        var didChange = false
+        for (account, rawValue) in keys {
+            let trimmedKey = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanAccount = account.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanAccount.isEmpty, !trimmedKey.isEmpty else { continue }
+            if overwriteExisting || (map[cleanAccount]?.isEmpty ?? true) {
+                map[cleanAccount] = trimmedKey
+                didChange = true
+            }
+        }
+        if didChange {
+            self.saveSecretsLocked(map)
+        }
     }
     
     

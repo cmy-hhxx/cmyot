@@ -103,7 +103,7 @@ extension Logger {
     
     private var menuUpdateObservers: Set<AnyCancellable> = []
     
-    private lazy var settingsWindowController = SettingsWindowController<SettingsPane>()
+    private lazy var settingsWindowController = SidebarSettingsWindowController()
     private weak var aboutPanel: NSPanel?
     private weak var whatsNewPanel: NSPanel?
     private weak var exportSettingsPanel: NSPanel?
@@ -203,6 +203,7 @@ extension Logger {
         NSApp.servicesProvider = ServicesProvider()
         NSApp.registerServicesMenuSendTypes([.fileURL], returnTypes: [])
         NSTouchBar.isAutomaticCustomizeTouchBarMenuItemEnabled = true
+        AnalyticsManager.shared.startBackgroundDigestScheduler()
         
         #if DEBUG
         self.scheduleTerminalDemoIfRequested()
@@ -244,6 +245,7 @@ extension Logger {
             document.syncToLocalDatabase(force: true)
         }
         CotLocalDatabase.shared.syncAIEndpointsToDatabase()
+        CotLocalDatabase.shared.syncUserProfileToDatabase()
         CotLocalDatabase.shared.syncUserPreferencesToDatabase()
         CotLocalDatabase.shared.checkpointDatabase()
         

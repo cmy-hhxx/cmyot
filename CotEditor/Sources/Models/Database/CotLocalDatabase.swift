@@ -104,6 +104,37 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
 }
 
 
+/// Portable snapshot of the active local user's profile (name, avatar image, accent color, etc.)
+/// stored inside `cot_user_data.sqlite3` so database export/import restores the complete user identity.
+nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
+    
+    var displayName: String
+    var avatarDataBase64: String?
+    var avatarColorHex: String
+    var accountKind: String
+    var email: String?
+    var remoteUserID: String?
+    var createdAt: Date
+    
+    
+    init(profile: UserProfile) {
+        self.displayName = profile.displayName
+        self.avatarDataBase64 = profile.avatarData?.base64EncodedString()
+        self.avatarColorHex = profile.avatarColorHex
+        self.accountKind = profile.accountKind
+        self.email = profile.email
+        self.remoteUserID = profile.remoteUserID
+        self.createdAt = profile.createdAt
+    }
+    
+    
+    var decodedAvatarData: Data? {
+        guard let avatarDataBase64, !avatarDataBase64.isEmpty else { return nil }
+        return Data(base64Encoded: avatarDataBase64)
+    }
+}
+
+
 /// The local SQLite database (`cot_user_data.sqlite3`) that persists user documents,
 /// AI personas, stage-by-stage prompts, weekly report fragments, and custom preferences.
 ///
@@ -148,6 +179,14 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         static let documentGroups = "documentCenter.groups"
         static let syncAIProfiles = "sync.aiProfiles"
         static let syncAIActiveProfileID = "sync.aiActiveProfileID"
+        static let syncAIProfileAPIKeys = "sync.aiProfileAPIKeys"
+        static let syncUserProfileSnapshot = "sync.userProfileSnapshot"
+        static let aiBotsConfigJSON = "ai.botsConfigJSON"
+        static let userPersonalityProfileJSON = "analytics.userPersonalityProfileJSON"
+        static let aiPersonalityAutoEnabled = "analytics.personalityAutoEnabled"
+        static let cotPassStyleIndex = "pass.styleIndex"
+        static let cotPassLicenseKey = "pass.licenseKey"
+        static let cotPassSerialCode = "pass.serialCode"
         static let analyticsHistoricalBackfillV2 = "analytics.historicalBackfillV2"
     }
     
@@ -1445,19 +1484,37 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     }
     
     
-    /// Snapshots `AIEndpointStore` profiles and active ID into the active user's database.
+    /// Snapshots `AIEndpointStore` profiles, active ID, and API keys into the active user's database.
     func syncAIEndpointsToDatabase() {
         
-        if let profilesData = try? JSONEncoder().encode(AIEndpointStore.profiles),
+        let profiles = AIEndpointStore.profiles
+        if let profilesData = try? JSONEncoder().encode(profiles),
            let profilesJSON = String(data: profilesData, encoding: .utf8)
         {
             self.set(profilesJSON, forKey: ConfigKey.syncAIProfiles)
         }
         self.set(AIEndpointStore.activeID?.uuidString ?? "", forKey: ConfigKey.syncAIActiveProfileID)
+        
+        var keyMap: [String: String] = [:]
+        for profile in profiles {
+            let key = AIKeychain.apiKey(for: profile.id).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !key.isEmpty {
+                keyMap[profile.id.uuidString] = key
+            }
+        }
+        let legacyKey = AIKeychain.legacyAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !legacyKey.isEmpty {
+            keyMap["__legacy__"] = legacyKey
+        }
+        if let keysData = try? JSONEncoder().encode(keyMap),
+           let keysJSON = String(data: keysData, encoding: .utf8)
+        {
+            self.set(keysJSON, forKey: ConfigKey.syncAIProfileAPIKeys)
+        }
     }
     
     
-    /// Restores `AIEndpointStore` profiles and active ID from the active user's database.
+    /// Restores `AIEndpointStore` profiles, active ID, and API keys from the active user's database.
     func restoreAIEndpointsFromDatabase(resetIfMissing: Bool) {
         
         let syncedProfilesJSON = self.queryConfigValue(forKey: ConfigKey.syncAIProfiles) ?? ""
@@ -1465,17 +1522,25 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
            let data = syncedProfilesJSON.data(using: .utf8),
            let importedProfiles = try? JSONDecoder().decode([AIEndpointProfile].self, from: data)
         {
+            let activeStr = self.queryConfigValue(forKey: ConfigKey.syncAIActiveProfileID) ?? ""
+            let importedActiveID = activeStr.isEmpty ? nil : UUID(uuidString: activeStr)
+            
             if resetIfMissing {
                 AIEndpointStore.profiles = importedProfiles
-                let activeStr = self.queryConfigValue(forKey: ConfigKey.syncAIActiveProfileID) ?? ""
-                AIEndpointStore.activeID = activeStr.isEmpty ? importedProfiles.first?.id : UUID(uuidString: activeStr)
+                AIEndpointStore.activeID = importedActiveID ?? importedProfiles.first?.id
             } else if !importedProfiles.isEmpty {
                 var existing = AIEndpointStore.profiles
-                for profile in importedProfiles where !existing.contains(where: { $0.id == profile.id }) {
-                    existing.append(profile)
+                for profile in importedProfiles {
+                    if let idx = existing.firstIndex(where: { $0.id == profile.id }) {
+                        existing[idx] = profile
+                    } else {
+                        existing.append(profile)
+                    }
                 }
                 AIEndpointStore.profiles = existing
-                if AIEndpointStore.activeID == nil {
+                if let importedActiveID, existing.contains(where: { $0.id == importedActiveID }) {
+                    AIEndpointStore.activeID = importedActiveID
+                } else if AIEndpointStore.activeID == nil {
                     AIEndpointStore.activeID = existing.first?.id
                 }
             }
@@ -1483,17 +1548,80 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             AIEndpointStore.profiles = []
             AIEndpointStore.activeID = nil
         }
+        
+        let syncedKeysJSON = self.queryConfigValue(forKey: ConfigKey.syncAIProfileAPIKeys) ?? ""
+        if !syncedKeysJSON.isEmpty,
+           let keysData = syncedKeysJSON.data(using: .utf8),
+           let keyMap = try? JSONDecoder().decode([String: String].self, from: keysData)
+        {
+            var uuidMap: [String: String] = [:]
+            for (account, key) in keyMap {
+                if account == "__legacy__" {
+                    AIKeychain.setLegacyAPIKey(key)
+                } else {
+                    uuidMap[account] = key
+                }
+            }
+            AIKeychain.mergeAPIKeys(uuidMap, overwriteExisting: true)
+        }
+    }
+    
+    
+    /// Snapshots the active user's avatar, display name, accent color, and account metadata into `configs`.
+    func syncUserProfileToDatabase(_ profile: UserProfile? = nil) {
+        
+        let resolvedProfile: UserProfile? = if let profile {
+            profile
+        } else if self === Self.shared {
+            UserProfileManager.shared.activeProfile
+        } else {
+            nil
+        }
+        guard let resolvedProfile else { return }
+        
+        let snapshot = PortableUserProfileSnapshot(profile: resolvedProfile)
+        if let data = try? JSONEncoder().encode(snapshot),
+           let json = String(data: data, encoding: .utf8)
+        {
+            self.set(json, forKey: ConfigKey.syncUserProfileSnapshot)
+        }
+    }
+    
+    
+    /// Restores the user's profile (avatar, display name, accent color) from `sync.userProfileSnapshot`.
+    func restoreUserProfileFromDatabase(to manager: UserProfileManager? = nil) {
+        
+        let targetManager: UserProfileManager? = if let manager {
+            manager
+        } else if self === Self.shared {
+            UserProfileManager.shared
+        } else {
+            nil
+        }
+        guard let targetManager else { return }
+        
+        let json = self.queryConfigValue(forKey: ConfigKey.syncUserProfileSnapshot) ?? ""
+        guard !json.isEmpty,
+              let data = json.data(using: .utf8),
+              let snapshot = try? JSONDecoder().decode(PortableUserProfileSnapshot.self, from: data)
+        else { return }
+        
+        targetManager.applyImportedProfileSnapshot(snapshot)
     }
     
     
     // MARK: Import & Export API
     
-    /// Exports the entire SQLite database (with current AI profiles & settings synced into `configs`)
+    /// Exports the entire SQLite database (with current AI profiles, API keys, user avatar/profile & settings synced into `configs`)
     /// to the destination URL using `VACUUM INTO` or atomic file copy.
     func exportDatabase(to destinationURL: URL) throws {
         
-        // Snapshot current AI endpoint profiles & user preferences into configs so they travel with the DB
-        self.syncAIEndpointsToDatabase()
+        // Snapshot current stats, AI endpoint profiles + keys, user profile/avatar & user preferences into configs
+        if self === Self.shared {
+            AnalyticsManager.shared.flushPendingStats()
+            self.syncAIEndpointsToDatabase()
+            self.syncUserProfileToDatabase()
+        }
         self.syncUserPreferencesToDatabase()
         
         self.executeSQL("PRAGMA wal_checkpoint(FULL);")
@@ -1510,7 +1638,7 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     }
     
     
-    /// Imports another Cot SQLite database file, replacing or merging documents and configurations.
+    /// Imports another Cot SQLite database file, replacing/merging documents, AI endpoints+keys, user avatar/profile, and configurations.
     func importDatabase(from sourceURL: URL) throws {
         
         // Validate that the source is a readable SQLite database with our tables
@@ -1539,8 +1667,17 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         self.reloadAll()
         
         self.restoreAIEndpointsFromDatabase(resetIfMissing: false)
+        self.restoreUserProfileFromDatabase()
         self.restoreUserPreferencesFromDatabase(overwriteExisting: true)
         self.applySyncedDefaultsToUserDefaults()
+        
+        if self === Self.shared {
+            AIBotStore.shared.reloadFromDatabase()
+            UserHabitPredictor.shared.reloadFromDatabase()
+            AINextTokenPredictor.shared.reloadForActiveUser()
+            AnalyticsManager.shared.reloadFromDatabase()
+            NotificationCenter.default.post(name: UserProfileManager.activeProfileDidChangeNotification, object: UserProfileManager.shared)
+        }
     }
     
     
@@ -1656,6 +1793,9 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             input_tokens INTEGER NOT NULL DEFAULT 0,
             output_tokens INTEGER NOT NULL DEFAULT 0,
             local_hits INTEGER NOT NULL DEFAULT 0,
+            local_accepted_chars INTEGER NOT NULL DEFAULT 0,
+            max_single_accept_chars INTEGER NOT NULL DEFAULT 0,
+            hourly_chars_json TEXT NOT NULL DEFAULT '',
             updated_at REAL NOT NULL
         );
         CREATE TABLE IF NOT EXISTS ai_usage_events (
@@ -1690,7 +1830,9 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             priority INTEGER NOT NULL DEFAULT 1,
             is_completed INTEGER NOT NULL DEFAULT 0,
             created_at REAL NOT NULL,
-            completed_at REAL
+            completed_at REAL,
+            is_pinned INTEGER NOT NULL DEFAULT 0,
+            has_deadline INTEGER NOT NULL DEFAULT 1
         );
         CREATE INDEX IF NOT EXISTS idx_reminders_due_day ON user_reminders(due_day_key);
         """
@@ -1698,6 +1840,53 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         self.ensureDocumentsGroupColumnExists()
         self.ensureDocumentsDeletedAtColumnExists()
         self.ensureDocumentsCreatedAtColumnExists()
+        self.ensureDailyStatsExtendedColumnsExist()
+        self.ensureRemindersExtendedColumnsExist()
+    }
+    
+    
+    private func ensureDailyStatsExtendedColumnsExist() {
+        
+        var existing: Set<String> = []
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, "PRAGMA table_info(daily_writing_stats);", -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let nameCStr = sqlite3_column_text(stmt, 1) {
+                    existing.insert(String(cString: nameCStr))
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        if !existing.contains("local_accepted_chars") {
+            self.executeSQL("ALTER TABLE daily_writing_stats ADD COLUMN local_accepted_chars INTEGER NOT NULL DEFAULT 0;")
+        }
+        if !existing.contains("max_single_accept_chars") {
+            self.executeSQL("ALTER TABLE daily_writing_stats ADD COLUMN max_single_accept_chars INTEGER NOT NULL DEFAULT 0;")
+        }
+        if !existing.contains("hourly_chars_json") {
+            self.executeSQL("ALTER TABLE daily_writing_stats ADD COLUMN hourly_chars_json TEXT NOT NULL DEFAULT '';")
+        }
+    }
+    
+    
+    private func ensureRemindersExtendedColumnsExist() {
+        
+        var existing: Set<String> = []
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, "PRAGMA table_info(user_reminders);", -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let nameCStr = sqlite3_column_text(stmt, 1) {
+                    existing.insert(String(cString: nameCStr))
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        if !existing.contains("is_pinned") {
+            self.executeSQL("ALTER TABLE user_reminders ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;")
+        }
+        if !existing.contains("has_deadline") {
+            self.executeSQL("ALTER TABLE user_reminders ADD COLUMN has_deadline INTEGER NOT NULL DEFAULT 1;")
+        }
     }
     
     
@@ -2048,15 +2237,29 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         aiRequests: Int = 0,
         inputTokens: Int = 0,
         outputTokens: Int = 0,
-        localHits: Int = 0
+        localHits: Int = 0,
+        localAcceptedChars: Int = 0,
+        singleAcceptChars: Int = 0,
+        hourBucket: Int? = nil
     ) {
         let now = Date().timeIntervalSince1970
+        let updatedHourlyJSON: String? = {
+            guard typedChars > 0, let hour = hourBucket, (0..<24).contains(hour) else { return nil }
+            var buckets = self.queryHourlyBuckets(forDateKey: dateKey)
+            buckets[hour] += typedChars
+            guard let data = try? JSONEncoder().encode(buckets),
+                  let json = String(data: data, encoding: .utf8)
+            else { return nil }
+            return json
+        }()
+        
         let sql = """
         INSERT INTO daily_writing_stats (
             date_key, typed_chars, ai_completed_chars, ai_completion_accepts,
-            files_created, documents_saved, ai_requests, input_tokens, output_tokens, local_hits, updated_at
+            files_created, documents_saved, ai_requests, input_tokens, output_tokens, local_hits,
+            local_accepted_chars, max_single_accept_chars, hourly_chars_json, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ''), ?)
         ON CONFLICT(date_key) DO UPDATE SET
             typed_chars = daily_writing_stats.typed_chars + excluded.typed_chars,
             ai_completed_chars = daily_writing_stats.ai_completed_chars + excluded.ai_completed_chars,
@@ -2067,6 +2270,9 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             input_tokens = daily_writing_stats.input_tokens + excluded.input_tokens,
             output_tokens = daily_writing_stats.output_tokens + excluded.output_tokens,
             local_hits = daily_writing_stats.local_hits + excluded.local_hits,
+            local_accepted_chars = daily_writing_stats.local_accepted_chars + excluded.local_accepted_chars,
+            max_single_accept_chars = MAX(daily_writing_stats.max_single_accept_chars, excluded.max_single_accept_chars),
+            hourly_chars_json = COALESCE(?, daily_writing_stats.hourly_chars_json),
             updated_at = excluded.updated_at;
         """
         var stmt: OpaquePointer?
@@ -2081,7 +2287,19 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             sqlite3_bind_int64(stmt, 8, Int64(inputTokens))
             sqlite3_bind_int64(stmt, 9, Int64(outputTokens))
             sqlite3_bind_int64(stmt, 10, Int64(localHits))
-            sqlite3_bind_double(stmt, 11, now)
+            sqlite3_bind_int64(stmt, 11, Int64(localAcceptedChars))
+            sqlite3_bind_int64(stmt, 12, Int64(singleAcceptChars))
+            if let updatedHourlyJSON {
+                sqlite3_bind_text(stmt, 13, updatedHourlyJSON, -1, self.transientDestructor)
+            } else {
+                sqlite3_bind_null(stmt, 13)
+            }
+            sqlite3_bind_double(stmt, 14, now)
+            if let updatedHourlyJSON {
+                sqlite3_bind_text(stmt, 15, updatedHourlyJSON, -1, self.transientDestructor)
+            } else {
+                sqlite3_bind_null(stmt, 15)
+            }
             let rc = sqlite3_step(stmt)
             if rc != SQLITE_DONE {
                 self.logSQLiteError(#function, code: rc)
@@ -2091,15 +2309,40 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     }
     
     
+    private func queryHourlyBuckets(forDateKey dateKey: String) -> [Int] {
+        
+        var buckets = Array(repeating: 0, count: 24)
+        let sql = "SELECT COALESCE(hourly_chars_json, '') FROM daily_writing_stats WHERE date_key = ? LIMIT 1;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, dateKey, -1, self.transientDestructor)
+            if sqlite3_step(stmt) == SQLITE_ROW, let cStr = sqlite3_column_text(stmt, 0) {
+                let raw = String(cString: cStr)
+                if !raw.isEmpty,
+                   let data = raw.data(using: .utf8),
+                   let decoded = try? JSONDecoder().decode([Int].self, from: data),
+                   decoded.count == 24
+                {
+                    buckets = decoded
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        return buckets
+    }
+    
+    
     /// Inserts a backfilled `DailyWritingStats` row only if that `date_key` has no existing telemetry or all counters are zero.
     func backfillDailyWritingStatsIfEmpty(_ stats: DailyWritingStats) {
         
+        let hourlyJSON = (try? String(data: JSONEncoder().encode(stats.hourlyTypedChars), encoding: .utf8)) ?? ""
         let sql = """
         INSERT INTO daily_writing_stats (
             date_key, typed_chars, ai_completed_chars, ai_completion_accepts,
-            files_created, documents_saved, ai_requests, input_tokens, output_tokens, local_hits, updated_at
+            files_created, documents_saved, ai_requests, input_tokens, output_tokens, local_hits,
+            local_accepted_chars, max_single_accept_chars, hourly_chars_json, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(date_key) DO UPDATE SET
             typed_chars = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.typed_chars ELSE daily_writing_stats.typed_chars END,
             ai_completed_chars = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.ai_completed_chars ELSE daily_writing_stats.ai_completed_chars END,
@@ -2110,6 +2353,8 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             input_tokens = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.input_tokens ELSE daily_writing_stats.input_tokens END,
             output_tokens = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.output_tokens ELSE daily_writing_stats.output_tokens END,
             local_hits = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.local_hits ELSE daily_writing_stats.local_hits END,
+            local_accepted_chars = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.local_accepted_chars ELSE daily_writing_stats.local_accepted_chars END,
+            max_single_accept_chars = CASE WHEN daily_writing_stats.typed_chars = 0 AND daily_writing_stats.ai_completed_chars = 0 AND daily_writing_stats.ai_requests = 0 THEN excluded.max_single_accept_chars ELSE daily_writing_stats.max_single_accept_chars END,
             updated_at = excluded.updated_at;
         """
         var stmt: OpaquePointer?
@@ -2124,7 +2369,10 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             sqlite3_bind_int64(stmt, 8, Int64(stats.inputTokens))
             sqlite3_bind_int64(stmt, 9, Int64(stats.outputTokens))
             sqlite3_bind_int64(stmt, 10, Int64(stats.localHits))
-            sqlite3_bind_double(stmt, 11, stats.updatedAt.timeIntervalSince1970)
+            sqlite3_bind_int64(stmt, 11, Int64(stats.localAcceptedChars))
+            sqlite3_bind_int64(stmt, 12, Int64(stats.maxSingleAcceptChars))
+            sqlite3_bind_text(stmt, 13, hourlyJSON, -1, self.transientDestructor)
+            sqlite3_bind_double(stmt, 14, stats.updatedAt.timeIntervalSince1970)
             let rc = sqlite3_step(stmt)
             if rc != SQLITE_DONE {
                 self.logSQLiteError(#function, code: rc)
@@ -2139,7 +2387,9 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         
         let sql = """
         SELECT date_key, typed_chars, ai_completed_chars, ai_completion_accepts,
-               files_created, documents_saved, ai_requests, input_tokens, output_tokens, local_hits, updated_at
+               files_created, documents_saved, ai_requests, input_tokens, output_tokens, local_hits,
+               COALESCE(local_accepted_chars, 0), COALESCE(max_single_accept_chars, 0),
+               COALESCE(hourly_chars_json, ''), updated_at
         FROM daily_writing_stats
         WHERE date_key >= ?
         ORDER BY date_key DESC;
@@ -2150,6 +2400,17 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             sqlite3_bind_text(stmt, 1, sinceDateKey, -1, self.transientDestructor)
             while sqlite3_step(stmt) == SQLITE_ROW {
                 guard let keyCStr = sqlite3_column_text(stmt, 0) else { continue }
+                var hourly = Array(repeating: 0, count: 24)
+                if let hourlyCStr = sqlite3_column_text(stmt, 12) {
+                    let raw = String(cString: hourlyCStr)
+                    if !raw.isEmpty,
+                       let data = raw.data(using: .utf8),
+                       let decoded = try? JSONDecoder().decode([Int].self, from: data),
+                       decoded.count == 24
+                    {
+                        hourly = decoded
+                    }
+                }
                 items.append(DailyWritingStats(
                     dateKey: String(cString: keyCStr),
                     typedChars: Int(sqlite3_column_int64(stmt, 1)),
@@ -2161,7 +2422,10 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
                     inputTokens: Int(sqlite3_column_int64(stmt, 7)),
                     outputTokens: Int(sqlite3_column_int64(stmt, 8)),
                     localHits: Int(sqlite3_column_int64(stmt, 9)),
-                    updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 10))
+                    localAcceptedChars: Int(sqlite3_column_int64(stmt, 10)),
+                    maxSingleAcceptChars: Int(sqlite3_column_int64(stmt, 11)),
+                    hourlyTypedChars: hourly,
+                    updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 13))
                 ))
             }
         }
@@ -2357,9 +2621,9 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
         
         let sql = """
         INSERT INTO user_reminders (
-            id, title, notes, due_date, due_day_key, priority, is_completed, created_at, completed_at
+            id, title, notes, due_date, due_day_key, priority, is_completed, created_at, completed_at, is_pinned, has_deadline
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             notes = excluded.notes,
@@ -2367,7 +2631,9 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             due_day_key = excluded.due_day_key,
             priority = excluded.priority,
             is_completed = excluded.is_completed,
-            completed_at = excluded.completed_at;
+            completed_at = excluded.completed_at,
+            is_pinned = excluded.is_pinned,
+            has_deadline = excluded.has_deadline;
         """
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
@@ -2384,6 +2650,8 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
             } else {
                 sqlite3_bind_null(stmt, 9)
             }
+            sqlite3_bind_int(stmt, 10, reminder.isPinned ? 1 : 0)
+            sqlite3_bind_int(stmt, 11, reminder.hasDeadline ? 1 : 0)
             let rc = sqlite3_step(stmt)
             if rc != SQLITE_DONE {
                 self.logSQLiteError(#function, code: rc)
@@ -2412,6 +2680,36 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     }
     
     
+    /// Updates pin status for a reminder by ID.
+    func setReminderPinned(id: String, isPinned: Bool) {
+        
+        let sql = "UPDATE user_reminders SET is_pinned = ? WHERE id = ?;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_int(stmt, 1, isPinned ? 1 : 0)
+            sqlite3_bind_text(stmt, 2, id, -1, self.transientDestructor)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+    }
+    
+    
+    /// Updates deadline for a reminder by ID.
+    func updateReminderDeadline(id: String, dueDate: Date, dueDayKey: String, hasDeadline: Bool) {
+        
+        let sql = "UPDATE user_reminders SET due_date = ?, due_day_key = ?, has_deadline = ? WHERE id = ?;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_double(stmt, 1, dueDate.timeIntervalSince1970)
+            sqlite3_bind_text(stmt, 2, dueDayKey, -1, self.transientDestructor)
+            sqlite3_bind_int(stmt, 3, hasDeadline ? 1 : 0)
+            sqlite3_bind_text(stmt, 4, id, -1, self.transientDestructor)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+    }
+    
+    
     /// Deletes a reminder by ID.
     func deleteReminder(id: String) {
         
@@ -2425,13 +2723,14 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
     }
     
     
-    /// Fetches all reminders ordered by completion, due day, priority, and creation time.
+    /// Fetches all reminders ordered by completion, pinned status, due date, priority, and creation time.
     func fetchAllReminders() -> [UserReminder] {
         
         let sql = """
-        SELECT id, title, notes, due_date, due_day_key, priority, is_completed, created_at, COALESCE(completed_at, 0)
+        SELECT id, title, notes, due_date, due_day_key, priority, is_completed, created_at, COALESCE(completed_at, 0),
+               COALESCE(is_pinned, 0), COALESCE(has_deadline, 1)
         FROM user_reminders
-        ORDER BY is_completed ASC, due_day_key ASC, priority DESC, created_at DESC;
+        ORDER BY is_completed ASC, is_pinned DESC, due_date ASC, priority DESC, created_at DESC;
         """
         var stmt: OpaquePointer?
         var items: [UserReminder] = []
@@ -2455,7 +2754,9 @@ nonisolated struct DatabaseConfigEntry: Identifiable, Codable, Sendable, Equatab
                     priority: ReminderPriority(rawValue: priorityRaw) ?? .normal,
                     isCompleted: sqlite3_column_int(stmt, 6) != 0,
                     createdAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 7)),
-                    completedAt: completedTS > 0 ? Date(timeIntervalSince1970: completedTS) : nil
+                    completedAt: completedTS > 0 ? Date(timeIntervalSince1970: completedTS) : nil,
+                    isPinned: sqlite3_column_int(stmt, 9) != 0,
+                    hasDeadline: sqlite3_column_int(stmt, 10) != 0
                 ))
             }
         }

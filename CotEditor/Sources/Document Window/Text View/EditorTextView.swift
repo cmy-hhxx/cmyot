@@ -826,10 +826,18 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     return true
                     
                 case "%":
+                    if self.documentViewController?.isPaneZoomed == true {
+                        NSSound.beep()
+                        return true
+                    }
                     self.documentViewController?.splitEditorVertically(self)
                     return true
                     
                 case "\"", "\u{201D}":
+                    if self.documentViewController?.isPaneZoomed == true {
+                        NSSound.beep()
+                        return true
+                    }
                     self.documentViewController?.splitEditorHorizontally(self)
                     return true
                     
@@ -1250,6 +1258,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let previousSelectedRanges = self.selectedRanges.map(\.rangeValue)
         let previousLocation = self.selectedRange.location
         let previousHadSelection = !self.selectedRange.isEmpty
+        let previousLineRects = self.lineHighlightRects
+        let previousSelectionRect: NSRect? = previousHadSelection ? self.boundingRect(for: self.selectedRange) : nil
         
         if !stillSelectingFlag,
            !self.isUpdatingGhostSuggestion,
@@ -1292,6 +1302,35 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         self.needsUpdateLineHighlight = true
         
+        let hasEmptySelection = selectedRanges.allSatisfy { $0.isEmpty }
+        if selectedRanges != previousSelectedRanges, previousHadSelection || !hasEmptySelection {
+            if UserDefaults.standard[.vimMode], VimState.shared.mode == .visual {
+                self.setNeedsDisplay(self.visibleRect, avoidAdditionalLayout: true)
+            } else {
+                for rect in previousLineRects {
+                    let band = NSRect(x: self.visibleRect.minX,
+                                      y: rect.minY - 6,
+                                      width: self.visibleRect.width,
+                                      height: rect.height + 12)
+                    self.setNeedsDisplay(band, avoidAdditionalLayout: true)
+                }
+                if let previousSelectionRect {
+                    let band = NSRect(x: self.visibleRect.minX,
+                                      y: previousSelectionRect.minY - 6,
+                                      width: self.visibleRect.width,
+                                      height: previousSelectionRect.height + 12)
+                    self.setNeedsDisplay(band, avoidAdditionalLayout: true)
+                }
+                if !self.selectedRange.isEmpty, let currentSelectionRect = self.boundingRect(for: self.selectedRange) {
+                    let band = NSRect(x: self.visibleRect.minX,
+                                      y: currentSelectionRect.minY - 6,
+                                      width: self.visibleRect.width,
+                                      height: currentSelectionRect.height + 12)
+                    self.setNeedsDisplay(band, avoidAdditionalLayout: true)
+                }
+            }
+        }
+        
         if !self.isUpdatingGhostSuggestion, selectedRanges != previousSelectedRanges {
             self.clearGhostSuggestion(animated: false)
         }
@@ -1300,12 +1339,13 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         if self.highlightsSelectionInstance {
             self.instanceHighlightTask?.cancel()
         }
-        // When the user clears a selection, force a repaint even if the temporary attribute
-        // is already gone: TextKit can leave a 1px colored hairline where the rounded
-        // instance highlight used to be.
-        let hasEmptySelection = selectedRanges.allSatisfy { $0.isEmpty }
+        // When the user clears or resizes a selection, force a repaint if rounded highlights were
+        // present: TextKit can leave a 1px colored hairline where a rounded instance highlight sat.
+        let hadRoundedHighlights = self.layoutManager?.hasTemporaryAttribute(.roundedBackgroundColor) == true
         if self.highlightsSelectionInstance || (previousHadSelection && hasEmptySelection) {
-            self.clearSelectionInstanceHighlight(redraw: previousHadSelection && hasEmptySelection)
+            self.clearSelectionInstanceHighlight(
+                redraw: previousHadSelection && (hasEmptySelection || (hadRoundedHighlights && selectedRanges != previousSelectedRanges))
+            )
         }
         
         if !stillSelectingFlag, !self.isShowingCompletion {

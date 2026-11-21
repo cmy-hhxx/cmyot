@@ -2542,10 +2542,11 @@ final class VimEngine {
         editorTextView?.isPerformingVimCursorMove = true
         defer { editorTextView?.isPerformingVimCursorMove = false }
         
-        textView.setSelectedRange(selectionRange)
         VimState.shared.visualActiveLocation = clamped
         VimState.shared.visualOwnerID = ObjectIdentifier(textView)
+        textView.setSelectedRange(selectionRange)
         self.scrollLocationToVisible(clamped, in: textView)
+        textView.setNeedsDisplay(textView.visibleRect, avoidAdditionalLayout: true)
         
         if let editorTextView {
             if editorTextView.funEffects.ownsVimCursorDrawing,

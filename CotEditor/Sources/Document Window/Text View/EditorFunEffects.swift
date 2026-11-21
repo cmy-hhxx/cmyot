@@ -1213,6 +1213,14 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
            abs(lastTarget.width - visualRect.width) < 0.35,
            abs(lastTarget.height - visualRect.height) < 0.35
         {
+            if self.vimDisplayLink?.isPaused != false {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                for layer in self.vimTrailLayers {
+                    layer.opacity = 0
+                }
+                CATransaction.commit()
+            }
             return
         }
         
@@ -1246,7 +1254,9 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            cursorLayer.path = CGPath(roundedRect: visualRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+            let snappedPath = CGPath(roundedRect: visualRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+            cursorLayer.path = snappedPath
+            cursorLayer.shadowPath = snappedPath
             for layer in self.vimTrailLayers {
                 layer.opacity = 0
             }
@@ -1279,7 +1289,9 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             self.trailRects = Array(repeating: visualRect, count: Self.trailLayerCount)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            cursorLayer.path = CGPath(roundedRect: visualRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+            let snappedPath = CGPath(roundedRect: visualRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+            cursorLayer.path = snappedPath
+            cursorLayer.shadowPath = snappedPath
             for layer in self.vimTrailLayers {
                 layer.opacity = 0
             }
@@ -1483,7 +1495,9 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             let radius = Self.cursorCornerRadius(for: targetRect)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            cursorLayer.path = CGPath(roundedRect: targetRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+            let settledPath = CGPath(roundedRect: targetRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+            cursorLayer.path = settledPath
+            cursorLayer.shadowPath = settledPath
             for layer in self.vimTrailLayers {
                 layer.opacity = 0
             }
@@ -1513,6 +1527,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             layer.opacity = Float(tailParams.alpha)
         }
         cursorLayer.path = path
+        cursorLayer.shadowPath = path
         CATransaction.commit()
     }
     

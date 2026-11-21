@@ -35,6 +35,14 @@ import Foundation
         let candidate: String
     }
     
+    nonisolated struct LearnedHabitChain: Identifiable, Sendable, Equatable {
+        
+        var id: String
+        var trigger: String
+        var candidate: String
+        var count: Int
+    }
+    
     /// Built-in high-confidence workflow & writing habits (short, natural next-phrase completions).
     private static let builtInHabits: [HabitRule] = [
         HabitRule(
@@ -189,6 +197,61 @@ import Foundation
             self.learn(from: report.content, persist: false)
         }
         self.scheduleSave()
+    }
+    
+    
+    /// Returns the count of learned transition patterns, vocabulary entries, and highest-frequency habit chains.
+    func habitSnapshot(limit: Int = 6) -> (transitionCount: Int, vocabularyCount: Int, topChains: [LearnedHabitChain]) {
+        
+        self.warmUpFromDatabaseIfNeeded()
+        
+        var candidates: [LearnedHabitChain] = []
+        var seenPairs = Set<String>()
+        
+        for (trigger, targets) in self.compoundTransitions {
+            let cleanTrigger = trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard cleanTrigger.count >= 2 else { continue }
+            for (next, count) in targets where count >= 1 {
+                let cleanNext = next.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard cleanNext.count >= 2, cleanNext != cleanTrigger else { continue }
+                let pairKey = "\(cleanTrigger)->\(cleanNext)"
+                guard seenPairs.insert(pairKey).inserted else { continue }
+                candidates.append(LearnedHabitChain(
+                    id: pairKey,
+                    trigger: cleanTrigger,
+                    candidate: cleanNext,
+                    count: count
+                ))
+            }
+        }
+        
+        for (trigger, targets) in self.transitions {
+            let cleanTrigger = trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard cleanTrigger.count >= 2 else { continue }
+            for (next, count) in targets where count >= 2 {
+                let cleanNext = next.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard cleanNext.count >= 2, cleanNext != cleanTrigger else { continue }
+                let pairKey = "\(cleanTrigger)->\(cleanNext)"
+                guard seenPairs.insert(pairKey).inserted else { continue }
+                candidates.append(LearnedHabitChain(
+                    id: pairKey,
+                    trigger: cleanTrigger,
+                    candidate: cleanNext,
+                    count: count
+                ))
+            }
+        }
+        
+        let sorted = candidates.sorted { lhs, rhs in
+            if lhs.count != rhs.count { return lhs.count > rhs.count }
+            return lhs.candidate.count > rhs.candidate.count
+        }
+        
+        return (
+            transitionCount: self.transitions.count + self.compoundTransitions.count,
+            vocabularyCount: self.vocabularyFrequencies.count,
+            topChains: Array(sorted.prefix(max(0, limit)))
+        )
     }
     
     

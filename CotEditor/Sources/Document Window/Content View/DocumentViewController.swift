@@ -116,6 +116,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     /// The pane that currently fills the window while zoomed, if any.
     private var zoomedPane: EditorViewController?
     
+    /// Whether a split pane is currently zoomed to fill the window (`⌃A Z`).
+    var isPaneZoomed: Bool { self.zoomedPane != nil }
+    
     /// The split view items hidden by the zoom, restored when zooming out.
     private var itemsCollapsedByZoom: [NSSplitViewItem] = []
     private var aiResultPanel: AIResultPanelController?
@@ -1705,14 +1708,16 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         // Splitting is reserved strictly for explicit ⌃A % / ⌃A " commands from the active editor.
         guard sender is EditorTextView else { return }
+        guard self.zoomedPane == nil else {
+            NSSound.beep()
+            return
+        }
         guard self.editorViewControllers.count < Self.maximumNumberOfSplitEditors else { return NSSound.beep() }
         
         guard
             let currentViewController = self.baseEditorViewController(for: sender),
             let window = self.view.window
         else { return assertionFailure() }
-        
-        self.unzoomPane()
         
         let document: Document
         do {
