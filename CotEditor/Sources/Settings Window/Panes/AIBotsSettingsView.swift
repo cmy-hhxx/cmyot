@@ -142,17 +142,10 @@ struct AIBotsSettingsView: View {
                 Circle()
                     .fill(isUsable ? Color.green : Color.orange)
                     .frame(width: 6, height: 6)
-                if let activeProfile {
-                    Text("\(activeProfile.displayName) · \(activeProfile.displayModel ?? "未选模型")")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                } else {
-                    Text("尚未接入模型 · 点击配置")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.orange)
-                }
+                Text(activeProfile?.displayName ?? "配置端点")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(activeProfile != nil ? Color.primary : Color.orange)
+                    .lineLimit(1)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
@@ -220,12 +213,6 @@ struct AIBotsSettingsView: View {
                                 CotLocalDatabase.shared.aiPersona = val
                             }
                         }
-                } else if !self.globalPersona.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(self.globalPersona)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
                 }
             }
             .padding(12)
@@ -327,32 +314,10 @@ struct AIBotsSettingsView: View {
                             .foregroundStyle(isActive ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
                             .frame(width: 20)
                         
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(profile.displayName)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .lineLimit(1)
-                                if isActive {
-                                    Text("当前默认")
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .foregroundStyle(Color.accentColor)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 1.5)
-                                        .background(Color.accentColor.opacity(0.13), in: Capsule())
-                                }
-                                Text(profile.endpoint.label)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1)
-                                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
-                            }
-                            Text(profile.resolvedBaseURL)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
+                        Text(profile.displayName)
+                            .font(.system(size: 13.5, weight: isActive ? .semibold : .medium))
+                            .lineLimit(1)
+                        
                         Spacer(minLength: 4)
                     }
                     .contentShape(Rectangle())
@@ -620,71 +585,39 @@ private struct BotCardView: View {
     
     var body: some View {
         let accent = Color(hexString: self.botID.accentHex)
-        let modelText = self.config.modelOverride.isEmpty ? self.defaultModelLabel : self.config.modelOverride
         
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(accent.opacity(self.config.isEnabled ? 1.0 : 0.35))
-                    .frame(width: 30, height: 30)
-                    .overlay(
-                        Image(systemName: self.botID.symbolName)
-                            .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundStyle(.white)
-                    )
-                
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(self.botID.displayName)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(self.config.isEnabled ? .primary : .secondary)
-                        .lineLimit(1)
-                    
-                    Text(self.botID.handle)
-                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(accent.opacity(self.config.isEnabled ? 0.9 : 0.45))
-                        .lineLimit(1)
-                }
-                
-                Spacer(minLength: 4)
-                
-                Toggle("", isOn: Binding(
-                    get: { self.config.isEnabled },
-                    set: { self.onToggle($0) }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-            }
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(accent.opacity(self.config.isEnabled ? 1.0 : 0.35))
+                .frame(width: 30, height: 30)
+                .overlay(
+                    Image(systemName: self.botID.symbolName)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                )
             
-            HStack(spacing: 6) {
-                Text(modelText)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                
-                if self.recentCalls > 0 {
-                    Text("\(self.recentCalls) 次")
-                        .font(.system(size: 10, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(.tertiary)
-                }
-                
-                Spacer(minLength: 4)
-                
-                Text("指令与试聊")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(self.isHovered ? accent : .secondary)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(self.isHovered ? accent : Color(nsColor: .tertiaryLabelColor))
-            }
+            Text(self.botID.displayName)
+                .font(.system(size: 13.5, weight: .medium))
+                .foregroundStyle(self.config.isEnabled ? .primary : .secondary)
+                .lineLimit(1)
+            
+            Spacer(minLength: 4)
+            
+            Toggle("", isOn: Binding(
+                get: { self.config.isEnabled },
+                set: { self.onToggle($0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(self.isHovered ? accent : Color(nsColor: .tertiaryLabelColor))
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 12)
+        .frame(height: 52)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(self.cardSurface)
@@ -750,13 +683,8 @@ private struct AIBotInspectorSheet: View {
                             .foregroundStyle(.white)
                     )
                 
-                HStack(spacing: 6) {
-                    Text(self.botID.displayName)
-                        .font(.headline)
-                    Text(self.botID.handle)
-                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(accent)
-                }
+                Text(self.botID.displayName)
+                    .font(.headline)
                 
                 Spacer()
                 
@@ -779,7 +707,7 @@ private struct AIBotInspectorSheet: View {
                             .frame(width: 70, alignment: .leading)
                         
                         TextField(
-                            "留空则跟随当前默认 (\(self.activeEndpoint?.displayModel ?? "未配置"))",
+                            self.activeEndpoint?.displayModel ?? "默认",
                             text: self.$config.modelOverride
                         )
                         .textFieldStyle(.roundedBorder)
@@ -789,7 +717,7 @@ private struct AIBotInspectorSheet: View {
                         
                         if let endpoint = self.activeEndpoint, !endpoint.availableModelIDs.isEmpty {
                             Menu {
-                                Button("跟随默认引擎") {
+                                Button("默认") {
                                     self.config.modelOverride = ""
                                     self.saveBotConfig()
                                 }
@@ -808,6 +736,30 @@ private struct AIBotInspectorSheet: View {
                         }
                     }
                     
+                    // Bot Personality / Tone
+                    HStack(spacing: 10) {
+                        Text("专属人设")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .frame(width: 70, alignment: .leading)
+                        
+                        TextField(
+                            "默认",
+                            text: self.$config.customPersona
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: self.config.customPersona) { _, _ in
+                            self.saveBotConfig()
+                        }
+                        
+                        if !self.config.customPersona.isEmpty {
+                            Button("重置") {
+                                self.config.customPersona = ""
+                                self.saveBotConfig()
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                    
                     // GhostBot Extra Controls
                     if self.botID == .ghost {
                         self.ghostControls
@@ -816,31 +768,6 @@ private struct AIBotInspectorSheet: View {
                     // PersonaBot Extra Controls
                     if self.botID == .persona {
                         self.personaControls
-                    }
-                    
-                    // Bot Personality / Tone
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("专属语气 / 人设")
-                                .font(.system(size: 12.5, weight: .medium))
-                            Spacer()
-                            if !self.config.customPersona.isEmpty {
-                                Button("恢复继承") {
-                                    self.config.customPersona = ""
-                                    self.saveBotConfig()
-                                }
-                                .controlSize(.mini)
-                            }
-                        }
-                        
-                        TextField(
-                            self.globalPersona.isEmpty ? "输入该 Bot 的性格/语气要求（可选）" : self.globalPersona,
-                            text: self.$config.customPersona
-                        )
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: self.config.customPersona) { _, _ in
-                            self.saveBotConfig()
-                        }
                     }
                     
                     // Bot Instructions (Stage Prompt)

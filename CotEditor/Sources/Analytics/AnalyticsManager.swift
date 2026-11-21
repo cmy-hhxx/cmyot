@@ -655,7 +655,27 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
            let pData = rawPersonality.data(using: .utf8),
            let decodedProfile = try? JSONDecoder().decode(UserPersonalityProfile.self, from: pData)
         {
-            self.personalityProfile = decodedProfile
+            let hasStaleFallbackCopy = decodedProfile.isLocalFallback && (
+                decodedProfile.conceptSummary.contains("基于当前") ||
+                decodedProfile.tags.contains { ["自留地耕作者", "结构控写手", "高密输出者", "工程实干派", "晨间清冽派"].contains($0.label) }
+            )
+            if hasStaleFallbackCopy {
+                let refreshed = UserPersonalityAnalyzer.makeLocalHeuristicFallback(
+                    documents: self.database.documents,
+                    weeklyReports: self.database.weeklyReports,
+                    stats: self.recentDailyStats,
+                    streak: 0,
+                    fingerprint: decodedProfile.sourceFingerprint
+                )
+                self.personalityProfile = refreshed
+                if let encoded = try? JSONEncoder().encode(refreshed),
+                   let json = String(data: encoded, encoding: .utf8)
+                {
+                    self.database.set(json, forKey: CotLocalDatabase.ConfigKey.userPersonalityProfileJSON)
+                }
+            } else {
+                self.personalityProfile = decodedProfile
+            }
         } else {
             self.personalityProfile = nil
         }
@@ -2529,10 +2549,18 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
             ) else { return }
         }
         
+        if self.personalityProfile == nil {
+            let initialFallback = UserPersonalityAnalyzer.makeLocalHeuristicFallback(
+                documents: self.database.documents,
+                weeklyReports: self.database.weeklyReports,
+                stats: self.recentDailyStats,
+                streak: self.currentWritingStreak,
+                fingerprint: corpus.fingerprint
+            )
+            self.savePersonalityProfile(initialFallback)
+        }
+        
         if corpus.charCount < 20 && self.database.documents.isEmpty && self.database.weeklyReports.isEmpty {
-            if force {
-                self.personalityErrorMessage = "先写几段文字再来分析你的性格画像吧。"
-            }
             return
         }
         
@@ -2575,7 +2603,7 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
           ]
         }
         硬性约束：
-        1. tags 输出 5~7 个；每个 label 必须严格 <= 8 个汉字/字符（比如：说人话专家、深夜代码狂、极简主义者、细节拉满、爱复盘的实干家），禁止超过 8 个字！
+        1. tags 输出 5~7 个；每个 label 必须严格 <= 8 个汉字/字符，文字要自然舒畅、像朋友间的温和观察（如：夜深更有灵感、说话直奔主题、做事很有条理、一写就停不下、抓重点很准、喜欢安静记录），不要生硬的网络黑话或夸张口号！
         2. 不要编造文本里完全不存在的职业或经历；如果内容偏向日常笔记或代码注释，就从行文语气、关注点、用词直白度等真实细节洞察。
 
         用户近期写作样本：

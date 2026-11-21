@@ -290,7 +290,7 @@ struct CustomCursorColorControl: View {
     var body: some View {
         
         HStack(spacing: 8) {
-            Toggle("覆盖主题默认光标色", isOn: self.$usesCustomCursorColor)
+            Toggle("自定义", isOn: self.$usesCustomCursorColor)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .controlSize(.small)

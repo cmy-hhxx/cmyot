@@ -128,8 +128,8 @@ final class SidebarSettingsWindowController: NSWindowController {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.setContentSize(NSSize(width: 820, height: 610))
-        window.minSize = NSSize(width: 740, height: 540)
+        window.setContentSize(NSSize(width: 740, height: 600))
+        window.minSize = NSSize(width: 700, height: 540)
         window.center()
         
         super.init(window: window)
@@ -210,7 +210,7 @@ private struct SidebarSettingsRootView: View {
                 .padding(.horizontal, 10)
                 .padding(.bottom, 12)
             }
-            .frame(width: 204)
+            .frame(width: 192)
             
             Rectangle()
                 .fill(self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.07))
@@ -243,7 +243,10 @@ private struct SidebarSettingsRootView: View {
                     }
                     .padding(.horizontal, 24)
                     .padding(.top, 18)
-                    .padding(.bottom, 14)
+                    .padding(.bottom, 12)
+                    
+                    Divider()
+                        .opacity(0.45)
                     
                     if self.state.selectedItem == .keyBindings {
                         KeyBindingsSettingsView(usesFlexibleFrame: true)
@@ -252,7 +255,9 @@ private struct SidebarSettingsRootView: View {
                         ScrollView {
                             self.detailContent
                                 .padding(.horizontal, 24)
+                                .padding(.top, 16)
                                 .padding(.bottom, 26)
+                                .frame(maxWidth: 548, alignment: .topLeading)
                                 .frame(maxWidth: .infinity, alignment: .topLeading)
                         }
                     }
@@ -260,7 +265,7 @@ private struct SidebarSettingsRootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 740, minHeight: 540)
+        .frame(minWidth: 700, minHeight: 540)
         .environment(\.locale, AppLanguage.current.locale)
     }
     
@@ -472,7 +477,7 @@ private struct SidebarGeneralSettingsPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             // 1. Local Account Management (moved cleanly from top-right popover!)
-            SettingsGroupCard(title: "本地账户（每账户独立 SQLite 数据库）") {
+            SettingsGroupCard(title: "本地账户") {
                 let active = self.profileManager.activeProfile
                 
                 HStack(spacing: 12) {
@@ -642,10 +647,10 @@ private struct SidebarGeneralSettingsPane: View {
                 Divider()
                 
                 HStack {
-                    Label("本地文档与配置库 (\(CotLocalDatabase.shared.documents.count) 篇)", systemImage: "internaldrive")
-                        .font(.system(size: 12.5))
+                    Text("本地文档库")
+                        .font(.system(size: 13, weight: .medium))
                     Spacer()
-                    Button("管理数据库内容…") {
+                    Button("管理…") {
                         self.isShowingStoredDocs = true
                     }
                     .controlSize(.small)
@@ -670,10 +675,6 @@ private struct SidebarGeneralSettingsPane: View {
                     }
                 }
                 
-                Divider()
-                
-                Toggle("下次启动重新打开上次窗口", isOn: self.$quitAlwaysKeepsWindows)
-                
                 HStack {
                     Text("无已开文档时启动动作")
                     Spacer()
@@ -686,7 +687,25 @@ private struct SidebarGeneralSettingsPane: View {
                     .frame(width: 180)
                 }
                 
-                Toggle("启用版本自动保存 (Auto Save)", isOn: self.$enablesAutosaveInPlace)
+                Divider()
+                
+                HStack {
+                    Text("下次启动重新打开上次窗口")
+                    Spacer()
+                    Toggle("", isOn: self.$quitAlwaysKeepsWindows)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                
+                HStack {
+                    Text("自动保存文档改动")
+                    Spacer()
+                    Toggle("", isOn: self.$enablesAutosaveInPlace)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
             }
         }
         .sheet(isPresented: self.$isShowingStoredDocs) {
@@ -785,33 +804,38 @@ private struct SidebarAppearanceSettingsPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsGroupCard(title: "字体与行距") {
-                HStack {
+                HStack(spacing: 8) {
                     Text("标准字体")
                     Spacer()
-                    Text("\(self.standardFont.wrappedValue.displayName ?? self.standardFont.wrappedValue.fontName) \(Int(self.standardFont.wrappedValue.pointSize))pt")
-                        .font(.caption)
+                    Text("\(self.standardFont.wrappedValue.displayName ?? self.standardFont.wrappedValue.fontName) \(Int(self.standardFont.wrappedValue.pointSize))")
+                        .font(.system(size: 12.5))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                     FontSizeStepper("字号", font: self.standardFont)
                     FontPicker("选择…", selection: self.standardFont)
                 }
                 
-                HStack {
+                HStack(spacing: 8) {
                     Text("等宽字体")
                     Spacer()
-                    Text("\(self.monospacedFont.wrappedValue.displayName ?? self.monospacedFont.wrappedValue.fontName) \(Int(self.monospacedFont.wrappedValue.pointSize))pt")
-                        .font(.caption)
+                    Text("\(self.monospacedFont.wrappedValue.displayName ?? self.monospacedFont.wrappedValue.fontName) \(Int(self.monospacedFont.wrappedValue.pointSize))")
+                        .font(.system(size: 12.5))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                     FontSizeStepper("字号", font: self.monospacedFont)
                     FontPicker("选择…", selection: self.monospacedFont)
                 }
                 
-                HStack {
+                HStack(spacing: 8) {
                     Text("行高倍数")
                     Spacer()
-                    Stepper(value: self.$lineHeight, in: 0.8...3.0, step: 0.1, format: .number.precision(.fractionLength(1...2))) {
+                    Text(self.lineHeight, format: .number.precision(.fractionLength(1...2)))
+                        .font(.system(size: 12.5).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Stepper(value: self.$lineHeight, in: 0.8...3.0, step: 0.1) {
                         EmptyView()
                     }
-                    .monospacedDigit()
+                    .labelsHidden()
                 }
             }
             
@@ -826,18 +850,18 @@ private struct SidebarAppearanceSettingsPane: View {
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
-                    .frame(width: 240)
+                    .frame(width: 210)
                 }
                 
-                HStack {
+                HStack(spacing: 8) {
                     Text("窗口不透明度")
                     Spacer()
                     Slider(value: self.$windowAlpha, in: 0.2...1.0)
-                        .frame(width: 200)
+                        .frame(width: 162)
                     Text(self.windowAlpha, format: .percent.precision(.fractionLength(0)))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
+                        .frame(width: 40, alignment: .trailing)
                 }
                 
                 HStack {
@@ -848,7 +872,7 @@ private struct SidebarAppearanceSettingsPane: View {
             }
             
             SettingsGroupCard(title: "编辑器显示") {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
+                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 10) {
                     Toggle("显示行号", isOn: self.$showLineNumbers)
                     Toggle("自动换行", isOn: self.$wrapLines)
                     Toggle("高亮当前行", isOn: self.$highlightCurrentLine)
@@ -859,7 +883,8 @@ private struct SidebarAppearanceSettingsPane: View {
             
             SettingsGroupCard(title: "配色主题") {
                 ThemeView()
-                    .frame(height: 224)
+                    .frame(height: 368)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
     }
@@ -907,23 +932,22 @@ private struct SidebarEditorFormatPane: View {
                     Spacer()
                     Picker("", selection: self.$autoExpandTab) {
                         Text("空格").tag(true)
-                        Text("制表符 (Tab)").tag(false)
+                        Text("Tab").tag(false)
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
-                    .frame(width: 210)
+                    .frame(width: 190)
                 }
                 
                 HStack {
                     Text("缩进宽度")
                     Spacer()
                     StepperNumberField(value: self.$tabWidth, default: 4, in: 1...99)
-                    Text("空格")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
                 
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
+                Divider()
+                
+                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 10) {
                     Toggle("输入时自动缩进", isOn: self.$autoIndent)
                     Toggle("按 Tab 缩进选区", isOn: self.$indentWithTabKey)
                     Toggle("自动清除行尾空白", isOn: self.$autoTrimsTrailingWhitespace)
@@ -932,7 +956,7 @@ private struct SidebarEditorFormatPane: View {
                 }
             }
             
-            SettingsGroupCard(title: "默认换行、编码与语法") {
+            SettingsGroupCard(title: "换行、编码与语法") {
                 HStack {
                     Text("默认换行符")
                     Spacer()
@@ -942,12 +966,17 @@ private struct SidebarEditorFormatPane: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 220)
+                    .frame(width: 190)
                 }
                 
-                HStack {
+                HStack(spacing: 8) {
                     Text("默认文本编码")
                     Spacer()
+                    Button("排序…") {
+                        self.isEncodingListPresented = true
+                    }
+                    .controlSize(.small)
+                    
                     Picker("", selection: self.fileEncoding) {
                         ForEach(Array(self.encodingManager.fileEncodings.enumerated()), id: \.offset) { _, enc in
                             if let enc {
@@ -958,12 +987,7 @@ private struct SidebarEditorFormatPane: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 220)
-                    
-                    Button("排序…") {
-                        self.isEncodingListPresented = true
-                    }
-                    .controlSize(.small)
+                    .frame(width: 190)
                 }
                 
                 HStack {
@@ -977,10 +1001,19 @@ private struct SidebarEditorFormatPane: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 220)
+                    .frame(width: 190)
                 }
                 
-                Toggle("读取文档内的编码声明标签", isOn: self.$referToEncodingTag)
+                Divider()
+                
+                HStack {
+                    Text("读取文档内的编码声明")
+                    Spacer()
+                    Toggle("", isOn: self.$referToEncodingTag)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
             }
         }
         .onReceive(SyntaxManager.shared.$settingNames) { self.syntaxNames = $0 }
@@ -1007,22 +1040,43 @@ private struct SidebarLabsSettingsPane: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SettingsGroupCard(title: "模态编辑与动感反馈") {
-                Toggle("启用 Vim 模式 (Normal / Visual / Insert + ⌃A 分屏)", isOn: self.$vimMode)
+            SettingsGroupCard(title: "模态编辑与动效") {
+                HStack {
+                    Text("启用 Vim 模式")
+                    Spacer()
+                    Toggle("", isOn: self.$vimMode)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
                 
-                Toggle("Vim 流体弹簧光标与尾迹", isOn: self.$vimCursorTrailEnabled)
-                    .onChange(of: self.vimCursorTrailEnabled) { _, val in
-                        CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
-                        UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
-                    }
+                HStack {
+                    Text("Vim 流体光标与尾迹")
+                    Spacer()
+                    Toggle("", isOn: self.$vimCursorTrailEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .onChange(of: self.vimCursorTrailEnabled) { _, val in
+                            CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
+                            UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
+                        }
+                }
                 
                 Divider()
                 
-                Toggle("动感打字粒子特效", isOn: self.$typewriterEnabled)
-                    .onChange(of: self.typewriterEnabled) { _, val in
-                        CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
-                        UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
-                    }
+                HStack {
+                    Text("打字粒子特效")
+                    Spacer()
+                    Toggle("", isOn: self.$typewriterEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .onChange(of: self.typewriterEnabled) { _, val in
+                            CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
+                            UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
+                        }
+                }
                 
                 HStack {
                     Text("打字特效风格")
@@ -1033,7 +1087,7 @@ private struct SidebarLabsSettingsPane: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 240)
+                    .frame(width: 190)
                     .disabled(!self.typewriterEnabled)
                     .onChange(of: self.typewriterStyle) { _, val in
                         CotLocalDatabase.shared.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
@@ -1041,27 +1095,41 @@ private struct SidebarLabsSettingsPane: View {
                     }
                 }
                 
-                Toggle("纯文本内嵌图片预览卡片", isOn: self.$plainTextImagesEnabled)
-                    .onChange(of: self.plainTextImagesEnabled) { _, val in
-                        CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
-                        UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
-                    }
+                Divider()
+                
+                HStack {
+                    Text("纯文本内嵌图片预览")
+                    Spacer()
+                    Toggle("", isOn: self.$plainTextImagesEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .onChange(of: self.plainTextImagesEnabled) { _, val in
+                            CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+                            UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+                        }
+                }
             }
             
             SettingsGroupCard(title: "性格弹幕") {
                 HStack {
-                    Toggle("后台自动提炼性格弹幕", isOn: self.$autoPersonalityEnabled)
-                        .onChange(of: self.autoPersonalityEnabled) { _, val in
-                            CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.aiPersonalityAutoEnabled)
-                        }
+                    Text("头像性格弹幕")
                     Spacer()
-                    Button(self.analytics.isAnalyzingPersonality ? "分析中…" : "立即分析") {
+                    Button(self.analytics.isAnalyzingPersonality ? "分析中…" : "更新") {
                         Task {
                             await self.analytics.refreshPersonalityProfile(force: true)
                         }
                     }
                     .controlSize(.small)
                     .disabled(self.analytics.isAnalyzingPersonality)
+                    
+                    Toggle("", isOn: self.$autoPersonalityEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .onChange(of: self.autoPersonalityEnabled) { _, val in
+                            CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.aiPersonalityAutoEnabled)
+                        }
                 }
             }
         }

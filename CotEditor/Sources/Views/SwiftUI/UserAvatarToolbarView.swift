@@ -416,7 +416,7 @@ struct UserProfilePopoverView: View {
     @State private var confirmDeleteUserID: String?
     @State private var isDotBreathing = false
     
-    // Fun click state
+    // Fun click & Danmaku state
     @State private var avatarTapCount = 0
     @State private var avatarSquish = false
     @State private var avatarSpinAngle: Double = 0
@@ -424,6 +424,10 @@ struct UserProfilePopoverView: View {
     @State private var avatarPulseOpacity: Double = 0
     @State private var nameWiggleAngle: Double = 0
     @State private var selectedTag: UserPersonalityTag?
+    @State private var isDanmakuEnabled: Bool = CotLocalDatabase.shared.bool(
+        forKey: CotLocalDatabase.ConfigKey.aiPersonalityAutoEnabled,
+        default: true
+    )
     
     @FocusState private var isNameFieldFocused: Bool
     @FocusState private var isTodoFieldFocused: Bool
@@ -442,7 +446,7 @@ struct UserProfilePopoverView: View {
         VStack(spacing: 10) {
             // Active Profile Card with Apple Music Ambient Wash
             VStack(spacing: 10) {
-                // Playful rotating greeting + live today pulse pill
+                // Playful rotating greeting + Danmaku switch + live today pulse pill
                 HStack(spacing: 6) {
                     Text(self.greeting)
                         .font(.system(size: 11, weight: .medium))
@@ -455,6 +459,39 @@ struct UserProfilePopoverView: View {
                         }
                     
                     Spacer()
+                    
+                    Button {
+                        withAnimation(Self.spring) {
+                            self.isDanmakuEnabled.toggle()
+                            CotLocalDatabase.shared.set(
+                                self.isDanmakuEnabled,
+                                forKey: CotLocalDatabase.ConfigKey.aiPersonalityAutoEnabled
+                            )
+                            if !self.isDanmakuEnabled {
+                                self.selectedTag = nil
+                            } else if self.analytics.personalityProfile == nil {
+                                Task {
+                                    await self.analytics.refreshPersonalityProfile(force: true)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 3.5) {
+                            Image(systemName: self.isDanmakuEnabled ? "sparkles" : "sparkles.slash")
+                                .font(.system(size: 9.5, weight: .semibold))
+                            Text("弹幕")
+                                .font(.system(size: 10.5, weight: .medium))
+                        }
+                        .foregroundStyle(self.isDanmakuEnabled ? self.mintAccent : .secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(
+                            self.isDanmakuEnabled ? self.mintSoftBg : self.surfaceFill,
+                            in: Capsule()
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
                     
                     HStack(spacing: 5) {
                         Circle()
@@ -474,78 +511,64 @@ struct UserProfilePopoverView: View {
                 }
                 
                 // Tactile Avatar (fun click reaction; drop or right-click to change avatar)
-                ZStack {
-                    if !tags.isEmpty {
-                        CompactDanmakuBackdrop(
-                            tags: tags,
-                            selectedTagID: self.selectedTag?.id,
-                            accent: ambient.primary
-                        ) { tapped in
-                            withAnimation(Self.spring) {
-                                self.selectedTag = (self.selectedTag?.id == tapped.id) ? nil : tapped
-                            }
+                Button {
+                    self.triggerAvatarFunTap()
+                } label: {
+                    ZStack(alignment: .bottom) {
+                        Circle()
+                            .strokeBorder(ambient.primary.opacity(self.avatarPulseOpacity), lineWidth: 2)
+                            .frame(width: 74, height: 74)
+                            .scaleEffect(self.avatarPulseScale)
+                        
+                        UserAvatarCircleView(profile: active, size: 68, customImage: avatarImage)
+                            .overlay(
+                                Circle()
+                                    .strokeBorder(
+                                        ambient.primary.opacity(self.isAvatarDropTargeted ? 0.9 : (self.isAvatarHovered ? 0.45 : 0.18)),
+                                        lineWidth: self.isAvatarDropTargeted ? 2.5 : 1.5
+                                    )
+                            )
+                            .scaleEffect(self.avatarSquish ? 0.86 : (self.isAvatarDropTargeted ? 1.08 : (self.isAvatarHovered ? 1.03 : 1.0)))
+                            .rotationEffect(.degrees(self.avatarSpinAngle))
+                            .shadow(
+                                color: ambient.primary.opacity(0.32),
+                                radius: 12,
+                                y: 4
+                            )
+                        
+                        if self.isAvatarDropTargeted {
+                            Text("松手换头像")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2.5)
+                                .background(.ultraThinMaterial, in: Capsule())
+                                .background(Color.black.opacity(0.45), in: Capsule())
+                                .offset(y: 4)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
                     }
-                    
-                    Button {
-                        self.triggerAvatarFunTap()
-                    } label: {
-                        ZStack(alignment: .bottom) {
-                            Circle()
-                                .strokeBorder(ambient.primary.opacity(self.avatarPulseOpacity), lineWidth: 2)
-                                .frame(width: 74, height: 74)
-                                .scaleEffect(self.avatarPulseScale)
-                            
-                            UserAvatarCircleView(profile: active, size: 68, customImage: avatarImage)
-                                .overlay(
-                                    Circle()
-                                        .strokeBorder(
-                                            ambient.primary.opacity(self.isAvatarDropTargeted ? 0.9 : (self.isAvatarHovered ? 0.45 : 0.18)),
-                                            lineWidth: self.isAvatarDropTargeted ? 2.5 : 1.5
-                                        )
-                                )
-                                .scaleEffect(self.avatarSquish ? 0.86 : (self.isAvatarDropTargeted ? 1.08 : (self.isAvatarHovered ? 1.03 : 1.0)))
-                                .rotationEffect(.degrees(self.avatarSpinAngle))
-                                .shadow(
-                                    color: ambient.primary.opacity(0.32),
-                                    radius: 12,
-                                    y: 4
-                                )
-                            
-                            if self.isAvatarDropTargeted {
-                                Text("松手换头像")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 2.5)
-                                    .background(.ultraThinMaterial, in: Capsule())
-                                    .background(Color.black.opacity(0.45), in: Capsule())
-                                    .offset(y: 4)
-                                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                            }
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .onHover { hovering in
+                    withAnimation(Self.spring) { self.isAvatarHovered = hovering }
+                }
+                .onDrop(of: [.image, .fileURL], isTargeted: self.$isAvatarDropTargeted) { providers in
+                    self.handleAvatarDrop(providers: providers)
+                }
+                .contextMenu {
+                    Button("更换头像…") { self.pickAvatarForActiveUser() }
+                    if avatarImage != nil {
+                        Button("恢复默认头像") {
+                            self.manager.updateProfile(id: active.id, avatarData: .some(nil))
                         }
                     }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    .onHover { hovering in
-                        withAnimation(Self.spring) { self.isAvatarHovered = hovering }
-                    }
-                    .onDrop(of: [.image, .fileURL], isTargeted: self.$isAvatarDropTargeted) { providers in
-                        self.handleAvatarDrop(providers: providers)
-                    }
-                    .contextMenu {
-                        Button("更换头像…") { self.pickAvatarForActiveUser() }
-                        if avatarImage != nil {
-                            Button("恢复默认头像") {
-                                self.manager.updateProfile(id: active.id, avatarData: .some(nil))
-                            }
-                        }
-                        Divider()
-                        Button("修改昵称") {
-                            withAnimation(Self.spring) {
-                                self.editingName = active.displayName
-                                self.isEditingName = true
-                            }
+                    Divider()
+                    Button("修改昵称") {
+                        withAnimation(Self.spring) {
+                            self.editingName = active.displayName
+                            self.isEditingName = true
                         }
                     }
                 }
@@ -653,7 +676,20 @@ struct UserProfilePopoverView: View {
                     }
                 }
                 
-                if let tag = self.selectedTag {
+                if self.isDanmakuEnabled, !tags.isEmpty {
+                    SmoothDanmakuMarquee(
+                        tags: tags,
+                        selectedTagID: self.selectedTag?.id,
+                        accent: ambient.primary
+                    ) { tapped in
+                        withAnimation(Self.spring) {
+                            self.selectedTag = (self.selectedTag?.id == tapped.id) ? nil : tapped
+                        }
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                }
+                
+                if self.isDanmakuEnabled, let tag = self.selectedTag {
                     HStack(spacing: 6) {
                         Text(tag.explanation.isEmpty ? (self.analytics.personalityProfile?.conceptSummary ?? tag.label) : tag.explanation)
                             .font(.system(size: 11.5, weight: .medium))
@@ -1295,7 +1331,8 @@ private struct MiniPopoverSparkMatrix: View {
 }
 
 
-private struct CompactDanmakuBackdrop: View {
+/// 60/120Hz display-synced marquee strip with exact measured single-loop width for seamless, stutter-free danmaku playback.
+private struct SmoothDanmakuMarquee: View {
     
     let tags: [UserPersonalityTag]
     let selectedTagID: String?
@@ -1305,69 +1342,91 @@ private struct CompactDanmakuBackdrop: View {
     @State private var isHovered = false
     @State private var accumulatedOffset: TimeInterval = 0
     @State private var anchorDate = Date()
+    @State private var singleSetWidth: CGFloat = 0
     @Environment(\.colorScheme) private var colorScheme
+    
+    private let pillGap: CGFloat = 8
+    private let speed: CGFloat = 22
     
     
     var body: some View {
-        let topTags = Array(self.tags.enumerated().filter { $0.offset % 2 == 0 }.map(\.element))
-        let bottomTags = Array(self.tags.enumerated().filter { $0.offset % 2 == 1 }.map(\.element))
-        
-        TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
+        TimelineView(.animation(minimumInterval: nil, paused: self.isHovered)) { context in
             let elapsed = self.isHovered
                 ? self.accumulatedOffset
                 : self.accumulatedOffset + max(0, context.date.timeIntervalSince(self.anchorDate))
-            VStack(spacing: 14) {
-                self.lane(tags: topTags, phase: elapsed, speed: 15)
-                if !bottomTags.isEmpty {
-                    self.lane(tags: bottomTags, phase: elapsed + 2.2, speed: 11)
-                }
+            let period = max(40, self.singleSetWidth + self.pillGap)
+            let xOffset = self.singleSetWidth > 0
+                ? -((CGFloat(elapsed) * self.speed).truncatingRemainder(dividingBy: period))
+                : 0
+            
+            HStack(spacing: self.pillGap) {
+                self.tagTrack
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.width
+                    } action: { newWidth in
+                        if newWidth > 0 && abs(newWidth - self.singleSetWidth) > 0.5 {
+                            self.singleSetWidth = newWidth
+                        }
+                    }
+                
+                self.tagTrack
+                self.tagTrack
             }
+            .offset(x: xOffset)
+            .frame(width: 224, height: 24, alignment: .leading)
         }
-        .frame(width: 224, height: 64)
+        .frame(width: 224, height: 24)
         .clipped()
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.0),
+                    .init(color: .black, location: 0.08),
+                    .init(color: .black, location: 0.92),
+                    .init(color: .clear, location: 1.0),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+        .onAppear {
+            self.anchorDate = Date()
+        }
         .onHover { hovering in
             guard hovering != self.isHovered else { return }
+            let now = Date()
             if hovering {
-                self.accumulatedOffset += max(0, Date().timeIntervalSince(self.anchorDate))
+                self.accumulatedOffset += max(0, now.timeIntervalSince(self.anchorDate))
             } else {
-                self.anchorDate = Date()
+                self.anchorDate = now
             }
             self.isHovered = hovering
         }
     }
     
     
-    @ViewBuilder
-    private func lane(tags: [UserPersonalityTag], phase: TimeInterval, speed: CGFloat) -> some View {
-        let cycleW = max(160, CGFloat(max(1, tags.count)) * 78)
-        let xOffset = -((CGFloat(phase) * speed).truncatingRemainder(dividingBy: cycleW))
-        
-        HStack(spacing: 8) {
-            ForEach(0..<3, id: \.self) { _ in
-                HStack(spacing: 8) {
-                    ForEach(tags) { tag in
-                        let isSelected = (self.selectedTagID == tag.id)
-                        Button {
-                            self.onTap(tag)
-                        } label: {
-                            Text(tag.label)
-                                .font(.system(size: 9.5, weight: .semibold))
-                                .foregroundStyle(isSelected ? .white : .primary.opacity(0.78))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(
-                                    Capsule()
-                                        .fill(isSelected ? self.accent : Color.primary.opacity(self.colorScheme == .dark ? 0.14 : 0.07))
-                                )
-                                .fixedSize()
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                    }
+    private var tagTrack: some View {
+        HStack(spacing: self.pillGap) {
+            ForEach(self.tags) { tag in
+                let isSelected = (self.selectedTagID == tag.id)
+                Button {
+                    self.onTap(tag)
+                } label: {
+                    Text(tag.label)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(isSelected ? .white : .primary.opacity(0.84))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(isSelected ? self.accent : Color.primary.opacity(self.colorScheme == .dark ? 0.14 : 0.065))
+                        )
+                        .fixedSize()
                 }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
             }
         }
-        .offset(x: xOffset)
-        .frame(width: 224, height: 18, alignment: .leading)
+        .fixedSize()
     }
 }

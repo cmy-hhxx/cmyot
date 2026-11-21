@@ -235,18 +235,18 @@ nonisolated enum UserPersonalityAnalyzer {
         let morningCount = hours.filter { (6...11).contains($0) }.count
         if !hours.isEmpty && lateNightCount * 2 >= hours.count {
             tags.append(UserPersonalityTag(
-                label: "深夜灵感捕手",
-                explanation: "最近记录中有不少是在 22:00 之后保存落笔的，夜间进入心流更顺。",
+                label: "夜深更有灵感",
+                explanation: "喜欢在安静的夜晚理清思绪，越到夜里写得越顺。",
                 tone: .calm
             ))
-            notes.append("偏好在安静的夜间整理思路并落地文稿。")
+            notes.append("偏爱在安静的夜晚沉淀想法。")
         } else if !hours.isEmpty && morningCount * 2 >= hours.count {
             tags.append(UserPersonalityTag(
-                label: "晨间清冽派",
-                explanation: "高频在上午集中开写，趁精力充沛把核心内容先敲出来。",
+                label: "早起思绪最清",
+                explanation: "习惯趁上午精力最好时动笔，干脆利落地推进核心内容。",
                 tone: .warm
             ))
-            notes.append("上午产出集中，习惯在一天的开端完成主要起草。")
+            notes.append("上午状态专注，习惯先把手头重要的事写出来。")
         }
         
         // 2. Syntax & genre inclination
@@ -257,14 +257,14 @@ nonisolated enum UserPersonalityAnalyzer {
         }.count
         if codeCount >= max(2, totalDocs / 3) {
             tags.append(UserPersonalityTag(
-                label: "工程实干派",
-                explanation: "库里有不少代码与结构化技术文档，思考偏向直接可落地。",
+                label: "逻辑清晰利落",
+                explanation: "平时常写代码与技术笔记，表达直接，凡事讲求落地。",
                 tone: .sharp
             ))
         } else if markdownCount >= max(2, totalDocs / 2) {
             tags.append(UserPersonalityTag(
-                label: "结构控写手",
-                explanation: "高频使用 Markdown 组织层级与要点，喜欢把复杂事理顺再动。",
+                label: "做事很有条理",
+                explanation: "习惯把复杂的想法分层列清，看着舒爽、读着清楚。",
                 tone: .calm
             ))
         }
@@ -272,24 +272,24 @@ nonisolated enum UserPersonalityAnalyzer {
         // 3. Weekly report habit
         if !weeklyReports.isEmpty {
             tags.append(UserPersonalityTag(
-                label: "复盘有章法",
-                explanation: "已沉淀 \(weeklyReports.count) 份周报，会定期把零散产出收束成阶段结论。",
+                label: "习惯勤做复盘",
+                explanation: "会把做过的事定期收拢成阶段记录，步子走得很稳。",
                 tone: .warm
             ))
-            notes.append("重视阶段复盘，持续在周报库沉淀工作线索。")
+            notes.append("有定期复盘的习惯，擅长从日常记录里梳理脉络。")
         }
         
         // 4. Streak or volume
         if streak >= 3 {
             tags.append(UserPersonalityTag(
-                label: "连续\(streak)天在写",
-                explanation: "保持了连续 \(streak) 天动笔的节奏，输出习惯相当稳定。",
+                label: "每天都在写字",
+                explanation: "保持着稳定的日常记录节奏，写字已经成了自然习惯。",
                 tone: .warm
             ))
         } else if totalTyped >= 10_000 {
             tags.append(UserPersonalityTag(
-                label: "高密输出者",
-                explanation: "累计已手写超过 \(totalTyped.formatted(.number.grouping(.automatic))) 字，耐得住长程打磨。",
+                label: "一写就停不下",
+                explanation: "耐得住性子长篇打磨，一旦进入状态就能持续输出。",
                 tone: .sharp
             ))
         }
@@ -298,31 +298,36 @@ nonisolated enum UserPersonalityAnalyzer {
         let hasHighlights = documents.contains { $0.highlightsJSON.count > 4 }
         if hasHighlights {
             tags.append(UserPersonalityTag(
-                label: "细节标红控",
-                explanation: "习惯在文稿里随手做高亮标注，抓重点很果断。",
+                label: "抓重点很准",
+                explanation: "读文写字时会随手标出关键处，一眼就能拎出核心。",
                 tone: .playful
             ))
         }
         
-        if tags.count < 4 {
+        if tags.count < 5 {
             tags.append(UserPersonalityTag(
-                label: "直白说人话",
-                explanation: "表达偏向务实直接，先把事情说清，再考虑修饰。",
+                label: "说话直奔主题",
+                explanation: "行文干净不绕弯子，喜欢把事情直接说透。",
                 tone: .playful
             ))
             tags.append(UserPersonalityTag(
-                label: "自留地耕作者",
-                explanation: "把零散想法收进本地文档库，慢慢养出自己的知识体系。",
+                label: "喜欢安静记录",
+                explanation: "习惯把闪过的念头随手记在本地，慢慢攒出自己的思路。",
                 tone: .calm
+            ))
+            tags.append(UserPersonalityTag(
+                label: "认真对待细节",
+                explanation: "对字句和排版有自己的讲究，看着顺眼才舒心。",
+                tone: .warm
             ))
         }
         
         if notes.isEmpty {
-            notes.append("目前由本地行为轨迹初判；配置可用 AI 端点后，每隔 6 小时会自动精读正文提炼深度性格概念。")
+            notes.append("行文干净自然，喜欢把想法理顺后再落笔。")
         }
         
-        let title = streak >= 3 ? "有节奏感的实干记录者" : "持续耕耘的思考者"
-        let summary = "基于当前 \(totalDocs) 篇本地文稿与 \(weeklyReports.count) 份周报的初判：你习惯把想法直接落到文字与结构里，不绕弯子。接通 AI 端点后，系统将每 6 小时自动细读近期内容，生成更犀利、更贴合文风的性格概念与个性弹幕。"
+        let title = streak >= 3 ? "步调从容的记录者" : "思路清爽的写字人"
+        let summary = "你写东西喜欢直奔重点，不爱堆砌客套话；习惯把零散的念头一条条理清，既有自己的节奏，也很在意细节的舒坦感。"
         
         return UserPersonalityProfile(
             tags: Array(tags.prefix(7)),
