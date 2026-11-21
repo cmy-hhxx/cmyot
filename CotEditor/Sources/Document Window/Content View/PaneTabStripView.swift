@@ -91,7 +91,7 @@ struct PaneTabStripView: NSViewRepresentable {
     private static let tabSpacing: CGFloat = 4
     private static let minTabWidth: CGFloat = 80
     private static let maxTabWidth: CGFloat = 600
-    private static let externalDragGapWidth: CGFloat = 26
+    private static let externalDragGapWidth: CGFloat = 64
     
     
     override init(frame frameRect: NSRect) {
@@ -148,16 +148,17 @@ struct PaneTabStripView: NSViewRepresentable {
         self.newTabButton.layer?.cornerCurve = .continuous
         self.newTabButton.target = self
         self.newTabButton.action = #selector(addNewTab(_:))
-        self.newTabButton.toolTip = String(localized: "chrome.tab.newTabHelp", defaultValue: "New Tab", table: "Chrome")
+        self.newTabButton.toolTip = AppLanguage.text("新建标签页", en: "New Tab")
         self.documentContainer.addSubview(self.newTabButton)
         
         self.insertionIndicator.wantsLayer = true
-        self.insertionIndicator.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
-        self.insertionIndicator.layer?.cornerRadius = 1.5
-        self.insertionIndicator.layer?.shadowColor = NSColor.controlAccentColor.cgColor
-        self.insertionIndicator.layer?.shadowOpacity = 0.55
-        self.insertionIndicator.layer?.shadowRadius = 4
+        self.insertionIndicator.layer?.cornerRadius = (Self.tabHeight - 4) / 2
+        self.insertionIndicator.layer?.cornerCurve = .continuous
+        self.insertionIndicator.layer?.borderWidth = 1.5
+        self.insertionIndicator.layer?.shadowOpacity = 0.36
+        self.insertionIndicator.layer?.shadowRadius = 6
         self.insertionIndicator.layer?.shadowOffset = .zero
+        self.refreshInsertionIndicatorAppearance()
         self.insertionIndicator.isHidden = true
         self.documentContainer.addSubview(self.insertionIndicator)
         
@@ -176,6 +177,24 @@ struct PaneTabStripView: NSViewRepresentable {
         
         super.layout()
         self.layoutTabViews(animated: false)
+    }
+    
+    
+    override func viewDidChangeEffectiveAppearance() {
+        
+        super.viewDidChangeEffectiveAppearance()
+        self.refreshInsertionIndicatorAppearance()
+    }
+    
+    
+    private func refreshInsertionIndicatorAppearance() {
+        
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            let accent = NSColor.controlAccentColor
+            self.insertionIndicator.layer?.backgroundColor = accent.withAlphaComponent(0.14).cgColor
+            self.insertionIndicator.layer?.borderColor = accent.withAlphaComponent(0.72).cgColor
+            self.insertionIndicator.layer?.shadowColor = accent.cgColor
+        }
     }
     
     
@@ -288,9 +307,12 @@ struct PaneTabStripView: NSViewRepresentable {
         }
         
         if shouldAnimate {
+            let isLiveDrag = (self.activeDragTabID != nil)
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.18
-                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+                ctx.duration = isLiveDrag ? 0.28 : 0.18
+                ctx.timingFunction = isLiveDrag
+                    ? CAMediaTimingFunction(controlPoints: 0.34, 1.46, 0.64, 1.0)
+                    : CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
                 applyFrames()
             }
         } else {
@@ -615,7 +637,7 @@ struct PaneTabStripView: NSViewRepresentable {
         menu.autoenablesItems = false
         
         let renameItem = NSMenuItem(
-            title: String(localized: "chrome.tab.rename", defaultValue: "Rename…", table: "Chrome"),
+            title: AppLanguage.text("重命名标签页", en: "Rename Tab"),
             action: #selector(contextMenuRename(_:)),
             keyEquivalent: ""
         )
@@ -624,8 +646,8 @@ struct PaneTabStripView: NSViewRepresentable {
         menu.addItem(renameItem)
         
         let pinTitle = tab.isPinned
-            ? String(localized: "chrome.tab.unpin", defaultValue: "Unpin Tab", table: "Chrome")
-            : String(localized: "chrome.tab.pin", defaultValue: "Pin Tab", table: "Chrome")
+            ? AppLanguage.text("取消固定标签页", en: "Unpin Tab")
+            : AppLanguage.text("固定标签页", en: "Pin Tab")
         let pinItem = NSMenuItem(title: pinTitle, action: #selector(contextMenuTogglePin(_:)), keyEquivalent: "")
         pinItem.target = self
         pinItem.representedObject = tab
@@ -634,7 +656,7 @@ struct PaneTabStripView: NSViewRepresentable {
         menu.addItem(.separator())
         
         let closeItem = NSMenuItem(
-            title: String(localized: "chrome.tab.close", defaultValue: "Close Tab", table: "Chrome"),
+            title: AppLanguage.text("关闭标签页", en: "Close Tab"),
             action: #selector(contextMenuClose(_:)),
             keyEquivalent: ""
         )
@@ -679,13 +701,14 @@ struct PaneTabStripView: NSViewRepresentable {
         self.activeDragTabID = tab.id
         self.dragStartScreenPoint = NSEvent.mouseLocation
         itemView.setDragSourceActive(true, animated: true)
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         
         let pboardItem = NSPasteboardItem()
         pboardItem.setString(tab.id.uuidString, forType: PaneTab.dragPasteboardType)
         pboardItem.setString(tab.dragPayload, forType: .string)
         
         let draggingItem = NSDraggingItem(pasteboardWriter: pboardItem)
-        let shadowPad: CGFloat = 6
+        let shadowPad: CGFloat = 10
         let previewImage = itemView.dragSnapshotImage(shadowPadding: shadowPad)
         let itemFrameInSelf = self.convert(itemView.bounds, from: itemView).insetBy(dx: -shadowPad, dy: -shadowPad)
         draggingItem.setDraggingFrame(itemFrameInSelf, contents: previewImage)
@@ -784,10 +807,13 @@ struct PaneTabStripView: NSViewRepresentable {
         }
         
         self.reloadTabs(animated: true)
-        if accepted, isLocalDrag {
-            let landedID = state.tabs.first(where: { $0.id == draggedID })?.id ?? state.selectedTab?.id
-            if let landedID {
-                self.tabViews[landedID]?.animateDropArrival(crossPane: false)
+        if accepted {
+            NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+            if isLocalDrag {
+                let landedID = state.tabs.first(where: { $0.id == draggedID })?.id ?? state.selectedTab?.id
+                if let landedID {
+                    self.tabViews[landedID]?.animateDropArrival(crossPane: false)
+                }
             }
         }
         return accepted
@@ -848,43 +874,63 @@ struct PaneTabStripView: NSViewRepresentable {
         
         if indexChanged {
             self.layoutTabViews(animated: true)
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
         
         let isLocalDrag = self.activeDragTabID.map { id in state.tabs.contains(where: { $0.id == id }) } ?? false
         if isLocalDrag {
-            // Local tabs glide smoothly into their target slot directly; no vertical bar needed.
-            self.insertionIndicator.isHidden = true
+            // Local tabs glide smoothly into their target slot directly; no berth capsule needed.
+            self.hideInsertionIndicator()
             return
         }
         
-        let indicatorX: CGFloat
+        self.refreshInsertionIndicatorAppearance()
+        let berthWidth = Self.externalDragGapWidth - 8
+        let berthHeight = Self.tabHeight - 4
+        let gapStartX: CGFloat
         if index == 0 {
-            indicatorX = (Self.externalDragGapWidth - 3) * 0.5
+            gapStartX = 0
         } else if index >= state.tabs.count, let lastTab = state.tabs.last, let lastFrame = self.tabFrames[lastTab.id] {
-            indicatorX = lastFrame.maxX + Self.tabSpacing + (Self.externalDragGapWidth - 3) * 0.5
+            gapStartX = lastFrame.maxX + Self.tabSpacing
         } else if let targetTab = state.tabs[safe: index], let targetFrame = self.tabFrames[targetTab.id] {
-            indicatorX = targetFrame.minX - (Self.externalDragGapWidth * 0.5) - 1.5
+            gapStartX = targetFrame.minX - Self.externalDragGapWidth
         } else {
-            indicatorX = 2
+            gapStartX = 0
         }
         
-        let targetFrame = NSRect(x: max(1, indicatorX), y: 2, width: 3, height: Self.tabHeight - 4)
+        let indicatorX = max(1, gapStartX + (Self.externalDragGapWidth - berthWidth) * 0.5)
+        let targetFrame = NSRect(x: indicatorX, y: 2, width: berthWidth, height: berthHeight)
         let wasHidden = self.insertionIndicator.isHidden
         self.insertionIndicator.isHidden = false
         if wasHidden || AnimationConstants.isReducedMotionEnabled {
             self.insertionIndicator.frame = targetFrame
         } else {
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.14
-                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+                ctx.duration = 0.24
+                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.34, 1.42, 0.64, 1.0)
                 self.insertionIndicator.animator().frame = targetFrame
             }
+        }
+        
+        if !AnimationConstants.isReducedMotionEnabled,
+           let layer = self.insertionIndicator.layer,
+           layer.animation(forKey: "berthPulse") == nil
+        {
+            let pulse = CABasicAnimation(keyPath: "transform.scale")
+            pulse.fromValue = 0.96
+            pulse.toValue = 1.04
+            pulse.duration = 0.55
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.add(pulse, forKey: "berthPulse")
         }
     }
     
     
     private func hideInsertionIndicator() {
         
+        self.insertionIndicator.layer?.removeAnimation(forKey: "berthPulse")
         self.insertionIndicator.isHidden = true
     }
 }
@@ -1380,12 +1426,33 @@ private final class TabStripContainerView: NSView {
         guard !AnimationConstants.isReducedMotionEnabled, let layer = self.layer else { return }
         let ease = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
         
-        let pop = CAKeyframeAnimation(keyPath: "transform.scale")
-        pop.values = crossPane ? [0.93, 1.04, 1.0] : [0.95, 1.03, 1.0]
-        pop.keyTimes = [0, 0.55, 1]
-        pop.duration = crossPane ? 0.28 : 0.24
-        pop.timingFunction = ease
-        layer.add(pop, forKey: "dropArrival")
+        let sxValues: [CGFloat] = crossPane ? [0.76, 1.16, 0.92, 1.05, 0.99, 1.0] : [0.88, 1.09, 0.96, 1.02, 1.0]
+        let syValues: [CGFloat] = crossPane ? [1.24, 0.85, 1.08, 0.96, 1.01, 1.0] : [1.12, 0.92, 1.03, 0.99, 1.0]
+        let keyTimes: [NSNumber] = crossPane ? [0, 0.28, 0.52, 0.74, 0.90, 1.0] : [0, 0.34, 0.64, 0.85, 1.0]
+        let anchorDeltaX = (0.5 - layer.anchorPoint.x) * self.bounds.width
+        let anchorDeltaY = (0.5 - layer.anchorPoint.y) * self.bounds.height
+        
+        let scaleX = CAKeyframeAnimation(keyPath: "transform.scale.x")
+        scaleX.values = sxValues
+        scaleX.keyTimes = keyTimes
+        
+        let scaleY = CAKeyframeAnimation(keyPath: "transform.scale.y")
+        scaleY.values = syValues
+        scaleY.keyTimes = keyTimes
+        
+        let tx = CAKeyframeAnimation(keyPath: "transform.translation.x")
+        tx.values = sxValues.map { (1 - $0) * anchorDeltaX }
+        tx.keyTimes = keyTimes
+        
+        let ty = CAKeyframeAnimation(keyPath: "transform.translation.y")
+        ty.values = syValues.map { (1 - $0) * anchorDeltaY }
+        ty.keyTimes = keyTimes
+        
+        let jellyGroup = CAAnimationGroup()
+        jellyGroup.animations = [scaleX, scaleY, tx, ty]
+        jellyGroup.duration = crossPane ? 0.46 : 0.34
+        jellyGroup.timingFunction = ease
+        layer.add(jellyGroup, forKey: "dropArrival")
         
         guard crossPane, self.bounds.width > 4, self.bounds.height > 4 else { return }
         
@@ -1679,7 +1746,7 @@ private final class TabStripContainerView: NSView {
     }
     
     
-    func dragSnapshotImage(shadowPadding: CGFloat = 6) -> NSImage {
+    func dragSnapshotImage(shadowPadding: CGFloat = 10) -> NSImage {
         
         let cardSize = NSSize(width: max(64, self.bounds.width), height: self.bounds.height)
         let imageSize = NSSize(width: cardSize.width + shadowPadding * 2, height: cardSize.height + shadowPadding * 2)
@@ -1688,20 +1755,28 @@ private final class TabStripContainerView: NSView {
         
         return NSImage(size: imageSize, flipped: true) { _ in
             let cardRect = NSRect(origin: NSPoint(x: shadowPadding, y: shadowPadding), size: cardSize)
-            let path = NSBezierPath(roundedRect: cardRect.insetBy(dx: 0.5, dy: 0.5), xRadius: 7, yRadius: 7)
+            let path = NSBezierPath(roundedRect: cardRect.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
             
             NSGraphicsContext.saveGraphicsState()
             let shadow = NSShadow()
-            shadow.shadowColor = NSColor.black.withAlphaComponent(0.22)
-            shadow.shadowBlurRadius = 5
-            shadow.shadowOffset = NSSize(width: 0, height: -2)
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.26)
+            shadow.shadowBlurRadius = 8
+            shadow.shadowOffset = NSSize(width: 0, height: -3)
             shadow.set()
-            NSColor.windowBackgroundColor.withAlphaComponent(0.95).setFill()
+            NSColor.windowBackgroundColor.withAlphaComponent(0.96).setFill()
             path.fill()
             NSGraphicsContext.restoreGraphicsState()
             
-            NSColor.controlAccentColor.withAlphaComponent(0.75).setStroke()
-            path.lineWidth = 1.1
+            let topHighlight = NSBezierPath(
+                roundedRect: NSRect(x: cardRect.minX + 2, y: cardRect.minY + 1.2, width: max(8, cardRect.width - 4), height: 1.5),
+                xRadius: 0.75,
+                yRadius: 0.75
+            )
+            NSColor.white.withAlphaComponent(0.32).setFill()
+            topHighlight.fill()
+            
+            NSColor.controlAccentColor.withAlphaComponent(0.84).setStroke()
+            path.lineWidth = 1.3
             path.stroke()
             
             let dotRect = NSRect(x: cardRect.maxX - 14, y: cardRect.midY - 2.5, width: 5, height: 5)

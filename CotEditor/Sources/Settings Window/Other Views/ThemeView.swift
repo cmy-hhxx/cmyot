@@ -50,11 +50,12 @@ struct ThemeView: View {
         
         HStack(spacing: 0) {
             ThemeListView(manager: self.manager, selection: $selection)
+                .frame(minWidth: 138, idealWidth: 152, maxWidth: 168)
             
             Divider()
             
             ThemeEditorView(theme: $theme, isBundled: self.isBundled)
-                .frame(minWidth: 340, maxWidth: .infinity)
+                .frame(minWidth: 272, maxWidth: .infinity)
                 .onChange(of: self.theme) { _, newValue in
                     do {
                         try self.manager.save(setting: newValue, name: self.selection)
@@ -410,8 +411,8 @@ private struct ThemeListView: View {
             }
             
             Button(isContext
-                   ? String(localized: "Action.export.label", defaultValue: "Export…")
-                   : String(localized: "Action.export.named.label", defaultValue: "Export “\(selection.name)”…"),
+                   ? AppLanguage.text("导出主题", en: "Export")
+                   : AppLanguage.text("导出“\(selection.name)”", en: "Export “\(selection.name)”"),
                    systemImage: "square.and.arrow.up")
             {
                 self.exportingItem = TransferableTheme(name: selection.name, url: self.manager.urlForUserSetting(name: selection.name))
@@ -440,7 +441,7 @@ private struct ThemeListView: View {
         if !isContext {
             Divider()
             
-            Button(String(localized: "Action.import.ellipsis.label", defaultValue: "Import…"), systemImage: "square.and.arrow.down") {
+            Button(AppLanguage.text("导入主题", en: "Import"), systemImage: "square.and.arrow.down") {
                 self.isImporterPresented = true
             }
             .modifierKeyAlternate(.option) {

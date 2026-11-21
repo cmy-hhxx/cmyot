@@ -153,6 +153,8 @@ extension Logger {
         // The app used to be sandboxed; pull the old settings out of the container first,
         // so everything else here already sees the migrated values.
         LegacyContainerMigrator.migrateIfNeeded()
+        AppLanguage.ensureDefaultInitialized()
+        AppLanguage.current.apply()
         _ = UserProfileManager.shared
         _ = CotLocalDatabase.shared
         _ = AnalyticsManager.shared
@@ -204,6 +206,7 @@ extension Logger {
         NSApp.registerServicesMenuSendTypes([.fileURL], returnTypes: [])
         NSTouchBar.isAutomaticCustomizeTouchBarMenuItemEnabled = true
         AnalyticsManager.shared.startBackgroundDigestScheduler()
+        AppIconManager.shared.applySavedAppIconOnLaunch()
         
         #if DEBUG
         self.scheduleTerminalDemoIfRequested()
@@ -391,6 +394,13 @@ extension Logger {
     @IBAction func showSettingsWindow(_ sender: Any?) {
         
         self.settingsWindowController.showWindow(sender)
+    }
+    
+    
+    /// Opens a specific sidebar tab in the Settings window.
+    func showSettingsItem(_ item: SidebarSettingsItem) {
+        
+        self.settingsWindowController.openItem(item)
     }
     
     

@@ -114,7 +114,7 @@ private struct UserAvatarToolbarBadgeLabel: View {
 }
 
 
-/// Top-right toolbar avatar control that opens the local user profile & account switcher popover.
+/// Top-right toolbar avatar control that opens the flagship personal command hub popover.
 @MainActor final class UserAvatarToolbarButtonView: NSView {
     
     private let hostingView: NSHostingView<UserAvatarToolbarBadgeLabel>
@@ -220,14 +220,15 @@ private struct UserAvatarToolbarBadgeLabel: View {
 }
 
 
-// MARK: - Apple Music Style Avatar Accent Extractor
+// MARK: - Soft Perceptual Avatar Aurora Extractor
 
 @MainActor
-private enum AvatarColorExtractor {
+enum AvatarColorExtractor {
     
     struct Palette: Equatable {
         let primary: Color
         let secondary: Color
+        let tertiary: Color
     }
     
     private static var cache: [String: Palette] = [:]
@@ -240,9 +241,12 @@ private enum AvatarColorExtractor {
             return cached
         }
         
-        let fallbackPrimary = Color(hexString: profile.avatarColorHex)
-        let fallbackSecondary = Self.hueShiftedFallback(from: profile.avatarColorHex)
-        let fallback = Palette(primary: fallbackPrimary, secondary: fallbackSecondary)
+        let fallbackBase = NSColor(Color(hexString: profile.avatarColorHex)).usingColorSpace(.sRGB) ?? .systemBlue
+        let fallback = Palette(
+            primary: self.softAtmosphericColor(from: fallbackBase, hueOffset: 0, saturationScale: 0.9),
+            secondary: self.softAtmosphericColor(from: fallbackBase, hueOffset: 0.072, saturationScale: 0.85),
+            tertiary: self.softAtmosphericColor(from: fallbackBase, hueOffset: 0.161, saturationScale: 0.80)
+        )
         
         guard let image,
               let bitmap = Self.downsample24x24(image)
@@ -259,6 +263,9 @@ private enum AvatarColorExtractor {
         }
         
         var buckets = Array(repeating: Bucket(), count: 12)
+        let center = 11.5
+        let twoSigmaSq = 2.0 * 7.5 * 7.5
+        
         for y in 0..<24 {
             for x in 0..<24 {
                 guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
@@ -267,8 +274,12 @@ private enum AvatarColorExtractor {
                 var hue: CGFloat = 0, sat: CGFloat = 0, bri: CGFloat = 0, alpha: CGFloat = 0
                 color.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alpha)
                 
-                let lumaWeight: Double = (bri < 0.08 || bri > 0.96) ? 0.15 : 1.0
-                let chromaWeight = max(0.08, Double(sat) * 1.8) * lumaWeight
+                // Gaussian center-weighting avoids corner backgrounds overpowering the portrait mood
+                let dx = Double(x) - center
+                let dy = Double(y) - center
+                let gaussian = exp(-(dx * dx + dy * dy) / twoSigmaSq)
+                let lumaWeight: Double = (bri < 0.10 || bri > 0.94) ? 0.22 : 1.0
+                let chromaWeight = (0.14 + Double(sat) * 1.15) * lumaWeight * gaussian
                 let idx = min(11, max(0, Int(hue * 12.0)))
                 
                 buckets[idx].rSum += Double(color.redComponent) * chromaWeight
@@ -293,36 +304,56 @@ private enum AvatarColorExtractor {
             blue: top.element.bSum / top.element.weightSum,
             alpha: 1
         )
-        let primary = Self.vibrantAmbientColor(from: primaryNS)
+        let primary = Self.softAtmosphericColor(from: primaryNS, hueOffset: 0, saturationScale: 0.92)
         
         let second = ranked.first { candidate in
             let dist = min(abs(candidate.offset - top.offset), 12 - abs(candidate.offset - top.offset))
             return dist >= 2
         }
+        let secondaryNS: NSColor
         let secondary: Color
         if let second {
-            let ns = NSColor(
+            secondaryNS = NSColor(
                 srgbRed: second.element.rSum / second.element.weightSum,
                 green: second.element.gSum / second.element.weightSum,
                 blue: second.element.bSum / second.element.weightSum,
                 alpha: 1
             )
-            secondary = Self.vibrantAmbientColor(from: ns)
+            secondary = Self.softAtmosphericColor(from: secondaryNS, hueOffset: 0, saturationScale: 0.88)
         } else {
-            var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-            primaryNS.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-            let shifted = NSColor(
-                hue: (h + 0.12).truncatingRemainder(dividingBy: 1.0),
-                saturation: min(0.85, max(0.35, s * 1.15)),
-                brightness: min(0.88, max(0.45, b)),
-                alpha: 1
-            )
-            secondary = Color(nsColor: shifted)
+            secondaryNS = primaryNS
+            secondary = Self.softAtmosphericColor(from: primaryNS, hueOffset: 0.072, saturationScale: 0.85)
         }
         
-        let palette = Palette(primary: primary, secondary: secondary)
+        let tertiary = Self.softAtmosphericColor(from: secondaryNS, hueOffset: 0.095, saturationScale: 0.80)
+        
+        let palette = Palette(primary: primary, secondary: secondary, tertiary: tertiary)
         self.cache[key] = palette
         return palette
+    }
+    
+    
+    /// Clamps extracted colors into silky atmospheric aurora tones (`S: 0.24...0.48`, `B: 0.62...0.84`)
+    /// so neon avatars stay tasteful and dark avatars never turn muddy brown.
+    private static func softAtmosphericColor(
+        from color: NSColor,
+        hueOffset: CGFloat,
+        saturationScale: CGFloat
+    ) -> Color {
+        
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        let srgb = color.usingColorSpace(.sRGB) ?? color
+        srgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        
+        let resolvedHue = (h + hueOffset).truncatingRemainder(dividingBy: 1.0)
+        let resolvedSat = min(0.48, max(0.24, s * saturationScale))
+        let resolvedBri = min(0.84, max(0.62, b * 0.90 + 0.14))
+        
+        let hsbColor = NSColor(hue: resolvedHue < 0 ? resolvedHue + 1 : resolvedHue,
+                               saturation: resolvedSat,
+                               brightness: resolvedBri,
+                               alpha: 1.0).usingColorSpace(.sRGB) ?? srgb
+        return Color(nsColor: hsbColor)
     }
     
     
@@ -348,34 +379,6 @@ private enum AvatarColorExtractor {
         NSGraphicsContext.restoreGraphicsState()
         return rep
     }
-    
-    
-    private static func vibrantAmbientColor(from color: NSColor) -> Color {
-        
-        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        let srgb = color.usingColorSpace(.sRGB) ?? color
-        srgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        return Color(nsColor: NSColor(
-            hue: h,
-            saturation: min(0.82, max(0.32, s * 1.25)),
-            brightness: min(0.84, max(0.38, b)),
-            alpha: 1.0
-        ))
-    }
-    
-    
-    private static func hueShiftedFallback(from hex: String) -> Color {
-        
-        let base = NSColor(Color(hexString: hex)).usingColorSpace(.sRGB) ?? .systemBlue
-        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        return Color(nsColor: NSColor(
-            hue: (h + 0.14).truncatingRemainder(dividingBy: 1.0),
-            saturation: min(0.85, max(0.40, s)),
-            brightness: min(0.86, max(0.45, b)),
-            alpha: 1.0
-        ))
-    }
 }
 
 
@@ -390,7 +393,8 @@ private enum QuickTodoDDL: String, CaseIterable, Identifiable {
 }
 
 
-/// Playful, soft-rounded popover for managing the active profile, AI danmaku, and quick pinned todos.
+/// Flagship Personal Command Hub popover featuring 360° surrounding tech danmaku,
+/// soft multi-cloud aurora extraction, mascot-infused capsule todos, and direct studio navigation.
 struct UserProfilePopoverView: View {
     
     var hostWindow: NSWindow?
@@ -398,8 +402,10 @@ struct UserProfilePopoverView: View {
     
     @Environment(\.colorScheme) private var colorScheme
     
+    @AppStorage("cot.pinnedTodo.mascotKind") private var mascotKindRaw = TodoMascotKind.autoMix.rawValue
     @State private var manager = UserProfileManager.shared
     @State private var analytics = AnalyticsManager.shared
+    @State private var studioPalette = StudioPaletteManager.shared
     @State private var editingName = ""
     @State private var isEditingName = false
     @State private var didJustSaveName = false
@@ -407,21 +413,22 @@ struct UserProfilePopoverView: View {
     @State private var isAvatarDropTargeted = false
     @State private var isNameHovered = false
     @State private var isDashboardHovered = false
+    @State private var isSettingsHovered = false
     @State private var greeting = Self.nextRandomGreeting()
     @State private var isCreateButtonHovered = false
     @State private var isCreatingTodo = false
     @State private var todoTitle = ""
     @State private var todoDDL: QuickTodoDDL = .none
-    @State private var hoveredProfileID: String?
-    @State private var confirmDeleteUserID: String?
-    @State private var isDotBreathing = false
+    @State private var hoveredTodoID: String?
+    @State private var completingTodoIDs: Set<String> = []
     
-    // Fun click & Danmaku state
+    // Avatar tactile & 360° danmaku shockwave state
     @State private var avatarTapCount = 0
     @State private var avatarSquish = false
     @State private var avatarSpinAngle: Double = 0
     @State private var avatarPulseScale: CGFloat = 0.85
     @State private var avatarPulseOpacity: Double = 0
+    @State private var shockwaveTimestamp: Date = .distantPast
     @State private var nameWiggleAngle: Double = 0
     @State private var selectedTag: UserPersonalityTag?
     @State private var isDanmakuEnabled: Bool = CotLocalDatabase.shared.bool(
@@ -431,7 +438,10 @@ struct UserProfilePopoverView: View {
     
     @FocusState private var isNameFieldFocused: Bool
     @FocusState private var isTodoFieldFocused: Bool
-    @Namespace private var activeSwitchNamespace
+    
+    private var mascotMode: TodoMascotKind {
+        TodoMascotKind(rawValue: self.mascotKindRaw) ?? .autoMix
+    }
     
     
     var body: some View {
@@ -439,14 +449,17 @@ struct UserProfilePopoverView: View {
         let avatarImage = self.manager.avatarImage(for: active)
         let ambient = AvatarColorExtractor.extractPalette(for: active, image: avatarImage)
         let recent5 = self.analytics.dailySeries(days: 5).map { Double($0.typedChars) }
-        let todayChars = self.analytics.todayStats.typedChars
-        let tags = self.analytics.personalityProfile?.tags ?? []
+        let studioTokens = self.studioPalette.tokens(isDark: self.colorScheme == .dark)
+        let tags = UserPersonalityAnalyzer.deduplicatedTags(
+            self.analytics.personalityProfile?.tags ?? [],
+            maxCount: 8
+        )
         let pinned = self.analytics.pinnedTodos
         
         VStack(spacing: 10) {
-            // Active Profile Card with Apple Music Ambient Wash
-            VStack(spacing: 10) {
-                // Playful rotating greeting + Danmaku switch + live today pulse pill
+            // 1. Flagship Hero Card with Soft Aurora Clouds + 360° Surrounding Danmaku Stage (Zero Refresh Button, Zero Right Label)
+            VStack(spacing: 6) {
+                // Header micro-row (Greeting left, Danmaku toggle right — seamless auto-updates)
                 HStack(spacing: 6) {
                     Text(self.greeting)
                         .font(.system(size: 11, weight: .medium))
@@ -469,114 +482,117 @@ struct UserProfilePopoverView: View {
                             )
                             if !self.isDanmakuEnabled {
                                 self.selectedTag = nil
-                            } else if self.analytics.personalityProfile == nil {
+                            } else {
                                 Task {
-                                    await self.analytics.refreshPersonalityProfile(force: true)
+                                    await self.analytics.refreshPersonalityProfile(force: false)
                                 }
                             }
                         }
                     } label: {
-                        HStack(spacing: 3.5) {
+                        HStack(spacing: 4) {
                             Image(systemName: self.isDanmakuEnabled ? "sparkles" : "sparkles.slash")
                                 .font(.system(size: 9.5, weight: .semibold))
-                            Text("弹幕")
+                            Text(AppLanguage.text("环绕弹幕", en: "Orbit Tags"))
                                 .font(.system(size: 10.5, weight: .medium))
                         }
-                        .foregroundStyle(self.isDanmakuEnabled ? self.mintAccent : .secondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
+                        .foregroundStyle(self.isDanmakuEnabled ? studioTokens.accentText : .secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
                         .background(
-                            self.isDanmakuEnabled ? self.mintSoftBg : self.surfaceFill,
+                            self.isDanmakuEnabled
+                                ? studioTokens.positivePillBg
+                                : self.surfaceFill,
                             in: Capsule()
                         )
                     }
                     .buttonStyle(.plain)
                     .pointerStyle(.link)
-                    
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(self.mintAccent)
-                            .frame(width: 5.5, height: 5.5)
-                            .scaleEffect(self.isDotBreathing ? 1.25 : 0.85)
-                            .opacity(self.isDotBreathing ? 1.0 : 0.55)
-                        
-                        Text(todayChars > 0 ? "\(todayChars.formatted(.number.grouping(.automatic))) 字" : "准备开写")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(self.mintAccent)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(self.mintSoftBg, in: Capsule())
                 }
                 
-                // Tactile Avatar (fun click reaction; drop or right-click to change avatar)
-                Button {
-                    self.triggerAvatarFunTap()
-                } label: {
-                    ZStack(alignment: .bottom) {
-                        Circle()
-                            .strokeBorder(ambient.primary.opacity(self.avatarPulseOpacity), lineWidth: 2)
-                            .frame(width: 74, height: 74)
-                            .scaleEffect(self.avatarPulseScale)
-                        
-                        UserAvatarCircleView(profile: active, size: 68, customImage: avatarImage)
-                            .overlay(
-                                Circle()
-                                    .strokeBorder(
-                                        ambient.primary.opacity(self.isAvatarDropTargeted ? 0.9 : (self.isAvatarHovered ? 0.45 : 0.18)),
-                                        lineWidth: self.isAvatarDropTargeted ? 2.5 : 1.5
-                                    )
-                            )
-                            .scaleEffect(self.avatarSquish ? 0.86 : (self.isAvatarDropTargeted ? 1.08 : (self.isAvatarHovered ? 1.03 : 1.0)))
-                            .rotationEffect(.degrees(self.avatarSpinAngle))
-                            .shadow(
-                                color: ambient.primary.opacity(0.32),
-                                radius: 12,
-                                y: 4
-                            )
-                        
-                        if self.isAvatarDropTargeted {
-                            Text("松手换头像")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2.5)
-                                .background(.ultraThinMaterial, in: Capsule())
-                                .background(Color.black.opacity(0.45), in: Capsule())
-                                .offset(y: 4)
-                                .transition(.move(edge: .bottom).combined(with: .opacity))
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .onHover { hovering in
-                    withAnimation(Self.spring) { self.isAvatarHovered = hovering }
-                }
-                .onDrop(of: [.image, .fileURL], isTargeted: self.$isAvatarDropTargeted) { providers in
-                    self.handleAvatarDrop(providers: providers)
-                }
-                .contextMenu {
-                    Button("更换头像…") { self.pickAvatarForActiveUser() }
-                    if avatarImage != nil {
-                        Button("恢复默认头像") {
-                            self.manager.updateProfile(id: active.id, avatarData: .some(nil))
-                        }
-                    }
-                    Divider()
-                    Button("修改昵称") {
+                // 360° Surrounding Danmaku Stage + Centered Interactive Avatar
+                AvatarSurroundingDanmakuStage(
+                    tags: self.isDanmakuEnabled ? tags : [],
+                    selectedTagID: self.selectedTag?.id,
+                    accent: studioTokens.accent,
+                    secondaryAccent: ambient.secondary,
+                    shockwaveTimestamp: self.shockwaveTimestamp,
+                    onTapTag: { tapped in
                         withAnimation(Self.spring) {
-                            self.editingName = active.displayName
-                            self.isEditingName = true
+                            self.selectedTag = (self.selectedTag?.id == tapped.id) ? nil : tapped
+                        }
+                    }
+                ) {
+                    Button {
+                        self.triggerAvatarFunTap()
+                    } label: {
+                        ZStack(alignment: .bottom) {
+                            Circle()
+                                .strokeBorder(ambient.primary.opacity(self.avatarPulseOpacity), lineWidth: 2)
+                                .frame(width: 78, height: 78)
+                                .scaleEffect(self.avatarPulseScale)
+                            
+                            UserAvatarCircleView(profile: active, size: 68, customImage: avatarImage)
+                                .background(
+                                    Circle()
+                                        .fill(Color(nsColor: .windowBackgroundColor))
+                                        .frame(width: 68, height: 68)
+                                )
+                                .overlay(
+                                    Circle()
+                                        .strokeBorder(
+                                            Color.white.opacity(self.isAvatarDropTargeted ? 0.90 : (self.isAvatarHovered ? 0.55 : 0.28)),
+                                            lineWidth: self.isAvatarDropTargeted ? 2.5 : 1.5
+                                        )
+                                )
+                                .scaleEffect(self.avatarSquish ? 0.85 : (self.isAvatarDropTargeted ? 1.08 : (self.isAvatarHovered ? 1.04 : 1.0)))
+                                .rotationEffect(.degrees(self.avatarSpinAngle))
+                                .shadow(
+                                    color: ambient.primary.opacity(0.28),
+                                    radius: 14,
+                                    y: 4
+                                )
+                            
+                            if self.isAvatarDropTargeted {
+                                Text(AppLanguage.text("松手换头像", en: "Drop Avatar"))
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 2.5)
+                                    .background(Color.black.opacity(0.65), in: Capsule())
+                                    .offset(y: 6)
+                                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .onHover { hovering in
+                        withAnimation(Self.spring) { self.isAvatarHovered = hovering }
+                    }
+                    .onDrop(of: [.image, .fileURL], isTargeted: self.$isAvatarDropTargeted) { providers in
+                        self.handleAvatarDrop(providers: providers)
+                    }
+                    .contextMenu {
+                        Button(AppLanguage.text("更换头像", en: "Change Avatar")) { self.pickAvatarForActiveUser() }
+                        if avatarImage != nil {
+                            Button(AppLanguage.text("恢复默认头像", en: "Reset Default Avatar")) {
+                                self.manager.updateProfile(id: active.id, avatarData: .some(nil))
+                            }
+                        }
+                        Divider()
+                        Button(AppLanguage.text("修改昵称", en: "Edit Name")) {
+                            withAnimation(Self.spring) {
+                                self.editingName = active.displayName
+                                self.isEditingName = true
+                            }
                         }
                     }
                 }
                 
-                // Centered Fun-Clickable / Editable Name
+                // Centered Identity Footer (Pure Nickname, Zero Right Label)
                 if self.isEditingName {
                     HStack(spacing: 6) {
-                        TextField("昵称", text: self.$editingName)
+                        TextField(AppLanguage.text("昵称", en: "Name"), text: self.$editingName)
                             .textFieldStyle(.plain)
                             .multilineTextAlignment(.center)
                             .font(.system(size: 14, weight: .medium))
@@ -584,18 +600,11 @@ struct UserProfilePopoverView: View {
                             .padding(.horizontal, 10)
                             .frame(height: 28)
                             .background(self.surfaceFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(self.mintAccent.opacity(0.65), lineWidth: 1.25))
-                            .frame(maxWidth: 158)
-                            .onSubmit {
-                                self.commitNameEdit()
-                            }
-                            .onExitCommand {
-                                self.cancelNameEdit()
-                            }
+                            .frame(maxWidth: 168)
+                            .onSubmit { self.commitNameEdit() }
+                            .onExitCommand { self.cancelNameEdit() }
                             .onAppear {
-                                DispatchQueue.main.async {
-                                    self.isNameFieldFocused = true
-                                }
+                                DispatchQueue.main.async { self.isNameFieldFocused = true }
                             }
                             .onChange(of: self.isNameFieldFocused) { _, focused in
                                 if !focused && self.isEditingName {
@@ -603,20 +612,20 @@ struct UserProfilePopoverView: View {
                                 }
                             }
                         
-                        Button("完成") {
+                        Button(AppLanguage.text("完成", en: "Done")) {
                             self.commitNameEdit()
                         }
                         .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(Color(nsColor: .windowBackgroundColor))
-                        .padding(.horizontal, 9)
+                        .foregroundStyle(studioTokens.onAccentInk)
+                        .padding(.horizontal, 10)
                         .frame(height: 28)
-                        .background(self.mintAccent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .background(studioTokens.accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .buttonStyle(.plain)
                         .pointerStyle(.link)
                     }
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 } else {
-                    HStack(spacing: 4) {
+                    ZStack {
                         Button {
                             self.triggerNameFunTap()
                         } label: {
@@ -630,45 +639,47 @@ struct UserProfilePopoverView: View {
                                 if self.didJustSaveName {
                                     Image(systemName: "checkmark.circle.fill")
                                         .font(.system(size: 12))
-                                        .foregroundStyle(self.mintAccent)
+                                        .foregroundStyle(studioTokens.accentText)
                                         .transition(.scale.combined(with: .opacity))
                                 }
                             }
                             .padding(.horizontal, 8)
-                            .frame(height: 28)
+                            .frame(height: 26)
                             .background(
-                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     .fill(self.isNameHovered ? self.surfaceFill : Color.clear)
                             )
                         }
                         .buttonStyle(.plain)
                         .pointerStyle(.link)
                         .contextMenu {
-                            Button("修改昵称") {
+                            Button(AppLanguage.text("修改昵称", en: "Edit Name")) {
                                 withAnimation(Self.spring) {
                                     self.editingName = active.displayName
                                     self.isEditingName = true
                                 }
                             }
-                            Button("更换头像…") { self.pickAvatarForActiveUser() }
+                            Button(AppLanguage.text("更换头像", en: "Change Avatar")) { self.pickAvatarForActiveUser() }
                         }
-                        
-                        if self.isNameHovered {
-                            Button {
-                                withAnimation(Self.spring) {
-                                    self.editingName = active.displayName
-                                    self.isEditingName = true
+                        .overlay(alignment: .trailing) {
+                            if self.isNameHovered {
+                                Button {
+                                    withAnimation(Self.spring) {
+                                        self.editingName = active.displayName
+                                        self.isEditingName = true
+                                    }
+                                } label: {
+                                    Image(systemName: "pencil")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 20, height: 20)
+                                        .background(self.surfaceFill, in: Circle())
                                 }
-                            } label: {
-                                Image(systemName: "pencil")
-                                    .font(.system(size: 10.5, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 22, height: 22)
-                                    .background(self.surfaceFill, in: Circle())
+                                .buttonStyle(.plain)
+                                .pointerStyle(.link)
+                                .offset(x: 24)
+                                .transition(.opacity)
                             }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                            .transition(.opacity)
                         }
                     }
                     .onHover { hovering in
@@ -676,30 +687,21 @@ struct UserProfilePopoverView: View {
                     }
                 }
                 
-                if self.isDanmakuEnabled, !tags.isEmpty {
-                    SmoothDanmakuMarquee(
-                        tags: tags,
-                        selectedTagID: self.selectedTag?.id,
-                        accent: ambient.primary
-                    ) { tapped in
-                        withAnimation(Self.spring) {
-                            self.selectedTag = (self.selectedTag?.id == tapped.id) ? nil : tapped
-                        }
-                    }
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                }
-                
+                // Expandable AI Insight Bubble when tapping any orbiting danmaku pill
                 if self.isDanmakuEnabled, let tag = self.selectedTag {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(Self.toneColor(for: tag.tone))
+                            .frame(width: 6, height: 6)
                         Text(tag.explanation.isEmpty ? (self.analytics.personalityProfile?.conceptSummary ?? tag.label) : tag.explanation)
                             .font(.system(size: 11.5, weight: .medium))
                             .foregroundStyle(.primary)
-                            .multilineTextAlignment(.center)
+                            .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(self.surfaceFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .onTapGesture {
                         withAnimation(Self.quick) { self.selectedTag = nil }
@@ -708,144 +710,145 @@ struct UserProfilePopoverView: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .padding(.top, 12)
-            .padding(.bottom, 14)
+            .padding(.top, 11)
+            .padding(.bottom, 12)
             .padding(.horizontal, 12)
             .background {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(self.cardSurface)
-                    
-                    LinearGradient(
-                        colors: [
-                            ambient.primary.opacity(self.colorScheme == .dark ? 0.34 : 0.22),
-                            ambient.secondary.opacity(self.colorScheme == .dark ? 0.20 : 0.12),
-                            .clear,
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .blur(radius: 14)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                SoftAvatarAuroraBackdrop(
+                    palette: ambient,
+                    surface: self.cardSurface,
+                    isDark: self.colorScheme == .dark
+                )
             }
             .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(ambient.primary.opacity(0.24), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: self.colorScheme == .dark
+                                ? [Color.white.opacity(0.14), Color.white.opacity(0.03)]
+                                : [Color.white.opacity(0.85), Color.black.opacity(0.05)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.75
+                    )
             )
             
-            // Inviting Dashboard Launch Card with Mini Pixel Sparkbar (no small subtext)
-            Button {
-                let targetWindow = self.hostWindow
-                self.closePopover()
-                AnalyticsDashboardWindowController.shared.showInWindow(preferredWindow: targetWindow)
-            } label: {
-                HStack(spacing: 10) {
-                    MiniPopoverSparkMatrix(values: recent5, accent: self.mintAccent, emptyColor: self.surfaceFill)
-                        .frame(width: 30, height: 22)
-                        .padding(6)
-                        .background(self.mintSoftBg, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    
-                    Text("数据看板")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    
-                    Spacer()
-                    
-                    Circle()
-                        .fill(self.isDashboardHovered ? self.mintAccent : self.surfaceFill)
-                        .frame(width: 24, height: 24)
-                        .overlay(
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(self.isDashboardHovered ? Color(nsColor: .windowBackgroundColor) : .secondary)
-                                .offset(x: self.isDashboardHovered ? 0.5 : 0, y: self.isDashboardHovered ? -0.5 : 0)
-                        )
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(
-                    self.isDashboardHovered ? self.surfaceFill : self.cardSurface,
-                    in: RoundedRectangle(cornerRadius: 13, style: .continuous)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .strokeBorder(self.isDashboardHovered ? self.mintAccent.opacity(0.35) : self.cardStroke, lineWidth: 1)
-                )
-                .scaleEffect(self.isDashboardHovered ? 1.01 : 1.0)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            .onHover { hovering in
-                withAnimation(Self.spring) {
-                    self.isDashboardHovered = hovering
-                }
-            }
-            
-            // Fluid Account Switcher List
-            if self.manager.profiles.count > 1 {
-                ScrollView {
-                    VStack(spacing: 2) {
-                        ForEach(self.manager.profiles) { profile in
-                            self.userSwitchRow(profile, isActive: profile.id == active.id)
-                        }
+            // 2. 2-Tile Primary Command Dock (数据看板 + 个人设置 / 通行证)
+            HStack(spacing: 8) {
+                Button {
+                    let targetWindow = self.hostWindow
+                    self.closePopover()
+                    AnalyticsDashboardWindowController.shared.showInWindow(preferredWindow: targetWindow)
+                } label: {
+                    HStack(spacing: 9) {
+                        MiniPopoverSparkMatrix(values: recent5, accent: studioTokens.accentText, emptyColor: self.surfaceFill)
+                            .frame(width: 26, height: 18)
+                            .padding(5)
+                            .background(studioTokens.positivePillBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        
+                        Text(AppLanguage.text("数据看板", en: "Dashboard"))
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        
+                        Spacer(minLength: 2)
+                        
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(self.isDashboardHovered ? studioTokens.accentText : .secondary)
                     }
-                    .padding(4)
+                    .padding(.horizontal, 10)
+                    .frame(height: 44)
+                    .background(
+                        self.isDashboardHovered ? self.surfaceFill : self.cardSurface,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(self.softCardStroke(active: self.isDashboardHovered, accent: studioTokens.accentText), lineWidth: 0.75)
+                    )
+                    .contentShape(Rectangle())
                 }
-                .frame(maxHeight: 136)
-                .fixedSize(horizontal: false, vertical: true)
-                .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .strokeBorder(self.cardStroke, lineWidth: 1)
-                )
-            }
-            
-            // Active Pinned Todos List
-            if !pinned.isEmpty {
-                VStack(spacing: 4) {
-                    ForEach(pinned.prefix(3)) { item in
-                        HStack(spacing: 7) {
-                            Button {
-                                self.analytics.toggleReminderCompleted(id: item.id)
-                            } label: {
-                                Image(systemName: "circle")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(self.mintAccent)
-                            }
-                            .buttonStyle(.plain)
-                            
-                            Text(item.title)
-                                .font(.system(size: 12.5, weight: .medium))
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .onHover { hovering in
+                    withAnimation(Self.spring) { self.isDashboardHovered = hovering }
+                }
+                
+                HStack(spacing: 4) {
+                    Button {
+                        self.closePopover()
+                        (NSApp.delegate as? AppDelegate)?.showSettingsItem(.general)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "gearshape.fill")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                            Text(AppLanguage.text("个人设置", en: "Settings"))
+                                .font(.system(size: 12.5, weight: .semibold))
                                 .foregroundStyle(.primary)
-                                .lineLimit(1)
-                            
-                            Spacer(minLength: 4)
-                            
-                            Button {
-                                self.analytics.unpinReminder(id: item.id)
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 9.5, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
                         }
-                        .padding(.horizontal, 10)
-                        .frame(height: 30)
-                        .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(self.cardStroke, lineWidth: 1)
-                        )
+                        .padding(.leading, 10)
+                        .padding(.trailing, 4)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    
+                    Button {
+                        self.closePopover()
+                        (NSApp.delegate as? AppDelegate)?.showSettingsItem(.pass)
+                    } label: {
+                        Image(systemName: "lanyardcard.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(studioTokens.accentText)
+                            .frame(width: 26, height: 26)
+                            .background(studioTokens.positivePillBg, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(AppLanguage.text("打开手稿铭牌通行证", en: "Open Atelier Pass"))
+                    .padding(.trailing, 7)
+                }
+                .frame(height: 44)
+                .frame(maxWidth: 148)
+                .background(
+                    self.isSettingsHovered ? self.surfaceFill : self.cardSurface,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(self.softCardStroke(active: self.isSettingsHovered, accent: studioTokens.accentText), lineWidth: 0.75)
+                )
+                .onHover { hovering in
+                    withAnimation(Self.spring) { self.isSettingsHovered = hovering }
+                }
+            }
+            
+            // 3. Compact Horizontal Account Switcher Strip (if multiple local users exist)
+            if self.manager.profiles.count > 1 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(self.manager.profiles) { profile in
+                            self.profileSwitchPill(profile, isActive: profile.id == active.id, accent: studioTokens.accentText)
+                        }
+                    }
+                    .padding(.horizontal, 2)
+                }
+            }
+            
+            // 4. Layered Mascot Capsule Pinned Todos + Creator
+            if !pinned.isEmpty {
+                VStack(spacing: 6) {
+                    ForEach(Array(pinned.prefix(3).enumerated()), id: \.element.id) { idx, item in
+                        self.popoverTodoCapsule(item: item, index: idx, accent: studioTokens.accentText)
                     }
                 }
             }
             
-            // Quick Pin Todo Drawer (Replaces Create Local User, which moved to Settings)
             if self.isCreatingTodo {
-                self.createTodoCard
+                self.createTodoCard(tokens: studioTokens)
                     .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)))
             } else {
                 Button {
@@ -857,19 +860,29 @@ struct UserProfilePopoverView: View {
                     }
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: "pin.fill")
-                            .font(.system(size: 10.5, weight: .semibold))
-                        Text("新建置顶 Todo")
-                            .font(.system(size: 12.5, weight: .medium))
+                        PinnedTodoMascotAvatar(
+                            kind: self.mascotMode.resolvedKind(for: "new-todo-btn"),
+                            isHovered: self.isCreateButtonHovered,
+                            size: 16
+                        )
+                        Text(AppLanguage.text("新建胶囊置顶", en: "New Capsule Todo"))
+                            .font(.system(size: 12, weight: .medium))
                     }
-                    .foregroundStyle(self.isCreateButtonHovered ? self.mintAccent : .secondary)
+                    .foregroundStyle(self.isCreateButtonHovered ? studioTokens.accentText : .secondary)
                     .frame(maxWidth: .infinity)
                     .frame(height: 32)
                     .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(self.isCreateButtonHovered ? self.mintSoftBg : Color.clear)
+                        Capsule()
+                            .fill(self.isCreateButtonHovered ? studioTokens.positivePillBg : self.cardSurface)
                     )
-                    .contentShape(Rectangle())
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(
+                                self.isCreateButtonHovered ? Color.clear : self.softCardStroke(active: false, accent: studioTokens.accentText),
+                                lineWidth: 0.65
+                            )
+                    )
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
@@ -880,37 +893,187 @@ struct UserProfilePopoverView: View {
                 }
             }
         }
-        .padding(12)
-        .frame(width: 272)
+        .padding(10)
+        .frame(width: 348)
         .onAppear {
             self.editingName = self.manager.activeProfile.displayName
             self.greeting = Self.nextRandomGreeting()
-            if !AnimationConstants.isReducedMotionEnabled {
-                withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) {
-                    self.isDotBreathing = true
+            self.mascotKindRaw = TodoMascotKind.persisted.rawValue
+            if self.isDanmakuEnabled {
+                Task {
+                    await self.analytics.refreshPersonalityProfile(force: false)
                 }
-            } else {
-                self.isDotBreathing = true
-            }
-            Task {
-                await self.analytics.refreshPersonalityProfile(force: false)
             }
         }
         .onChange(of: self.manager.activeProfile.id) { _, _ in
             self.editingName = self.manager.activeProfile.displayName
             self.isEditingName = false
-            self.confirmDeleteUserID = nil
             self.selectedTag = nil
         }
     }
     
     
-    private var createTodoCard: some View {
+    @ViewBuilder
+    private func popoverTodoCapsule(item: UserReminder, index: Int, accent: Color) -> some View {
+        let isHovered = (self.hoveredTodoID == item.id)
+        let isCompleting = self.completingTodoIDs.contains(item.id)
+        let mascot = self.mascotMode.resolvedKind(for: item.id)
+        
+        HStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.045))
+                    .frame(width: 24, height: 24)
+                PinnedTodoMascotAvatar(
+                    kind: mascot,
+                    isHovered: isHovered,
+                    isCompleting: isCompleting,
+                    size: 18,
+                    phaseSeed: Double(index) * 1.13
+                )
+            }
+            
+            Text(item.title)
+                .font(.system(size: 12.2, weight: .medium))
+                .foregroundStyle(isCompleting ? .secondary : .primary)
+                .strikethrough(isCompleting)
+                .lineLimit(1)
+            
+            Spacer(minLength: 4)
+            
+            if item.hasDeadline {
+                Text(PinnedTodoUrgency.compactBadgeText(item.dueDate.timeIntervalSinceNow))
+                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(accent)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(accent.opacity(self.colorScheme == .dark ? 0.18 : 0.11), in: Capsule())
+            }
+            
+            if isHovered && !isCompleting {
+                Button {
+                    self.analytics.snoozeReminder(id: item.id, by: 15 * 60)
+                } label: {
+                    Text("+15m")
+                        .font(.system(size: 9.5, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(self.surfaceFill, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help(AppLanguage.text("延后 15 分钟", en: "Snooze 15m"))
+                
+                Button {
+                    self.analytics.unpinReminder(id: item.id)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 18)
+                        .background(self.surfaceFill, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help(AppLanguage.text("取消置顶", en: "Unpin"))
+            }
+            
+            Button {
+                self.completePopoverTodo(item)
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(isCompleting ? Color(red: 0.20, green: 0.72, blue: 0.45) : accent.opacity(0.14))
+                        .frame(width: 20, height: 20)
+                    Image(systemName: isCompleting ? "checkmark" : "circle.fill")
+                        .font(.system(size: isCompleting ? 9.5 : 4.5, weight: .bold))
+                        .foregroundStyle(isCompleting ? .white : accent)
+                }
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+            .help(AppLanguage.text("标记已完成", en: "Complete"))
+        }
+        .padding(.horizontal, 7)
+        .frame(height: 34)
+        .background(
+            Capsule()
+                .fill(self.colorScheme == .dark ? Color.white.opacity(0.055) : Color.white.opacity(0.86))
+                .shadow(color: Color.black.opacity(self.colorScheme == .dark ? 0.28 : 0.06), radius: 8, y: 3)
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(
+                    LinearGradient(
+                        colors: self.colorScheme == .dark
+                            ? [Color.white.opacity(0.15), Color.clear]
+                            : [Color.white.opacity(0.9), Color.black.opacity(0.05)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.65
+                )
+        )
+        .onHover { hovering in
+            withAnimation(Self.quick) {
+                self.hoveredTodoID = hovering ? item.id : (self.hoveredTodoID == item.id ? nil : self.hoveredTodoID)
+            }
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func profileSwitchPill(_ profile: UserProfile, isActive: Bool, accent: Color) -> some View {
+        Button {
+            guard !isActive else { return }
+            withAnimation(Self.spring) {
+                self.manager.switchToProfile(id: profile.id)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                UserAvatarCircleView(profile: profile, size: 18)
+                Text(profile.displayName)
+                    .font(.system(size: 11.5, weight: isActive ? .semibold : .regular))
+                    .foregroundStyle(isActive ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+                if isActive {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(accent)
+                }
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(
+                Capsule()
+                    .fill(isActive ? self.surfaceFill : self.cardSurface)
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(self.softCardStroke(active: isActive, accent: accent), lineWidth: 0.75)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .contextMenu {
+            if self.manager.profiles.count > 1 && !isActive {
+                Button(AppLanguage.text("删除账户「\(profile.displayName)」", en: "Delete \(profile.displayName)"), role: .destructive) {
+                    withAnimation(Self.spring) {
+                        _ = self.manager.deleteProfile(id: profile.id)
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    private func createTodoCard(tokens: StudioColorTokens) -> some View {
         
         VStack(spacing: 9) {
-            TextField("输入 Todo，回车置顶", text: self.$todoTitle)
+            TextField(AppLanguage.text("输入待办，回车置顶为轻胶囊", en: "Enter todo, press Return"), text: self.$todoTitle)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .font(.system(size: 12.5))
                 .focused(self.$isTodoFieldFocused)
                 .padding(.horizontal, 10)
                 .frame(height: 28)
@@ -929,12 +1092,11 @@ struct UserProfilePopoverView: View {
                     } label: {
                         Text(option.rawValue)
                             .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                            .foregroundStyle(isSelected ? Color(nsColor: .windowBackgroundColor) : .secondary)
+                            .foregroundStyle(isSelected ? tokens.onAccentInk : .secondary)
                             .frame(maxWidth: .infinity)
                             .frame(height: 24)
                             .background(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(isSelected ? self.mintAccent : self.surfaceFill)
+                                Capsule().fill(isSelected ? tokens.accent : self.surfaceFill)
                             )
                     }
                     .buttonStyle(.plain)
@@ -948,13 +1110,13 @@ struct UserProfilePopoverView: View {
                         self.resetTodoDraft()
                     }
                 } label: {
-                    Text("取消")
+                    Text(AppLanguage.text("取消", en: "Cancel"))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity)
                         .frame(height: 28)
-                        .background(self.surfaceFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .contentShape(Rectangle())
+                        .background(self.surfaceFill, in: Capsule())
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
@@ -962,133 +1124,55 @@ struct UserProfilePopoverView: View {
                 Button {
                     self.submitTodo()
                 } label: {
-                    Text("置顶")
+                    Text(AppLanguage.text("置顶", en: "Pin"))
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color(nsColor: .windowBackgroundColor))
+                        .foregroundStyle(tokens.onAccentInk)
                         .frame(maxWidth: .infinity)
                         .frame(height: 28)
-                        .background(self.mintAccent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .contentShape(Rectangle())
+                        .background(tokens.accent, in: Capsule())
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
             }
         }
         .padding(10)
-        .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .strokeBorder(self.cardStroke, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(self.softCardStroke(active: false, accent: tokens.accentText), lineWidth: 0.75)
         )
     }
     
     
-    @ViewBuilder
-    private func userSwitchRow(_ profile: UserProfile, isActive: Bool) -> some View {
-        let isRowHovered = (self.hoveredProfileID == profile.id)
-        
-        HStack(spacing: 8) {
-            Button {
-                guard !isActive else { return }
-                self.confirmDeleteUserID = nil
-                withAnimation(Self.spring) {
-                    self.manager.switchToProfile(id: profile.id)
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    UserAvatarCircleView(profile: profile, size: 22)
-                    Text(profile.displayName)
-                        .font(.system(size: 12.5, weight: isActive ? .semibold : .regular))
-                        .foregroundStyle(isActive ? Color.primary : Color.secondary)
-                        .lineLimit(1)
-                    Spacer()
-                    if isActive {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(self.mintAccent)
-                    }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            
-            if self.manager.profiles.count > 1 && !isActive && (isRowHovered || self.confirmDeleteUserID == profile.id) {
-                let isConfirming = (self.confirmDeleteUserID == profile.id)
-                Button(isConfirming ? "确认删除" : "删除") {
-                    withAnimation(Self.spring) {
-                        if isConfirming {
-                            self.manager.deleteProfile(id: profile.id)
-                            self.confirmDeleteUserID = nil
-                        } else {
-                            self.confirmDeleteUserID = profile.id
-                        }
-                    }
-                }
-                .font(.system(size: 10.5, weight: isConfirming ? .semibold : .medium))
-                .foregroundStyle(isConfirming ? Color.white : Color.red)
-                .padding(.horizontal, isConfirming ? 8 : 6)
-                .padding(.vertical, 2.5)
-                .background(
-                    Capsule().fill(isConfirming ? Color.red : Color.red.opacity(0.10))
-                )
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .transition(.scale(scale: 0.9).combined(with: .opacity))
-            }
-        }
-        .padding(.horizontal, 8)
-        .frame(height: 32)
-        .background {
-            if isActive {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(self.surfaceFill)
-                    .matchedGeometryEffect(id: "activeProfilePill", in: self.activeSwitchNamespace)
-            } else if isRowHovered {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(self.surfaceFill.opacity(0.65))
-            }
-        }
-        .onHover { hovering in
-            withAnimation(Self.quick) {
-                if hovering {
-                    self.hoveredProfileID = profile.id
-                } else if self.hoveredProfileID == profile.id {
-                    self.hoveredProfileID = nil
-                    if self.confirmDeleteUserID == profile.id {
-                        self.confirmDeleteUserID = nil
-                    }
-                }
-            }
-        }
-    }
-    
-    
-    // MARK: Visual Tokens
+    // MARK: Visual Tokens & Helpers
     
     private static let quick = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.14)
     private static let spring = Animation.spring(response: 0.30, dampingFraction: 0.80)
     
-    private var mintAccent: Color {
-        self.colorScheme == .dark
-            ? Color(red: 0.25, green: 0.84, blue: 0.62)
-            : Color(red: 0.16, green: 0.54, blue: 0.38)
-    }
-    
-    private var mintSoftBg: Color {
-        self.mintAccent.opacity(self.colorScheme == .dark ? 0.18 : 0.12)
-    }
-    
     private var cardSurface: Color {
-        self.colorScheme == .dark ? Color.white.opacity(0.04) : Color.black.opacity(0.025)
-    }
-    
-    private var cardStroke: Color {
-        self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.065)
+        self.colorScheme == .dark ? Color.white.opacity(0.045) : Color.black.opacity(0.025)
     }
     
     private var surfaceFill: Color {
-        self.colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.045)
+        self.colorScheme == .dark ? Color.white.opacity(0.075) : Color.black.opacity(0.045)
+    }
+    
+    private func softCardStroke(active: Bool, accent: Color) -> Color {
+        if active {
+            return accent.opacity(0.32)
+        }
+        return self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.055)
+    }
+    
+    
+    static func toneColor(for tone: PersonalityTagTone) -> Color {
+        switch tone {
+            case .warm: Color(red: 0.92, green: 0.52, blue: 0.32)
+            case .sharp: Color(red: 0.22, green: 0.72, blue: 0.92)
+            case .playful: Color(red: 0.80, green: 0.44, blue: 0.88)
+            case .calm: Color(red: 0.26, green: 0.76, blue: 0.58)
+        }
     }
     
     
@@ -1160,6 +1244,8 @@ struct UserProfilePopoverView: View {
     private func triggerAvatarFunTap() {
         
         self.avatarTapCount += 1
+        self.shockwaveTimestamp = Date()
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         withAnimation(Self.quick) {
             self.greeting = Self.nextRandomGreeting()
         }
@@ -1178,8 +1264,8 @@ struct UserProfilePopoverView: View {
         }
         self.avatarPulseScale = 0.88
         self.avatarPulseOpacity = 0.75
-        withAnimation(.easeOut(duration: 0.42)) {
-            self.avatarPulseScale = 1.42
+        withAnimation(.easeOut(duration: 0.44)) {
+            self.avatarPulseScale = 1.46
             self.avatarPulseOpacity = 0
         }
     }
@@ -1196,6 +1282,22 @@ struct UserProfilePopoverView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
             withAnimation(.spring(response: 0.24, dampingFraction: 0.48)) {
                 self.nameWiggleAngle = 0
+            }
+        }
+    }
+    
+    
+    private func completePopoverTodo(_ item: UserReminder) {
+        guard !self.completingTodoIDs.contains(item.id) else { return }
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.7)) {
+            _ = self.completingTodoIDs.insert(item.id)
+        }
+        let targetID = item.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+            withAnimation(.easeOut(duration: 0.16)) {
+                self.analytics.toggleReminderCompleted(id: targetID)
+                self.completingTodoIDs.remove(targetID)
             }
         }
     }
@@ -1248,11 +1350,11 @@ struct UserProfilePopoverView: View {
                     } else {
                         item as? URL
                     }
-                    guard let url,
-                          let image = NSImage(contentsOf: url),
-                          let png = UserProfileManager.processedAvatarPNGData(from: image)
-                    else { return }
+                    guard let url else { return }
                     Task { @MainActor in
+                        guard let image = NSImage(contentsOf: url),
+                              let png = UserProfileManager.processedAvatarPNGData(from: image)
+                        else { return }
                         self.manager.updateProfile(id: self.manager.activeProfile.id, avatarData: .some(png))
                     }
                 }
@@ -1260,10 +1362,9 @@ struct UserProfilePopoverView: View {
             }
             if provider.canLoadObject(ofClass: NSImage.self) {
                 provider.loadObject(ofClass: NSImage.self) { object, _ in
-                    guard let image = object as? NSImage,
-                          let png = UserProfileManager.processedAvatarPNGData(from: image)
-                    else { return }
+                    guard let image = object as? NSImage else { return }
                     Task { @MainActor in
+                        guard let png = UserProfileManager.processedAvatarPNGData(from: image) else { return }
                         self.manager.updateProfile(id: self.manager.activeProfile.id, avatarData: .some(png))
                     }
                 }
@@ -1277,7 +1378,7 @@ struct UserProfilePopoverView: View {
     private func chooseAvatarData(_ completion: @escaping @MainActor (Data) -> Void) {
         
         let panel = NSOpenPanel()
-        panel.title = "选择头像图片"
+        panel.title = AppLanguage.text("选择头像图片", en: "Choose Avatar Image")
         panel.allowedContentTypes = [.image, .png, .jpeg, .heic, .tiff]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
@@ -1289,6 +1390,356 @@ struct UserProfilePopoverView: View {
             else { return }
             Task { @MainActor in
                 completion(data)
+            }
+        }
+    }
+}
+
+
+// MARK: - Soft Multi-Cloud Aurora Backdrop (Unblurred Solid Base + Clipped Blurred Clouds)
+
+private struct SoftAvatarAuroraBackdrop: View {
+    
+    let palette: AvatarColorExtractor.Palette
+    let surface: Color
+    let isDark: Bool
+    
+    
+    var body: some View {
+        let baseAlpha = self.isDark ? 0.24 : 0.16
+        let midAlpha = self.isDark ? 0.11 : 0.08
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        
+        ZStack {
+            shape.fill(self.surface)
+            
+            ZStack {
+                RadialGradient(
+                    stops: [
+                        .init(color: self.palette.primary.opacity(baseAlpha), location: 0.0),
+                        .init(color: self.palette.primary.opacity(midAlpha), location: 0.45),
+                        .init(color: .clear, location: 1.0),
+                    ],
+                    center: .topLeading,
+                    startRadius: 6,
+                    endRadius: 210
+                )
+                
+                RadialGradient(
+                    stops: [
+                        .init(color: self.palette.secondary.opacity(baseAlpha * 0.9), location: 0.0),
+                        .init(color: self.palette.secondary.opacity(midAlpha * 0.85), location: 0.45),
+                        .init(color: .clear, location: 1.0),
+                    ],
+                    center: .topTrailing,
+                    startRadius: 8,
+                    endRadius: 200
+                )
+                
+                RadialGradient(
+                    stops: [
+                        .init(color: self.palette.tertiary.opacity(baseAlpha * 0.72), location: 0.0),
+                        .init(color: self.palette.tertiary.opacity(midAlpha * 0.65), location: 0.48),
+                        .init(color: .clear, location: 1.0),
+                    ],
+                    center: .bottom,
+                    startRadius: 6,
+                    endRadius: 180
+                )
+            }
+            .blur(radius: 28)
+            .clipShape(shape)
+        }
+    }
+}
+
+
+// MARK: - 360° Tech + Playful Surrounding Danmaku Stage (Deduplicated, Unclipped, Calm Pacing)
+
+private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
+    
+    let tags: [UserPersonalityTag]
+    let selectedTagID: String?
+    let accent: Color
+    let secondaryAccent: Color
+    let shockwaveTimestamp: Date
+    let onTapTag: (UserPersonalityTag) -> Void
+    @ViewBuilder let avatarContent: () -> AvatarContent
+    
+    @State private var hoveredTagID: String?
+    @State private var anchorDate = Date()
+    @State private var accumulatedTime: TimeInterval = 0
+    @State private var isPaused = false
+    @Environment(\.colorScheme) private var colorScheme
+    
+    private let stageWidth: CGFloat = 328
+    private let stageHeight: CGFloat = 180
+    
+    
+    private var laneConfigs: [(yOffset: CGFloat, speed: CGFloat, dir: CGFloat, scale: CGFloat, opacity: Double, isForeground: Bool)] {
+        [
+            (-64, 9.2, -1, 1.00, 1.00, true),   // Top foreground arc
+            (-19, 8.2, +1, 0.94, 0.92, false),  // Upper middle orbit behind portrait
+            (+21, 8.8, -1, 0.94, 0.92, false),  // Lower middle orbit behind portrait
+            (+64, 10.4, +1, 1.00, 1.00, true),  // Bottom foreground arc
+        ]
+    }
+    
+    
+    var body: some View {
+        let uniqueTags = UserPersonalityAnalyzer.deduplicatedTags(self.tags, maxCount: 8)
+        let laneBuckets = self.distributeUniqueTagsAcrossLanes(uniqueTags)
+        
+        TimelineView(.animation(minimumInterval: nil, paused: AnimationConstants.isReducedMotionEnabled)) { context in
+            let dt = self.isPaused
+                ? self.accumulatedTime
+                : self.accumulatedTime + max(0, context.date.timeIntervalSince(self.anchorDate))
+            let shockElapsed = max(0, context.date.timeIntervalSince(self.shockwaveTimestamp))
+            let shockImpulse: CGFloat = (shockElapsed < 0.55)
+                ? CGFloat(sin(shockElapsed / 0.55 * .pi) * exp(-2.5 * shockElapsed) * 12.0)
+                : 0
+            
+            ZStack {
+                // 1. Tech HUD Dual Concentric Orbital Telemetry Rings
+                self.orbitalRingsLayer(elapsed: dt, shockImpulse: shockImpulse)
+                    .zIndex(0)
+                
+                // 2. Behind-Portrait Orbit Lanes (never sliced by harsh radial mask; portrait sits crisply in front!)
+                ForEach([1, 2], id: \.self) { laneIdx in
+                    let cfg = self.laneConfigs[laneIdx]
+                    OrbitingUniqueLaneView(
+                        tags: laneBuckets[laneIdx],
+                        laneIndex: laneIdx,
+                        elapsed: dt,
+                        speed: cfg.speed,
+                        direction: cfg.dir,
+                        scale: cfg.scale,
+                        baseOpacity: cfg.opacity,
+                        yOffset: cfg.yOffset + (cfg.yOffset < 0 ? -shockImpulse * 0.7 : shockImpulse * 0.7),
+                        stageWidth: self.stageWidth,
+                        selectedTagID: self.selectedTagID,
+                        hoveredTagID: self.$hoveredTagID,
+                        accent: self.accent,
+                        curvesAroundPortrait: true,
+                        onTap: self.onTapTag
+                    )
+                    .zIndex(1)
+                }
+                
+                // 3. Center Interactive Avatar (opaque disk sits cleanly between behind & foreground orbits)
+                self.avatarContent()
+                    .zIndex(2)
+                
+                // 4. Foreground Top & Bottom Orbit Lanes
+                ForEach([0, 3], id: \.self) { laneIdx in
+                    let cfg = self.laneConfigs[laneIdx]
+                    OrbitingUniqueLaneView(
+                        tags: laneBuckets[laneIdx],
+                        laneIndex: laneIdx,
+                        elapsed: dt,
+                        speed: cfg.speed,
+                        direction: cfg.dir,
+                        scale: cfg.scale,
+                        baseOpacity: cfg.opacity,
+                        yOffset: cfg.yOffset + (cfg.yOffset < 0 ? -shockImpulse : shockImpulse),
+                        stageWidth: self.stageWidth,
+                        selectedTagID: self.selectedTagID,
+                        hoveredTagID: self.$hoveredTagID,
+                        accent: self.accent,
+                        curvesAroundPortrait: false,
+                        onTap: self.onTapTag
+                    )
+                    .zIndex(3)
+                }
+            }
+            .frame(width: self.stageWidth, height: self.stageHeight)
+            .clipped()
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.0),
+                        .init(color: .black, location: 0.03),
+                        .init(color: .black, location: 0.97),
+                        .init(color: .clear, location: 1.0),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+        }
+        .onAppear {
+            self.anchorDate = Date()
+        }
+        .onChange(of: self.hoveredTagID) { _, key in
+            let shouldPause = (key != nil)
+            guard shouldPause != self.isPaused else { return }
+            let now = Date()
+            if shouldPause {
+                self.accumulatedTime += max(0, now.timeIntervalSince(self.anchorDate))
+            } else {
+                self.anchorDate = now
+            }
+            self.isPaused = shouldPause
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func orbitalRingsLayer(elapsed: TimeInterval, shockImpulse: CGFloat) -> some View {
+        let innerAngle = Angle.degrees(elapsed * 11)
+        let outerAngle = Angle.degrees(-elapsed * 7)
+        
+        ZStack {
+            Circle()
+                .stroke(
+                    self.accent.opacity(self.colorScheme == .dark ? 0.30 : 0.24),
+                    style: StrokeStyle(lineWidth: 1, dash: [3, 5])
+                )
+                .frame(width: 98 + shockImpulse * 0.8, height: 98 + shockImpulse * 0.8)
+                .rotationEffect(innerAngle)
+            
+            ZStack {
+                Ellipse()
+                    .strokeBorder(self.secondaryAccent.opacity(self.colorScheme == .dark ? 0.18 : 0.14), lineWidth: 0.9)
+                    .frame(width: 146 + shockImpulse, height: 134 + shockImpulse)
+                
+                Circle()
+                    .fill(self.accent)
+                    .frame(width: 4.5, height: 4.5)
+                    .shadow(color: self.accent.opacity(0.8), radius: 4)
+                    .offset(x: (146 + shockImpulse) * 0.5)
+                
+                Circle()
+                    .fill(self.secondaryAccent)
+                    .frame(width: 3.5, height: 3.5)
+                    .shadow(color: self.secondaryAccent.opacity(0.75), radius: 3)
+                    .offset(x: -(146 + shockImpulse) * 0.5)
+            }
+            .rotationEffect(outerAngle)
+        }
+        .allowsHitTesting(false)
+    }
+    
+    
+    /// Assigns each unique tag ONCE (never duplicates across empty lanes) so zero repeat labels ever appear.
+    private func distributeUniqueTagsAcrossLanes(_ uniqueTags: [UserPersonalityTag]) -> [[UserPersonalityTag]] {
+        var buckets: [[UserPersonalityTag]] = [[], [], [], []]
+        for (idx, tag) in uniqueTags.enumerated() {
+            buckets[idx % 4].append(tag)
+        }
+        return buckets
+    }
+}
+
+
+private struct OrbitingUniqueLaneView: View {
+    
+    let tags: [UserPersonalityTag]
+    let laneIndex: Int
+    let elapsed: TimeInterval
+    let speed: CGFloat
+    let direction: CGFloat
+    let scale: CGFloat
+    let baseOpacity: Double
+    let yOffset: CGFloat
+    let stageWidth: CGFloat
+    let selectedTagID: String?
+    @Binding var hoveredTagID: String?
+    let accent: Color
+    let curvesAroundPortrait: Bool
+    let onTap: (UserPersonalityTag) -> Void
+    
+    @State private var measuredWidths: [String: CGFloat] = [:]
+    @Environment(\.colorScheme) private var colorScheme
+    
+    
+    var body: some View {
+        ZStack {
+            ForEach(Array(self.tags.enumerated()), id: \.element.id) { idx, tag in
+                let pillW = self.measuredWidths[tag.id] ?? CGFloat(max(58, tag.label.count * 12 + 24))
+                let margin: CGFloat = 24
+                let activeSpan = self.stageWidth + pillW + margin * 2
+                let period = max(activeSpan, CGFloat(max(1, self.tags.count)) * 185.0)
+                let stagger = (CGFloat(idx) / CGFloat(max(1, self.tags.count))) * period + CGFloat(self.laneIndex) * 58.0
+                let rawProgress = (CGFloat(self.elapsed) * self.speed + stagger).truncatingRemainder(dividingBy: period)
+                
+                // Continuous wrap from entry edge to exit edge without ever spawning a duplicate copy!
+                let xPos: CGFloat = self.direction < 0
+                    ? (self.stageWidth * 0.5 + pillW * 0.5 + margin) - rawProgress
+                    : -(self.stageWidth * 0.5 + pillW * 0.5 + margin) + rawProgress
+                
+                let bobY = CGFloat(sin(self.elapsed * 1.45 + Double(idx) * 1.7 + Double(self.laneIndex))) * 2.0
+                let orbitBend: CGFloat = self.curvesAroundPortrait
+                    ? (self.yOffset < 0 ? -1.0 : 1.0) * max(0, 1.0 - abs(xPos) / 76.0) * 10.0
+                    : 0
+                
+                let isThisHovered = (self.hoveredTagID == tag.id)
+                let isSelected = (self.selectedTagID == tag.id)
+                let toneColor = UserProfilePopoverView.toneColor(for: tag.tone)
+                
+                if xPos >= -(self.stageWidth * 0.5 + pillW + 8) && xPos <= (self.stageWidth * 0.5 + pillW + 8) {
+                    Button {
+                        self.onTap(tag)
+                    } label: {
+                        HStack(spacing: 4.5) {
+                            Circle()
+                                .fill(isSelected ? Color.white : toneColor)
+                                .frame(width: 5, height: 5)
+                                .shadow(color: toneColor.opacity(0.65), radius: 3)
+                            
+                            Text(tag.label)
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.90))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: true)
+                        }
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .background {
+                            if isSelected {
+                                Capsule().fill(self.accent)
+                            } else {
+                                Capsule()
+                                    .fill(.ultraThinMaterial)
+                                    .overlay(
+                                        Capsule()
+                                            .fill(toneColor.opacity(self.colorScheme == .dark ? 0.12 : 0.07))
+                                    )
+                            }
+                        }
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(
+                                    isThisHovered || isSelected
+                                        ? toneColor.opacity(0.75)
+                                        : Color.primary.opacity(self.colorScheme == .dark ? 0.14 : 0.08),
+                                    lineWidth: isThisHovered || isSelected ? 1.0 : 0.65
+                                )
+                        )
+                        .scaleEffect(isThisHovered ? 1.08 : self.scale)
+                        .opacity(self.baseOpacity)
+                        .onGeometryChange(for: CGFloat.self) { proxy in
+                            proxy.size.width
+                        } action: { newWidth in
+                            if newWidth > 10, abs((self.measuredWidths[tag.id] ?? 0) - newWidth) > 0.5 {
+                                self.measuredWidths[tag.id] = newWidth
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .offset(x: xPos, y: self.yOffset + bobY + orbitBend)
+                    .onHover { inside in
+                        withAnimation(.spring(response: 0.22, dampingFraction: 0.76)) {
+                            if inside {
+                                self.hoveredTagID = tag.id
+                            } else if self.hoveredTagID == tag.id {
+                                self.hoveredTagID = nil
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1307,8 +1758,8 @@ private struct MiniPopoverSparkMatrix: View {
         Canvas { context, size in
             let cols = max(1, self.values.count)
             let rows = 4
-            let gap: CGFloat = 1.8
-            let side = max(2.2, min((size.width - gap * CGFloat(cols - 1)) / CGFloat(cols), (size.height - gap * CGFloat(rows - 1)) / CGFloat(rows)))
+            let gap: CGFloat = 1.6
+            let side = max(2.0, min((size.width - gap * CGFloat(cols - 1)) / CGFloat(cols), (size.height - gap * CGFloat(rows - 1)) / CGFloat(rows)))
             let peak = max(1.0, self.values.max() ?? 1.0)
             
             for col in 0..<cols {
@@ -1327,106 +1778,5 @@ private struct MiniPopoverSparkMatrix: View {
                 }
             }
         }
-    }
-}
-
-
-/// 60/120Hz display-synced marquee strip with exact measured single-loop width for seamless, stutter-free danmaku playback.
-private struct SmoothDanmakuMarquee: View {
-    
-    let tags: [UserPersonalityTag]
-    let selectedTagID: String?
-    let accent: Color
-    let onTap: (UserPersonalityTag) -> Void
-    
-    @State private var isHovered = false
-    @State private var accumulatedOffset: TimeInterval = 0
-    @State private var anchorDate = Date()
-    @State private var singleSetWidth: CGFloat = 0
-    @Environment(\.colorScheme) private var colorScheme
-    
-    private let pillGap: CGFloat = 8
-    private let speed: CGFloat = 22
-    
-    
-    var body: some View {
-        TimelineView(.animation(minimumInterval: nil, paused: self.isHovered)) { context in
-            let elapsed = self.isHovered
-                ? self.accumulatedOffset
-                : self.accumulatedOffset + max(0, context.date.timeIntervalSince(self.anchorDate))
-            let period = max(40, self.singleSetWidth + self.pillGap)
-            let xOffset = self.singleSetWidth > 0
-                ? -((CGFloat(elapsed) * self.speed).truncatingRemainder(dividingBy: period))
-                : 0
-            
-            HStack(spacing: self.pillGap) {
-                self.tagTrack
-                    .onGeometryChange(for: CGFloat.self) { proxy in
-                        proxy.size.width
-                    } action: { newWidth in
-                        if newWidth > 0 && abs(newWidth - self.singleSetWidth) > 0.5 {
-                            self.singleSetWidth = newWidth
-                        }
-                    }
-                
-                self.tagTrack
-                self.tagTrack
-            }
-            .offset(x: xOffset)
-            .frame(width: 224, height: 24, alignment: .leading)
-        }
-        .frame(width: 224, height: 24)
-        .clipped()
-        .mask(
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0.0),
-                    .init(color: .black, location: 0.08),
-                    .init(color: .black, location: 0.92),
-                    .init(color: .clear, location: 1.0),
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        )
-        .onAppear {
-            self.anchorDate = Date()
-        }
-        .onHover { hovering in
-            guard hovering != self.isHovered else { return }
-            let now = Date()
-            if hovering {
-                self.accumulatedOffset += max(0, now.timeIntervalSince(self.anchorDate))
-            } else {
-                self.anchorDate = now
-            }
-            self.isHovered = hovering
-        }
-    }
-    
-    
-    private var tagTrack: some View {
-        HStack(spacing: self.pillGap) {
-            ForEach(self.tags) { tag in
-                let isSelected = (self.selectedTagID == tag.id)
-                Button {
-                    self.onTap(tag)
-                } label: {
-                    Text(tag.label)
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(isSelected ? .white : .primary.opacity(0.84))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(
-                            Capsule()
-                                .fill(isSelected ? self.accent : Color.primary.opacity(self.colorScheme == .dark ? 0.14 : 0.065))
-                        )
-                        .fixedSize()
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-            }
-        }
-        .fixedSize()
     }
 }

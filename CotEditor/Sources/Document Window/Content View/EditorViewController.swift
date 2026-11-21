@@ -437,26 +437,38 @@ final class EditorViewController: NSSplitViewController {
         if let childView = self.contentChild?.view {
             childView.wantsLayer = true
             if let childLayer = childView.layer {
-                let maxShift: CGFloat = 8
-                let shiftX = max(-maxShift, min(maxShift, delta.x * 0.04))
-                let shiftY = max(-maxShift, min(maxShift, delta.y * 0.04))
-                let dx = (abs(shiftX) < 1 && abs(shiftY) < 1) ? -6 : shiftX
+                let maxShift: CGFloat = 14
+                let shiftX = max(-maxShift, min(maxShift, delta.x * 0.055))
+                let shiftY = max(-maxShift, min(maxShift, delta.y * 0.055))
+                let dx = (abs(shiftX) < 1 && abs(shiftY) < 1) ? -10 : shiftX
                 let dy = (abs(shiftX) < 1 && abs(shiftY) < 1) ? 0 : shiftY
                 
-                let slideX = CABasicAnimation(keyPath: "transform.translation.x")
+                let slideX = CASpringAnimation(keyPath: "transform.translation.x")
                 slideX.fromValue = dx
                 slideX.toValue = 0
+                slideX.mass = 0.85
+                slideX.stiffness = 300
+                slideX.damping = 18
+                slideX.initialVelocity = 5
+                slideX.duration = 0.48
+                childLayer.add(slideX, forKey: "crossPaneContentSlideX")
                 
-                let slideY = CABasicAnimation(keyPath: "transform.translation.y")
+                let slideY = CASpringAnimation(keyPath: "transform.translation.y")
                 slideY.fromValue = dy
                 slideY.toValue = 0
+                slideY.mass = 0.85
+                slideY.stiffness = 300
+                slideY.damping = 18
+                slideY.initialVelocity = 5
+                slideY.duration = 0.48
+                childLayer.add(slideY, forKey: "crossPaneContentSlideY")
                 
-                let slideGroup = CAAnimationGroup()
-                slideGroup.animations = [slideX, slideY]
-                slideGroup.duration = 0.22
-                slideGroup.timingFunction = ease
-                slideGroup.isRemovedOnCompletion = true
-                childLayer.add(slideGroup, forKey: "crossPaneContentSlide")
+                let trampoline = CAKeyframeAnimation(keyPath: "transform.scale")
+                trampoline.values = [0.985, 1.006, 0.998, 1.0]
+                trampoline.keyTimes = [0, 0.36, 0.72, 1.0]
+                trampoline.duration = 0.42
+                trampoline.timingFunction = ease
+                childLayer.add(trampoline, forKey: "crossPaneTrampolineScale")
             }
         }
         
@@ -811,7 +823,7 @@ final class EditorViewController: NSSplitViewController {
             return []
         }
         
-        self.showDropOverlay(for: .center)
+        self.showDropOverlay(for: .center, cursorInWindow: sender.draggingLocation)
         return .move
     }
     
@@ -831,7 +843,11 @@ final class EditorViewController: NSSplitViewController {
             !self.tabs.contains(where: { $0.id == draggedID })
         else { return false }
         
-        return self.requestDropTabInZone?(draggedID, .center) ?? false
+        let accepted = self.requestDropTabInZone?(draggedID, .center) ?? false
+        if accepted {
+            NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+        }
+        return accepted
     }
     
     
@@ -849,7 +865,7 @@ final class EditorViewController: NSSplitViewController {
     }
     
     
-    private func showDropOverlay(for zone: PaneDropZone) {
+    private func showDropOverlay(for zone: PaneDropZone, cursorInWindow: NSPoint? = nil) {
         
         self.dropOverlayGeneration &+= 1
         let containerView = self.contentViewController.view
@@ -860,6 +876,7 @@ final class EditorViewController: NSSplitViewController {
             isNewOverlay = false
         } else {
             let created = PaneDropOverlayView(frame: containerView.bounds)
+            created.wantsLayer = true
             created.autoresizingMask = [.width, .height]
             created.alphaValue = AnimationConstants.isReducedMotionEnabled ? 1 : 0
             containerView.addSubview(created, positioned: .above, relativeTo: nil)
@@ -869,12 +886,32 @@ final class EditorViewController: NSSplitViewController {
         }
         overlay.frame = containerView.bounds
         overlay.zone = zone
+        overlay.cursorPointInView = cursorInWindow.map { overlay.convert($0, from: nil) }
+        
+        if isNewOverlay {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
         
         if !AnimationConstants.isReducedMotionEnabled && (isNewOverlay || overlay.alphaValue < 0.99) {
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.16
                 ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
                 overlay.animator().alphaValue = 1
+            }
+            if isNewOverlay, let overlayLayer = overlay.layer {
+                let cx = overlay.bounds.midX
+                let cy = overlay.bounds.midY
+                var fromTransform = CATransform3DMakeTranslation(cx, cy, 0)
+                fromTransform = CATransform3DScale(fromTransform, 0.95, 0.95, 1)
+                fromTransform = CATransform3DTranslate(fromTransform, -cx, -cy, 0)
+                let springScale = CASpringAnimation(keyPath: "transform")
+                springScale.fromValue = fromTransform
+                springScale.toValue = CATransform3DIdentity
+                springScale.mass = 0.8
+                springScale.stiffness = 340
+                springScale.damping = 19
+                springScale.duration = 0.38
+                overlayLayer.add(springScale, forKey: "dropOverlayPop")
             }
         } else {
             overlay.alphaValue = 1
@@ -1002,6 +1039,14 @@ private final class PaneDropOverlayView: NSView {
         }
     }
     
+    var cursorPointInView: NSPoint? {
+        didSet {
+            if self.cursorPointInView != oldValue {
+                self.needsDisplay = true
+            }
+        }
+    }
+    
     override var isOpaque: Bool { false }
     
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -1016,19 +1061,19 @@ private final class PaneDropOverlayView: NSView {
         switch self.zone {
             case .center:
                 highlightRect = bounds
-                label = String(localized: "chrome.dropZone.moveToPane", defaultValue: "移动到此分栏", table: "Chrome")
+                label = AppLanguage.text("松手弹入此分栏", en: "Drop in Pane")
             case .left:
                 highlightRect = NSRect(x: bounds.minX, y: bounds.minY, width: bounds.width * 0.48, height: bounds.height)
-                label = String(localized: "chrome.dropZone.splitLeft", defaultValue: "Split Left", table: "Chrome")
+                label = AppLanguage.text("向左分栏", en: "Split Left")
             case .right:
                 highlightRect = NSRect(x: bounds.minX + bounds.width * 0.52, y: bounds.minY, width: bounds.width * 0.48, height: bounds.height)
-                label = String(localized: "chrome.dropZone.splitRight", defaultValue: "Split Right", table: "Chrome")
+                label = AppLanguage.text("向右分栏", en: "Split Right")
             case .top:
                 highlightRect = NSRect(x: bounds.minX, y: bounds.minY + bounds.height * 0.52, width: bounds.width, height: bounds.height * 0.48)
-                label = String(localized: "chrome.dropZone.splitTop", defaultValue: "Split Top", table: "Chrome")
+                label = AppLanguage.text("向上分栏", en: "Split Top")
             case .bottom:
                 highlightRect = NSRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height * 0.48)
-                label = String(localized: "chrome.dropZone.splitBottom", defaultValue: "Split Bottom", table: "Chrome")
+                label = AppLanguage.text("向下分栏", en: "Split Bottom")
         }
         
         let accent = NSColor.controlAccentColor
@@ -1036,9 +1081,40 @@ private final class PaneDropOverlayView: NSView {
         accent.withAlphaComponent(0.11).setFill()
         path.fill()
         
+        // Cursor-tracking radial luminous cushion inside highlightRect
+        let centerPt = NSPoint(x: highlightRect.midX, y: highlightRect.midY)
+        let glowCenter = self.cursorPointInView ?? centerPt
+        if let gradient = NSGradient(colorsAndLocations:
+            (accent.withAlphaComponent(0.22), 0.0),
+            (accent.withAlphaComponent(0.08), 0.45),
+            (accent.withAlphaComponent(0.0), 1.0)
+        ) {
+            NSGraphicsContext.saveGraphicsState()
+            path.addClip()
+            let glowRadius = max(140, min(highlightRect.width, highlightRect.height) * 0.62)
+            gradient.draw(fromCenter: glowCenter, radius: 0, toCenter: glowCenter, radius: glowRadius, options: [])
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        
         accent.withAlphaComponent(0.75).setStroke()
         path.lineWidth = 1.75
         path.stroke()
+        
+        // Magnetically pull the pill badge gently toward the dragged cursor
+        var badgeCenter = centerPt
+        if let cursor = self.cursorPointInView {
+            let rawDx = (cursor.x - centerPt.x) * 0.18
+            let rawDy = (cursor.y - centerPt.y) * 0.18
+            let dist = hypot(rawDx, rawDy)
+            let maxPull: CGFloat = 30
+            if dist > maxPull, dist > 0.001 {
+                badgeCenter.x += (rawDx / dist) * maxPull
+                badgeCenter.y += (rawDy / dist) * maxPull
+            } else {
+                badgeCenter.x += rawDx
+                badgeCenter.y += rawDy
+            }
+        }
         
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
@@ -1052,8 +1128,8 @@ private final class PaneDropOverlayView: NSView {
         let badgeWidth = textSize.width + 28 + iconGap
         let badgeHeight = max(34, textSize.height + 16)
         let badgeRect = NSRect(
-            x: highlightRect.midX - badgeWidth / 2,
-            y: highlightRect.midY - badgeHeight / 2,
+            x: badgeCenter.x - badgeWidth / 2,
+            y: badgeCenter.y - badgeHeight / 2,
             width: badgeWidth,
             height: badgeHeight
         )

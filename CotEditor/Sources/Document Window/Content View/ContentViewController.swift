@@ -41,16 +41,43 @@ enum WorkspaceCenterIcons {
     private static let defaultSize = NSSize(width: 18, height: 18)
     
     
-    /// Helper to draw crisp, pixel-aligned vector toolbar icons with unified stroke weight & optical balance.
+    /// Renders an Apple SF Symbol centered inside an exact `18 × 18` toolbar canvas with crisp Apple optical weights.
     @MainActor
-    private static func vectorIcon(
-        size: NSSize = defaultSize,
+    private static func appleToolbarSymbol(
+        _ symbolName: String,
+        fallback: String? = nil,
+        pointSize: CGFloat = 14.2,
+        weight: NSFont.Weight = .medium,
+        tintColor: NSColor? = nil,
         isTemplate: Bool,
-        draw: @escaping (NSRect) -> Void
+        size: NSSize = defaultSize
     ) -> NSImage {
+        let base = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+            ?? fallback.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+        let configured = base?.withSymbolConfiguration(config)
+        let finalSymbol: NSImage? = if let tintColor, !isTemplate, let configured {
+            configured.tinted(with: tintColor)
+        } else {
+            configured
+        }
+        
         let image = NSImage(size: size, flipped: false) { rect in
             NSGraphicsContext.current?.shouldAntialias = true
-            draw(rect)
+            NSGraphicsContext.current?.imageInterpolation = .high
+            if let sym = finalSymbol {
+                let symSize = sym.size
+                let scale = min(1.0, min((rect.width - 1.5) / max(1, symSize.width), (rect.height - 1.5) / max(1, symSize.height)))
+                let drawW = symSize.width * scale
+                let drawH = symSize.height * scale
+                let drawRect = NSRect(
+                    x: (rect.width - drawW) * 0.5,
+                    y: (rect.height - drawH) * 0.5,
+                    width: drawW,
+                    height: drawH
+                )
+                sym.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            }
             return true
         }
         image.isTemplate = isTemplate
@@ -58,387 +85,144 @@ enum WorkspaceCenterIcons {
     }
     
     
-    /// Custom vector icon for 编辑 / 只读 (`editable` toolbar item): sleek stylus nib + writing baseline.
+    /// Apple HIG icon for 编辑 / 只读 (`editable` toolbar item): `pencil.line` vs unmistakable `lock.fill`.
     @MainActor
     static func editableIcon(isEditable: Bool, size: NSSize = defaultSize) -> NSImage {
-        
-        self.vectorIcon(size: size, isTemplate: true) { _ in
-            NSColor.labelColor.setStroke()
-            NSColor.labelColor.setFill()
-            
-            // Angled sleek stylus body
-            let pen = NSBezierPath()
-            pen.lineWidth = 1.45
-            pen.lineCapStyle = .round
-            pen.lineJoinStyle = .round
-            pen.move(to: NSPoint(x: 4.0, y: 4.0))
-            pen.line(to: NSPoint(x: 5.1, y: 7.4))
-            pen.line(to: NSPoint(x: 12.6, y: 14.9))
-            pen.curve(to: NSPoint(x: 14.9, y: 12.6), controlPoint1: NSPoint(x: 13.7, y: 16.0), controlPoint2: NSPoint(x: 16.0, y: 13.7))
-            pen.line(to: NSPoint(x: 7.4, y: 5.1))
-            pen.close()
-            pen.stroke()
-            
-            // Subtle nib collar accent
-            let collar = NSBezierPath()
-            collar.lineWidth = 1.25
-            collar.lineCapStyle = .round
-            collar.move(to: NSPoint(x: 10.9, y: 13.2))
-            collar.line(to: NSPoint(x: 13.2, y: 10.9))
-            collar.stroke()
-            
-            // Crisp writing baseline
-            let baseline = NSBezierPath()
-            baseline.lineWidth = 1.4
-            baseline.lineCapStyle = .round
-            baseline.move(to: NSPoint(x: 3.5, y: 2.3))
-            baseline.line(to: NSPoint(x: 14.5, y: 2.3))
-            baseline.stroke()
-            
-            if !isEditable {
-                // Diagonal read-only slash
-                let slash = NSBezierPath()
-                slash.lineWidth = 1.5
-                slash.lineCapStyle = .round
-                slash.move(to: NSPoint(x: 3.2, y: 14.8))
-                slash.line(to: NSPoint(x: 14.8, y: 3.2))
-                slash.stroke()
-            }
-        }
+        self.appleToolbarSymbol(
+            isEditable ? "pencil.line" : "lock.fill",
+            fallback: isEditable ? "square.and.pencil" : "lock",
+            pointSize: 14.0,
+            weight: .medium,
+            isTemplate: true,
+            size: size
+        )
     }
     
     
-    /// Custom vector icon for Emoji (`quickEmoji` toolbar item): soft modern geometric smile with happy arcs.
+    /// Apple HIG icon for Emoji (`quickEmoji` toolbar item).
     @MainActor
     static func quickEmojiIcon(size: NSSize = defaultSize) -> NSImage {
-        
-        self.vectorIcon(size: size, isTemplate: true) { _ in
-            NSColor.labelColor.setStroke()
-            NSColor.labelColor.setFill()
-            
-            let face = NSBezierPath(ovalIn: NSRect(x: 2.4, y: 2.4, width: 13.2, height: 13.2))
-            face.lineWidth = 1.45
-            face.stroke()
-            
-            // Happy crescent eyes
-            let leftEye = NSBezierPath()
-            leftEye.lineWidth = 1.35
-            leftEye.lineCapStyle = .round
-            leftEye.move(to: NSPoint(x: 5.8, y: 10.1))
-            leftEye.curve(to: NSPoint(x: 7.7, y: 10.1), controlPoint1: NSPoint(x: 6.3, y: 11.3), controlPoint2: NSPoint(x: 7.2, y: 11.3))
-            leftEye.stroke()
-            
-            let rightEye = NSBezierPath()
-            rightEye.lineWidth = 1.35
-            rightEye.lineCapStyle = .round
-            rightEye.move(to: NSPoint(x: 10.3, y: 10.1))
-            rightEye.curve(to: NSPoint(x: 12.2, y: 10.1), controlPoint1: NSPoint(x: 10.8, y: 11.3), controlPoint2: NSPoint(x: 11.7, y: 11.3))
-            rightEye.stroke()
-            
-            // Warm smile curve
-            let smile = NSBezierPath()
-            smile.lineWidth = 1.4
-            smile.lineCapStyle = .round
-            smile.move(to: NSPoint(x: 6.1, y: 7.2))
-            smile.curve(to: NSPoint(x: 11.9, y: 7.2), controlPoint1: NSPoint(x: 7.4, y: 5.0), controlPoint2: NSPoint(x: 10.6, y: 5.0))
-            smile.stroke()
-        }
+        self.appleToolbarSymbol(
+            "face.smiling",
+            pointSize: 14.5,
+            weight: .medium,
+            isTemplate: true,
+            size: size
+        )
     }
     
     
-    /// Custom vector icon for 数据看板: sleek rounded Bento frame with rising bar columns + highlight dot.
+    /// Apple HIG icon for 数据看板: unboxed bar chart (`chart.bar.xaxis` / filled tinted accent when open).
     @MainActor
     static func analyticsDashboardIcon(isActive: Bool, size: NSSize = defaultSize) -> NSImage {
-        
-        let strokeColor: NSColor = isActive ? .controlAccentColor : .labelColor
-        return self.vectorIcon(size: size, isTemplate: !isActive) { _ in
-            let frameRect = NSRect(x: 2.3, y: 2.5, width: 13.4, height: 13.0)
-            let framePath = NSBezierPath(roundedRect: frameRect, xRadius: 3.4, yRadius: 3.4)
-            if isActive {
-                NSColor.controlAccentColor.withAlphaComponent(0.16).setFill()
-                framePath.fill()
-            }
-            strokeColor.setStroke()
-            framePath.lineWidth = 1.45
-            framePath.stroke()
-            
-            // Three crisp ascending rounded bars
-            strokeColor.setFill()
-            let bars: [(x: CGFloat, h: CGFloat)] = [
-                (5.2, 3.8),
-                (8.2, 6.2),
-                (11.2, 8.2),
-            ]
-            for bar in bars {
-                let rect = NSRect(x: bar.x, y: 4.8, width: 1.75, height: bar.h)
-                NSBezierPath(roundedRect: rect, xRadius: 0.85, yRadius: 0.85).fill()
-            }
-            
-            // Small live telemetry dot top-left inside card
-            let dot = NSBezierPath(ovalIn: NSRect(x: 4.9, y: 11.4, width: 2.1, height: 2.1))
-            dot.fill()
-        }
+        let tint = StudioPaletteManager.shared.activeNSAccentColor
+        return self.appleToolbarSymbol(
+            isActive ? "chart.bar.fill" : "chart.bar.xaxis",
+            fallback: "chart.bar",
+            pointSize: 14.0,
+            weight: .medium,
+            tintColor: isActive ? tint : nil,
+            isTemplate: !isActive,
+            size: size
+        )
     }
     
     
-    /// Custom vector icon for 深浅外观: minimalist geometric sun (light) and sculpted crescent + twin stars (dark).
+    /// Apple HIG icon for 深浅外观 (`sun.max` / `moon.stars.fill`).
     @MainActor
     static func appearanceModeIcon(isDark: Bool, size: NSSize = defaultSize) -> NSImage {
-        
-        self.vectorIcon(size: size, isTemplate: true) { _ in
-            NSColor.labelColor.setStroke()
-            NSColor.labelColor.setFill()
-            
-            if isDark {
-                // Sculpted crescent moon
-                let moon = NSBezierPath()
-                moon.lineWidth = 1.45
-                moon.lineCapStyle = .round
-                moon.lineJoinStyle = .round
-                moon.move(to: NSPoint(x: 11.4, y: 14.3))
-                moon.curve(to: NSPoint(x: 3.4, y: 8.6), controlPoint1: NSPoint(x: 6.5, y: 15.1), controlPoint2: NSPoint(x: 3.0, y: 11.9))
-                moon.curve(to: NSPoint(x: 13.7, y: 5.8), controlPoint1: NSPoint(x: 3.9, y: 4.4), controlPoint2: NSPoint(x: 9.7, y: 2.2))
-                moon.curve(to: NSPoint(x: 8.4, y: 9.2), controlPoint1: NSPoint(x: 10.6, y: 5.7), controlPoint2: NSPoint(x: 8.3, y: 6.9))
-                moon.curve(to: NSPoint(x: 11.4, y: 14.3), controlPoint1: NSPoint(x: 8.5, y: 11.6), controlPoint2: NSPoint(x: 9.6, y: 13.4))
-                moon.close()
-                moon.stroke()
-                
-                // Crisp 4-point companion star
-                Self.drawFourPointStar(center: NSPoint(x: 13.6, y: 13.0), outerRadius: 2.1, innerRadius: 0.65)
-                NSBezierPath(ovalIn: NSRect(x: 13.8, y: 8.8, width: 1.5, height: 1.5)).fill()
-            } else {
-                // Central sun orb
-                let center = NSPoint(x: 9.0, y: 9.0)
-                let core = NSBezierPath(ovalIn: NSRect(x: 6.1, y: 6.1, width: 5.8, height: 5.8))
-                core.lineWidth = 1.45
-                core.stroke()
-                
-                // 8 balanced short rays
-                let rays = NSBezierPath()
-                rays.lineWidth = 1.4
-                rays.lineCapStyle = .round
-                for i in 0..<8 {
-                    let angle = CGFloat(i) * (.pi / 4.0)
-                    let innerR: CGFloat = 4.9
-                    let outerR: CGFloat = 6.7
-                    rays.move(to: NSPoint(x: center.x + cos(angle) * innerR, y: center.y + sin(angle) * innerR))
-                    rays.line(to: NSPoint(x: center.x + cos(angle) * outerR, y: center.y + sin(angle) * outerR))
-                }
-                rays.stroke()
-            }
-        }
+        self.appleToolbarSymbol(
+            isDark ? "moon.stars.fill" : "sun.max",
+            pointSize: 14.5,
+            weight: .medium,
+            isTemplate: true,
+            size: size
+        )
     }
     
     
-    /// Custom vector icon for 周报中心: modern calendar card with twin rings & structured weekly lines.
+    /// Apple HIG icon for 周报中心 (`calendar`).
     @MainActor
     static func weeklyReportIcon(isActive: Bool, size: NSSize = defaultSize) -> NSImage {
-        
-        let strokeColor: NSColor = isActive ? .controlAccentColor : .labelColor
-        return self.vectorIcon(size: size, isTemplate: !isActive) { _ in
-            let bodyRect = NSRect(x: 2.4, y: 2.4, width: 13.2, height: 11.6)
-            let body = NSBezierPath(roundedRect: bodyRect, xRadius: 3.0, yRadius: 3.0)
-            if isActive {
-                NSColor.controlAccentColor.withAlphaComponent(0.15).setFill()
-                body.fill()
-            }
-            strokeColor.setStroke()
-            body.lineWidth = 1.45
-            body.stroke()
-            
-            // Top binding rings
-            let rings = NSBezierPath()
-            rings.lineWidth = 1.5
-            rings.lineCapStyle = .round
-            rings.move(to: NSPoint(x: 6.0, y: 15.5))
-            rings.line(to: NSPoint(x: 6.0, y: 12.8))
-            rings.move(to: NSPoint(x: 12.0, y: 15.5))
-            rings.line(to: NSPoint(x: 12.0, y: 12.8))
-            rings.stroke()
-            
-            // Header divider
-            let header = NSBezierPath()
-            header.lineWidth = 1.2
-            header.move(to: NSPoint(x: 2.7, y: 10.8))
-            header.line(to: NSPoint(x: 15.3, y: 10.8))
-            header.stroke()
-            
-            // Weekly highlight lines + check accent
-            let lines = NSBezierPath()
-            lines.lineWidth = 1.35
-            lines.lineCapStyle = .round
-            lines.move(to: NSPoint(x: 5.3, y: 8.1))
-            lines.line(to: NSPoint(x: 12.6, y: 8.1))
-            lines.move(to: NSPoint(x: 5.3, y: 5.4))
-            lines.line(to: NSPoint(x: 9.8, y: 5.4))
-            lines.stroke()
-            
-            strokeColor.setFill()
-            NSBezierPath(ovalIn: NSRect(x: 11.3, y: 4.5, width: 1.9, height: 1.9)).fill()
-        }
+        let tint = StudioPaletteManager.shared.activeNSAccentColor
+        return self.appleToolbarSymbol(
+            "calendar",
+            pointSize: 14.2,
+            weight: .medium,
+            tintColor: isActive ? tint : nil,
+            isTemplate: !isActive,
+            size: size
+        )
     }
     
     
-    /// Custom vector icon for 文档中心: layered floating document stack with crisp lines.
+    /// Apple HIG icon for 文档中心 (`books.vertical` / `books.vertical.fill`) — distinct book-spine silhouette.
     @MainActor
     static func documentCenterIcon(isActive: Bool, size: NSSize = defaultSize) -> NSImage {
-        
-        let strokeColor: NSColor = isActive ? .controlAccentColor : .labelColor
-        return self.vectorIcon(size: size, isTemplate: !isActive) { _ in
-            strokeColor.setStroke()
-            
-            // Back stacked card peek (top-right offset)
-            let back = NSBezierPath()
-            back.lineWidth = 1.35
-            back.lineCapStyle = .round
-            back.lineJoinStyle = .round
-            back.move(to: NSPoint(x: 6.2, y: 13.7))
-            back.line(to: NSPoint(x: 6.2, y: 14.3))
-            back.curve(to: NSPoint(x: 8.1, y: 15.8), controlPoint1: NSPoint(x: 6.2, y: 15.2), controlPoint2: NSPoint(x: 7.0, y: 15.8))
-            back.line(to: NSPoint(x: 13.6, y: 15.8))
-            back.curve(to: NSPoint(x: 15.4, y: 14.0), controlPoint1: NSPoint(x: 14.6, y: 15.8), controlPoint2: NSPoint(x: 15.4, y: 15.0))
-            back.line(to: NSPoint(x: 15.4, y: 7.2))
-            back.curve(to: NSPoint(x: 13.9, y: 5.5), controlPoint1: NSPoint(x: 15.4, y: 6.3), controlPoint2: NSPoint(x: 14.7, y: 5.6))
-            back.stroke()
-            
-            // Front document card
-            let frontRect = NSRect(x: 2.8, y: 2.3, width: 10.2, height: 11.4)
-            let front = NSBezierPath(roundedRect: frontRect, xRadius: 2.5, yRadius: 2.5)
-            if isActive {
-                NSColor.controlAccentColor.withAlphaComponent(0.16).setFill()
-                front.fill()
-            }
-            front.lineWidth = 1.45
-            front.stroke()
-            
-            // Crisp document content lines
-            let textLines = NSBezierPath()
-            textLines.lineWidth = 1.35
-            textLines.lineCapStyle = .round
-            textLines.move(to: NSPoint(x: 5.3, y: 10.4))
-            textLines.line(to: NSPoint(x: 10.5, y: 10.4))
-            textLines.move(to: NSPoint(x: 5.3, y: 7.9))
-            textLines.line(to: NSPoint(x: 10.5, y: 7.9))
-            textLines.move(to: NSPoint(x: 5.3, y: 5.4))
-            textLines.line(to: NSPoint(x: 8.4, y: 5.4))
-            textLines.stroke()
-        }
+        let tint = StudioPaletteManager.shared.activeNSAccentColor
+        return self.appleToolbarSymbol(
+            isActive ? "books.vertical.fill" : "books.vertical",
+            fallback: "doc.on.doc",
+            pointSize: 14.0,
+            weight: .medium,
+            tintColor: isActive ? tint : nil,
+            isTemplate: !isActive,
+            size: size
+        )
     }
     
     
-    /// Custom vector icon for 终端 (`terminal`): rounded console frame with crisp `>_` glyph.
+    /// Apple HIG icon for 终端 (`apple.terminal` / `terminal`).
     @MainActor
     static func terminalIcon(size: NSSize = defaultSize) -> NSImage {
-        
-        self.vectorIcon(size: size, isTemplate: true) { _ in
-            NSColor.labelColor.setStroke()
-            
-            let bezel = NSBezierPath(roundedRect: NSRect(x: 2.1, y: 3.1, width: 13.8, height: 11.8), xRadius: 3.1, yRadius: 3.1)
-            bezel.lineWidth = 1.45
-            bezel.stroke()
-            
-            let prompt = NSBezierPath()
-            prompt.lineWidth = 1.45
-            prompt.lineCapStyle = .round
-            prompt.lineJoinStyle = .round
-            prompt.move(to: NSPoint(x: 5.3, y: 11.2))
-            prompt.line(to: NSPoint(x: 7.9, y: 9.0))
-            prompt.line(to: NSPoint(x: 5.3, y: 6.8))
-            prompt.move(to: NSPoint(x: 9.4, y: 6.8))
-            prompt.line(to: NSPoint(x: 12.6, y: 6.8))
-            prompt.stroke()
-        }
+        self.appleToolbarSymbol(
+            "apple.terminal",
+            fallback: "terminal",
+            pointSize: 14.2,
+            weight: .medium,
+            isTemplate: true,
+            size: size
+        )
     }
     
     
-    /// Custom vector icon for AI 设置 (`aiSettings`): graceful curved 4-point starlight constellation.
+    /// Apple HIG icon for AI 设置 (`sparkles`).
     @MainActor
     static func aiSettingsIcon(size: NSSize = defaultSize) -> NSImage {
-        
-        self.vectorIcon(size: size, isTemplate: true) { _ in
-            NSColor.labelColor.setFill()
-            Self.drawFourPointStar(center: NSPoint(x: 8.2, y: 8.6), outerRadius: 5.6, innerRadius: 1.55)
-            Self.drawFourPointStar(center: NSPoint(x: 13.9, y: 13.6), outerRadius: 2.4, innerRadius: 0.72)
-            Self.drawFourPointStar(center: NSPoint(x: 14.3, y: 5.0), outerRadius: 1.7, innerRadius: 0.52)
-        }
+        self.appleToolbarSymbol(
+            "sparkles",
+            pointSize: 14.2,
+            weight: .medium,
+            isTemplate: true,
+            size: size
+        )
     }
     
     
-    /// Custom vector icon for 右侧检查器 (`inspector`): rounded window with right sidebar detail ticks.
+    /// Apple HIG icon for 右侧检查器 (`sidebar.trailing`).
     @MainActor
     static func inspectorIcon(size: NSSize = defaultSize) -> NSImage {
-        
-        self.vectorIcon(size: size, isTemplate: true) { _ in
-            NSColor.labelColor.setStroke()
-            
-            let frame = NSBezierPath(roundedRect: NSRect(x: 2.1, y: 3.0, width: 13.8, height: 12.0), xRadius: 3.0, yRadius: 3.0)
-            frame.lineWidth = 1.45
-            frame.stroke()
-            
-            let divider = NSBezierPath()
-            divider.lineWidth = 1.35
-            divider.move(to: NSPoint(x: 10.6, y: 3.2))
-            divider.line(to: NSPoint(x: 10.6, y: 14.8))
-            divider.stroke()
-            
-            let ticks = NSBezierPath()
-            ticks.lineWidth = 1.25
-            ticks.lineCapStyle = .round
-            for y in [11.6, 9.0, 6.4] as [CGFloat] {
-                ticks.move(to: NSPoint(x: 12.2, y: y))
-                ticks.line(to: NSPoint(x: 14.0, y: y))
-            }
-            ticks.stroke()
-        }
+        self.appleToolbarSymbol(
+            "sidebar.trailing",
+            fallback: "sidebar.right",
+            pointSize: 14.5,
+            weight: .medium,
+            isTemplate: true,
+            size: size
+        )
     }
     
     
-    /// Custom vector icon for 更多 (`more`): clean geometric triad inside a delicate ring.
+    /// Apple HIG icon for 更多 (`ellipsis.circle`).
     @MainActor
     static func moreIcon(size: NSSize = defaultSize) -> NSImage {
-        
-        self.vectorIcon(size: size, isTemplate: true) { _ in
-            NSColor.labelColor.setStroke()
-            NSColor.labelColor.setFill()
-            
-            let ring = NSBezierPath(roundedRect: NSRect(x: 2.3, y: 2.3, width: 13.4, height: 13.4), xRadius: 4.6, yRadius: 4.6)
-            ring.lineWidth = 1.4
-            ring.stroke()
-            
-            for x in [5.4, 8.25, 11.1] as [CGFloat] {
-                NSBezierPath(ovalIn: NSRect(x: x, y: 8.25, width: 1.55, height: 1.55)).fill()
-            }
-        }
-    }
-    
-    
-    /// Draws a smooth curved 4-point diamond sparkle centered at `center`.
-    private static func drawFourPointStar(center: NSPoint, outerRadius r: CGFloat, innerRadius ir: CGFloat) {
-        
-        let path = NSBezierPath()
-        path.move(to: NSPoint(x: center.x, y: center.y + r))
-        path.curve(
-            to: NSPoint(x: center.x + r, y: center.y),
-            controlPoint1: NSPoint(x: center.x + ir * 0.4, y: center.y + ir),
-            controlPoint2: NSPoint(x: center.x + ir, y: center.y + ir * 0.4)
+        self.appleToolbarSymbol(
+            "ellipsis.circle",
+            pointSize: 14.5,
+            weight: .medium,
+            isTemplate: true,
+            size: size
         )
-        path.curve(
-            to: NSPoint(x: center.x, y: center.y - r),
-            controlPoint1: NSPoint(x: center.x + ir, y: center.y - ir * 0.4),
-            controlPoint2: NSPoint(x: center.x + ir * 0.4, y: center.y - ir)
-        )
-        path.curve(
-            to: NSPoint(x: center.x - r, y: center.y),
-            controlPoint1: NSPoint(x: center.x - ir * 0.4, y: center.y - ir),
-            controlPoint2: NSPoint(x: center.x - ir, y: center.y - ir * 0.4)
-        )
-        path.curve(
-            to: NSPoint(x: center.x, y: center.y + r),
-            controlPoint1: NSPoint(x: center.x - ir, y: center.y + ir * 0.4),
-            controlPoint2: NSPoint(x: center.x - ir * 0.4, y: center.y + ir)
-        )
-        path.close()
-        path.fill()
     }
 }
 

@@ -188,6 +188,12 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let cotPassLicenseKey = "pass.licenseKey"
         static let cotPassSerialCode = "pass.serialCode"
         static let analyticsHistoricalBackfillV2 = "analytics.historicalBackfillV2"
+        static let studioPaletteID = "ui.studioPaletteID"
+        static let studioCustomLightHex = "ui.studioCustomLightHex"
+        static let studioCustomDarkHex = "ui.studioCustomDarkHex"
+        static let studioCustomAccentHex = "ui.studioCustomAccentHex"
+        static let appIconSpecJSON = "ui.appIconSpecJSON"
+        static let pinnedTodoMascot = "todo.mascotKind"
     }
     
     static let weeklyReportsDidChangeNotification = Notification.Name("CotLocalDatabaseWeeklyReportsDidChange")

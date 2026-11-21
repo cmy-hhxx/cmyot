@@ -401,6 +401,34 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
 }
 
 
+/// A recently touched document or weekly report displayed in the Studio Manuscript Folio gallery.
+nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
+    
+    enum Kind: String, Sendable, Equatable {
+        case markdown
+        case code
+        case weeklyReport
+        case plainText
+    }
+    
+    enum Payload: Sendable, Equatable {
+        case document(StoredDocumentRecord)
+        case weeklyReport(StoredWeeklyReport)
+    }
+    
+    var id: String
+    var title: String
+    var excerpt: String
+    var syntaxLabel: String
+    var kind: Kind
+    var charCount: Int
+    var updatedAt: Date
+    var relativeTimeBadge: String
+    var isCreatedToday: Bool
+    var payload: Payload
+}
+
+
 /// Collects live editor & AI telemetry, manages reminders, and runs the 6-hour background AI daily digest.
 @MainActor @Observable final class AnalyticsManager {
     
@@ -580,6 +608,11 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         let key = Self.dateKey(for: date)
         self.database.incrementDailyWritingStats(dateKey: key, documentsSaved: 1)
         self.reloadFromDatabase()
+        if !Self.isRunningUnitTests {
+            Task { @MainActor [weak self] in
+                await self?.refreshPersonalityProfile(force: false)
+            }
+        }
     }
     
     
@@ -2116,19 +2149,23 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         if !routing.effectiveModel.isEmpty {
             config.model = routing.effectiveModel
         }
-        config.temperature = 0.25
+        config.temperature = 0.65
         config.reasoningEffort = "low"
         
         let prompt = """
-        请阅读用户今天编辑的文本内容与提醒事项，用简洁、直白的中文提炼今天的进展和明天最值得优先推进的事项。
-        请严格以 JSON 格式输出（不要包含额外解释）：
-        {"summary":"2-3条极简要点，用换行符\\n分隔，每条不超过24字，不要编号或前缀符号","topics":["关键词1","关键词2","关键词3"],"tomorrow_focus":"25字以内说明明天最值得优先推进的一件事"}
+        请你像一个坐在我工位旁边的聪明损友兼老搭档，看看我今天写的东西和待办，给我来几句掏心窝子的“今日点评”。
+        要求：
+        1. 分成 3-4 条短点，用换行符 \\n 隔开，每条 16-45 字，不要带编号或项目符号。
+        2. 彻底戒掉公文腔、汇报腔、鸡汤味和AI客套话！直接说人话，通俗易懂，聊我今天到底干了啥、卡在哪儿、写得顺不顺、该夸还是该吐槽。
+        3. 允许俏皮、幽默和无伤大雅的口头小脏话（比如“卧槽”“牛逼”“别特么死磕了”“纯摸鱼回血不丢人”），要有真实朋友的温度，不能恶意人身攻击。
+        4. 请严格以 JSON 格式输出（不要包含额外解释）：
+        {"summary":"第一条点评\\n第二条点评\\n第三条点评","topics":["关键词1","关键词2"],"tomorrow_focus":"28字以内直白说出明天先搞哪件事"}
 
         \(corpus.promptText)
         """
         
         let messages: [AIMessage] = [
-            .system("你是用户的私人写作与工作复盘助手。输出必须精炼、说人话、高信噪比。"),
+            .system("你是用户的毒舌又暖心的写作老友。说话极其接地气、一针见血、分点清晰、允许俏皮和口头小脏话，绝不端着。"),
             .user(prompt),
         ]
         
@@ -2731,5 +2768,285 @@ nonisolated struct DetectedNoteTodo: Identifiable, Sendable, Equatable {
         let combined = segments.joined(separator: "\n\n")
         let fp = UserPersonalityAnalyzer.sha256Hex(combined)
         return (combined, totalChars, fp)
+    }
+    
+    
+    // MARK: Round 20 Dashboard Helpers (Candid AI Take, Manuscripts & Achievements)
+    
+    var lifetimeTypedChars: Int {
+        
+        var total = self.todayStats.typedChars
+        let todayKey = self.todayStats.dateKey
+        for stat in self.recentDailyStats where stat.dateKey != todayKey {
+            total += stat.typedChars
+        }
+        return total
+    }
+    
+    
+    /// Translates a typed character count into a tangible physical milestone for the Typed Achievement view.
+    static func tangibleWritingEquivalent(for chars: Int) -> (badge: String, detail: String) {
+        
+        let keystrokes = Int((Double(chars) * 2.4).rounded())
+        if chars <= 0 {
+            return ("蓄力起草中", "敲下第一行即刻开始累计字迹")
+        }
+        if chars < 150 {
+            return ("一张灵感便签", "约合 \(keystrokes) 次指尖敲击")
+        }
+        if chars < 500 {
+            let pages = max(0.2, Double(chars) / 400.0)
+            return ("一张明信片体量", String(format: "约 %.1f 页手写笔记 · %d 次敲击", pages, keystrokes))
+        }
+        if chars < 1500 {
+            let pages = Double(chars) / 550.0
+            return ("一篇专栏随笔", String(format: "约合 %.1f 页 16 开书稿", pages))
+        }
+        if chars < 3500 {
+            let pages = Double(chars) / 550.0
+            return ("一整章书稿体量", String(format: "约合 %.1f 页 16 开书稿", pages))
+        }
+        let pages = max(6, Int((Double(chars) / 550.0).rounded()))
+        return ("中篇手稿级输出", "约合 \(pages) 页 16 开成书 · \(keystrokes) 次敲击")
+    }
+    
+    
+    /// Identifies the user's highest-output 1-hour flow window and writing chronotype for `dateKey`.
+    func peakFlowWindow(for dateKey: String) -> (hourRange: String, chronotype: String, peakChars: Int)? {
+        
+        let hourly = self.hourlyWritingPulse(for: dateKey)
+        guard let best = hourly.enumerated().max(by: { $0.element < $1.element }),
+              best.element > 0
+        else { return nil }
+        
+        let hr = best.offset
+        let range = String(format: "%02d:00–%02d:59", hr, hr)
+        let chronotype: String = if hr >= 22 || hr <= 4 {
+            "深夜心流派"
+        } else if hr <= 11 {
+            "晨间清醒派"
+        } else if hr <= 17 {
+            "午后推进派"
+        } else {
+            "傍晚沉思派"
+        }
+        return (hourRange: range, chronotype: chronotype, peakChars: best.element)
+    }
+    
+    
+    /// Produces 3–4 candid, plain-spoken, cheeky bullet points summarizing what AI thinks about this day.
+    func candidDailyTakePoints(
+        for cell: HeatmapDayCell,
+        referenceDate: Date = Date(),
+        baselineDailyChars: Int = 0
+    ) -> [String] {
+        
+        let detail = self.dayDetail(for: cell)
+        let todayKey = Self.dateKey(for: referenceDate)
+        let isToday = (cell.dateKey == todayKey)
+        
+        if let digest = detail.digest, digest.modelUsed != "本地摘要" {
+            var aiPoints = Self.structuredSummaryPoints(from: digest.summary, maxPoints: 4)
+            let focus = digest.tomorrowFocus.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !focus.isEmpty && aiPoints.count < 4 && !aiPoints.contains(where: { $0.contains(focus) }) {
+                aiPoints.append("明天建议一上来就先搞定：\(focus)")
+            }
+            if aiPoints.count >= 2 {
+                return aiPoints
+            }
+        }
+        
+        var points: [String] = []
+        let typed = cell.typedChars
+        let ai = cell.aiCompletedChars
+        let docTitles = detail.documents.map(\.title) + detail.weeklyReports.map(\.title)
+        let typedText = typed.formatted(.number.grouping(.automatic))
+        let aiText = ai.formatted(.number.grouping(.automatic))
+        let firstDocText = docTitles.first.map { "，主要在撸《\($0)》" } ?? ""
+        
+        if typed == 0 && ai == 0 && docTitles.isEmpty {
+            if isToday {
+                points.append("今天目前还是零字起步，纯纯蓄力摸鱼回血中——歇会儿不丢人，别硬坐着干瞪眼。")
+                points.append("真想开动的话，随便新建一篇写两句大白话就行，先写坨丑的比完美主义卡死强一百倍。")
+            } else {
+                points.append("这天键盘歇了个彻底，估计是出门忙正事或者干脆放空回血去了。")
+                points.append("没留下字迹也挺好，写东西本来就讲究张弛有度，总不能天天绷着。")
+            }
+        } else if baselineDailyChars > 100 && typed >= Int(Double(baselineDailyChars) * 1.45) {
+            points.append("卧槽，\(isToday ? "今天" : "这天")手速直接干拉满了！一口气手搓了 \(typedText) 字\(firstDocText)，比平时均值猛了一大截，牛逼。")
+        } else if typed >= 1200 {
+            points.append("\(isToday ? "今天" : "这天")手感是真的顺，实打实敲了 \(typedText) 字\(firstDocText)，这输出节奏贼稳。")
+        } else if typed > 0 {
+            points.append("\(isToday ? "今天" : "这天")不紧不慢写了 \(typedText) 字\(firstDocText)，没瞎赶工反而把思路理得挺清。")
+        } else if let first = docTitles.first {
+            points.append("\(isToday ? "今天" : "这天")先开起了《\(first)》的骨架，把摊子铺开就是个好头。")
+        }
+        
+        if let peak = self.peakFlowWindow(for: cell.dateKey) {
+            if peak.chronotype == "深夜心流派" {
+                points.append("夜深人静果然是你的主场，\(peak.hourRange) 那会儿一小时灌进去 \(peak.peakChars) 字，夜猫子实锤。")
+            } else if peak.chronotype == "晨间清醒派" {
+                points.append("大清早脑子最灵光，\(peak.hourRange) 状态起飞，趁热打铁干了 \(peak.peakChars) 字。")
+            }
+        } else if docTitles.count >= 2 {
+            points.append("在《\(docTitles[0])》和《\(docTitles[1])》这 \(docTitles.count) 篇之间来回打磨，想法没断档。")
+        } else if let first = docTitles.first, points.count < 2 {
+            points.append("\(isToday ? "今天" : "这天")就盯死《\(first)》这一篇往下啃，没到处瞎开新坑就是胜利。")
+        }
+        
+        if cell.aiCompletionAccepts >= 3 {
+            points.append("顺手按了 \(cell.aiCompletionAccepts) 次 Tab 让 AI 帮你接了 \(aiText) 字，省力偷懒这方面你算是玩明白了。")
+        } else if cell.documentsSaved >= 4 {
+            points.append("前前后后保存修改了 \(cell.documentsSaved) 次，看得出来你在死抠细节；差不多就往下写，别特么死磕第一段。")
+        } else if cell.filesCreated > 0 {
+            points.append("新开了 \(cell.filesCreated) 篇草稿把灵感先占住坑，后面顺着往里填肉就完事了。")
+        } else if !detail.weeklyReports.isEmpty {
+            points.append("把本周的账拢进了《\(detail.weeklyReports[0].title)》，复盘这步走得挺稳。")
+        }
+        
+        if isToday {
+            if let pinned = self.pinnedTodos.first {
+                points.append("屏幕角落还钉着「\(pinned.title)」盯着你呢，顺手把它消掉就能爽快收工。")
+            } else if let next = self.tomorrowReminders.first {
+                points.append("明天头一件事已经挂上号了：先别墨迹，把「\(next.title)」干掉再说。")
+            }
+        }
+        
+        if points.count < 3 {
+            points.append("整体步调挺舒服，保持这种说人话、直给重点的写字劲儿就对了。")
+        }
+        return Array(points.prefix(4))
+    }
+    
+    
+    /// Returns documents and weekly reports touched within the past `days` days (newest first).
+    func recentTouchedManuscripts(
+        days: Int = 7,
+        referenceDate: Date = Date(),
+        limit: Int = 6
+    ) -> [TouchedManuscriptItem] {
+        
+        let cutoff = Calendar.current.date(byAdding: .day, value: -max(1, days), to: Calendar.current.startOfDay(for: referenceDate)) ?? referenceDate
+        let docs = self.database.documents.filter { !$0.id.hasPrefix("weekly:") && $0.updatedAt >= cutoff }
+        let reports = self.database.weeklyReports.filter { $0.updatedAt >= cutoff }
+        return self.buildManuscriptItems(docs: docs, reports: reports, referenceDate: referenceDate, limit: limit)
+    }
+    
+    
+    /// Returns documents and weekly reports touched on the specific day of `cell`.
+    func dayTouchedManuscripts(
+        for cell: HeatmapDayCell,
+        referenceDate: Date = Date(),
+        limit: Int = 6
+    ) -> [TouchedManuscriptItem] {
+        
+        let detail = self.dayDetail(for: cell)
+        return self.buildManuscriptItems(
+            docs: detail.documents,
+            reports: detail.weeklyReports,
+            referenceDate: referenceDate,
+            limit: limit
+        )
+    }
+    
+    
+    private func buildManuscriptItems(
+        docs: [StoredDocumentRecord],
+        reports: [StoredWeeklyReport],
+        referenceDate: Date,
+        limit: Int
+    ) -> [TouchedManuscriptItem] {
+        
+        let todayKey = Self.dateKey(for: referenceDate)
+        var items: [TouchedManuscriptItem] = []
+        items.reserveCapacity(docs.count + reports.count)
+        
+        for doc in docs {
+            let preview = Self.documentFirstLinePreview(doc.content)
+            let excerpt = preview.isEmpty ? "空白草稿，等你落笔第一行" : preview
+            let kind = Self.classifyManuscriptKind(syntax: doc.syntax)
+            let syntaxLabel = doc.syntax.isEmpty ? "纯文本" : doc.syntax
+            let isCreatedToday = doc.createdAt.map { Self.dateKey(for: $0) == todayKey } ?? false
+            items.append(TouchedManuscriptItem(
+                id: "doc:\(doc.id)",
+                title: doc.title,
+                excerpt: excerpt,
+                syntaxLabel: syntaxLabel,
+                kind: kind,
+                charCount: doc.content.count,
+                updatedAt: doc.updatedAt,
+                relativeTimeBadge: Self.relativeTimeBadge(for: doc.updatedAt, referenceDate: referenceDate),
+                isCreatedToday: isCreatedToday,
+                payload: .document(doc)
+            ))
+        }
+        
+        for report in reports {
+            let preview = Self.documentFirstLinePreview(report.content)
+            let excerpt = preview.isEmpty ? "阶段工作周报记录" : preview
+            let isCreatedToday = (Self.dateKey(for: report.createdAt) == todayKey)
+            items.append(TouchedManuscriptItem(
+                id: "rep:\(report.id)",
+                title: report.title,
+                excerpt: excerpt,
+                syntaxLabel: "周报",
+                kind: .weeklyReport,
+                charCount: report.content.count,
+                updatedAt: report.updatedAt,
+                relativeTimeBadge: Self.relativeTimeBadge(for: report.updatedAt, referenceDate: referenceDate),
+                isCreatedToday: isCreatedToday,
+                payload: .weeklyReport(report)
+            ))
+        }
+        
+        return Array(items.sorted(by: { $0.updatedAt > $1.updatedAt }).prefix(max(0, limit)))
+    }
+    
+    
+    private static func classifyManuscriptKind(syntax: String) -> TouchedManuscriptItem.Kind {
+        
+        let lower = syntax.lowercased()
+        if lower.contains("markdown") {
+            return .markdown
+        }
+        if lower.contains("swift") || lower.contains("python") || lower.contains("javascript")
+            || lower.contains("typescript") || lower.contains("json") || lower.contains("bash")
+            || lower.contains("shell") || lower.contains("html") || lower.contains("css")
+            || lower.contains("sql") || lower.contains("rust") || lower.contains("go")
+        {
+            return .code
+        }
+        return .plainText
+    }
+    
+    
+    private static func relativeTimeBadge(for date: Date, referenceDate: Date) -> String {
+        
+        let delta = referenceDate.timeIntervalSince(date)
+        if delta >= 0 && delta < 180 {
+            return "刚刚"
+        }
+        if delta >= 0 && delta < 3600 {
+            return "\(max(1, Int(delta / 60))) 分钟前"
+        }
+        let calendar = Calendar.current
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH:mm"
+        if calendar.isDate(date, inSameDayAs: referenceDate) {
+            return "今天 \(timeFormatter.string(from: date))"
+        }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: referenceDate),
+           calendar.isDate(date, inSameDayAs: yesterday)
+        {
+            return "昨天 \(timeFormatter.string(from: date))"
+        }
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: referenceDate)).day ?? 0
+        if (2...6).contains(days) {
+            return "\(days) 天前"
+        }
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "zh_CN")
+        dateFormatter.dateFormat = "M月d日"
+        return dateFormatter.string(from: date)
     }
 }

@@ -287,7 +287,7 @@ struct Round19FeatureTests {
     }
     
     
-    // MARK: 6. Pinned Todo Deadline Urgency Escalation
+    // MARK: 6. Featherweight Capsule Pinned Todo Escalation (Non-Intrusive)
     
     @Test func pinnedTodoFontEscalatesUntilWindowBurstingOnDeadline() {
         
@@ -308,8 +308,8 @@ struct Round19FeatureTests {
         #expect(imminent.fontSize > approaching.fontSize)
         #expect(overdue.fontSize > imminent.fontSize)
         #expect(overdue.isOverdue == true)
-        #expect(overdue.isWindowBursting == true)
-        #expect(overdue.fontSize >= 100)
+        #expect(overdue.isWindowBursting == false)
+        #expect(timeless.fontSize >= 11.0 && overdue.fontSize <= 14.5)
     }
     
     

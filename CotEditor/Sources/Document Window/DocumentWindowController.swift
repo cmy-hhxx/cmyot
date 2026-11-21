@@ -740,7 +740,7 @@ private extension NSViewController {
 
 private extension NSToolbar.Identifier {
     
-    static let document = Self("Document.personal.9")
+    static let document = Self("Document.personal.10")
     static let directoryDocument = Self("DirectoryDocument")
 }
 
@@ -828,13 +828,17 @@ extension DocumentWindowController: NSToolbarDelegate {
         
         self.directoryIdentifiers + [
             .editable,
+            .space,
             .quickEmoji,
-            .analyticsDashboard,
             .appearanceMode,
+            .space,
+            .analyticsDashboard,
             .weeklyReportCenter,
             .documentCenter,
+            .space,
             .syntax,
             .textScale,
+            .space,
             .terminal,
             .aiSettings,
             .inspector,
@@ -895,10 +899,8 @@ extension DocumentWindowController: NSToolbarDelegate {
                 self.buildSyntaxPopUpButton(popUpButton)
                 
                 let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-                item.label = String(localized: "Toolbar.syntax.label",
-                                    defaultValue: "Syntax", table: "Document")
-                item.toolTip = String(localized: "Toolbar.syntax.tooltip",
-                                      defaultValue: "Change syntax", table: "Document")
+                item.label = AppLanguage.text("语法", en: "Syntax")
+                item.toolTip = AppLanguage.text("切换文档语法高亮", en: "Change syntax")
                 item.view = popUpButton
                 item.isNavigational = true
                 item.visibilityPriority = .high
@@ -916,16 +918,13 @@ extension DocumentWindowController: NSToolbarDelegate {
                                       action: #selector(DocumentViewController.changeTextScale(_:)))
                 slider.isContinuous = true
                 slider.controlSize = .small
-                slider.toolTip = String(localized: "chrome.toolbar.textScale.tooltip",
-                                        defaultValue: "Text size (continuous)", table: "Chrome")
+                slider.toolTip = AppLanguage.text("无极调节字体大小", en: "Text size (continuous)")
                 slider.translatesAutoresizingMaskIntoConstraints = false
                 NSLayoutConstraint.activate([slider.widthAnchor.constraint(equalToConstant: 96)])
                 
                 let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-                item.label = String(localized: "chrome.toolbar.textScale.label",
-                                    defaultValue: "Text Size", table: "Chrome")
-                item.toolTip = String(localized: "chrome.toolbar.textScale.hint",
-                                      defaultValue: "Drag to change text size", table: "Chrome")
+                item.label = AppLanguage.text("字号", en: "Text Size")
+                item.toolTip = AppLanguage.text("拖动无极缩放编辑器文字", en: "Drag to change text size")
                 item.view = slider
                 item.isNavigational = true
                 item.visibilityPriority = .high
@@ -936,9 +935,8 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.isBordered = true
                 item.showsIndicator = false
                 item.isNavigational = true
-                item.label = "Emoji"
-                item.toolTip = String(localized: "chrome.toolbar.emoji.tooltip",
-                                      defaultValue: "Frequently used emoji", table: "Chrome")
+                item.label = AppLanguage.text("表情", en: "Emoji")
+                item.toolTip = AppLanguage.text("插入常用标点与表情", en: "Frequently used emoji")
                 item.image = WorkspaceCenterIcons.quickEmojiIcon()
                 item.menu = Self.quickEmojiMenu()
                 return item
@@ -946,8 +944,8 @@ extension DocumentWindowController: NSToolbarDelegate {
             case .analyticsDashboard:
                 let item = StatableToolbarItem(itemIdentifier: itemIdentifier)
                 item.isBordered = true
-                item.label = "数据看板"
-                item.toolTip = "在当前窗口打开/关闭数据看板"
+                item.label = AppLanguage.text("数据看板", en: "Dashboard")
+                item.toolTip = AppLanguage.text("打开 / 关闭数据看板", en: "Toggle Analytics Dashboard")
                 item.stateImages[.off] = WorkspaceCenterIcons.analyticsDashboardIcon(isActive: false)
                 item.stateImages[.on] = WorkspaceCenterIcons.analyticsDashboardIcon(isActive: true)
                 item.action = #selector(ContentViewController.toggleAnalyticsDashboard(_:))
@@ -957,8 +955,8 @@ extension DocumentWindowController: NSToolbarDelegate {
                 
             case .userProfile:
                 let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-                item.label = "用户"
-                item.toolTip = "用户资料与本地多账户切换"
+                item.label = AppLanguage.text("用户", en: "Profile")
+                item.toolTip = AppLanguage.text("用户资料、环绕画像与胶囊置顶", en: "User Profile & Capsule Todos")
                 item.view = UserAvatarToolbarButtonView()
                 item.isNavigational = false
                 item.visibilityPriority = .high
@@ -967,9 +965,8 @@ extension DocumentWindowController: NSToolbarDelegate {
             case .appearanceMode:
                 let item = StatableToolbarItem(itemIdentifier: itemIdentifier)
                 item.isBordered = true
-                item.label = String(localized: "chrome.toolbar.appearance.label",
-                                    defaultValue: "深浅外观", table: "Chrome")
-                item.toolTip = "切换深色 / 浅色外观"
+                item.label = AppLanguage.text("外观", en: "Appearance")
+                item.toolTip = AppLanguage.text("切换深色 / 浅色外观", en: "Toggle Light / Dark Mode")
                 item.stateImages[.off] = WorkspaceCenterIcons.appearanceModeIcon(isDark: false)
                 item.stateImages[.on] = WorkspaceCenterIcons.appearanceModeIcon(isDark: true)
                 item.action = #selector(DocumentViewController.toggleAppearanceMode(_:))
@@ -980,10 +977,8 @@ extension DocumentWindowController: NSToolbarDelegate {
             case .weeklyReportCenter:
                 let item = StatableToolbarItem(itemIdentifier: itemIdentifier)
                 item.isBordered = true
-                item.label = String(localized: "chrome.toolbar.weeklyReportCenter.label",
-                                    defaultValue: "周报中心", table: "Chrome")
-                item.toolTip = String(localized: "chrome.toolbar.weeklyReportCenter.tooltip",
-                                      defaultValue: "在当前窗口打开/关闭周报中心", table: "Chrome")
+                item.label = AppLanguage.text("周报中心", en: "Weekly Reports")
+                item.toolTip = AppLanguage.text("在当前窗口打开 / 关闭周报中心", en: "Toggle Weekly Report Center")
                 item.stateImages[.off] = WorkspaceCenterIcons.weeklyReportIcon(isActive: false)
                 item.stateImages[.on] = WorkspaceCenterIcons.weeklyReportIcon(isActive: true)
                 item.action = #selector(ContentViewController.toggleWeeklyReportCenter(_:))
@@ -994,10 +989,8 @@ extension DocumentWindowController: NSToolbarDelegate {
             case .documentCenter:
                 let item = StatableToolbarItem(itemIdentifier: itemIdentifier)
                 item.isBordered = true
-                item.label = String(localized: "chrome.toolbar.documentCenter.label",
-                                    defaultValue: "文档中心", table: "Chrome")
-                item.toolTip = String(localized: "chrome.toolbar.documentCenter.tooltip",
-                                      defaultValue: "在当前窗口管理与打开所有文档", table: "Chrome")
+                item.label = AppLanguage.text("文档中心", en: "Documents")
+                item.toolTip = AppLanguage.text("在当前窗口管理与浏览所有文档", en: "Toggle Document Center")
                 item.stateImages[.off] = WorkspaceCenterIcons.documentCenterIcon(isActive: false)
                 item.stateImages[.on] = WorkspaceCenterIcons.documentCenterIcon(isActive: true)
                 item.action = #selector(ContentViewController.toggleDocumentCenter(_:))
@@ -1009,10 +1002,8 @@ extension DocumentWindowController: NSToolbarDelegate {
                 let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
                 item.isBordered = true
                 item.showsIndicator = false
-                item.label = String(localized: "chrome.toolbar.more.label",
-                                    defaultValue: "More", table: "Chrome")
-                item.toolTip = String(localized: "chrome.toolbar.more.tooltip",
-                                      defaultValue: "More actions", table: "Chrome")
+                item.label = AppLanguage.text("更多", en: "More")
+                item.toolTip = AppLanguage.text("更多视图与整理操作", en: "More actions")
                 item.image = WorkspaceCenterIcons.moreIcon()
                 item.menu = Self.moreMenu()
                 return item
@@ -1021,9 +1012,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                 let item = NSToolbarItem(itemIdentifier: itemIdentifier)
                 item.isBordered = true
                 item.label = "AI"
-                item.toolTip = String(localized: "chrome.toolbar.ai.tooltip",
-                                      defaultValue: "Configure AI: endpoint, model, and API key",
-                                      table: "Chrome")
+                item.toolTip = AppLanguage.text("配置 AI 模型、接口与智能体", en: "Configure AI models & bots")
                 item.image = WorkspaceCenterIcons.aiSettingsIcon()
                 item.target = NSApp.delegate
                 item.action = #selector(AppDelegate.showAIPreferences(_:))
@@ -1034,11 +1023,8 @@ extension DocumentWindowController: NSToolbarDelegate {
             case .terminal:
                 let item = NSToolbarItem(itemIdentifier: itemIdentifier)
                 item.isBordered = true
-                item.label = String(localized: "chrome.toolbar.terminal.label",
-                                    defaultValue: "Terminal", table: "Chrome")
-                item.toolTip = String(localized: "chrome.toolbar.terminal.tooltip",
-                                      defaultValue: "Show or hide the terminal in this window",
-                                      table: "Chrome")
+                item.label = AppLanguage.text("终端", en: "Terminal")
+                item.toolTip = AppLanguage.text("显示或隐藏底部内置终端", en: "Show or hide terminal")
                 item.image = WorkspaceCenterIcons.terminalIcon()
                 item.action = #selector(ContentViewController.toggleTerminal(_:))
                 // keep it next to the other leading controls, and out of the overflow menu
@@ -1049,10 +1035,8 @@ extension DocumentWindowController: NSToolbarDelegate {
             case .inspector:
                 let item = NSToolbarItem(itemIdentifier: itemIdentifier)
                 item.isBordered = true
-                item.label = String(localized: "Toolbar.inspector.label",
-                                    defaultValue: "Inspector", table: "Document")
-                item.toolTip = String(localized: "Toolbar.inspector.tooltip",
-                                      defaultValue: "Show inspector", table: "Document")
+                item.label = AppLanguage.text("检查器", en: "Inspector")
+                item.toolTip = AppLanguage.text("显示 / 隐藏右侧信息检查器", en: "Show inspector")
                 item.image = WorkspaceCenterIcons.inspectorIcon()
                 item.action = #selector(NSSplitViewController.toggleInspector)
                 item.visibilityPriority = .high
@@ -1267,10 +1251,8 @@ extension DocumentWindowController: NSToolbarDelegate {
             case .editable:
                 let item = StatableToolbarItem(itemIdentifier: itemIdentifier)
                 item.isBordered = true
-                item.label = String(localized: "Toolbar.editable.label",
-                                    defaultValue: "Edit", table: "Document")
-                item.toolTip = String(localized: "Toolbar.editable.tooltip.off",
-                                      defaultValue: "Prevent the document from being edited", table: "Document")
+                item.label = AppLanguage.text("只读锁定", en: "Edit")
+                item.toolTip = AppLanguage.text("切换读写状态 / 锁定防误改", en: "Prevent the document from being edited")
                 item.stateImages[.on] = WorkspaceCenterIcons.editableIcon(isEditable: true)
                 item.stateImages[.off] = WorkspaceCenterIcons.editableIcon(isEditable: false)
                 item.action = #selector(Document.toggleEditable)
@@ -1435,17 +1417,13 @@ extension DocumentWindowController {
             menu.addItem(item)
         }
         
-        let appearanceItem = NSMenuItem(title: String(localized: "chrome.more.appearance",
-                                                      defaultValue: "Appearance", table: "Chrome"),
+        let appearanceItem = NSMenuItem(title: AppLanguage.text("外观模式", en: "Appearance"),
                                         action: nil, keyEquivalent: "")
         let appearanceMenu = NSMenu()
         let appearanceModes: [(title: String, mode: AppearanceMode)] = [
-            (String(localized: "chrome.more.appearance.system",
-                    defaultValue: "System", table: "Chrome"), .default),
-            (String(localized: "chrome.more.appearance.light",
-                    defaultValue: "Light", table: "Chrome"), .light),
-            (String(localized: "chrome.more.appearance.dark",
-                    defaultValue: "Dark", table: "Chrome"), .dark),
+            (AppLanguage.text("跟随系统", en: "System"), .default),
+            (AppLanguage.text("浅色模式", en: "Light"), .light),
+            (AppLanguage.text("深色模式", en: "Dark"), .dark),
         ]
         for (title, mode) in appearanceModes {
             let item = NSMenuItem(title: title,
@@ -1458,41 +1436,30 @@ extension DocumentWindowController {
         appearanceItem.submenu = appearanceMenu
         menu.addItem(appearanceItem)
         
-        add(String(localized: "chrome.more.lineWrap",
-                   defaultValue: "Wrap Lines", table: "Chrome"),
+        add(AppLanguage.text("自动换行", en: "Wrap Lines"),
             #selector(DocumentViewController.toggleLineWrap(_:)))
-        add(String(localized: "chrome.more.invisibleCharacters",
-                   defaultValue: "Show Invisibles", table: "Chrome"),
+        add(AppLanguage.text("显示不可见字符", en: "Show Invisibles"),
             #selector(DocumentViewController.toggleInvisibleChars(_:)))
-        add(String(localized: "chrome.more.indentGuides",
-                   defaultValue: "Show Indent Guides", table: "Chrome"),
+        add(AppLanguage.text("显示缩进参考线", en: "Show Indent Guides"),
             #selector(DocumentViewController.toggleIndentGuides(_:)))
-        add(String(localized: "chrome.more.pageGuide",
-                   defaultValue: "Show Page Guide", table: "Chrome"),
+        add(AppLanguage.text("显示页面参考线", en: "Show Page Guide"),
             #selector(DocumentViewController.togglePageGuide(_:)))
         menu.addItem(.separator())
-        add(String(localized: "chrome.menu.organizeAndMergeAll",
-                   defaultValue: "AI 一键整理合并所有文档…", table: "Chrome"),
+        add(AppLanguage.text("AI 一键整理合并所有文档", en: "AI Organize & Merge All Documents"),
             #selector(AppDelegate.organizeAndMergeAllDocumentsFromMenu(_:)))
         menu.addItem(.separator())
-        add(String(localized: "chrome.more.tileWindows",
-                   defaultValue: "Tile Two Windows", table: "Chrome"),
+        add(AppLanguage.text("并排平铺两窗口", en: "Tile Two Windows"),
             #selector(DocumentController.tileDocumentWindows(_:)))
-        add(String(localized: "chrome.more.toggleSplitOrientation",
-                   defaultValue: "Toggle Split Orientation", table: "Chrome"),
+        add(AppLanguage.text("切换分栏方向", en: "Toggle Split Orientation"),
             #selector(DocumentViewController.toggleSplitOrientation(_:)))
-        add(String(localized: "chrome.more.closeSplit",
-                   defaultValue: "Close Split Editor", table: "Chrome"),
+        add(AppLanguage.text("关闭当前分栏", en: "Close Split Editor"),
             #selector(DocumentViewController.closeSplitTextView(_:)))
         menu.addItem(.separator())
-        add(String(localized: "chrome.more.resetTextSize",
-                   defaultValue: "Reset Text Size", table: "Chrome"),
+        add(AppLanguage.text("还原默认字号", en: "Reset Text Size"),
             #selector(EditorTextView.resetFont(_:)))
-        add(String(localized: "chrome.more.print",
-                   defaultValue: "Print…", table: "Chrome"),
+        add(AppLanguage.text("打印文档", en: "Print"),
             #selector(NSDocument.printDocument(_:)))
-        add(String(localized: "chrome.more.enterFullScreen",
-                   defaultValue: "Enter Full Screen", table: "Chrome"),
+        add(AppLanguage.text("进入全屏", en: "Enter Full Screen"),
             #selector(NSWindow.toggleFullScreen(_:)))
         
         return menu

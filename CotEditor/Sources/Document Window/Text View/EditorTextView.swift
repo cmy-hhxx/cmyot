@@ -204,8 +204,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     private var windowOpacityObserver: NSKeyValueObservation?
     private var keyStateObservers: [any NSObjectProtocol] = []
     private var scrollClipObserver: NSObjectProtocol?
-    private var inlineImageCardEntries: [(rect: NSRect, identifier: String, tokenRange: NSRange)] = []
+    private var inlineImageCardEntries: [InlineImageCardEntry] = []
+    private var selectedInlineImageIdentifier: String?
+    private var liveInlineImageHUDText: String?
+    private var showInlineImageCenterGuide = false
     private weak var imagePreviewPopover: NSPopover?
+    private weak var imageTransformPopover: NSPopover?
     
     
     // MARK: Lifecycle
@@ -512,17 +516,19 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return
         }
         
-        // Clicking an inline image card in Plain Text opens an interactive preview popover
+        // Direct manipulation on inline images (left-click selects / drags position, corners scale steplessly, knob rotates; zooming popover is right-click only)
         if !event.modifierFlags.contains(.command),
-           !event.modifierFlags.contains(.shift),
-           !event.modifierFlags.contains(.option),
-           event.clickCount == 1,
+           event.clickCount >= 1,
            (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true,
-           let hit = self.inlineImageCardEntries.first(where: { $0.rect.contains(self.mouseDownPoint) })
+           self.handleInlineImageMouseDown(at: self.mouseDownPoint, modifiers: event.modifierFlags)
         {
             self.window?.makeFirstResponder(self)
-            self.presentInlineImagePopover(for: hit)
             return
+        }
+        
+        if self.selectedInlineImageIdentifier != nil {
+            self.selectedInlineImageIdentifier = nil
+            self.needsDisplay = true
         }
         
         self.isPerformingRectangularSelection = event.modifierFlags.contains(.option)
@@ -563,6 +569,14 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     /// The Esc key is pressed.
     override func cancelOperation(_ sender: Any?) {
+        
+        if self.selectedInlineImageIdentifier != nil {
+            self.selectedInlineImageIdentifier = nil
+            self.liveInlineImageHUDText = nil
+            self.showInlineImageCenterGuide = false
+            self.needsDisplay = true
+            return
+        }
         
         if self.activeGhostSuggestion != nil {
             self.dismissedGhostCaretLocation = self.selectedRange.location
@@ -1445,6 +1459,17 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     override func menu(for event: NSEvent) -> NSMenu? {
         
+        // Check right-click directly over an inline image first
+        if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true {
+            let point = self.convert(event.locationInWindow, from: nil)
+            if let hit = self.inlineImageCardEntries.first(where: { $0.hitTestImage(point: point) }) {
+                self.window?.makeFirstResponder(self)
+                self.selectedInlineImageIdentifier = hit.identifier
+                self.needsDisplay = true
+                return self.makeInlineImageContextMenu(for: hit.identifier, tokenRange: hit.tokenRange)
+            }
+        }
+        
         // AppKit asks the view whether it can offer auto-fill and services while it prepares
         // a context menu, and inserts those items into the menu it is about to show. The
         // window goes through that preparation right here, before the menu opens, so both
@@ -1828,7 +1853,69 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
-    /// Renders inline image preview cards inside Plain Text documents without displaying token titles.
+    /// Handles trackpad pinch gesture when an inline image is selected or under the pointer.
+    func handleInlineImageMagnify(with event: NSEvent) -> Bool {
+        
+        guard (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true else {
+            return false
+        }
+        let point = self.convert(event.locationInWindow, from: nil)
+        let targetEntry = self.selectedInlineImageEntry()
+            ?? self.inlineImageCardEntries.first(where: { $0.hitTestImage(point: point) })
+        guard let entry = targetEntry else {
+            return false
+        }
+        
+        self.selectedInlineImageIdentifier = entry.identifier
+        let docURL = self.currentInlineImageDocURL
+        var tx = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+        tx.scale = max(0.15, min(4.0, tx.scale * (1.0 + event.magnification)))
+        PlainTextInlineImageStore.shared.setTransform(tx, for: entry.identifier, documentURL: docURL)
+        self.liveInlineImageHUDText = "\(Int((tx.scale * 100).rounded()))%"
+        self.applyInlineImageLayoutUpdate()
+        
+        if event.phase == .ended || event.phase == .cancelled {
+            self.liveInlineImageHUDText = nil
+            self.needsDisplay = true
+        }
+        return true
+    }
+    
+    
+    /// Trackpad two-finger rotation gesture on a selected or hovered inline image performs stepless angle adjustment.
+    override func rotate(with event: NSEvent) {
+        
+        guard (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true else {
+            super.rotate(with: event)
+            return
+        }
+        let point = self.convert(event.locationInWindow, from: nil)
+        let targetEntry = self.selectedInlineImageEntry()
+            ?? self.inlineImageCardEntries.first(where: { $0.hitTestImage(point: point) })
+        guard let entry = targetEntry else {
+            super.rotate(with: event)
+            return
+        }
+        
+        self.selectedInlineImageIdentifier = entry.identifier
+        let docURL = self.currentInlineImageDocURL
+        var tx = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+        var rawDeg = tx.rotationDegrees - CGFloat(event.rotation)
+        if rawDeg > 180 { rawDeg -= 360 }
+        if rawDeg < -180 { rawDeg += 360 }
+        if event.phase == .ended {
+            rawDeg = Self.snappedImageAngleIfNearCardinal(rawDeg)
+            self.liveInlineImageHUDText = nil
+        } else {
+            self.liveInlineImageHUDText = String(format: "%.1f°", rawDeg)
+        }
+        tx.rotationDegrees = rawDeg
+        PlainTextInlineImageStore.shared.setTransform(tx, for: entry.identifier, documentURL: docURL)
+        self.applyInlineImageLayoutUpdate()
+    }
+    
+    
+    /// Renders inline image cards (supporting stepless scale, offset, rotation, and Freeform selection handles).
     private func drawPlainTextInlineImages(in dirtyRect: NSRect) {
         
         self.inlineImageCardEntries.removeAll()
@@ -1844,9 +1931,24 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let tokens = PlainTextInlineImageStore.shared.findTokens(in: nsString, range: expandedRange)
         guard !tokens.isEmpty else { return }
         
-        let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
+        let docURL = self.currentInlineImageDocURL
         let borderColor = (self.theme?.text.color ?? .labelColor).withAlphaComponent(0.12)
         let fillColor = self.theme?.background.color ?? .controlBackgroundColor
+        let accentColor = StudioPaletteManager.shared.activeNSAccentColor
+        let containerWidth = max(160, textContainer.size.width)
+        let canvasMidX = self.textContainerOrigin.x + containerWidth * 0.5
+        
+        if self.showInlineImageCenterGuide {
+            NSGraphicsContext.saveGraphicsState()
+            let guide = NSBezierPath()
+            guide.setLineDash([4, 4], count: 2, phase: 0)
+            guide.lineWidth = 1.0
+            guide.move(to: NSPoint(x: canvasMidX, y: dirtyRect.minY))
+            guide.line(to: NSPoint(x: canvasMidX, y: dirtyRect.maxY))
+            accentColor.withAlphaComponent(0.65).setStroke()
+            guide.stroke()
+            NSGraphicsContext.restoreGraphicsState()
+        }
         
         for token in tokens {
             guard let image = PlainTextInlineImageStore.shared.image(for: token.identifier, documentURL: docURL) else { continue }
@@ -1856,54 +1958,579 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             
             let fragmentRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
             let glyphLocation = layoutManager.location(forGlyphAt: glyphIndex)
-            let cardTopY = fragmentRect.minY + self.textContainerOrigin.y + 4
-            let cardX = fragmentRect.minX + self.textContainerOrigin.x + glyphLocation.x
             let maxCardWidth = PlainTextInlineImageStore.effectiveMaxImageWidth(
-                containerWidth: textContainer.size.width,
+                containerWidth: containerWidth,
                 glyphX: glyphLocation.x
             )
             
-            guard let cardSize = PlainTextInlineImageStore.shared.cardSize(
+            guard let geom = PlainTextInlineImageStore.shared.displayGeometry(
                 for: token.identifier,
                 documentURL: docURL,
+                containerWidth: containerWidth,
                 maxImageWidth: maxCardWidth
             ) else { continue }
             
-            let cardRect = NSRect(x: cardX, y: cardTopY, width: cardSize.width, height: cardSize.height)
-            self.inlineImageCardEntries.append((rect: cardRect, identifier: token.identifier, tokenRange: token.range))
-            guard cardRect.intersects(dirtyRect) else { continue }
+            let tx = geom.transform
+            let boxW = geom.rotatedBoxSize.width + 8
+            let boxH = geom.rotatedBoxSize.height + 8
+            let baseX = fragmentRect.minX + self.textContainerOrigin.x + glyphLocation.x
+            let minX = self.textContainerOrigin.x + 8
+            let maxX = max(minX, self.textContainerOrigin.x + containerWidth - boxW - 8)
+            let clampedX = min(maxX, max(minX, baseX + tx.offsetX))
+            let cardTopY = fragmentRect.minY + self.textContainerOrigin.y + 4 + max(0, tx.offsetY)
+            
+            let cardRect = NSRect(x: clampedX, y: cardTopY, width: boxW, height: boxH)
+            let center = NSPoint(x: cardRect.midX, y: cardRect.midY)
+            let unrotatedCardRect = NSRect(
+                x: -geom.drawSize.width * 0.5 - 4,
+                y: -geom.drawSize.height * 0.5 - 4,
+                width: geom.drawSize.width + 8,
+                height: geom.drawSize.height + 8
+            )
+            let entry = InlineImageCardEntry(
+                rect: cardRect,
+                unrotatedCardSize: unrotatedCardRect.size,
+                center: center,
+                rotationDegrees: tx.rotationDegrees,
+                scale: tx.scale,
+                baseAnchorX: baseX,
+                identifier: token.identifier,
+                tokenRange: token.range
+            )
+            self.inlineImageCardEntries.append(entry)
+            
+            let isSelected = (self.selectedInlineImageIdentifier == token.identifier)
+            let repaintBounds = isSelected ? cardRect.insetBy(dx: -36, dy: -44) : cardRect
+            guard repaintBounds.intersects(dirtyRect) else { continue }
             
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current?.imageInterpolation = .high
-            let cardPath = NSBezierPath(roundedRect: cardRect, xRadius: 6, yRadius: 6)
+            
+            let xform = NSAffineTransform()
+            xform.translateX(by: center.x, yBy: center.y)
+            xform.rotate(byDegrees: tx.rotationDegrees)
+            xform.concat()
+            
+            let cardPath = NSBezierPath(roundedRect: unrotatedCardRect, xRadius: 6, yRadius: 6)
             fillColor.setFill()
             cardPath.fill()
-            borderColor.setStroke()
-            cardPath.lineWidth = 0.75
+            if isSelected {
+                accentColor.withAlphaComponent(0.92).setStroke()
+                cardPath.lineWidth = 1.6
+            } else {
+                borderColor.setStroke()
+                cardPath.lineWidth = 0.75
+            }
             cardPath.stroke()
             
-            let imageRect = cardRect.insetBy(dx: 4, dy: 4)
-            let naturalSize = PlainTextInlineImageStore.naturalImageSize(for: image)
-            let drawRect = PlainTextInlineImageStore.aspectFitRect(imageSize: naturalSize, in: imageRect)
+            let drawRect = unrotatedCardRect.insetBy(dx: 4, dy: 4)
             let clipPath = NSBezierPath(roundedRect: drawRect, xRadius: 4, yRadius: 4)
             clipPath.addClip()
-            image.draw(in: drawRect,
-                       from: .zero,
-                       operation: .sourceOver,
-                       fraction: 1.0,
-                       respectFlipped: true,
-                       hints: nil)
+            image.draw(
+                in: drawRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1.0,
+                respectFlipped: true,
+                hints: nil
+            )
             NSGraphicsContext.restoreGraphicsState()
+            
+            if isSelected {
+                self.drawSelectionHandles(for: entry, accentColor: accentColor)
+            }
         }
     }
     
     
-    /// Opens an interactive preview popover when clicking an inline image card.
-    private func presentInlineImagePopover(for entry: (rect: NSRect, identifier: String, tokenRange: NSRange)) {
+    private func drawSelectionHandles(for entry: InlineImageCardEntry, accentColor: NSColor) {
+        
+        let corners = entry.rotatedCorners()
+        let topMid = entry.rotatedPoint(local: NSPoint(x: 0, y: -entry.unrotatedCardSize.height * 0.5))
+        let rotKnob = entry.rotationKnobCenter()
+        
+        NSGraphicsContext.saveGraphicsState()
+        
+        // Stem from top edge center to rotation handle
+        let stem = NSBezierPath()
+        stem.lineWidth = 1.25
+        stem.move(to: topMid)
+        stem.line(to: rotKnob)
+        accentColor.withAlphaComponent(0.85).setStroke()
+        stem.stroke()
+        
+        // 4 circular corner scale handles
+        for corner in corners {
+            let handleRect = NSRect(x: corner.x - 4.5, y: corner.y - 4.5, width: 9, height: 9)
+            let circle = NSBezierPath(ovalIn: handleRect)
+            NSColor.white.setFill()
+            circle.fill()
+            accentColor.setStroke()
+            circle.lineWidth = 1.6
+            circle.stroke()
+        }
+        
+        // Top circular rotation knob
+        let knobRect = NSRect(x: rotKnob.x - 7.5, y: rotKnob.y - 7.5, width: 15, height: 15)
+        let knobPath = NSBezierPath(ovalIn: knobRect)
+        NSColor.windowBackgroundColor.setFill()
+        knobPath.fill()
+        accentColor.setStroke()
+        knobPath.lineWidth = 1.5
+        knobPath.stroke()
+        if let rotateIcon = NSImage(systemSymbolName: "arrow.trianglehead.2.clockwise.rotate.90", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 8.5, weight: .bold))
+        {
+            let tinted = rotateIcon.tinted(with: accentColor)
+            tinted.draw(
+                in: knobRect.insetBy(dx: 3, dy: 3),
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1.0,
+                respectFlipped: true,
+                hints: nil
+            )
+        }
+        
+        // Live HUD readout pill during interactive adjustment
+        if let hud = self.liveInlineImageHUDText {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold),
+                .foregroundColor: NSColor.white,
+            ]
+            let attrStr = NSAttributedString(string: hud, attributes: attrs)
+            let sz = attrStr.size()
+            let pillW = sz.width + 14
+            let pillH: CGFloat = 20
+            let pillRect = NSRect(
+                x: entry.center.x - pillW * 0.5,
+                y: entry.rect.maxY + 6,
+                width: pillW,
+                height: pillH
+            )
+            NSColor.black.withAlphaComponent(0.76).setFill()
+            NSBezierPath(roundedRect: pillRect, xRadius: pillH * 0.5, yRadius: pillH * 0.5).fill()
+            attrStr.draw(at: NSPoint(x: pillRect.minX + 7, y: pillRect.minY + (pillH - sz.height) * 0.5))
+        }
+        
+        NSGraphicsContext.restoreGraphicsState()
+    }
+    
+    
+    // MARK: Inline Image Direct Manipulation (Scale / Rotate / Move) & Right-Click Menu
+    
+    private var currentInlineImageDocURL: URL? {
+        self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
+    }
+    
+    
+    private func selectedInlineImageEntry() -> InlineImageCardEntry? {
+        guard let selectedID = self.selectedInlineImageIdentifier else { return nil }
+        return self.inlineImageCardEntries.first { $0.identifier == selectedID }
+    }
+    
+    
+    private func applyInlineImageLayoutUpdate() {
+        (self.layoutManager as? LayoutManager)?.invalidateInlineImageLayout()
+        self.needsDisplay = true
+    }
+    
+    
+    private static func snappedImageAngleIfNearCardinal(_ degrees: CGFloat) -> CGFloat {
+        for target in [-180.0, -90.0, 0.0, 90.0, 180.0] as [CGFloat] {
+            if abs(degrees - target) <= 3.0 {
+                return target == -180.0 ? 180.0 : target
+            }
+        }
+        return degrees
+    }
+    
+    
+    private func handleInlineImageMouseDown(at point: NSPoint, modifiers: NSEvent.ModifierFlags) -> Bool {
+        // 1. Check active selection's rotation & corner scale handles first
+        if let selected = self.selectedInlineImageEntry() {
+            let rotCenter = selected.rotationKnobCenter()
+            if hypot(point.x - rotCenter.x, point.y - rotCenter.y) <= 11 {
+                self.trackInlineImageRotation(for: selected, initialPoint: point)
+                return true
+            }
+            for corner in selected.rotatedCorners() {
+                if hypot(point.x - corner.x, point.y - corner.y) <= 10 {
+                    self.trackInlineImageScale(for: selected, startPoint: point)
+                    return true
+                }
+            }
+        }
+        
+        // 2. Check clicking inside any inline image body -> select + smooth position drag (NO zoom popup!)
+        guard let hit = self.inlineImageCardEntries.first(where: { $0.hitTestImage(point: point) }) else {
+            return false
+        }
+        self.selectedInlineImageIdentifier = hit.identifier
+        self.needsDisplay = true
+        self.trackInlineImageDragMove(for: hit, startPoint: point)
+        return true
+    }
+    
+    
+    private func trackInlineImageScale(for entry: InlineImageCardEntry, startPoint: NSPoint) {
+        guard let window = self.window else { return }
+        let docURL = self.currentInlineImageDocURL
+        let baseTransform = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+        let startDist = max(14.0, hypot(startPoint.x - entry.center.x, startPoint.y - entry.center.y))
+        let startScale = baseTransform.scale
+        
+        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            let curPt = self.convert(event.locationInWindow, from: nil)
+            let curDist = max(8.0, hypot(curPt.x - entry.center.x, curPt.y - entry.center.y))
+            let ratio = curDist / startDist
+            var updated = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+            updated.scale = max(0.15, min(4.0, startScale * ratio))
+            PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL)
+            self.liveInlineImageHUDText = "\(Int((updated.scale * 100).rounded()))%"
+            self.applyInlineImageLayoutUpdate()
+            
+            if event.type == .leftMouseUp { break }
+        }
+        self.liveInlineImageHUDText = nil
+        self.needsDisplay = true
+    }
+    
+    
+    private func trackInlineImageRotation(for entry: InlineImageCardEntry, initialPoint: NSPoint) {
+        guard let window = self.window else { return }
+        let docURL = self.currentInlineImageDocURL
+        let startAngleRad = atan2(initialPoint.y - entry.center.y, initialPoint.x - entry.center.x)
+        let baseTransform = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+        let initialDegrees = baseTransform.rotationDegrees
+        
+        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            let curPt = self.convert(event.locationInWindow, from: nil)
+            let curRad = atan2(curPt.y - entry.center.y, curPt.x - entry.center.x)
+            var deg = initialDegrees + (curRad - startAngleRad) * 180.0 / .pi
+            while deg > 180 { deg -= 360 }
+            while deg < -180 { deg += 360 }
+            if !event.modifierFlags.contains(.option) {
+                deg = Self.snappedImageAngleIfNearCardinal(deg)
+            }
+            var updated = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+            updated.rotationDegrees = deg
+            PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL)
+            self.liveInlineImageHUDText = String(format: "%.1f°", deg)
+            self.applyInlineImageLayoutUpdate()
+            
+            if event.type == .leftMouseUp { break }
+        }
+        self.liveInlineImageHUDText = nil
+        self.needsDisplay = true
+    }
+    
+    
+    private func trackInlineImageDragMove(for entry: InlineImageCardEntry, startPoint: NSPoint) {
+        guard let window = self.window else { return }
+        let docURL = self.currentInlineImageDocURL
+        let startTx = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+        let containerWidth = max(160, self.textContainer?.size.width ?? self.bounds.width)
+        let canvasMidX = self.textContainerOrigin.x + containerWidth * 0.5
+        var didMove = false
+        
+        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            let curPt = self.convert(event.locationInWindow, from: nil)
+            let dx = curPt.x - startPoint.x
+            let dy = curPt.y - startPoint.y
+            
+            if didMove || hypot(dx, dy) > 2.5 {
+                didMove = true
+                var updated = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+                var proposedOffsetX = startTx.offsetX + dx
+                let proposedCenterX = entry.baseAnchorX + proposedOffsetX + entry.rect.width * 0.5
+                if !event.modifierFlags.contains(.option), abs(proposedCenterX - canvasMidX) <= 7.0 {
+                    proposedOffsetX = (canvasMidX - entry.rect.width * 0.5) - entry.baseAnchorX
+                    self.showInlineImageCenterGuide = true
+                } else {
+                    self.showInlineImageCenterGuide = false
+                }
+                updated.offsetX = proposedOffsetX
+                updated.offsetY = max(0, min(200, startTx.offsetY + dy))
+                PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL)
+                self.liveInlineImageHUDText = "X:\(Int(updated.offsetX.rounded())) Y:\(Int(updated.offsetY.rounded()))"
+                self.applyInlineImageLayoutUpdate()
+            }
+            
+            if event.type == .leftMouseUp { break }
+        }
+        
+        self.showInlineImageCenterGuide = false
+        self.liveInlineImageHUDText = nil
+        self.needsDisplay = true
+    }
+    
+    
+    /// Builds the dedicated right-click menu for inline images (zoom preview + stepless adjust + presets).
+    func makeInlineImageContextMenu(for identifier: String, tokenRange: NSRange) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let docURL = self.currentInlineImageDocURL
+        let currentTx = PlainTextInlineImageStore.shared.transform(for: identifier, documentURL: docURL)
+        
+        func item(
+            _ title: String,
+            systemImage: String? = nil,
+            action: Selector,
+            tag: Int = 0,
+            enabled: Bool = true
+        ) -> NSMenuItem {
+            let m = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            m.target = self
+            m.tag = tag
+            m.isEnabled = enabled
+            m.representedObject = InlineImageMenuPayload(identifier: identifier, tokenRange: tokenRange)
+            if let systemImage {
+                m.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: title)
+            }
+            return m
+        }
+        
+        menu.addItem(item(
+            AppLanguage.text("查看大图", en: "Zoom Preview"),
+            systemImage: "arrow.up.left.and.arrow.down.right",
+            action: #selector(inlineImageContextZoomPreview(_:))
+        ))
+        menu.addItem(item(
+            AppLanguage.text("调整大小、位置与旋转", en: "Adjust Size, Position & Rotation"),
+            systemImage: "slider.horizontal.3",
+            action: #selector(inlineImageContextOpenTransformPanel(_:))
+        ))
+        
+        menu.addItem(.separator())
+        
+        menu.addItem(item(
+            AppLanguage.text("向左旋转 90°", en: "Rotate Left 90°"),
+            systemImage: "rotate.left",
+            action: #selector(inlineImageContextRotateByTag(_:)),
+            tag: -90
+        ))
+        menu.addItem(item(
+            AppLanguage.text("向右旋转 90°", en: "Rotate Right 90°"),
+            systemImage: "rotate.right",
+            action: #selector(inlineImageContextRotateByTag(_:)),
+            tag: 90
+        ))
+        
+        let alignMenu = NSMenu()
+        alignMenu.autoenablesItems = false
+        alignMenu.addItem(item(AppLanguage.text("靠左对齐", en: "Align Left"), action: #selector(inlineImageContextAlignByTag(_:)), tag: 0))
+        alignMenu.addItem(item(AppLanguage.text("水平居中", en: "Align Center"), action: #selector(inlineImageContextAlignByTag(_:)), tag: 1))
+        alignMenu.addItem(item(AppLanguage.text("靠右对齐", en: "Align Right"), action: #selector(inlineImageContextAlignByTag(_:)), tag: 2))
+        let alignParent = NSMenuItem(
+            title: AppLanguage.text("图片位置对齐", en: "Align Position"),
+            action: nil,
+            keyEquivalent: ""
+        )
+        alignParent.image = NSImage(systemSymbolName: "rectangle.center.inset.filled", accessibilityDescription: nil)
+        alignParent.submenu = alignMenu
+        menu.addItem(alignParent)
+        
+        menu.addItem(item(
+            AppLanguage.text("恢复原始大小与角度", en: "Reset Transform"),
+            systemImage: "arrow.counterclockwise",
+            action: #selector(inlineImageContextResetTransform(_:)),
+            enabled: !currentTx.isIdentity
+        ))
+        
+        menu.addItem(.separator())
+        
+        menu.addItem(item(
+            AppLanguage.text("OCR 识别文字", en: "OCR & AI Polish"),
+            systemImage: "text.viewfinder",
+            action: #selector(inlineImageContextRunOCR(_:))
+        ))
+        menu.addItem(item(
+            AppLanguage.text("拷贝图片", en: "Copy Image"),
+            systemImage: "doc.on.doc",
+            action: #selector(inlineImageContextCopy(_:))
+        ))
+        let fileURL = PlainTextInlineImageStore.shared.imageURL(for: identifier, documentURL: docURL)
+        menu.addItem(item(
+            AppLanguage.text("在访达中显示", en: "Reveal in Finder"),
+            systemImage: "folder",
+            action: #selector(inlineImageContextRevealInFinder(_:)),
+            enabled: fileURL != nil
+        ))
+        
+        menu.addItem(.separator())
+        
+        menu.addItem(item(
+            AppLanguage.text("删除图片", en: "Delete Image"),
+            systemImage: "trash",
+            action: #selector(inlineImageContextDelete(_:))
+        ))
+        
+        return menu
+    }
+    
+    
+    @objc private func inlineImageContextZoomPreview(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? InlineImageMenuPayload,
+              let entry = self.entry(for: payload)
+        else { return }
+        self.presentInlineImagePopover(for: entry)
+    }
+    
+    
+    @objc private func inlineImageContextOpenTransformPanel(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? InlineImageMenuPayload,
+              let entry = self.entry(for: payload)
+        else { return }
+        self.presentInlineImageTransformPopover(for: entry)
+    }
+    
+    
+    @objc private func inlineImageContextRotateByTag(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? InlineImageMenuPayload else { return }
+        let docURL = self.currentInlineImageDocURL
+        var tx = PlainTextInlineImageStore.shared.transform(for: payload.identifier, documentURL: docURL)
+        tx.rotationDegrees += CGFloat(sender.tag)
+        PlainTextInlineImageStore.shared.setTransform(tx, for: payload.identifier, documentURL: docURL)
+        self.selectedInlineImageIdentifier = payload.identifier
+        self.applyInlineImageLayoutUpdate()
+    }
+    
+    
+    @objc private func inlineImageContextAlignByTag(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? InlineImageMenuPayload,
+              let entry = self.entry(for: payload)
+        else { return }
+        let docURL = self.currentInlineImageDocURL
+        let containerWidth = max(160, self.textContainer?.size.width ?? self.bounds.width)
+        let maxOffset = max(0, (self.textContainerOrigin.x + containerWidth - entry.rect.width - 8) - entry.baseAnchorX)
+        var tx = PlainTextInlineImageStore.shared.transform(for: payload.identifier, documentURL: docURL)
+        switch sender.tag {
+            case 0: tx.offsetX = 0
+            case 1: tx.offsetX = maxOffset * 0.5
+            default: tx.offsetX = maxOffset
+        }
+        PlainTextInlineImageStore.shared.setTransform(tx, for: payload.identifier, documentURL: docURL)
+        self.selectedInlineImageIdentifier = payload.identifier
+        self.applyInlineImageLayoutUpdate()
+    }
+    
+    
+    @objc private func inlineImageContextResetTransform(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? InlineImageMenuPayload else { return }
+        PlainTextInlineImageStore.shared.resetTransform(for: payload.identifier, documentURL: self.currentInlineImageDocURL)
+        self.applyInlineImageLayoutUpdate()
+    }
+    
+    
+    @objc private func inlineImageContextRunOCR(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? InlineImageMenuPayload,
+              let image = PlainTextInlineImageStore.shared.image(for: payload.identifier, documentURL: self.currentInlineImageDocURL),
+              let window = self.window
+        else { return }
+        self.documentViewController?.processOCR(image: image, on: window)
+    }
+    
+    
+    @objc private func inlineImageContextCopy(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? InlineImageMenuPayload,
+              let image = PlainTextInlineImageStore.shared.image(for: payload.identifier, documentURL: self.currentInlineImageDocURL)
+        else { return }
+        let pboard = NSPasteboard.general
+        pboard.clearContents()
+        pboard.writeObjects([image])
+    }
+    
+    
+    @objc private func inlineImageContextRevealInFinder(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? InlineImageMenuPayload,
+              let url = PlainTextInlineImageStore.shared.imageURL(for: payload.identifier, documentURL: self.currentInlineImageDocURL)
+        else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+    
+    
+    @objc private func inlineImageContextDelete(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? InlineImageMenuPayload else { return }
+        self.deleteInlineImageToken(range: payload.tokenRange, identifier: payload.identifier)
+    }
+    
+    
+    private func entry(for payload: InlineImageMenuPayload) -> InlineImageCardEntry? {
+        self.inlineImageCardEntries.first(where: { $0.identifier == payload.identifier })
+            ?? InlineImageCardEntry(
+                rect: NSRect(x: 20, y: 20, width: 220, height: 140),
+                unrotatedCardSize: NSSize(width: 220, height: 140),
+                center: NSPoint(x: 130, y: 90),
+                rotationDegrees: 0,
+                scale: 1,
+                baseAnchorX: 20,
+                identifier: payload.identifier,
+                tokenRange: payload.tokenRange
+            )
+    }
+    
+    
+    private func deleteInlineImageToken(range: NSRange, identifier: String) {
+        let nsLen = (self.string as NSString).length
+        if NSMaxRange(range) <= nsLen,
+           self.shouldChangeText(in: range, replacementString: "")
+        {
+            self.replaceCharacters(in: range, with: "")
+            self.didChangeText()
+            if self.selectedInlineImageIdentifier == identifier {
+                self.selectedInlineImageIdentifier = nil
+            }
+        }
+    }
+    
+    
+    /// Opens the stepless Transform Inspector popover from the right-click context menu.
+    private func presentInlineImageTransformPopover(for entry: InlineImageCardEntry) {
+        self.imageTransformPopover?.performClose(nil)
+        self.imagePreviewPopover?.performClose(nil)
+        
+        let docURL = self.currentInlineImageDocURL
+        let current = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+        let containerWidth = max(160, self.textContainer?.size.width ?? self.bounds.width)
+        let maxOffset = max(120, (self.textContainerOrigin.x + containerWidth - entry.rect.width - 8) - entry.baseAnchorX)
+        
+        let popover = NSPopover()
+        popover.behavior = .transient
+        
+        let view = InlineImageTransformPopoverView(
+            initialTransform: current,
+            maxOffsetX: maxOffset,
+            onChange: { [weak self] nextTransform in
+                guard let self else { return }
+                PlainTextInlineImageStore.shared.setTransform(nextTransform, for: entry.identifier, documentURL: docURL)
+                self.selectedInlineImageIdentifier = entry.identifier
+                self.applyInlineImageLayoutUpdate()
+            },
+            onReset: { [weak self] in
+                guard let self else { return }
+                PlainTextInlineImageStore.shared.resetTransform(for: entry.identifier, documentURL: docURL)
+                self.selectedInlineImageIdentifier = entry.identifier
+                self.applyInlineImageLayoutUpdate()
+            },
+            onClose: { [weak popover] in
+                popover?.performClose(nil)
+            }
+        )
+        let host = NSHostingController(rootView: view)
+        host.view.frame.size = host.view.intrinsicContentSize
+        popover.contentViewController = host
+        self.imageTransformPopover = popover
+        popover.show(relativeTo: entry.rect, of: self, preferredEdge: .maxY)
+    }
+    
+    
+    /// Opens the high-resolution zoomable preview popover (invoked exclusively from the right-click menu).
+    private func presentInlineImagePopover(for entry: InlineImageCardEntry) {
         
         self.imagePreviewPopover?.performClose(nil)
         
-        let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
+        let docURL = self.currentInlineImageDocURL
         guard let image = PlainTextInlineImageStore.shared.image(for: entry.identifier, documentURL: docURL) else { return }
         let fileURL = PlainTextInlineImageStore.shared.imageURL(for: entry.identifier, documentURL: docURL)
         
@@ -1932,14 +2559,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             },
             onDeleteToken: { [weak self, weak popover] in
                 popover?.performClose(nil)
-                guard let self else { return }
-                let nsLen = (self.string as NSString).length
-                if NSMaxRange(entry.tokenRange) <= nsLen,
-                   self.shouldChangeText(in: entry.tokenRange, replacementString: "")
-                {
-                    self.replaceCharacters(in: entry.tokenRange, with: "")
-                    self.didChangeText()
-                }
+                self?.deleteInlineImageToken(range: entry.tokenRange, identifier: entry.identifier)
             }
         )
         let hostingController = NSHostingController(rootView: contentView)
@@ -3455,7 +4075,72 @@ extension EditorTextView {
 }
 
 
-// MARK: - Inline Image Preview Popover
+// MARK: - Inline Image Card Geometry & Popover Views
+
+private struct InlineImageCardEntry {
+    
+    let rect: NSRect
+    let unrotatedCardSize: NSSize
+    let center: NSPoint
+    let rotationDegrees: CGFloat
+    let scale: CGFloat
+    let baseAnchorX: CGFloat
+    let identifier: String
+    let tokenRange: NSRange
+    
+    
+    func rotatedPoint(local: NSPoint) -> NSPoint {
+        let rad = self.rotationDegrees * .pi / 180.0
+        let c = cos(rad)
+        let s = sin(rad)
+        return NSPoint(
+            x: self.center.x + local.x * c - local.y * s,
+            y: self.center.y + local.x * s + local.y * c
+        )
+    }
+    
+    
+    func rotatedCorners() -> [NSPoint] {
+        let hw = self.unrotatedCardSize.width * 0.5
+        let hh = self.unrotatedCardSize.height * 0.5
+        return [
+            self.rotatedPoint(local: NSPoint(x: -hw, y: -hh)),
+            self.rotatedPoint(local: NSPoint(x: hw, y: -hh)),
+            self.rotatedPoint(local: NSPoint(x: hw, y: hh)),
+            self.rotatedPoint(local: NSPoint(x: -hw, y: hh)),
+        ]
+    }
+    
+    
+    func rotationKnobCenter() -> NSPoint {
+        self.rotatedPoint(local: NSPoint(x: 0, y: -self.unrotatedCardSize.height * 0.5 - 22))
+    }
+    
+    
+    func hitTestImage(point: NSPoint) -> Bool {
+        let rad = -self.rotationDegrees * .pi / 180.0
+        let dx = point.x - self.center.x
+        let dy = point.y - self.center.y
+        let lx = dx * cos(rad) - dy * sin(rad)
+        let ly = dx * sin(rad) + dy * cos(rad)
+        let hw = self.unrotatedCardSize.width * 0.5 + 3
+        let hh = self.unrotatedCardSize.height * 0.5 + 3
+        return abs(lx) <= hw && abs(ly) <= hh
+    }
+}
+
+
+private final class InlineImageMenuPayload: NSObject {
+    
+    let identifier: String
+    let tokenRange: NSRange
+    
+    init(identifier: String, tokenRange: NSRange) {
+        self.identifier = identifier
+        self.tokenRange = tokenRange
+    }
+}
+
 
 private struct InlineImagePreviewPopoverView: View {
     
@@ -3466,23 +4151,44 @@ private struct InlineImagePreviewPopoverView: View {
     let onRevealInFinder: () -> Void
     let onDeleteToken: () -> Void
     
+    @State private var previewZoom: CGFloat = 1.0
+    
     var body: some View {
         
         VStack(alignment: .leading, spacing: 10) {
-            Image(nsImage: self.image)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(maxWidth: 440, maxHeight: 320)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2), lineWidth: 1))
+            ScrollView([.horizontal, .vertical], showsIndicators: self.previewZoom > 1.01) {
+                Image(nsImage: self.image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(
+                        width: 460 * self.previewZoom,
+                        height: 320 * self.previewZoom
+                    )
+            }
+            .frame(width: 460, height: 320)
+            .background(Color.black.opacity(0.04))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.secondary.opacity(0.18), lineWidth: 1))
             
             HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Slider(value: self.$previewZoom, in: 1.0...4.0)
+                        .frame(width: 96)
+                    Text("\(Int((self.previewZoom * 100).rounded()))%")
+                        .font(.system(size: 10.5).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 38, alignment: .leading)
+                }
+                
                 Spacer()
                 
-                Button("OCR + AI", action: self.onRunOCR)
-                Button("拷贝图片", action: self.onCopyImage)
+                Button("OCR 识别", action: self.onRunOCR)
+                Button(AppLanguage.text("拷贝图片", en: "Copy"), action: self.onCopyImage)
                 if self.fileURL != nil {
-                    Button("Finder", action: self.onRevealInFinder)
+                    Button(AppLanguage.text("访达", en: "Finder"), action: self.onRevealInFinder)
                 }
                 Button(role: .destructive, action: self.onDeleteToken) {
                     Image(systemName: "trash")
@@ -3491,5 +4197,143 @@ private struct InlineImagePreviewPopoverView: View {
             .controlSize(.small)
         }
         .padding(12)
+    }
+}
+
+
+private struct InlineImageTransformPopoverView: View {
+    
+    @State private var scale: Double
+    @State private var offsetX: Double
+    @State private var offsetY: Double
+    @State private var rotationDegrees: Double
+    
+    let maxOffsetX: CGFloat
+    let onChange: (InlineImageTransform) -> Void
+    let onReset: () -> Void
+    let onClose: () -> Void
+    
+    
+    init(
+        initialTransform: InlineImageTransform,
+        maxOffsetX: CGFloat,
+        onChange: @escaping (InlineImageTransform) -> Void,
+        onReset: @escaping () -> Void,
+        onClose: @escaping () -> Void
+    ) {
+        self._scale = State(initialValue: Double(initialTransform.scale))
+        self._offsetX = State(initialValue: Double(initialTransform.offsetX))
+        self._offsetY = State(initialValue: Double(initialTransform.offsetY))
+        self._rotationDegrees = State(initialValue: Double(initialTransform.rotationDegrees))
+        self.maxOffsetX = max(120, maxOffsetX)
+        self.onChange = onChange
+        self.onReset = onReset
+        self.onClose = onClose
+    }
+    
+    
+    private func emitChange() {
+        self.onChange(InlineImageTransform(
+            scale: CGFloat(self.scale),
+            offsetX: CGFloat(self.offsetX),
+            offsetY: CGFloat(self.offsetY),
+            rotationDegrees: CGFloat(self.rotationDegrees)
+        ))
+    }
+    
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(AppLanguage.text("无极精调图片", en: "Transform Image"))
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button(AppLanguage.text("重置", en: "Reset")) {
+                    self.scale = 1.0
+                    self.offsetX = 0.0
+                    self.offsetY = 0.0
+                    self.rotationDegrees = 0.0
+                    self.onReset()
+                }
+                .controlSize(.small)
+                
+                Button(AppLanguage.text("完成", en: "Done"), action: self.onClose)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            }
+            
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
+                GridRow {
+                    Text(AppLanguage.text("无极缩放", en: "Scale"))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Slider(value: self.$scale, in: 0.2...3.5)
+                        .frame(width: 170)
+                        .onChange(of: self.scale) { _, _ in self.emitChange() }
+                    Text("\(Int((self.scale * 100).rounded()))%")
+                        .font(.system(size: 11.5).monospacedDigit())
+                        .frame(width: 44, alignment: .trailing)
+                }
+                
+                GridRow {
+                    Text(AppLanguage.text("水平位置", en: "Offset X"))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Slider(value: self.$offsetX, in: 0...Double(self.maxOffsetX))
+                        .frame(width: 170)
+                        .onChange(of: self.offsetX) { _, _ in self.emitChange() }
+                    Text("\(Int(self.offsetX.rounded())) pt")
+                        .font(.system(size: 11.5).monospacedDigit())
+                        .frame(width: 44, alignment: .trailing)
+                }
+                
+                GridRow {
+                    Text(AppLanguage.text("上方留白", en: "Offset Y"))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Slider(value: self.$offsetY, in: 0...160)
+                        .frame(width: 170)
+                        .onChange(of: self.offsetY) { _, _ in self.emitChange() }
+                    Text("\(Int(self.offsetY.rounded())) pt")
+                        .font(.system(size: 11.5).monospacedDigit())
+                        .frame(width: 44, alignment: .trailing)
+                }
+                
+                GridRow {
+                    Text(AppLanguage.text("旋转角度", en: "Angle"))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Slider(value: self.$rotationDegrees, in: -180...180)
+                        .frame(width: 170)
+                        .onChange(of: self.rotationDegrees) { _, _ in self.emitChange() }
+                    Text("\(Int(self.rotationDegrees.rounded()))°")
+                        .font(.system(size: 11.5).monospacedDigit())
+                        .frame(width: 44, alignment: .trailing)
+                }
+            }
+            
+            HStack(spacing: 6) {
+                ForEach([-90.0, -45.0, 0.0, 45.0, 90.0], id: \.self) { deg in
+                    Button("\(Int(deg))°") {
+                        self.rotationDegrees = deg
+                        self.emitChange()
+                    }
+                    .controlSize(.small)
+                }
+                Spacer()
+                Button(AppLanguage.text("居左", en: "Left")) {
+                    self.offsetX = 0
+                    self.emitChange()
+                }
+                .controlSize(.small)
+                Button(AppLanguage.text("居中", en: "Center")) {
+                    self.offsetX = Double(self.maxOffsetX) * 0.5
+                    self.emitChange()
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(14)
+        .frame(width: 320)
     }
 }

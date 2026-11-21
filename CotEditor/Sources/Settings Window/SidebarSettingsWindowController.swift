@@ -27,57 +27,69 @@ import FileEncoding
 import LineEnding
 import SyntaxFormat
 
-// MARK: - Sidebar Navigation Model
+// MARK: - Sidebar Navigation Model (11 Atomic Tabs)
 
 enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
     
     case general
+    case appIcon
     case appearance
-    case editor
-    case aiBots
+    case typography
+    case editing
+    case format
+    case effects
+    case models
+    case bots
     case keyBindings
-    case labs
     case pass
-    case about
     
     var id: String { self.rawValue }
     
     var title: String {
         switch self {
-            case .general: "通用"
-            case .appearance: "外观与显示"
-            case .editor: "编辑与格式"
-            case .aiBots: "AI 助手"
-            case .keyBindings: "快捷键"
-            case .labs: "实验室"
-            case .pass: "通行证"
-            case .about: "关于"
+            case .general: AppLanguage.text("通用", en: "General")
+            case .appIcon: AppLanguage.text("图标", en: "App Icon")
+            case .appearance: AppLanguage.text("外观", en: "Appearance")
+            case .typography: AppLanguage.text("字体", en: "Fonts")
+            case .editing: AppLanguage.text("编辑", en: "Editing")
+            case .format: AppLanguage.text("格式", en: "Format")
+            case .effects: AppLanguage.text("动效", en: "Motion")
+            case .models: AppLanguage.text("模型", en: "Models")
+            case .bots: AppLanguage.text("智能体", en: "Agents")
+            case .keyBindings: AppLanguage.text("快捷键", en: "Shortcuts")
+            case .pass: AppLanguage.text("通行证", en: "Pass")
         }
     }
     
     var symbolName: String {
         switch self {
             case .general: "gearshape.fill"
-            case .appearance: "textformat.size"
-            case .editor: "slider.horizontal.3"
-            case .aiBots: "sparkles"
+            case .appIcon: "sparkles.rectangle.stack.fill"
+            case .appearance: "paintpalette.fill"
+            case .typography: "textformat.size"
+            case .editing: "square.and.pencil"
+            case .format: "doc.text.fill"
+            case .effects: "wand.and.stars"
+            case .models: "cpu.fill"
+            case .bots: "sparkles"
             case .keyBindings: "keyboard.fill"
-            case .labs: "flask.fill"
-            case .pass: "wallet.pass.fill"
-            case .about: "info.circle.fill"
+            case .pass: "lanyardcard.fill"
         }
     }
     
     var badgeColor: Color {
         switch self {
             case .general: Color(red: 0.56, green: 0.56, blue: 0.58)
-            case .appearance: Color(red: 0.35, green: 0.34, blue: 0.84)
-            case .editor: Color(red: 0.04, green: 0.52, blue: 1.00)
-            case .aiBots: Color(red: 0.06, green: 0.72, blue: 0.51)
+            case .appIcon: Color(red: 0.85, green: 0.65, blue: 0.16)
+            case .appearance: Color(red: 0.44, green: 0.36, blue: 0.70)
+            case .typography: Color(red: 0.25, green: 0.48, blue: 0.92)
+            case .editing: Color(red: 0.04, green: 0.52, blue: 1.00)
+            case .format: Color(red: 0.14, green: 0.65, blue: 0.58)
+            case .effects: Color(red: 0.96, green: 0.55, blue: 0.08)
+            case .models: Color(red: 0.06, green: 0.72, blue: 0.51)
+            case .bots: Color(red: 0.84, green: 0.22, blue: 0.26)
             case .keyBindings: Color(red: 0.69, green: 0.32, blue: 0.87)
-            case .labs: Color(red: 1.00, green: 0.58, blue: 0.00)
             case .pass: Color(red: 0.08, green: 0.72, blue: 0.65)
-            case .about: Color(red: 0.04, green: 0.52, blue: 1.00)
         }
     }
     
@@ -86,9 +98,11 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
         switch legacyPane {
             case .general, .dashboard: self = .general
             case .appearance, .window: self = .appearance
-            case .edit, .format: self = .editor
+            case .edit: self = .editing
+            case .format: self = .format
             case .keyBindings: self = .keyBindings
-            case .ai, .aiPersona: self = .aiBots
+            case .ai: self = .models
+            case .aiPersona: self = .bots
         }
     }
 }
@@ -128,8 +142,9 @@ final class SidebarSettingsWindowController: NSWindowController {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.setContentSize(NSSize(width: 740, height: 600))
-        window.minSize = NSSize(width: 700, height: 540)
+        window.setContentSize(NSSize(width: 700, height: 610))
+        window.minSize = NSSize(width: 700, height: 520)
+        window.maxSize = NSSize(width: 700, height: 1200)
         window.center()
         
         super.init(window: window)
@@ -147,13 +162,32 @@ final class SidebarSettingsWindowController: NSWindowController {
             AnalyticsDashboardWindowController.shared.showWindow(nil)
             return
         }
-        self.state.selectedItem = SidebarSettingsItem(legacyPane: pane)
+        self.openItem(SidebarSettingsItem(legacyPane: pane))
+    }
+    
+    
+    func openItem(_ item: SidebarSettingsItem) {
+        self.state.selectedItem = item
         self.showWindow(nil)
+        self.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
 
-// MARK: - Root Split Layout
+// MARK: - Unified Design Tokens & Alignment Primitives
+
+private enum SettingsDesignTokens {
+    
+    static let sidebarWidth: CGFloat = 176
+    static let contentPadding: CGFloat = 24
+    static let sectionSpacing: CGFloat = 20
+    static let sectionTitleSpacing: CGFloat = 7
+    static let rowHeight: CGFloat = 40
+    static let cardCornerRadius: CGFloat = 11
+    static let segmentedWidth: CGFloat = 164
+}
+
 
 private struct SidebarSettingsRootView: View {
     
@@ -171,66 +205,44 @@ private struct SidebarSettingsRootView: View {
     
     var body: some View {
         HStack(spacing: 0) {
-            // Left Translucent Sidebar
+            // Left Translucent Sidebar (10 crisp atomic tabs)
             ZStack(alignment: .topLeading) {
                 SidebarVisualEffectBackdrop()
                     .ignoresSafeArea()
                 
-                VStack(alignment: .leading, spacing: 2) {
-                    Spacer().frame(height: 36)
+                VStack(alignment: .leading, spacing: 3) {
+                    Spacer().frame(height: 40)
                     
-                    ForEach([SidebarSettingsItem.general, .appearance, .editor, .aiBots]) { item in
-                        self.sidebarRow(item)
-                    }
-                    
-                    Text("高级")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 14)
-                        .padding(.bottom, 4)
-                    
-                    ForEach([SidebarSettingsItem.keyBindings, .labs]) { item in
-                        self.sidebarRow(item)
-                    }
-                    
-                    Text("CotEditor")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 14)
-                        .padding(.bottom, 4)
-                    
-                    ForEach([SidebarSettingsItem.pass, .about]) { item in
+                    ForEach(SidebarSettingsItem.allCases) { item in
                         self.sidebarRow(item)
                     }
                     
                     Spacer()
                 }
                 .padding(.horizontal, 10)
-                .padding(.bottom, 12)
+                .padding(.bottom, 14)
             }
-            .frame(width: 192)
+            .frame(width: SettingsDesignTokens.sidebarWidth)
             
             Rectangle()
                 .fill(self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.07))
                 .frame(width: 1)
                 .ignoresSafeArea()
             
-            // Right Detail Canvas
+            // Right Detail Canvas (487pt wide with symmetric 24pt horizontal gutters -> 439pt cards)
             ZStack(alignment: .topLeading) {
                 self.contentBackground.ignoresSafeArea()
                 
                 VStack(alignment: .leading, spacing: 0) {
-                    // Header strip
+                    // Header strip aligned optically with sidebar clearance
                     HStack(spacing: 10) {
                         SettingsSquircleBadge(
                             symbolName: self.state.selectedItem.symbolName,
                             color: self.state.selectedItem.badgeColor,
-                            size: 24
+                            size: 22
                         )
                         Text(self.state.selectedItem.title)
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.system(size: 15.5, weight: .semibold))
                         
                         Spacer()
                         
@@ -238,12 +250,12 @@ private struct SidebarSettingsRootView: View {
                             Text(dbStatusMessage)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
                                 .transition(.opacity)
                         }
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.top, 18)
-                    .padding(.bottom, 12)
+                    .padding(.horizontal, SettingsDesignTokens.contentPadding)
+                    .frame(height: 52)
                     
                     Divider()
                         .opacity(0.45)
@@ -254,10 +266,9 @@ private struct SidebarSettingsRootView: View {
                     } else {
                         ScrollView {
                             self.detailContent
-                                .padding(.horizontal, 24)
-                                .padding(.top, 16)
+                                .padding(.horizontal, SettingsDesignTokens.contentPadding)
+                                .padding(.top, 18)
                                 .padding(.bottom, 26)
-                                .frame(maxWidth: 548, alignment: .topLeading)
                                 .frame(maxWidth: .infinity, alignment: .topLeading)
                         }
                     }
@@ -265,7 +276,8 @@ private struct SidebarSettingsRootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 700, minHeight: 540)
+        .frame(width: 700)
+        .frame(minHeight: 520)
         .environment(\.locale, AppLanguage.current.locale)
     }
     
@@ -280,7 +292,7 @@ private struct SidebarSettingsRootView: View {
             }
         } label: {
             HStack(spacing: 9) {
-                SettingsSquircleBadge(symbolName: item.symbolName, color: item.badgeColor, size: 22)
+                SettingsSquircleBadge(symbolName: item.symbolName, color: item.badgeColor, size: 20)
                 
                 Text(item.title)
                     .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
@@ -290,7 +302,7 @@ private struct SidebarSettingsRootView: View {
                 Spacer()
             }
             .padding(.horizontal, 8)
-            .frame(height: 32)
+            .frame(height: 30)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(isSelected ? (self.colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.08)) : Color.clear)
@@ -309,22 +321,26 @@ private struct SidebarSettingsRootView: View {
                     onExportDatabase: { self.exportLocalDatabase() },
                     onImportDatabase: { self.importLocalDatabase() }
                 )
+            case .appIcon:
+                SidebarAppIconSettingsPane()
             case .appearance:
                 SidebarAppearanceSettingsPane()
-            case .editor:
-                SidebarEditorFormatPane()
-            case .aiBots:
+            case .typography:
+                SidebarTypographySettingsPane()
+            case .editing:
+                SidebarEditingSettingsPane()
+            case .format:
+                SidebarFormatSettingsPane()
+            case .effects:
+                SidebarEffectsSettingsPane()
+            case .models:
+                AIModelsSettingsView()
+            case .bots:
                 AIBotsSettingsView()
             case .keyBindings:
                 EmptyView()
-            case .labs:
-                SidebarLabsSettingsPane()
             case .pass:
-                CotPassSettingsView {
-                    self.exportLocalDatabase()
-                }
-            case .about:
-                SidebarAboutSettingsPane()
+                CotPassSettingsView()
         }
     }
     
@@ -338,7 +354,7 @@ private struct SidebarSettingsRootView: View {
             Task { @MainActor in
                 do {
                     try CotLocalDatabase.shared.exportDatabase(to: url)
-                    self.setTemporaryStatus("✓ 已导出完整备份（含端点、Key 与头像）：\(url.lastPathComponent)")
+                    self.setTemporaryStatus("✓ 已导出完整备份：\(url.lastPathComponent)")
                 } catch {
                     self.setTemporaryStatus("导出失败：\(error.localizedDescription)")
                 }
@@ -355,7 +371,7 @@ private struct SidebarSettingsRootView: View {
             Task { @MainActor in
                 do {
                     try CotLocalDatabase.shared.importDatabase(from: url)
-                    self.setTemporaryStatus("✓ 已从 \(url.lastPathComponent) 恢复文档、端点 Key 与头像")
+                    self.setTemporaryStatus("✓ 已恢复本地数据：\(url.lastPathComponent)")
                 } catch {
                     self.setTemporaryStatus("导入失败：\(error.localizedDescription)")
                 }
@@ -423,25 +439,24 @@ private struct SettingsGroupCard<Content: View>: View {
     
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionTitleSpacing) {
             if let title {
                 Text(title)
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .padding(.leading, 4)
+                    .padding(.leading, 3)
             }
             
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 0) {
                 self.content()
             }
-            .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: SettingsDesignTokens.cardCornerRadius, style: .continuous)
                     .fill(self.colorScheme == .dark ? Color.white.opacity(0.055) : Color.white)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: SettingsDesignTokens.cardCornerRadius, style: .continuous)
                     .strokeBorder(self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.07), lineWidth: 1)
             )
         }
@@ -449,7 +464,43 @@ private struct SettingsGroupCard<Content: View>: View {
 }
 
 
-// MARK: - 通用（包含本地多账户与完整数据库迁移）
+private struct SettingsItemRow<Control: View>: View {
+    
+    let label: String
+    @ViewBuilder let control: () -> Control
+    
+    
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(self.label)
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            
+            Spacer(minLength: 12)
+            
+            self.control()
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: SettingsDesignTokens.rowHeight)
+    }
+}
+
+
+private struct SettingsRowDivider: View {
+    
+    @Environment(\.colorScheme) private var colorScheme
+    
+    var body: some View {
+        Rectangle()
+            .fill(self.colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
+            .frame(height: 1)
+            .padding(.horizontal, 14)
+    }
+}
+
+
+// MARK: - 1. 通用
 
 private struct SidebarGeneralSettingsPane: View {
     
@@ -475,8 +526,8 @@ private struct SidebarGeneralSettingsPane: View {
     
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // 1. Local Account Management (moved cleanly from top-right popover!)
+        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+            // 1. 本地账户
             SettingsGroupCard(title: "本地账户") {
                 let active = self.profileManager.activeProfile
                 
@@ -484,14 +535,14 @@ private struct SidebarGeneralSettingsPane: View {
                     Button {
                         self.pickAvatar(forActive: true)
                     } label: {
-                        UserAvatarCircleView(profile: active, size: 46)
+                        UserAvatarCircleView(profile: active, size: 42)
                             .overlay(alignment: .bottomTrailing) {
                                 Circle()
                                     .fill(Color.accentColor)
-                                    .frame(width: 16, height: 16)
+                                    .frame(width: 15, height: 15)
                                     .overlay(
                                         Image(systemName: "camera.fill")
-                                            .font(.system(size: 8.5, weight: .bold))
+                                            .font(.system(size: 8, weight: .bold))
                                             .foregroundStyle(.white)
                                     )
                             }
@@ -499,32 +550,30 @@ private struct SidebarGeneralSettingsPane: View {
                     .buttonStyle(.plain)
                     .help("点击更换当前账户头像")
                     
-                    VStack(alignment: .leading, spacing: 3) {
-                        if self.isEditingActiveName {
-                            HStack(spacing: 6) {
-                                TextField("昵称", text: self.$editingActiveName)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 160)
-                                    .onSubmit { self.commitActiveRename() }
-                                Button("保存") { self.commitActiveRename() }
-                                    .controlSize(.small)
-                                Button("取消") { self.isEditingActiveName = false }
-                                    .controlSize(.small)
+                    if self.isEditingActiveName {
+                        HStack(spacing: 6) {
+                            TextField("昵称", text: self.$editingActiveName)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 140)
+                                .onSubmit { self.commitActiveRename() }
+                            Button("保存") { self.commitActiveRename() }
+                                .controlSize(.small)
+                            Button("取消") { self.isEditingActiveName = false }
+                                .controlSize(.small)
+                        }
+                    } else {
+                        HStack(spacing: 6) {
+                            Text(active.displayName)
+                                .font(.system(size: 13.5, weight: .semibold))
+                            Button {
+                                self.editingActiveName = active.displayName
+                                self.isEditingActiveName = true
+                            } label: {
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
                             }
-                        } else {
-                            HStack(spacing: 6) {
-                                Text(active.displayName)
-                                    .font(.system(size: 14, weight: .semibold))
-                                Button {
-                                    self.editingActiveName = active.displayName
-                                    self.isEditingActiveName = true
-                                } label: {
-                                    Image(systemName: "pencil")
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(.secondary)
-                                }
-                                .buttonStyle(.plain)
-                            }
+                            .buttonStyle(.plain)
                         }
                     }
                     
@@ -535,176 +584,197 @@ private struct SidebarGeneralSettingsPane: View {
                             self.isCreatingUser.toggle()
                         }
                     } label: {
-                        Label("新建本地用户", systemImage: "person.badge.plus")
+                        Label("新建用户", systemImage: "person.badge.plus")
                     }
                     .controlSize(.small)
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
                 
                 if self.isCreatingUser {
-                    Divider()
-                    HStack(spacing: 10) {
-                        Button {
-                            self.pickAvatar(forActive: false)
-                        } label: {
-                            let previewHex = UserProfileManager.avatarPresetColors[self.profileManager.profiles.count % UserProfileManager.avatarPresetColors.count]
-                            UserAvatarCircleView(
-                                profile: UserProfile(
-                                    id: "draft",
-                                    displayName: self.newUserName.isEmpty ? "新" : self.newUserName,
-                                    avatarData: self.newUserAvatarData,
-                                    avatarColorHex: previewHex,
-                                    dbFilename: "",
-                                    accountKind: "local",
-                                    email: nil,
-                                    remoteUserID: nil,
-                                    createdAt: Date(),
-                                    lastActiveAt: Date()
-                                ),
-                                size: 32,
-                                customImage: self.newUserAvatarData.flatMap { NSImage(data: $0) }
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .help("选择新账户头像")
-                        
-                        TextField("输入新用户昵称", text: self.$newUserName)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit { self.submitNewUser() }
-                        
-                        Button {
-                            self.newUserName = GeneratedDocumentName.generateCandidate()
-                        } label: {
-                            Image(systemName: "dice")
-                        }
-                        .help("随机生成昵称")
-                        
-                        Toggle("沿用 AI 端点与 Key", isOn: self.$copyCurrentAIConfig)
+                    SettingsRowDivider()
+                    
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Button {
+                                self.pickAvatar(forActive: false)
+                            } label: {
+                                let previewHex = UserProfileManager.avatarPresetColors[self.profileManager.profiles.count % UserProfileManager.avatarPresetColors.count]
+                                UserAvatarCircleView(
+                                    profile: UserProfile(
+                                        id: "draft",
+                                        displayName: self.newUserName.isEmpty ? "新" : self.newUserName,
+                                        avatarData: self.newUserAvatarData,
+                                        avatarColorHex: previewHex,
+                                        dbFilename: "",
+                                        accountKind: "local",
+                                        email: nil,
+                                        remoteUserID: nil,
+                                        createdAt: Date(),
+                                        lastActiveAt: Date()
+                                    ),
+                                    size: 30,
+                                    customImage: self.newUserAvatarData.flatMap { NSImage(data: $0) }
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .help("选择新账户头像")
+                            
+                            TextField("输入新用户昵称", text: self.$newUserName)
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit { self.submitNewUser() }
+                            
+                            Button {
+                                self.newUserName = GeneratedDocumentName.generateCandidate()
+                            } label: {
+                                Image(systemName: "dice")
+                            }
                             .controlSize(.small)
-                            .fixedSize()
-                        
-                        Button("创建") {
-                            self.submitNewUser()
+                            .help("随机生成昵称")
+                            
+                            Button("创建") {
+                                self.submitNewUser()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
+                        
+                        HStack {
+                            Text("同步当前模型配置")
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Toggle("", isOn: self.$copyCurrentAIConfig)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
+                        }
                     }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
                 }
                 
                 if self.profileManager.profiles.count > 1 {
-                    Divider()
-                    VStack(spacing: 6) {
-                        ForEach(self.profileManager.profiles) { profile in
-                            let isCurrent = (profile.id == active.id)
-                            HStack(spacing: 8) {
-                                UserAvatarCircleView(profile: profile, size: 22)
-                                Text(profile.displayName)
-                                    .font(.system(size: 12.5, weight: isCurrent ? .semibold : .regular))
-                                Spacer()
-                                if isCurrent {
-                                    Text("使用中")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(Color.accentColor)
-                                } else {
-                                    Button("切换") {
-                                        self.confirmDeleteID = nil
-                                        self.profileManager.switchToProfile(id: profile.id)
-                                    }
-                                    .controlSize(.small)
-                                    
-                                    let isConfirming = (self.confirmDeleteID == profile.id)
-                                    Button(isConfirming ? "确认删除" : "删除", role: .destructive) {
-                                        if isConfirming {
-                                            self.profileManager.deleteProfile(id: profile.id)
-                                            self.confirmDeleteID = nil
-                                        } else {
-                                            self.confirmDeleteID = profile.id
-                                        }
-                                    }
-                                    .controlSize(.small)
+                    SettingsRowDivider()
+                    
+                    ForEach(Array(self.profileManager.profiles.enumerated()), id: \.element.id) { idx, profile in
+                        if idx > 0 {
+                            SettingsRowDivider()
+                        }
+                        let isCurrent = (profile.id == active.id)
+                        HStack(spacing: 8) {
+                            UserAvatarCircleView(profile: profile, size: 22)
+                            Text(profile.displayName)
+                                .font(.system(size: 13, weight: isCurrent ? .semibold : .regular))
+                            Spacer()
+                            if isCurrent {
+                                Text("使用中")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Color.accentColor)
+                            } else {
+                                Button("切换") {
+                                    self.confirmDeleteID = nil
+                                    self.profileManager.switchToProfile(id: profile.id)
                                 }
+                                .controlSize(.small)
+                                
+                                let isConfirming = (self.confirmDeleteID == profile.id)
+                                Button(isConfirming ? "确认删除" : "删除", role: .destructive) {
+                                    if isConfirming {
+                                        self.profileManager.deleteProfile(id: profile.id)
+                                        self.confirmDeleteID = nil
+                                    } else {
+                                        self.confirmDeleteID = profile.id
+                                    }
+                                }
+                                .controlSize(.small)
                             }
                         }
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: SettingsDesignTokens.rowHeight)
                     }
                 }
             }
             
-            // 2. Full Database Backup & Migration
-            SettingsGroupCard(title: "数据迁移") {
-                HStack {
-                    Text("全量备份与恢复")
-                        .font(.system(size: 13, weight: .medium))
-                    Spacer()
+            // 2. 数据备份
+            SettingsGroupCard(title: AppLanguage.text("数据备份", en: "Data Backup")) {
+                SettingsItemRow(label: AppLanguage.text("全量数据备份", en: "Full Backup")) {
                     HStack(spacing: 8) {
-                        Button("导出备份…") {
+                        Button(AppLanguage.text("导出备份", en: "Export")) {
                             self.onExportDatabase()
                         }
-                        Button("导入迁移…") {
+                        .controlSize(.small)
+                        Button(AppLanguage.text("导入迁移", en: "Import")) {
                             self.onImportDatabase()
                         }
+                        .controlSize(.small)
                     }
                 }
                 
-                Divider()
+                SettingsRowDivider()
                 
-                HStack {
-                    Text("本地文档库")
-                        .font(.system(size: 13, weight: .medium))
-                    Spacer()
-                    Button("管理…") {
+                SettingsItemRow(label: AppLanguage.text("本地文档库", en: "Document Vault")) {
+                    Button(AppLanguage.text("管理文档", en: "Manage")) {
                         self.isShowingStoredDocs = true
                     }
                     .controlSize(.small)
                 }
             }
             
-            // 3. Language & Startup
-            SettingsGroupCard(title: "启动与语言") {
-                HStack {
-                    Text("界面语言")
-                    Spacer()
+            // 3. 启动选项
+            SettingsGroupCard(title: AppLanguage.text("启动选项", en: "Startup")) {
+                SettingsItemRow(label: AppLanguage.text("界面语言", en: "Language")) {
                     Picker("", selection: self.$language) {
                         ForEach(AppLanguage.allCases, id: \.self) { lang in
                             Text(verbatim: lang.displayName).tag(lang)
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 180)
+                    .fixedSize()
                     .onChange(of: self.language) { _, newValue in
                         newValue.apply()
                         self.isLanguageConfirmationPresented = true
                     }
                 }
                 
-                HStack {
-                    Text("无已开文档时启动动作")
-                    Spacer()
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("无文档启动动作", en: "When Opening Without Documents")) {
                     Picker("", selection: self.$noDocumentOnLaunchOption) {
-                        Text("新建空白文档").tag(NoDocumentOnLaunchOption.untitledDocument)
-                        Text("显示打开面板").tag(NoDocumentOnLaunchOption.openPanel)
-                        Text("不执行动作").tag(NoDocumentOnLaunchOption.none)
+                        Text(AppLanguage.text("新建空白文档", en: "Create New Document")).tag(NoDocumentOnLaunchOption.untitledDocument)
+                        Text(AppLanguage.text("显示打开面板", en: "Show Open Panel")).tag(NoDocumentOnLaunchOption.openPanel)
+                        Text(AppLanguage.text("不执行动作", en: "Do Nothing")).tag(NoDocumentOnLaunchOption.none)
                     }
                     .labelsHidden()
-                    .frame(width: 180)
+                    .fixedSize()
                 }
                 
-                Divider()
+                SettingsRowDivider()
                 
-                HStack {
-                    Text("下次启动重新打开上次窗口")
-                    Spacer()
+                SettingsItemRow(label: AppLanguage.text("启动时恢复上次窗口", en: "Restore Windows on Launch")) {
                     Toggle("", isOn: self.$quitAlwaysKeepsWindows)
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.small)
                 }
                 
-                HStack {
-                    Text("自动保存文档改动")
-                    Spacer()
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("自动保存文档修改", en: "Autosave Documents")) {
                     Toggle("", isOn: self.$enablesAutosaveInPlace)
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.small)
+                }
+            }
+            
+            // 4. 关于版本
+            SettingsGroupCard(title: AppLanguage.text("关于版本", en: "Version")) {
+                SettingsItemRow(label: "\(Bundle.main.bundleName) \(Bundle.main.shortVersion) (\(Bundle.main.bundleVersion))") {
+                    Button(AppLanguage.text("版本详情", en: "About")) {
+                        NSApp.orderFrontStandardAboutPanel(nil)
+                    }
+                    .controlSize(.small)
                 }
             }
         }
@@ -770,21 +840,380 @@ private struct SidebarGeneralSettingsPane: View {
 }
 
 
-// MARK: - 外观与显示
+// MARK: - 1B. 应用图标自定义工坊 (App Icon Studio)
 
-private struct SidebarAppearanceSettingsPane: View {
+private struct SidebarAppIconSettingsPane: View {
+    
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var iconManager = AppIconManager.shared
+    @State private var isDropTargeted = false
+    
+    private var customRimBinding: Binding<Color> {
+        Binding(
+            get: { StudioPaletteManager.swiftUIColor(hex: self.iconManager.spec.customBorderHex) },
+            set: { newColor in
+                self.iconManager.spec.customBorderHex = StudioPaletteManager.hexString(from: NSColor(newColor))
+                self.iconManager.applyIconToSystemAndDock()
+            }
+        )
+    }
+    
+    private var matColorBinding: Binding<Color> {
+        Binding(
+            get: { StudioPaletteManager.swiftUIColor(hex: self.iconManager.spec.backgroundMatHex) },
+            set: { newColor in
+                self.iconManager.spec.backgroundMatHex = StudioPaletteManager.hexString(from: NSColor(newColor))
+                self.iconManager.applyIconToSystemAndDock()
+            }
+        )
+    }
+    
+    
+    var body: some View {
+        let _ = self.iconManager.customImageVersion
+        
+        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+            // 1. Live macOS Dock Showcase
+            SettingsGroupCard(title: AppLanguage.text("实时程序坞预览", en: "Live Dock Preview")) {
+                VStack(spacing: 14) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: self.colorScheme == .dark
+                                        ? [Color(red: 0.12, green: 0.13, blue: 0.18), Color(red: 0.08, green: 0.09, blue: 0.13)]
+                                        : [Color(red: 0.90, green: 0.91, blue: 0.95), Color(red: 0.84, green: 0.86, blue: 0.91)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .frame(height: 146)
+                        
+                        // Frosted mini Dock shelf beneath icon
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                            .frame(width: 170, height: 34)
+                            .offset(y: 44)
+                            .shadow(color: .black.opacity(self.colorScheme == .dark ? 0.35 : 0.10), radius: 10, y: 4)
+                        
+                        Image(nsImage: self.iconManager.previewImage)
+                            .resizable()
+                            .interpolation(.high)
+                            .frame(width: 112, height: 112)
+                            .scaleEffect(self.isDropTargeted ? 1.07 : 1.0)
+                            .animation(.spring(response: 0.28, dampingFraction: 0.72), value: self.isDropTargeted)
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(
+                                self.isDropTargeted ? Color.accentColor : Color.clear,
+                                style: StrokeStyle(lineWidth: 2, dash: [6, 4])
+                            )
+                    )
+                    .onDrop(of: [.image, .fileURL], isTargeted: self.$isDropTargeted) { providers in
+                        self.handleDrop(providers: providers)
+                    }
+                    
+                    HStack(spacing: 10) {
+                        Button(AppLanguage.text("上传自定义图片", en: "Upload Custom Artwork")) {
+                            self.pickCustomArtwork()
+                        }
+                        .controlSize(.small)
+                        
+                        Button(AppLanguage.text("恢复默认乌萨奇", en: "Reset Default")) {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                                self.iconManager.resetToDefault()
+                            }
+                        }
+                        .controlSize(.small)
+                        
+                        Spacer()
+                        
+                        Text(AppLanguage.text("支持拖入图片", en: "Drop Image Above"))
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(14)
+            }
+            
+            // 2. Built-in Chiikawa Artwork & Custom Source
+            SettingsGroupCard(title: AppLanguage.text("图标原画库", en: "Icon Artwork")) {
+                HStack(spacing: 10) {
+                    ForEach(AppIconSource.allCases) { source in
+                        let isSelected = (self.iconManager.spec.source == source)
+                        let thumb = self.iconManager.sourceImage(for: source)
+                        
+                        Button {
+                            if source == .customImage && !self.iconManager.hasCustomImage {
+                                self.pickCustomArtwork()
+                                return
+                            }
+                            withAnimation(.spring(response: 0.26, dampingFraction: 0.78)) {
+                                self.iconManager.spec.source = source
+                                self.iconManager.applyIconToSystemAndDock()
+                            }
+                        } label: {
+                            VStack(spacing: 6) {
+                                ZStack {
+                                    if let thumb {
+                                        Image(nsImage: thumb)
+                                            .resizable()
+                                            .interpolation(.high)
+                                            .scaledToFill()
+                                    } else {
+                                        Image(systemName: "photo.badge.plus")
+                                            .font(.system(size: 20))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .frame(width: 58, height: 58)
+                                .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                        .strokeBorder(
+                                            isSelected ? StudioPaletteManager.shared.activeAccentColor : Color.primary.opacity(0.10),
+                                            lineWidth: isSelected ? 2.2 : 0.75
+                                        )
+                                )
+                                
+                                Text(source.displayName)
+                                    .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
+                                    .foregroundStyle(isSelected ? .primary : .secondary)
+                                    .lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(isSelected ? Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.045) : Color.clear)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                    }
+                }
+                .padding(10)
+            }
+            
+            // 3. Rim / Gold Inlay Style Presets
+            SettingsGroupCard(title: AppLanguage.text("镶边工艺样式", en: "Bezel & Gold Inlay Style")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 8)], spacing: 8) {
+                        ForEach(AppIconBorderStyle.allCases) { style in
+                            let isSelected = (self.iconManager.spec.borderStyle == style)
+                            Button {
+                                withAnimation(.spring(response: 0.24, dampingFraction: 0.78)) {
+                                    self.iconManager.spec.borderStyle = style
+                                    if style != .clean && self.iconManager.spec.borderWidth < 1.5 {
+                                        self.iconManager.spec.borderWidth = 4.6
+                                    }
+                                    self.iconManager.applyIconToSystemAndDock()
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Circle()
+                                        .fill(
+                                            LinearGradient(
+                                                colors: style.previewColors,
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            )
+                                        )
+                                        .frame(width: 12, height: 12)
+                                        .overlay(
+                                            Circle().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.6)
+                                        )
+                                    
+                                    Text(style.displayName)
+                                        .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
+                                        .foregroundStyle(isSelected ? .primary : .secondary)
+                                        .fixedSize()
+                                }
+                                .padding(.horizontal, 9)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 30)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(isSelected ? Color.primary.opacity(self.colorScheme == .dark ? 0.12 : 0.07) : Color.primary.opacity(0.03))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .strokeBorder(isSelected ? Color.accentColor.opacity(0.70) : Color.clear, lineWidth: 1.2)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        }
+                    }
+                    
+                    if self.iconManager.spec.borderStyle == .customColor {
+                        HStack {
+                            Text(AppLanguage.text("自定义镶边颜色", en: "Custom Rim Color"))
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            ColorPicker("", selection: self.customRimBinding, supportsOpacity: false)
+                                .labelsHidden()
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+                .padding(12)
+            }
+            
+            // 4. Stepless Fine-Tuning Controls
+            SettingsGroupCard(title: AppLanguage.text("无极精调参数", en: "Fine Adjustments")) {
+                SettingsItemRow(label: AppLanguage.text("镶边粗细", en: "Border Width")) {
+                    HStack(spacing: 8) {
+                        Slider(value: self.specBinding(\.borderWidth), in: 0...10)
+                            .frame(width: 150)
+                        Text(String(format: "%.1f", self.iconManager.spec.borderWidth))
+                            .font(.system(size: 12).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 34, alignment: .trailing)
+                    }
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("画面缩放", en: "Artwork Zoom")) {
+                    HStack(spacing: 8) {
+                        Slider(value: self.specBinding(\.imageZoom), in: 0.80...1.35)
+                            .frame(width: 150)
+                        Text("\(Int((self.iconManager.spec.imageZoom * 100).rounded()))%")
+                            .font(.system(size: 12).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 38, alignment: .trailing)
+                    }
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("圆角曲率", en: "Corner Curvature")) {
+                    HStack(spacing: 8) {
+                        Slider(value: self.specBinding(\.cornerRoundness), in: 0.16...0.50)
+                            .frame(width: 150)
+                        Text("\(Int((self.iconManager.spec.cornerRoundness * 100).rounded()))%")
+                            .font(.system(size: 12).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 38, alignment: .trailing)
+                    }
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("表面水晶流光", en: "Crystal Gloss")) {
+                    HStack(spacing: 8) {
+                        Slider(value: self.specBinding(\.glossIntensity), in: 0.0...1.0)
+                            .frame(width: 150)
+                        Text("\(Int((self.iconManager.spec.glossIntensity * 100).rounded()))%")
+                            .font(.system(size: 12).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 38, alignment: .trailing)
+                    }
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("装饰角标", en: "Corner Badge")) {
+                    Picker("", selection: self.specBinding(\.cornerBadge)) {
+                        ForEach(AppIconBadge.allCases) { badge in
+                            Text(badge.displayName).tag(badge)
+                        }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                
+                if self.iconManager.spec.imageZoom < 0.99 {
+                    SettingsRowDivider()
+                    
+                    SettingsItemRow(label: AppLanguage.text("画布衬底色", en: "Background Mat")) {
+                        ColorPicker("", selection: self.matColorBinding, supportsOpacity: false)
+                            .labelsHidden()
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    private func specBinding<T: Equatable>(_ keyPath: WritableKeyPath<AppIconSpec, T>) -> Binding<T> {
+        Binding(
+            get: { self.iconManager.spec[keyPath: keyPath] },
+            set: { newValue in
+                self.iconManager.spec[keyPath: keyPath] = newValue
+                self.iconManager.applyIconToSystemAndDock()
+            }
+        )
+    }
+    
+    
+    private func pickCustomArtwork() {
+        let panel = NSOpenPanel()
+        panel.title = AppLanguage.text("选择应用图标图片", en: "Choose App Icon Image")
+        panel.allowedContentTypes = [.image, .png, .jpeg, .heic, .tiff]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.begin { response in
+            guard response == .OK,
+                  let url = panel.url,
+                  let image = NSImage(contentsOf: url)
+            else { return }
+            Task { @MainActor in
+                _ = self.iconManager.saveCustomImage(image)
+            }
+        }
+    }
+    
+    
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    let url: URL? = if let data = item as? Data {
+                        URL(dataRepresentation: data, relativeTo: nil)
+                    } else {
+                        item as? URL
+                    }
+                    guard let url else { return }
+                    Task { @MainActor in
+                        if let image = NSImage(contentsOf: url) {
+                            _ = self.iconManager.saveCustomImage(image)
+                        }
+                    }
+                }
+                return true
+            }
+            if provider.canLoadObject(ofClass: NSImage.self) {
+                provider.loadObject(ofClass: NSImage.self) { object, _ in
+                    guard let image = object as? NSImage else { return }
+                    Task { @MainActor in
+                        _ = self.iconManager.saveCustomImage(image)
+                    }
+                }
+                return true
+            }
+        }
+        return false
+    }
+}
+
+
+// MARK: - 2. 字体
+
+private struct SidebarTypographySettingsPane: View {
     
     @AppStorage(.font) private var fontData
-    @AppStorage(.monospacedFont) private var monospacedFontData
-    @AppStorage(.lineHeight) private var lineHeight
-    @AppStorage(.documentAppearance) private var documentAppearance
-    @AppStorage(.windowAlpha) private var windowAlpha
+    @AppStorage(.shouldAntialias) private var shouldAntialias
+    @AppStorage(.ligature) private var ligature
     
-    @AppStorage(.showLineNumbers) private var showLineNumbers
-    @AppStorage(.wrapLines) private var wrapLines
-    @AppStorage(.highlightCurrentLine) private var highlightCurrentLine
-    @AppStorage(.showInvisibles) private var showInvisibles
-    @AppStorage(.showIndentGuides) private var showIndentGuides
+    @AppStorage(.monospacedFont) private var monospacedFontData
+    @AppStorage(.monospacedShouldAntialias) private var monospacedShouldAntialias
+    @AppStorage(.monospacedLigature) private var monospacedLigature
+    
+    @AppStorage(.lineHeight) private var lineHeight
     
     private var standardFont: Binding<NSFont> {
         Binding(
@@ -802,106 +1231,470 @@ private struct SidebarAppearanceSettingsPane: View {
     
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SettingsGroupCard(title: "字体与行距") {
-                HStack(spacing: 8) {
-                    Text("标准字体")
-                    Spacer()
-                    Text("\(self.standardFont.wrappedValue.displayName ?? self.standardFont.wrappedValue.fontName) \(Int(self.standardFont.wrappedValue.pointSize))")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    FontSizeStepper("字号", font: self.standardFont)
-                    FontPicker("选择…", selection: self.standardFont)
-                }
-                
-                HStack(spacing: 8) {
-                    Text("等宽字体")
-                    Spacer()
-                    Text("\(self.monospacedFont.wrappedValue.displayName ?? self.monospacedFont.wrappedValue.fontName) \(Int(self.monospacedFont.wrappedValue.pointSize))")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    FontSizeStepper("字号", font: self.monospacedFont)
-                    FontPicker("选择…", selection: self.monospacedFont)
-                }
-                
-                HStack(spacing: 8) {
-                    Text("行高倍数")
-                    Spacer()
-                    Text(self.lineHeight, format: .number.precision(.fractionLength(1...2)))
-                        .font(.system(size: 12.5).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    Stepper(value: self.$lineHeight, in: 0.8...3.0, step: 0.1) {
-                        EmptyView()
+        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+            SettingsGroupCard(title: AppLanguage.text("标准字体", en: "Standard Font")) {
+                SettingsItemRow(label: AppLanguage.text("字体样式", en: "Font Family")) {
+                    HStack(spacing: 8) {
+                        Text("\(self.standardFont.wrappedValue.displayName ?? self.standardFont.wrappedValue.fontName) \(Int(self.standardFont.wrappedValue.pointSize))")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                        FontSizeStepper(AppLanguage.text("字号", en: "Size"), font: self.standardFont)
+                        FontPicker(AppLanguage.text("选择字体", en: "Choose Font"), selection: self.standardFont)
+                            .controlSize(.small)
                     }
-                    .labelsHidden()
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("字体抗锯齿", en: "Antialias Text")) {
+                    Toggle("", isOn: self.$shouldAntialias)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("连字效果", en: "Enable Ligatures")) {
+                    Toggle("", isOn: self.$ligature)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
                 }
             }
             
-            SettingsGroupCard(title: "外观与光标") {
-                HStack {
-                    Text("窗口模式")
-                    Spacer()
-                    Picker("", selection: self.$documentAppearance) {
-                        Text("跟随系统").tag(AppearanceMode.default)
-                        Text("浅色").tag(AppearanceMode.light)
-                        Text("深色").tag(AppearanceMode.dark)
+            SettingsGroupCard(title: AppLanguage.text("等宽字体", en: "Monospaced Font")) {
+                SettingsItemRow(label: AppLanguage.text("字体样式", en: "Font Family")) {
+                    HStack(spacing: 8) {
+                        Text("\(self.monospacedFont.wrappedValue.displayName ?? self.monospacedFont.wrappedValue.fontName) \(Int(self.monospacedFont.wrappedValue.pointSize))")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                        FontSizeStepper(AppLanguage.text("字号", en: "Size"), font: self.monospacedFont)
+                        FontPicker(AppLanguage.text("选择字体", en: "Choose Font"), selection: self.monospacedFont)
+                            .controlSize(.small)
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 210)
                 }
                 
-                HStack(spacing: 8) {
-                    Text("窗口不透明度")
-                    Spacer()
-                    Slider(value: self.$windowAlpha, in: 0.2...1.0)
-                        .frame(width: 162)
-                    Text(self.windowAlpha, format: .percent.precision(.fractionLength(0)))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("等宽抗锯齿", en: "Antialias Monospaced")) {
+                    Toggle("", isOn: self.$monospacedShouldAntialias)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
                 }
                 
-                HStack {
-                    Text("光标颜色")
-                    Spacer()
-                    CustomCursorColorControl()
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("等宽连字", en: "Monospaced Ligatures")) {
+                    Toggle("", isOn: self.$monospacedLigature)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
                 }
             }
             
-            SettingsGroupCard(title: "编辑器显示") {
-                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 10) {
-                    Toggle("显示行号", isOn: self.$showLineNumbers)
-                    Toggle("自动换行", isOn: self.$wrapLines)
-                    Toggle("高亮当前行", isOn: self.$highlightCurrentLine)
-                    Toggle("显示缩进参考线", isOn: self.$showIndentGuides)
-                    Toggle("显示不可见字符", isOn: self.$showInvisibles)
+            SettingsGroupCard(title: AppLanguage.text("行距排版", en: "Line Spacing")) {
+                SettingsItemRow(label: AppLanguage.text("行高倍数", en: "Line Height")) {
+                    HStack(spacing: 8) {
+                        Text(self.lineHeight, format: .number.precision(.fractionLength(1...2)))
+                            .font(.system(size: 12.5).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Stepper(value: self.$lineHeight, in: 0.8...3.0, step: 0.1) {
+                            EmptyView()
+                        }
+                        .labelsHidden()
+                    }
                 }
-            }
-            
-            SettingsGroupCard(title: "配色主题") {
-                ThemeView()
-                    .frame(height: 368)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
     }
 }
 
 
-// MARK: - 编辑与格式
+// MARK: - 3. 外观 (Designer 3-Color Swatches + Window + Theme)
 
-private struct SidebarEditorFormatPane: View {
+private struct SidebarAppearanceSettingsPane: View {
+    
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(.documentAppearance) private var documentAppearance
+    @AppStorage(.windowAlpha) private var windowAlpha
+    @State private var studioPalette = StudioPaletteManager.shared
+    @State private var syncedToast: String?
+    
+    private var customLightBinding: Binding<Color> {
+        Binding(
+            get: { StudioPaletteManager.swiftUIColor(hex: self.studioPalette.customLightHex) },
+            set: { self.studioPalette.customLightHex = StudioPaletteManager.hexString(from: NSColor($0)) }
+        )
+    }
+    
+    private var customDarkBinding: Binding<Color> {
+        Binding(
+            get: { StudioPaletteManager.swiftUIColor(hex: self.studioPalette.customDarkHex) },
+            set: { self.studioPalette.customDarkHex = StudioPaletteManager.hexString(from: NSColor($0)) }
+        )
+    }
+    
+    private var customAccentBinding: Binding<Color> {
+        Binding(
+            get: { StudioPaletteManager.swiftUIColor(hex: self.studioPalette.customAccentHex) },
+            set: { self.studioPalette.customAccentHex = StudioPaletteManager.hexString(from: NSColor($0)) }
+        )
+    }
+    
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+            // 1. Curated Designer Color Triads (Synced Globally & to Data Dashboard)
+            SettingsGroupCard(title: AppLanguage.text("全局高级配色方案（同步数据看板与界面）", en: "Global Designer Color System")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                        ForEach(StudioPaletteID.allCases) { preset in
+                            self.paletteCard(preset)
+                        }
+                    }
+                    
+                    if self.studioPalette.selectedID == .custom {
+                        HStack(spacing: 14) {
+                            HStack(spacing: 5) {
+                                Text(AppLanguage.text("浅底色", en: "Light"))
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(.secondary)
+                                ColorPicker("", selection: self.customLightBinding, supportsOpacity: false)
+                                    .labelsHidden()
+                            }
+                            HStack(spacing: 5) {
+                                Text(AppLanguage.text("深底色", en: "Dark"))
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(.secondary)
+                                ColorPicker("", selection: self.customDarkBinding, supportsOpacity: false)
+                                    .labelsHidden()
+                            }
+                            HStack(spacing: 5) {
+                                Text(AppLanguage.text("主亮色", en: "Accent"))
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(.secondary)
+                                ColorPicker("", selection: self.customAccentBinding, supportsOpacity: false)
+                                    .labelsHidden()
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    
+                    SettingsRowDivider()
+                        .padding(.horizontal, -12)
+                    
+                    HStack(spacing: 10) {
+                        Button(AppLanguage.text("应用至浅色正文主题", en: "Sync Light Editor Theme")) {
+                            self.studioPalette.applyPaletteToEditorTheme(preferDark: false)
+                            self.showSyncedToast(AppLanguage.text("已生成并应用浅色正文主题", en: "Applied Light Theme"))
+                        }
+                        .controlSize(.small)
+                        
+                        Button(AppLanguage.text("应用至深色正文主题", en: "Sync Dark Editor Theme")) {
+                            self.studioPalette.applyPaletteToEditorTheme(preferDark: true)
+                            self.showSyncedToast(AppLanguage.text("已生成并应用深色正文主题", en: "Applied Dark Theme"))
+                        }
+                        .controlSize(.small)
+                        
+                        Spacer()
+                        
+                        if let syncedToast = self.syncedToast {
+                            Text(syncedToast)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .fixedSize()
+                        }
+                    }
+                }
+                .padding(12)
+            }
+            
+            SettingsGroupCard(title: AppLanguage.text("窗口外观", en: "Window Appearance")) {
+                SettingsItemRow(label: AppLanguage.text("深浅模式", en: "Appearance Mode")) {
+                    Picker("", selection: self.$documentAppearance) {
+                        Text(AppLanguage.text("跟随系统", en: "System")).tag(AppearanceMode.default)
+                        Text(AppLanguage.text("浅色", en: "Light")).tag(AppearanceMode.light)
+                        Text(AppLanguage.text("深色", en: "Dark")).tag(AppearanceMode.dark)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: SettingsDesignTokens.segmentedWidth)
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("窗口不透明度", en: "Window Opacity")) {
+                    HStack(spacing: 6) {
+                        Slider(value: self.$windowAlpha, in: 0.2...1.0)
+                            .frame(width: 118)
+                        Text(self.windowAlpha, format: .percent.precision(.fractionLength(0)))
+                            .font(.system(size: 12.5).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 38, alignment: .trailing)
+                    }
+                    .frame(width: SettingsDesignTokens.segmentedWidth, alignment: .trailing)
+                }
+            }
+            
+            SettingsGroupCard(title: AppLanguage.text("光标配色", en: "Cursor Color")) {
+                SettingsItemRow(label: AppLanguage.text("光标颜色", en: "Insertion Point")) {
+                    CustomCursorColorControl()
+                }
+            }
+            
+            SettingsGroupCard(title: AppLanguage.text("配色主题", en: "Syntax Themes")) {
+                ThemeView()
+                    .frame(height: 344)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding(6)
+            }
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func paletteCard(_ preset: StudioPaletteID) -> some View {
+        let triad = self.studioPalette.triad(for: preset)
+        let isSelected = (self.studioPalette.selectedID == preset)
+        let darkSwatch = StudioPaletteManager.swiftUIColor(hex: triad.darkInkHex)
+        let lightSwatch = StudioPaletteManager.swiftUIColor(hex: triad.lightPaperHex)
+        let accentSwatch = StudioPaletteManager.swiftUIColor(hex: triad.accentHex)
+        
+        Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.80)) {
+                self.studioPalette.selectPalette(preset)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(darkSwatch)
+                        .frame(height: 18)
+                        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5))
+                    
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(lightSwatch)
+                        .frame(height: 18)
+                        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5))
+                    
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(accentSwatch)
+                        .frame(height: 18)
+                }
+                
+                HStack(spacing: 5) {
+                    Text(preset.displayName)
+                        .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(.primary)
+                        .fixedSize()
+                    
+                    Spacer()
+                    
+                    Text(triad.accentHex)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(accentSwatch)
+                    }
+                }
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isSelected ? Color.primary.opacity(self.colorScheme == .dark ? 0.10 : 0.05) : Color.primary.opacity(0.025))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(isSelected ? accentSwatch.opacity(0.75) : Color.primary.opacity(0.08), lineWidth: isSelected ? 1.5 : 0.75)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+    }
+    
+    
+    private func showSyncedToast(_ msg: String) {
+        withAnimation(.easeOut(duration: 0.16)) {
+            self.syncedToast = msg
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(2.4))
+            await MainActor.run {
+                if self.syncedToast == msg {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        self.syncedToast = nil
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// MARK: - 4. 编辑
+
+private struct SidebarEditingSettingsPane: View {
+    
+    @AppStorage(.showLineNumbers) private var showLineNumbers
+    @AppStorage(.wrapLines) private var wrapLines
+    @AppStorage(.highlightCurrentLine) private var highlightCurrentLine
+    @AppStorage(.showIndentGuides) private var showIndentGuides
+    @AppStorage(.showInvisibles) private var showInvisibles
     
     @AppStorage(.autoExpandTab) private var autoExpandTab
     @AppStorage(.tabWidth) private var tabWidth
     @AppStorage(.autoIndent) private var autoIndent
     @AppStorage(.indentWithTabKey) private var indentWithTabKey
+    
     @AppStorage(.autoTrimsTrailingWhitespace) private var autoTrimsTrailingWhitespace
     @AppStorage(.highlightBraces) private var highlightBraces
     @AppStorage(.highlightSelectionInstance) private var highlightSelectionInstance
+    @AppStorage(.vimMode) private var vimMode
+    
+    @State private var plainTextImagesEnabled = true
+    
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+            SettingsGroupCard(title: "视图辅助") {
+                SettingsItemRow(label: "显示行号") {
+                    Toggle("", isOn: self.$showLineNumbers)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                SettingsRowDivider()
+                SettingsItemRow(label: "自动换行") {
+                    Toggle("", isOn: self.$wrapLines)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                SettingsRowDivider()
+                SettingsItemRow(label: "高亮当前行") {
+                    Toggle("", isOn: self.$highlightCurrentLine)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                SettingsRowDivider()
+                SettingsItemRow(label: "显示缩进参考线") {
+                    Toggle("", isOn: self.$showIndentGuides)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                SettingsRowDivider()
+                SettingsItemRow(label: "显示不可见字符") {
+                    Toggle("", isOn: self.$showInvisibles)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+            }
+            
+            SettingsGroupCard(title: "缩进规则") {
+                SettingsItemRow(label: "缩进方式") {
+                    Picker("", selection: self.$autoExpandTab) {
+                        Text("空格").tag(true)
+                        Text("Tab").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: SettingsDesignTokens.segmentedWidth)
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: "缩进宽度") {
+                    StepperNumberField(value: self.$tabWidth, default: 4, in: 1...99)
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: "输入时自动缩进") {
+                    Toggle("", isOn: self.$autoIndent)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: "按 Tab 缩进选区") {
+                    Toggle("", isOn: self.$indentWithTabKey)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+            }
+            
+            SettingsGroupCard(title: "内容辅助") {
+                SettingsItemRow(label: "自动清除行尾空白") {
+                    Toggle("", isOn: self.$autoTrimsTrailingWhitespace)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                SettingsRowDivider()
+                SettingsItemRow(label: "高亮匹配括号") {
+                    Toggle("", isOn: self.$highlightBraces)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                SettingsRowDivider()
+                SettingsItemRow(label: "高亮相同选词") {
+                    Toggle("", isOn: self.$highlightSelectionInstance)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                SettingsRowDivider()
+                SettingsItemRow(label: "纯文本内嵌贴图") {
+                    Toggle("", isOn: self.$plainTextImagesEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .onChange(of: self.plainTextImagesEnabled) { _, val in
+                            CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+                            UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+                        }
+                }
+            }
+            
+            SettingsGroupCard(title: "模态编辑") {
+                SettingsItemRow(label: "启用 Vim 模式") {
+                    Toggle("", isOn: self.$vimMode)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+            }
+        }
+        .onAppear {
+            self.plainTextImagesEnabled = CotLocalDatabase.shared.bool(
+                forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled,
+                default: true
+            )
+        }
+    }
+}
+
+
+// MARK: - 5. 格式
+
+private struct SidebarFormatSettingsPane: View {
     
     @AppStorage(.lineEndCharCode) private var lineEnding
     @AppStorage(.encoding) private var encoding
@@ -925,58 +1718,21 @@ private struct SidebarEditorFormatPane: View {
     
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SettingsGroupCard(title: "缩进与空白") {
-                HStack {
-                    Text("缩进字符")
-                    Spacer()
-                    Picker("", selection: self.$autoExpandTab) {
-                        Text("空格").tag(true)
-                        Text("Tab").tag(false)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 190)
-                }
-                
-                HStack {
-                    Text("缩进宽度")
-                    Spacer()
-                    StepperNumberField(value: self.$tabWidth, default: 4, in: 1...99)
-                }
-                
-                Divider()
-                
-                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 10) {
-                    Toggle("输入时自动缩进", isOn: self.$autoIndent)
-                    Toggle("按 Tab 缩进选区", isOn: self.$indentWithTabKey)
-                    Toggle("自动清除行尾空白", isOn: self.$autoTrimsTrailingWhitespace)
-                    Toggle("高亮匹配括号", isOn: self.$highlightBraces)
-                    Toggle("高亮相同选中词", isOn: self.$highlightSelectionInstance)
-                }
-            }
-            
-            SettingsGroupCard(title: "换行、编码与语法") {
-                HStack {
-                    Text("默认换行符")
-                    Spacer()
+        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+            SettingsGroupCard(title: "换行标准") {
+                SettingsItemRow(label: "默认换行符") {
                     Picker("", selection: self.$lineEnding) {
                         ForEach(LineEnding.allCases.filter(\.isBasic), id: \.self) {
                             Text(verbatim: "\($0.description) (\($0.label))").tag($0.index)
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 190)
+                    .fixedSize()
                 }
-                
-                HStack(spacing: 8) {
-                    Text("默认文本编码")
-                    Spacer()
-                    Button("排序…") {
-                        self.isEncodingListPresented = true
-                    }
-                    .controlSize(.small)
-                    
+            }
+            
+            SettingsGroupCard(title: "文本编码") {
+                SettingsItemRow(label: "默认编码") {
                     Picker("", selection: self.fileEncoding) {
                         ForEach(Array(self.encodingManager.fileEncodings.enumerated()), id: \.offset) { _, enc in
                             if let enc {
@@ -987,12 +1743,30 @@ private struct SidebarEditorFormatPane: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 190)
+                    .fixedSize()
                 }
                 
-                HStack {
-                    Text("默认语法高亮")
-                    Spacer()
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("编码优先顺序", en: "Encoding Priority")) {
+                    Button(AppLanguage.text("调整顺序", en: "Edit Order")) {
+                        self.isEncodingListPresented = true
+                    }
+                    .controlSize(.small)
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: "识别文档内编码声明") {
+                    Toggle("", isOn: self.$referToEncodingTag)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+            }
+            
+            SettingsGroupCard(title: "语法高亮") {
+                SettingsItemRow(label: "默认语法") {
                     Picker("", selection: self.$syntax) {
                         Text("无").tag(SyntaxName.none)
                         Divider()
@@ -1001,18 +1775,7 @@ private struct SidebarEditorFormatPane: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 190)
-                }
-                
-                Divider()
-                
-                HStack {
-                    Text("读取文档内的编码声明")
-                    Spacer()
-                    Toggle("", isOn: self.$referToEncodingTag)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
+                    .fixedSize()
                 }
             }
         }
@@ -1024,50 +1787,22 @@ private struct SidebarEditorFormatPane: View {
 }
 
 
-// MARK: - 实验室（Vim / 动效 / AI 性格弹幕）
+// MARK: - 6. 动效
 
-private struct SidebarLabsSettingsPane: View {
+private struct SidebarEffectsSettingsPane: View {
     
-    @AppStorage(.vimMode) private var vimMode
     @State private var analytics = AnalyticsManager.shared
     
     @State private var typewriterEnabled = true
     @State private var typewriterStyle: TypingEffectPreset = .powerMode
     @State private var vimCursorTrailEnabled = true
-    @State private var plainTextImagesEnabled = true
     @State private var autoPersonalityEnabled = true
     
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SettingsGroupCard(title: "模态编辑与动效") {
-                HStack {
-                    Text("启用 Vim 模式")
-                    Spacer()
-                    Toggle("", isOn: self.$vimMode)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                }
-                
-                HStack {
-                    Text("Vim 流体光标与尾迹")
-                    Spacer()
-                    Toggle("", isOn: self.$vimCursorTrailEnabled)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                        .onChange(of: self.vimCursorTrailEnabled) { _, val in
-                            CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
-                            UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
-                        }
-                }
-                
-                Divider()
-                
-                HStack {
-                    Text("打字粒子特效")
-                    Spacer()
+        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+            SettingsGroupCard(title: "打字反馈") {
+                SettingsItemRow(label: "打字粒子特效") {
                     Toggle("", isOn: self.$typewriterEnabled)
                         .labelsHidden()
                         .toggleStyle(.switch)
@@ -1078,51 +1813,39 @@ private struct SidebarLabsSettingsPane: View {
                         }
                 }
                 
-                HStack {
-                    Text("打字特效风格")
-                    Spacer()
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: "粒子风格") {
                     Picker("", selection: self.$typewriterStyle) {
                         ForEach(TypingEffectPreset.allCases) { preset in
                             Text(preset.displayName).tag(preset)
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 190)
+                    .fixedSize()
                     .disabled(!self.typewriterEnabled)
                     .onChange(of: self.typewriterStyle) { _, val in
                         CotLocalDatabase.shared.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
                         UserDefaults.standard.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
                     }
                 }
-                
-                Divider()
-                
-                HStack {
-                    Text("纯文本内嵌图片预览")
-                    Spacer()
-                    Toggle("", isOn: self.$plainTextImagesEnabled)
+            }
+            
+            SettingsGroupCard(title: "光标动效") {
+                SettingsItemRow(label: "Vim 流体光标尾迹") {
+                    Toggle("", isOn: self.$vimCursorTrailEnabled)
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.small)
-                        .onChange(of: self.plainTextImagesEnabled) { _, val in
-                            CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
-                            UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+                        .onChange(of: self.vimCursorTrailEnabled) { _, val in
+                            CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
+                            UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
                         }
                 }
             }
             
-            SettingsGroupCard(title: "性格弹幕") {
-                HStack {
-                    Text("头像性格弹幕")
-                    Spacer()
-                    Button(self.analytics.isAnalyzingPersonality ? "分析中…" : "更新") {
-                        Task {
-                            await self.analytics.refreshPersonalityProfile(force: true)
-                        }
-                    }
-                    .controlSize(.small)
-                    .disabled(self.analytics.isAnalyzingPersonality)
-                    
+            SettingsGroupCard(title: AppLanguage.text("性格弹幕", en: "Orbit Danmaku")) {
+                SettingsItemRow(label: AppLanguage.text("头像环绕弹幕", en: "Avatar Orbit Tags")) {
                     Toggle("", isOn: self.$autoPersonalityEnabled)
                         .labelsHidden()
                         .toggleStyle(.switch)
@@ -1140,42 +1863,7 @@ private struct SidebarLabsSettingsPane: View {
                 db.string(forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle, default: TypingEffectPreset.powerMode.rawValue)
             )
             self.vimCursorTrailEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled, default: true)
-            self.plainTextImagesEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled, default: true)
             self.autoPersonalityEnabled = db.bool(forKey: CotLocalDatabase.ConfigKey.aiPersonalityAutoEnabled, default: true)
-        }
-    }
-}
-
-
-// MARK: - 关于
-
-private struct SidebarAboutSettingsPane: View {
-    
-    var body: some View {
-        SettingsGroupCard {
-            VStack(spacing: 12) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .frame(width: 64, height: 64)
-                
-                Text(Bundle.main.bundleName)
-                    .font(.system(size: 18, weight: .semibold))
-                
-                Text("Version \(Bundle.main.shortVersion) (\(Bundle.main.bundleVersion))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                
-                HStack(spacing: 12) {
-                    Button("打开完整致谢与开源许可…") {
-                        NSApp.orderFrontStandardAboutPanel(nil)
-                    }
-                    .controlSize(.small)
-                }
-                .padding(.top, 4)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
         }
     }
 }

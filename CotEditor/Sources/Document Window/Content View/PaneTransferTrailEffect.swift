@@ -118,7 +118,7 @@ enum PaneTransferTrailEffect {
         let dx = end.x - start.x
         let dy = end.y - start.y
         let distance = hypot(dx, dy)
-        let bow = min(46, max(18, distance * 0.17))
+        let bow = min(56, max(20, distance * 0.20))
         
         guard distance > 0.5 else {
             return CGPoint(x: mid.x, y: mid.y - bow)
@@ -202,6 +202,33 @@ enum PaneTransferTrailEffect {
         
         window.effectiveAppearance.performAsCurrentDrawingAppearance {
             let accent = NSColor(cgColor: accentColor.cgColor) ?? accentColor
+            
+            // 0. Origin launch elastic pop ring at startPoint
+            let launchRing = CAShapeLayer()
+            let launchSize: CGFloat = 22
+            launchRing.bounds = CGRect(x: 0, y: 0, width: launchSize, height: launchSize)
+            launchRing.position = startPoint
+            launchRing.path = CGPath(ellipseIn: launchRing.bounds.insetBy(dx: 1, dy: 1), transform: nil)
+            launchRing.fillColor = nil
+            launchRing.strokeColor = accent.withAlphaComponent(0.75).cgColor
+            launchRing.lineWidth = 1.6
+            launchRing.opacity = 0
+            rootLayer.addSublayer(launchRing)
+            
+            let launchScale = CABasicAnimation(keyPath: "transform.scale")
+            launchScale.fromValue = 0.5
+            launchScale.toValue = 1.8
+            let launchAlpha = CAKeyframeAnimation(keyPath: "opacity")
+            launchAlpha.values = [0, 0.7, 0]
+            launchAlpha.keyTimes = [0, 0.18, 1]
+            let launchGroup = CAAnimationGroup()
+            launchGroup.animations = [launchScale, launchAlpha]
+            launchGroup.beginTime = now
+            launchGroup.duration = 0.26
+            launchGroup.timingFunction = easeOut
+            launchGroup.fillMode = .both
+            launchGroup.isRemovedOnCompletion = false
+            launchRing.add(launchGroup, forKey: "launchRing")
             
             // 1. Outer luminous glow ribbon
             let glowLayer = CAShapeLayer()
@@ -309,16 +336,20 @@ enum PaneTransferTrailEffect {
                 flight.calculationMode = .paced
                 flight.rotationMode = .rotateAuto
                 
-                let scale = CABasicAnimation(keyPath: "transform.scale")
-                scale.fromValue = params.scale
-                scale.toValue = params.scale * 0.35
+                let scaleX = CAKeyframeAnimation(keyPath: "transform.scale.x")
+                scaleX.values = [0.8, 1.35, 0.5].map { params.scale * $0 }
+                scaleX.keyTimes = [0, 0.42, 1.0]
+                
+                let scaleY = CAKeyframeAnimation(keyPath: "transform.scale.y")
+                scaleY.values = [1.15, 0.78, 0.5].map { params.scale * $0 }
+                scaleY.keyTimes = [0, 0.42, 1.0]
                 
                 let alpha = CAKeyframeAnimation(keyPath: "opacity")
                 alpha.values = [0, params.alpha, params.alpha * 0.7, 0]
                 alpha.keyTimes = [0, 0.16, 0.70, 1.0]
                 
                 let group = CAAnimationGroup()
-                group.animations = [flight, scale, alpha]
+                group.animations = [flight, scaleX, scaleY, alpha]
                 group.beginTime = now + params.delay
                 group.duration = 0.27
                 group.timingFunction = easeOut
@@ -403,10 +434,73 @@ enum PaneTransferTrailEffect {
                 haloGroup.fillMode = .both
                 haloGroup.isRemovedOnCompletion = false
                 halo.add(haloGroup, forKey: "landingHalo")
+                
+                // Second outer concentric elastic halo ring
+                let outerHalo = CAShapeLayer()
+                outerHalo.bounds = ringRect
+                outerHalo.position = targetCenter
+                outerHalo.path = CGPath(roundedRect: insetRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+                outerHalo.fillColor = nil
+                outerHalo.strokeColor = accent.withAlphaComponent(0.55).cgColor
+                outerHalo.lineWidth = 1.2
+                outerHalo.opacity = 0
+                rootLayer.addSublayer(outerHalo)
+                
+                let outerScale = CABasicAnimation(keyPath: "transform.scale")
+                outerScale.fromValue = 0.88
+                outerScale.toValue = 1.24
+                let outerAlpha = CAKeyframeAnimation(keyPath: "opacity")
+                outerAlpha.values = [0, 0.55, 0]
+                outerAlpha.keyTimes = [0, 0.20, 1]
+                let outerGroup = CAAnimationGroup()
+                outerGroup.animations = [outerScale, outerAlpha]
+                outerGroup.beginTime = now + 0.23
+                outerGroup.duration = 0.38
+                outerGroup.timingFunction = easeOut
+                outerGroup.fillMode = .both
+                outerGroup.isRemovedOnCompletion = false
+                outerHalo.add(outerGroup, forKey: "outerLandingHalo")
+            }
+            
+            // 6. Six radial impact starburst sparks around targetCenter
+            for idx in 0..<6 {
+                let angle = (CGFloat(idx) / 6.0) * .pi * 2.0 + 0.25
+                let dist: CGFloat = idx.isMultiple(of: 2) ? 24 : 18
+                let endPt = CGPoint(
+                    x: targetCenter.x + cos(angle) * dist,
+                    y: targetCenter.y + sin(angle) * dist
+                )
+                let burstSpark = CALayer()
+                burstSpark.bounds = CGRect(x: 0, y: 0, width: 3.2, height: 3.2)
+                burstSpark.cornerRadius = 1.6
+                burstSpark.position = targetCenter
+                burstSpark.backgroundColor = (idx.isMultiple(of: 2)
+                    ? (NSColor.white.blended(withFraction: 0.4, of: accent) ?? accent)
+                    : accent).cgColor
+                burstSpark.opacity = 0
+                rootLayer.addSublayer(burstSpark)
+                
+                let pos = CABasicAnimation(keyPath: "position")
+                pos.fromValue = NSValue(point: targetCenter)
+                pos.toValue = NSValue(point: endPt)
+                let scale = CABasicAnimation(keyPath: "transform.scale")
+                scale.fromValue = 1.2
+                scale.toValue = 0.15
+                let alpha = CAKeyframeAnimation(keyPath: "opacity")
+                alpha.values = [0, 0.9, 0]
+                alpha.keyTimes = [0, 0.15, 1]
+                let burstGroup = CAAnimationGroup()
+                burstGroup.animations = [pos, scale, alpha]
+                burstGroup.beginTime = now + 0.22
+                burstGroup.duration = 0.30
+                burstGroup.timingFunction = easeOut
+                burstGroup.fillMode = .both
+                burstGroup.isRemovedOnCompletion = false
+                burstSpark.add(burstGroup, forKey: "impactSpark")
             }
         }
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.62) { [weak overlay] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.72) { [weak overlay] in
             overlay?.removeFromSuperview()
         }
     }

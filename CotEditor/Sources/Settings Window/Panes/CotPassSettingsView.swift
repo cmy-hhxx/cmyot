@@ -21,9 +21,8 @@
 
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
-// MARK: - License & Serial Model
+// MARK: - License & Serial Model (Preserved for Model Compatibility)
 
 nonisolated enum CotPassTier: String, Codable, Sendable, Equatable {
     
@@ -87,7 +86,7 @@ nonisolated enum CotPassLicense {
     }
     
     
-    /// Generates a deterministic-looking readable pass serial code (`COT-XXXX-V1`).
+    /// Generates a deterministic-looking readable pass serial code (`XXXX-YYV1`).
     static func generateSerialCode() -> String {
         let alphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
         let head = String((0..<4).map { _ in alphabet.randomElement()! })
@@ -97,7 +96,7 @@ nonisolated enum CotPassLicense {
 }
 
 
-// MARK: - Curated ASCII Pass Themes
+// MARK: - Curated Pass Themes & Atelier Finishes
 
 nonisolated struct CotPassTheme: Identifiable, Sendable {
     
@@ -109,132 +108,87 @@ nonisolated struct CotPassTheme: Identifiable, Sendable {
     let backgroundTopHex: String
     let backgroundBottomHex: String
     let mascotName: String
-    /// 8 columns × 6 rows pixel art bitmap (`#` = lit pixel, `.` = empty).
     let bitmap: [String]
     
     
     static let allThemes: [CotPassTheme] = [
         CotPassTheme(
             id: 0,
-            title: "EXPLORER",
-            subtitle: "BOARDING_PASS",
+            title: "松烟墨玉",
+            subtitle: "PINE_INK_EDITION",
             matrixColorHex: "#44C997",
-            accentColorHex: "#F18D80",
-            backgroundTopHex: "#0C1513",
-            backgroundBottomHex: "#111313",
-            mascotName: "Pixel Hopper",
-            bitmap: [
-                "..#..#..",
-                ".######.",
-                "##.##.##",
-                "########",
-                ".#.##.#.",
-                "#......#",
-            ]
+            accentColorHex: "#E8ECE9",
+            backgroundTopHex: "#0E1714",
+            backgroundBottomHex: "#15211D",
+            mascotName: "松烟",
+            bitmap: ["........", "........", "........", "........", "........", "........"]
         ),
         CotPassTheme(
             id: 1,
-            title: "ARCHITECT",
-            subtitle: "SYSTEM_PASS",
-            matrixColorHex: "#38BDF8",
-            accentColorHex: "#FBBF24",
-            backgroundTopHex: "#0B131E",
-            backgroundBottomHex: "#101218",
-            mascotName: "Fountain Nib",
-            bitmap: [
-                "...##...",
-                "..####..",
-                ".######.",
-                ".##..##.",
-                "..####..",
-                "...##...",
-            ]
+            title: "鎏金琥珀",
+            subtitle: "CHAMPAGNE_GOLD",
+            matrixColorHex: "#E5A93C",
+            accentColorHex: "#FDE6B8",
+            backgroundTopHex: "#16110B",
+            backgroundBottomHex: "#241B11",
+            mascotName: "鎏金",
+            bitmap: ["........", "........", "........", "........", "........", "........"]
         ),
         CotPassTheme(
             id: 2,
-            title: "CRAFTSMAN",
-            subtitle: "STUDIO_PASS",
-            matrixColorHex: "#A78BFA",
-            accentColorHex: "#34D399",
-            backgroundTopHex: "#131021",
-            backgroundBottomHex: "#121117",
-            mascotName: "Terminal Spark",
-            bitmap: [
-                "...##...",
-                ".#.###..",
-                "########",
-                "########",
-                ".#.###..",
-                "...##...",
-            ]
+            title: "电光紫罗兰",
+            subtitle: "ULTRA_VIOLET",
+            matrixColorHex: "#715CB2",
+            accentColorHex: "#E7E7E7",
+            backgroundTopHex: "#0E0E16",
+            backgroundBottomHex: "#1A172B",
+            mascotName: "紫罗兰",
+            bitmap: ["........", "........", "........", "........", "........", "........"]
         ),
         CotPassTheme(
             id: 3,
-            title: "CHRONICLER",
-            subtitle: "ARCHIVAL_PASS",
-            matrixColorHex: "#F59E0B",
-            accentColorHex: "#FB7185",
-            backgroundTopHex: "#19130A",
-            backgroundBottomHex: "#141210",
-            mascotName: "Paper Crown",
-            bitmap: [
-                "#..##..#",
-                "#.####.#",
-                "########",
-                "########",
-                ".######.",
-                "........",
-            ]
+            title: "信号绯红",
+            subtitle: "SIGNAL_CRIMSON",
+            matrixColorHex: "#D53740",
+            accentColorHex: "#EAEAEA",
+            backgroundTopHex: "#111111",
+            backgroundBottomHex: "#1D1315",
+            mascotName: "绯红",
+            bitmap: ["........", "........", "........", "........", "........", "........"]
         ),
         CotPassTheme(
             id: 4,
-            title: "OPERATOR",
-            subtitle: "TERMINAL_PASS",
-            matrixColorHex: "#10B981",
-            accentColorHex: "#E2E8F0",
-            backgroundTopHex: "#0A1410",
-            backgroundBottomHex: "#0F1211",
-            mascotName: "Signal Core",
-            bitmap: [
-                ".######.",
-                "#......#",
-                "#..##..#",
-                "#..##..#",
-                "#......#",
-                ".######.",
-            ]
+            title: "抹茶羊皮纸",
+            subtitle: "MATCHA_PARCHMENT",
+            matrixColorHex: "#5D8718",
+            accentColorHex: "#A4CE46",
+            backgroundTopHex: "#EFE6CC",
+            backgroundBottomHex: "#E7DBB8",
+            mascotName: "抹茶",
+            bitmap: ["........", "........", "........", "........", "........", "........"]
+        ),
+        CotPassTheme(
+            id: 5,
+            title: "宣白朱砂",
+            subtitle: "VERMILION_XUAN",
+            matrixColorHex: "#D14236",
+            accentColorHex: "#1C1F1E",
+            backgroundTopHex: "#F6F3EC",
+            backgroundBottomHex: "#ECE5D7",
+            mascotName: "宣白",
+            bitmap: ["........", "........", "........", "........", "........", "........"]
         ),
     ]
+    
+    
+    var isLightSurface: Bool {
+        self.id == 4 || self.id == 5
+    }
     
     
     static func resolve(index: Int) -> CotPassTheme {
         let safe = ((index % Self.allThemes.count) + Self.allThemes.count) % Self.allThemes.count
         return Self.allThemes[safe]
-    }
-    
-    
-    /// Renders a clean plaintext ASCII art representation of the Pass for clipboard sharing.
-    func asciiRepresentation(serialCode: String, holderName: String, joinedDate: String, tier: CotPassTier) -> String {
-        
-        let headerTitle = tier == .explorer ? self.title : tier.badgeTitle
-        return """
-        +----------------------------------------+
-        | COTEDITOR                 \(serialCode.padding(toLength: 12, withPad: " ", startingAt: 0)) |
-        |   · · + + + · ·   ··  + + · ·   · +    |
-        |  · + + [\(self.mascotName)] + + ·       |
-        |   · · + + · · ·   + + + · · ·   · +    |
-        +----------------------------------------+
-        | \(headerTitle)
-        | \(self.subtitle)
-        |
-        | STATUS  > [ \(tier.statusLabel) ]
-        | HOLDER  > \(holderName)
-        | JOINED  > \(joinedDate)
-        | ACCESS  > \(tier.accessLabel)
-        | ...................................... |
-        | COTEDITOR ▪ V1          WELCOME ABOARD |
-        +----------------------------------------+
-        """
     }
 }
 
@@ -243,83 +197,190 @@ nonisolated struct CotPassTheme: Identifiable, Sendable {
 
 struct CotPassSettingsView: View {
     
-    var onRequestMigrationExport: () -> Void = {}
-    
     @Environment(\.colorScheme) private var colorScheme
     
     @State private var profileManager = UserProfileManager.shared
+    @State private var analytics = AnalyticsManager.shared
+    @State private var botStore = AIBotStore.shared
     @State private var styleIndex: Int = 0
     @State private var serialCode: String = ""
-    @State private var licenseKey: String = ""
-    @State private var isLicenseSheetPresented = false
     @State private var toastMessage: String?
+    
     @State private var tiltX: Double = 0
     @State private var tiltY: Double = 0
+    @State private var hoverPoint = UnitPoint(x: 0.5, y: 0.5)
     @State private var isCardHovered = false
+    @State private var stampCount: Int = 0
+    @State private var isStamping = false
     
     
     private var theme: CotPassTheme {
         CotPassTheme.resolve(index: self.styleIndex)
     }
     
-    private var activeTier: CotPassTier {
-        CotPassLicense.validate(self.licenseKey) ?? .explorer
-    }
-    
     private var joinedText: String {
         let formatter = DateFormatter()
-        formatter.dateFormat = "dd.MM.yyyy"
+        formatter.dateFormat = "yyyy.MM.dd"
         return formatter.string(from: self.profileManager.activeProfile.createdAt)
+    }
+    
+    private var conceptBadge: String {
+        let title = self.analytics.personalityProfile?.conceptTitle.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !title.isEmpty {
+            return title
+        }
+        let lifetime = self.lifetimeTypedChars
+        if lifetime >= 50_000 { return "长卷造物者" }
+        if lifetime >= 10_000 { return "恒心执笔人" }
+        return "执笔探索者"
+    }
+    
+    private var lifetimeTypedChars: Int {
+        var total = self.analytics.todayStats.typedChars
+        let todayKey = self.analytics.todayStats.dateKey
+        for stat in self.analytics.recentDailyStats where stat.dateKey != todayKey {
+            total += stat.typedChars
+        }
+        return total
+    }
+    
+    private var enabledBotCount: Int {
+        AIBotID.allCases.filter { self.botStore.config(for: $0).isEnabled }.count
     }
     
     
     var body: some View {
-        VStack(spacing: 18) {
-            VStack(spacing: 14) {
-                CotPassCardView(
-                    theme: self.theme,
-                    serialCode: self.serialCode,
-                    holderName: self.profileManager.activeProfile.displayName,
-                    joinedText: self.joinedText,
-                    tier: self.activeTier
-                )
-                .rotation3DEffect(.degrees(self.tiltX), axis: (x: 1, y: 0, z: 0), perspective: 0.45)
-                .rotation3DEffect(.degrees(self.tiltY), axis: (x: 0, y: 1, z: 0), perspective: 0.45)
-                .scaleEffect(self.isCardHovered ? 1.012 : 1.0)
-                .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22), value: self.tiltX)
-                .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22), value: self.tiltY)
-                .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18), value: self.isCardHovered)
-                .onContinuousHover { phase in
-                    switch phase {
-                        case .active(let pt):
-                            self.isCardHovered = true
-                            let nx = ((pt.x / 280.0) - 0.5) * 2.0
-                            let ny = ((pt.y / 366.0) - 0.5) * 2.0
-                            self.tiltY = max(-7, min(7, nx * 6.5))
-                            self.tiltX = max(-7, min(7, -ny * 5.5))
-                        case .ended:
-                            self.isCardHovered = false
-                            self.tiltX = 0
-                            self.tiltY = 0
+        let daily14 = self.analytics.dailySeries(days: 14).map { Double($0.typedChars) }
+        let streakDays = self.analytics.currentWritingStreak
+        let docCount = CotLocalDatabase.shared.documents.count
+        
+        VStack(alignment: .center, spacing: 20) {
+            // Original Horizontal Engraved Atelier Colophon Card
+            CotPassCardView(
+                theme: self.theme,
+                profile: self.profileManager.activeProfile,
+                avatarImage: self.profileManager.avatarImage(for: self.profileManager.activeProfile),
+                serialCode: self.serialCode,
+                joinedText: self.joinedText,
+                conceptBadge: self.conceptBadge,
+                waveformValues: daily14,
+                lifetimeTypedChars: self.lifetimeTypedChars,
+                streakDays: streakDays,
+                docCount: docCount,
+                enabledBotCount: self.enabledBotCount,
+                specularPoint: self.hoverPoint,
+                isHovered: self.isCardHovered,
+                isStamping: self.isStamping,
+                onTapChopSeal: {
+                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                    withAnimation(.spring(response: 0.22, dampingFraction: 0.52)) {
+                        self.isStamping = true
+                        self.stampCount += 1
                     }
-                }
-                
-                HStack(spacing: 16) {
-                    PassActionIconButton(systemImage: "doc.on.doc", helpText: "复制 ASCII 通行证") {
-                        self.copyASCIIToPasteboard()
-                    }
-                    
-                    PassActionIconButton(systemImage: "arrow.down.circle", helpText: "导出高清 PNG 卡片") {
-                        self.exportPassImage()
-                    }
-                    
-                    PassActionIconButton(systemImage: "shuffle", helpText: "切换 ASCII 主题风格") {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) {
-                            self.styleIndex = (self.styleIndex + 1) % CotPassTheme.allThemes.count
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+                        withAnimation(.spring(response: 0.30, dampingFraction: 0.72)) {
+                            self.isStamping = false
                         }
-                        CotLocalDatabase.shared.set("\(self.styleIndex)", forKey: CotLocalDatabase.ConfigKey.cotPassStyleIndex)
+                    }
+                    self.showToast(AppLanguage.text("✓ 朱砂藏书印已钤落 (#\(self.stampCount))", en: "✓ Studio Chop Stamped (#\(self.stampCount))"))
+                }
+            )
+            .rotation3DEffect(.degrees(self.tiltX), axis: (x: 1, y: 0, z: 0), perspective: 0.55)
+            .rotation3DEffect(.degrees(self.tiltY), axis: (x: 0, y: 1, z: 0), perspective: 0.55)
+            .scaleEffect(self.isCardHovered ? 1.015 : 1.0)
+            .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22), value: self.tiltX)
+            .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22), value: self.tiltY)
+            .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18), value: self.isCardHovered)
+            .onContinuousHover { phase in
+                switch phase {
+                    case .active(let pt):
+                        self.isCardHovered = true
+                        let ux = max(0, min(1, pt.x / 396.0))
+                        let uy = max(0, min(1, pt.y / 234.0))
+                        self.hoverPoint = UnitPoint(x: ux, y: uy)
+                        let nx = (ux - 0.5) * 2.0
+                        let ny = (uy - 0.5) * 2.0
+                        self.tiltY = max(-6.5, min(6.5, nx * 6.0))
+                        self.tiltX = max(-6.5, min(6.5, -ny * 5.0))
+                    case .ended:
+                        self.isCardHovered = false
+                        self.tiltX = 0
+                        self.tiltY = 0
+                        self.hoverPoint = UnitPoint(x: 0.5, y: 0.5)
+                }
+            }
+            
+            // Material Finish Selector Card
+            VStack(alignment: .leading, spacing: 7) {
+                Text("铭牌材质")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 3)
+                
+                HStack(spacing: 6) {
+                    ForEach(CotPassTheme.allThemes) { option in
+                        let isSelected = (option.id == self.theme.id)
+                        Button {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.80)) {
+                                self.styleIndex = option.id
+                            }
+                            CotLocalDatabase.shared.set("\(option.id)", forKey: CotLocalDatabase.ConfigKey.cotPassStyleIndex)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .fill(Color(hexString: option.matrixColorHex))
+                                    .frame(width: 8, height: 8)
+                                    .overlay(
+                                        Circle()
+                                            .strokeBorder(Color(hexString: option.backgroundTopHex), lineWidth: 1)
+                                    )
+                                
+                                Text(option.mascotName)
+                                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                                    .foregroundStyle(isSelected ? .primary : .secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 30)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(isSelected ? Color.primary.opacity(self.colorScheme == .dark ? 0.14 : 0.08) : Color.clear)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .strokeBorder(isSelected ? Color(hexString: option.matrixColorHex).opacity(0.65) : Color.clear, lineWidth: 1)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
                     }
                 }
+                .padding(6)
+                .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(self.cardBorder, lineWidth: 1)
+                )
+            }
+            
+            // Single Genuine Plain-Text Colophon Copy Action
+            HStack(spacing: 12) {
+                Button {
+                    self.copyPlainColophon()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 12, weight: .medium))
+                        Text(AppLanguage.text("复制手稿落款", en: "Copy Colophon Signature"))
+                            .font(.system(size: 12.5, weight: .medium))
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 32)
+                    .background(self.cardSurface, in: Capsule())
+                    .overlay(Capsule().strokeBorder(self.cardBorder, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
                 
                 if let toastMessage = self.toastMessage {
                     Text(toastMessage)
@@ -328,94 +389,10 @@ struct CotPassSettingsView: View {
                         .transition(.opacity)
                 }
             }
-            .padding(.top, 4)
-            
-            // Grouped Action Rows below card (matching reference layout)
-            VStack(spacing: 0) {
-                Button {
-                    self.isLicenseSheetPresented = true
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "key")
-                            .font(.system(size: 13.5, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 20)
-                        
-                        Text("License 与设备")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.primary)
-                        
-                        Spacer()
-                        
-                        Text(self.activeTier == .explorer ? "1/1" : "3/3")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                        
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.horizontal, 14)
-                    .frame(height: 44)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                
-                Divider()
-                    .padding(.leading, 44)
-                
-                Button {
-                    self.onRequestMigrationExport()
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 13.5, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 20)
-                        
-                        Text("再加一台 Mac")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.primary)
-                        
-                        Spacer()
-                        
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.horizontal, 14)
-                    .frame(height: 44)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-            }
-            .frame(maxWidth: 460)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(self.cardSurface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(self.cardBorder, lineWidth: 1)
-            )
         }
         .frame(maxWidth: .infinity)
         .onAppear {
             self.loadPassState()
-        }
-        .sheet(isPresented: self.$isLicenseSheetPresented) {
-            CotPassLicenseSheet(
-                licenseKey: self.$licenseKey,
-                activeTier: self.activeTier,
-                serialCode: self.serialCode
-            ) { newKey in
-                let trimmed = newKey.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-                self.licenseKey = trimmed
-                CotLocalDatabase.shared.set(trimmed, forKey: CotLocalDatabase.ConfigKey.cotPassLicenseKey)
-            }
         }
     }
     
@@ -443,58 +420,21 @@ struct CotPassSettingsView: View {
         } else {
             self.serialCode = storedSerial
         }
-        
-        self.licenseKey = db.string(forKey: CotLocalDatabase.ConfigKey.cotPassLicenseKey)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     
-    private func copyASCIIToPasteboard() {
-        let text = self.theme.asciiRepresentation(
-            serialCode: self.serialCode,
-            holderName: self.profileManager.activeProfile.displayName,
-            joinedDate: self.joinedText,
-            tier: self.activeTier
-        )
+    private func copyPlainColophon() {
+        let name = self.profileManager.activeProfile.displayName
+        let chars = self.lifetimeTypedChars.formatted(.number.grouping(.automatic))
+        let streak = self.analytics.currentWritingStreak
+        let text = """
+        「\(name) · \(self.conceptBadge)」
+        累计手写 \(chars) 字 · 连续执笔 \(streak) 天 · 手稿 \(CotLocalDatabase.shared.documents.count) 篇
+        COTEDITOR ATELIER · NO. \(self.serialCode) · SINCE \(self.joinedText)
+        """
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        self.showToast("已复制 ASCII 通行证到剪贴板")
-    }
-    
-    
-    private func exportPassImage() {
-        let card = CotPassCardView(
-            theme: self.theme,
-            serialCode: self.serialCode,
-            holderName: self.profileManager.activeProfile.displayName,
-            joinedText: self.joinedText,
-            tier: self.activeTier
-        )
-        .padding(20)
-        .background(Color(hexString: self.theme.backgroundBottomHex))
-        
-        let renderer = ImageRenderer(content: card)
-        renderer.scale = 2.0
-        guard let nsImage = renderer.nsImage,
-              let tiff = nsImage.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let pngData = rep.representation(using: .png, properties: [:])
-        else { return }
-        
-        let savePanel = NSSavePanel()
-        savePanel.allowedContentTypes = [.png]
-        savePanel.nameFieldStringValue = "CotEditor-Pass-\(self.serialCode).png"
-        savePanel.begin { response in
-            guard response == .OK, let url = savePanel.url else { return }
-            Task { @MainActor in
-                do {
-                    try pngData.write(to: url, options: .atomic)
-                    self.showToast("已保存 PNG 到 \(url.lastPathComponent)")
-                } catch {
-                    self.showToast("导出失败：\(error.localizedDescription)")
-                }
-            }
-        }
+        self.showToast("✓ 已复制纯文本签名")
     }
     
     
@@ -503,7 +443,7 @@ struct CotPassSettingsView: View {
             self.toastMessage = message
         }
         Task {
-            try? await Task.sleep(for: .seconds(2.2))
+            try? await Task.sleep(for: .seconds(2.0))
             await MainActor.run {
                 if self.toastMessage == message {
                     withAnimation(.easeOut(duration: 0.2)) {
@@ -516,322 +456,291 @@ struct CotPassSettingsView: View {
 }
 
 
-// MARK: - Boarding Pass Card View
+// MARK: - Original Horizontal Atelier Colophon Card
 
 struct CotPassCardView: View {
     
     let theme: CotPassTheme
+    let profile: UserProfile
+    let avatarImage: NSImage?
     let serialCode: String
-    let holderName: String
     let joinedText: String
-    let tier: CotPassTier
+    let conceptBadge: String
+    let waveformValues: [Double]
+    let lifetimeTypedChars: Int
+    let streakDays: Int
+    let docCount: Int
+    let enabledBotCount: Int
+    var specularPoint: UnitPoint = UnitPoint(x: 0.5, y: 0.5)
+    var isHovered: Bool = false
+    var isStamping: Bool = false
+    var onTapChopSeal: (() -> Void)? = nil
     
     
     var body: some View {
-        let matrixColor = Color(hexString: self.theme.matrixColorHex)
-        let accentColor = Color(hexString: self.theme.accentColorHex)
+        let accent = Color(hexString: self.theme.matrixColorHex)
+        let secondaryInk = Color(hexString: self.theme.accentColorHex)
         let topBg = Color(hexString: self.theme.backgroundTopHex)
         let bottomBg = Color(hexString: self.theme.backgroundBottomHex)
+        let primaryText: Color = self.theme.isLightSurface ? Color(red: 0.10, green: 0.11, blue: 0.10) : Color.white
+        let mutedText: Color = self.theme.isLightSurface ? Color.black.opacity(0.52) : Color.white.opacity(0.50)
+        let dividerStroke: Color = self.theme.isLightSurface ? Color.black.opacity(0.09) : Color.white.opacity(0.11)
+        let badgeInk: Color = (self.theme.id == 4) ? Color(red: 0.08, green: 0.08, blue: 0.08) : (self.theme.isLightSurface ? .white : .black.opacity(0.88))
+        let badgeFill: Color = (self.theme.id == 4) ? Color(hexString: self.theme.accentColorHex) : accent
         
-        VStack(alignment: .leading, spacing: 0) {
-            // Upper ASCII topographic matrix + Pixel Mascot
-            ZStack(alignment: .top) {
-                LinearGradient(colors: [topBg, bottomBg], startPoint: .top, endPoint: .bottom)
-                
-                ASCIITopographyCanvas(seed: self.theme.id, tint: matrixColor)
-                
-                // Top Bar
-                HStack {
-                    Text("COTEDITOR")
-                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                        .tracking(1.6)
-                        .foregroundStyle(matrixColor)
-                    Spacer()
-                    Text(self.serialCode)
-                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.45))
-                }
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
-                
-                // Center Pixel Mascot
-                PixelMascotView(bitmap: self.theme.bitmap, color: accentColor)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    .padding(.top, 18)
-            }
-            .frame(height: 168)
-            .clipped()
+        ZStack {
+            // Material metallic/paper gradient surface
+            LinearGradient(colors: [topBg, bottomBg], startPoint: .topLeading, endPoint: .bottomTrailing)
             
-            Rectangle()
-                .fill(matrixColor.opacity(0.18))
-                .frame(height: 1)
+            // Live 14-day keystroke ink-waveform guilloché seal
+            InkWaveformSealCanvas(
+                values: self.waveformValues,
+                accent: accent,
+                isLightSurface: self.theme.isLightSurface
+            )
             
-            // Lower Terminal Metadata Block
+            // Letterpress inner registration frame & micro corner L-marks
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(dividerStroke, lineWidth: 0.75)
+                .padding(8)
+                .allowsHitTesting(false)
+            
+            // Cursor-tracking diagonal specular foil gleam
+            RadialGradient(
+                colors: [
+                    (self.theme.isLightSurface ? Color.white : accent).opacity(self.isHovered ? 0.22 : 0.07),
+                    .clear,
+                ],
+                center: self.specularPoint,
+                startRadius: 10,
+                endRadius: 240
+            )
+            .allowsHitTesting(false)
+            
             VStack(alignment: .leading, spacing: 0) {
-                Text(self.tier == .explorer ? self.theme.title : self.tier.badgeTitle)
-                    .font(.system(size: 20, weight: .heavy, design: .monospaced))
-                    .foregroundStyle(accentColor)
-                    .lineLimit(1)
-                
-                Text(self.theme.subtitle)
-                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                    .tracking(2.0)
-                    .foregroundStyle(Color.white.opacity(0.42))
-                    .padding(.top, 2)
-                
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 10) {
-                        Text("STATUS")
-                            .frame(width: 50, alignment: .leading)
-                            .foregroundStyle(Color.white.opacity(0.42))
-                        Text(">")
-                            .foregroundStyle(Color.white.opacity(0.32))
-                        Text(self.tier.statusLabel)
-                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color.black.opacity(0.88))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1.5)
-                            .background(accentColor, in: RoundedRectangle(cornerRadius: 2, style: .continuous))
+                // Top Engraved Header Seal
+                HStack(alignment: .center) {
+                    HStack(spacing: 6) {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(accent)
+                            .frame(width: 6, height: 6)
+                        Text(AppLanguage.text("手稿藏书铭牌", en: "COTEDITOR ATELIER"))
+                            .font(.system(size: 10.5, weight: .bold))
+                            .tracking(1.4)
+                            .foregroundStyle(accent)
                     }
                     
-                    PassMetaRow(label: "HOLDER", value: self.holderName, valueColor: Color.white.opacity(0.86))
-                    PassMetaRow(label: "JOINED", value: self.joinedText, valueColor: accentColor.opacity(0.9))
-                    PassMetaRow(label: "ACCESS", value: self.tier.accessLabel, valueColor: accentColor.opacity(0.9))
+                    Spacer()
+                    
+                    Text("\(AppLanguage.text("编号", en: "NO.")) \(self.serialCode)  ·  \(self.joinedText)")
+                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(mutedText)
                 }
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .padding(.top, 16)
                 
                 Spacer(minLength: 10)
                 
-                // Perforated ASCII dotted rule
-                Text(String(repeating: "·", count: 38))
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.18))
-                    .lineLimit(1)
-                
-                HStack {
-                    Text("COTEDITOR ▪ V1")
-                    Spacer()
-                    Text("WELCOME ABOARD")
+                // Center Identity Row
+                HStack(alignment: .center, spacing: 14) {
+                    UserAvatarCircleView(profile: self.profile, size: 48, customImage: self.avatarImage)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(accent.opacity(0.80), lineWidth: 1.5)
+                        )
+                        .shadow(color: accent.opacity(0.28), radius: 8, y: 2)
+                    
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(self.profile.displayName)
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(primaryText)
+                            .lineLimit(1)
+                        
+                        HStack(spacing: 6) {
+                            Text(self.conceptBadge)
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(badgeInk)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2.5)
+                                .background(badgeFill, in: Capsule())
+                            
+                            Text(self.theme.title)
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(secondaryInk.opacity(0.85))
+                        }
+                    }
+                    
+                    Spacer(minLength: 4)
+                    
+                    // Interactive carved cinnabar studio chop seal ("墨")
+                    Button {
+                        self.onTapChopSeal?()
+                    } label: {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color(red: 0.78, green: 0.21, blue: 0.18).opacity(0.92))
+                                .frame(width: 30, height: 30)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                                        .strokeBorder(Color(red: 0.99, green: 0.95, blue: 0.88).opacity(0.55), lineWidth: 0.8)
+                                        .padding(2.5)
+                                )
+                            
+                            Text("墨")
+                                .font(.system(size: 14, weight: .black, design: .serif))
+                                .foregroundStyle(Color(red: 0.99, green: 0.96, blue: 0.90))
+                        }
+                        .rotationEffect(.degrees(self.isStamping ? -8 : 3))
+                        .scaleEffect(self.isStamping ? 0.84 : 1.0)
+                        .shadow(color: Color(red: 0.78, green: 0.21, blue: 0.18).opacity(0.35), radius: 6, y: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(AppLanguage.text("点击钤印藏书印章", en: "Stamp Atelier Seal"))
                 }
-                .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                .tracking(1.0)
-                .foregroundStyle(Color.white.opacity(0.38))
-                .padding(.top, 8)
+                
+                Spacer(minLength: 12)
+                
+                // Engraved Hairline Rule
+                Rectangle()
+                    .fill(dividerStroke)
+                    .frame(height: 1)
+                    .padding(.bottom, 12)
+                
+                // Bottom 4 Live Studio Telemetry Counters
+                HStack(spacing: 0) {
+                    self.metricCell(
+                        label: "累计手写",
+                        value: Self.compactChars(self.lifetimeTypedChars),
+                        primary: primaryText,
+                        muted: mutedText
+                    )
+                    self.metricCell(
+                        label: "连续执笔",
+                        value: "\(self.streakDays) 天",
+                        primary: primaryText,
+                        muted: mutedText
+                    )
+                    self.metricCell(
+                        label: "手稿馆藏",
+                        value: "\(self.docCount) 篇",
+                        primary: primaryText,
+                        muted: mutedText
+                    )
+                    self.metricCell(
+                        label: "在线智能体",
+                        value: "\(self.enabledBotCount) 席",
+                        primary: primaryText,
+                        muted: mutedText
+                    )
+                }
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 14)
-            .padding(.bottom, 12)
-            .background(bottomBg)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 18)
         }
-        .frame(width: 280, height: 366)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .frame(width: 396, height: 234)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(matrixColor.opacity(0.28), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(accent.opacity(self.isHovered ? 0.55 : 0.30), lineWidth: 1)
         )
-        .shadow(color: Color.black.opacity(0.28), radius: 20, y: 10)
+        .shadow(color: Color.black.opacity(self.theme.isLightSurface ? 0.14 : 0.30), radius: 18, y: 8)
     }
-}
-
-
-private struct PassMetaRow: View {
     
-    let label: String
-    let value: String
-    let valueColor: Color
     
-    var body: some View {
-        HStack(spacing: 10) {
-            Text(self.label)
-                .frame(width: 50, alignment: .leading)
-                .foregroundStyle(Color.white.opacity(0.42))
-            Text(">")
-                .foregroundStyle(Color.white.opacity(0.32))
-            Text(self.value)
-                .foregroundStyle(self.valueColor)
+    private func metricCell(label: String, value: String, primary: Color, muted: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(muted)
+            Text(value)
+                .font(.system(size: 13.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(primary)
                 .lineLimit(1)
-                .truncationMode(.tail)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    
+    
+    private static func compactChars(_ count: Int) -> String {
+        if count >= 10_000 {
+            return String(format: "%.1f万", Double(count) / 10_000.0)
+        }
+        return "\(count) 字"
     }
 }
 
 
-private struct ASCIITopographyCanvas: View {
+/// Draws fine guilloché seal rings and a 14-day writing waveform shaped by the user's actual keystrokes.
+private struct InkWaveformSealCanvas: View {
     
-    let seed: Int
-    let tint: Color
+    let values: [Double]
+    let accent: Color
+    let isLightSurface: Bool
     
     
     var body: some View {
         Canvas { context, size in
-            let cols = 30
-            let rows = 15
-            let stepX = size.width / CGFloat(cols)
-            let stepY = size.height / CGFloat(rows)
+            // 1. Concentric guilloché seal rings anchored to upper-right studio emblem
+            let sealCenter = CGPoint(x: size.width - 54, y: 66)
+            for idx in 0..<5 {
+                let radius = CGFloat(22 + idx * 12)
+                let ringRect = CGRect(
+                    x: sealCenter.x - radius,
+                    y: sealCenter.y - radius,
+                    width: radius * 2,
+                    height: radius * 2
+                )
+                context.stroke(
+                    Path(ellipseIn: ringRect),
+                    with: .color(self.accent.opacity(self.isLightSurface ? 0.10 : 0.12 - Double(idx) * 0.015)),
+                    lineWidth: 0.8
+                )
+            }
             
-            for r in 0..<rows {
-                for c in 0..<cols {
-                    let fx = Double(c) * 0.34 + Double(self.seed) * 1.17
-                    let fy = Double(r) * 0.42 + Double(self.seed) * 0.83
-                    let wave = (sin(fx) * cos(fy) + sin((fx + fy) * 0.65) + 2.0) / 4.0
-                    let dx = abs(Double(c) - Double(cols - 1) / 2.0)
-                    let dy = abs(Double(r) - Double(rows - 1) / 2.0)
-                    let centerClear = hypot(dx, dy * 1.4) < 3.4
-                    guard !centerClear else { continue }
-                    
-                    let pt = CGPoint(x: (CGFloat(c) + 0.5) * stepX, y: (CGFloat(r) + 0.5) * stepY)
-                    if wave > 0.62 {
-                        let glyph = context.resolve(
-                            Text("+")
-                                .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(self.tint.opacity(0.72))
-                        )
-                        context.draw(glyph, at: pt)
-                    } else if wave > 0.42 {
-                        let glyph = context.resolve(
-                            Text("·")
-                                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                                .foregroundStyle(self.tint.opacity(0.36))
-                        )
-                        context.draw(glyph, at: pt)
-                    } else if wave > 0.25 {
-                        let dotRect = CGRect(x: pt.x - 0.8, y: pt.y - 0.8, width: 1.6, height: 1.6)
-                        context.fill(Path(ellipseIn: dotRect), with: .color(self.tint.opacity(0.16)))
-                    }
+            // 2. Real 14-day keystroke ribbon curve across the middle-right field
+            let samples = self.values.isEmpty ? Array(repeating: 0.0, count: 14) : self.values
+            let peak = max(120.0, samples.max() ?? 120.0)
+            let baselineY = size.height * 0.62
+            let startX: CGFloat = size.width * 0.44
+            let widthSpan = size.width - startX - 20
+            let stepX = widthSpan / CGFloat(max(1, samples.count - 1))
+            
+            var wavePath = Path()
+            var points: [CGPoint] = []
+            for (index, val) in samples.enumerated() {
+                let norm = max(0.05, min(1.0, val / peak))
+                let x = startX + CGFloat(index) * stepX
+                let y = baselineY - CGFloat(norm) * 34
+                points.append(CGPoint(x: x, y: y))
+            }
+            
+            if let first = points.first {
+                wavePath.move(to: first)
+                for idx in 1..<points.count {
+                    let prev = points[idx - 1]
+                    let curr = points[idx]
+                    let midX = (prev.x + curr.x) * 0.5
+                    wavePath.addCurve(
+                        to: curr,
+                        control1: CGPoint(x: midX, y: prev.y),
+                        control2: CGPoint(x: midX, y: curr.y)
+                    )
+                }
+                context.stroke(
+                    wavePath,
+                    with: .color(self.accent.opacity(self.isLightSurface ? 0.42 : 0.48)),
+                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
+                )
+                
+                for (idx, pt) in points.enumerated() {
+                    let r: CGFloat = (idx == points.count - 1) ? 2.6 : 1.5
+                    let dotRect = CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2)
+                    context.fill(
+                        Path(ellipseIn: dotRect),
+                        with: .color(self.accent.opacity(idx == points.count - 1 ? 0.90 : 0.45))
+                    )
                 }
             }
         }
         .allowsHitTesting(false)
-    }
-}
-
-
-private struct PixelMascotView: View {
-    
-    let bitmap: [String]
-    let color: Color
-    
-    
-    var body: some View {
-        let pixel: CGFloat = 3.2
-        VStack(spacing: 0.6) {
-            ForEach(Array(self.bitmap.enumerated()), id: \.offset) { rowIndex, row in
-                HStack(spacing: 0.6) {
-                    ForEach(Array(row.enumerated()), id: \.offset) { colIndex, ch in
-                        let isEye = (rowIndex == 2 && (colIndex == 2 || colIndex == 5)) && ch == "."
-                        Rectangle()
-                            .fill(ch == "#" ? self.color : (isEye ? Color.black.opacity(0.85) : Color.clear))
-                            .frame(width: pixel, height: pixel)
-                    }
-                }
-            }
-        }
-        .padding(7)
-        .background(Color.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .shadow(color: self.color.opacity(0.35), radius: 8)
-    }
-}
-
-
-private struct PassActionIconButton: View {
-    
-    let systemImage: String
-    let helpText: String
-    let action: () -> Void
-    
-    @State private var isHovered = false
-    
-    var body: some View {
-        Button(action: self.action) {
-            Image(systemName: self.systemImage)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(self.isHovered ? .primary : .secondary)
-                .frame(width: 30, height: 30)
-                .background(
-                    Circle().fill(self.isHovered ? Color.primary.opacity(0.08) : Color.clear)
-                )
-        }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-        .help(self.helpText)
-        .onHover { self.isHovered = $0 }
-    }
-}
-
-
-// MARK: - License Sheet
-
-private struct CotPassLicenseSheet: View {
-    
-    @Environment(\.dismiss) private var dismiss
-    @Binding var licenseKey: String
-    let activeTier: CotPassTier
-    let serialCode: String
-    let onSaveKey: (String) -> Void
-    
-    @State private var draftKey: String = ""
-    @State private var validationMessage: String?
-    
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("License 与设备")
-                    .font(.headline)
-                Spacer()
-                Text(self.activeTier.badgeTitle)
-                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color.accentColor.opacity(0.14), in: Capsule())
-                    .foregroundStyle(Color.accentColor)
-            }
-            
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    TextField("COT-PRO-2026-PASS", text: self.$draftKey)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12.5, design: .monospaced))
-                    
-                    Button("激活") {
-                        if let tier = CotPassLicense.validate(self.draftKey) {
-                            self.onSaveKey(self.draftKey)
-                            self.validationMessage = "✓ 已激活 \(tier.badgeTitle)"
-                        } else {
-                            self.validationMessage = "无效授权码"
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(self.draftKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                
-                if let validationMessage = self.validationMessage {
-                    Text(validationMessage)
-                        .font(.caption)
-                        .foregroundStyle(validationMessage.hasPrefix("✓") ? Color.green : Color.orange)
-                }
-            }
-            
-            HStack {
-                if self.activeTier != .explorer {
-                    Button("停用授权", role: .destructive) {
-                        self.draftKey = ""
-                        self.onSaveKey("")
-                        self.validationMessage = "已恢复 Explorer 档位"
-                    }
-                }
-                Spacer()
-                Button("完成") {
-                    self.dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(width: 440)
-        .onAppear {
-            self.draftKey = self.licenseKey
-        }
     }
 }

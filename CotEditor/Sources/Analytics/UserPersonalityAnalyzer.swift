@@ -101,6 +101,23 @@ nonisolated enum UserPersonalityAnalyzer {
     }
     
     
+    /// Deduplicates personality tags by normalized label so orbital danmaku never shows repeat pills.
+    static func deduplicatedTags(_ tags: [UserPersonalityTag], maxCount: Int = 8) -> [UserPersonalityTag] {
+        var result: [UserPersonalityTag] = []
+        var seen = Set<String>()
+        for tag in tags {
+            let cleanLabel = Self.clampTagLabel(tag.label)
+            let key = cleanLabel.lowercased()
+            guard !cleanLabel.isEmpty, seen.insert(key).inserted else { continue }
+            var normalizedTag = tag
+            normalizedTag.label = cleanLabel
+            result.append(normalizedTag)
+            if result.count >= maxCount { break }
+        }
+        return result
+    }
+    
+    
     /// Determines whether the automatic 6-hour background personality refresh should execute now.
     static func shouldAutoRun(
         now: Date = Date(),
@@ -169,7 +186,8 @@ nonisolated enum UserPersonalityAnalyzer {
             for entry in rawTags {
                 let rawLabel = (entry["label"] as? String) ?? ""
                 let clampedLabel = Self.clampTagLabel(rawLabel)
-                guard !clampedLabel.isEmpty, seenLabels.insert(clampedLabel).inserted else { continue }
+                let normKey = clampedLabel.lowercased()
+                guard !clampedLabel.isEmpty, seenLabels.insert(normKey).inserted else { continue }
                 
                 let explanation = AIDocumentTextCleaner.clean((entry["explanation"] as? String) ?? "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -186,7 +204,8 @@ nonisolated enum UserPersonalityAnalyzer {
         } else if let stringTags = obj["tags"] as? [String] {
             for rawLabel in stringTags {
                 let clampedLabel = Self.clampTagLabel(rawLabel)
-                guard !clampedLabel.isEmpty, seenLabels.insert(clampedLabel).inserted else { continue }
+                let normKey = clampedLabel.lowercased()
+                guard !clampedLabel.isEmpty, seenLabels.insert(normKey).inserted else { continue }
                 parsedTags.append(UserPersonalityTag(
                     label: clampedLabel,
                     explanation: "从近期文本与表达习惯中捕捉到的高频特质。",
@@ -330,7 +349,7 @@ nonisolated enum UserPersonalityAnalyzer {
         let summary = "你写东西喜欢直奔重点，不爱堆砌客套话；习惯把零散的念头一条条理清，既有自己的节奏，也很在意细节的舒坦感。"
         
         return UserPersonalityProfile(
-            tags: Array(tags.prefix(7)),
+            tags: Self.deduplicatedTags(tags, maxCount: 7),
             conceptTitle: title,
             conceptSummary: summary,
             writingStyleNotes: Array(notes.prefix(3)),

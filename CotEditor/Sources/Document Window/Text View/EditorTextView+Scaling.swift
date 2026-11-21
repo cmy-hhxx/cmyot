@@ -32,6 +32,10 @@ extension EditorTextView: TextSizeChanging {
     /// Changes scale by pinch gesture.
     override func magnify(with event: NSEvent) {
         
+        if self.handleInlineImageMagnify(with: event) {
+            return
+        }
+        
         if event.phase.contains(.began) {
             self.deferredMagnification = 0
             self.initialMagnificationScale = self.scale

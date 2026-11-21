@@ -318,9 +318,9 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
     }
     
     
-    // MARK: Private Methods
+    // MARK: Inline Image Layout Invalidation
     
-    private func invalidateInlineImageLayout() {
+    func invalidateInlineImageLayout() {
         
         let wholeRange = self.attributedString().range
         if wholeRange.length > 0 {
@@ -329,6 +329,9 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
         self.invalidateLayout(forCharacterRange: wholeRange, actualCharacterRange: nil)
         self.invalidateDisplay(forCharacterRange: wholeRange)
     }
+    
+    
+    // MARK: Private Methods
     
     
     private func invalidateLineDisplay(around charLocation: Int?) {
@@ -388,12 +391,14 @@ extension LayoutManager: NSLayoutManagerDelegate {
                 let lineSubstring = string.substring(with: safeRange)
                 if lineSubstring.contains("⟦🖼"), lineSubstring.contains("⟧") {
                     let tokens = PlainTextInlineImageStore.shared.findTokens(in: string, range: safeRange)
-                    let maxCardWidth = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: lineFragmentRect.pointee.width, glyphX: 0)
+                    let containerW = textContainer.size.width > 0 ? textContainer.size.width : lineFragmentRect.pointee.width
+                    let maxCardWidth = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: containerW, glyphX: 0)
                     for token in tokens {
                         if let size = PlainTextInlineImageStore.shared.cardSize(
                             for: token.identifier,
                             documentURL: self.inlineImageDocumentURL,
-                            maxImageWidth: maxCardWidth
+                            maxImageWidth: maxCardWidth,
+                            containerWidth: containerW
                         ) {
                             tallestCard = max(tallestCard, size.height)
                         }
@@ -433,10 +438,11 @@ extension LayoutManager: NSLayoutManagerDelegate {
            let cardSize = PlainTextInlineImageStore.shared.cardSize(
                for: token.identifier,
                documentURL: self.inlineImageDocumentURL,
-               maxImageWidth: PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: proposedRect.width, glyphX: glyphPosition.x)
+               maxImageWidth: PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: proposedRect.width, glyphX: glyphPosition.x),
+               containerWidth: textContainer.size.width
            )
         {
-            return NSRect(x: 0, y: 0, width: cardSize.width + 4, height: self.lineHeight)
+            return NSRect(x: 0, y: 0, width: min(cardSize.width + 4, max(40, proposedRect.width - glyphPosition.x - 4)), height: self.lineHeight)
         }
         
         return self.boundingBoxForControlGlyph

@@ -48,19 +48,22 @@ enum AppLanguage: String, CaseIterable, Sendable {
     }
     
     
-    /// Reads the configured language from `defaults`, defaulting to Simplified Chinese.
+    /// Reads the configured language from `defaults`, always defaulting to Simplified Chinese
+    /// unless the user explicitly selected English in Settings.
     static func current(in defaults: UserDefaults) -> AppLanguage {
         
         if let explicit = defaults.string(forKey: Self.explicitPreferenceKey) {
             return explicit.lowercased().hasPrefix("en") ? .english : .simplifiedChinese
         }
         
-        if let appleLang = defaults.stringArray(forKey: "AppleLanguages")?.first?.lowercased() {
-            if appleLang.hasPrefix("en") { return .english }
-            if appleLang.hasPrefix("zh") { return .simplifiedChinese }
-        }
-        
         return .simplifiedChinese
+    }
+    
+    
+    /// Returns the Simplified Chinese string by default, or English only when explicitly selected in Settings.
+    static func text(_ zh: String, en: String) -> String {
+        
+        self.current == .english ? en : zh
     }
     
     

@@ -23,13 +23,54 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
+/// Stepless user customization transform (zoom, free X/Y offset, rotation) for an inline image.
+nonisolated struct InlineImageTransform: Codable, Equatable, Sendable {
+    
+    var scale: CGFloat = 1.0          // 0.15 ... 4.0 (stepless)
+    var offsetX: CGFloat = 0.0        // Horizontal offset inside editor canvas
+    var offsetY: CGFloat = 0.0        // Extra top padding (0 ... 240)
+    var rotationDegrees: CGFloat = 0  // Stepless angle (-180 ... +180)
+    
+    var isIdentity: Bool {
+        abs(self.scale - 1.0) < 0.001 &&
+        abs(self.offsetX) < 0.5 &&
+        abs(self.offsetY) < 0.5 &&
+        abs(self.rotationDegrees) < 0.1
+    }
+    
+    static let identity = InlineImageTransform()
+    
+    func clamped() -> InlineImageTransform {
+        var copy = self
+        copy.scale = max(0.15, min(4.0, self.scale))
+        copy.offsetX = max(-1200, min(1200, self.offsetX))
+        copy.offsetY = max(0, min(240, self.offsetY))
+        var deg = self.rotationDegrees.truncatingRemainder(dividingBy: 360)
+        if deg > 180 { deg -= 360 }
+        if deg < -180 { deg += 360 }
+        copy.rotationDegrees = deg
+        return copy
+    }
+}
+
+
+/// Computed unrotated image draw size, rotated bounding box, and card size for layout & drawing.
+nonisolated struct InlineImageDisplayGeometry: Equatable, Sendable {
+    
+    let drawSize: NSSize
+    let rotatedBoxSize: NSSize
+    let cardSize: NSSize
+    let transform: InlineImageTransform
+}
+
+
 /// Manages images embedded inside a Plain Text document (`SyntaxName.none`).
 ///
 /// The text file stays 100% pure plain text by storing a compact token `⟦🖼 <filename>⟧`
 /// while the image file itself lives in a hidden `.cot-assets/` folder beside the document
 /// (or in `~/Library/Application Support/Cot/InlineImages/` for untitled documents).
-/// In the editor, `EditorTextView` and `LayoutManager` render a sleek inline thumbnail card
-/// right under the line containing the token.
+/// In the editor, `EditorTextView` and `LayoutManager` render a sleek inline card right under
+/// the line containing the token, supporting stepless zoom, position offset, and rotation.
 nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     
     static let shared = PlainTextInlineImageStore()
@@ -48,6 +89,7 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     private let lock = NSLock()
     private var imageCache: [String: NSImage] = [:]
     private var imageSizeCache: [String: NSSize] = [:]
+    private var transformsByFolder: [String: [String: InlineImageTransform]] = [:]
     
     
     /// Extracts an image from the pasteboard for `Cmd+V` pasting, handling screenshots,
@@ -158,13 +200,17 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
         for token in tokens {
             let sourceURL = globalFolder.appending(path: token.identifier)
             let destURL = docFolder.appending(path: token.identifier)
-            guard
-                FileManager.default.fileExists(atPath: sourceURL.path),
-                !FileManager.default.fileExists(atPath: destURL.path)
-            else { continue }
+            if FileManager.default.fileExists(atPath: sourceURL.path),
+               !FileManager.default.fileExists(atPath: destURL.path)
+            {
+                try? FileManager.default.createDirectory(at: docFolder, withIntermediateDirectories: true)
+                try? FileManager.default.copyItem(at: sourceURL, to: destURL)
+            }
             
-            try? FileManager.default.createDirectory(at: docFolder, withIntermediateDirectories: true)
-            try? FileManager.default.copyItem(at: sourceURL, to: destURL)
+            let globalTransform = self.transform(for: token.identifier, documentURL: nil)
+            if !globalTransform.isIdentity {
+                self.setTransform(globalTransform, for: token.identifier, documentURL: documentURL)
+            }
         }
     }
     
@@ -282,13 +328,56 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     }
     
     
-    /// Returns the scaled card size (including padding) for an inline image token, or `nil` if unresolved.
-    func cardSize(
+    /// Returns the persisted stepless transform for an image token, defaulting to `.identity`.
+    func transform(for identifier: String, documentURL: URL?) -> InlineImageTransform {
+        
+        let folder = self.assetsFolder(for: documentURL)
+        let folderKey = folder.path
+        return self.lock.withLock {
+            if let cachedMap = self.transformsByFolder[folderKey] {
+                return cachedMap[identifier] ?? .identity
+            }
+            let loaded = self.loadTransformMap(in: folder)
+            self.transformsByFolder[folderKey] = loaded
+            return loaded[identifier] ?? .identity
+        }
+    }
+    
+    
+    /// Persists a stepless transform (scale, offsetX/Y, rotation) for an image token.
+    func setTransform(_ transform: InlineImageTransform, for identifier: String, documentURL: URL?) {
+        
+        let clamped = transform.clamped()
+        let folder = self.assetsFolder(for: documentURL)
+        let folderKey = folder.path
+        
+        let updatedMap: [String: InlineImageTransform] = self.lock.withLock {
+            var map = self.transformsByFolder[folderKey] ?? self.loadTransformMap(in: folder)
+            if clamped.isIdentity {
+                map.removeValue(forKey: identifier)
+            } else {
+                map[identifier] = clamped
+            }
+            self.transformsByFolder[folderKey] = map
+            return map
+        }
+        self.saveTransformMap(updatedMap, in: folder)
+    }
+    
+    
+    func resetTransform(for identifier: String, documentURL: URL?) {
+        self.setTransform(.identity, for: identifier, documentURL: documentURL)
+    }
+    
+    
+    /// Computes complete display geometry accounting for stepless scale, rotation bounding box, and spacing.
+    func displayGeometry(
         for identifier: String,
         documentURL: URL?,
+        containerWidth: CGFloat,
         maxImageWidth: CGFloat = 460,
         maxImageHeight: CGFloat = 260
-    ) -> NSSize? {
+    ) -> InlineImageDisplayGeometry? {
         
         let cacheKey = self.cacheKey(for: identifier, documentURL: documentURL)
         let naturalSize: NSSize?
@@ -302,10 +391,61 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
         
         guard let imgSize = naturalSize, imgSize.width > 0, imgSize.height > 0 else { return nil }
         
-        let scale = min(maxImageWidth / imgSize.width, maxImageHeight / imgSize.height, 1.0)
-        let drawWidth = max(1, round(imgSize.width * scale))
-        let drawHeight = max(1, round(imgSize.height * scale))
-        return NSSize(width: drawWidth + 8, height: drawHeight + 8)
+        let baseScale = min(maxImageWidth / imgSize.width, maxImageHeight / imgSize.height, 1.0)
+        let baseDrawW = max(1, round(imgSize.width * baseScale))
+        let baseDrawH = max(1, round(imgSize.height * baseScale))
+        let transform = self.transform(for: identifier, documentURL: documentURL)
+        
+        if transform.isIdentity {
+            let drawSize = NSSize(width: baseDrawW, height: baseDrawH)
+            return InlineImageDisplayGeometry(
+                drawSize: drawSize,
+                rotatedBoxSize: drawSize,
+                cardSize: NSSize(width: baseDrawW + 8, height: baseDrawH + 8),
+                transform: .identity
+            )
+        }
+        
+        // When user explicitly scales (> 1.0), break past the 460pt thumbnail cap up to full editor canvas width.
+        let canvasMaxW = max(maxImageWidth, max(160, containerWidth - 24))
+        let rawScaledW = baseDrawW * transform.scale
+        let clampedW = max(36, min(canvasMaxW, round(rawScaledW)))
+        let aspect = imgSize.height / imgSize.width
+        let clampedH = max(24, round(clampedW * aspect))
+        
+        let rad = abs(transform.rotationDegrees) * .pi / 180.0
+        let cosA = abs(cos(rad))
+        let sinA = abs(sin(rad))
+        let rotW = ceil(clampedW * cosA + clampedH * sinA)
+        let rotH = ceil(clampedW * sinA + clampedH * cosA)
+        let extraTop = max(0, transform.offsetY)
+        
+        return InlineImageDisplayGeometry(
+            drawSize: NSSize(width: clampedW, height: clampedH),
+            rotatedBoxSize: NSSize(width: rotW, height: rotH),
+            cardSize: NSSize(width: rotW + 8, height: rotH + 8 + extraTop),
+            transform: transform
+        )
+    }
+    
+    
+    /// Returns the scaled card size (including padding) for an inline image token, or `nil` if unresolved.
+    func cardSize(
+        for identifier: String,
+        documentURL: URL?,
+        maxImageWidth: CGFloat = 460,
+        maxImageHeight: CGFloat = 260,
+        containerWidth: CGFloat? = nil
+    ) -> NSSize? {
+        
+        let resolvedContainer = containerWidth ?? maxImageWidth
+        return self.displayGeometry(
+            for: identifier,
+            documentURL: documentURL,
+            containerWidth: resolvedContainer,
+            maxImageWidth: maxImageWidth,
+            maxImageHeight: maxImageHeight
+        )?.cardSize
     }
     
     
@@ -340,6 +480,28 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     
     
     // MARK: Private Helpers
+    
+    private func loadTransformMap(in folder: URL) -> [String: InlineImageTransform] {
+        let url = folder.appending(path: "image-transforms.json")
+        guard let data = try? Data(contentsOf: url),
+              let map = try? JSONDecoder().decode([String: InlineImageTransform].self, from: data)
+        else { return [:] }
+        return map
+    }
+    
+    
+    private func saveTransformMap(_ map: [String: InlineImageTransform], in folder: URL) {
+        let url = folder.appending(path: "image-transforms.json")
+        if map.isEmpty {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(map) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+    
     
     private func cacheKey(for identifier: String, documentURL: URL?) -> String {
         
