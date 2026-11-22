@@ -201,6 +201,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     private var fontObservers: Set<AnyCancellable> = []
+    private var wallpaperObserver: AnyCancellable?
     private var windowOpacityObserver: NSKeyValueObservation?
     private var keyStateObservers: [any NSObjectProtocol] = []
     private var scrollClipObserver: NSObjectProtocol?
@@ -529,11 +530,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 }
             }
             
-            NotificationCenter.default.publisher(for: WallpaperManager.didChangeNotification)
+            self.wallpaperObserver = NotificationCenter.default.publisher(for: WallpaperManager.didChangeNotification)
                 .sink { [weak self] _ in
                     self?.refreshWallpaperTransparency()
                 }
-                .store(in: &self.fontObservers)
             
             self.refreshWallpaperTransparency()
             
@@ -562,6 +562,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.funEffects.resetCursorTracking()
             self.keyStateObservers.forEach(NotificationCenter.default.removeObserver)
             self.keyStateObservers.removeAll()
+            self.wallpaperObserver = nil
             self.windowOpacityObserver = nil
             self.instanceHighlightTask?.cancel()
             self.instanceHighlightTask = nil
@@ -2101,14 +2102,19 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         super.drawBackground(in: rect)
         
-        guard let range = self.range(for: rect) else { return }
+        guard let rawRange = self.range(for: rect) else { return }
+        let storageLength = self.textStorage?.length ?? (self.string as NSString).length
+        let range = NSIntersectionRange(rawRange, NSRange(location: 0, length: storageLength))
+        guard range.location != NSNotFound else { return }
         
         if self.highlightsCurrentLines {
             self.drawCurrentLine(range: range, in: rect)
         }
         
-        self.drawNotesHighlights(range: range, in: rect)
-        self.drawRoundedBackground(range: range, in: rect)
+        if range.length > 0 {
+            self.drawNotesHighlights(range: range, in: rect)
+            self.drawRoundedBackground(range: range, in: rect)
+        }
     }
     
     
@@ -2240,10 +2246,15 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         guard
             let layoutManager = self.layoutManager as? LayoutManager,
             let textContainer = self.textContainer,
-            let visibleCharRange = self.range(for: dirtyRect, withoutAdditionalLayout: true)
+            let rawVisibleCharRange = self.range(for: dirtyRect, withoutAdditionalLayout: true)
         else { return }
         
         let nsString = self.string as NSString
+        guard nsString.length > 0 else { return }
+        
+        let visibleCharRange = NSIntersectionRange(rawVisibleCharRange, NSRange(location: 0, length: nsString.length))
+        guard visibleCharRange.location != NSNotFound, visibleCharRange.length > 0 else { return }
+        
         let expandedRange = nsString.lineRange(for: visibleCharRange)
         let tokens = PlainTextInlineImageStore.shared.findTokens(in: nsString, range: expandedRange)
         guard !tokens.isEmpty else { return }
@@ -2252,7 +2263,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let borderColor = (self.theme?.text.color ?? .labelColor).withAlphaComponent(0.12)
         let fillColor = self.theme?.background.color ?? .controlBackgroundColor
         let accentColor = StudioPaletteManager.shared.activeNSAccentColor
-        let containerWidth = max(160, textContainer.size.width)
+        let rawContainerW = textContainer.size.width
+        let finiteContainerW = (rawContainerW.isFinite && rawContainerW > 0 && rawContainerW <= 100_000)
+            ? rawContainerW
+            : (self.enclosingScrollView?.documentVisibleRect.width ?? self.bounds.width)
+        let containerWidth = max(160, finiteContainerW.isFinite ? min(16_384, finiteContainerW) : 800)
         let canvasMidX = self.textContainerOrigin.x + containerWidth * 0.5
         
         if self.showInlineImageCenterGuide {
@@ -4243,8 +4258,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             
             // workaround for a TextKit issue where textColor update can leave
             // LastResort fallback glyphs after emoji tag sequences (2026-05, macOS 26.4).
-            if let font {
-                self.textStorage?.addAttribute(.font, value: font, range: self.string.nsRange)
+            if let font, let textStorage = self.textStorage, textStorage.length > 0 {
+                textStorage.addAttribute(.font, value: font, range: textStorage.range)
             }
             
         } else if self.typingAttributes[.foregroundColor] as? NSColor != theme.text.color {

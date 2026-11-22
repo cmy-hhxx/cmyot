@@ -54,7 +54,11 @@ extension Document {
             return
         }
         
-        self.textHighlights = store.marks
+        let wholeRange = NSRange(location: 0, length: self.textStorage.length)
+        self.textHighlights = store.marks.compactMap { mark in
+            let clamped = NSIntersectionRange(mark.range, wholeRange)
+            return clamped.length > 0 ? TextHighlight(range: clamped, color: mark.color) : nil
+        }
         self.syncHighlightAttributesToTextStorage()
         self.applyHighlightRendering()
     }
@@ -63,7 +67,11 @@ extension Document {
     /// Restores highlights decoded from the local SQLite database for an untitled/session document.
     func restoreHighlightsFromDatabase(_ highlights: [TextHighlight]) {
         
-        self.textHighlights = highlights
+        let wholeRange = NSRange(location: 0, length: self.textStorage.length)
+        self.textHighlights = highlights.compactMap { mark in
+            let clamped = NSIntersectionRange(mark.range, wholeRange)
+            return clamped.length > 0 ? TextHighlight(range: clamped, color: mark.color) : nil
+        }
         self.syncHighlightAttributesToTextStorage()
         self.applyHighlightRendering()
     }
@@ -103,6 +111,12 @@ extension Document {
     
     /// Keeps the stored highlights attached to their text after an edit.
     ///
+    /// Called from `NSTextStorage.didProcessEditingNotification`, which fires **before**
+    /// `NSLayoutManager` instances receive `processEditing(...)` for the character length change.
+    /// Never mutate `textStorage` attributes or touch `layoutManager` temporary attributes/display
+    /// synchronously here; update the in-memory model now and defer TextKit synchronization until
+    /// after `processEditing` completes.
+    ///
     /// - Parameters:
     ///   - editedRange: The range the edit produced, in post-edit coordinates.
     ///   - changeInLength: The length delta the edit introduced.
@@ -110,23 +124,21 @@ extension Document {
         
         guard !self.textHighlights.isEmpty || self.hasHighlightAttributeInTextStorage else { return }
         
-        let textStorage = self.textStorage
-        let wholeRange = NSRange(location: 0, length: textStorage.length)
+        let wholeRange = NSRange(location: 0, length: self.textStorage.length)
         
-        // If typing inserted text at the boundary of a highlight, NSTextView's typingAttributes
-        // may have inherited `.cotTextHighlight` unless we strip it from newly typed characters
-        // outside the original mark. Reconcile using the authoritative `adjusting` math when
-        // delta != 0, then sync both ways so `NSTextStorage` and `textHighlights` never drift.
         if delta != 0 {
             let replacedRange = NSRange(location: editedRange.location,
                                         length: max(0, editedRange.length - delta))
-            self.textHighlights = self.textHighlights.adjusting(forEditIn: replacedRange,
-                                                                changeInLength: delta)
-            self.syncHighlightAttributesToTextStorage()
+            self.textHighlights = self.textHighlights
+                .adjusting(forEditIn: replacedRange, changeInLength: delta)
+                .compactMap { mark in
+                    let clamped = NSIntersectionRange(mark.range, wholeRange)
+                    return clamped.length > 0 ? TextHighlight(range: clamped, color: mark.color) : nil
+                }
         } else {
             // Attribute-only or undo pass: read back from textStorage if present
             var marks: [TextHighlight] = []
-            textStorage.enumerateAttribute(.cotTextHighlight, in: wholeRange) { value, range, _ in
+            self.textStorage.enumerateAttribute(.cotTextHighlight, in: wholeRange) { value, range, _ in
                 if let raw = value as? String, let color = HighlightColor(rawValue: raw), range.length > 0 {
                     marks.append(TextHighlight(range: range, color: color))
                 }
@@ -136,8 +148,25 @@ extension Document {
             }
         }
         
-        self.applyHighlightRendering()
+        self.scheduleHighlightSync(shouldSyncStorageAttributes: delta != 0)
         self.saveHighlightsSoon()
+    }
+    
+    
+    /// Defers synchronizing highlight attributes and layout manager temporary attributes until
+    /// after the current `NSTextStorage.processEditing()` pass has notified all layout managers.
+    private func scheduleHighlightSync(shouldSyncStorageAttributes: Bool) {
+        
+        self.highlightSyncTask?.cancel()
+        self.highlightSyncTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self, !Task.isCancelled else { return }
+            
+            if shouldSyncStorageAttributes {
+                self.syncHighlightAttributesToTextStorage()
+            }
+            self.applyHighlightRendering()
+        }
     }
     
     
@@ -148,11 +177,25 @@ extension Document {
         let wholeRange = NSRange(location: 0, length: textStorage.length)
         guard wholeRange.length > 0 else { return }
         
-        textStorage.removeAttribute(.cotTextHighlight, range: wholeRange)
-        for highlight in self.textHighlights {
+        // Skip mutating textStorage if stored `.cotTextHighlight` runs already match `textHighlights`.
+        var existing: [TextHighlight] = []
+        textStorage.enumerateAttribute(.cotTextHighlight, in: wholeRange) { value, range, _ in
+            if let raw = value as? String, let color = HighlightColor(rawValue: raw), range.length > 0 {
+                existing.append(TextHighlight(range: range, color: color))
+            }
+        }
+        let clampedExpected: [TextHighlight] = self.textHighlights.compactMap { highlight in
             let range = NSIntersectionRange(highlight.range, wholeRange)
-            guard range.length > 0 else { continue }
-            textStorage.addAttribute(.cotTextHighlight, value: highlight.color.rawValue, range: range)
+            return range.length > 0 ? TextHighlight(range: range, color: highlight.color) : nil
+        }
+        guard existing != clampedExpected else { return }
+        
+        textStorage.beginEditing()
+        defer { textStorage.endEditing() }
+        
+        textStorage.removeAttribute(.cotTextHighlight, range: wholeRange)
+        for highlight in clampedExpected {
+            textStorage.addAttribute(.cotTextHighlight, value: highlight.color.rawValue, range: highlight.range)
         }
     }
     
@@ -179,9 +222,14 @@ extension Document {
     func applyHighlightRendering() {
         
         let textStorage = self.textStorage
-        let wholeRange = NSRange(location: 0, length: textStorage.length)
+        let storageLength = textStorage.length
+        guard storageLength > 0 else { return }
         
         for layoutManager in textStorage.layoutManagers {
+            let safeLength = min(storageLength, layoutManager.attributedString().length)
+            guard safeLength > 0 else { continue }
+            
+            let wholeRange = NSRange(location: 0, length: safeLength)
             let apply = {
                 layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: wholeRange)
                 layoutManager.removeTemporaryAttribute(.notesHighlightFillColor, forCharacterRange: wholeRange)
@@ -203,9 +251,8 @@ extension Document {
                 customLM.groupTemporaryAttributesUpdate(in: wholeRange, work: apply)
             } else {
                 apply()
+                layoutManager.invalidateDisplay(forCharacterRange: wholeRange)
             }
-            
-            layoutManager.invalidateDisplay(forCharacterRange: wholeRange)
         }
     }
     

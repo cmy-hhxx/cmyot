@@ -331,7 +331,11 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             ) { rect, _ in
                 var adjusted = rect.offsetBy(dx: containerOrigin.x, dy: containerOrigin.y)
                 if isLinewise {
-                    adjusted.size.width = max(adjusted.width, max(16, textContainer.size.width - adjusted.minX))
+                    let rawContainerW = textContainer.size.width
+                    let finiteContainerW = (rawContainerW.isFinite && rawContainerW > 0 && rawContainerW <= 100_000)
+                        ? rawContainerW
+                        : (textView.enclosingScrollView?.documentVisibleRect.width ?? textView.bounds.width)
+                    adjusted.size.width = max(adjusted.width, max(16, finiteContainerW - adjusted.minX))
                 } else {
                     adjusted.size.width = max(adjusted.width, 6)
                 }

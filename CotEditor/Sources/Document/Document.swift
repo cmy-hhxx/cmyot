@@ -144,6 +144,7 @@ extension NSAttributedString.Key {
     /// Highlights painted on this document, kept in a sidecar file so the document
     /// itself stays plain text.
     var textHighlights: [TextHighlight] = []
+    var highlightSyncTask: Task<Void, Never>?
     var highlightSaveTask: Task<Void, Never>?
     var databaseSyncTask: Task<Void, Never>?
     
@@ -895,6 +896,7 @@ extension NSAttributedString.Key {
         
         super.close()
         
+        self.highlightSyncTask?.cancel()
         self.highlightSaveTask?.cancel()
         self.databaseSyncTask?.cancel()
         self.syntaxUpdateObserver?.cancel()

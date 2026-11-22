@@ -129,10 +129,15 @@ extension NSLayoutManager {
     ///   - stop: A reference to a Boolean value, which you can set to true within the closure to stop further processing of the attribute enumeration.
     final func enumerateTemporaryAttribute<T>(_ attrName: NSAttributedString.Key, type: T.Type, in enumerationRange: NSRange, using block: (_ value: T, _ range: NSRange, _ stop: inout Bool) -> Void) {
         
-        var characterIndex = enumerationRange.location
-        while characterIndex < enumerationRange.upperBound {
+        let clampedRange = NSIntersectionRange(enumerationRange, self.attributedString().range)
+        guard clampedRange.location != NSNotFound, clampedRange.length > 0 else { return }
+        
+        var characterIndex = clampedRange.location
+        while characterIndex < clampedRange.upperBound {
             var effectiveRange: NSRange = .notFound
-            let value = self.temporaryAttribute(attrName, atCharacterIndex: characterIndex, longestEffectiveRange: &effectiveRange, in: enumerationRange)
+            let value = self.temporaryAttribute(attrName, atCharacterIndex: characterIndex, longestEffectiveRange: &effectiveRange, in: clampedRange)
+            
+            guard effectiveRange.location != NSNotFound, effectiveRange.length > 0 else { break }
             
             if let value = value as? T {
                 var stop = false

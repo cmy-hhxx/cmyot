@@ -417,7 +417,10 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
         }
         
         // When user explicitly resizes or scales (> 1.0), break past the 460pt thumbnail cap up to full editor canvas width.
-        let canvasMaxW = max(maxImageWidth, max(160, containerWidth - 24))
+        let finiteContainerW = (containerWidth.isFinite && containerWidth > 0 && containerWidth <= 100_000)
+            ? containerWidth
+            : maxImageWidth
+        let canvasMaxW = max(maxImageWidth, max(160, finiteContainerW - 24))
         let aspect = imgSize.height / imgSize.width
         let clampedW: CGFloat
         let clampedH: CGFloat
