@@ -578,27 +578,27 @@ struct AIModelsSettingsView: View {
 }
 
 
-// MARK: - 智能体 (Collection Layout Morph: List / Card / Pack + Inline Inspector)
+// MARK: - 智能体 (AI 娘化画廊 · 固定宽度零跳动 · 卡片 / 列表 / 叠放视图)
 
 enum BotCollectionLayoutMode: String, CaseIterable, Identifiable {
-    case list
     case card
+    case list
     case pack
     
     var id: String { self.rawValue }
     
     var title: String {
         switch self {
-            case .list: AppLanguage.text("列表视图", en: "List view")
-            case .card: AppLanguage.text("卡片视图", en: "Card view")
-            case .pack: AppLanguage.text("叠放视图", en: "Pack view")
+            case .card: AppLanguage.text("画廊视图", en: "Gallery")
+            case .list: AppLanguage.text("列表视图", en: "List")
+            case .pack: AppLanguage.text("叠放视图", en: "Pack")
         }
     }
     
     var icon: String {
         switch self {
-            case .list: "list.bullet"
             case .card: "square.grid.2x2"
+            case .list: "list.bullet"
             case .pack: "square.stack.3d.up"
         }
     }
@@ -607,15 +607,19 @@ enum BotCollectionLayoutMode: String, CaseIterable, Identifiable {
 
 struct AIBotsSettingsView: View {
     
+    /// Exact deterministic content width (`700 - 176 sidebar - 1 divider - 48 padding = 475pt`)
+    /// so entering the Agents pane NEVER triggers a post-mount geometry feedback jump.
+    private static let fixedStageWidth: CGFloat = 475
+    
     @Environment(\.colorScheme) private var colorScheme
     
     @State private var botStore = AIBotStore.shared
     @State private var analytics = AnalyticsManager.shared
-    @State private var layoutMode: BotCollectionLayoutMode = .list
+    @State private var imageLoader = AIGijinkaImageLoader.shared
+    @State private var layoutMode: BotCollectionLayoutMode = .card
     @State private var inspectingBot: AIBotID?
     @State private var activeEndpoint: AIEndpointProfile?
     @State private var globalPersona: String = ""
-    @State private var stageWidth: CGFloat = 439
     @State private var hoveredBotID: AIBotID?
     
     @Namespace private var modePillNamespace
@@ -630,19 +634,16 @@ struct AIBotsSettingsView: View {
         VStack(alignment: .leading, spacing: 14) {
             if let botID = self.inspectingBot {
                 self.inlineInspector(for: botID)
-                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+                    .transition(.opacity)
             } else {
                 self.morphingCollectionView(featureCounts: featureCounts)
-                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                    .transition(.opacity)
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { w in
-            if abs(w - self.stageWidth) > 2 && w > 120 {
-                self.stageWidth = w
-            }
-        }
+        .frame(width: Self.fixedStageWidth, alignment: .topLeading)
         .onAppear {
             self.reload()
+            self.imageLoader.prefetchAll()
         }
         .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
             self.reload()
@@ -650,29 +651,31 @@ struct AIBotsSettingsView: View {
     }
     
     
-    // MARK: Morphing List / Card / Pack Collection Stage
+    // MARK: Morphing Gallery / List / Pack Stage
     
     @ViewBuilder
     private func morphingCollectionView(featureCounts: [String: Int]) -> some View {
         let bots = AIBotID.allCases
         let cols = 3
         let rowsCount = Int(ceil(Double(bots.count) / Double(cols)))
-        let cardGap: CGFloat = 14
-        let cardSize = max(92, floor((self.stageWidth - cardGap * CGFloat(cols - 1)) / CGFloat(cols)))
+        let cardGap: CGFloat = 12
+        let cardWidth = floor((Self.fixedStageWidth - cardGap * CGFloat(cols - 1)) / CGFloat(cols)) // 150pt
+        let portraitHeight: CGFloat = 176
+        let cardRowStride: CGFloat = portraitHeight + 48
         let stageHeight: CGFloat = switch self.layoutMode {
             case .list: CGFloat(bots.count) * 64.0
-            case .card: CGFloat(rowsCount) * (cardSize + 44.0)
-            case .pack: 214.0
+            case .card: CGFloat(rowsCount) * cardRowStride
+            case .pack: 236.0
         }
         let enabledCount = bots.filter { self.botStore.config(for: $0).isEnabled }.count
         
         VStack(alignment: .leading, spacing: 14) {
-            // Segmented Layout Switcher with a SINGLE shared sliding capsule
-            HStack(spacing: 6) {
+            // Segmented Layout Switcher with shared sliding capsule
+            HStack(spacing: 4) {
                 ForEach(BotCollectionLayoutMode.allCases) { mode in
                     let isSelected = (self.layoutMode == mode)
                     Button {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.42)) {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.36)) {
                             self.layoutMode = mode
                         }
                     } label: {
@@ -688,7 +691,7 @@ struct AIBotsSettingsView: View {
                         .background {
                             if isSelected {
                                 Capsule()
-                                    .fill(self.colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.085))
+                                    .fill(self.colorScheme == .dark ? Color.white.opacity(0.13) : Color.black.opacity(0.08))
                                     .matchedGeometryEffect(id: "botLayoutPill", in: self.modePillNamespace)
                             }
                         }
@@ -700,17 +703,16 @@ struct AIBotsSettingsView: View {
                 
                 Spacer()
                 
-                Text("\(enabledCount)/\(bots.count) 已启用")
+                Text("\(enabledCount)/\(bots.count) \(AppLanguage.text("已启用", en: "Active"))")
                     .font(.system(size: 11.5, weight: .medium).monospacedDigit())
                     .foregroundStyle(.secondary)
             }
             
-            // Divider hairline fades in card view just like collection-layout-morph
             Rectangle()
                 .fill(self.cardBorder)
                 .frame(height: 1)
                 .opacity(self.layoutMode == .card ? 0.0 : 1.0)
-                .animation(.easeOut(duration: 0.22), value: self.layoutMode)
+                .animation(.easeOut(duration: 0.18), value: self.layoutMode)
             
             // Unified Identity-Preserving Morph Stage
             ZStack(alignment: .topLeading) {
@@ -723,27 +725,33 @@ struct AIBotsSettingsView: View {
                         total: bots.count,
                         config: cfg,
                         recentCalls: calls,
-                        cardSize: cardSize,
-                        cardGap: cardGap
+                        cardWidth: cardWidth,
+                        portraitHeight: portraitHeight,
+                        cardGap: cardGap,
+                        cardRowStride: cardRowStride
                     )
                 }
                 
-                // Pack summary label beneath stacked cards
                 if self.layoutMode == .pack {
                     VStack(spacing: 4) {
-                        Text(AppLanguage.text("内置智能体卡组（共 \(bots.count) 位）", en: "\(bots.count) Built-in Agents"))
-                            .font(.system(size: 13.5, weight: .semibold))
+                        Text(AppLanguage.text("AI 娘化智能体卡组（共 \(bots.count) 位）", en: "\(bots.count) AI Gijinka Agents"))
+                            .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(.primary)
-                        Text(AppLanguage.text("点击任一张卡牌即可进入人设与指令调教", en: "Click any card to configure"))
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity)
-                    .offset(y: 136)
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    .offset(y: 174)
+                    .transition(.opacity)
                 }
             }
-            .frame(width: self.stageWidth, height: stageHeight, alignment: .topLeading)
+            .frame(width: Self.fixedStageWidth, height: stageHeight, alignment: .topLeading)
+            
+            HStack {
+                Text("AI Gijinka Gallery · ZipZipPipe / CC BY-NC-SA 4.0")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .padding(.top, 2)
         }
     }
     
@@ -755,96 +763,136 @@ struct AIBotsSettingsView: View {
         total: Int,
         config: AIBotConfig,
         recentCalls: Int,
-        cardSize: CGFloat,
-        cardGap: CGFloat
+        cardWidth: CGFloat,
+        portraitHeight: CGFloat,
+        cardGap: CGFloat,
+        cardRowStride: CGFloat
     ) -> some View {
-        let accent = Color(hexString: botID.accentHex)
+        let character = botID.gijinkaCharacter
+        let accent = Color(hexString: character.accentHex)
+        let portrait = self.imageLoader.image(for: botID)
         let isHovered = (self.hoveredBotID == botID)
         
         let itemWidth: CGFloat
-        let badgeSize: CGFloat
-        let badgeCorner: CGFloat
+        let artWidth: CGFloat
+        let artHeight: CGFloat
+        let artCorner: CGFloat
         let posX: CGFloat
         let posY: CGFloat
         let rotation: Double
         
         switch self.layoutMode {
             case .list:
-                badgeSize = 48
-                badgeCorner = 10
-                itemWidth = self.stageWidth
+                artWidth = 48
+                artHeight = 48
+                artCorner = 10
+                itemWidth = Self.fixedStageWidth
                 posX = 0
                 posY = CGFloat(index) * 64.0
                 rotation = 0
             case .card:
-                badgeSize = cardSize
-                badgeCorner = 14
-                itemWidth = cardSize
+                artWidth = cardWidth
+                artHeight = portraitHeight
+                artCorner = 12
+                itemWidth = cardWidth
                 let col = index % 3
                 let row = index / 3
-                posX = CGFloat(col) * (cardSize + cardGap)
-                posY = CGFloat(row) * (cardSize + 44.0)
+                posX = CGFloat(col) * (cardWidth + cardGap)
+                posY = CGFloat(row) * cardRowStride
                 rotation = 0
             case .pack:
-                badgeSize = 84
-                badgeCorner = 16
-                itemWidth = badgeSize
-                let spread: CGFloat = 24.0
+                artWidth = 92
+                artHeight = 124
+                artCorner = 12
+                itemWidth = artWidth
+                let spread: CGFloat = 28.0
                 let mid = Double(total - 1) * 0.5
                 let offsetIndex = Double(index) - mid
-                posX = (self.stageWidth - badgeSize) * 0.5 + CGFloat(offsetIndex) * spread
-                posY = 16 + abs(CGFloat(offsetIndex)) * 4.5 - (isHovered ? 12 : 0)
-                rotation = offsetIndex * 5.2
+                posX = (Self.fixedStageWidth - artWidth) * 0.5 + CGFloat(offsetIndex) * spread
+                posY = 18 + abs(CGFloat(offsetIndex)) * 4.0 - (isHovered ? 12 : 0)
+                rotation = offsetIndex * 4.6
         }
         
         return ZStack(alignment: .topLeading) {
-            // Persistent Bot Artwork Tile (never swapped across modes!)
-            RoundedRectangle(cornerRadius: badgeCorner, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            accent.opacity(config.isEnabled ? 0.95 : 0.42),
-                            accent.opacity(config.isEnabled ? 0.72 : 0.28),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+            // Persistent AI Gijinka Portrait Frame (never swapped across layout modes)
+            ZStack {
+                RoundedRectangle(cornerRadius: artCorner, style: .continuous)
+                    .fill(
+                        self.colorScheme == .dark
+                            ? Color(red: 0.14, green: 0.14, blue: 0.16)
+                            : Color(red: 0.97, green: 0.97, blue: 0.98)
                     )
-                )
-                .frame(width: badgeSize, height: badgeSize)
-                .overlay {
-                    Image(systemName: botID.symbolName)
-                        .font(.system(size: badgeSize * 0.40, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
-                }
-                .overlay(
-                    RoundedRectangle(cornerRadius: badgeCorner, style: .continuous)
-                        .strokeBorder(Color.white.opacity(self.colorScheme == .dark ? 0.20 : 0.42), lineWidth: 1)
-                )
-                .shadow(
-                    color: (self.layoutMode == .pack ? accent.opacity(0.24) : Color.black.opacity(0.10)),
-                    radius: self.layoutMode == .pack ? 10 : 4,
-                    y: self.layoutMode == .pack ? 5 : 2
-                )
-                .rotationEffect(.degrees(rotation))
-                .onTapGesture {
-                    withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
-                        self.inspectingBot = botID
+                
+                if let portrait {
+                    if self.layoutMode == .card {
+                        Image(nsImage: portrait)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFit()
+                            .padding(.top, 6)
+                            .padding(.horizontal, 4)
+                            .frame(width: artWidth, height: artHeight, alignment: .bottom)
+                            .opacity(config.isEnabled ? 1.0 : 0.48)
+                    } else {
+                        // Face-framed upper crop in List & Pack views
+                        Image(nsImage: portrait)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFill()
+                            .frame(width: artWidth, height: artHeight, alignment: .top)
+                            .opacity(config.isEnabled ? 1.0 : 0.48)
+                    }
+                } else {
+                    VStack(spacing: 4) {
+                        Image(systemName: botID.symbolName)
+                            .font(.system(size: min(artWidth * 0.34, 24), weight: .medium))
+                            .foregroundStyle(accent)
+                        if self.layoutMode == .card {
+                            Text(character.name)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
+            }
+            .frame(width: artWidth, height: artHeight)
+            .clipShape(RoundedRectangle(cornerRadius: artCorner, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: artCorner, style: .continuous)
+                    .strokeBorder(
+                        isHovered ? accent.opacity(0.65) : self.cardBorder,
+                        lineWidth: isHovered ? 1.2 : 0.75
+                    )
+            )
+            .shadow(
+                color: Color.black.opacity(self.layoutMode == .pack ? 0.16 : 0.05),
+                radius: self.layoutMode == .pack ? 8 : 3,
+                y: self.layoutMode == .pack ? 4 : 1
+            )
+            .rotationEffect(.degrees(rotation))
+            .onTapGesture {
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+                    self.inspectingBot = botID
+                }
+            }
             
-            // List view metadata right of tile
+            // List view metadata right of portrait thumbnail
             if self.layoutMode == .list {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(botID.displayName)
-                            .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundStyle(config.isEnabled ? .primary : .secondary)
+                        HStack(spacing: 6) {
+                            Text(character.name)
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .foregroundStyle(config.isEnabled ? .primary : .secondary)
+                            Text(botID.displayName)
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.secondary)
+                        }
                         
                         HStack(spacing: 6) {
                             Text(config.modelOverride.isEmpty ? (self.activeEndpoint?.displayModel ?? "默认模型") : config.modelOverride)
                                 .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.tertiary)
                                 .lineLimit(1)
                             if recentCalls > 0 {
                                 Text("· \(recentCalls) 次")
@@ -869,7 +917,7 @@ struct AIBotsSettingsView: View {
                     .controlSize(.small)
                     
                     Button {
-                        withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
                             self.inspectingBot = botID
                         }
                     } label: {
@@ -880,34 +928,41 @@ struct AIBotsSettingsView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(.leading, badgeSize + 14)
-                .frame(width: itemWidth, height: badgeSize, alignment: .leading)
+                .padding(.leading, artWidth + 12)
+                .frame(width: itemWidth, height: artHeight, alignment: .leading)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
+                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
                         self.inspectingBot = botID
                     }
                 }
             }
             
-            // Card view compact caption under tile
+            // Card view caption under standing portrait (clean gallery typography)
             if self.layoutMode == .card {
-                HStack(spacing: 4) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(character.name)
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(config.isEnabled ? .primary : .secondary)
+                            .lineLimit(1)
+                        
+                        Spacer(minLength: 2)
+                        
+                        Circle()
+                            .fill(config.isEnabled ? accent : Color.primary.opacity(0.18))
+                            .frame(width: 6.5, height: 6.5)
+                    }
+                    
                     Text(botID.displayName)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(config.isEnabled ? .primary : .secondary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    
-                    Spacer(minLength: 2)
-                    
-                    Circle()
-                        .fill(config.isEnabled ? accent : Color.primary.opacity(0.18))
-                        .frame(width: 7, height: 7)
                 }
-                .frame(width: cardSize)
-                .offset(y: cardSize + 8)
+                .frame(width: cardWidth, alignment: .leading)
+                .offset(y: portraitHeight + 7)
                 .onTapGesture {
-                    withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
+                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
                         self.inspectingBot = botID
                     }
                 }
@@ -917,12 +972,12 @@ struct AIBotsSettingsView: View {
         .offset(x: posX, y: posY)
         .zIndex(Double(index) + (isHovered && self.layoutMode == .pack ? 20 : 0))
         .onHover { hovering in
-            withAnimation(.spring(response: 0.22, dampingFraction: 0.80)) {
+            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
                 self.hoveredBotID = hovering ? botID : (self.hoveredBotID == botID ? nil : self.hoveredBotID)
             }
         }
         .pointerStyle(.link)
-        .help(botID.displayName)
+        .help("\(character.name) · \(botID.displayName)")
     }
     
     
@@ -1012,21 +1067,41 @@ private struct AIBotInlineInspectorView: View {
     
     
     var body: some View {
-        let accent = Color(hexString: self.botID.accentHex)
+        let character = self.botID.gijinkaCharacter
+        let accent = Color(hexString: character.accentHex)
+        let portrait = AIGijinkaImageLoader.shared.image(for: self.botID)
         
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(accent)
-                    .frame(width: 36, height: 36)
-                    .overlay(
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(accent.opacity(0.14))
+                    if let portrait {
+                        Image(nsImage: portrait)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFill()
+                            .frame(width: 52, height: 64, alignment: .top)
+                    } else {
                         Image(systemName: self.botID.symbolName)
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.white)
-                    )
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(accent)
+                    }
+                }
+                .frame(width: 52, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(accent.opacity(0.35), lineWidth: 0.75)
+                )
                 
-                Text(self.botID.displayName)
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(character.name)
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("\(self.botID.displayName) · \(character.brand)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
                 
                 Spacer()
                 

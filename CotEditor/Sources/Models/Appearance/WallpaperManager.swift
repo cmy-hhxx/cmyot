@@ -102,6 +102,7 @@ final class WallpaperManager {
     private let storageDirectory: URL
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     private var rawImageCache: [String: NSImage] = [:]
+    private var thumbnailCache: [String: NSImage] = [:]
     private var blurredImageCache: [String: NSImage] = [:]
     
     
@@ -147,6 +148,32 @@ final class WallpaperManager {
         {
             self.customRecords = decoded
         }
+    }
+    
+    
+    /// Reloads wallpaper spec and custom catalog from the backing database (e.g. after DB import).
+    func reloadFromDatabase() {
+        let rawSpec = self.database.string(forKey: CotLocalDatabase.ConfigKey.editorWallpaperSpecJSON)
+        if let data = rawSpec.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(WallpaperSpec.self, from: data)
+        {
+            self.spec = decoded.clamped()
+        } else {
+            self.spec = .default
+        }
+        let rawCustom = self.database.string(forKey: CotLocalDatabase.ConfigKey.editorWallpaperCustomCatalogJSON)
+        if let data = rawCustom.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([WallpaperCustomRecord].self, from: data)
+        {
+            self.customRecords = decoded
+        } else {
+            self.customRecords = []
+        }
+        self.rawImageCache.removeAll()
+        self.thumbnailCache.removeAll()
+        self.blurredImageCache.removeAll()
+        self.catalogVersion += 1
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
     
     
@@ -228,6 +255,7 @@ final class WallpaperManager {
         let url = self.storageDirectory.appending(path: removed.filename)
         try? FileManager.default.removeItem(at: url)
         self.rawImageCache.removeValue(forKey: id)
+        self.thumbnailCache.removeValue(forKey: id)
         self.blurredImageCache.keys.filter { $0.hasPrefix("\(id)|") }.forEach { self.blurredImageCache.removeValue(forKey: $0) }
         self.persistCustomCatalog()
         self.catalogVersion += 1
@@ -242,7 +270,28 @@ final class WallpaperManager {
     }
     
     
-    /// Returns the sharp preview/thumbnail artwork for the tunnel selector or card cover.
+    /// Returns a lightweight cached `192×128` thumbnail for zero-lag Settings gallery scrolling.
+    func thumbnailImage(for id: String) -> NSImage {
+        if let cached = self.thumbnailCache[id] {
+            return cached
+        }
+        let targetSize = NSSize(width: 192, height: 128)
+        if let record = self.customRecords.first(where: { $0.id == id }) {
+            let url = self.storageDirectory.appending(path: record.filename)
+            if let source = self.rawImageCache[id] ?? NSImage(contentsOf: url) {
+                let thumb = Self.downsample(source, to: targetSize)
+                self.thumbnailCache[id] = thumb
+                return thumb
+            }
+        }
+        let item = Self.builtInItems.first(where: { $0.id == id }) ?? Self.builtInItems[0]
+        let rendered = Self.renderProceduralArtwork(item: item, size: targetSize)
+        self.thumbnailCache[id] = rendered
+        return rendered
+    }
+    
+    
+    /// Returns the sharp preview/thumbnail artwork for the editor preview or card cover.
     func artworkImage(for id: String) -> NSImage {
         if let cached = self.rawImageCache[id] {
             return cached
@@ -255,7 +304,7 @@ final class WallpaperManager {
             }
         }
         let item = Self.builtInItems.first(where: { $0.id == id }) ?? Self.builtInItems[0]
-        let rendered = Self.renderProceduralArtwork(item: item, size: NSSize(width: 640, height: 640))
+        let rendered = Self.renderProceduralArtwork(item: item, size: NSSize(width: 640, height: 420))
         self.rawImageCache[id] = rendered
         return rendered
     }
@@ -265,30 +314,58 @@ final class WallpaperManager {
     func activeBackdropImage() -> NSImage? {
         guard self.spec.isEnabled else { return nil }
         let raw = self.artworkImage(for: self.spec.selectedID)
-        let roundedBlur = Int(self.spec.blurRadius.rounded())
-        guard roundedBlur >= 1 else { return raw }
+        // Quantize blur radius to 2px steps so continuous slider dragging stays silky 120fps.
+        let quantizedBlur = Int((self.spec.blurRadius / 2.0).rounded()) * 2
+        guard quantizedBlur >= 2 else { return raw }
         
-        let cacheKey = "\(self.spec.selectedID)|\(roundedBlur)"
+        let cacheKey = "\(self.spec.selectedID)|\(quantizedBlur)"
         if let cached = self.blurredImageCache[cacheKey] {
             return cached
         }
-        guard let cg = raw.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        // Downsample large custom wallpapers to max 640px before Gaussian blur so GPU pass is instantaneous.
+        let blurInput = Self.downsample(raw, maxSide: 640)
+        guard let cg = blurInput.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return raw
         }
         let ciInput = CIImage(cgImage: cg)
         guard let filter = CIFilter(name: "CIGaussianBlur") else { return raw }
+        let scaledRadius = Double(quantizedBlur) * (Double(cg.width) / max(Double(raw.size.width), Double(cg.width), 1.0))
         filter.setValue(ciInput.clampedToExtent(), forKey: kCIInputImageKey)
-        filter.setValue(Double(roundedBlur), forKey: kCIInputRadiusKey)
+        filter.setValue(max(1.0, scaledRadius), forKey: kCIInputRadiusKey)
         guard let output = filter.outputImage?.cropped(to: ciInput.extent),
               let outCG = self.ciContext.createCGImage(output, from: ciInput.extent)
         else { return raw }
         
-        let blurred = NSImage(cgImage: outCG, size: raw.size)
-        if self.blurredImageCache.count > 16 {
+        let blurred = NSImage(cgImage: outCG, size: blurInput.size)
+        if self.blurredImageCache.count > 24 {
             self.blurredImageCache.removeAll()
         }
         self.blurredImageCache[cacheKey] = blurred
         return blurred
+    }
+    
+    
+    private static func downsample(_ image: NSImage, to targetSize: NSSize) -> NSImage {
+        let out = NSImage(size: targetSize, flipped: false) { rect in
+            NSGraphicsContext.current?.imageInterpolation = .medium
+            let src = image.size
+            let scale = max(rect.width / max(1, src.width), rect.height / max(1, src.height))
+            let drawW = src.width * scale
+            let drawH = src.height * scale
+            let drawRect = NSRect(x: (rect.width - drawW) * 0.5, y: (rect.height - drawH) * 0.5, width: drawW, height: drawH)
+            image.draw(in: drawRect, from: .zero, operation: .copy, fraction: 1.0)
+            return true
+        }
+        return out
+    }
+    
+    
+    private static func downsample(_ image: NSImage, maxSide: CGFloat) -> NSImage {
+        let src = image.size
+        let longest = max(src.width, src.height)
+        guard longest > maxSide else { return image }
+        let ratio = maxSide / longest
+        return self.downsample(image, to: NSSize(width: (src.width * ratio).rounded(), height: (src.height * ratio).rounded()))
     }
     
     

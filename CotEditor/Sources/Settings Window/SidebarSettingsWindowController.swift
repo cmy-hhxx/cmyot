@@ -140,6 +140,7 @@ final class SidebarSettingsWindowController: NSWindowController {
     init() {
         let rootView = SidebarSettingsRootView(state: self.state)
         let hostingController = NSHostingController(rootView: rootView)
+        hostingController.sizingOptions = []
         
         let window = SidebarSettingsWindow(contentViewController: hostingController)
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
@@ -147,7 +148,7 @@ final class SidebarSettingsWindowController: NSWindowController {
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.setContentSize(NSSize(width: 700, height: 610))
-        window.minSize = NSSize(width: 700, height: 520)
+        window.minSize = NSSize(width: 700, height: 560)
         window.maxSize = NSSize(width: 700, height: 1200)
         window.center()
         
@@ -268,31 +269,24 @@ private struct SidebarSettingsRootView: View {
                     if self.state.selectedItem == .keyBindings {
                         KeyBindingsSettingsView(usesFlexibleFrame: true)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .id(self.state.selectedItem)
-                            .transition(.asymmetric(
-                                insertion: .opacity.combined(with: .offset(y: 8)),
-                                removal: .opacity
-                            ))
                     } else {
                         ScrollView {
                             self.detailContent
                                 .padding(.horizontal, SettingsDesignTokens.contentPadding)
-                                .padding(.top, 18)
-                                .padding(.bottom, 26)
-                                .frame(maxWidth: .infinity, alignment: .topLeading)
-                                .id(self.state.selectedItem)
-                                .transition(.asymmetric(
-                                    insertion: .opacity.combined(with: .offset(y: 8)),
-                                    removal: .opacity
-                                ))
+                                .padding(.top, 20)
+                                .padding(.bottom, 28)
+                                .frame(width: 523, alignment: .topLeading)
                         }
+                        .frame(width: 523)
+                        .frame(maxHeight: .infinity)
                     }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(width: 523)
+            .frame(maxHeight: .infinity)
         }
         .frame(width: 700)
-        .frame(minHeight: 540)
+        .frame(maxHeight: .infinity)
         .environment(\.locale, AppLanguage.current.locale)
     }
     
@@ -1294,27 +1288,14 @@ private struct SidebarAppIconSettingsPane: View {
 }
 
 
-// MARK: - 1C. 壁纸 (Album-Cover-Tunnel 3D Showcase + Custom Upload)
+// MARK: - 1C. 壁纸 (Silky 120fps Live Editor Preview + Cached Gallery Grid)
 
 private struct SidebarWallpaperSettingsPane: View {
     
     @Environment(\.colorScheme) private var colorScheme
     @State private var manager = WallpaperManager.shared
-    @State private var tunnelDepth: Double = 0
-    @State private var dragStartDepth: Double?
     @State private var hoveredID: String?
     @State private var isDropTargeted = false
-    
-    
-    private struct TunnelInstance: Identifiable {
-        let id: String
-        let item: WallpaperItem
-        let x3d: Double
-        let y3d: Double
-        let relZ: Double
-        let isCenterHero: Bool
-        let isLeftHeroTrack: Bool
-    }
     
     
     var body: some View {
@@ -1323,47 +1304,32 @@ private struct SidebarWallpaperSettingsPane: View {
         let selectedItem = items.first { $0.id == self.manager.spec.selectedID } ?? items.first
         
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
-            // 1. Streamlined 3D Perspective Cover Tunnel Showcase
-            SettingsGroupCard(title: AppLanguage.text("3D 壁纸画廊隧道", en: "3D Wallpaper Tunnel")) {
+            // 1. Live Miniature Editor Stage (real-time opacity & blur preview, zero-lag)
+            SettingsGroupCard(title: AppLanguage.text("实时画布预览", en: "Live Canvas Preview")) {
                 VStack(spacing: 12) {
-                    ZStack(alignment: .bottom) {
-                        self.tunnelStage(items: items, selectedItem: selectedItem)
-                            .frame(height: 238)
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .strokeBorder(
-                                        self.isDropTargeted ? StudioPaletteManager.shared.activeAccentColor : Color.white.opacity(0.10),
-                                        style: self.isDropTargeted ? StrokeStyle(lineWidth: 2, dash: [6, 4]) : StrokeStyle(lineWidth: 0.75)
-                                    )
-                            )
-                            .onDrop(of: [.image, .fileURL], isTargeted: self.$isDropTargeted) { providers in
-                                self.handleDrop(providers: providers)
-                            }
-                    }
+                    self.liveEditorPreviewStage(selectedItem: selectedItem)
+                        .frame(height: 184)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(
+                                    self.isDropTargeted
+                                        ? StudioPaletteManager.shared.activeAccentColor
+                                        : (self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.08)),
+                                    style: self.isDropTargeted ? StrokeStyle(lineWidth: 2, dash: [6, 4]) : StrokeStyle(lineWidth: 0.75)
+                                )
+                        )
+                        .onDrop(of: [.image, .fileURL], isTargeted: self.$isDropTargeted) { providers in
+                            self.handleDrop(providers: providers)
+                        }
                     
                     HStack(spacing: 8) {
-                        Button {
-                            self.stepTunnel(delta: -1, items: items)
-                        } label: {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                        .controlSize(.small)
-                        .help(AppLanguage.text("上一张壁纸", en: "Previous"))
-                        
-                        Button {
-                            self.stepTunnel(delta: 1, items: items)
-                        } label: {
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                        .controlSize(.small)
-                        .help(AppLanguage.text("下一张壁纸", en: "Next"))
-                        
                         if let selectedItem {
+                            Circle()
+                                .fill(Color(hexString: selectedItem.accentHex))
+                                .frame(width: 8, height: 8)
                             Text(selectedItem.title)
-                                .font(.system(size: 12.5, weight: .semibold))
+                                .font(.system(size: 13, weight: .medium))
                                 .lineLimit(1)
                         }
                         
@@ -1371,14 +1337,13 @@ private struct SidebarWallpaperSettingsPane: View {
                         
                         if let selectedItem, selectedItem.isCustom {
                             Button(role: .destructive) {
-                                withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
                                     self.manager.deleteCustomWallpaper(id: selectedItem.id)
                                 }
                             } label: {
-                                Image(systemName: "trash")
+                                Label(AppLanguage.text("删除", en: "Delete"), systemImage: "trash")
                             }
                             .controlSize(.small)
-                            .help(AppLanguage.text("删除此自定义壁纸", en: "Delete Custom Wallpaper"))
                         }
                         
                         Button {
@@ -1392,13 +1357,26 @@ private struct SidebarWallpaperSettingsPane: View {
                 .padding(12)
             }
             
-            // 2. Concise Rendering Controls
+            // 2. Clean 4-Column Cached Wallpaper Gallery Grid
+            SettingsGroupCard(title: AppLanguage.text("精选壁纸", en: "Gallery")) {
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
+                    spacing: 8
+                ) {
+                    ForEach(items) { item in
+                        self.wallpaperTile(item)
+                    }
+                }
+                .padding(12)
+            }
+            
+            // 3. Editor Backdrop Controls
             SettingsGroupCard(title: AppLanguage.text("编辑器背景显示", en: "Editor Backdrop")) {
                 SettingsItemRow(label: AppLanguage.text("启用编辑器壁纸", en: "Enable Wallpaper")) {
                     Toggle("", isOn: Binding(
                         get: { self.manager.spec.isEnabled },
                         set: { val in
-                            withAnimation(.easeOut(duration: 0.16)) {
+                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
                                 self.manager.spec.isEnabled = val
                             }
                         }
@@ -1410,7 +1388,7 @@ private struct SidebarWallpaperSettingsPane: View {
                 
                 SettingsRowDivider()
                 
-                SettingsItemRow(label: AppLanguage.text("壁纸画面浓度", en: "Wallpaper Opacity")) {
+                SettingsItemRow(label: AppLanguage.text("画面浓度", en: "Opacity")) {
                     HStack(spacing: 8) {
                         Slider(
                             value: Binding(
@@ -1419,7 +1397,7 @@ private struct SidebarWallpaperSettingsPane: View {
                             ),
                             in: 0.04...0.48
                         )
-                        .frame(width: 150)
+                        .frame(width: 152)
                         .disabled(!self.manager.spec.isEnabled)
                         
                         Text("\(Int((self.manager.spec.opacity * 100).rounded()))%")
@@ -1431,7 +1409,7 @@ private struct SidebarWallpaperSettingsPane: View {
                 
                 SettingsRowDivider()
                 
-                SettingsItemRow(label: AppLanguage.text("柔焦模糊半径", en: "Soft Blur Radius")) {
+                SettingsItemRow(label: AppLanguage.text("柔焦模糊", en: "Soft Blur")) {
                     HStack(spacing: 8) {
                         Slider(
                             value: Binding(
@@ -1440,7 +1418,7 @@ private struct SidebarWallpaperSettingsPane: View {
                             ),
                             in: 0...32
                         )
-                        .frame(width: 150)
+                        .frame(width: 152)
                         .disabled(!self.manager.spec.isEnabled)
                         
                         Text("\(Int(self.manager.spec.blurRadius.rounded())) px")
@@ -1451,220 +1429,159 @@ private struct SidebarWallpaperSettingsPane: View {
                 }
             }
         }
-        .onAppear {
-            if let idx = items.firstIndex(where: { $0.id == self.manager.spec.selectedID }) {
-                self.tunnelDepth = Double(idx)
+    }
+    
+    
+    @ViewBuilder
+    private func liveEditorPreviewStage(selectedItem: WallpaperItem?) -> some View {
+        let isDark = (self.colorScheme == .dark)
+        let editorBase = isDark ? Color(red: 0.09, green: 0.095, blue: 0.11) : Color(red: 0.985, green: 0.985, blue: 0.99)
+        let artwork = selectedItem.map { self.manager.artworkImage(for: $0.id) }
+        let accent = selectedItem.map { Color(hexString: $0.accentHex) } ?? StudioPaletteManager.shared.activeAccentColor
+        let previewAlpha = self.manager.spec.isEnabled ? min(0.82, max(0.18, self.manager.spec.opacity * 1.65)) : 0.12
+        let previewBlur = self.manager.spec.isEnabled ? min(14, self.manager.spec.blurRadius * 0.45) : 0
+        
+        ZStack(alignment: .topLeading) {
+            editorBase
+            
+            if let artwork {
+                Image(nsImage: artwork)
+                    .resizable()
+                    .interpolation(.medium)
+                    .scaledToFill()
+                    .blur(radius: previewBlur)
+                    .opacity(previewAlpha)
+                    .scaleEffect(1.06)
+                    .clipped()
+                    .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24), value: selectedItem?.id)
+            }
+            
+            // Miniature authentic CotEditor window chrome & code skeleton (real product material)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                    Circle().fill(Color(red: 0.95, green: 0.37, blue: 0.35)).frame(width: 7, height: 7)
+                    Circle().fill(Color(red: 0.96, green: 0.74, blue: 0.26)).frame(width: 7, height: 7)
+                    Circle().fill(Color(red: 0.30, green: 0.78, blue: 0.38)).frame(width: 7, height: 7)
+                    
+                    Spacer()
+                    
+                    Text(self.manager.spec.isEnabled ? AppLanguage.text("已启用", en: "Active") : AppLanguage.text("未启用", en: "Off"))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(self.manager.spec.isEnabled ? accent : .secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(
+                            (self.manager.spec.isEnabled ? accent.opacity(0.16) : Color.primary.opacity(0.06)),
+                            in: Capsule()
+                        )
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 28)
+                .background(isDark ? Color.black.opacity(0.26) : Color.white.opacity(0.55))
+                
+                Divider().opacity(0.25)
+                
+                VStack(alignment: .leading, spacing: 7) {
+                    self.sampleCodeRow(line: "1", segments: [(accent, 42), (.primary.opacity(0.75), 96), (.secondary.opacity(0.45), 64)])
+                    self.sampleCodeRow(line: "2", segments: [(.clear, 16), (.primary.opacity(0.65), 118), (accent.opacity(0.75), 54)])
+                    self.sampleCodeRow(line: "3", segments: [(.clear, 16), (.secondary.opacity(0.50), 146)])
+                    self.sampleCodeRow(line: "4", segments: [(.clear, 32), (accent.opacity(0.85), 62), (.primary.opacity(0.70), 82)])
+                    self.sampleCodeRow(line: "5", segments: [(.primary.opacity(0.55), 36)])
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 14)
+                
+                Spacer(minLength: 0)
+            }
+            
+            if self.isDropTargeted {
+                ZStack {
+                    Color.black.opacity(0.35)
+                    Text(AppLanguage.text("松手设为自定义壁纸", en: "Drop Image to Use as Wallpaper"))
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(accent, in: Capsule())
+                }
+            }
+        }
+    }
+    
+    
+    private func sampleCodeRow(line: String, segments: [(Color, CGFloat)]) -> some View {
+        HStack(spacing: 8) {
+            Text(line)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .frame(width: 14, alignment: .trailing)
+            HStack(spacing: 5) {
+                ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
+                    if seg.0 == .clear {
+                        Color.clear.frame(width: seg.1, height: 6)
+                    } else {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(seg.0)
+                            .frame(width: seg.1, height: 6)
+                    }
+                }
             }
         }
     }
     
     
     @ViewBuilder
-    private func tunnelStage(items: [WallpaperItem], selectedItem: WallpaperItem?) -> some View {
-        GeometryReader { geo in
-            let W = geo.size.width
-            let H = geo.size.height
-            let accent = selectedItem.map { Color(hexString: $0.accentHex) } ?? StudioPaletteManager.shared.activeAccentColor
-            let instances = self.buildTunnelInstances(items: items)
-            
-            ZStack {
-                // Deep cosmos backdrop (#05060F + subtle radial nebula core)
-                Color(red: 0.024, green: 0.027, blue: 0.062)
-                
-                RadialGradient(
-                    colors: [accent.opacity(0.32), Color(red: 0.10, green: 0.09, blue: 0.34).opacity(0.28), .clear],
-                    center: UnitPoint(x: 0.56, y: 0.32),
-                    startRadius: 12,
-                    endRadius: W * 0.72
-                )
-                
-                // Twinkling depth motes inside tunnel
-                Canvas { ctx, sz in
-                    for i in 0..<28 {
-                        let px = CGFloat((i * 73 + 19) % 100) / 100.0 * sz.width
-                        let py = CGFloat((i * 41 + 11) % 100) / 100.0 * sz.height
-                        let r: CGFloat = (i % 3 == 0) ? 1.4 : 0.9
-                        ctx.fill(Path(ellipseIn: CGRect(x: px, y: py, width: r * 2, height: r * 2)), with: .color(.white.opacity(0.36)))
-                    }
-                }
-                .allowsHitTesting(false)
-                
-                // Perspective 3D Tunnel Cards sorted far-to-near
-                ForEach(instances) { inst in
-                    let focal: Double = 3.2
-                    let zClamped = max(0.3, inst.relZ)
-                    let projScale = focal / (focal + zClamped * 1.45)
-                    let baseSide: CGFloat = 104
-                    let cardSide = baseSide * CGFloat(projScale)
+    private func wallpaperTile(_ item: WallpaperItem) -> some View {
+        let isSelected = (self.manager.spec.selectedID == item.id)
+        let isHovered = (self.hoveredID == item.id)
+        let accent = Color(hexString: item.accentHex)
+        let thumb = self.manager.thumbnailImage(for: item.id)
+        
+        Button {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                self.manager.selectWallpaper(id: item.id, enableIfDisabled: true)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                ZStack(alignment: .topTrailing) {
+                    Image(nsImage: thumb)
+                        .resizable()
+                        .interpolation(.medium)
+                        .scaledToFill()
+                        .frame(height: 64)
+                        .frame(maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(
+                                    isSelected ? accent : Color.primary.opacity(isHovered ? 0.22 : 0.08),
+                                    lineWidth: isSelected ? 2 : 0.75
+                                )
+                        )
                     
-                    // Perspective projection with subtle 10deg cinematic tunnel roll
-                    let tiltRad: Double = 0.14
-                    let rotX = inst.x3d * cos(tiltRad) - inst.y3d * sin(tiltRad)
-                    let rotY = inst.x3d * sin(tiltRad) + inst.y3d * cos(tiltRad)
-                    let screenX = W * 0.5 + CGFloat(rotX * projScale * 138.0)
-                    let screenY = H * 0.5 - CGFloat(rotY * projScale * 98.0)
-                    let isCardHovered = (self.hoveredID == inst.id)
-                    let isSelected = (self.manager.spec.selectedID == inst.item.id && self.manager.spec.isEnabled)
-                    let fogAlpha = max(0.08, min(1.0, exp(-max(0.0, zClamped - 0.5) * 0.42)))
-                    let liftScale: CGFloat = isCardHovered ? 1.12 : (inst.isCenterHero ? 1.04 : 1.0)
-                    let artwork = self.manager.artworkImage(for: inst.item.id)
-                    
-                    ZStack {
-                        Image(nsImage: artwork)
-                            .resizable()
-                            .interpolation(.high)
-                            .scaledToFill()
-                            .frame(width: cardSide, height: cardSide)
-                            .clipShape(RoundedRectangle(cornerRadius: max(5, cardSide * 0.10), style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: max(5, cardSide * 0.10), style: .continuous)
-                                    .strokeBorder(
-                                        isSelected && inst.isCenterHero
-                                            ? Color(hexString: inst.item.accentHex)
-                                            : Color.white.opacity(isCardHovered ? 0.65 : (inst.isCenterHero ? 0.34 : 0.14)),
-                                        lineWidth: (isSelected && inst.isCenterHero) ? 2.0 : 0.9
-                                    )
-                            )
-                            .shadow(
-                                color: Color.black.opacity(inst.isCenterHero ? 0.55 : 0.35),
-                                radius: inst.isCenterHero ? 18 : 8,
-                                y: inst.isCenterHero ? 10 : 4
-                            )
-                        
-                        // Frosted caption pill on center Hero cover
-                        if inst.isCenterHero {
-                            VStack {
-                                Spacer()
-                                Text(inst.item.title)
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(.ultraThinMaterial, in: Capsule())
-                                    .padding(.bottom, 6)
-                            }
-                        }
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.white, accent)
+                            .padding(4)
                     }
-                    .frame(width: cardSide, height: cardSide)
-                    .scaleEffect(liftScale)
-                    .opacity(fogAlpha)
-                    .position(x: screenX, y: screenY)
-                    .onHover { inside in
-                        withAnimation(.spring(response: 0.22, dampingFraction: 0.78)) {
-                            self.hoveredID = inside ? inst.id : (self.hoveredID == inst.id ? nil : self.hoveredID)
-                        }
-                    }
-                    .onTapGesture {
-                        self.flyWallpaperToCenter(item: inst.item, items: items)
-                    }
-                    .pointerStyle(.link)
                 }
                 
-                // Concise bottom usage cue
-                VStack {
-                    Spacer()
-                    Text(AppLanguage.text("拖动穿行隧道 · 点击封面切换 · 拖入图片自定义", en: "Drag tunnel · Click cover to activate · Drop image"))
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.55))
-                        .padding(.bottom, 8)
-                }
-                .allowsHitTesting(false)
+                Text(item.title)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                    .lineLimit(1)
             }
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 2)
-                    .onChanged { value in
-                        let base = self.dragStartDepth ?? self.tunnelDepth
-                        if self.dragStartDepth == nil {
-                            self.dragStartDepth = base
-                        }
-                        self.tunnelDepth = base - Double(value.translation.height) * 0.022
-                    }
-                    .onEnded { value in
-                        let base = self.dragStartDepth ?? self.tunnelDepth
-                        self.dragStartDepth = nil
-                        let predicted = base - Double(value.predictedEndTranslation.height) * 0.022
-                        let snapped = predicted.rounded()
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.36)) {
-                            self.tunnelDepth = snapped
-                        }
-                        let count = max(1, items.count)
-                        let mod = ((Int(snapped) % count) + count) % count
-                        if items.indices.contains(mod) {
-                            self.manager.selectWallpaper(id: items[mod].id, enableIfDisabled: true)
-                        }
-                    }
-            )
         }
-    }
-    
-    
-    private func buildTunnelInstances(items: [WallpaperItem]) -> [TunnelInstance] {
-        guard !items.isEmpty else { return [] }
-        let count = items.count
-        let layerOffset = self.tunnelDepth
-        let baseLayer = Int(floor(layerOffset))
-        var result: [TunnelInstance] = []
-        
-        // Checkerboard tunnel across 5 receding layers from k = 4 down to k = 0 (far to near)
-        for relLayer in stride(from: 4, through: 0, by: -1) {
-            let k = baseLayer + relLayer
-            let relZ = Double(k) - layerOffset
-            guard relZ >= -0.35 else { continue }
-            
-            let wrappedLayer = ((k % count) + count) % count
-            for j in -1...1 {
-                for i in -2...2 {
-                    // Checkerboard parity: avoid uniform grid clutter
-                    guard (abs(i + j + relLayer) % 2 == 0) || (i == 0 && j == 0) else { continue }
-                    let isHero = (relLayer == 0 && i == 0 && j == 0)
-                    let idx: Int
-                    if i == 0 && j == 0 {
-                        idx = wrappedLayer
-                    } else {
-                        let raw = abs(i * 3 + j * 5 + relLayer * 2 + wrappedLayer) % count
-                        idx = raw
-                    }
-                    let item = items[idx]
-                    result.append(TunnelInstance(
-                        id: "\(k)_\(i)_\(j)",
-                        item: item,
-                        x3d: Double(i) * 1.16,
-                        y3d: Double(j) * 0.96,
-                        relZ: max(0.0, relZ + 0.08),
-                        isCenterHero: isHero,
-                        isLeftHeroTrack: i == 0 && j == 0
-                    ))
-                }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { inside in
+            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.14)) {
+                self.hoveredID = inside ? item.id : (self.hoveredID == item.id ? nil : self.hoveredID)
             }
         }
-        return result.sorted { $0.relZ > $1.relZ }
-    }
-    
-    
-    private func stepTunnel(delta: Int, items: [WallpaperItem]) {
-        guard !items.isEmpty else { return }
-        let next = self.tunnelDepth.rounded() + Double(delta)
-        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.36)) {
-            self.tunnelDepth = next
-        }
-        let mod = ((Int(next) % items.count) + items.count) % items.count
-        self.manager.selectWallpaper(id: items[mod].id, enableIfDisabled: true)
-    }
-    
-    
-    private func flyWallpaperToCenter(item: WallpaperItem, items: [WallpaperItem]) {
-        guard let idx = items.firstIndex(where: { $0.id == item.id }) else { return }
-        let count = Double(max(1, items.count))
-        let base = self.tunnelDepth
-        let k = (base - Double(idx)) / count
-        let nearest = Double(idx) + k.rounded() * count
-        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.80)) {
-            self.tunnelDepth = nearest
-        }
-        self.manager.selectWallpaper(id: item.id, enableIfDisabled: true)
     }
     
     
@@ -1678,13 +1595,7 @@ private struct SidebarWallpaperSettingsPane: View {
             guard response == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
             let baseTitle = url.deletingPathExtension().lastPathComponent
             Task { @MainActor in
-                if let saved = self.manager.saveCustomWallpaper(image, title: baseTitle),
-                   let idx = self.manager.allItems.firstIndex(where: { $0.id == saved.id })
-                {
-                    withAnimation(.spring(response: 0.36, dampingFraction: 0.80)) {
-                        self.tunnelDepth = Double(idx)
-                    }
-                }
+                _ = self.manager.saveCustomWallpaper(image, title: baseTitle)
             }
         }
     }
@@ -1703,7 +1614,6 @@ private struct SidebarWallpaperSettingsPane: View {
                     let title = url.deletingPathExtension().lastPathComponent
                     Task { @MainActor in
                         _ = self.manager.saveCustomWallpaper(image, title: title)
-                        self.tunnelDepth = 0
                     }
                 }
                 return true
@@ -1713,7 +1623,6 @@ private struct SidebarWallpaperSettingsPane: View {
                     guard let image = object as? NSImage else { return }
                     Task { @MainActor in
                         _ = self.manager.saveCustomWallpaper(image)
-                        self.tunnelDepth = 0
                     }
                 }
                 return true

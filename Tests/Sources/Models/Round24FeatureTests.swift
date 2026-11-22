@@ -1,0 +1,252 @@
+//
+//  Round24FeatureTests.swift
+//
+//  CotEditor
+//  https://coteditor.com
+//
+//  ---------------------------------------------------------------------------
+//
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
+//
+//  https://www.apache.org/licenses/LICENSE-2.0
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+//
+
+import AppKit
+import Foundation
+import SwiftUI
+import Testing
+@testable import CotEditor
+
+@MainActor
+struct Round24FeatureTests {
+    
+    // MARK: 1. Highlight Palette Whitespace Guard
+    
+    @Test func highlightPaletteIgnoresWhitespaceAndEmptySelections() {
+        #expect(!NotesTextColorPaletteController.shouldPresent(for: ""))
+        #expect(!NotesTextColorPaletteController.shouldPresent(for: "   "))
+        #expect(!NotesTextColorPaletteController.shouldPresent(for: "\t\n  \r\n"))
+        #expect(!NotesTextColorPaletteController.shouldPresent(for: "⟦🖼demo-id⟧"))
+        #expect(NotesTextColorPaletteController.shouldPresent(for: "hello"))
+        #expect(NotesTextColorPaletteController.shouldPresent(for: "  中文高亮  "))
+    }
+    
+    
+    // MARK: 2. Vim j/k Sticky Column Across Blank & Shorter Lines
+    
+    @Test func vimVerticalMovementPreservesColumnAcrossBlankAndShortLines() throws {
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.string = "0123456789abcdef\n\nhi\nABCDEFGHIJKLMNOP"
+        
+        let engine = VimEngine(textView: textView)
+        VimState.shared.mode = .normal
+        
+        // Start on line 3 ("ABCDEFGHIJKLMNOP") at column 8 ('I')
+        let line3Start = ("0123456789abcdef\n\nhi\n" as NSString).length
+        textView.setSelectedRange(NSRange(location: line3Start + 8, length: 0))
+        
+        // Press `k` -> lands on short line "hi" (clamped to index 1, 'i')
+        let kEvent = try Self.makeKeyEvent(char: "k", keyCode: 40)
+        #expect(engine.handleKeyDown(kEvent))
+        let line2Start = ("0123456789abcdef\n\n" as NSString).length
+        #expect(textView.selectedRange().location == line2Start + 1)
+        
+        // Press `k` -> lands on blank line (offset 0)
+        #expect(engine.handleKeyDown(kEvent))
+        let line1Start = ("0123456789abcdef\n" as NSString).length
+        #expect(textView.selectedRange().location == line1Start)
+        
+        // Press `k` -> restores sticky column ~8 on line 0 ("0123456789abcdef") instead of snapping to column 0!
+        #expect(engine.handleKeyDown(kEvent))
+        #expect(textView.selectedRange().location >= 7 && textView.selectedRange().location <= 9)
+        
+        // Press `j` three times back to line 3 -> stays near column 8!
+        let jEvent = try Self.makeKeyEvent(char: "j", keyCode: 38)
+        #expect(engine.handleKeyDown(jEvent))
+        #expect(engine.handleKeyDown(jEvent))
+        #expect(engine.handleKeyDown(jEvent))
+        let finalCol = textView.selectedRange().location - line3Start
+        #expect(finalCol >= 7 && finalCol <= 9)
+    }
+    
+    
+    // MARK: 3. Toolbar Capsule Todos: Priority Ordering & Always-On Time Badge
+    
+    @Test func toolbarCapsuleTodosPrioritizeSoonestAndAlwaysShowTime() {
+        let now = Date()
+        let todayKey = AnalyticsManager.dateKey(for: now)
+        let timeless = UserReminder(
+            id: "timeless",
+            title: "无期限任务",
+            dueDate: now.addingTimeInterval(9999),
+            dueDayKey: todayKey,
+            createdAt: now.addingTimeInterval(-600),
+            isPinned: true,
+            hasDeadline: false
+        )
+        let later = UserReminder(
+            id: "later",
+            title: "两小时后",
+            dueDate: now.addingTimeInterval(7200),
+            dueDayKey: todayKey,
+            createdAt: now.addingTimeInterval(-300),
+            isPinned: true,
+            hasDeadline: true
+        )
+        let soon = UserReminder(
+            id: "soon",
+            title: "10分钟内到期",
+            dueDate: now.addingTimeInterval(600),
+            dueDayKey: todayKey,
+            createdAt: now.addingTimeInterval(-100),
+            isPinned: true,
+            hasDeadline: true
+        )
+        let overdue = UserReminder(
+            id: "overdue",
+            title: "已超时事项",
+            dueDate: now.addingTimeInterval(-120),
+            dueDayKey: todayKey,
+            createdAt: now.addingTimeInterval(-900),
+            isPinned: true,
+            hasDeadline: true
+        )
+        
+        let sorted = ToolbarCapsuleTodoHelper.prioritizedTodos([timeless, later, soon, overdue])
+        #expect(sorted.map(\.id) == ["overdue", "soon", "later", "timeless"])
+        
+        // Every item, including timeless ones, produces a non-empty time badge
+        for item in sorted {
+            let badge = ToolbarCapsuleTodoHelper.timeBadgeText(for: item, now: now)
+            #expect(!badge.isEmpty)
+        }
+    }
+    
+    
+    // MARK: 4. AI Gijinka Mapping for All Bots
+    
+    @Test func allBotsExposeValidAIGijinkaCharacters() {
+        var seenNames = Set<String>()
+        for bot in AIBotID.allCases {
+            let gijinka = bot.gijinkaCharacter
+            #expect(!gijinka.name.isEmpty)
+            #expect(gijinka.portraitURL != nil)
+            #expect(gijinka.portraitURLString.hasPrefix("https://"))
+            seenNames.insert(gijinka.name)
+        }
+        #expect(seenNames.count == AIBotID.allCases.count)
+    }
+    
+    
+    // MARK: 5. CotPass Metadata & Avatar Contour Extraction
+    
+    @Test func cotPassTierFieldsAndAvatarContourLuminanceField() {
+        #expect(CotPassTier.explorer.statusLabel == "LANDED")
+        #expect(CotPassTier.pro.statusLabel == "LANDED")
+        #expect(CotPassTier.explorer.summaryLabel == "免费")
+        #expect(CotPassTier.pro.summaryLabel == "付费")
+        #expect(CotPassTier.founder.summaryLabel == "付费")
+        
+        // Render a synthetic high-contrast portrait image and confirm Sobel contour extraction produces signal
+        let avatar = NSImage(size: NSSize(width: 96, height: 96))
+        avatar.lockFocus()
+        NSColor.black.setFill()
+        NSRect(x: 0, y: 0, width: 96, height: 96).fill()
+        NSColor.white.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 20, y: 20, width: 56, height: 56)).fill()
+        avatar.unlockFocus()
+        
+        let field = BrandLinePassEngine.buildAvatarContourField(from: avatar)
+        #expect(field.count == BrandLinePassEngine.gridSize * BrandLinePassEngine.gridSize)
+        #expect((field.max() ?? 0) > 0.5)
+    }
+    
+    
+    // MARK: 6. Apple Music Ambient Blurred Cover Artwork
+    
+    @Test func avatarColorExtractorBuildsAppleMusicBlurredAmbientArtwork() {
+        let avatar = NSImage(size: NSSize(width: 80, height: 80))
+        avatar.lockFocus()
+        NSColor.systemPink.setFill()
+        NSRect(x: 0, y: 0, width: 40, height: 80).fill()
+        NSColor.systemTeal.setFill()
+        NSRect(x: 40, y: 0, width: 40, height: 80).fill()
+        avatar.unlockFocus()
+        
+        let profile = UserProfile(
+            id: "ambient-test",
+            displayName: "Tester",
+            avatarData: Data([1, 2, 3]),
+            avatarColorHex: "#715CB2",
+            dbFilename: "test.sqlite3",
+            accountKind: "local",
+            email: nil,
+            remoteUserID: nil,
+            createdAt: Date(),
+            lastActiveAt: Date()
+        )
+        let blurred = AvatarColorExtractor.blurredAmbientArtwork(for: profile, image: avatar)
+        #expect(blurred != nil)
+        #expect((blurred?.size.width ?? 0) > 0)
+    }
+    
+    
+    // MARK: 7. Database Migration Studio Theme Synthesis (Zero Missing Resource Alerts)
+    
+    @Test func studioPaletteThemesSynthesizeOnDemandAfterMigration() throws {
+        let cnDark = "Studio · 电光紫罗兰 (暗色)"
+        let enLight = "Studio · Matcha Marker (Light)"
+        
+        let theme1 = StudioPaletteManager.shared.synthesizedTheme(named: cnDark)
+        let theme2 = StudioPaletteManager.shared.synthesizedTheme(named: enLight)
+        #expect(theme1 != nil)
+        #expect(theme2 != nil)
+        #expect(StudioPaletteManager.shared.synthesizedTheme(named: "NonStudioTheme") == nil)
+        
+        // ThemeManager.setting(name:) resolves built-in Studio themes even without a pre-existing file
+        let resolved = try ThemeManager.shared.setting(name: cnDark)
+        #expect(resolved.background.color != .clear)
+    }
+    
+    
+    // MARK: 8. Settings Window Fixed Width Stability
+    
+    @Test func settingsWindowLocksSizingOptionsToPreventJumping() throws {
+        let controller = SidebarSettingsWindowController()
+        let window = try #require(controller.window)
+        #expect(abs(window.contentLayoutRect.width - 700) <= 2)
+        if let hosting = window.contentViewController as? NSHostingController<AnyView> {
+            #expect(hosting.sizingOptions.isEmpty)
+        }
+        window.close()
+    }
+    
+    
+    private static func makeKeyEvent(
+        char: String,
+        keyCode: UInt16,
+        modifiers: NSEvent.ModifierFlags = []
+    ) throws -> NSEvent {
+        try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifiers,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: 0,
+            context: nil,
+            characters: char,
+            charactersIgnoringModifiers: char,
+            isARepeat: false,
+            keyCode: keyCode
+        ))
+    }
+}

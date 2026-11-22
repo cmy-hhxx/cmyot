@@ -199,6 +199,19 @@ enum WorkspaceCenterIcons {
     }
     
     
+    /// Apple HIG icon for 设置 (`gearshape`).
+    @MainActor
+    static func settingsIcon(size: NSSize = defaultSize) -> NSImage {
+        self.appleToolbarSymbol(
+            "gearshape",
+            pointSize: 14.2,
+            weight: .medium,
+            isTemplate: true,
+            size: size
+        )
+    }
+    
+    
     /// Apple HIG icon for 右侧检查器 (`sidebar.trailing`).
     @MainActor
     static func inspectorIcon(size: NSSize = defaultSize) -> NSImage {
@@ -254,7 +267,6 @@ final class ContentViewController: NSSplitViewController {
     private var windowCloseObserver: NSObjectProtocol?
     private var centerEscMonitor: Any?
     private var centerHostView: NSHostingView<WorkspaceCenterHostView>?
-    private var pinnedTodoOverlayView: PinnedTodoOverlayContainerView?
     private var wallpaperBackdropView: EditorWallpaperBackdropView?
     private let centerHostModel = WorkspaceCenterHostModel()
     private let weeklyReportState = WeeklyReportCenterState()
@@ -314,17 +326,6 @@ final class ContentViewController: NSSplitViewController {
             wallpaperView.bottomAnchor.constraint(equalTo: self.view.bottomAnchor),
         ])
         self.wallpaperBackdropView = wallpaperView
-        
-        let todoOverlay = PinnedTodoOverlayContainerView(frame: .zero)
-        todoOverlay.translatesAutoresizingMaskIntoConstraints = false
-        self.view.addSubview(todoOverlay, positioned: .above, relativeTo: self.splitView)
-        NSLayoutConstraint.activate([
-            todoOverlay.leadingAnchor.constraint(equalTo: self.view.leadingAnchor),
-            todoOverlay.trailingAnchor.constraint(equalTo: self.view.trailingAnchor),
-            todoOverlay.topAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.topAnchor),
-            todoOverlay.bottomAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.bottomAnchor),
-        ])
-        self.pinnedTodoOverlayView = todoOverlay
     }
     
     
@@ -499,9 +500,6 @@ final class ContentViewController: NSSplitViewController {
         }
         
         self.splitView.isHidden = true
-        if let overlay = self.pinnedTodoOverlayView, let host = self.centerHostView {
-            self.view.addSubview(overlay, positioned: .above, relativeTo: host)
-        }
         self.view.window?.invalidateCursorRects(for: self.view)
         NSCursor.arrow.set()
         

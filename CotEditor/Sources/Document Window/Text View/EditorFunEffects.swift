@@ -339,13 +339,13 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
                 } else {
                     adjusted.size.width = max(adjusted.width, 6)
                 }
-                adjusted = adjusted.insetBy(dx: -2, dy: -0.5)
+                adjusted = adjusted.insetBy(dx: -1, dy: 0)
                 if adjusted.width > 0, adjusted.height > 0 {
                     targetRects.append(adjusted)
                 }
             }
         } else if let anchorLocation, let cursorRect = textView.vimCursorRect(at: anchorLocation) {
-            targetRects.append(cursorRect.insetBy(dx: -2, dy: -0.5))
+            targetRects.append(cursorRect.insetBy(dx: -1, dy: 0))
         }
         
         if targetRects.count > Self.maxVisualBandLayers {
@@ -355,28 +355,11 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         let wasActive = self.isVimVisualActive
         self.isVimVisualActive = !targetRects.isEmpty
         
-        // Update subtle anchor pin dot at `anchorLocation`
-        if let anchorDot = self.vimVisualAnchorDotLayer,
-           let anchorLocation,
-           let anchorRect = textView.vimCursorRect(at: anchorLocation)
-        {
-            let dotSize: CGFloat = 5.0
-            let dotFrame = CGRect(
-                x: anchorRect.minX - dotSize * 0.5,
-                y: anchorRect.minY - 2.5,
-                width: dotSize,
-                height: dotSize
-            )
+        // Keep anchor marker hidden so visual selection stays clean and borderless.
+        if let anchorDot = self.vimVisualAnchorDotLayer {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            anchorDot.path = CGPath(ellipseIn: CGRect(origin: .zero, size: dotFrame.size), transform: nil)
-            anchorDot.frame = dotFrame
-            anchorDot.fillColor = accent.withAlphaComponent(0.92).cgColor
-            anchorDot.shadowColor = accent.cgColor
-            anchorDot.shadowOpacity = 0.5
-            anchorDot.shadowRadius = 4
-            anchorDot.shadowOffset = .zero
-            anchorDot.opacity = targetRects.isEmpty ? 0 : 1
+            anchorDot.opacity = 0
             CATransaction.commit()
         }
         
@@ -429,9 +412,10 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             let accent = self.visualSelectionColor
             for (idx, layer) in self.vimVisualBandLayers.enumerated() where idx < self.vimVisualStates.count {
                 let targetRect = self.vimVisualStates[idx].target
-                layer.fillColor = accent.withAlphaComponent(0.36).cgColor
-                layer.strokeColor = accent.withAlphaComponent(0.85).cgColor
-                layer.path = CGPath(roundedRect: targetRect, cornerWidth: 4.5, cornerHeight: 4.5, transform: nil)
+                layer.fillColor = accent.withAlphaComponent(0.32).cgColor
+                layer.strokeColor = nil
+                layer.lineWidth = 0
+                layer.path = CGPath(roundedRect: targetRect, cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
                 layer.opacity = 1.0
             }
             self.vimVisualStates.removeAll()
@@ -1813,19 +1797,18 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private func applyVisualBandLayersImmediate() {
         
         let accent = self.visualSelectionColor
-        let fill = accent.withAlphaComponent(0.22).cgColor
-        let stroke = accent.withAlphaComponent(0.50).cgColor
+        let fill = accent.withAlphaComponent(0.20).cgColor
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (idx, layer) in self.vimVisualBandLayers.enumerated() {
             if idx < self.vimVisualStates.count {
                 let rect = self.vimVisualStates[idx].currentRect
-                let radius = min(4.5, max(2.5, rect.height * 0.20))
+                let radius = min(3.5, max(2.0, rect.height * 0.16))
                 layer.path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
                 layer.fillColor = fill
-                layer.strokeColor = stroke
-                layer.lineWidth = 1.0
+                layer.strokeColor = nil
+                layer.lineWidth = 0
                 layer.opacity = 1.0
             } else {
                 layer.opacity = 0

@@ -3682,13 +3682,28 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         assert(Thread.isMainThread)
         
         let theme: Theme
+        let resolvedName: String
         do {
             theme = try ThemeManager.shared.setting(name: name)
+            resolvedName = name
         } catch {
-            return self.presentErrorAsSheet(error)
+            // Built-in themes belong to the application bundle rather than the migrated SQLite DB;
+            // fall back cleanly to the app's default theme instead of presenting a missing-resource alert.
+            let fallbackName = ThemeManager.shared.userDefaultSettingName(inDarkMode: self.view.effectiveAppearance.isDark)
+            if fallbackName != name, let fallbackTheme = try? ThemeManager.shared.setting(name: fallbackName) {
+                theme = fallbackTheme
+                resolvedName = fallbackName
+            } else if let bundledName = ThemeManager.shared.bundledSettingNames.first,
+                      let bundledTheme = try? ThemeManager.shared.setting(name: bundledName)
+            {
+                theme = bundledTheme
+                resolvedName = bundledName
+            } else {
+                return self.presentErrorAsSheet(error)
+            }
         }
         
-        self.themeName = name
+        self.themeName = resolvedName
         self.document.syntaxController.theme = theme
         
         for textView in self.textViews {

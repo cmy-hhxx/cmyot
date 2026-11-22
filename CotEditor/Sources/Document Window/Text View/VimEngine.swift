@@ -110,6 +110,11 @@ final class VimEngine {
     private var wasKeyRepeat = false
     private var lastMoveWasContinuous = false
     
+    // Sticky horizontal goal column / visual X coordinate preserved across consecutive `j`/`k` motions
+    // (including across blank lines, shorter lines, and soft-wrapped visual lines).
+    private var preferredColumn: Int?
+    private var preferredVisualX: CGFloat?
+    
     // Count freshness tracking so stray digits expire cleanly.
     private var countUpdatedTimestamp: TimeInterval = 0
     private static let staleCountExpiration: TimeInterval = 3.0
@@ -976,44 +981,56 @@ final class VimEngine {
         
         switch motion {
             case .left:
+                self.resetPreferredColumn()
                 for _ in 0..<count {
                     guard location > 0 else { break }
                     let prevIndex = min(location - 1, max(0, string.length - 1))
                     location = string.rangeOfComposedCharacterSequence(at: prevIndex).location
                 }
             case .right:
+                self.resetPreferredColumn()
                 for _ in 0..<count {
                     guard location < string.length else { break }
                     let seq = string.rangeOfComposedCharacterSequence(at: location)
                     location = min(string.length, NSMaxRange(seq))
                 }
             case .down, .lineDown:
-                location = self.verticalLocation(from: location, direction: count)
+                location = self.interactiveVerticalLocation(from: location, direction: count)
                 if location < string.length {
                     location = string.rangeOfComposedCharacterSequence(at: location).location
                 }
             case .up, .lineUp:
-                location = self.verticalLocation(from: location, direction: -count)
+                location = self.interactiveVerticalLocation(from: location, direction: -count)
                 if location < string.length {
                     location = string.rangeOfComposedCharacterSequence(at: location).location
                 }
             case .wordForward:
+                self.resetPreferredColumn()
                 for _ in 0..<count { location = self.forwardWord(from: location, big: false) }
             case .wordBackward:
+                self.resetPreferredColumn()
                 for _ in 0..<count { location = self.backwardWord(from: location, big: false) }
             case .wordEnd:
+                self.resetPreferredColumn()
                 for _ in 0..<count { location = self.wordEnd(from: location, big: false) }
             case .bigWordForward:
+                self.resetPreferredColumn()
                 for _ in 0..<count { location = self.forwardWord(from: location, big: true) }
             case .bigWordBackward:
+                self.resetPreferredColumn()
                 for _ in 0..<count { location = self.backwardWord(from: location, big: true) }
             case .bigWordEnd:
+                self.resetPreferredColumn()
                 for _ in 0..<count { location = self.wordEnd(from: location, big: true) }
             case .lineStart:
+                self.resetPreferredColumn()
                 location = self.lineRange(at: location)?.location ?? 0
             case .firstNonBlank:
+                self.resetPreferredColumn()
                 location = self.firstNonBlank(in: self.lineRange(at: location), string: string)
             case .lineEnd:
+                self.preferredColumn = Int.max
+                self.preferredVisualX = .greatestFiniteMagnitude
                 if let range = self.lineRange(at: location) {
                     var end = NSMaxRange(range)
                     if end > range.location, string.character(at: end - 1) == 10 {
@@ -1030,12 +1047,16 @@ final class VimEngine {
                     location = 0
                 }
             case .paragraphBackward:
+                self.resetPreferredColumn()
                 for _ in 0..<count { location = self.paragraphLocation(from: location, forward: false, string: string) }
             case .paragraphForward:
+                self.resetPreferredColumn()
                 for _ in 0..<count { location = self.paragraphLocation(from: location, forward: true, string: string) }
             case .documentStart:
+                self.resetPreferredColumn()
                 location = count > 1 ? self.lineLocation(number: count) : 0
             case .documentEnd:
+                self.resetPreferredColumn()
                 if count > 1 {
                     location = self.lineLocation(number: count)
                 } else {
@@ -2218,6 +2239,7 @@ final class VimEngine {
             self.visualLinewise = false
             VimState.shared.visualActiveLocation = nil
             VimState.shared.visualOwnerID = nil
+            self.resetPreferredColumn()
         }
         self.resetPending(keepCount: false)
         self.refreshCursor()
@@ -2259,6 +2281,7 @@ final class VimEngine {
             VimState.shared.mode = .normal
             self.refreshCursor()
         }
+        self.resetPreferredColumn()
         self.resetPending()
     }
     
@@ -2267,6 +2290,7 @@ final class VimEngine {
     func handleFocusLost() {
         
         self.clearVisualSelectionIfNeeded()
+        self.resetPreferredColumn()
         self.resetPending()
     }
     
@@ -2714,6 +2738,132 @@ final class VimEngine {
     }
     
     
+    private func resetPreferredColumn() {
+        
+        self.preferredColumn = nil
+        self.preferredVisualX = nil
+    }
+    
+    
+    /// Visual-line-aware vertical movement for interactive `j` / `k` with sticky horizontal goal
+    /// (`preferredVisualX` + `preferredColumn`), so moving across blank lines, shorter lines,
+    /// soft-wrapped lines, or mixed CJK/ASCII lines stays smoothly aligned instead of snapping to column 0.
+    private func interactiveVerticalLocation(from location: Int, direction: Int) -> Int {
+        
+        guard let textView else { return location }
+        let string = textView.string as NSString
+        guard direction != 0, string.length > 0 else { return location }
+        
+        let currentLine = self.lineRange(at: location) ?? NSRange(location: 0, length: 0)
+        if self.preferredColumn == nil {
+            self.preferredColumn = location - currentLine.location
+        }
+        
+        if let layoutManager = textView.layoutManager,
+           let textContainer = textView.textContainer,
+           textContainer.size.width > 20
+        {
+            let windowStart = max(0, location - 4096)
+            let windowEnd = min(string.length, location + 4096)
+            layoutManager.ensureLayout(forCharacterRange: NSRange(location: windowStart, length: windowEnd - windowStart))
+            
+            let totalGlyphs = layoutManager.numberOfGlyphs
+            if totalGlyphs > 0 {
+                let extraRect = layoutManager.extraLineFragmentRect
+                let hasExtraLine = extraRect.height > 0
+                
+                var curGlyphRange = NSRange(location: 0, length: 0)
+                var curLineRect = CGRect.zero
+                var onExtraLine = false
+                
+                if location >= string.length, hasExtraLine {
+                    onExtraLine = true
+                    curLineRect = extraRect
+                    if self.preferredVisualX == nil {
+                        self.preferredVisualX = extraRect.minX
+                    }
+                } else {
+                    let safeLoc = min(location, string.length - 1)
+                    let curGlyph = min(layoutManager.glyphIndexForCharacter(at: safeLoc), totalGlyphs - 1)
+                    curLineRect = layoutManager.lineFragmentRect(forGlyphAt: curGlyph, effectiveRange: &curGlyphRange)
+                    if self.preferredVisualX == nil {
+                        let glyphPoint = layoutManager.location(forGlyphAt: curGlyph)
+                        self.preferredVisualX = curLineRect.minX + glyphPoint.x
+                    }
+                }
+                
+                let steps = abs(direction)
+                var moved = 0
+                for _ in 0..<steps {
+                    if direction > 0 {
+                        if onExtraLine { break }
+                        let nextGlyph = NSMaxRange(curGlyphRange)
+                        if nextGlyph >= totalGlyphs {
+                            if hasExtraLine {
+                                onExtraLine = true
+                                curLineRect = extraRect
+                                moved += 1
+                            }
+                            break
+                        }
+                        curLineRect = layoutManager.lineFragmentRect(forGlyphAt: nextGlyph, effectiveRange: &curGlyphRange)
+                        moved += 1
+                    } else {
+                        if onExtraLine {
+                            onExtraLine = false
+                            curLineRect = layoutManager.lineFragmentRect(forGlyphAt: totalGlyphs - 1, effectiveRange: &curGlyphRange)
+                            moved += 1
+                        } else {
+                            let prevGlyph = curGlyphRange.location - 1
+                            guard prevGlyph >= 0 else { break }
+                            curLineRect = layoutManager.lineFragmentRect(forGlyphAt: prevGlyph, effectiveRange: &curGlyphRange)
+                            moved += 1
+                        }
+                    }
+                }
+                
+                guard moved > 0 else { return location }
+                if onExtraLine {
+                    return string.length
+                }
+                
+                let targetCharRange = layoutManager.characterRange(forGlyphRange: curGlyphRange, actualGlyphRange: nil)
+                var contentEnd = NSMaxRange(targetCharRange)
+                while contentEnd > targetCharRange.location {
+                    let ch = string.character(at: contentEnd - 1)
+                    if ch == 10 || ch == 13 {
+                        contentEnd -= 1
+                    } else {
+                        break
+                    }
+                }
+                if contentEnd <= targetCharRange.location {
+                    return targetCharRange.location
+                }
+                
+                let goalX = self.preferredVisualX ?? curLineRect.minX
+                if goalX == .greatestFiniteMagnitude {
+                    return string.rangeOfComposedCharacterSequence(at: contentEnd - 1).location
+                }
+                
+                let finiteMaxX = (curLineRect.maxX.isFinite && curLineRect.maxX < 1_000_000)
+                    ? curLineRect.maxX - 0.5
+                    : max(curLineRect.minX, goalX)
+                let probeX = max(curLineRect.minX, min(goalX, finiteMaxX))
+                let probePoint = CGPoint(x: probeX, y: curLineRect.midY)
+                let rawHitGlyph = layoutManager.glyphIndex(for: probePoint, in: textContainer, fractionOfDistanceThroughGlyph: nil)
+                let clampedGlyph = max(curGlyphRange.location, min(rawHitGlyph, max(curGlyphRange.location, NSMaxRange(curGlyphRange) - 1)))
+                let rawChar = layoutManager.characterIndexForGlyph(at: clampedGlyph)
+                let maxChar = max(targetCharRange.location, contentEnd - 1)
+                let clampedChar = max(targetCharRange.location, min(rawChar, maxChar))
+                return string.rangeOfComposedCharacterSequence(at: clampedChar).location
+            }
+        }
+        
+        return self.verticalLocation(from: location, direction: direction)
+    }
+    
+    
     private func verticalLocation(from location: Int, direction: Int) -> Int {
         
         guard let textView else { return location }
@@ -2721,7 +2871,10 @@ final class VimEngine {
         guard direction != 0 else { return location }
         
         let currentLine = self.lineRange(at: location) ?? NSRange(location: 0, length: 0)
-        let column = location - currentLine.location
+        let column = self.preferredColumn ?? (location - currentLine.location)
+        if self.preferredColumn == nil {
+            self.preferredColumn = column
+        }
         
         var target = currentLine
         var movedLines = 0
@@ -2750,7 +2903,8 @@ final class VimEngine {
             }
         }
         let maxOffset = max(0, contentLength - 1)
-        return min(target.location + column, target.location + maxOffset)
+        let clampedOffset = min(column, maxOffset)
+        return target.location + clampedOffset
     }
     
     

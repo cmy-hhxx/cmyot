@@ -43,22 +43,21 @@ final class NotesTextColorPaletteModel {
     var beakOffsetX: CGFloat = 0
     var pointsDownward: Bool = true
     var appears: Bool = false
+    var isDarkAppearance: Bool = true
 }
 
 
-/// Non-activating frosted floating palette inspired by Notes Text Color.
+/// Non-activating quiet floating highlight bar inspired by Apple Notes.
 ///
-/// Appears beside an active text selection without stealing first responder, lets the user paint
-/// 8 curated radial-orb shades or a continuous rainbow hue (`hsl(h, 76%, 72%)`), and jumps back
-/// to up to 4 recently colored passages inside the document.
+/// Appears cleanly beside non-whitespace text selections without stealing first responder,
+/// offering 8 crisp color swatches, a continuous rainbow hue ring, clear-highlight button,
+/// and compact passage jumps only when colored passages already exist.
 @MainActor
 final class NotesTextColorPaletteController {
     
     static let shared = NotesTextColorPaletteController()
     
-    private static let panelWidth: CGFloat = 218
-    private static let compactHeight: CGFloat = 104
-    private static let expandedHeight: CGFloat = 136
+    private static let basePanelWidth: CGFloat = 244
     private static let marginPadding: CGFloat = 12
     
     private let model = NotesTextColorPaletteModel()
@@ -80,7 +79,18 @@ final class NotesTextColorPaletteController {
     private init() {}
     
     
-    /// Presents or updates the frosted floating color palette for the current selection.
+    /// Returns whether `rawSelection` contains non-whitespace, non-inline-image text eligible for highlighting.
+    nonisolated static func shouldPresent(for rawSelection: String) -> Bool {
+        let trimmed = rawSelection.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if trimmed.hasPrefix("⟦🖼"), trimmed.hasSuffix("⟧"), !trimmed.contains("\n") {
+            return false
+        }
+        return true
+    }
+    
+    
+    /// Presents or updates the quiet floating highlight bar for the current selection.
     func present(for textView: EditorTextView, document: Document, selectedRange: NSRange) {
         
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
@@ -93,15 +103,15 @@ final class NotesTextColorPaletteController {
             return
         }
         
-        // Do not show text highlight palette when selecting a standalone inline image token.
         let nsString = textView.string as NSString
         let safeRange = NSIntersectionRange(selectedRange, NSRange(location: 0, length: nsString.length))
         guard safeRange.length > 0 else {
             self.dismiss(animated: false)
             return
         }
-        let selectedSnippet = nsString.substring(with: safeRange).trimmingCharacters(in: .whitespacesAndNewlines)
-        if selectedSnippet.hasPrefix("⟦🖼"), selectedSnippet.hasSuffix("⟧"), !selectedSnippet.contains("\n") {
+        
+        let rawSelectedText = nsString.substring(with: safeRange)
+        guard Self.shouldPresent(for: rawSelectedText) else {
             self.dismiss(animated: false)
             return
         }
@@ -118,6 +128,7 @@ final class NotesTextColorPaletteController {
         self.textView = textView
         self.document = document
         self.activeRange = safeRange
+        self.model.isDarkAppearance = window.effectiveAppearance.isDark
         
         self.syncModel(from: document, selectedRange: safeRange)
         if case .customHue = self.model.selectedColor {
@@ -138,7 +149,7 @@ final class NotesTextColorPaletteController {
         
         if !alreadyShown {
             DispatchQueue.main.async { [weak self] in
-                withAnimation(.spring(response: 0.18, dampingFraction: 0.74)) {
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
                     self?.model.appears = true
                 }
             }
@@ -146,7 +157,7 @@ final class NotesTextColorPaletteController {
     }
     
     
-    /// Dismisses the palette cleanly with an optional 140ms fade-out.
+    /// Dismisses the palette cleanly with an optional 130ms fade-out.
     func dismiss(animated: Bool = true) {
         
         self.dismissWorkItem?.cancel()
@@ -168,7 +179,7 @@ final class NotesTextColorPaletteController {
             return
         }
         
-        withAnimation(.easeIn(duration: 0.14)) {
+        withAnimation(.easeIn(duration: 0.13)) {
             self.model.appears = false
         }
         let work = DispatchWorkItem { [weak self] in
@@ -178,7 +189,7 @@ final class NotesTextColorPaletteController {
             self.document = nil
         }
         self.dismissWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: work)
     }
     
     
@@ -202,21 +213,35 @@ final class NotesTextColorPaletteController {
         }
         
         self.syncModel(from: document, selectedRange: range)
+        self.repositionIfVisible()
+        textView.needsDisplay = true
+    }
+    
+    
+    private func handleClearHighlight() {
+        
+        guard let textView = self.textView,
+              let document = self.document
+        else { return }
+        
+        let range = self.clampedActiveRange(in: document)
+        guard range.length > 0 else { return }
+        
+        document.removeHighlights(in: range)
+        self.model.selectedColor = nil
+        self.model.isCustomHueExpanded = false
+        self.syncModel(from: document, selectedRange: range)
+        self.repositionIfVisible()
         textView.needsDisplay = true
     }
     
     
     private func handleToggleRainbowSlider() {
         
-        withAnimation(.spring(response: 0.22, dampingFraction: 0.82)) {
+        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
             self.model.isCustomHueExpanded.toggle()
         }
-        if let textView = self.textView,
-           let window = textView.window,
-           let anchor = self.selectionScreenBounds(in: textView, window: window, range: self.activeRange)
-        {
-            self.positionPanel(against: anchor, window: window)
-        }
+        self.repositionIfVisible()
         if self.model.isCustomHueExpanded {
             self.handleCustomHueChanged(self.model.customHue)
         }
@@ -239,6 +264,7 @@ final class NotesTextColorPaletteController {
         document.addHighlight(range: range, color: customColor)
         self.model.selectedColor = customColor
         self.syncModel(from: document, selectedRange: range)
+        self.repositionIfVisible()
         textView.needsDisplay = true
     }
     
@@ -259,11 +285,35 @@ final class NotesTextColorPaletteController {
     }
     
     
+    private func repositionIfVisible() {
+        if let textView = self.textView,
+           let window = textView.window,
+           let anchor = self.selectionScreenBounds(in: textView, window: window, range: self.activeRange)
+        {
+            self.positionPanel(against: anchor, window: window)
+        }
+    }
+    
+    
     // MARK: Model & Layout Helpers
     
     private func clampedActiveRange(in document: Document) -> NSRange {
         
         NSIntersectionRange(self.activeRange, NSRange(location: 0, length: document.textStorage.length))
+    }
+    
+    
+    private func computedPanelSize() -> NSSize {
+        let hasClear = (self.model.selectedColor != nil)
+        let width: CGFloat = hasClear ? Self.basePanelWidth + 24 : Self.basePanelWidth
+        var height: CGFloat = 52
+        if self.model.isCustomHueExpanded {
+            height += 26
+        }
+        if !self.model.recentPassages.isEmpty {
+            height += 32
+        }
+        return NSSize(width: width, height: height)
     }
     
     
@@ -289,7 +339,7 @@ final class NotesTextColorPaletteController {
         }
         
         var items: [NotesColoredPassageItem] = []
-        for mark in orderedMarks.prefix(4) {
+        for mark in orderedMarks.prefix(3) {
             let safeRange = NSIntersectionRange(mark.range, wholeRange)
             guard safeRange.length > 0 else { continue }
             
@@ -298,7 +348,7 @@ final class NotesTextColorPaletteController {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !raw.isEmpty else { continue }
             
-            let preview = raw.count > 16 ? String(raw.prefix(15)) + "…" : raw
+            let preview = raw.count > 10 ? String(raw.prefix(9)) + "…" : raw
             let isActive = NSIntersectionRange(safeRange, selectedRange).length > 0
             items.append(NotesColoredPassageItem(
                 id: "\(safeRange.location)-\(safeRange.length)",
@@ -319,6 +369,7 @@ final class NotesTextColorPaletteController {
         let rootView = NotesTextColorPaletteRootView(
             model: self.model,
             onSelectPreset: { [weak self] color in self?.handlePresetTap(color) },
+            onClear: { [weak self] in self?.handleClearHighlight() },
             onToggleRainbow: { [weak self] in self?.handleToggleRainbowSlider() },
             onChangeHue: { [weak self] hue in self?.handleCustomHueChanged(hue) },
             onSelectPassage: { [weak self] item in self?.handleJumpToPassage(item) }
@@ -328,7 +379,7 @@ final class NotesTextColorPaletteController {
         hosting.layer?.backgroundColor = NSColor.clear.cgColor
         
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.compactHeight),
+            contentRect: NSRect(origin: .zero, size: self.computedPanelSize()),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -352,9 +403,7 @@ final class NotesTextColorPaletteController {
         
         guard let panel = self.panel else { return }
         
-        let panelHeight = self.model.isCustomHueExpanded ? Self.expandedHeight : Self.compactHeight
-        let panelSize = NSSize(width: Self.panelWidth, height: panelHeight)
-        
+        let panelSize = self.computedPanelSize()
         let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         
@@ -363,8 +412,8 @@ final class NotesTextColorPaletteController {
         originX = max(visibleFrame.minX + Self.marginPadding,
                       min(visibleFrame.maxX - Self.marginPadding - panelSize.width, originX))
         
-        let aboveY = anchor.firstLine.maxY + 8
-        let belowY = anchor.lastLine.minY - panelSize.height - 8
+        let aboveY = anchor.firstLine.maxY + 6
+        let belowY = anchor.lastLine.minY - panelSize.height - 6
         
         let originY: CGFloat
         if aboveY + panelSize.height <= visibleFrame.maxY - Self.marginPadding {
@@ -375,7 +424,7 @@ final class NotesTextColorPaletteController {
             self.model.pointsDownward = false
         }
         
-        let halfSpan = panelSize.width * 0.5 - 22
+        let halfSpan = panelSize.width * 0.5 - 20
         let rawBeak = selectionMidX - (originX + panelSize.width * 0.5)
         self.model.beakOffsetX = max(-halfSpan, min(halfSpan, rawBeak))
         
@@ -450,146 +499,144 @@ final class NotesTextColorPaletteController {
 }
 
 
-// MARK: - SwiftUI Frosted Nine-Color Palette
+// MARK: - Quiet Single-Row Highlight Bar (Unslopped: Zero Filler Copy, Zero Excess Shadows)
 
 private struct NotesTextColorPaletteRootView: View {
     
     let model: NotesTextColorPaletteModel
     let onSelectPreset: (HighlightColor) -> Void
+    let onClear: () -> Void
     let onToggleRainbow: () -> Void
     let onChangeHue: (Double) -> Void
     let onSelectPassage: (NotesColoredPassageItem) -> Void
     
     
+    private var surfaceFill: Color {
+        self.model.isDarkAppearance
+            ? Color(red: 0.145, green: 0.145, blue: 0.153)
+            : Color(red: 0.992, green: 0.992, blue: 0.996)
+    }
+    
+    private var hairlineStroke: Color {
+        self.model.isDarkAppearance
+            ? Color.white.opacity(0.10)
+            : Color.black.opacity(0.09)
+    }
+    
+    private var primaryInk: Color {
+        self.model.isDarkAppearance
+            ? Color(red: 0.93, green: 0.93, blue: 0.94)
+            : Color(red: 0.11, green: 0.11, blue: 0.12)
+    }
+    
+    private var secondarySurface: Color {
+        self.model.isDarkAppearance
+            ? Color.white.opacity(0.06)
+            : Color.black.opacity(0.045)
+    }
+    
+    
     var body: some View {
-        ZStack(alignment: self.model.pointsDownward ? .bottom : .top) {
-            // Rotated square beak rendered behind card edge so no interior stroke seam appears
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(
-                    self.model.pointsDownward
-                        ? Color(red: 0.141, green: 0.145, blue: 0.153).opacity(0.97)
-                        : Color(red: 0.208, green: 0.212, blue: 0.220).opacity(0.94)
-                )
-                .frame(width: 12, height: 12)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.11), lineWidth: 1)
-                )
-                .rotationEffect(.degrees(45))
-                .shadow(color: Color.black.opacity(0.28), radius: 5, y: 2)
-                .offset(x: self.model.beakOffsetX, y: self.model.pointsDownward ? -1 : 1)
-            
-            VStack(spacing: 8) {
-                HStack(alignment: .top, spacing: 9) {
-                    self.colorOrbGrid
-                    
-                    if !self.model.recentPassages.isEmpty {
-                        self.recentPassagesList
-                    } else {
-                        self.emptyRecentPlaceholder
-                    }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                ForEach(HighlightColor.palettePresets, id: \.self) { color in
+                    self.presetSwatchButton(color)
                 }
                 
-                if self.model.isCustomHueExpanded {
-                    self.rainbowHueSlider
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                self.rainbowCustomButton
+                
+                if self.model.selectedColor != nil {
+                    Rectangle()
+                        .fill(self.hairlineStroke)
+                        .frame(width: 1, height: 14)
+                        .padding(.horizontal, 1)
+                    
+                    Button(action: self.onClear) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(self.primaryInk.opacity(0.70))
+                            .frame(width: 18, height: 18)
+                            .background(self.secondarySurface, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(AppLanguage.text("清除高亮", en: "Clear Highlight"))
                 }
             }
-            .padding(11)
-            .background {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.208, green: 0.212, blue: 0.220).opacity(0.95),
-                                Color(red: 0.141, green: 0.145, blue: 0.153).opacity(0.98),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .overlay(
-                        DarkHudBlurBackdrop()
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .opacity(0.28)
-                    )
+            
+            if self.model.isCustomHueExpanded {
+                self.rainbowHueSlider
+                    .transition(.opacity)
             }
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.11), lineWidth: 1)
-            )
-            .shadow(color: Color.black.opacity(0.42), radius: 14, y: 7)
-            .padding(.bottom, self.model.pointsDownward ? 6 : 0)
-            .padding(.top, self.model.pointsDownward ? 0 : 6)
-        }
-        .scaleEffect(
-            self.model.appears ? 1.0 : 0.84,
-            anchor: self.model.pointsDownward ? .bottom : .top
-        )
-        .offset(y: self.model.appears ? 0 : (self.model.pointsDownward ? 5 : -5))
-        .opacity(self.model.appears ? 1 : 0)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-    }
-    
-    
-    private var colorOrbGrid: some View {
-        let presets = HighlightColor.palettePresets
-        return VStack(spacing: 6) {
-            ForEach(0..<3, id: \.self) { row in
+            
+            if !self.model.recentPassages.isEmpty {
+                Rectangle()
+                    .fill(self.hairlineStroke)
+                    .frame(height: 0.75)
+                
                 HStack(spacing: 6) {
-                    ForEach(0..<3, id: \.self) { col in
-                        let idx = row * 3 + col
-                        if idx < presets.count {
-                            self.presetOrbButton(presets[idx])
-                        } else {
-                            self.rainbowCustomOrbButton
-                        }
+                    ForEach(self.model.recentPassages) { item in
+                        self.recentPassageChip(item)
                     }
                 }
             }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(self.surfaceFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(self.hairlineStroke, lineWidth: 0.75)
+        )
+        .shadow(
+            color: Color.black.opacity(self.model.isDarkAppearance ? 0.22 : 0.08),
+            radius: 6,
+            y: 2
+        )
+        .scaleEffect(
+            self.model.appears ? 1.0 : 0.94,
+            anchor: self.model.pointsDownward ? .bottom : .top
+        )
+        .offset(y: self.model.appears ? 0 : (self.model.pointsDownward ? 4 : -4))
+        .opacity(self.model.appears ? 1 : 0)
+        .padding(4)
     }
     
     
-    private func presetOrbButton(_ color: HighlightColor) -> some View {
+    private func presetSwatchButton(_ color: HighlightColor) -> some View {
         let isSelected = (self.model.selectedColor == color)
-        let pair = color.orbGradientColors
-        let inner = Color(nsColor: pair.inner)
-        let outer = Color(nsColor: pair.outer)
+        let swatch = Color(nsColor: color.swatchColor)
         
         return Button {
             self.onSelectPreset(color)
         } label: {
             ZStack {
                 Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [inner, outer],
-                            center: .center,
-                            startRadius: 1,
-                            endRadius: 9
-                        )
+                    .fill(swatch)
+                    .frame(width: 16, height: 16)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
                     )
-                    .frame(width: 17, height: 17)
-                    .shadow(color: outer.opacity(0.32), radius: 2.5)
                 
                 if isSelected {
                     Circle()
-                        .strokeBorder(Color(red: 0.933, green: 0.933, blue: 0.937), lineWidth: 1.4)
-                        .frame(width: 22, height: 22)
+                        .strokeBorder(self.primaryInk, lineWidth: 1.5)
+                        .frame(width: 21, height: 21)
                 }
             }
-            .frame(width: 17, height: 17)
-            .scaleEffect(isSelected ? 1.04 : 1.0)
-            .animation(.spring(response: 0.18, dampingFraction: 0.68), value: isSelected)
+            .frame(width: 18, height: 18)
         }
         .buttonStyle(.plain)
+        .pointerStyle(.link)
         .help(color.localizedName)
     }
     
     
-    private var rainbowCustomOrbButton: some View {
+    private var rainbowCustomButton: some View {
         let isCustomSelected: Bool = if case .customHue = self.model.selectedColor { true } else { false }
         let isActive = isCustomSelected || self.model.isCustomHueExpanded
         
@@ -599,79 +646,64 @@ private struct NotesTextColorPaletteRootView: View {
                     .fill(
                         AngularGradient(
                             colors: [
-                                Color(hue: 0.00, saturation: 0.78, brightness: 0.92),
-                                Color(hue: 0.17, saturation: 0.78, brightness: 0.92),
-                                Color(hue: 0.34, saturation: 0.78, brightness: 0.92),
-                                Color(hue: 0.52, saturation: 0.78, brightness: 0.92),
-                                Color(hue: 0.70, saturation: 0.78, brightness: 0.92),
-                                Color(hue: 0.86, saturation: 0.78, brightness: 0.92),
-                                Color(hue: 1.00, saturation: 0.78, brightness: 0.92),
+                                Color(hue: 0.00, saturation: 0.72, brightness: 0.90),
+                                Color(hue: 0.17, saturation: 0.72, brightness: 0.90),
+                                Color(hue: 0.34, saturation: 0.72, brightness: 0.90),
+                                Color(hue: 0.52, saturation: 0.72, brightness: 0.90),
+                                Color(hue: 0.70, saturation: 0.72, brightness: 0.90),
+                                Color(hue: 0.86, saturation: 0.72, brightness: 0.90),
+                                Color(hue: 1.00, saturation: 0.72, brightness: 0.90),
                             ],
                             center: .center
                         )
                     )
-                    .frame(width: 17, height: 17)
+                    .frame(width: 16, height: 16)
                 
                 Circle()
-                    .fill(Color(red: 0.161, green: 0.165, blue: 0.180))  // #292a2e cutout
-                    .frame(width: 8, height: 8)
+                    .fill(self.surfaceFill)
+                    .frame(width: 7, height: 7)
                 
                 if isActive {
                     Circle()
-                        .strokeBorder(Color(red: 0.933, green: 0.933, blue: 0.937), lineWidth: 1.4)
-                        .frame(width: 22, height: 22)
+                        .strokeBorder(self.primaryInk, lineWidth: 1.5)
+                        .frame(width: 21, height: 21)
                 }
             }
-            .frame(width: 17, height: 17)
+            .frame(width: 18, height: 18)
         }
         .buttonStyle(.plain)
+        .pointerStyle(.link)
         .help(AppLanguage.text("自定义色相", en: "Custom Hue"))
     }
     
     
-    private var recentPassagesList: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            ForEach(self.model.recentPassages) { item in
-                let barColor = Color(nsColor: item.color.swatchColor)
-                Button {
-                    self.onSelectPassage(item)
-                } label: {
-                    HStack(spacing: 5) {
-                        RoundedRectangle(cornerRadius: 1, style: .continuous)
-                            .fill(barColor)
-                            .frame(width: 2, height: 8)
-                        
-                        Text(item.preview)
-                            .font(.system(size: 10, weight: item.isActive ? .semibold : .regular))
-                            .foregroundStyle(Color(red: 0.933, green: 0.933, blue: 0.937))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    .padding(.horizontal, 5)
-                    .frame(width: 108, height: 14, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(item.isActive ? Color.white.opacity(0.11) : Color.white.opacity(0.03))
-                    )
-                    .opacity(item.isActive ? 1.0 : 0.56)
-                }
-                .buttonStyle(.plain)
+    private func recentPassageChip(_ item: NotesColoredPassageItem) -> some View {
+        let barColor = Color(nsColor: item.color.swatchColor)
+        return Button {
+            self.onSelectPassage(item)
+        } label: {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(barColor)
+                    .frame(width: 5, height: 5)
+                Text(item.preview)
+                    .font(.system(size: 11, weight: item.isActive ? .medium : .regular))
+                    .foregroundStyle(self.primaryInk.opacity(item.isActive ? 0.95 : 0.70))
+                    .lineLimit(1)
             }
+            .padding(.horizontal, 6)
+            .frame(height: 20)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(item.isActive ? self.secondarySurface : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(self.hairlineStroke, lineWidth: 0.5)
+            )
         }
-    }
-    
-    
-    private var emptyRecentPlaceholder: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(AppLanguage.text("点击色点上色", en: "Pick a shade"))
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Color.white.opacity(0.74))
-            Text(AppLanguage.text("可跳回最近段落", en: "Quick passage jumps"))
-                .font(.system(size: 9))
-                .foregroundStyle(Color.white.opacity(0.42))
-        }
-        .frame(width: 108, alignment: .leading)
-        .padding(.top, 2)
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
     }
     
     
@@ -692,23 +724,18 @@ private struct NotesTextColorPaletteRootView: View {
                     .fill(
                         LinearGradient(
                             colors: (0...6).map { idx in
-                                Color(hue: Double(idx) / 6.0, saturation: 0.78, brightness: 0.90)
+                                Color(hue: Double(idx) / 6.0, saturation: 0.74, brightness: 0.88)
                             },
                             startPoint: .leading,
                             endPoint: .trailing
                         )
                     )
-                    .frame(height: 8)
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.75)
-                    )
+                    .frame(height: 6)
                 
                 Circle()
                     .fill(thumbColor)
                     .frame(width: 14, height: 14)
-                    .overlay(Circle().strokeBorder(Color.white, lineWidth: 1.8))
-                    .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
+                    .overlay(Circle().strokeBorder(Color.white, lineWidth: 1.6))
                     .position(x: thumbX, y: geo.size.height * 0.5)
             }
             .contentShape(Rectangle())
@@ -720,21 +747,6 @@ private struct NotesTextColorPaletteRootView: View {
                     }
             )
         }
-        .frame(height: 18)
+        .frame(height: 16)
     }
-}
-
-
-private struct DarkHudBlurBackdrop: NSViewRepresentable {
-    
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .hudWindow
-        view.blendingMode = .behindWindow
-        view.state = .active
-        view.appearance = NSAppearance(named: .darkAqua)
-        return view
-    }
-    
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }

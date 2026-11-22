@@ -66,13 +66,70 @@ import URLUtils
     
     // MARK: Public Methods
     
+    /// Returns the setting instance for `name`, transparently synthesizing built-in Studio themes
+    /// when a migrated preference references one that has not yet been written to disk.
+    func setting(name: String) throws(SettingFileError) -> Setting {
+        
+        if let setting = Self.constantSettings[name] ?? self.cachedSettings[name] {
+            return setting
+        }
+        
+        let resolvedURL = self.urlForUserSetting(name: name)
+            ?? Bundle.main.url(forResource: name, withExtension: Setting.fileType.preferredFilenameExtension, subdirectory: Self.directoryName)
+        if let url = resolvedURL {
+            let setting: Setting
+            do {
+                setting = try Setting(contentsOf: url)
+            } catch {
+                throw SettingFileError(.loadFailed, name: name, underlyingError: error)
+            }
+            self.cachedSettings[name] = setting
+            return setting
+        }
+        
+        if let synthesized = StudioPaletteManager.shared.synthesizedTheme(named: name) {
+            self.cachedSettings[name] = synthesized
+            try? self.save(setting: synthesized, name: name)
+            return synthesized
+        }
+        
+        throw SettingFileError(.noSourceFile, name: name)
+    }
+    
+    
+    /// Ensures the active theme preference resolves to a valid bundled or synthesized theme after database migration.
+    func validateOrRepairActiveThemePreference() {
+        
+        let currentName = UserDefaults.standard[.theme]
+        if self.settingNames.contains(currentName) {
+            return
+        }
+        if let synthesized = StudioPaletteManager.shared.synthesizedTheme(named: currentName) {
+            try? self.save(setting: synthesized, name: currentName)
+            return
+        }
+        UserDefaults.standard.restore(key: .theme)
+        UserDefaults.standard[.pinsThemeAppearance] = false
+        
+        if let printTheme = UserDefaults.standard[.printTheme],
+           !self.settingNames.contains(printTheme)
+        {
+            if let synthesized = StudioPaletteManager.shared.synthesizedTheme(named: printTheme) {
+                try? self.save(setting: synthesized, name: printTheme)
+            } else {
+                UserDefaults.standard.restore(key: .printTheme)
+            }
+        }
+    }
+    
+    
     /// Returns whether the given setting name is a dark theme.
     ///
     /// - Parameter name: The setting name to test.
     /// - Returns: A Boolean value.
     nonisolated static func isDark(name: String) -> Bool {
         
-        name.hasSuffix("(Dark)")
+        name.hasSuffix("(Dark)") || name.hasSuffix("(暗色)")
     }
     
     
@@ -86,7 +143,13 @@ import URLUtils
         let settingName = UserDefaults.standard[.theme]
         
         if UserDefaults.standard[.pinsThemeAppearance] {
-            return settingName
+            if self.settingNames.contains(settingName) {
+                return settingName
+            }
+            if let synthesized = StudioPaletteManager.shared.synthesizedTheme(named: settingName) {
+                try? self.save(setting: synthesized, name: settingName)
+                return settingName
+            }
         }
         
         let usesDark = self.usesDarkAppearance(inDarkMode: inDarkMode)
@@ -99,9 +162,14 @@ import URLUtils
             return settingName
         }
         
+        if let synthesized = StudioPaletteManager.shared.synthesizedTheme(named: settingName) {
+            try? self.save(setting: synthesized, name: settingName)
+            return settingName
+        }
+        
         let defaultSettingName = DefaultSettings.defaults[.theme] as! String
         
-        return self.equivalentSettingName(to: defaultSettingName, forDark: usesDark)!
+        return self.equivalentSettingName(to: defaultSettingName, forDark: usesDark) ?? defaultSettingName
     }
     
     

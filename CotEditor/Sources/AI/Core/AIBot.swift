@@ -19,8 +19,99 @@
 //  limitations under the License.
 //
 
+import AppKit
 import Foundation
 import Observation
+
+/// Verified AI Gijinka (AI 娘化) character metadata sourced from https://genderswapai.com/zh-CN/ai-gijinka/gallery
+nonisolated struct AIGijinkaCharacter: Sendable, Equatable {
+    
+    let name: String
+    let brand: String
+    let accentHex: String
+    let portraitURLString: String
+    let attribution: String
+    
+    var portraitURL: URL? {
+        URL(string: self.portraitURLString)
+    }
+}
+
+
+/// Lightweight async image loader with memory + disk cache (`Caches/CotEditor/AIGijinka`)
+/// for AI Gijinka standing portraits.
+@MainActor @Observable
+final class AIGijinkaImageLoader {
+    
+    static let shared = AIGijinkaImageLoader()
+    
+    private(set) var images: [String: NSImage] = [:]
+    private var inFlight: Set<String> = []
+    private let cacheDirectory: URL
+    
+    private init() {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(filePath: NSTemporaryDirectory(), directoryHint: .isDirectory)
+        self.cacheDirectory = caches
+            .appending(path: "CotEditor", directoryHint: .isDirectory)
+            .appending(path: "AIGijinka", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: self.cacheDirectory, withIntermediateDirectories: true)
+    }
+    
+    
+    func image(for botID: AIBotID) -> NSImage? {
+        let key = botID.rawValue
+        if let cached = self.images[key] {
+            return cached
+        }
+        let diskURL = self.cacheDirectory.appending(path: "\(key).webp")
+        if let diskImage = NSImage(contentsOf: diskURL) {
+            self.images[key] = diskImage
+            return diskImage
+        }
+        self.triggerFetchIfNeeded(for: botID)
+        return nil
+    }
+    
+    
+    func prefetchAll() {
+        for bot in AIBotID.allCases {
+            _ = self.image(for: bot)
+        }
+    }
+    
+    
+    private func triggerFetchIfNeeded(for botID: AIBotID) {
+        let key = botID.rawValue
+        guard !self.inFlight.contains(key),
+              ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+              let url = botID.gijinkaCharacter.portraitURL
+        else { return }
+        
+        self.inFlight.insert(key)
+        let diskURL = self.cacheDirectory.appending(path: "\(key).webp")
+        
+        Task.detached(priority: .utility) {
+            var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 15)
+            request.setValue("image/webp,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+            guard let (data, response) = try? await URLSession.shared.data(for: request),
+                  (response as? HTTPURLResponse)?.statusCode == 200,
+                  let decoded = NSImage(data: data)
+            else {
+                await MainActor.run {
+                    AIGijinkaImageLoader.shared.inFlight.remove(key)
+                }
+                return
+            }
+            try? data.write(to: diskURL, options: .atomic)
+            await MainActor.run {
+                AIGijinkaImageLoader.shared.images[key] = decoded
+                AIGijinkaImageLoader.shared.inFlight.remove(key)
+            }
+        }
+    }
+}
+
 
 /// GrokBot-inspired specialized AI bot identity representing a distinct editor capability.
 nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable {
@@ -138,20 +229,95 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
     }
     
     
-    var accentHex: String {
-        
+    /// Mapped AI 娘化 (AI Gijinka) character from https://genderswapai.com/zh-CN/ai-gijinka/gallery
+    var gijinkaCharacter: AIGijinkaCharacter {
         switch self {
-            case .ghost: "#10B981"
-            case .translate: "#3B82F6"
-            case .summarize: "#6366F1"
-            case .explain: "#F59E0B"
-            case .weeklyReport: "#0EA5E9"
-            case .weeklyReportItem: "#14B8A6"
-            case .interactiveChart: "#EC4899"
-            case .ocrPolish: "#8B5CF6"
-            case .organizeAndMerge: "#F97316"
-            case .persona: "#E11D48"
+            case .ghost:
+                AIGijinkaCharacter(
+                    name: "DeepSeek 娘",
+                    brand: "DeepSeek",
+                    accentHex: "#3B82F6",
+                    portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/a7f2339608c7598bfc36/images/thumbnails/fa016e468ce466b5-900.webp",
+                    attribution: "上善无形 原角色 · ZipZipPipe 二创"
+                )
+            case .translate:
+                AIGijinkaCharacter(
+                    name: "Qwen 娘",
+                    brand: "Qwen",
+                    accentHex: "#7C5CFC",
+                    portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/f8c3c51016dedaab132c/images/thumbnails/a0b12bd5c8ba80f6-893.webp",
+                    attribution: "ZipZipPipe"
+                )
+            case .summarize:
+                AIGijinkaCharacter(
+                    name: "Claude 娘",
+                    brand: "Claude",
+                    accentHex: "#D97757",
+                    portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/2ba8b6f44f542e2a7247/images/thumbnails/55c9212015554e52-893.webp",
+                    attribution: "ZipZipPipe"
+                )
+            case .explain:
+                AIGijinkaCharacter(
+                    name: "GPT 娘",
+                    brand: "OpenAI GPT",
+                    accentHex: "#10A37F",
+                    portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/de058742c92d4755bf95/images/thumbnails/b3603b73a0ff93c4-893.webp",
+                    attribution: "ZipZipPipe"
+                )
+            case .weeklyReport:
+                AIGijinkaCharacter(
+                    name: "Kimi 娘",
+                    brand: "Kimi",
+                    accentHex: "#2563EB",
+                    portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/8c11c4f574f587de685f/images/thumbnails/c484cd8df7ca4503-900.webp",
+                    attribution: "ZipZipPipe"
+                )
+            case .weeklyReportItem:
+                AIGijinkaCharacter(
+                    name: "Seed 娘",
+                    brand: "Seed",
+                    accentHex: "#14B8A6",
+                    portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/4f19bfa2b672e4f0be5f/images/thumbnails/a057509e1c7a1c7b-893.webp",
+                    attribution: "ZipZipPipe"
+                )
+            case .interactiveChart:
+                AIGijinkaCharacter(
+                    name: "Gemini 娘",
+                    brand: "Gemini",
+                    accentHex: "#6366F1",
+                    portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/aaac639ab8832f4101cc/images/thumbnails/f2cd51da09151c5e-893.webp",
+                    attribution: "ZipZipPipe"
+                )
+            case .ocrPolish:
+                AIGijinkaCharacter(
+                    name: "GLM 娘",
+                    brand: "GLM",
+                    accentHex: "#4F46E5",
+                    portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/ba11aade767c0931712d/images/thumbnails/519b4801c990b582-900.webp",
+                    attribution: "ZipZipPipe"
+                )
+            case .organizeAndMerge:
+                AIGijinkaCharacter(
+                    name: "MiniMax 娘",
+                    brand: "MiniMax",
+                    accentHex: "#F97316",
+                    portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/dee336736d63d24b1fe9/images/thumbnails/2bfd13f9dce1375a-893.webp",
+                    attribution: "ZipZipPipe"
+                )
+            case .persona:
+                AIGijinkaCharacter(
+                    name: "Grok 娘",
+                    brand: "Grok",
+                    accentHex: "#E11D48",
+                    portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/84f22675b1de27a301bb/images/thumbnails/2d67a5b5e9333d2a-893.webp",
+                    attribution: "ZipZipPipe"
+                )
         }
+    }
+    
+    
+    var accentHex: String {
+        self.gijinkaCharacter.accentHex
     }
     
     

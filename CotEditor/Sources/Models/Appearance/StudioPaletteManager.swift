@@ -161,6 +161,20 @@ final class StudioPaletteManager {
     }
     
     
+    /// Reloads palette selection & custom triad hexes from the backing database (e.g. after DB import or profile switch).
+    func reloadFromDatabase() {
+        let rawID = self.database.string(
+            forKey: CotLocalDatabase.ConfigKey.studioPaletteID,
+            default: StudioPaletteID.ultraViolet.rawValue
+        )
+        self.selectedID = StudioPaletteID(rawValue: rawID) ?? .ultraViolet
+        self.customLightHex = self.database.string(forKey: CotLocalDatabase.ConfigKey.studioCustomLightHex, default: "#EDEBE6")
+        self.customDarkHex = self.database.string(forKey: CotLocalDatabase.ConfigKey.studioCustomDarkHex, default: "#121318")
+        self.customAccentHex = self.database.string(forKey: CotLocalDatabase.ConfigKey.studioCustomAccentHex, default: "#715CB2")
+        self.postPaletteChange()
+    }
+    
+    
     private func postPaletteChange() {
         self.revision &+= 1
         NotificationCenter.default.post(name: Self.paletteDidChangeNotification, object: self)
@@ -341,10 +355,9 @@ final class StudioPaletteManager {
     }
     
     
-    /// Creates or updates a user editor syntax `Theme` matching the active Studio Palette and selects it.
-    func applyPaletteToEditorTheme(preferDark: Bool) {
-        let triad = self.triad()
-        let themeName = "Studio · \(self.selectedID.displayName) (\(preferDark ? AppLanguage.text("暗色", en: "Dark") : AppLanguage.text("浅色", en: "Light")))"
+    /// Builds a software-bundled `Theme` from a `StudioPaletteID` and dark/light preference.
+    func buildTheme(for paletteID: StudioPaletteID, preferDark: Bool) -> Theme {
+        let triad = self.triad(for: paletteID)
         let lightPaper = Self.nsColor(hex: triad.lightPaperHex)
         let darkInk = Self.nsColor(hex: triad.darkInkHex)
         let accent = Self.nsColor(hex: triad.accentHex)
@@ -369,7 +382,7 @@ final class StudioPaletteManager {
             theme.characters = .init(color: Self.ensureDarkModeVisibility(accent))
             theme.comments = .init(color: lightPaper.withAlphaComponent(0.45))
         } else {
-            let softPaper = (self.selectedID == .matchaParchment) ? lightPaper : Self.blend(lightPaper, with: .white, ratio: 0.52)
+            let softPaper = (paletteID == .matchaParchment) ? lightPaper : Self.blend(lightPaper, with: .white, ratio: 0.52)
             let crispAccent = Self.ensureLightModeTextContrast(accent, against: softPaper)
             theme.background = .init(color: softPaper)
             theme.text = .init(color: darkInk)
@@ -389,6 +402,52 @@ final class StudioPaletteManager {
             theme.characters = .init(color: crispAccent)
             theme.comments = .init(color: darkInk.withAlphaComponent(0.44))
         }
+        return theme
+    }
+    
+    
+    /// Synthesizes any built-in `Studio · ...` editor theme by name (Chinese or English) so migrating
+    /// a database to another machine never fails with a missing theme resource error.
+    func synthesizedTheme(named name: String) -> Theme? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("Studio · ") else { return nil }
+        let body = String(trimmed.dropFirst("Studio · ".count))
+        
+        let preferDark: Bool
+        let baseTitle: String
+        if body.hasSuffix(" (暗色)") {
+            preferDark = true
+            baseTitle = String(body.dropLast(" (暗色)".count))
+        } else if body.hasSuffix(" (Dark)") {
+            preferDark = true
+            baseTitle = String(body.dropLast(" (Dark)".count))
+        } else if body.hasSuffix(" (浅色)") {
+            preferDark = false
+            baseTitle = String(body.dropLast(" (浅色)".count))
+        } else if body.hasSuffix(" (Light)") {
+            preferDark = false
+            baseTitle = String(body.dropLast(" (Light)".count))
+        } else {
+            preferDark = false
+            baseTitle = body
+        }
+        
+        let matchedID: StudioPaletteID = switch baseTitle {
+            case "电光紫罗兰", "Ultra Violet": .ultraViolet
+            case "信号绯红", "Signal Crimson": .signalCrimson
+            case "抹茶荧光绿", "Matcha Marker": .matchaParchment
+            case "松烟青玉", "Pine Celadon": .pineCeladon
+            case "自定义三色", "Custom Triad": .custom
+            default: self.selectedID
+        }
+        return self.buildTheme(for: matchedID, preferDark: preferDark)
+    }
+    
+    
+    /// Creates or updates a user editor syntax `Theme` matching the active Studio Palette and selects it.
+    func applyPaletteToEditorTheme(preferDark: Bool) {
+        let themeName = "Studio · \(self.selectedID.displayName) (\(preferDark ? AppLanguage.text("暗色", en: "Dark") : AppLanguage.text("浅色", en: "Light")))"
+        let theme = self.buildTheme(for: self.selectedID, preferDark: preferDark)
         
         try? ThemeManager.shared.save(setting: theme, name: themeName)
         UserDefaults.standard[.theme] = themeName

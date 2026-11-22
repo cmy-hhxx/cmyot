@@ -1680,6 +1680,9 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         self.applySyncedDefaultsToUserDefaults()
         
         if self === Self.shared {
+            StudioPaletteManager.shared.reloadFromDatabase()
+            WallpaperManager.shared.reloadFromDatabase()
+            ThemeManager.shared.validateOrRepairActiveThemePreference()
             AIBotStore.shared.reloadFromDatabase()
             UserHabitPredictor.shared.reloadFromDatabase()
             AINextTokenPredictor.shared.reloadForActiveUser()
