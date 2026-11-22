@@ -207,63 +207,7 @@ struct Round23FeatureTests {
     }
     
     
-    // MARK: 5. Stacked Metadata Underdamped Spring & Toolbar Cluster Geometry
-    
-    @Test func stackedMetadataSpringOvershootsReversesMidFlightAndExpandsCluster() {
-        
-        var spring = StackedMetadataSpring(position: 0, velocity: 0, target: 1)
-        var peakPos = 0.0
-        for _ in 0..<24 {
-            _ = spring.step(dt: 1.0 / 60.0)
-            peakPos = max(peakPos, spring.position)
-        }
-        // Underdamped spring (m=1, k=175, c=20) peaks above 1.01 before settling
-        #expect(peakPos > 1.01)
-        
-        // Reverse target mid-flight and confirm continuous velocity settlement back to 0
-        spring.target = 0
-        let velocityBeforeFlip = spring.velocity
-        _ = spring.step(dt: 1.0 / 60.0)
-        #expect(spring.velocity != velocityBeforeFlip)
-        
-        for _ in 0..<180 {
-            _ = spring.step(dt: 1.0 / 60.0)
-        }
-        #expect(abs(spring.position) < 0.001)
-        
-        let sampleImage = NSImage(systemSymbolName: "star", accessibilityDescription: nil) ?? NSImage()
-        let items = [
-            StackedToolbarCapsuleItem(
-                id: "one",
-                title: { _ in "看板" },
-                tooltip: { _ in "数据看板" },
-                image: { _ in sampleImage }
-            ),
-            StackedToolbarCapsuleItem(
-                id: "two",
-                title: { _ in "周报" },
-                tooltip: { _ in "周报中心" },
-                image: { _ in sampleImage }
-            ),
-            StackedToolbarCapsuleItem(
-                id: "three",
-                title: { _ in "文档" },
-                tooltip: { _ in "文档中心" },
-                image: { _ in sampleImage }
-            ),
-        ]
-        
-        let cluster = StackedToolbarClusterView(items: items)
-        #expect(cluster.collapsedWidth < cluster.expandedWidth)
-        let initialWidth = cluster.currentClusterWidth
-        cluster.setExpanded(true, animated: false)
-        #expect(cluster.currentProgress == 1.0)
-        #expect(cluster.currentClusterWidth > initialWidth)
-        #expect(abs(cluster.currentClusterWidth - cluster.expandedWidth) <= 1.0)
-    }
-    
-    
-    // MARK: 6. Glass Folder Procedural Textures & Weekly Report Refresh Signal
+    // MARK: 5. Glass Folder Procedural Textures & Weekly Report Refresh Signal
     
     @Test func glassFolderTexturesRenderAndWeeklyReportsNotificationFiresOnInPlaceUpdate() async throws {
         

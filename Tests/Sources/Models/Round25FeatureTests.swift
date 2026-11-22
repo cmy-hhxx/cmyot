@@ -22,6 +22,7 @@
 import AppKit
 import Foundation
 import LineEnding
+import SwiftUI
 import Testing
 @testable import CotEditor
 
@@ -277,5 +278,235 @@ struct Round25FeatureTests {
         textView.insertInlineImageTokenCleanly("⟦🖼 test-eof.png⟧")
         
         #expect(textView.string.hasPrefix("Hello world\n⟦🖼 test-eof.png⟧"))
+    }
+    
+    
+    // MARK: 7. Heatmap Strict 1:1 Square Proportions, AI Document Predictions, News Covers & Avatar Accent
+    
+    @Test func heatmapLayoutAlwaysMaintainsStrictSquareCells() {
+        for weeks in [18, 36, 53] {
+            let layout = HeatmapGridLayout.compute(size: CGSize(width: 560, height: 240), weekCount: weeks)
+            let rect = layout.cellRect(col: 0, row: 0)
+            #expect(abs(rect.width - rect.height) < 0.001)
+            #expect(rect.width >= 9.5 && rect.width <= 15.0)
+        }
+    }
+    
+    
+    @Test func aiActionPredictionsParseJSONAndInferFromDocuments() {
+        let doc = StoredDocumentRecord(
+            id: "doc-auth",
+            title: "认证重构方案.md",
+            filePath: nil,
+            syntax: "Markdown",
+            content: "# 认证重构\n- [ ] 补完 OAuth 超时重试逻辑\n是否需要支持多租户隔离？\n## 待补充压测数据",
+            highlightsJSON: "[]",
+            updatedAt: Date(),
+            createdAt: Date()
+        )
+        
+        let aiJSON = """
+        ```json
+        [{"action":"补齐 OAuth 刷新失败的重试退避","reason":"方案中尚未覆盖网络抖动场景","doc_title":"认证重构方案.md","urgency":"高"}]
+        ```
+        """
+        let parsed = AnalyticsManager.parseActionPredictions(from: aiJSON, documents: [doc])
+        #expect(parsed.count == 1)
+        #expect(parsed[0].sourceDocumentID == "doc-auth")
+        #expect(parsed[0].urgency == "高")
+        
+        let heuristic = AnalyticsManager.buildHeuristicActionPredictions(
+            documents: [doc],
+            weeklyReports: [],
+            reminders: []
+        )
+        #expect(!heuristic.isEmpty)
+        #expect(heuristic.contains { $0.sourceDocumentID == "doc-auth" })
+    }
+    
+    
+    @Test func aiHotNewsExtractsRealCoversFromJSONRSSAndOpenGraph() throws {
+        let jsonData = Data("""
+        {"items":[{"id":"c1","title":"Vision Model Release","url":"https://example.com/post/1","image":"https://cdn.example.com/cover.webp"}]}
+        """.utf8)
+        let parsedJSON = AIHotNewsService.parseJSON(jsonData)
+        #expect(parsedJSON.first?.coverURLString == "https://cdn.example.com/cover.webp")
+        
+        let rssData = Data("""
+        <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+          <channel><item>
+            <title>Agent Post</title>
+            <link>https://example.com/agent</link>
+            <media:thumbnail url="https://cdn.example.com/thumb.png" />
+          </item></channel>
+        </rss>
+        """.utf8)
+        let parsedRSS = AIHotNewsService.parseRSS(rssData)
+        #expect(parsedRSS.first?.coverURLString == "https://cdn.example.com/thumb.png")
+        
+        let pageURL = try #require(URL(string: "https://blog.example.com/articles/42"))
+        let html = """
+        <html><head><meta property="og:image" content="/assets/hero-42.jpg" /></head></html>
+        """
+        let og = AIHotNewsService.extractOpenGraphImageURL(from: html, pageURL: pageURL)
+        #expect(og == "https://blog.example.com/assets/hero-42.jpg")
+    }
+    
+    
+    @Test func avatarColorExtractorIgnoresWhiteBackgroundAndPicksTrueBlueAccent() throws {
+        let img = NSImage(size: NSSize(width: 64, height: 64))
+        img.lockFocus()
+        // White background covering 75% of canvas (previously polluted red bucket 0!)
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 64, height: 64).fill()
+        // Blue subject in center
+        NSColor(srgbRed: 0.10, green: 0.48, blue: 0.96, alpha: 1).setFill()
+        NSBezierPath(ovalIn: NSRect(x: 16, y: 16, width: 32, height: 32)).fill()
+        img.unlockFocus()
+        
+        let profile = UserProfile(
+            id: "blue-on-white-\(UUID().uuidString)",
+            displayName: "Blue",
+            avatarData: nil,
+            avatarColorHex: "#FF0000",
+            dbFilename: "test.sqlite3",
+            accountKind: "local",
+            email: nil,
+            remoteUserID: nil,
+            createdAt: Date(),
+            lastActiveAt: Date()
+        )
+        let palette = AvatarColorExtractor.extractPalette(for: profile, image: img)
+        let accentNS = try #require(NSColor(palette.accent).usingColorSpace(.sRGB))
+        // Hue of blue is around 0.55...0.67 (far from red 0.0 / 1.0!)
+        #expect(accentNS.hueComponent >= 0.50 && accentNS.hueComponent <= 0.72)
+    }
+    
+    
+    // MARK: 8. Vim Normal Mode Navigation onto Inline Image Lines
+    
+    @Test func vimNormalModeMovesCleanlyOntoAndAcrossInlineImageLines() throws {
+        // Store a real inline image so `LayoutManager` renders `.controlCharacter` + `.null` glyphs
+        let sampleImg = NSImage(size: NSSize(width: 120, height: 80))
+        sampleImg.lockFocus()
+        NSColor.systemTeal.setFill()
+        NSRect(x: 0, y: 0, width: 120, height: 80).fill()
+        sampleImg.unlockFocus()
+        let stored = try #require(PlainTextInlineImageStore.shared.store(image: sampleImg, for: nil))
+        let tokenStr = stored.token
+        
+        let doc = "First text line\n\(tokenStr)\nThird text line"
+        let storage = NSTextStorage(string: doc)
+        let scanner = LineEndingScanner(textStorage: storage, lineEnding: .lf)
+        let textView = EditorTextView(frame: NSRect(x: 0, y: 0, width: 640, height: 420), textStorage: storage, lineEndingScanner: scanner)
+        (textView.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages = true
+        textView.layoutManager?.ensureLayout(forCharacterRange: NSRange(location: 0, length: (doc as NSString).length))
+        
+        let line1Start = ("First text line\n" as NSString).length
+        let line2Start = ("First text line\n\(tokenStr)\n" as NSString).length
+        
+        VimState.shared.mode = .normal
+        textView.setSelectedRange(NSRange(location: 4, length: 0))
+        
+        let engine = VimEngine(textView: textView)
+        let jEvent = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0,
+            context: nil, characters: "j", charactersIgnoringModifiers: "j",
+            isARepeat: false, keyCode: 38
+        ))
+        let kEvent = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0,
+            context: nil, characters: "k", charactersIgnoringModifiers: "k",
+            isARepeat: false, keyCode: 40
+        ))
+        
+        // Press `j` from Line 0 -> MUST land cleanly at start of image token on Line 1!
+        #expect(engine.handleKeyDown(jEvent))
+        #expect(textView.selectedRange().location == line1Start)
+        #expect(textView.vimCursorRect(at: line1Start) != nil)
+        
+        // Press `j` again -> advances cleanly to Line 2!
+        #expect(engine.handleKeyDown(jEvent))
+        #expect(textView.selectedRange().location >= line2Start)
+        
+        // Press `k` from Line 2 -> MUST land cleanly back on the image line (Line 1)!
+        #expect(engine.handleKeyDown(kEvent))
+        #expect(textView.selectedRange().location == line1Start)
+        
+        // Press `k` again -> returns to Line 0!
+        #expect(engine.handleKeyDown(kEvent))
+        #expect(textView.selectedRange().location < line1Start)
+    }
+    
+    
+    // MARK: 9. Unified 10-Palette Light/Dark Pairing & Multi-Category News (Finance + X + AI)
+    
+    @Test func unifiedTenPalettesStayPairedAcrossLightAndDarkModes() throws {
+        #expect(StudioPaletteID.allCases.count == 10)
+        #expect(StudioPaletteID.resolve(rawValue: "custom") == .pineCeladon)
+        
+        let manager = StudioPaletteManager.shared
+        for preset in StudioPaletteID.allCases {
+            let lightThemeName = StudioPaletteManager.themeName(for: preset, preferDark: false)
+            let darkThemeName = StudioPaletteManager.themeName(for: preset, preferDark: true)
+            
+            // Switching Light <-> Dark always stays on the EXACT SAME palette
+            let toDark = ThemeManager.shared.equivalentSettingName(to: lightThemeName, forDark: true)
+            let toLight = ThemeManager.shared.equivalentSettingName(to: darkThemeName, forDark: false)
+            #expect(toDark == darkThemeName)
+            #expect(toLight == lightThemeName)
+            
+            let lightTokens = manager.tokens(isDark: false, id: preset)
+            let darkTokens = manager.tokens(isDark: true, id: preset)
+            #expect(!lightTokens.isDark && darkTokens.isDark)
+        }
+    }
+    
+    
+    @Test func multiCategoryNewsSupportsFinanceAndXWhileScrubbingAIHot() throws {
+        let hnXJSON = Data("""
+        {
+          "hits": [
+            {
+              "objectID": "42001",
+              "title": "Fed signals steady rates while AI capex surges",
+              "url": "https://x.com/markets_desk/status/1234567890",
+              "points": 185,
+              "created_at": "2026-11-22T09:30:00Z"
+            }
+          ]
+        }
+        """.utf8)
+        let parsed = AIHotNewsService.parseHackerNewsAlgoliaJSON(hnXJSON, defaultSource: "X 热议", category: .xSocial)
+        #expect(parsed.count == 1)
+        #expect(parsed[0].resolvedCategory == .xSocial)
+        #expect(parsed[0].source.contains("@markets_desk"))
+        #expect(parsed[0].heatScore == 185)
+        
+        let financeItem = AIHotNewsItem(
+            id: "fin-1",
+            title: "美股科技板块领涨，美联储释放鸽派信号",
+            source: "CNBC 财经",
+            urlString: "https://www.cnbc.com/2026/11/22/markets.html",
+            publishedAt: Date(),
+            heatScore: nil,
+            tag: "金融",
+            category: .finance
+        )
+        #expect(financeItem.resolvedCategory == .finance)
+        
+        let blocked = AIHotNewsItem(
+            id: "old-1",
+            title: "Old cached item",
+            source: "aihot.news",
+            urlString: "https://aihot.news/items/1",
+            publishedAt: nil,
+            heatScore: nil,
+            tag: nil
+        )
+        #expect(AIHotNewsService.containsBlockedBrand(blocked))
+        #expect(!AIHotNewsService.sanitizedDisplaySource("ai.hot").lowercased().contains("ai"))
     }
 }

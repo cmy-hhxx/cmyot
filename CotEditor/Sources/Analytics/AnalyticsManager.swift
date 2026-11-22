@@ -280,19 +280,6 @@ nonisolated struct HeatmapDayCell: Identifiable, Sendable, Equatable {
 }
 
 
-/// Aggregated weekday writing intensity for the 7-day rhythm bar chart (Mon...Sun).
-nonisolated struct WeekdayActivityPoint: Identifiable, Sendable, Equatable {
-    
-    var weekdayIndex: Int  // 0 = Mon ... 6 = Sun
-    var label: String
-    var totalChars: Int
-    var averageChars: Int
-    var activeDays: Int
-    
-    var id: Int { self.weekdayIndex }
-}
-
-
 /// Detailed breakdown shown in the center modal when the user clicks a heatmap cell.
 nonisolated struct HeatmapDayDetail: Identifiable, Sendable, Equatable {
     
@@ -326,51 +313,6 @@ nonisolated struct YearlyHeatmapData: Sendable, Equatable {
     var monthLabels: [HeatmapMonthLabel]
     var activeDays: Int
     var totalTypedChars: Int
-}
-
-
-/// Month column marker along the top edge of a rolling activity heatmap.
-nonisolated struct RollingHeatmapMonthLabel: Identifiable, Sendable, Equatable {
-    
-    var year: Int
-    var month: Int
-    var weekIndex: Int
-    var label: String
-    
-    var id: String { "\(self.year)-\(self.month)-\(self.weekIndex)" }
-}
-
-
-/// Rolling backwards-from-today activity heatmap matrix (Monday-first week columns x 7 rows, zero future cells drawn).
-nonisolated struct RollingHeatmapData: Sendable, Equatable {
-    
-    var weeks: [[HeatmapDayCell]]
-    var monthLabels: [RollingHeatmapMonthLabel]
-    var activeDays: Int
-    var totalTypedChars: Int
-    var totalAIChars: Int
-    var startDate: Date
-    var endDate: Date
-}
-
-
-/// Warm, plain-Chinese daily story synthesized for the selected heatmap cell.
-nonisolated struct DailyHumanStory: Sendable, Equatable {
-    
-    var dateKey: String
-    var dateBadge: String
-    var moodTag: String
-    var headline: String
-    var highlights: [String]
-    var handTypedChars: Int
-    var aiChars: Int
-    var totalChars: Int
-    var aiSharePercent: Int
-    var savedCount: Int
-    var createdCount: Int
-    var aiRequests: Int
-    var documents: [StoredDocumentRecord]
-    var weeklyReports: [StoredWeeklyReport]
 }
 
 
@@ -431,12 +373,17 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     private(set) var personalityProfile: UserPersonalityProfile?
     private(set) var isAnalyzingPersonality: Bool = false
     private(set) var personalityErrorMessage: String?
+    private(set) var actionPredictions: [DocumentActionPrediction] = []
+    private(set) var isPredictingActions: Bool = false
+    private(set) var actionPredictionsFromAI: Bool = false
+    private(set) var actionPredictionUpdatedAt: Date?
     private(set) var revision: Int = 0
     private(set) var lastKeystrokeAt: Date = .distantPast
     
     // MARK: Private Properties
     
     private let database: CotLocalDatabase
+    private var actionPredictionFingerprint: String = ""
     private var pendingTypedCharsDelta: Int = 0
     private var pendingTypedDateKey: String?
     private var pendingTypedHour: Int?
@@ -713,6 +660,8 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         } else {
             self.personalityProfile = nil
         }
+        
+        self.loadActionPredictionsFromDatabase()
         
         self.revision &+= 1
     }
@@ -1098,223 +1047,6 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     }
     
     
-    /// Builds a Monday-first rolling heatmap ending at the week containing `referenceDate` (no future months).
-    func rollingHeatmap(weeks: Int = 26, referenceDate: Date = Date()) -> RollingHeatmapData {
-        
-        let weekCount = max(4, min(53, weeks))
-        let calendar = Calendar.current
-        let todayStart = calendar.startOfDay(for: referenceDate)
-        let gridStart = Self.rollingGridStart(weeks: weekCount, todayStart: todayStart, calendar: calendar)
-        
-        let cells = self.buildHeatmapCells(
-            gridStart: gridStart,
-            totalCells: weekCount * 7,
-            targetYear: nil,
-            todayStart: todayStart,
-            calendar: calendar
-        )
-        
-        let weekMatrix = Self.chunkWeeks(cells)
-        let monthLabels = Self.buildRollingMonthLabels(
-            weekMatrix: weekMatrix,
-            gridStart: gridStart,
-            todayStart: todayStart,
-            calendar: calendar
-        )
-        
-        let visibleCells = cells.filter { !$0.isFuture }
-        let activeDays = visibleCells.filter { $0.level > 0 }.count
-        let totalTypedChars = visibleCells.reduce(0) { $0 + $1.typedChars }
-        let totalAIChars = visibleCells.reduce(0) { $0 + $1.aiCompletedChars }
-        
-        return RollingHeatmapData(
-            weeks: weekMatrix,
-            monthLabels: monthLabels,
-            activeDays: activeDays,
-            totalTypedChars: totalTypedChars,
-            totalAIChars: totalAIChars,
-            startDate: gridStart,
-            endDate: todayStart
-        )
-    }
-    
-    
-    /// Builds a Monday-first rolling mini heatmap scored strictly by daily AI token & request usage.
-    func aiConsumptionHeatmap(weeks: Int = 12, referenceDate: Date = Date()) -> RollingHeatmapData {
-        
-        let weekCount = max(4, min(53, weeks))
-        let calendar = Calendar.current
-        let todayStart = calendar.startOfDay(for: referenceDate)
-        let gridStart = Self.rollingGridStart(weeks: weekCount, todayStart: todayStart, calendar: calendar)
-        let totalCells = weekCount * 7
-        
-        var statsByDay = Dictionary(self.recentDailyStats.map { ($0.dateKey, $0) }, uniquingKeysWith: { first, _ in first })
-        statsByDay[self.todayStats.dateKey] = self.todayStats
-        
-        struct RawAIDay {
-            let key: String
-            let date: Date
-            let stat: DailyWritingStats?
-            let score: Int
-            let isFuture: Bool
-        }
-        
-        var rawDays: [RawAIDay] = []
-        rawDays.reserveCapacity(totalCells)
-        
-        for offset in 0..<totalCells {
-            let day = calendar.date(byAdding: .day, value: offset, to: gridStart) ?? gridStart
-            let key = Self.dateKey(for: day)
-            let isFuture = day > todayStart
-            let stat = isFuture ? nil : statsByDay[key]
-            let tokens = (stat?.inputTokens ?? 0) + (stat?.outputTokens ?? 0)
-            let requests = stat?.aiRequests ?? 0
-            let aiChars = stat?.aiCompletedChars ?? 0
-            let score: Int = if isFuture {
-                0
-            } else if tokens > 0 {
-                tokens + requests * 60 + aiChars * 2
-            } else {
-                requests * 120 + aiChars * 4
-            }
-            rawDays.append(RawAIDay(key: key, date: day, stat: stat, score: score, isFuture: isFuture))
-        }
-        
-        let maxScore = max(120, rawDays.filter { !$0.isFuture && $0.score > 0 }.map(\.score).max() ?? 120)
-        let cells = rawDays.map { item in
-            let level = item.isFuture ? 0 : Self.heatmapLevel(for: item.score, maxScore: maxScore)
-            return HeatmapDayCell(
-                dateKey: item.key,
-                date: item.date,
-                typedChars: item.stat?.typedChars ?? 0,
-                aiCompletedChars: item.stat?.aiCompletedChars ?? 0,
-                aiCompletionAccepts: item.stat?.aiCompletionAccepts ?? 0,
-                filesCreated: item.stat?.filesCreated ?? 0,
-                documentsSaved: item.stat?.documentsSaved ?? 0,
-                aiRequests: item.stat?.aiRequests ?? 0,
-                inputTokens: item.stat?.inputTokens ?? 0,
-                outputTokens: item.stat?.outputTokens ?? 0,
-                localHits: item.stat?.localHits ?? 0,
-                level: level,
-                isFuture: item.isFuture,
-                isOutOfYear: false
-            )
-        }
-        
-        let weekMatrix = Self.chunkWeeks(cells)
-        let monthLabels = Self.buildRollingMonthLabels(
-            weekMatrix: weekMatrix,
-            gridStart: gridStart,
-            todayStart: todayStart,
-            calendar: calendar
-        )
-        
-        let visibleCells = cells.filter { !$0.isFuture }
-        return RollingHeatmapData(
-            weeks: weekMatrix,
-            monthLabels: monthLabels,
-            activeDays: visibleCells.filter { $0.level > 0 }.count,
-            totalTypedChars: visibleCells.reduce(0) { $0 + $1.typedChars },
-            totalAIChars: visibleCells.reduce(0) { $0 + $1.aiCompletedChars },
-            startDate: gridStart,
-            endDate: todayStart
-        )
-    }
-    
-    
-    private static func rollingGridStart(weeks: Int, todayStart: Date, calendar: Calendar) -> Date {
-        
-        let mondayIndex = (calendar.component(.weekday, from: todayStart) + 5) % 7
-        let currentWeekMonday = calendar.date(byAdding: .day, value: -mondayIndex, to: todayStart) ?? todayStart
-        return calendar.date(byAdding: .day, value: -(weeks - 1) * 7, to: currentWeekMonday) ?? currentWeekMonday
-    }
-    
-    
-    private static func chunkWeeks(_ cells: [HeatmapDayCell]) -> [[HeatmapDayCell]] {
-        
-        stride(from: 0, to: cells.count, by: 7).map { start in
-            Array(cells[start..<min(start + 7, cells.count)])
-        }
-    }
-    
-    
-    private static func buildRollingMonthLabels(
-        weekMatrix: [[HeatmapDayCell]],
-        gridStart: Date,
-        todayStart: Date,
-        calendar: Calendar
-    ) -> [RollingHeatmapMonthLabel] {
-        
-        var monthLabels: [RollingHeatmapMonthLabel] = []
-        let startYear = calendar.component(.year, from: gridStart)
-        let endYear = calendar.component(.year, from: todayStart)
-        let spansYears = (startYear != endYear)
-        
-        for (weekIdx, column) in weekMatrix.enumerated() {
-            guard let firstDayCell = column.first(where: { !$0.isFuture && calendar.component(.day, from: $0.date) == 1 }) else {
-                continue
-            }
-            let year = calendar.component(.year, from: firstDayCell.date)
-            let month = calendar.component(.month, from: firstDayCell.date)
-            let labelText = (spansYears && month == 1 && weekIdx > 0)
-                ? "\(year % 100)年1月"
-                : "\(month)月"
-            monthLabels.append(RollingHeatmapMonthLabel(
-                year: year,
-                month: month,
-                weekIndex: weekIdx,
-                label: labelText
-            ))
-        }
-        
-        if let firstColumn = weekMatrix.first?.first {
-            let firstYear = calendar.component(.year, from: firstColumn.date)
-            let firstMonth = calendar.component(.month, from: firstColumn.date)
-            let hasRoomBeforeNext = monthLabels.first.map { $0.weekIndex >= 2 } ?? true
-            if hasRoomBeforeNext,
-               !monthLabels.contains(where: { $0.year == firstYear && $0.month == firstMonth && $0.weekIndex == 0 })
-            {
-                monthLabels.insert(
-                    RollingHeatmapMonthLabel(
-                        year: firstYear,
-                        month: firstMonth,
-                        weekIndex: 0,
-                        label: "\(firstMonth)月"
-                    ),
-                    at: 0
-                )
-            }
-        }
-        
-        return monthLabels
-    }
-    
-    
-    private static func heatmapLevel(for score: Int, maxScore: Int) -> Int {
-        
-        guard score > 0 else { return 0 }
-        let ratio = Double(score) / Double(max(1, maxScore))
-        if ratio >= 0.75 { return 4 }
-        if ratio >= 0.45 { return 3 }
-        if ratio >= 0.18 { return 2 }
-        return 1
-    }
-    
-    
-    /// Returns chronological past-through-today cells from a rolling heatmap.
-    func orderedVisibleCells(in heatmap: RollingHeatmapData) -> [HeatmapDayCell] {
-        
-        heatmap.weeks.flatMap { $0 }.filter { !$0.isFuture }
-    }
-    
-    
-    /// Finds a visible (past or today) cell matching `dateKey` inside `heatmap`.
-    func cell(forDateKey dateKey: String, in heatmap: RollingHeatmapData) -> HeatmapDayCell? {
-        
-        heatmap.weeks.flatMap { $0 }.first { !$0.isFuture && $0.dateKey == dateKey }
-    }
-    
-    
     /// Calendar years available for the yearly heatmap switcher, sorted ascending.
     func availableHeatmapYears(referenceDate: Date = Date()) -> [Int] {
         
@@ -1462,42 +1194,6 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     }
     
     
-    /// Aggregates Monday-to-Sunday average and total writing activity over the last `days` days.
-    func weekdayActivityDistribution(days: Int = 90, referenceDate: Date = Date()) -> [WeekdayActivityPoint] {
-        
-        let calendar = Calendar.current
-        let todayStart = calendar.startOfDay(for: referenceDate)
-        let labels = ["一", "二", "三", "四", "五", "六", "日"]
-        var totals = Array(repeating: 0, count: 7)
-        var counts = Array(repeating: 0, count: 7)
-        
-        let series = self.dailySeries(days: days, referenceDate: todayStart)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        
-        for item in series {
-            guard let date = formatter.date(from: item.dateKey) else { continue }
-            let mondayIndex = (calendar.component(.weekday, from: date) + 5) % 7
-            let combined = item.typedChars + item.aiCompletedChars
-            if combined > 0 {
-                totals[mondayIndex] += combined
-                counts[mondayIndex] += 1
-            }
-        }
-        
-        return (0..<7).map { idx in
-            let avg = counts[idx] > 0 ? totals[idx] / counts[idx] : 0
-            return WeekdayActivityPoint(
-                weekdayIndex: idx,
-                label: "周\(labels[idx])",
-                totalChars: totals[idx],
-                averageChars: avg,
-                activeDays: counts[idx]
-            )
-        }
-    }
-    
-    
     /// Builds full rich details for a clicked heatmap cell, including models, features, documents, and daily digest.
     func dayDetail(for cell: HeatmapDayCell) -> HeatmapDayDetail {
         
@@ -1537,146 +1233,6 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     }
     
     
-    /// Synthesizes a warm, plain-Chinese daily story for the clicked heatmap cell (no jargon or database dumps).
-    func humanDayStory(
-        for cell: HeatmapDayCell,
-        referenceDate: Date = Date(),
-        baselineDailyChars: Int = 0
-    ) -> DailyHumanStory {
-        
-        let detail = self.dayDetail(for: cell)
-        let calendar = Calendar.current
-        let todayStart = calendar.startOfDay(for: referenceDate)
-        let todayKey = Self.dateKey(for: todayStart)
-        let yesterdayKey = calendar.date(byAdding: .day, value: -1, to: todayStart).map { Self.dateKey(for: $0) }
-        
-        let isToday = (cell.dateKey == todayKey)
-        let isYesterday = (cell.dateKey == yesterdayKey)
-        
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        let sameYear = calendar.component(.year, from: cell.date) == calendar.component(.year, from: todayStart)
-        formatter.dateFormat = sameYear ? "M 月 d 日 EEE" : "yyyy 年 M 月 d 日 EEE"
-        let shortDate = formatter.string(from: cell.date)
-        
-        let dateBadge: String = if isToday {
-            "今天 · \(shortDate)"
-        } else if isYesterday {
-            "昨天 · \(shortDate)"
-        } else {
-            shortDate
-        }
-        
-        let typed = cell.typedChars
-        let ai = cell.aiCompletedChars
-        let total = typed + ai
-        let aiShare = total > 0 ? Int((Double(ai) * 100 / Double(total)).rounded()) : 0
-        let docTitles = detail.documents.map(\.title) + detail.weeklyReports.map(\.title)
-        let firstTitle = docTitles.first
-        
-        let typedText = typed.formatted(.number.grouping(.automatic))
-        let aiText = ai.formatted(.number.grouping(.automatic))
-        
-        let moodTag = ""
-        let headline: String
-        
-        if total == 0 && cell.filesCreated == 0 && docTitles.isEmpty {
-            headline = isToday
-                ? "今日尚未开始记录。"
-                : "当日没有留下文本记录。"
-        } else if typed == 0 && ai == 0 {
-            if let first = firstTitle {
-                headline = isToday
-                    ? "今日新建《\(first)》，当前处于结构起草阶段。"
-                    : "当日新建或整理了《\(first)》。"
-            } else {
-                headline = isToday
-                    ? "今日新建了空白文档。"
-                    : "当日新建过空白文档。"
-            }
-        } else if typed == 0 && ai > 0 {
-            if let first = firstTitle {
-                headline = "当日在《\(first)》中通过补全与整理写入 \(aiText) 字。"
-            } else {
-                headline = "当日通过补全与整理写入 \(aiText) 字。"
-            }
-        } else if let first = firstTitle {
-            if docTitles.count >= 2 {
-                headline = "手写 \(typedText) 字\(ai > 0 ? "、补全 \(aiText) 字" : "")，主要围绕《\(first)》等 \(docTitles.count) 篇推进。"
-            } else {
-                headline = "手写 \(typedText) 字\(ai > 0 ? "、补全 \(aiText) 字" : "")，集中落笔于《\(first)》。"
-            }
-        } else if ai > 0 {
-            headline = "当日手写 \(typedText) 字，辅助补全 \(aiText) 字。"
-        } else {
-            headline = "当日累计手写 \(typedText) 字。"
-        }
-        
-        var highlights: [String] = []
-        let jargonTokens = ["累计输入", "编辑文档：", "Tokens", "token", "延迟", "ms", "活跃度"]
-        
-        if let digest = detail.digest {
-            let points = Self.structuredSummaryPoints(from: digest.summary, maxPoints: 3)
-            for point in points {
-                let clean = point.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !clean.isEmpty,
-                      !clean.hasPrefix("新建 "),
-                      !jargonTokens.contains(where: { clean.localizedCaseInsensitiveContains($0) })
-                else { continue }
-                if !highlights.contains(clean) {
-                    highlights.append(clean)
-                }
-            }
-        }
-        
-        func appendHighlight(_ text: String) {
-            guard highlights.count < 3, !highlights.contains(text) else { return }
-            highlights.append(text)
-        }
-        
-        if cell.filesCreated > 0 {
-            appendHighlight(isToday
-                ? "新开了 \(cell.filesCreated) 篇文档，新想法落地了"
-                : "新开了 \(cell.filesCreated) 篇文档，起草了新内容"
-            )
-        }
-        if !detail.weeklyReports.isEmpty {
-            let reportTitle = detail.weeklyReports[0].title
-            appendHighlight(detail.weeklyReports.count == 1
-                ? "整理了周报《\(reportTitle)》"
-                : "整理了 \(detail.weeklyReports.count) 份周报"
-            )
-        }
-        if cell.aiCompletionAccepts > 0 {
-            appendHighlight("顺手用 Tab 接纳了 \(cell.aiCompletionAccepts) 次续写，省了不少敲字功夫")
-        } else if cell.documentsSaved >= 3 {
-            appendHighlight("来回保存打磨了 \(cell.documentsSaved) 次，写得挺仔细")
-        }
-        if isToday && !self.todayReminders.isEmpty {
-            appendHighlight("今天还有 \(self.todayReminders.count) 件挂念的小事待收尾")
-        } else if isToday && !self.tomorrowReminders.isEmpty {
-            appendHighlight("已经记好明天要先处理「\(self.tomorrowReminders[0].title)」")
-        }
-        
-        return DailyHumanStory(
-            dateKey: cell.dateKey,
-            dateBadge: dateBadge,
-            moodTag: moodTag,
-            headline: headline,
-            highlights: highlights,
-            handTypedChars: typed,
-            aiChars: ai,
-            totalChars: total,
-            aiSharePercent: aiShare,
-            savedCount: cell.documentsSaved,
-            createdCount: cell.filesCreated,
-            aiRequests: cell.aiRequests,
-            documents: detail.documents,
-            weeklyReports: detail.weeklyReports
-        )
-    }
-    
-    
     /// Number of consecutive active days ending today or yesterday.
     var currentWritingStreak: Int {
         
@@ -1711,29 +1267,11 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     }
     
     
-    /// Model usage breakdown for a single calendar day (defaults to today).
-    func todayModelDistribution(referenceDate: Date = Date()) -> [ModelUsageSummary] {
-        
-        let key = Self.dateKey(for: referenceDate)
-        let filtered = self.recentAIEvents.filter { $0.dateKey == key }
-        return Self.aggregateModelDistribution(from: filtered)
-    }
-    
-    
     /// Feature usage breakdown over the last `days` days.
     func featureDistribution(days: Int = 30) -> [FeatureUsageSummary] {
         
         let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
         let filtered = self.recentAIEvents.filter { $0.timestamp >= cutoff }
-        return Self.aggregateFeatureDistribution(from: filtered)
-    }
-    
-    
-    /// Feature usage breakdown for a single calendar day (defaults to today).
-    func todayFeatureDistribution(referenceDate: Date = Date()) -> [FeatureUsageSummary] {
-        
-        let key = Self.dateKey(for: referenceDate)
-        let filtered = self.recentAIEvents.filter { $0.dateKey == key }
         return Self.aggregateFeatureDistribution(from: filtered)
     }
     
@@ -2604,33 +2142,6 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     
     // MARK: Round 20 Dashboard Helpers (Candid AI Take, Manuscripts & Achievements)
     
-    /// Translates a typed character count into a tangible physical milestone for the Typed Achievement view.
-    static func tangibleWritingEquivalent(for chars: Int) -> (badge: String, detail: String) {
-        
-        let keystrokes = Int((Double(chars) * 2.4).rounded())
-        if chars <= 0 {
-            return ("蓄力起草中", "敲下第一行即刻开始累计字迹")
-        }
-        if chars < 150 {
-            return ("一张灵感便签", "约合 \(keystrokes) 次指尖敲击")
-        }
-        if chars < 500 {
-            let pages = max(0.2, Double(chars) / 400.0)
-            return ("一张明信片体量", String(format: "约 %.1f 页手写笔记 · %d 次敲击", pages, keystrokes))
-        }
-        if chars < 1500 {
-            let pages = Double(chars) / 550.0
-            return ("一篇专栏随笔", String(format: "约合 %.1f 页 16 开书稿", pages))
-        }
-        if chars < 3500 {
-            let pages = Double(chars) / 550.0
-            return ("一整章书稿体量", String(format: "约合 %.1f 页 16 开书稿", pages))
-        }
-        let pages = max(6, Int((Double(chars) / 550.0).rounded()))
-        return ("中篇手稿级输出", "约合 \(pages) 页 16 开成书 · \(keystrokes) 次敲击")
-    }
-    
-    
     /// Identifies the user's highest-output 1-hour flow window and writing chronotype for `dateKey`.
     func peakFlowWindow(for dateKey: String) -> (hourRange: String, chronotype: String, peakChars: Int)? {
         
@@ -3136,4 +2647,398 @@ extension AnalyticsManager {
         
         return Array(points.prefix(5))
     }
+    
+    
+    /// Looks up a stored document record matching `id` or `title` for one-click jumping from predictions.
+    func storedDocument(id: String?, title: String) -> StoredDocumentRecord? {
+        if let id, let match = self.database.documents.first(where: { $0.id == id }) {
+            return match
+        }
+        let cleaned = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        return self.database.documents.first(where: { !$0.id.hasPrefix("weekly:") && $0.title == cleaned })
+    }
+    
+    
+    /// Loads cached AI document action predictions or immediately builds smart local predictions from recent documents.
+    func loadActionPredictionsFromDatabase() {
+        let raw = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiActionPredictionsJSON)
+        if !raw.isEmpty,
+           let data = raw.data(using: .utf8),
+           let bundle = try? JSONDecoder().decode(DocumentActionPredictionBundle.self, from: data),
+           !bundle.predictions.isEmpty
+        {
+            self.actionPredictions = bundle.predictions
+            self.actionPredictionsFromAI = bundle.isAIGenerated
+            self.actionPredictionUpdatedAt = bundle.updatedAt
+            self.actionPredictionFingerprint = bundle.sourceFingerprint
+            return
+        }
+        
+        let local = Self.buildHeuristicActionPredictions(
+            documents: self.database.documents.filter { !$0.id.hasPrefix("weekly:") },
+            weeklyReports: self.database.weeklyReports,
+            reminders: self.reminders
+        )
+        self.actionPredictions = local
+        self.actionPredictionsFromAI = false
+    }
+    
+    
+    /// Uses AI (with rich local document-structure fallback) to predict the user's most valuable next actions
+    /// directly from recent document contents, unfinished sections, open questions, and implicit follow-ups.
+    func refreshActionPredictions(force: Bool = false) async {
+        
+        guard !self.isPredictingActions else { return }
+        
+        let corpus = self.collectActionPredictionCorpus()
+        let recentDocs = self.database.documents.filter { !$0.id.hasPrefix("weekly:") }
+        
+        if !force,
+           !self.actionPredictions.isEmpty,
+           self.actionPredictionsFromAI,
+           self.actionPredictionFingerprint == corpus.fingerprint,
+           let updatedAt = self.actionPredictionUpdatedAt,
+           Date().timeIntervalSince(updatedAt) < 4 * 3600
+        {
+            return
+        }
+        
+        // Immediately ensure non-empty local predictions while AI thinks
+        if self.actionPredictions.isEmpty {
+            self.actionPredictions = Self.buildHeuristicActionPredictions(
+                documents: recentDocs,
+                weeklyReports: self.database.weeklyReports,
+                reminders: self.reminders
+            )
+            self.actionPredictionsFromAI = false
+        }
+        
+        guard !corpus.promptText.isEmpty else { return }
+        
+        self.isPredictingActions = true
+        defer { self.isPredictingActions = false }
+        
+        let baseConfig = AIConfiguration.current
+        let resolvedConfig = AIBotStore.shared.resolvedConfiguration(for: .weeklyReport, baseConfig: baseConfig)
+        guard resolvedConfig.isUsable else {
+            let local = Self.buildHeuristicActionPredictions(
+                documents: recentDocs,
+                weeklyReports: self.database.weeklyReports,
+                reminders: self.reminders
+            )
+            self.persistActionPredictions(local, isAI: false, fingerprint: corpus.fingerprint)
+            return
+        }
+        
+        var config = resolvedConfig
+        config.temperature = 0.35
+        config.reasoningEffort = "low"
+        
+        let systemPrompt = """
+        你是用户的个人文档洞察与行动预测助手。请仔细阅读用户最近编辑的真实文档片段（草稿、技术方案、笔记、周报、未完小节、问号/待定项），预测用户接下来最应该推进的 3 到 5 项具体行动。
+        要求：
+        1. 必须紧扣文档里的具体内容、未完段落、开放问题或逻辑下一步，禁止空泛鸡汤（如"保持专注""整理思路"）。
+        2. 严格只输出 JSON 数组，不要 Markdown 代码块外的任何说明：
+        [{"action":"24字以内具体下一步行动","reason":"26字以内文档依据","doc_title":"来源文档标题","urgency":"高|中|常规"}]
+        """
+        
+        let userPrompt = """
+        以下是用户近期真实文档与上下文，请预测最关键的下一步行动：
+
+        \(corpus.promptText)
+        """
+        
+        do {
+            let response = try await AIClient(configuration: config).sendWithUsage([
+                AIMessage(role: .system, text: systemPrompt),
+                AIMessage(role: .user, text: userPrompt),
+            ])
+            let parsed = Self.parseActionPredictions(from: response.text, documents: recentDocs)
+            if !parsed.isEmpty {
+                self.persistActionPredictions(parsed, isAI: true, fingerprint: corpus.fingerprint)
+                self.recordAIUsage(
+                    feature: "actionPrediction",
+                    model: config.wireConfiguration.model,
+                    provider: config.provider.rawValue,
+                    inputTokens: response.inputTokens ?? AINextTokenPredictor.estimateTokens(in: userPrompt),
+                    outputTokens: response.outputTokens ?? AINextTokenPredictor.estimateTokens(in: response.text),
+                    latencyMs: 600,
+                    success: true
+                )
+                return
+            }
+        } catch {
+            // Fall through cleanly to local document heuristic prediction
+        }
+        
+        let fallback = Self.buildHeuristicActionPredictions(
+            documents: recentDocs,
+            weeklyReports: self.database.weeklyReports,
+            reminders: self.reminders
+        )
+        self.persistActionPredictions(fallback, isAI: false, fingerprint: corpus.fingerprint)
+    }
+    
+    
+    private func persistActionPredictions(
+        _ predictions: [DocumentActionPrediction],
+        isAI: Bool,
+        fingerprint: String
+    ) {
+        let now = Date()
+        self.actionPredictions = predictions
+        self.actionPredictionsFromAI = isAI
+        self.actionPredictionUpdatedAt = now
+        self.actionPredictionFingerprint = fingerprint
+        let bundle = DocumentActionPredictionBundle(
+            predictions: predictions,
+            isAIGenerated: isAI,
+            sourceFingerprint: fingerprint,
+            updatedAt: now
+        )
+        if let data = try? JSONEncoder().encode(bundle),
+           let json = String(data: data, encoding: .utf8)
+        {
+            self.database.set(json, forKey: CotLocalDatabase.ConfigKey.aiActionPredictionsJSON)
+        }
+    }
+    
+    
+    private func collectActionPredictionCorpus() -> (promptText: String, fingerprint: String) {
+        var blocks: [String] = []
+        var usedIDs = Set<String>()
+        var usedTitles = Set<String>()
+        
+        if self.database === CotLocalDatabase.shared {
+            for case let doc as Document in NSDocumentController.shared.documents {
+                let text = doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard text.count >= 12 else { continue }
+                let title = doc.displayName ?? "未命名文档"
+                guard usedTitles.insert(title).inserted else { continue }
+                let head = String(text.prefix(600))
+                let tail = text.count > 900 ? "\n...\n" + String(text.suffix(500)) : ""
+                blocks.append("【打开中的文档：《\(title)》】\n\(head)\(tail)")
+                if blocks.count >= 4 { break }
+            }
+        }
+        
+        let recentDocs = self.database.documents
+            .filter { !$0.id.hasPrefix("weekly:") }
+            .sorted { $0.updatedAt > $1.updatedAt }
+        for record in recentDocs {
+            guard blocks.count < 6 else { break }
+            guard usedIDs.insert(record.id).inserted else { continue }
+            guard !usedTitles.contains(record.title) else { continue }
+            let trimmed = record.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count >= 12 else { continue }
+            let head = String(trimmed.prefix(550))
+            let tail = trimmed.count > 850 ? "\n...\n" + String(trimmed.suffix(450)) : ""
+            blocks.append("【近期文档：《\(record.title)》】\n\(head)\(tail)")
+        }
+        
+        if let latestReport = self.database.weeklyReports.sorted(by: { $0.updatedAt > $1.updatedAt }).first {
+            let trimmed = latestReport.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                blocks.append("【最近周报：《\(latestReport.title)》】\n\(String(trimmed.prefix(600)))")
+            }
+        }
+        
+        let combined = blocks.joined(separator: "\n\n")
+        let fp = UserPersonalityAnalyzer.sha256Hex("pred-v1|" + combined)
+        return (combined, fp)
+    }
+    
+    
+    /// Parses a JSON array returned by AI into structured `DocumentActionPrediction` items matched against local documents.
+    nonisolated static func parseActionPredictions(
+        from raw: String,
+        documents: [StoredDocumentRecord]
+    ) -> [DocumentActionPrediction] {
+        var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let start = cleaned.firstIndex(of: "["), let end = cleaned.lastIndex(of: "]"), start < end {
+            cleaned = String(cleaned[start...end])
+        }
+        guard let data = cleaned.data(using: .utf8),
+              let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return [] }
+        
+        var seen = Set<String>()
+        var results: [DocumentActionPrediction] = []
+        for (idx, dict) in array.enumerated() {
+            let action = (dict["action"] as? String ?? dict["task"] as? String ?? dict["title"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard action.count >= 3, seen.insert(action.lowercased()).inserted else { continue }
+            
+            let reason = (dict["reason"] as? String ?? dict["why"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawDocTitle = (dict["doc_title"] as? String ?? dict["document"] as? String ?? dict["source"] as? String ?? "")
+                .replacingOccurrences(of: "《", with: "")
+                .replacingOccurrences(of: "》", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawUrgency = (dict["urgency"] as? String ?? dict["priority"] as? String ?? "中")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let urgency: String = if rawUrgency.contains("高") || rawUrgency.lowercased() == "high" {
+                "高"
+            } else if rawUrgency.contains("常") || rawUrgency.contains("低") || rawUrgency.lowercased() == "low" {
+                "常规"
+            } else {
+                "中"
+            }
+            
+            let matchedDoc = documents.first(where: { $0.title == rawDocTitle })
+                ?? documents.first(where: { !rawDocTitle.isEmpty && ($0.title.localizedCaseInsensitiveContains(rawDocTitle) || rawDocTitle.localizedCaseInsensitiveContains($0.title)) })
+            
+            results.append(DocumentActionPrediction(
+                id: "ai-pred-\(idx)-\(action.prefix(16))",
+                action: action,
+                reason: reason.isEmpty ? "基于近期文档上下文推演" : reason,
+                sourceDocumentTitle: matchedDoc?.title ?? rawDocTitle,
+                sourceDocumentID: matchedDoc?.id,
+                urgency: urgency
+            ))
+            if results.count >= 5 { break }
+        }
+        return results
+    }
+    
+    
+    /// Deterministic document-structure analyzer used offline or before AI responds: extracts unfinished checklist items,
+    /// empty trailing headings, open questions, and active drafts directly from the user's real documents.
+    nonisolated static func buildHeuristicActionPredictions(
+        documents: [StoredDocumentRecord],
+        weeklyReports: [StoredWeeklyReport],
+        reminders: [UserReminder]
+    ) -> [DocumentActionPrediction] {
+        var results: [DocumentActionPrediction] = []
+        var seen = Set<String>()
+        
+        func appendIfUnique(_ pred: DocumentActionPrediction) {
+            let key = pred.action.lowercased()
+            guard results.count < 5, seen.insert(key).inserted else { return }
+            results.append(pred)
+        }
+        
+        let sortedDocs = documents.sorted { $0.updatedAt > $1.updatedAt }
+        
+        // 1. Scan recent docs for explicit unchecked todos / TODO / FIXME / 待确认
+        for doc in sortedDocs.prefix(8) {
+            let lines = doc.content.components(separatedBy: .newlines)
+            for rawLine in lines {
+                let line = rawLine.trimmingCharacters(in: .whitespaces)
+                guard line.count >= 4, line.count <= 90 else { continue }
+                let lower = line.lowercased()
+                let isExplicitAction = line.hasPrefix("- [ ]") || line.hasPrefix("* [ ]")
+                    || lower.contains("todo") || lower.contains("fixme")
+                    || line.contains("待确认") || line.contains("待补") || line.contains("下一步") || line.contains("后续")
+                guard isExplicitAction else { continue }
+                let clean = line
+                    .replacingOccurrences(of: #"^[-*•]\s*\[\s*\]\s*"#, with: "", options: .regularExpression)
+                    .replacingOccurrences(of: #"^(TODO|FIXME|todo|fixme|待办|下一步|后续)[:：]?\s*"#, with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard clean.count >= 4 else { continue }
+                appendIfUnique(DocumentActionPrediction(
+                    id: "heur-todo-\(doc.id)-\(results.count)",
+                    action: String(clean.prefix(34)),
+                    reason: "文档中存在未勾选或待补全事项",
+                    sourceDocumentTitle: doc.title,
+                    sourceDocumentID: doc.id,
+                    urgency: (lower.contains("fixme") || line.contains("紧急")) ? "高" : "中"
+                ))
+                if results.count >= 3 { break }
+            }
+        }
+        
+        // 2. Detect empty / stub trailing headings or open questions in top active documents
+        for doc in sortedDocs.prefix(6) where results.count < 5 {
+            let lines = doc.content.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            guard !lines.isEmpty else { continue }
+            
+            if let lastLine = lines.last, lastLine.hasPrefix("#") {
+                let heading = lastLine.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+                if !heading.isEmpty {
+                    appendIfUnique(DocumentActionPrediction(
+                        id: "heur-heading-\(doc.id)",
+                        action: "补全「\(String(heading.prefix(18)))」小节正文",
+                        reason: "草稿末尾仅拟好标题，尚未展开内容",
+                        sourceDocumentTitle: doc.title,
+                        sourceDocumentID: doc.id,
+                        urgency: "高"
+                    ))
+                    continue
+                }
+            }
+            
+            if let openQuestion = lines.reversed().first(where: { ($0.hasSuffix("？") || $0.hasSuffix("?")) && $0.count >= 6 && $0.count <= 48 }) {
+                appendIfUnique(DocumentActionPrediction(
+                    id: "heur-q-\(doc.id)",
+                    action: "收敛并确认：\(String(openQuestion.prefix(26)))",
+                    reason: "文稿中留有尚未闭环的疑问",
+                    sourceDocumentTitle: doc.title,
+                    sourceDocumentID: doc.id,
+                    urgency: "中"
+                ))
+                continue
+            }
+            
+            if doc.content.count < 400 {
+                appendIfUnique(DocumentActionPrediction(
+                    id: "heur-draft-\(doc.id)",
+                    action: "继续扩充《\(String(doc.title.prefix(16)))》草稿内容",
+                    reason: "当前仅 \(doc.content.count) 字，处于起草阶段",
+                    sourceDocumentTitle: doc.title,
+                    sourceDocumentID: doc.id,
+                    urgency: "常规"
+                ))
+            }
+        }
+        
+        // 3. Fold urgent active deadline reminders if space remains
+        for item in reminders.filter({ !$0.isCompleted && $0.hasDeadline }).prefix(2) where results.count < 5 {
+            appendIfUnique(DocumentActionPrediction(
+                id: "heur-rem-\(item.id)",
+                action: item.title,
+                reason: "临近截止时间，建议优先收尾",
+                sourceDocumentTitle: "",
+                sourceDocumentID: nil,
+                urgency: "高"
+            ))
+        }
+        
+        if results.isEmpty, let latestDoc = sortedDocs.first {
+            appendIfUnique(DocumentActionPrediction(
+                id: "heur-review-\(latestDoc.id)",
+                action: "复盘并定稿《\(String(latestDoc.title.prefix(18)))》",
+                reason: "最近更新的主要文档，适合梳理下一步结论",
+                sourceDocumentTitle: latestDoc.title,
+                sourceDocumentID: latestDoc.id,
+                urgency: "常规"
+            ))
+        }
+        
+        return results
+    }
+}
+
+
+/// A single AI-predicted next action grounded in the user's actual documents.
+nonisolated struct DocumentActionPrediction: Identifiable, Codable, Sendable, Equatable {
+    
+    var id: String
+    var action: String
+    var reason: String
+    var sourceDocumentTitle: String
+    var sourceDocumentID: String?
+    var urgency: String
+}
+
+
+private nonisolated struct DocumentActionPredictionBundle: Codable, Sendable, Equatable {
+    
+    var predictions: [DocumentActionPrediction]
+    var isAIGenerated: Bool
+    var sourceFingerprint: String
+    var updatedAt: Date
 }

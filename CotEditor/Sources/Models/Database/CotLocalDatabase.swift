@@ -193,10 +193,10 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let studioCustomDarkHex = "ui.studioCustomDarkHex"
         static let studioCustomAccentHex = "ui.studioCustomAccentHex"
         static let appIconSpecJSON = "ui.appIconSpecJSON"
-        static let pinnedTodoMascot = "todo.mascotKind"
         static let editorWallpaperSpecJSON = "appearance.wallpaperSpecJSON"
         static let editorWallpaperCustomCatalogJSON = "appearance.wallpaperCustomCatalogJSON"
         static let aiHotNewsCacheJSON = "analytics.aiHotNewsCacheJSON"
+        static let aiActionPredictionsJSON = "analytics.aiActionPredictionsJSON"
     }
     
     static let weeklyReportsDidChangeNotification = Notification.Name("CotLocalDatabaseWeeklyReportsDidChange")

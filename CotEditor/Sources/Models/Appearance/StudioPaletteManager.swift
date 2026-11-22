@@ -23,36 +23,76 @@ import AppKit
 import SwiftUI
 import Defaults
 
-/// Global high-fashion editorial palette presets inspired by curated 3-color design triads.
+/// 10 curated global Light/Dark paired color systems covering editor canvas, syntax, sidebar,
+/// tab chrome, analytics heatmap, and dashboard cards as one unified design language.
 nonisolated enum StudioPaletteID: String, CaseIterable, Identifiable, Codable, Sendable {
     
+    case pineCeladon
     case ultraViolet
     case signalCrimson
     case matchaParchment
-    case pineCeladon
-    case custom
+    case oceanCobalt
+    case amberEspresso
+    case sakuraQuartz
+    case nordFrost
+    case terracottaClay
+    case graphiteMono
     
     var id: String { self.rawValue }
     
     
+    static func resolve(rawValue: String) -> StudioPaletteID {
+        if let direct = StudioPaletteID(rawValue: rawValue) {
+            return direct
+        }
+        return .pineCeladon
+    }
+    
+    
     var displayName: String {
         switch self {
+            case .pineCeladon: AppLanguage.text("松烟青玉", en: "Pine Celadon")
             case .ultraViolet: AppLanguage.text("电光紫罗兰", en: "Ultra Violet")
             case .signalCrimson: AppLanguage.text("信号绯红", en: "Signal Crimson")
-            case .matchaParchment: AppLanguage.text("抹茶荧光绿", en: "Matcha Marker")
-            case .pineCeladon: AppLanguage.text("松烟青玉", en: "Pine Celadon")
-            case .custom: AppLanguage.text("自定义三色", en: "Custom Triad")
+            case .matchaParchment: AppLanguage.text("抹茶手稿", en: "Matcha Marker")
+            case .oceanCobalt: AppLanguage.text("沧海钴蓝", en: "Ocean Cobalt")
+            case .amberEspresso: AppLanguage.text("琥珀浓缩", en: "Amber Espresso")
+            case .sakuraQuartz: AppLanguage.text("樱雾石英", en: "Sakura Quartz")
+            case .nordFrost: AppLanguage.text("北欧霜雪", en: "Nord Frost")
+            case .terracottaClay: AppLanguage.text("赤陶暖泥", en: "Terracotta Clay")
+            case .graphiteMono: AppLanguage.text("石墨极简", en: "Graphite Mono")
+        }
+    }
+    
+    
+    var canonicalEnglishName: String {
+        switch self {
+            case .pineCeladon: "Pine Celadon"
+            case .ultraViolet: "Ultra Violet"
+            case .signalCrimson: "Signal Crimson"
+            case .matchaParchment: "Matcha Marker"
+            case .oceanCobalt: "Ocean Cobalt"
+            case .amberEspresso: "Amber Espresso"
+            case .sakuraQuartz: "Sakura Quartz"
+            case .nordFrost: "Nord Frost"
+            case .terracottaClay: "Terracotta Clay"
+            case .graphiteMono: "Graphite Mono"
         }
     }
     
     
     var subtitle: String {
         switch self {
+            case .pineCeladon: "XUAN · PINE INK · CELADON"
             case .ultraViolet: "MIDNIGHT · SILVER · ULTRA VIOLET"
             case .signalCrimson: "CLOUD · CARBON · CRIMSON"
             case .matchaParchment: "PARCHMENT · INK · MATCHA"
-            case .pineCeladon: "XUAN · PINE INK · CELADON"
-            case .custom: "CUSTOM DESIGNER TRIAD"
+            case .oceanCobalt: "ICE SLATE · PRUSSIAN · COBALT"
+            case .amberEspresso: "LATTE · ESPRESSO · AMBER"
+            case .sakuraQuartz: "PETAL · PLUM · SAKURA"
+            case .nordFrost: "FROST · POLAR · ARCTIC"
+            case .terracottaClay: "LINEN · OBSIDIAN · CLAY"
+            case .graphiteMono: "PAPER · GRAPHITE · SLATE"
         }
     }
 }
@@ -138,33 +178,6 @@ final class StudioPaletteManager {
         }
     }
     
-    var customLightHex: String {
-        didSet {
-            self.database.set(self.customLightHex, forKey: CotLocalDatabase.ConfigKey.studioCustomLightHex)
-            if self.selectedID == .custom {
-                self.postPaletteChange()
-            }
-        }
-    }
-    
-    var customDarkHex: String {
-        didSet {
-            self.database.set(self.customDarkHex, forKey: CotLocalDatabase.ConfigKey.studioCustomDarkHex)
-            if self.selectedID == .custom {
-                self.postPaletteChange()
-            }
-        }
-    }
-    
-    var customAccentHex: String {
-        didSet {
-            self.database.set(self.customAccentHex, forKey: CotLocalDatabase.ConfigKey.studioCustomAccentHex)
-            if self.selectedID == .custom {
-                self.postPaletteChange()
-            }
-        }
-    }
-    
     /// Incremented monotonically whenever active tokens change, making SwiftUI observation explicit.
     private(set) var revision: Int = 0
     
@@ -175,25 +188,19 @@ final class StudioPaletteManager {
         self.database = database
         let rawID = database.string(
             forKey: CotLocalDatabase.ConfigKey.studioPaletteID,
-            default: StudioPaletteID.ultraViolet.rawValue
+            default: StudioPaletteID.pineCeladon.rawValue
         )
-        self.selectedID = StudioPaletteID(rawValue: rawID) ?? .ultraViolet
-        self.customLightHex = database.string(forKey: CotLocalDatabase.ConfigKey.studioCustomLightHex, default: "#EDEBE6")
-        self.customDarkHex = database.string(forKey: CotLocalDatabase.ConfigKey.studioCustomDarkHex, default: "#121318")
-        self.customAccentHex = database.string(forKey: CotLocalDatabase.ConfigKey.studioCustomAccentHex, default: "#715CB2")
+        self.selectedID = StudioPaletteID.resolve(rawValue: rawID)
     }
     
     
-    /// Reloads palette selection & custom triad hexes from the backing database (e.g. after DB import or profile switch).
+    /// Reloads palette selection from the backing database (e.g. after DB import or profile switch).
     func reloadFromDatabase() {
         let rawID = self.database.string(
             forKey: CotLocalDatabase.ConfigKey.studioPaletteID,
-            default: StudioPaletteID.ultraViolet.rawValue
+            default: StudioPaletteID.pineCeladon.rawValue
         )
-        self.selectedID = StudioPaletteID(rawValue: rawID) ?? .ultraViolet
-        self.customLightHex = self.database.string(forKey: CotLocalDatabase.ConfigKey.studioCustomLightHex, default: "#EDEBE6")
-        self.customDarkHex = self.database.string(forKey: CotLocalDatabase.ConfigKey.studioCustomDarkHex, default: "#121318")
-        self.customAccentHex = self.database.string(forKey: CotLocalDatabase.ConfigKey.studioCustomAccentHex, default: "#715CB2")
+        self.selectedID = StudioPaletteID.resolve(rawValue: rawID)
         self.postPaletteChange()
     }
     
@@ -204,14 +211,62 @@ final class StudioPaletteManager {
     }
     
     
-    func selectPalette(_ id: StudioPaletteID) {
+    func selectPalette(_ id: StudioPaletteID, syncEditorTheme: Bool = false) {
         self.selectedID = id
+        if syncEditorTheme {
+            self.syncEditorThemeWithCurrentAppearance()
+        }
+    }
+    
+    
+    /// Resolves whether the current appearance mode evaluates to Dark mode.
+    static func resolvedIsDark(for mode: AppearanceMode = UserDefaults.standard[.documentAppearance]) -> Bool {
+        switch mode {
+            case .light: false
+            case .dark: true
+            case .default:
+                NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        }
+    }
+    
+    
+    /// Canonical paired theme name for `(paletteID, preferDark)` used by `ThemeManager`.
+    nonisolated static func themeName(for paletteID: StudioPaletteID, preferDark: Bool) -> String {
+        "Studio · \(paletteID.canonicalEnglishName) (\(preferDark ? "Dark" : "Light"))"
+    }
+    
+    
+    /// Switches Light / Dark / System appearance while keeping the EXACT SAME active palette
+    /// across editor, sidebar, tab chrome, heatmap, and cards.
+    func applyAppearanceMode(_ mode: AppearanceMode) {
+        let preferDark = Self.resolvedIsDark(for: mode)
+        UserDefaults.standard[.pinsThemeAppearance] = false
+        UserDefaults.standard[.documentAppearance] = mode
+        self.applyPaletteToEditorTheme(preferDark: preferDark, updateDocumentAppearance: false)
+        CotLocalDatabase.shared.syncUserPreferencesToDatabase()
+        self.postPaletteChange()
+    }
+    
+    
+    /// Ensures the active editor theme always matches `selectedID` + the current Light/Dark appearance.
+    func syncEditorThemeWithCurrentAppearance() {
+        let preferDark = Self.resolvedIsDark()
+        self.applyPaletteToEditorTheme(preferDark: preferDark, updateDocumentAppearance: false)
     }
     
     
     func triad(for id: StudioPaletteID? = nil) -> StudioPaletteTriad {
         let resolvedID = id ?? self.selectedID
         switch resolvedID {
+            case .pineCeladon:
+                return StudioPaletteTriad(
+                    lightPaperHex: "#F2F3EF",
+                    lightPaperName: AppLanguage.text("宣纸素白", en: "Xuan Paper"),
+                    darkInkHex: "#111413",
+                    darkInkName: AppLanguage.text("松烟墨黑", en: "Pine Ink"),
+                    accentHex: "#2E8B67",
+                    accentName: AppLanguage.text("青玉松翠", en: "Celadon Pine")
+                )
             case .ultraViolet:
                 return StudioPaletteTriad(
                     lightPaperHex: "#E7E7E7",
@@ -239,23 +294,59 @@ final class StudioPaletteManager {
                     accentHex: "#A4CE46",
                     accentName: AppLanguage.text("抹茶荧光绿", en: "Matcha Marker")
                 )
-            case .pineCeladon:
+            case .oceanCobalt:
                 return StudioPaletteTriad(
-                    lightPaperHex: "#F2F3EF",
-                    lightPaperName: AppLanguage.text("宣纸素白", en: "Xuan Paper"),
-                    darkInkHex: "#111413",
-                    darkInkName: AppLanguage.text("松烟墨黑", en: "Pine Ink"),
-                    accentHex: "#2E8B67",
-                    accentName: AppLanguage.text("青玉松翠", en: "Celadon Pine")
+                    lightPaperHex: "#EDF3FA",
+                    lightPaperName: AppLanguage.text("冰岩淡蓝", en: "Ice Slate"),
+                    darkInkHex: "#0D1524",
+                    darkInkName: AppLanguage.text("深海普鲁士", en: "Prussian Navy"),
+                    accentHex: "#2272DC",
+                    accentName: AppLanguage.text("沧海钴蓝", en: "Ocean Cobalt")
                 )
-            case .custom:
+            case .amberEspresso:
                 return StudioPaletteTriad(
-                    lightPaperHex: self.customLightHex,
-                    lightPaperName: AppLanguage.text("浅底纸色", en: "Light Surface"),
-                    darkInkHex: self.customDarkHex,
-                    darkInkName: AppLanguage.text("深底墨色", en: "Dark Ink"),
-                    accentHex: self.customAccentHex,
-                    accentName: AppLanguage.text("点睛主色", en: "Signature Accent")
+                    lightPaperHex: "#F5EFE6",
+                    lightPaperName: AppLanguage.text("拿铁暖纸", en: "Latte Ivory"),
+                    darkInkHex: "#16120F",
+                    darkInkName: AppLanguage.text("浓缩深烘", en: "Espresso Roast"),
+                    accentHex: "#D47E1E",
+                    accentName: AppLanguage.text("琥珀焦糖", en: "Warm Amber")
+                )
+            case .sakuraQuartz:
+                return StudioPaletteTriad(
+                    lightPaperHex: "#F6EEF1",
+                    lightPaperName: AppLanguage.text("樱雾粉白", en: "Petal White"),
+                    darkInkHex: "#171115",
+                    darkInkName: AppLanguage.text("暮梅炭黑", en: "Plum Charcoal"),
+                    accentHex: "#D44E7A",
+                    accentName: AppLanguage.text("石英樱红", en: "Sakura Quartz")
+                )
+            case .nordFrost:
+                return StudioPaletteTriad(
+                    lightPaperHex: "#EDF2F7",
+                    lightPaperName: AppLanguage.text("北国霜纸", en: "Frost Paper"),
+                    darkInkHex: "#121821",
+                    darkInkName: AppLanguage.text("极夜蓝炭", en: "Polar Night"),
+                    accentHex: "#3D8FB3",
+                    accentName: AppLanguage.text("冰川青蓝", en: "Arctic Cyan")
+                )
+            case .terracottaClay:
+                return StudioPaletteTriad(
+                    lightPaperHex: "#F4ECE4",
+                    lightPaperName: AppLanguage.text("亚麻暖砂", en: "Sand Linen"),
+                    darkInkHex: "#171210",
+                    darkInkName: AppLanguage.text("玄陶深棕", en: "Obsidian Clay"),
+                    accentHex: "#C85A38",
+                    accentName: AppLanguage.text("赤陶暖锈", en: "Terracotta")
+                )
+            case .graphiteMono:
+                return StudioPaletteTriad(
+                    lightPaperHex: "#F0F0F2",
+                    lightPaperName: AppLanguage.text("画室素灰", en: "Studio Paper"),
+                    darkInkHex: "#121214",
+                    darkInkName: AppLanguage.text("建筑石墨", en: "Graphite Ink"),
+                    accentHex: "#525966",
+                    accentName: AppLanguage.text("极简岩灰", en: "Architectural Slate")
                 )
         }
     }
@@ -429,9 +520,9 @@ final class StudioPaletteManager {
     }
     
     
-    /// Synthesizes any built-in `Studio · ...` editor theme by name (Chinese or English) so migrating
-    /// a database to another machine never fails with a missing theme resource error.
-    func synthesizedTheme(named name: String) -> Theme? {
+    /// Parses a `Studio · ...` theme name into its `(paletteID, preferDark)` pair, recognizing both
+    /// canonical English names and legacy Chinese/English saved names.
+    nonisolated static func parseStudioThemeName(_ name: String) -> (paletteID: StudioPaletteID, preferDark: Bool)? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("Studio · ") else { return nil }
         let body = String(trimmed.dropFirst("Studio · ".count))
@@ -455,39 +546,57 @@ final class StudioPaletteManager {
             baseTitle = body
         }
         
-        let matchedID: StudioPaletteID = switch baseTitle {
+        let matchedID: StudioPaletteID? = switch baseTitle {
+            case "松烟青玉", "Pine Celadon": .pineCeladon
             case "电光紫罗兰", "Ultra Violet": .ultraViolet
             case "信号绯红", "Signal Crimson": .signalCrimson
-            case "抹茶荧光绿", "Matcha Marker": .matchaParchment
-            case "松烟青玉", "Pine Celadon": .pineCeladon
-            case "自定义三色", "Custom Triad": .custom
-            default: self.selectedID
+            case "抹茶荧光绿", "抹茶手稿", "Matcha Marker": .matchaParchment
+            case "沧海钴蓝", "Ocean Cobalt": .oceanCobalt
+            case "琥珀浓缩", "Amber Espresso": .amberEspresso
+            case "樱雾石英", "Sakura Quartz": .sakuraQuartz
+            case "北欧霜雪", "Nord Frost": .nordFrost
+            case "赤陶暖泥", "Terracotta Clay": .terracottaClay
+            case "石墨极简", "Graphite Mono": .graphiteMono
+            case "自定义三色", "Custom Triad": .pineCeladon
+            default: StudioPaletteID(rawValue: baseTitle)
         }
-        return self.buildTheme(for: matchedID, preferDark: preferDark)
+        guard let matchedID else { return nil }
+        return (matchedID, preferDark)
     }
     
     
-    /// Creates or updates a user editor syntax `Theme` matching the active Studio Palette and selects it.
-    func applyPaletteToEditorTheme(preferDark: Bool) {
-        let themeName = "Studio · \(self.selectedID.displayName) (\(preferDark ? AppLanguage.text("暗色", en: "Dark") : AppLanguage.text("浅色", en: "Light")))"
-        let theme = self.buildTheme(for: self.selectedID, preferDark: preferDark)
+    /// Synthesizes any built-in `Studio · ...` editor theme by name (Chinese or English) so migrating
+    /// a database to another machine never fails with a missing theme resource error.
+    func synthesizedTheme(named name: String) -> Theme? {
+        guard let parsed = Self.parseStudioThemeName(name) else { return nil }
+        return self.buildTheme(for: parsed.paletteID, preferDark: parsed.preferDark)
+    }
+    
+    
+    /// Creates or updates both the Light and Dark paired `Theme` files for the active `StudioPaletteID`
+    /// and activates the requested `preferDark` variant without breaking appearance mode coupling.
+    func applyPaletteToEditorTheme(preferDark: Bool, updateDocumentAppearance: Bool = true) {
+        let lightName = Self.themeName(for: self.selectedID, preferDark: false)
+        let darkName = Self.themeName(for: self.selectedID, preferDark: true)
         
-        try? ThemeManager.shared.save(setting: theme, name: themeName)
-        UserDefaults.standard[.theme] = themeName
-        UserDefaults.standard[.pinsThemeAppearance] = true
-        UserDefaults.standard[.documentAppearance] = preferDark ? AppearanceMode.dark : AppearanceMode.light
+        try? ThemeManager.shared.save(setting: self.buildTheme(for: self.selectedID, preferDark: false), name: lightName)
+        try? ThemeManager.shared.save(setting: self.buildTheme(for: self.selectedID, preferDark: true), name: darkName)
+        
+        UserDefaults.standard[.theme] = preferDark ? darkName : lightName
+        UserDefaults.standard[.pinsThemeAppearance] = false
+        if updateDocumentAppearance {
+            UserDefaults.standard[.documentAppearance] = preferDark ? AppearanceMode.dark : AppearanceMode.light
+        }
     }
     
     
-    /// Syncs the active editor theme with the current Studio Palette when the user is already using a Studio theme,
-    /// or when `applyIfNonStudio` is enabled, keeping the editor and tab chrome visually unified.
-    func syncActiveEditorTheme(preferDark: Bool, applyIfNonStudio: Bool = false) {
-        let currentThemeName = UserDefaults.standard[.theme]
-        if currentThemeName.hasPrefix("Studio · ") {
-            let currentlyDark = ThemeManager.isDark(name: currentThemeName)
-            self.applyPaletteToEditorTheme(preferDark: currentlyDark)
-        } else if applyIfNonStudio {
-            self.applyPaletteToEditorTheme(preferDark: preferDark)
+    /// Syncs the active editor theme with the current Studio Palette, preserving current Light/Dark mode.
+    func syncActiveEditorTheme(preferDark: Bool, applyIfNonStudio: Bool = true) {
+        let resolvedDark = Self.resolvedIsDark()
+        if applyIfNonStudio || UserDefaults.standard[.theme].hasPrefix("Studio · ") {
+            self.applyPaletteToEditorTheme(preferDark: resolvedDark, updateDocumentAppearance: false)
+        } else {
+            self.applyPaletteToEditorTheme(preferDark: preferDark, updateDocumentAppearance: false)
         }
     }
     

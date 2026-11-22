@@ -182,11 +182,7 @@ struct Round20FeatureTests {
         analytics.recordDocumentSaved()
         analytics.flushPendingStats()
         
-        // Tangible achievement & peak flow window
-        let equiv = AnalyticsManager.tangibleWritingEquivalent(for: 1420)
-        #expect(!equiv.badge.isEmpty)
-        #expect(equiv.detail.contains("16 开"))
-        
+        // Peak flow window
         let peak = try #require(analytics.peakFlowWindow(for: analytics.todayStats.dateKey))
         #expect(peak.peakChars >= 1420)
         #expect(!peak.chronotype.isEmpty)

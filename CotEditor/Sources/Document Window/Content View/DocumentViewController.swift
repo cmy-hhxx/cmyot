@@ -912,7 +912,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         guard let mode = AppearanceMode(rawValue: sender.tag) else { return }
         
-        UserDefaults.standard[.documentAppearance] = mode
+        StudioPaletteManager.shared.applyAppearanceMode(mode)
     }
     
     
@@ -920,8 +920,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     @IBAction func toggleAppearanceMode(_ sender: Any?) {
         
         let isDark = (self.view.window?.effectiveAppearance ?? NSApp.effectiveAppearance).isDark
-        UserDefaults.standard[.documentAppearance] = isDark ? .light : .dark
-        CotLocalDatabase.shared.syncUserPreferencesToDatabase()
+        StudioPaletteManager.shared.applyAppearanceMode(isDark ? .light : .dark)
     }
     
     

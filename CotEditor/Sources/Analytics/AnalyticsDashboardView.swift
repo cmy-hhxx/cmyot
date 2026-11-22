@@ -109,7 +109,6 @@ private enum DashMotion {
     
     static let quick = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.16)
     static let standard = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.24)
-    static let flip = Animation.spring(response: 0.42, dampingFraction: 0.84)
 }
 
 
@@ -192,6 +191,7 @@ private struct DashboardSnapshot {
     var today: DailyWritingStats
     var days14: [ChartDay]
     var yearlyHeatmap: YearlyHeatmapData
+    var currentStreak: Int
     var availableYears: [Int]
     var aiTodayTotals: AIUsageTotals
     var ai30Totals: AIUsageTotals
@@ -221,7 +221,7 @@ private struct DashboardSnapshot {
         let resolvedYear = availableYears.contains(selectedYear)
             ? selectedYear
             : (availableYears.last ?? Calendar.current.component(.year, from: Date()))
-        let yearly = analytics.yearlyHeatmap(year: resolvedYear, trimFutureWeeks: false)
+        let yearly = analytics.yearlyHeatmap(year: resolvedYear, trimFutureWeeks: true)
         
         let aiTodayTotals = analytics.aiUsageTotals(forTodayOnly: true)
         let ai30Totals = analytics.aiUsageTotals(forTodayOnly: false, days: 30)
@@ -232,6 +232,7 @@ private struct DashboardSnapshot {
             today: today,
             days14: days14,
             yearlyHeatmap: yearly,
+            currentStreak: analytics.currentWritingStreak,
             availableYears: availableYears,
             aiTodayTotals: aiTodayTotals,
             ai30Totals: ai30Totals,
@@ -262,10 +263,8 @@ struct AnalyticsDashboardView: View {
     @State private var snapshot: DashboardSnapshot?
     @State private var selectedYear: Int = Calendar.current.component(.year, from: Date())
     @State private var expandedQuad: DashboardQuadMetric?
-    @State private var isAddingTodo = false
-    @State private var newTodoText = ""
+    @State private var pinnedPredictionIDs: Set<String> = []
     @State private var hasAppeared = false
-    @Namespace private var quadNamespace
     
     
     init(
@@ -290,7 +289,7 @@ struct AnalyticsDashboardView: View {
     
     private var outerPadding: CGFloat { self.isEmbeddedInSettings ? 14 : 22 }
     private var row1Height: CGFloat { self.isEmbeddedInSettings ? 250 : 316 }
-    private var row2MinHeight: CGFloat { self.isEmbeddedInSettings ? 204 : 254 }
+    private var row2Height: CGFloat { self.isEmbeddedInSettings ? 260 : 340 }
     
     
     var body: some View {
@@ -306,23 +305,10 @@ struct AnalyticsDashboardView: View {
                 if let snapshot = self.snapshot {
                     VStack(alignment: .leading, spacing: 14) {
                         if !self.isEmbeddedInSettings, let onDismiss = self.onDismiss {
-                            HStack {
-                                Text("数据看板")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(self.palette.pine)
-                                
-                                Spacer()
-                                
-                                Button(action: onDismiss) {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundStyle(self.palette.pine.opacity(0.68))
-                                        .frame(width: 24, height: 24)
-                                        .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            .padding(.bottom, 2)
+                            DashboardTopNavigationBar(
+                                palette: self.palette,
+                                onBack: onDismiss
+                            )
                         }
                         
                         self.row1Section(snapshot)
@@ -339,15 +325,8 @@ struct AnalyticsDashboardView: View {
             }
         }
         .onKeyPress(.escape) {
-            if self.isAddingTodo {
-                withAnimation(DashMotion.quick) {
-                    self.isAddingTodo = false
-                    self.newTodoText = ""
-                }
-                return .handled
-            }
             if self.expandedQuad != nil {
-                withAnimation(DashMotion.flip) {
+                withAnimation(DashMotion.standard) {
                     self.expandedQuad = nil
                 }
                 return .handled
@@ -363,7 +342,9 @@ struct AnalyticsDashboardView: View {
             withAnimation(DashMotion.standard) {
                 self.hasAppeared = true
             }
-            await self.newsService.refreshIfNeeded()
+            async let newsTask: Void = self.newsService.refreshIfNeeded()
+            async let predTask: Void = self.analytics.refreshActionPredictions(force: false)
+            _ = await (newsTask, predTask)
         }
         .onChange(of: self.analytics.revision) { _, _ in
             self.rebuildSnapshot()
@@ -374,18 +355,20 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    // MARK: Row 1 — Heatmap + Flippable 2x2 Quad
+    // MARK: Row 1 — Heatmap + Expandable 2x2 Quad
     
     private func row1Section(_ snapshot: DashboardSnapshot) -> some View {
         GeometryReader { proxy in
             let spacing: CGFloat = 14
             let usableW = max(320, proxy.size.width - spacing)
-            let leftWidth = floor(usableW * 0.52)
+            let leftRatio: CGFloat = self.isEmbeddedInSettings ? 0.50 : 0.56
+            let leftWidth = floor(usableW * leftRatio)
             let rightWidth = max(160, usableW - leftWidth)
             
             HStack(alignment: .top, spacing: spacing) {
                 DashboardHeatmapCard(
                     yearlyHeatmap: snapshot.yearlyHeatmap,
+                    currentStreak: snapshot.currentStreak,
                     availableYears: snapshot.availableYears,
                     selectedYear: self.$selectedYear,
                     palette: self.palette
@@ -400,48 +383,45 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    @ViewBuilder
     private func flippableQuadSection(_ snapshot: DashboardSnapshot) -> some View {
-        if let expanded = self.expandedQuad {
-            DashboardExpandedQuadCard(
-                metric: expanded,
-                snapshot: snapshot,
-                palette: self.palette,
-                namespace: self.quadNamespace
-            ) {
-                withAnimation(DashMotion.flip) {
-                    self.expandedQuad = nil
+        ZStack {
+            if let expanded = self.expandedQuad {
+                DashboardExpandedQuadCard(
+                    metric: expanded,
+                    snapshot: snapshot,
+                    palette: self.palette
+                ) {
+                    withAnimation(DashMotion.standard) {
+                        self.expandedQuad = nil
+                    }
                 }
+                .id("expanded-\(expanded.rawValue)")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            } else {
+                let vGap: CGFloat = 12
+                let hGap: CGFloat = 12
+                let tileH = max(80, (self.row1Height - vGap) * 0.5)
+                
+                VStack(spacing: vGap) {
+                    HStack(spacing: hGap) {
+                        self.quadCard(metric: .typed, snapshot: snapshot)
+                            .frame(maxWidth: .infinity, minHeight: tileH, maxHeight: tileH)
+                        self.quadCard(metric: .aiUsage, snapshot: snapshot)
+                            .frame(maxWidth: .infinity, minHeight: tileH, maxHeight: tileH)
+                    }
+                    HStack(spacing: hGap) {
+                        self.quadCard(metric: .busyness, snapshot: snapshot)
+                            .frame(maxWidth: .infinity, minHeight: tileH, maxHeight: tileH)
+                        self.quadCard(metric: .mood, snapshot: snapshot)
+                            .frame(maxWidth: .infinity, minHeight: tileH, maxHeight: tileH)
+                    }
+                }
+                .id("compact-quad-grid")
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .transition(.asymmetric(
-                insertion: .opacity.combined(with: .scale(scale: 0.96)),
-                removal: .opacity.combined(with: .scale(scale: 0.96))
-            ))
-        } else {
-            let vGap: CGFloat = 12
-            let hGap: CGFloat = 12
-            let tileH = (self.row1Height - vGap) * 0.5
-            
-            VStack(spacing: vGap) {
-                HStack(spacing: hGap) {
-                    self.quadCard(metric: .typed, snapshot: snapshot)
-                        .frame(maxWidth: .infinity, minHeight: tileH, maxHeight: tileH)
-                    self.quadCard(metric: .aiUsage, snapshot: snapshot)
-                        .frame(maxWidth: .infinity, minHeight: tileH, maxHeight: tileH)
-                }
-                HStack(spacing: hGap) {
-                    self.quadCard(metric: .busyness, snapshot: snapshot)
-                        .frame(maxWidth: .infinity, minHeight: tileH, maxHeight: tileH)
-                    self.quadCard(metric: .mood, snapshot: snapshot)
-                        .frame(maxWidth: .infinity, minHeight: tileH, maxHeight: tileH)
-                }
-            }
-            .transition(.asymmetric(
-                insertion: .opacity.combined(with: .scale(scale: 0.96)),
-                removal: .opacity.combined(with: .scale(scale: 0.96))
-            ))
         }
+        .animation(DashMotion.standard, value: self.expandedQuad)
     }
     
     
@@ -449,30 +429,28 @@ struct AnalyticsDashboardView: View {
         DashboardCompactQuadCard(
             metric: metric,
             snapshot: snapshot,
-            palette: self.palette,
-            namespace: self.quadNamespace
+            palette: self.palette
         ) {
-            withAnimation(DashMotion.flip) {
+            withAnimation(DashMotion.standard) {
                 self.expandedQuad = metric
             }
         }
     }
     
     
-    // MARK: Row 2 — Equal 3-Column Layout (干了啥 / 要干啥 / NEWS)
+    // MARK: Row 2 — Equal 3-Column Layout (干了啥 / AI 预测要干啥 / 小红书风分页 NEWS)
     
     private func row2Section() -> some View {
         HStack(alignment: .top, spacing: 14) {
             self.doneTodayColumn()
-                .frame(maxWidth: .infinity, minHeight: self.row2MinHeight, maxHeight: .infinity, alignment: .topLeading)
+                .frame(maxWidth: .infinity, minHeight: self.row2Height, maxHeight: self.row2Height, alignment: .topLeading)
             
-            self.todoColumn()
-                .frame(maxWidth: .infinity, minHeight: self.row2MinHeight, maxHeight: .infinity, alignment: .topLeading)
+            self.predictedActionsColumn()
+                .frame(maxWidth: .infinity, minHeight: self.row2Height, maxHeight: self.row2Height, alignment: .topLeading)
             
             self.newsColumn()
-                .frame(maxWidth: .infinity, minHeight: self.row2MinHeight, maxHeight: .infinity, alignment: .topLeading)
+                .frame(maxWidth: .infinity, minHeight: self.row2Height, maxHeight: self.row2Height, alignment: .topLeading)
         }
-        .fixedSize(horizontal: false, vertical: true)
     }
     
     
@@ -525,9 +503,8 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    private func todoColumn() -> some View {
-        let items = self.mergedTodoItems()
-        let detected = self.analytics.detectedNoteTodos(limit: 3)
+    private func predictedActionsColumn() -> some View {
+        let predictions = self.analytics.actionPredictions
         
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
@@ -535,97 +512,77 @@ struct AnalyticsDashboardView: View {
                     .font(.system(size: 13.5, weight: .semibold))
                     .foregroundStyle(self.palette.pine)
                 
+                Text(self.analytics.actionPredictionsFromAI ? "AI 预测" : "文档推演")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(self.palette.emerald)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(self.palette.accentFill.opacity(0.12), in: Capsule())
+                
                 Spacer()
                 
                 Button {
-                    withAnimation(DashMotion.quick) {
-                        self.isAddingTodo.toggle()
+                    Task {
+                        await self.analytics.refreshActionPredictions(force: true)
                     }
                 } label: {
-                    Image(systemName: self.isAddingTodo ? "minus" : "plus")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(self.palette.pine.opacity(0.68))
+                    Image(systemName: self.analytics.isPredictingActions ? "hourglass" : "arrow.clockwise")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(self.palette.pine.opacity(0.60))
                         .frame(width: 22, height: 22)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-            }
-            
-            if self.isAddingTodo {
-                HStack(spacing: 6) {
-                    TextField("添加待办…", text: self.$newTodoText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(self.palette.inset)
-                        )
-                        .onSubmit {
-                            self.commitNewTodo()
-                        }
-                    
-                    Button("添加") {
-                        self.commitNewTodo()
-                    }
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(self.palette.emerald)
-                    .buttonStyle(.plain)
-                    .disabled(self.newTodoText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
+                .disabled(self.analytics.isPredictingActions)
+                .help("基于近期文档重新预测下一步行动")
             }
             
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 7) {
-                    if items.isEmpty && detected.isEmpty {
-                        Text("暂无待办")
-                            .font(.system(size: 12))
-                            .foregroundStyle(self.palette.pine.opacity(0.45))
+                VStack(alignment: .leading, spacing: 8) {
+                    if predictions.isEmpty {
+                        if self.analytics.isPredictingActions {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("AI 正在阅读近期文档并推演下一步…")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(self.palette.pine.opacity(0.60))
+                            }
                             .padding(.top, 4)
+                        } else {
+                            Text("开始写作后，AI 会结合文档内容自动预测下一步行动")
+                                .font(.system(size: 12))
+                                .foregroundStyle(self.palette.pine.opacity(0.48))
+                                .padding(.top, 4)
+                        }
                     } else {
-                        ForEach(items) { item in
-                            TodoChecklistRow(
-                                item: item,
+                        ForEach(predictions) { pred in
+                            let isPinned = self.pinnedPredictionIDs.contains(pred.id)
+                            let sourceDoc = self.analytics.storedDocument(
+                                id: pred.sourceDocumentID,
+                                title: pred.sourceDocumentTitle
+                            )
+                            PredictedActionRow(
+                                prediction: pred,
                                 palette: self.palette,
-                                onToggle: {
-                                    withAnimation(DashMotion.quick) {
-                                        self.analytics.toggleReminderCompleted(id: item.id)
+                                isPinned: isPinned,
+                                canOpenDocument: sourceDoc != nil,
+                                onOpenDocument: {
+                                    guard let doc = sourceDoc else { return }
+                                    if let handler = self.onOpenDocument {
+                                        handler(doc)
+                                    } else {
+                                        AnalyticsDashboardWindowController.shared.openDocument(doc)
                                     }
                                 },
-                                onDelete: {
+                                onPinToCapsule: {
+                                    guard !isPinned else { return }
+                                    _ = self.analytics.addPinnedTodo(title: pred.action, deadline: nil)
                                     withAnimation(DashMotion.quick) {
-                                        self.analytics.deleteReminder(id: item.id)
+                                        _ = self.pinnedPredictionIDs.insert(pred.id)
                                     }
                                 }
                             )
-                        }
-                        
-                        ForEach(detected) { candidate in
-                            if !items.contains(where: { $0.title == candidate.text }) {
-                                Button {
-                                    withAnimation(DashMotion.quick) {
-                                        _ = self.analytics.addPinnedTodo(title: candidate.text, deadline: nil)
-                                    }
-                                } label: {
-                                    HStack(spacing: 7) {
-                                        Image(systemName: "plus.circle")
-                                            .font(.system(size: 11))
-                                            .foregroundStyle(self.palette.accentFill.opacity(0.75))
-                                        
-                                        Text(candidate.text)
-                                            .font(.system(size: 12))
-                                            .foregroundStyle(self.palette.pine.opacity(0.72))
-                                            .lineLimit(1)
-                                            .truncationMode(.tail)
-                                        
-                                        Spacer()
-                                    }
-                                    .padding(.vertical, 2)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                            }
                         }
                     }
                 }
@@ -638,13 +595,36 @@ struct AnalyticsDashboardView: View {
     
     
     private func newsColumn() -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let pageItems = self.newsService.currentPageItems
+        
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Text("NEWS")
                     .font(.system(size: 13.5, weight: .semibold))
                     .foregroundStyle(self.palette.pine)
                 
-                Spacer()
+                Spacer(minLength: 4)
+                
+                HStack(spacing: 3) {
+                    ForEach(NewsFeedCategory.allCases) { category in
+                        let isSelected = (self.newsService.selectedCategory == category)
+                        Button {
+                            withAnimation(DashMotion.quick) {
+                                self.newsService.selectedCategory = category
+                            }
+                        } label: {
+                            Text(category.label)
+                                .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
+                                .foregroundStyle(isSelected ? self.palette.tokens.onAccentInk : self.palette.pine.opacity(0.58))
+                                .padding(.horizontal, 6)
+                                .frame(height: 20)
+                                .background(
+                                    Capsule().fill(isSelected ? self.palette.accentFill : self.palette.inset)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
                 
                 Button {
                     Task {
@@ -653,76 +633,127 @@ struct AnalyticsDashboardView: View {
                 } label: {
                     Image(systemName: self.newsService.isLoading ? "hourglass" : "arrow.clockwise")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(self.palette.pine.opacity(0.60))
+                        .foregroundStyle(self.palette.pine.opacity(0.65))
                         .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
+                        .background(Circle().fill(self.palette.inset.opacity(0.7)))
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .disabled(self.newsService.isLoading)
-                
-                Button {
-                    NSWorkspace.shared.open(AIHotNewsService.portalURL)
-                } label: {
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(self.palette.pine.opacity(0.60))
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                .help("刷新金融、X 与 AI 资讯")
             }
             
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 8) {
-                    if self.newsService.items.isEmpty {
+            GeometryReader { geo in
+                let useTwoColumns = geo.size.width >= 260
+                let columns: [GridItem] = useTwoColumns
+                    ? [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
+                    : [GridItem(.flexible(), spacing: 8)]
+                
+                ScrollView(.vertical, showsIndicators: false) {
+                    if pageItems.isEmpty {
                         if self.newsService.isLoading {
                             HStack(spacing: 8) {
                                 ProgressView()
                                     .controlSize(.small)
-                                Text("正在同步行业动态…")
+                                Text("正在同步金融、X 与 AI 资讯…")
                                     .font(.system(size: 12))
                                     .foregroundStyle(self.palette.pine.opacity(0.60))
                             }
-                            .padding(.top, 4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 6)
                         } else {
                             Button {
-                                NSWorkspace.shared.open(AIHotNewsService.portalURL)
+                                Task {
+                                    await self.newsService.refreshIfNeeded(force: true)
+                                }
                             } label: {
-                                Text("点击访问 aihot.news/agent 获取最新动态")
-                                    .font(.system(size: 12))
+                                Label("重新加载最新资讯", systemImage: "arrow.clockwise")
+                                    .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(self.palette.emerald)
-                                    .underline()
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 28)
+                                    .background(self.palette.accentFill.opacity(0.12), in: Capsule())
                             }
                             .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 6)
                         }
                     } else {
-                        ForEach(self.newsService.items) { item in
-                            Button {
-                                NSWorkspace.shared.open(item.url ?? AIHotNewsService.portalURL)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.title)
-                                        .font(.system(size: 12.5, weight: .medium))
-                                        .foregroundStyle(self.palette.pine.opacity(0.92))
-                                        .lineLimit(2)
-                                        .multilineTextAlignment(.leading)
-                                    
-                                    if !item.conciseMetaLabel.isEmpty {
-                                        Text(item.conciseMetaLabel)
-                                            .font(.system(size: 11, weight: .regular))
-                                            .foregroundStyle(self.palette.pine.opacity(0.52))
-                                            .lineLimit(1)
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                            ForEach(pageItems) { item in
+                                NewsFeedCoverCard(
+                                    item: item,
+                                    coverImage: self.newsService.coverImage(for: item),
+                                    compactRow: !useTwoColumns,
+                                    palette: self.palette
+                                ) {
+                                    if let url = item.url {
+                                        NSWorkspace.shared.open(url)
                                     }
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 3)
-                                .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
                         }
+                        .id("news-\(self.newsService.selectedCategory.rawValue)-page-\(self.newsService.currentPage)")
+                        .transition(.opacity)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            
+            // Xiaohongshu-style bottom pagination bar
+            if !self.newsService.filteredItems.isEmpty {
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation(DashMotion.quick) {
+                            self.newsService.goToPreviousPage()
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 9.5, weight: .semibold))
+                            Text("上一页")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundStyle(self.newsService.totalPages > 1 ? self.palette.pine.opacity(0.75) : self.palette.pine.opacity(0.28))
+                        .padding(.horizontal, 8)
+                        .frame(height: 24)
+                        .background(self.palette.inset, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(self.newsService.totalPages <= 1)
+                    
+                    Spacer()
+                    
+                    Text("第 \(self.newsService.currentPage) / \(self.newsService.totalPages) 页")
+                        .font(.system(size: 10.5, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(self.palette.pine.opacity(0.55))
+                    
+                    Spacer()
+                    
+                    Button {
+                        if self.newsService.totalPages > 1 {
+                            withAnimation(DashMotion.quick) {
+                                self.newsService.goToNextPage()
+                            }
+                        } else {
+                            Task {
+                                await self.newsService.refreshIfNeeded(force: true)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(self.newsService.currentPage >= self.newsService.totalPages ? "换一批" : "下一页")
+                                .font(.system(size: 11, weight: .medium))
+                            Image(systemName: self.newsService.currentPage >= self.newsService.totalPages ? "arrow.clockwise" : "chevron.right")
+                                .font(.system(size: 9.5, weight: .semibold))
+                        }
+                        .foregroundStyle(self.palette.emerald)
+                        .padding(.horizontal, 8)
+                        .frame(height: 24)
+                        .background(self.palette.accentFill.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.top, 2)
             }
         }
         .padding(14)
@@ -735,37 +766,81 @@ struct AnalyticsDashboardView: View {
     private func rebuildSnapshot() {
         self.snapshot = DashboardSnapshot.build(analytics: self.analytics, selectedYear: self.selectedYear)
     }
+}
+
+
+// MARK: - Top Navigation Bar (Title-Free · Ergonomic Top-Left Back Pill)
+
+private struct DashboardTopNavigationBar: View {
     
+    let palette: DashPalette
+    let onBack: () -> Void
     
-    private func commitNewTodo() {
-        let trimmed = self.newTodoText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        _ = self.analytics.addPinnedTodo(title: trimmed, deadline: nil)
-        self.newTodoText = ""
-        self.isAddingTodo = false
-    }
+    @State private var isHovered = false
     
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy年M月d日 · EEEE"
+        f.locale = Locale(identifier: "zh_CN")
+        return f
+    }()
     
-    private func mergedTodoItems() -> [UserReminder] {
-        var seen = Set<String>()
-        var merged: [UserReminder] = []
-        let sources = self.analytics.overdueReminders
-            + self.analytics.pinnedTodos
-            + self.analytics.todayReminders
-            + self.analytics.tomorrowReminders
-        for item in sources where seen.insert(item.id).inserted {
-            merged.append(item)
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Button(action: self.onBack) {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(self.isHovered ? self.palette.emerald : self.palette.pine.opacity(0.75))
+                    
+                    Text(AppLanguage.text("返回编辑", en: "Back to Editor"))
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(self.palette.pine.opacity(self.isHovered ? 0.96 : 0.82))
+                    
+                    Text("ESC")
+                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(self.palette.pine.opacity(0.42))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(self.isHovered ? self.palette.card : self.palette.card.opacity(0.84))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(self.isHovered ? self.palette.accentFill.opacity(0.45) : self.palette.hairline, lineWidth: 0.75)
+                )
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+            .onHover { hovering in
+                withAnimation(DashMotion.quick) {
+                    self.isHovered = hovering
+                }
+            }
+            .help(AppLanguage.text("返回编辑器 (Esc)", en: "Back to Editor (Esc)"))
+            
+            Spacer()
+            
+            Text(Self.dateFormatter.string(from: Date()))
+                .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                .foregroundStyle(self.palette.pine.opacity(0.48))
         }
-        return ToolbarCapsuleTodoHelper.prioritizedTodos(merged)
+        .padding(.bottom, 2)
     }
 }
 
 
-// MARK: - Heatmap Card (Year Switcher Only, Zero Legend, Zero Clipping)
+// MARK: - Heatmap Card (Crisp 1:1 Square Cells + Month & Weekday Axis)
 
 private struct DashboardHeatmapCard: View {
     
     let yearlyHeatmap: YearlyHeatmapData
+    let currentStreak: Int
     let availableYears: [Int]
     @Binding var selectedYear: Int
     let palette: DashPalette
@@ -785,7 +860,7 @@ private struct DashboardHeatmapCard: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(spacing: 8) {
                 HStack(spacing: 4) {
                     Button {
                         if let prev = self.previousYear {
@@ -821,6 +896,17 @@ private struct DashboardHeatmapCard: View {
                 }
                 
                 Spacer()
+                
+                HStack(spacing: 10) {
+                    Text("活跃 \(self.yearlyHeatmap.activeDays) 天")
+                        .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(self.palette.pine.opacity(0.58))
+                    if self.currentStreak > 0 {
+                        Text("连写 \(self.currentStreak) 天")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(self.palette.emerald)
+                    }
+                }
             }
             
             GeometryReader { geo in
@@ -829,40 +915,78 @@ private struct DashboardHeatmapCard: View {
                     weekCount: max(1, self.yearlyHeatmap.weeks.count)
                 )
                 
-                ZStack(alignment: .topLeading) {
-                    Canvas { context, _ in
-                        for (colIndex, week) in self.yearlyHeatmap.weeks.enumerated() {
-                            for (rowIndex, cell) in week.enumerated() {
-                                guard rowIndex < 7, !cell.isOutOfYear else { continue }
-                                let rect = layout.cellRect(col: colIndex, row: rowIndex)
-                                let path = RoundedRectangle(cornerRadius: layout.cornerRadius, style: .continuous)
-                                    .path(in: rect)
-                                context.fill(path, with: .color(self.palette.heat(cell.level)))
-                                
-                                if self.hoveredCell?.id == cell.id {
-                                    context.stroke(
-                                        path,
-                                        with: .color(self.palette.pine.opacity(0.65)),
-                                        lineWidth: 1.0
-                                    )
+                ScrollView(.horizontal, showsIndicators: false) {
+                    ZStack(alignment: .topLeading) {
+                        Canvas { context, canvasSize in
+                            guard canvasSize.width.isFinite, canvasSize.height.isFinite,
+                                  canvasSize.width > 10, canvasSize.height > 10 else { return }
+                            
+                            // Top month axis labels
+                            var lastLabelRightX: CGFloat = -100
+                            for marker in self.yearlyHeatmap.monthLabels {
+                                let x = layout.gridOriginX + CGFloat(marker.weekIndex) * layout.pitch
+                                guard x >= lastLabelRightX + 20 else { continue }
+                                lastLabelRightX = x
+                                context.draw(
+                                    Text("\(marker.month)月")
+                                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                                        .foregroundStyle(self.palette.pine.opacity(0.46)),
+                                    at: CGPoint(x: x, y: layout.gridOriginY - 10),
+                                    anchor: .leading
+                                )
+                            }
+                            
+                            // Subtle left weekday axis (Mon / Wed / Fri)
+                            for (rowIndex, label) in [(0, "一"), (2, "三"), (4, "五")] {
+                                let rect = layout.cellRect(col: 0, row: rowIndex)
+                                context.draw(
+                                    Text(label)
+                                        .font(.system(size: 9, weight: .regular))
+                                        .foregroundStyle(self.palette.pine.opacity(0.42)),
+                                    at: CGPoint(x: layout.gridOriginX - 6, y: rect.midY),
+                                    anchor: .trailing
+                                )
+                            }
+                            
+                            // Strictly 1:1 square heatmap cells
+                            for (colIndex, week) in self.yearlyHeatmap.weeks.enumerated() {
+                                for (rowIndex, cell) in week.enumerated() {
+                                    guard rowIndex < 7, !cell.isOutOfYear, !cell.isFuture else { continue }
+                                    let rect = layout.cellRect(col: colIndex, row: rowIndex)
+                                    let path = RoundedRectangle(cornerRadius: layout.cornerRadius, style: .continuous)
+                                        .path(in: rect)
+                                    context.fill(path, with: .color(self.palette.heat(cell.level)))
+                                    
+                                    if self.hoveredCell?.id == cell.id {
+                                        context.stroke(
+                                            path,
+                                            with: .color(self.palette.pine.opacity(0.70)),
+                                            lineWidth: 1.0
+                                        )
+                                    }
                                 }
                             }
                         }
-                    }
-                    .onContinuousHover { phase in
-                        switch phase {
-                            case .active(let location):
-                                self.hoverPoint = location
-                                self.hoveredCell = layout.hitTest(point: location, weeks: self.yearlyHeatmap.weeks)
-                            case .ended:
-                                self.hoveredCell = nil
+                        .frame(width: layout.canvasWidth, height: max(layout.canvasHeight, geo.size.height))
+                        .onContinuousHover { phase in
+                            switch phase {
+                                case .active(let location):
+                                    self.hoverPoint = location
+                                    self.hoveredCell = layout.hitTest(point: location, weeks: self.yearlyHeatmap.weeks)
+                                case .ended:
+                                    self.hoveredCell = nil
+                            }
+                        }
+                        
+                        if let cell = self.hoveredCell {
+                            self.hoverTooltip(
+                                cell: cell,
+                                in: CGSize(width: layout.canvasWidth, height: max(layout.canvasHeight, geo.size.height))
+                            )
                         }
                     }
-                    
-                    if let cell = self.hoveredCell {
-                        self.hoverTooltip(cell: cell, in: geo.size)
-                    }
                 }
+                .defaultScrollAnchor(.trailing)
             }
         }
         .padding(14)
@@ -903,77 +1027,91 @@ private struct DashboardHeatmapCard: View {
 }
 
 
-private struct HeatmapGridLayout {
+/// Strict 1:1 square-cell layout for the yearly activity heatmap with left weekday labels & top month markers.
+struct HeatmapGridLayout {
     
-    let originX: CGFloat
-    let originY: CGFloat
-    let cellW: CGFloat
-    let cellH: CGFloat
-    let gapX: CGFloat
-    let gapY: CGFloat
+    let gridOriginX: CGFloat
+    let gridOriginY: CGFloat
+    let cellSide: CGFloat
+    let gap: CGFloat
     let cornerRadius: CGFloat
+    let canvasWidth: CGFloat
+    let canvasHeight: CGFloat
+    
+    var pitch: CGFloat { self.cellSide + self.gap }
     
     
     static func compute(size: CGSize, weekCount: Int) -> HeatmapGridLayout {
-        let safeInset: CGFloat = 6
-        let availW = max(120, size.width - safeInset * 2)
-        let availH = max(84, size.height - safeInset * 2)
         let cols = max(1, weekCount)
         let rows = 7
+        let leftAxis: CGFloat = 18
+        let topAxis: CGFloat = 18
+        let trailingPad: CGFloat = 4
+        let bottomPad: CGFloat = 4
         
-        let gapX: CGFloat = cols > 45 ? max(1.8, min(3.0, availW * 0.0055)) : 3.0
-        let cellW = max(2.0, (availW - CGFloat(cols - 1) * gapX) / CGFloat(cols))
+        let availW = max(120, size.width - leftAxis - trailingPad)
+        let availH = max(72, size.height - topAxis - bottomPad)
         
-        let gapY: CGFloat = max(3.0, min(7.0, availH * 0.025))
-        let rawCellH = max(4.0, (availH - CGFloat(rows - 1) * gapY) / CGFloat(rows))
-        let cellH = min(rawCellH, cellW * 2.6)
+        let gap: CGFloat = cols > 40 ? 2.5 : 3.0
+        let fitW = (availW - CGFloat(cols - 1) * gap) / CGFloat(cols)
+        let fitH = (availH - CGFloat(rows - 1) * gap) / CGFloat(rows)
         
-        let totalW = CGFloat(cols) * cellW + CGFloat(cols - 1) * gapX
-        let totalH = CGFloat(rows) * cellH + CGFloat(rows - 1) * gapY
-        let originX = max(safeInset, (size.width - totalW) * 0.5)
-        let originY = max(safeInset, (size.height - totalH) * 0.5)
-        let cornerRadius = max(1.5, min(4.0, min(cellW, cellH) * 0.28))
+        // Strictly 1:1 square cells bounded cleanly in [9.5pt, 15.0pt]; wider 53-week years scroll smoothly instead of distorting aspect ratio!
+        let minSide: CGFloat = 9.5
+        let maxSide: CGFloat = 15.0
+        let idealSide = min(fitW, fitH)
+        let cellSide = max(minSide, min(maxSide, floor(idealSide * 2) / 2))
+        
+        let gridW = CGFloat(cols) * cellSide + CGFloat(cols - 1) * gap
+        let gridH = CGFloat(rows) * cellSide + CGFloat(rows - 1) * gap
+        
+        let contentW = leftAxis + gridW + trailingPad
+        let canvasWidth = max(size.width, contentW)
+        let canvasHeight = max(size.height, topAxis + gridH + bottomPad)
+        
+        let gridOriginX = contentW < size.width
+            ? leftAxis + floor((size.width - contentW) * 0.5)
+            : leftAxis
+        let gridOriginY = topAxis + max(0, floor((canvasHeight - topAxis - bottomPad - gridH) * 0.5))
+        let cornerRadius = max(2.0, min(3.5, cellSide * 0.25))
         
         return HeatmapGridLayout(
-            originX: originX,
-            originY: originY,
-            cellW: cellW,
-            cellH: cellH,
-            gapX: gapX,
-            gapY: gapY,
-            cornerRadius: cornerRadius
+            gridOriginX: gridOriginX,
+            gridOriginY: gridOriginY,
+            cellSide: cellSide,
+            gap: gap,
+            cornerRadius: cornerRadius,
+            canvasWidth: canvasWidth,
+            canvasHeight: canvasHeight
         )
     }
     
     
     func cellRect(col: Int, row: Int) -> CGRect {
-        let x = self.originX + CGFloat(col) * (self.cellW + self.gapX)
-        let y = self.originY + CGFloat(row) * (self.cellH + self.gapY)
-        return CGRect(x: x, y: y, width: self.cellW, height: self.cellH)
+        let x = self.gridOriginX + CGFloat(col) * self.pitch
+        let y = self.gridOriginY + CGFloat(row) * self.pitch
+        return CGRect(x: x, y: y, width: self.cellSide, height: self.cellSide)
     }
     
     
     func hitTest(point: CGPoint, weeks: [[HeatmapDayCell]]) -> HeatmapDayCell? {
-        let stepX = self.cellW + self.gapX
-        let stepY = self.cellH + self.gapY
-        let col = Int(floor((point.x - self.originX) / stepX))
-        let row = Int(floor((point.y - self.originY) / stepY))
+        let col = Int(floor((point.x - self.gridOriginX) / self.pitch))
+        let row = Int(floor((point.y - self.gridOriginY) / self.pitch))
         guard col >= 0, col < weeks.count, row >= 0, row < weeks[col].count else { return nil }
         let cell = weeks[col][row]
-        guard !cell.isOutOfYear else { return nil }
+        guard !cell.isOutOfYear, !cell.isFuture else { return nil }
         return cell
     }
 }
 
 
-// MARK: - Compact & Expanded Flippable Quad Cards (Trend, Sankey, Rose, Sunburst)
+// MARK: - Compact & Expanded Quad Cards (Trend, Sankey, Rose, Sunburst)
 
 private struct DashboardCompactQuadCard: View {
     
     let metric: DashboardQuadMetric
     let snapshot: DashboardSnapshot
     let palette: DashPalette
-    let namespace: Namespace.ID
     let onTap: () -> Void
     
     @State private var isHovered = false
@@ -1004,7 +1142,6 @@ private struct DashboardCompactQuadCard: View {
             .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
         .buttonStyle(.plain)
-        .matchedGeometryEffect(id: self.metric.rawValue, in: self.namespace)
         .scaleEffect(self.isHovered ? 1.012 : 1.0)
         .animation(DashMotion.quick, value: self.isHovered)
         .onHover { hovering in
@@ -1044,11 +1181,11 @@ private struct DashboardCompactQuadCard: View {
             case .typed:
                 TrendAreaChartView(days: self.snapshot.days14, palette: self.palette, detailed: false)
             case .aiUsage:
-                SankeyFlowChartView(snapshot: self.snapshot, palette: self.palette, detailed: false)
+                AIUsageSunburstChartView(snapshot: self.snapshot, palette: self.palette, detailed: false)
             case .busyness:
                 NightingaleRoseChartView(metrics: self.snapshot.busyness, palette: self.palette, detailed: false)
             case .mood:
-                EmotionSunburstChartView(metrics: self.snapshot.mood, palette: self.palette, detailed: false)
+                EmotionSankeyChartView(snapshot: self.snapshot, palette: self.palette, detailed: false)
         }
     }
 }
@@ -1059,10 +1196,7 @@ private struct DashboardExpandedQuadCard: View {
     let metric: DashboardQuadMetric
     let snapshot: DashboardSnapshot
     let palette: DashPalette
-    let namespace: Namespace.ID
     let onClose: () -> Void
-    
-    @State private var flipAngle: Double = 90
     
     
     var body: some View {
@@ -1073,8 +1207,9 @@ private struct DashboardExpandedQuadCard: View {
                     .foregroundStyle(self.palette.pine)
                 
                 Text(self.detailHeadline)
-                    .font(.system(size: 14.5, weight: .bold, design: .rounded).monospacedDigit())
+                    .font(.system(size: 13.5, weight: .bold, design: .rounded).monospacedDigit())
                     .foregroundStyle(self.palette.emerald)
+                    .lineLimit(1)
                 
                 Spacer()
                 
@@ -1094,14 +1229,6 @@ private struct DashboardExpandedQuadCard: View {
         }
         .padding(14)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: true)
-        .matchedGeometryEffect(id: self.metric.rawValue, in: self.namespace)
-        .rotation3DEffect(.degrees(self.flipAngle), axis: (x: 0, y: 1, z: 0), perspective: 0.55)
-        .onAppear {
-            self.flipAngle = 90
-            withAnimation(DashMotion.flip) {
-                self.flipAngle = 0
-            }
-        }
     }
     
     
@@ -1127,11 +1254,11 @@ private struct DashboardExpandedQuadCard: View {
             case .typed:
                 TrendAreaChartView(days: self.snapshot.days14, palette: self.palette, detailed: true)
             case .aiUsage:
-                SankeyFlowChartView(snapshot: self.snapshot, palette: self.palette, detailed: true)
+                AIUsageSunburstChartView(snapshot: self.snapshot, palette: self.palette, detailed: true)
             case .busyness:
                 NightingaleRoseChartView(metrics: self.snapshot.busyness, palette: self.palette, detailed: true)
             case .mood:
-                EmotionSunburstChartView(metrics: self.snapshot.mood, palette: self.palette, detailed: true)
+                EmotionSankeyChartView(snapshot: self.snapshot, palette: self.palette, detailed: true)
         }
     }
 }
@@ -1172,7 +1299,9 @@ private struct TrendAreaChartView: View {
                     return CGPoint(x: x, y: y)
                 }
                 
-                Canvas { context, _ in
+                Canvas { context, canvasSize in
+                    guard canvasSize.width.isFinite, canvasSize.height.isFinite,
+                          canvasSize.width > 8, canvasSize.height > 8 else { return }
                     if self.detailed {
                         for frac in [0.0, 0.5, 1.0] {
                             let y = padT + CGFloat(frac) * plotH
@@ -1315,242 +1444,266 @@ private struct TrendAreaChartView: View {
 }
 
 
-// MARK: - Chart 2: 3-Column Sankey Flow Diagram (桑基图)
+// MARK: - Chart 2: AI Usage 2-Ring Sunburst Chart (AI 用量 · 旭日图)
 
-private struct SankeyFlowChartView: View {
+private struct AIUsageSunburstChartView: View {
     
     let snapshot: DashboardSnapshot
     let palette: DashPalette
     let detailed: Bool
     
+    @State private var hoveredLabel: String?
     
-    private struct SankeyNode {
-        var label: String
-        var weight: Double
-        var color: Color
+    private struct RingSlice {
+        let label: String
+        let weight: Double
+        let detailText: String
+        let color: Color
+        let children: [ChildSlice]
+    }
+    
+    private struct ChildSlice {
+        let label: String
+        let weight: Double
+        let detailText: String
+    }
+    
+    
+    private func buildHierarchy() -> [RingSlice] {
+        let modelColors: [Color] = [
+            self.palette.accentFill,
+            self.palette.emerald,
+            self.palette.mint,
+            self.palette.heat(2),
+            self.palette.paleMint,
+        ]
+        
+        let featureChildren: [ChildSlice] = {
+            let feats = Array(self.snapshot.aiFeatures.prefix(4))
+            if !feats.isEmpty {
+                return feats.map { f in
+                    let name = f.displayName.isEmpty ? f.feature : f.displayName
+                    let tokens = max(1, f.totalTokens)
+                    return ChildSlice(
+                        label: name,
+                        weight: Double(f.totalTokens > 0 ? f.totalTokens : max(1, f.requests * 120)),
+                        detailText: "\(name) · \(f.requests) 次 · \(Self.compactTokens(tokens))"
+                    )
+                }
+            }
+            let totals = self.snapshot.ai30Totals
+            if totals.inputTokens + totals.outputTokens > 0 {
+                return [
+                    ChildSlice(label: "输入", weight: Double(max(1, totals.inputTokens)), detailText: "输入 · \(Self.compactTokens(totals.inputTokens))"),
+                    ChildSlice(label: "生成", weight: Double(max(1, totals.outputTokens)), detailText: "生成 · \(Self.compactTokens(totals.outputTokens))"),
+                ]
+            }
+            return [
+                ChildSlice(label: "续写", weight: 44, detailText: "续写 · 44%"),
+                ChildSlice(label: "翻译", weight: 30, detailText: "翻译 · 30%"),
+                ChildSlice(label: "摘要", weight: 26, detailText: "摘要 · 26%"),
+            ]
+        }()
+        
+        let models = Array(self.snapshot.aiModels.prefix(4))
+        if !models.isEmpty {
+            return models.enumerated().map { idx, m in
+                let shortName = Self.shortName(m.model)
+                let w = Double(m.totalTokens > 0 ? m.totalTokens : max(1, m.requests * 150))
+                let sliceChildren: [ChildSlice] = if models.count == 1 {
+                    featureChildren
+                } else {
+                    // Distribute top features proportionally inside each model arc
+                    Array(featureChildren.prefix(3))
+                }
+                return RingSlice(
+                    label: shortName,
+                    weight: w,
+                    detailText: "\(shortName) · \(m.requests) 次 · \(Self.compactTokens(m.totalTokens)) tokens",
+                    color: modelColors[idx % modelColors.count],
+                    children: sliceChildren
+                )
+            }
+        }
+        
+        return [
+            RingSlice(
+                label: "主力模型",
+                weight: 62,
+                detailText: "主力模型 · 占比 62%",
+                color: self.palette.accentFill,
+                children: [
+                    ChildSlice(label: "续写", weight: 38, detailText: "主力模型 → 续写"),
+                    ChildSlice(label: "摘要", weight: 24, detailText: "主力模型 → 摘要"),
+                ]
+            ),
+            RingSlice(
+                label: "轻量模型",
+                weight: 38,
+                detailText: "轻量模型 · 占比 38%",
+                color: self.palette.mint,
+                children: [
+                    ChildSlice(label: "翻译", weight: 22, detailText: "轻量模型 → 翻译"),
+                    ChildSlice(label: "解释", weight: 16, detailText: "轻量模型 → 解释"),
+                ]
+            ),
+        ]
     }
     
     
     var body: some View {
-        GeometryReader { _ in
-            Canvas { context, size in
-                let padX: CGFloat = self.detailed ? 74 : 6
-                let padY: CGFloat = self.detailed ? 10 : 4
-                let nodeW: CGFloat = self.detailed ? 10 : 7
-                let innerW = max(40, size.width - padX * 2)
-                let innerH = max(36, size.height - padY * 2)
-                
-                let col1X = padX
-                let col2X = padX + innerW * 0.5 - nodeW * 0.5
-                let col3X = padX + innerW - nodeW
-                
-                let col1Nodes = self.leftFeatureNodes()
-                let col2Nodes = self.middleModelNodes()
-                let col3Nodes = self.rightSinkNodes()
-                
-                let rects1 = Self.layoutColumn(nodes: col1Nodes, x: col1X, yStart: padY, height: innerH, width: nodeW, gap: 6)
-                let rects2 = Self.layoutColumn(nodes: col2Nodes, x: col2X, yStart: padY, height: innerH, width: nodeW, gap: 6)
-                let rects3 = Self.layoutColumn(nodes: col3Nodes, x: col3X, yStart: padY, height: innerH, width: nodeW, gap: 6)
-                
-                // Draw flows Col 1 -> Col 2
-                Self.drawFlows(context: &context, sources: rects1, targets: rects2)
-                // Draw flows Col 2 -> Col 3
-                Self.drawFlows(context: &context, sources: rects2, targets: rects3)
-                
-                // Draw column nodes
-                for (node, layout) in zip(col1Nodes, rects1) {
-                    let rect = layout.rect
-                    let p = RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: rect)
-                    context.fill(p, with: .color(node.color))
-                    if self.detailed {
-                        context.draw(
-                            Text(node.label)
-                                .font(.system(size: 10.5, weight: .medium))
-                                .foregroundStyle(self.palette.pine.opacity(0.85)),
-                            at: CGPoint(x: rect.minX - 6, y: rect.midY),
-                            anchor: .trailing
-                        )
+        let rings = self.buildHierarchy()
+        let totalWeight = max(1.0, rings.reduce(0.0) { $0 + $1.weight })
+        let centerTokens = self.snapshot.ai30Totals.totalTokens > 0
+            ? Self.compactTokens(self.snapshot.ai30Totals.totalTokens)
+            : "\(self.snapshot.ai30Totals.requests)次"
+        
+        VStack(spacing: 6) {
+            GeometryReader { geo in
+                Canvas { context, size in
+                    guard size.width.isFinite, size.height.isFinite,
+                          size.width > 8, size.height > 8 else { return }
+                    let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+                    let outerLimit = max(18, min(size.width, size.height) * 0.5 - (self.detailed ? 16 : 4))
+                    let rCore = max(10, outerLimit * 0.32)
+                    let rMid = max(rCore + 4, outerLimit * 0.66)
+                    let rOuter = max(rMid + 6, outerLimit)
+                    
+                    var cursorDeg = -90.0
+                    for slice in rings {
+                        let spanDeg = (slice.weight / totalWeight) * 360.0
+                        let segStart = cursorDeg + 1.2
+                        let segEnd = cursorDeg + spanDeg - 1.2
+                        
+                        if segEnd > segStart {
+                            var innerSector = Path()
+                            innerSector.addArc(center: center, radius: rCore, startAngle: .degrees(segStart), endAngle: .degrees(segEnd), clockwise: false)
+                            innerSector.addArc(center: center, radius: rMid - 1.5, startAngle: .degrees(segEnd), endAngle: .degrees(segStart), clockwise: true)
+                            innerSector.closeSubpath()
+                            context.fill(innerSector, with: .color(slice.color.opacity(0.88)))
+                            
+                            if self.detailed && spanDeg > 30 {
+                                let midRad = (segStart + segEnd) * 0.5 * .pi / 180.0
+                                let labelR = (rCore + rMid) * 0.5
+                                context.draw(
+                                    Text(slice.label)
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(self.palette.tokens.onAccentInk),
+                                    at: CGPoint(x: center.x + CGFloat(cos(midRad)) * labelR, y: center.y + CGFloat(sin(midRad)) * labelR),
+                                    anchor: .center
+                                )
+                            }
+                        }
+                        
+                        let childSum = max(1.0, slice.children.reduce(0.0) { $0 + $1.weight })
+                        var childCursor = cursorDeg
+                        for (cIdx, child) in slice.children.enumerated() {
+                            let childSpan = (child.weight / childSum) * spanDeg
+                            let cStart = childCursor + 0.9
+                            let cEnd = childCursor + childSpan - 0.9
+                            if cEnd > cStart {
+                                var outerSector = Path()
+                                outerSector.addArc(center: center, radius: rMid + 1.5, startAngle: .degrees(cStart), endAngle: .degrees(cEnd), clockwise: false)
+                                outerSector.addArc(center: center, radius: rOuter, startAngle: .degrees(cEnd), endAngle: .degrees(cStart), clockwise: true)
+                                outerSector.closeSubpath()
+                                let alpha = cIdx.isMultiple(of: 2) ? 0.58 : 0.38
+                                context.fill(outerSector, with: .color(slice.color.opacity(alpha)))
+                                
+                                if self.detailed && childSpan > 24 {
+                                    let midRad = (cStart + cEnd) * 0.5 * .pi / 180.0
+                                    let labelR = (rMid + rOuter) * 0.52
+                                    context.draw(
+                                        Text(child.label)
+                                            .font(.system(size: 9.5, weight: .medium))
+                                            .foregroundStyle(self.palette.pine.opacity(0.90)),
+                                        at: CGPoint(x: center.x + CGFloat(cos(midRad)) * labelR, y: center.y + CGFloat(sin(midRad)) * labelR),
+                                        anchor: .center
+                                    )
+                                }
+                            }
+                            childCursor += childSpan
+                        }
+                        cursorDeg += spanDeg
                     }
-                }
-                
-                for (node, layout) in zip(col2Nodes, rects2) {
-                    let rect = layout.rect
-                    let p = RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: rect)
-                    context.fill(p, with: .color(node.color))
+                    
+                    let coreRect = CGRect(x: center.x - rCore + 2, y: center.y - rCore + 2, width: (rCore - 2) * 2, height: (rCore - 2) * 2)
+                    context.fill(Circle().path(in: coreRect), with: .color(self.palette.card))
                     if self.detailed {
                         context.draw(
-                            Text(node.label)
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(self.palette.pine.opacity(0.9)),
-                            at: CGPoint(x: rect.midX, y: max(rect.minY - 7, 8)),
+                            Text(centerTokens)
+                                .font(.system(size: 13, weight: .bold, design: .rounded).monospacedDigit())
+                                .foregroundStyle(self.palette.pine),
+                            at: center,
                             anchor: .center
                         )
                     }
                 }
-                
-                for (node, layout) in zip(col3Nodes, rects3) {
-                    let rect = layout.rect
-                    let p = RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: rect)
-                    context.fill(p, with: .color(node.color))
-                    if self.detailed {
-                        context.draw(
-                            Text(node.label)
-                                .font(.system(size: 10.5, weight: .medium))
-                                .foregroundStyle(self.palette.pine.opacity(0.85)),
-                            at: CGPoint(x: rect.maxX + 6, y: rect.midY),
-                            anchor: .leading
-                        )
+                .onContinuousHover { phase in
+                    guard self.detailed else { return }
+                    switch phase {
+                        case .active(let loc):
+                            self.hoveredLabel = self.hitTestSector(loc, in: geo.size, rings: rings, totalWeight: totalWeight)
+                        case .ended:
+                            self.hoveredLabel = nil
                     }
                 }
             }
-        }
-    }
-    
-    
-    private func leftFeatureNodes() -> [SankeyNode] {
-        let feats = self.snapshot.aiFeatures.prefix(3)
-        if !feats.isEmpty {
-            let colors = [self.palette.accentFill, self.palette.mint, self.palette.paleMint]
-            return feats.enumerated().map { idx, f in
-                SankeyNode(
-                    label: f.displayName.isEmpty ? f.feature : f.displayName,
-                    weight: max(1, Double(f.totalTokens > 0 ? f.totalTokens : f.requests * 100)),
-                    color: colors[idx % colors.count]
-                )
+            
+            if self.detailed {
+                Text(self.hoveredLabel ?? "内环：模型占比 · 外环：功能与 Token 分布")
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundStyle(self.palette.pine.opacity(self.hoveredLabel == nil ? 0.48 : 0.80))
+                    .frame(height: 16)
             }
         }
-        return [
-            SankeyNode(label: "续写", weight: 46, color: self.palette.accentFill),
-            SankeyNode(label: "对话", weight: 32, color: self.palette.mint),
-            SankeyNode(label: "摘要", weight: 22, color: self.palette.paleMint),
-        ]
     }
     
     
-    private func middleModelNodes() -> [SankeyNode] {
-        let mods = self.snapshot.aiModels.prefix(3)
-        if !mods.isEmpty {
-            let colors = [self.palette.emerald, self.palette.heat(3), self.palette.heat(2)]
-            return mods.enumerated().map { idx, m in
-                SankeyNode(
-                    label: Self.shortModelName(m.model),
-                    weight: max(1, Double(m.totalTokens > 0 ? m.totalTokens : m.requests * 100)),
-                    color: colors[idx % colors.count]
-                )
-            }
-        }
-        return [
-            SankeyNode(label: "主力模型", weight: 62, color: self.palette.emerald),
-            SankeyNode(label: "轻量模型", weight: 38, color: self.palette.heat(2)),
-        ]
-    }
-    
-    
-    private func rightSinkNodes() -> [SankeyNode] {
-        let totals = self.snapshot.ai30Totals
-        let input = max(1, totals.inputTokens)
-        let output = max(1, totals.outputTokens)
-        if totals.inputTokens + totals.outputTokens > 0 {
-            return [
-                SankeyNode(label: "输入", weight: Double(input), color: self.palette.mint),
-                SankeyNode(label: "生成", weight: Double(output), color: self.palette.accentFill),
-            ]
-        }
-        return [
-            SankeyNode(label: "输入", weight: 58, color: self.palette.mint),
-            SankeyNode(label: "生成", weight: 42, color: self.palette.accentFill),
-        ]
-    }
-    
-    
-    private static func shortModelName(_ name: String) -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.count <= 14 ? trimmed : String(trimmed.prefix(13)) + "…"
-    }
-    
-    
-    private static func layoutColumn(
-        nodes: [SankeyNode],
-        x: CGFloat,
-        yStart: CGFloat,
-        height: CGFloat,
-        width: CGFloat,
-        gap: CGFloat
-    ) -> [(rect: CGRect, color: Color, weight: Double)] {
-        let totalGap = CGFloat(max(0, nodes.count - 1)) * gap
-        let usableH = max(12, height - totalGap)
-        let minNodeH: CGFloat = nodes.isEmpty ? 0 : min(6, usableH / CGFloat(nodes.count))
-        let leftoverH = max(0, usableH - minNodeH * CGFloat(nodes.count))
-        let sumW = max(1.0, nodes.reduce(0.0) { $0 + $1.weight })
+    private func hitTestSector(_ point: CGPoint, in size: CGSize, rings: [RingSlice], totalWeight: Double) -> String? {
+        let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+        let outerLimit = max(18, min(size.width, size.height) * 0.5 - (self.detailed ? 16 : 4))
+        let rCore = max(10, outerLimit * 0.32)
+        let rMid = max(rCore + 4, outerLimit * 0.66)
+        let dist = hypot(point.x - center.x, point.y - center.y)
+        guard dist >= rCore && dist <= outerLimit else { return nil }
         
-        var cursorY = yStart
-        var result: [(rect: CGRect, color: Color, weight: Double)] = []
-        for node in nodes {
-            let h = minNodeH + leftoverH * CGFloat(node.weight / sumW)
-            let rect = CGRect(x: x, y: cursorY, width: width, height: h)
-            result.append((rect, node.color, node.weight))
-            cursorY += h + gap
+        var deg = atan2(point.y - center.y, point.x - center.x) * 180.0 / .pi + 90.0
+        if deg < 0 { deg += 360.0 }
+        
+        var cursor = 0.0
+        for slice in rings {
+            let span = (slice.weight / totalWeight) * 360.0
+            if deg <= cursor + span {
+                if dist <= rMid {
+                    return slice.detailText
+                }
+                let childTotal = max(1.0, slice.children.reduce(0.0) { $0 + $1.weight })
+                var cCursor = cursor
+                for child in slice.children {
+                    let cSpan = (child.weight / childTotal) * span
+                    if deg <= cCursor + cSpan {
+                        return "\(slice.label) → \(child.detailText)"
+                    }
+                    cCursor += cSpan
+                }
+                return slice.detailText
+            }
+            cursor += span
         }
-        return result
+        return nil
     }
     
     
-    private static func drawFlows(
-        context: inout GraphicsContext,
-        sources: [(rect: CGRect, color: Color, weight: Double)],
-        targets: [(rect: CGRect, color: Color, weight: Double)]
-    ) {
-        let totalTarget = max(1.0, targets.reduce(0.0) { $0 + $1.weight })
-        var targetOffsets = targets.map { $0.rect.minY }
-        
-        for src in sources {
-            var srcOffsetY = src.rect.minY
-            for (tIdx, tgt) in targets.enumerated() {
-                let share = tgt.weight / totalTarget
-                let ribbonSrcH = src.rect.height * CGFloat(share)
-                let ribbonTgtH = tgt.rect.height * CGFloat(src.weight / max(1.0, sources.reduce(0.0) { $0 + $1.weight }))
-                
-                let sTop = srcOffsetY
-                let sBot = srcOffsetY + ribbonSrcH
-                let tTop = targetOffsets[tIdx]
-                let tBot = targetOffsets[tIdx] + ribbonTgtH
-                
-                srcOffsetY = sBot
-                targetOffsets[tIdx] = tBot
-                
-                let startX = src.rect.maxX
-                let endX = tgt.rect.minX
-                let ctrlX1 = startX + (endX - startX) * 0.45
-                let ctrlX2 = endX - (endX - startX) * 0.45
-                
-                var ribbon = Path()
-                ribbon.move(to: CGPoint(x: startX, y: sTop))
-                ribbon.addCurve(
-                    to: CGPoint(x: endX, y: tTop),
-                    control1: CGPoint(x: ctrlX1, y: sTop),
-                    control2: CGPoint(x: ctrlX2, y: tTop)
-                )
-                ribbon.addLine(to: CGPoint(x: endX, y: tBot))
-                ribbon.addCurve(
-                    to: CGPoint(x: startX, y: sBot),
-                    control1: CGPoint(x: ctrlX2, y: tBot),
-                    control2: CGPoint(x: ctrlX1, y: sBot)
-                )
-                ribbon.closeSubpath()
-                
-                context.fill(
-                    ribbon,
-                    with: .linearGradient(
-                        Gradient(colors: [
-                            src.color.opacity(0.32),
-                            tgt.color.opacity(0.26),
-                        ]),
-                        startPoint: CGPoint(x: startX, y: sTop),
-                        endPoint: CGPoint(x: endX, y: tTop)
-                    )
-                )
-            }
-        }
+    private static func shortName(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.count <= 10 ? trimmed : String(trimmed.prefix(9)) + "…"
+    }
+    
+    
+    private static func compactTokens(_ value: Int) -> String {
+        if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000.0) }
+        if value >= 1_000 { return String(format: "%.1fK", Double(value) / 1_000.0) }
+        return value.formatted()
     }
 }
 
@@ -1570,6 +1723,8 @@ private struct NightingaleRoseChartView: View {
         VStack(spacing: 6) {
             GeometryReader { geo in
                 Canvas { context, size in
+                    guard size.width.isFinite, size.height.isFinite,
+                          size.width > 8, size.height > 8 else { return }
                     let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
                     let outerLimit = max(16, min(size.width, size.height) * 0.5 - (self.detailed ? 22 : 4))
                     let innerR = max(8, outerLimit * 0.22)
@@ -1687,204 +1842,541 @@ private struct NightingaleRoseChartView: View {
 }
 
 
-// MARK: - Chart 4: 2-Ring Emotion Sunburst Chart (旭日图)
+// MARK: - Chart 4: 3-Column Emotion Sankey Flow Diagram (情绪指数 · 桑基图)
 
-private struct EmotionSunburstChartView: View {
+private struct EmotionSankeyChartView: View {
     
-    let metrics: MoodMetrics
+    let snapshot: DashboardSnapshot
     let palette: DashPalette
     let detailed: Bool
     
-    @State private var hoveredLabel: String?
+    @State private var hoveredCaption: String?
+    
+    private struct SankeyNode {
+        let label: String
+        let weight: Double
+        let color: Color
+    }
     
     
     var body: some View {
+        let col1Nodes = self.leftTimeSlotNodes()
+        let col2Nodes = self.middleMoodNodes()
+        let col3Nodes = self.rightSubMoodNodes()
+        
         VStack(spacing: 6) {
             GeometryReader { geo in
                 Canvas { context, size in
-                    let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
-                    let outerLimit = max(18, min(size.width, size.height) * 0.5 - (self.detailed ? 18 : 4))
-                    let rCore = max(10, outerLimit * 0.30)
-                    let rMid = max(rCore + 4, outerLimit * 0.64)
-                    let rOuter = max(rMid + 6, outerLimit)
+                    guard size.width.isFinite, size.height.isFinite,
+                          size.width > 8, size.height > 8 else { return }
+                    let padX: CGFloat = self.detailed ? 64 : 6
+                    let padY: CGFloat = self.detailed ? 14 : 4
+                    let nodeW: CGFloat = self.detailed ? 10 : 6.5
+                    let innerW = max(40, size.width - padX * 2)
+                    let innerH = max(34, size.height - padY * 2)
                     
-                    let totalWeight = max(1.0, self.metrics.segments.reduce(0.0) { $0 + $1.weight })
-                    var cursorDeg = -90.0
+                    let col1X = padX
+                    let col2X = padX + innerW * 0.5 - nodeW * 0.5
+                    let col3X = padX + innerW - nodeW
                     
-                    for segment in self.metrics.segments {
-                        let spanDeg = (segment.weight / totalWeight) * 360.0
-                        let segStart = cursorDeg + 1.2
-                        let segEnd = cursorDeg + spanDeg - 1.2
-                        let baseColor = self.palette.toneColor(for: segment.tone)
-                        
-                        if segEnd > segStart {
-                            var innerSector = Path()
-                            innerSector.addArc(center: center, radius: rCore, startAngle: .degrees(segStart), endAngle: .degrees(segEnd), clockwise: false)
-                            innerSector.addArc(center: center, radius: rMid - 1.5, startAngle: .degrees(segEnd), endAngle: .degrees(segStart), clockwise: true)
-                            innerSector.closeSubpath()
-                            context.fill(innerSector, with: .color(baseColor.opacity(0.86)))
-                            
-                            if self.detailed && spanDeg > 28 {
-                                let midRad = (segStart + segEnd) * 0.5 * .pi / 180.0
-                                let labelR = (rCore + rMid) * 0.5
-                                context.draw(
-                                    Text(segment.label)
-                                        .font(.system(size: 10.5, weight: .semibold))
-                                        .foregroundStyle(Color.white),
-                                    at: CGPoint(x: center.x + CGFloat(cos(midRad)) * labelR, y: center.y + CGFloat(sin(midRad)) * labelR),
-                                    anchor: .center
-                                )
-                            }
+                    let rects1 = Self.layoutColumn(nodes: col1Nodes, x: col1X, yStart: padY, height: innerH, width: nodeW, gap: 6)
+                    let rects2 = Self.layoutColumn(nodes: col2Nodes, x: col2X, yStart: padY, height: innerH, width: nodeW, gap: 6)
+                    let rects3 = Self.layoutColumn(nodes: col3Nodes, x: col3X, yStart: padY, height: innerH, width: nodeW, gap: 6)
+                    
+                    Self.drawFlows(context: &context, sources: rects1, targets: rects2)
+                    Self.drawFlows(context: &context, sources: rects2, targets: rects3)
+                    
+                    for (node, layout) in zip(col1Nodes, rects1) {
+                        context.fill(RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: layout.rect), with: .color(node.color))
+                        if self.detailed {
+                            context.draw(
+                                Text(node.label)
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundStyle(self.palette.pine.opacity(0.84)),
+                                at: CGPoint(x: layout.rect.minX - 6, y: layout.rect.midY),
+                                anchor: .trailing
+                            )
                         }
-                        
-                        let childSum = max(1.0, segment.children.reduce(0.0) { $0 + $1.value })
-                        var childCursor = cursorDeg
-                        for (cIdx, child) in segment.children.enumerated() {
-                            let childSpan = (child.value / childSum) * spanDeg
-                            let cStart = childCursor + 0.9
-                            let cEnd = childCursor + childSpan - 0.9
-                            if cEnd > cStart {
-                                var outerSector = Path()
-                                outerSector.addArc(center: center, radius: rMid + 1.5, startAngle: .degrees(cStart), endAngle: .degrees(cEnd), clockwise: false)
-                                outerSector.addArc(center: center, radius: rOuter, startAngle: .degrees(cEnd), endAngle: .degrees(cStart), clockwise: true)
-                                outerSector.closeSubpath()
-                                let alpha = cIdx.isMultiple(of: 2) ? 0.58 : 0.40
-                                context.fill(outerSector, with: .color(baseColor.opacity(alpha)))
-                                
-                                if self.detailed && childSpan > 24 {
-                                    let midRad = (cStart + cEnd) * 0.5 * .pi / 180.0
-                                    let labelR = (rMid + rOuter) * 0.52
-                                    context.draw(
-                                        Text(child.label)
-                                            .font(.system(size: 9.5, weight: .medium))
-                                            .foregroundStyle(self.palette.pine.opacity(0.90)),
-                                        at: CGPoint(x: center.x + CGFloat(cos(midRad)) * labelR, y: center.y + CGFloat(sin(midRad)) * labelR),
-                                        anchor: .center
-                                    )
-                                }
-                            }
-                            childCursor += childSpan
-                        }
-                        
-                        cursorDeg += spanDeg
                     }
                     
-                    let coreRect = CGRect(x: center.x - rCore + 2, y: center.y - rCore + 2, width: (rCore - 2) * 2, height: (rCore - 2) * 2)
-                    context.fill(Circle().path(in: coreRect), with: .color(self.palette.card))
-                    if self.detailed {
-                        context.draw(
-                            Text("\(self.metrics.score)")
-                                .font(.system(size: 16, weight: .bold, design: .rounded).monospacedDigit())
-                                .foregroundStyle(self.palette.pine),
-                            at: center,
-                            anchor: .center
-                        )
+                    for (node, layout) in zip(col2Nodes, rects2) {
+                        context.fill(RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: layout.rect), with: .color(node.color))
+                        if self.detailed {
+                            context.draw(
+                                Text(node.label)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(self.palette.pine.opacity(0.92)),
+                                at: CGPoint(x: layout.rect.midX, y: max(layout.rect.minY - 7, 8)),
+                                anchor: .center
+                            )
+                        }
+                    }
+                    
+                    for (node, layout) in zip(col3Nodes, rects3) {
+                        context.fill(RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: layout.rect), with: .color(node.color))
+                        if self.detailed {
+                            context.draw(
+                                Text(node.label)
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundStyle(self.palette.pine.opacity(0.84)),
+                                at: CGPoint(x: layout.rect.maxX + 6, y: layout.rect.midY),
+                                anchor: .leading
+                            )
+                        }
                     }
                 }
                 .onContinuousHover { phase in
                     guard self.detailed else { return }
                     switch phase {
                         case .active(let loc):
-                            self.hoveredLabel = self.hitTestSector(loc, in: geo.size)
+                            self.hoveredCaption = self.hitTestColumn(
+                                loc,
+                                in: geo.size,
+                                col1: col1Nodes,
+                                col2: col2Nodes,
+                                col3: col3Nodes
+                            )
                         case .ended:
-                            self.hoveredLabel = nil
+                            self.hoveredCaption = nil
                     }
                 }
             }
             
             if self.detailed {
-                Text(self.hoveredLabel ?? " ")
+                Text(self.hoveredCaption ?? "时段流向 → 主导情绪 → 心境细分")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(self.palette.pine.opacity(0.75))
+                    .foregroundStyle(self.palette.pine.opacity(self.hoveredCaption == nil ? 0.48 : 0.80))
                     .frame(height: 16)
             }
         }
     }
     
     
-    private func hitTestSector(_ point: CGPoint, in size: CGSize) -> String? {
-        let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
-        let outerLimit = max(18, min(size.width, size.height) * 0.5 - (self.detailed ? 18 : 4))
-        let rCore = max(10, outerLimit * 0.30)
-        let rMid = max(rCore + 4, outerLimit * 0.64)
-        let dist = hypot(point.x - center.x, point.y - center.y)
-        guard dist >= rCore && dist <= outerLimit else { return nil }
-        
-        var deg = atan2(point.y - center.y, point.x - center.x) * 180.0 / .pi + 90.0
-        if deg < 0 { deg += 360.0 }
-        
-        let total = max(1.0, self.metrics.segments.reduce(0.0) { $0 + $1.weight })
-        var cursor = 0.0
-        for seg in self.metrics.segments {
-            let span = (seg.weight / total) * 360.0
-            if deg <= cursor + span {
-                if dist <= rMid {
-                    let pct = Int(((seg.weight / total) * 100).rounded())
-                    return "\(seg.label) · 占比 \(pct)%"
-                }
-                let childTotal = max(1.0, seg.children.reduce(0.0) { $0 + $1.value })
-                var cCursor = cursor
-                for child in seg.children {
-                    let cSpan = (child.value / childTotal) * span
-                    if deg <= cCursor + cSpan {
-                        return "\(seg.label) → \(child.label)"
-                    }
-                    cCursor += cSpan
-                }
-                return seg.label
+    private func leftTimeSlotNodes() -> [SankeyNode] {
+        let slices = self.snapshot.busyness.slices
+        var morning: Double = 0
+        var afternoon: Double = 0
+        var night: Double = 0
+        for slice in slices {
+            let weight = max(0.05, slice.intensity)
+            switch slice.index {
+                case 3..<6: morning += weight     // 06:00 - 12:00
+                case 6..<9: afternoon += weight   // 12:00 - 18:00
+                default: night += weight          // 18:00 - 06:00
             }
-            cursor += span
+        }
+        return [
+            SankeyNode(label: "晨间", weight: max(1, morning * 100), color: self.palette.mint),
+            SankeyNode(label: "午后", weight: max(1, afternoon * 100), color: self.palette.accentFill),
+            SankeyNode(label: "夜间", weight: max(1, night * 100), color: self.palette.emerald),
+        ]
+    }
+    
+    
+    private func middleMoodNodes() -> [SankeyNode] {
+        let segs = Array(self.snapshot.mood.segments.prefix(4))
+        guard !segs.isEmpty else {
+            return [
+                SankeyNode(label: "沉稳", weight: 45, color: self.palette.accentFill),
+                SankeyNode(label: "专注", weight: 35, color: self.palette.mint),
+                SankeyNode(label: "松弛", weight: 20, color: self.palette.paleMint),
+            ]
+        }
+        return segs.map { seg in
+            SankeyNode(
+                label: seg.label,
+                weight: max(1, seg.weight),
+                color: self.palette.toneColor(for: seg.tone)
+            )
+        }
+    }
+    
+    
+    private func rightSubMoodNodes() -> [SankeyNode] {
+        var collected: [SankeyNode] = []
+        for seg in self.snapshot.mood.segments {
+            let baseColor = self.palette.toneColor(for: seg.tone)
+            for child in seg.children.prefix(2) {
+                collected.append(SankeyNode(
+                    label: child.label,
+                    weight: max(1, child.value),
+                    color: baseColor.opacity(0.82)
+                ))
+            }
+        }
+        if !collected.isEmpty {
+            return Array(collected.sorted { $0.weight > $1.weight }.prefix(4))
+        }
+        return [
+            SankeyNode(label: "心流", weight: 42, color: self.palette.accentFill),
+            SankeyNode(label: "克制", weight: 33, color: self.palette.mint),
+            SankeyNode(label: "愉悦", weight: 25, color: self.palette.heat(2)),
+        ]
+    }
+    
+    
+    private func hitTestColumn(
+        _ point: CGPoint,
+        in size: CGSize,
+        col1: [SankeyNode],
+        col2: [SankeyNode],
+        col3: [SankeyNode]
+    ) -> String? {
+        let third = size.width / 3.0
+        let nodes: [SankeyNode]
+        let prefix: String
+        if point.x < third {
+            nodes = col1
+            prefix = "写作时段"
+        } else if point.x < third * 2 {
+            nodes = col2
+            prefix = "情绪维度"
+        } else {
+            nodes = col3
+            prefix = "细分状态"
+        }
+        let padY: CGFloat = 14
+        let innerH = max(34, size.height - padY * 2)
+        let laid = Self.layoutColumn(nodes: nodes, x: 0, yStart: padY, height: innerH, width: 10, gap: 6)
+        let total = max(1.0, nodes.reduce(0.0) { $0 + $1.weight })
+        for (node, layout) in zip(nodes, laid) {
+            if point.y >= layout.rect.minY - 3 && point.y <= layout.rect.maxY + 3 {
+                let pct = Int(((node.weight / total) * 100).rounded())
+                return "\(prefix) · \(node.label)（占比 \(pct)%）"
+            }
         }
         return nil
+    }
+    
+    
+    private static func layoutColumn(
+        nodes: [SankeyNode],
+        x: CGFloat,
+        yStart: CGFloat,
+        height: CGFloat,
+        width: CGFloat,
+        gap: CGFloat
+    ) -> [(rect: CGRect, color: Color, weight: Double)] {
+        let totalGap = CGFloat(max(0, nodes.count - 1)) * gap
+        let usableH = max(12, height - totalGap)
+        let minNodeH: CGFloat = nodes.isEmpty ? 0 : min(6, usableH / CGFloat(nodes.count))
+        let leftoverH = max(0, usableH - minNodeH * CGFloat(nodes.count))
+        let sumW = max(1.0, nodes.reduce(0.0) { $0 + $1.weight })
+        
+        var cursorY = yStart
+        var result: [(rect: CGRect, color: Color, weight: Double)] = []
+        for node in nodes {
+            let h = minNodeH + leftoverH * CGFloat(node.weight / sumW)
+            let rect = CGRect(x: x, y: cursorY, width: width, height: h)
+            result.append((rect, node.color, node.weight))
+            cursorY += h + gap
+        }
+        return result
+    }
+    
+    
+    private static func drawFlows(
+        context: inout GraphicsContext,
+        sources: [(rect: CGRect, color: Color, weight: Double)],
+        targets: [(rect: CGRect, color: Color, weight: Double)]
+    ) {
+        let totalTarget = max(1.0, targets.reduce(0.0) { $0 + $1.weight })
+        let totalSource = max(1.0, sources.reduce(0.0) { $0 + $1.weight })
+        var targetOffsets = targets.map { $0.rect.minY }
+        
+        for src in sources {
+            var srcOffsetY = src.rect.minY
+            for (tIdx, tgt) in targets.enumerated() {
+                let share = tgt.weight / totalTarget
+                let ribbonSrcH = src.rect.height * CGFloat(share)
+                let ribbonTgtH = tgt.rect.height * CGFloat(src.weight / totalSource)
+                
+                let sTop = srcOffsetY
+                let sBot = srcOffsetY + ribbonSrcH
+                let tTop = targetOffsets[tIdx]
+                let tBot = targetOffsets[tIdx] + ribbonTgtH
+                
+                srcOffsetY = sBot
+                targetOffsets[tIdx] = tBot
+                
+                let startX = src.rect.maxX
+                let endX = tgt.rect.minX
+                let ctrlX1 = startX + (endX - startX) * 0.45
+                let ctrlX2 = endX - (endX - startX) * 0.45
+                
+                var ribbon = Path()
+                ribbon.move(to: CGPoint(x: startX, y: sTop))
+                ribbon.addCurve(
+                    to: CGPoint(x: endX, y: tTop),
+                    control1: CGPoint(x: ctrlX1, y: sTop),
+                    control2: CGPoint(x: ctrlX2, y: tTop)
+                )
+                ribbon.addLine(to: CGPoint(x: endX, y: tBot))
+                ribbon.addCurve(
+                    to: CGPoint(x: startX, y: sBot),
+                    control1: CGPoint(x: ctrlX2, y: tBot),
+                    control2: CGPoint(x: ctrlX1, y: sBot)
+                )
+                ribbon.closeSubpath()
+                
+                context.fill(
+                    ribbon,
+                    with: .linearGradient(
+                        Gradient(colors: [
+                            src.color.opacity(0.36),
+                            tgt.color.opacity(0.28),
+                        ]),
+                        startPoint: CGPoint(x: startX, y: sTop),
+                        endPoint: CGPoint(x: endX, y: tTop)
+                    )
+                )
+            }
+        }
     }
 }
 
 
-// MARK: - Supporting Components
+// MARK: - Supporting Components (AI Predicted Actions & Xiaohongshu-Style News Cards)
 
-private struct TodoChecklistRow: View {
+private struct PredictedActionRow: View {
     
-    let item: UserReminder
+    let prediction: DocumentActionPrediction
     let palette: DashPalette
-    let onToggle: () -> Void
-    let onDelete: () -> Void
+    let isPinned: Bool
+    let canOpenDocument: Bool
+    let onOpenDocument: () -> Void
+    let onPinToCapsule: () -> Void
+    
+    @State private var isHovered = false
+    
+    
+    private var urgencyColor: Color {
+        switch self.prediction.urgency {
+            case "高": self.palette.emerald
+            case "中": self.palette.mint
+            default: self.palette.pine.opacity(0.35)
+        }
+    }
+    
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(self.urgencyColor)
+                .frame(width: 2.5, height: 28)
+                .padding(.top, 2)
+            
+            VStack(alignment: .leading, spacing: 3) {
+                Text(self.prediction.action)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(self.palette.pine.opacity(0.92))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                
+                HStack(spacing: 5) {
+                    if !self.prediction.sourceDocumentTitle.isEmpty {
+                        Text("《\(self.prediction.sourceDocumentTitle)》")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(self.palette.emerald.opacity(0.88))
+                            .lineLimit(1)
+                    }
+                    
+                    Text(self.prediction.reason)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(self.palette.pine.opacity(0.54))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if self.canOpenDocument {
+                    self.onOpenDocument()
+                }
+            }
+            
+            Button(action: self.onPinToCapsule) {
+                Image(systemName: self.isPinned ? "checkmark.circle.fill" : "pin")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(self.isPinned ? self.palette.emerald : self.palette.pine.opacity(self.isHovered ? 0.65 : 0.30))
+                    .frame(width: 22, height: 22)
+                    .background(
+                        Circle().fill(self.isHovered || self.isPinned ? self.palette.inset : Color.clear)
+                    )
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help(self.isPinned ? "已加入顶部待办" : "固定到顶部待办")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(self.isHovered ? self.palette.inset : Color.clear)
+        )
+        .onHover { hovering in
+            withAnimation(DashMotion.quick) {
+                self.isHovered = hovering
+            }
+        }
+    }
+}
+
+
+private struct NewsFeedCoverCard: View {
+    
+    let item: AIHotNewsItem
+    let coverImage: NSImage?
+    let compactRow: Bool
+    let palette: DashPalette
+    let onTap: () -> Void
     
     @State private var isHovered = false
     
     
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Button(action: self.onToggle) {
-                Image(systemName: self.item.isCompleted ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 13))
-                    .foregroundStyle(self.item.isCompleted ? self.palette.emerald : self.palette.pine.opacity(0.42))
-                    .padding(.top, 1)
-            }
-            .buttonStyle(.plain)
-            
-            Text(self.item.title)
-                .font(.system(size: 12.5))
-                .strikethrough(self.item.isCompleted)
-                .foregroundStyle(self.item.isCompleted ? self.palette.pine.opacity(0.45) : self.palette.pine.opacity(0.88))
-                .lineLimit(2)
-            
-            Spacer()
-            
-            if self.isHovered {
-                Button(action: self.onDelete) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(self.palette.pine.opacity(0.45))
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
+        Button(action: self.onTap) {
+            if self.compactRow {
+                HStack(alignment: .top, spacing: 8) {
+                    self.thumbnailView
+                        .frame(width: 64, height: 46)
+                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(self.item.title)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(self.palette.pine.opacity(0.92))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                        
+                        if !self.item.conciseMetaLabel.isEmpty {
+                            Text(self.item.conciseMetaLabel)
+                                .font(.system(size: 10, weight: .regular))
+                                .foregroundStyle(self.palette.pine.opacity(0.50))
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.plain)
+                .padding(6)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(self.isHovered ? self.palette.inset : self.palette.inset.opacity(0.45))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(self.palette.hairline, lineWidth: 0.6)
+                )
+            } else {
+                // Xiaohongshu-style miniature cover card
+                VStack(alignment: .leading, spacing: 5) {
+                    self.thumbnailView
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 68)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    
+                    Text(self.item.title)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(self.palette.pine.opacity(0.92))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    HStack(spacing: 4) {
+                        let catBadge = self.item.resolvedCategory.badgeLabel
+                        if !catBadge.isEmpty {
+                            Text(catBadge)
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(self.palette.emerald)
+                                .padding(.horizontal, 4.5)
+                                .padding(.vertical, 1)
+                                .background(self.palette.accentFill.opacity(0.12), in: Capsule())
+                        }
+                        
+                        Text(AIHotNewsService.sanitizedDisplaySource(self.item.source))
+                            .font(.system(size: 10))
+                            .foregroundStyle(self.palette.pine.opacity(0.52))
+                            .lineLimit(1)
+                        
+                        Spacer(minLength: 2)
+                        
+                        if let score = self.item.heatScore, score > 0 {
+                            Text("\(score)°")
+                                .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+                                .foregroundStyle(self.palette.emerald)
+                        }
+                    }
+                }
+                .padding(6)
+                .background(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(self.isHovered ? self.palette.inset : self.palette.inset.opacity(0.45))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(self.isHovered ? self.palette.accentFill.opacity(0.35) : self.palette.hairline, lineWidth: 0.7)
+                )
+                .scaleEffect(self.isHovered ? 1.015 : 1.0)
             }
         }
-        .padding(.vertical, 2)
+        .buttonStyle(.plain)
         .onHover { hovering in
-            self.isHovered = hovering
+            withAnimation(DashMotion.quick) {
+                self.isHovered = hovering
+            }
         }
+    }
+    
+    
+    @ViewBuilder
+    private var thumbnailView: some View {
+        ZStack {
+            if let coverImage = self.coverImage {
+                GeometryReader { geo in
+                    Image(nsImage: coverImage)
+                        .resizable()
+                        .interpolation(.medium)
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                }
+            } else {
+                let tint = self.domainTintColor
+                LinearGradient(
+                    colors: [tint.opacity(0.24), tint.opacity(0.08)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                VStack(spacing: 2) {
+                    Text(String(self.item.source.prefix(2)).uppercased())
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundStyle(tint.opacity(0.85))
+                    Text(self.item.source)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(self.palette.pine.opacity(0.48))
+                        .lineLimit(1)
+                        .padding(.horizontal, 6)
+                }
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(self.palette.hairline, lineWidth: 0.5)
+        )
+    }
+    
+    
+    private var domainTintColor: Color {
+        let hash = abs(self.item.source.unicodeScalars.reduce(0) { $0 &* 31 &+ Int($1.value) })
+        let hues: [Color] = [
+            self.palette.accentFill,
+            self.palette.mint,
+            Color(red: 0.86, green: 0.48, blue: 0.34),
+            Color(red: 0.44, green: 0.56, blue: 0.88),
+            Color(red: 0.68, green: 0.44, blue: 0.84),
+        ]
+        return hues[hash % hues.count]
     }
 }
 

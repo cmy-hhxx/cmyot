@@ -256,59 +256,6 @@ private struct NavigationBarTrailingControls: View {
 }
 
 
-/// The tab bar of a pane, listing the documents the pane shows.
-struct NavigationBar: View {
-    
-    @State var outlineNavigator: OutlineNavigator
-    var splitState: SplitState
-    @State var tabs: PaneTabState
-    
-    
-    var body: some View {
-        
-        HStack(alignment: .center, spacing: 2) {
-            PaneTabStripView(state: self.tabs)
-                .frame(maxWidth: .infinity)
-                .frame(height: 24)
-            
-            if self.outlineNavigator.items?.isEmpty == false {
-                Divider()
-                    .frame(height: 14)
-                    .padding(.horizontal, 4)
-                
-                OutlineNavigationView(navigator: $outlineNavigator)
-            }
-            
-            if self.tabs.canClosePane {
-                self.closePaneButton
-            }
-        }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .padding(.horizontal, isLiquidGlass ? 6 : 4)
-        .frame(height: isLiquidGlass ? 30 : 28)
-        .background(.windowBackground)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor))
-                .frame(height: 1 / max(NSScreen.main?.backingScaleFactor ?? 2, 1))
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(String(localized: "Navigation Bar", table: "Document", comment: "accessibility label"))
-    }
-    
-    
-    // MARK: Private Views
-    
-    private var closePaneButton: some View {
-        
-        ClosePaneAnimatedButton(action: self.tabs.onClosePane)
-            .frame(width: 22, height: 24, alignment: .center)
-            .help(String(localized: "Close split editor", table: "Document", comment: "tooltip for button"))
-    }
-}
-
-
 /// Close-pane button: a quarter turn and a soft red fill on hover, matching the tab close buttons.
 private struct ClosePaneAnimatedButton: View {
     
@@ -345,50 +292,26 @@ private struct OutlineNavigationView: View {
     
     @Binding var navigator: OutlineNavigator
     
-    @State private var isLongExtraction = false
-    @State private var extractionDelayTask: Task<Void, any Error>?
-    
     
     var body: some View {
         
         HStack {
-            if let items = self.navigator.items {
-                if !items.isEmpty {
-                    HStack(spacing: 0) {
-                        if self.navigator.isVerticalOrientation {
-                            self.nextButton(systemImage: "chevron.left")
-                            self.previousButton(systemImage: "chevron.right")
-                        } else {
-                            self.previousButton(systemImage: "chevron.up")
-                            self.nextButton(systemImage: "chevron.down")
-                        }
+            if let items = self.navigator.items, !items.isEmpty {
+                HStack(spacing: 0) {
+                    if self.navigator.isVerticalOrientation {
+                        self.nextButton(systemImage: "chevron.left")
+                        self.previousButton(systemImage: "chevron.right")
+                    } else {
+                        self.previousButton(systemImage: "chevron.up")
+                        self.nextButton(systemImage: "chevron.down")
                     }
-                    
-                    // Use AppKit-based picker to open programmatically (2024-05, macOS 14).
-                    OutlinePicker(items: items, selection: $navigator.selection, isPresented: $navigator.isOutlinePickerPresented) {
-                        self.navigator.textView?.select(range: $0.range)
-                    }
-                    .accessibilityLabel(String(localized: "Outline Menu", table: "Document", comment: "accessibility label"))
                 }
-            } else if self.isLongExtraction {
-                Text("Extracting Outline…", tableName: "Document")
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .onDisappear {
-            self.extractionDelayTask?.cancel()
-        }
-        .onChange(of: self.navigator.items, initial: true) { _, newValue in
-            // show message only when parse takes more than 1 second.
-            self.extractionDelayTask?.cancel()
-            if newValue == nil {
-                self.extractionDelayTask = Task {
-                    try await Task.sleep(for: .seconds(1))
-                    self.isLongExtraction = true
+                
+                // Use AppKit-based picker to open programmatically (2024-05, macOS 14).
+                OutlinePicker(items: items, selection: $navigator.selection, isPresented: $navigator.isOutlinePickerPresented) {
+                    self.navigator.textView?.select(range: $0.range)
                 }
-            } else {
-                self.extractionDelayTask = nil
-                self.isLongExtraction = false
+                .accessibilityLabel(String(localized: "Outline Menu", table: "Document", comment: "accessibility label"))
             }
         }
     }
@@ -425,53 +348,5 @@ private struct OutlineNavigationView: View {
         .labelStyle(.iconOnly)
         .disabled(!self.navigator.canSelectNextItem)
         .help(String(localized: "Jump to next outline item", table: "Document", comment: "tooltip for button"))
-    }
-}
-
-
-// MARK: - Preview
-
-#Preview {
-    let navigator = OutlineNavigator()
-    navigator.items = [
-        OutlineItem(title: "    Heading 1", range: .notFound),
-        OutlineItem(title: "Heading 2", range: .notFound),
-    ]
-    
-    return NavigationBar(outlineNavigator: navigator, splitState: SplitState(canClose: true), tabs: PaneTabState())
-        .frame(width: 300)
-}
-
-
-/// A plain button style with a subtle rounded hover/pressed highlight.
-struct HoverPlainButtonStyle: ButtonStyle {
-    
-    var cornerRadius: CGFloat = 6
-    
-    
-    func makeBody(configuration: Configuration) -> some View {
-        
-        HoverPlainButtonBody(configuration: configuration, cornerRadius: self.cornerRadius)
-    }
-    
-    
-    private struct HoverPlainButtonBody: View {
-        
-        var configuration: ButtonStyleConfiguration
-        var cornerRadius: CGFloat
-        
-        @State private var isHovered = false
-        
-        
-        var body: some View {
-            
-            self.configuration.label
-                .background(
-                    RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
-                        .fill(Color.primary.opacity(self.configuration.isPressed ? 0.14 : (self.isHovered ? 0.07 : 0)))
-                )
-                .onHover { self.isHovered = $0 }
-                .animation(.easeOut(duration: 0.12), value: self.isHovered)
-        }
     }
 }

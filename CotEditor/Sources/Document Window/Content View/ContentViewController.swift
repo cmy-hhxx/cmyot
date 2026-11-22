@@ -210,33 +210,6 @@ enum WorkspaceCenterIcons {
             size: size
         )
     }
-    
-    
-    /// Apple HIG icon for 右侧检查器 (`sidebar.trailing`).
-    @MainActor
-    static func inspectorIcon(size: NSSize = defaultSize) -> NSImage {
-        self.appleToolbarSymbol(
-            "sidebar.trailing",
-            fallback: "sidebar.right",
-            pointSize: 14.5,
-            weight: .medium,
-            isTemplate: true,
-            size: size
-        )
-    }
-    
-    
-    /// Apple HIG icon for 更多 (`ellipsis.circle`).
-    @MainActor
-    static func moreIcon(size: NSSize = defaultSize) -> NSImage {
-        self.appleToolbarSymbol(
-            "ellipsis.circle",
-            pointSize: 14.5,
-            weight: .medium,
-            isTemplate: true,
-            size: size
-        )
-    }
 }
 
 

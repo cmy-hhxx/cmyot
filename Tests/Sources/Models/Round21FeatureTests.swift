@@ -162,9 +162,9 @@ struct Round21FeatureTests {
     }
     
     
-    // MARK: 4. Danmaku Strict Label Deduplication & Animated Mascots
+    // MARK: 4. Danmaku Strict Label Deduplication
     
-    @Test func danmakuTagsStrictlyDeduplicateAndMascotsRender() {
+    @Test func danmakuTagsStrictlyDeduplicate() {
         
         let raw = [
             UserPersonalityTag(id: "1", label: "  夜深灵感  ", explanation: "a", tone: .calm),
@@ -176,10 +176,6 @@ struct Round21FeatureTests {
         let deduped = UserPersonalityAnalyzer.deduplicatedTags(raw)
         #expect(deduped.count == 3)
         #expect(deduped.map(\.label) == ["夜深灵感", "ReactPro", "条理清晰"])
-        
-        // Auto-mix deterministically distributes across Claude Chibi / DeepSeek Pixel Whale / Pixel Usagi
-        let concrete = Set(["a", "b", "c", "d", "e", "f"].map { TodoMascotKind.autoMix.resolvedKind(for: $0) })
-        #expect(concrete.contains(.claudeChibi) || concrete.contains(.deepseekFish) || concrete.contains(.usagiPixel))
     }
     
     

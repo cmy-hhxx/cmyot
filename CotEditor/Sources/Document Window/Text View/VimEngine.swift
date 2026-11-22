@@ -612,7 +612,12 @@ final class VimEngine {
                 if self.guardEditable() {
                     let string = textView.string as NSString
                     let loc = textView.selectedRange().location
-                    let next = (loc < string.length && string.character(at: loc) != 10) ? loc + 1 : loc
+                    let next: Int
+                    if let token = self.inlineImageToken(containing: loc, in: string) {
+                        next = min(string.length, token.range.upperBound)
+                    } else {
+                        next = (loc < string.length && string.character(at: loc) != 10) ? loc + 1 : loc
+                    }
                     self.setCursor(next)
                     self.enter(mode: .insert)
                 }
@@ -985,24 +990,54 @@ final class VimEngine {
                 for _ in 0..<count {
                     guard location > 0 else { break }
                     let prevIndex = min(location - 1, max(0, string.length - 1))
-                    location = string.rangeOfComposedCharacterSequence(at: prevIndex).location
+                    if let token = self.inlineImageToken(containing: prevIndex, in: string) {
+                        location = token.range.location
+                    } else {
+                        location = string.rangeOfComposedCharacterSequence(at: prevIndex).location
+                    }
                 }
             case .right:
                 self.resetPreferredColumn()
                 for _ in 0..<count {
                     guard location < string.length else { break }
-                    let seq = string.rangeOfComposedCharacterSequence(at: location)
-                    location = min(string.length, NSMaxRange(seq))
+                    if let token = self.inlineImageToken(containing: location, in: string) {
+                        let afterToken = min(string.length, token.range.upperBound)
+                        if afterToken < string.length,
+                           string.character(at: afterToken) != 10,
+                           string.character(at: afterToken) != 13
+                        {
+                            location = afterToken
+                        } else {
+                            break
+                        }
+                    } else {
+                        let seq = string.rangeOfComposedCharacterSequence(at: location)
+                        let nextLoc = min(string.length, NSMaxRange(seq))
+                        if nextLoc < string.length,
+                           let nextToken = self.inlineImageToken(containing: nextLoc, in: string),
+                           nextLoc > nextToken.range.location
+                        {
+                            location = nextToken.range.location
+                        } else {
+                            location = nextLoc
+                        }
+                    }
                 }
             case .down, .lineDown:
                 location = self.interactiveVerticalLocation(from: location, direction: count)
                 if location < string.length {
-                    location = string.rangeOfComposedCharacterSequence(at: location).location
+                    location = self.normalizeLocationForNormalMode(
+                        string.rangeOfComposedCharacterSequence(at: location).location,
+                        in: string
+                    )
                 }
             case .up, .lineUp:
                 location = self.interactiveVerticalLocation(from: location, direction: -count)
                 if location < string.length {
-                    location = string.rangeOfComposedCharacterSequence(at: location).location
+                    location = self.normalizeLocationForNormalMode(
+                        string.rangeOfComposedCharacterSequence(at: location).location,
+                        in: string
+                    )
                 }
             case .wordForward:
                 self.resetPreferredColumn()
@@ -1041,7 +1076,10 @@ final class VimEngine {
                     }
                     location = max(range.location, end - 1)
                     if location < string.length {
-                        location = string.rangeOfComposedCharacterSequence(at: location).location
+                        location = self.normalizeLocationForNormalMode(
+                            string.rangeOfComposedCharacterSequence(at: location).location,
+                            in: string
+                        )
                     }
                 } else {
                     location = 0
@@ -2692,11 +2730,12 @@ final class VimEngine {
         defer { editorTextView?.isPerformingVimCursorMove = false }
         
         textView.setSelectedRange(targetRange)
-        self.scrollLocationToVisible(clamped, in: textView)
+        let settled = textView.selectedRange().location
+        self.scrollLocationToVisible(settled, in: textView)
         
         if let editorTextView,
            editorTextView.funEffects.ownsVimCursorDrawing,
-           let newRect = editorTextView.vimCursorRect(at: clamped)
+           let newRect = editorTextView.vimCursorRect(at: settled)
         {
             editorTextView.syncNativeCaretVisibility()
             editorTextView.funEffects.animateVimCursorTransition(
@@ -2745,9 +2784,38 @@ final class VimEngine {
     }
     
     
+    private func inlineImageTokens(in range: NSRange, of string: NSString) -> [(range: NSRange, identifier: String)] {
+        
+        guard range.length > 0, range.location >= 0, NSMaxRange(range) <= string.length else { return [] }
+        let slice = string.substring(with: range)
+        guard slice.contains("⟦🖼"), slice.contains("⟧") else { return [] }
+        return PlainTextInlineImageStore.shared.findTokens(in: string, range: range)
+    }
+    
+    
+    private func inlineImageToken(containing location: Int, in string: NSString) -> (range: NSRange, identifier: String)? {
+        
+        guard location >= 0, location < string.length else { return nil }
+        let lineRange = string.lineRange(for: NSRange(location: location, length: 0))
+        return self.inlineImageTokens(in: lineRange, of: string).first {
+            NSLocationInRange(location, $0.range)
+        }
+    }
+    
+    
+    private func normalizeLocationForNormalMode(_ location: Int, in string: NSString) -> Int {
+        
+        guard location >= 0, location < string.length else { return max(0, min(location, string.length)) }
+        if let token = self.inlineImageToken(containing: location, in: string) {
+            return token.range.location
+        }
+        return location
+    }
+    
+    
     /// Visual-line-aware vertical movement for interactive `j` / `k` with sticky horizontal goal
     /// (`preferredVisualX` + `preferredColumn`), so moving across blank lines, shorter lines,
-    /// soft-wrapped lines, or mixed CJK/ASCII lines stays smoothly aligned instead of snapping to column 0.
+    /// inline image lines, soft-wrapped lines, or mixed CJK/ASCII lines stays smoothly aligned.
     private func interactiveVerticalLocation(from location: Int, direction: Int) -> Int {
         
         guard let textView else { return location }
@@ -2806,28 +2874,47 @@ final class VimEngine {
                             }
                             break
                         }
-                        curLineRect = layoutManager.lineFragmentRect(forGlyphAt: nextGlyph, effectiveRange: &curGlyphRange)
+                        var nextRange = NSRange(location: 0, length: 0)
+                        let nextRect = layoutManager.lineFragmentRect(forGlyphAt: nextGlyph, effectiveRange: &nextRange)
+                        guard nextRange.length > 0, nextRange.location != curGlyphRange.location else { break }
+                        curGlyphRange = nextRange
+                        curLineRect = nextRect
                         moved += 1
                     } else {
                         if onExtraLine {
                             onExtraLine = false
-                            curLineRect = layoutManager.lineFragmentRect(forGlyphAt: totalGlyphs - 1, effectiveRange: &curGlyphRange)
+                            var prevRange = NSRange(location: 0, length: 0)
+                            curLineRect = layoutManager.lineFragmentRect(forGlyphAt: totalGlyphs - 1, effectiveRange: &prevRange)
+                            curGlyphRange = prevRange
                             moved += 1
                         } else {
-                            let prevGlyph = curGlyphRange.location - 1
+                            var prevGlyph = curGlyphRange.location - 1
+                            // Skip any trailing `.null` glyphs (e.g. interior characters of `⟦🖼...⟧` inline image tokens)
+                            while prevGlyph > 0, layoutManager.propertyForGlyph(at: prevGlyph) == .null {
+                                prevGlyph -= 1
+                            }
                             guard prevGlyph >= 0 else { break }
-                            curLineRect = layoutManager.lineFragmentRect(forGlyphAt: prevGlyph, effectiveRange: &curGlyphRange)
+                            var prevRange = NSRange(location: 0, length: 0)
+                            let prevRect = layoutManager.lineFragmentRect(forGlyphAt: prevGlyph, effectiveRange: &prevRange)
+                            guard prevRange.length > 0, prevRange.location != curGlyphRange.location else { break }
+                            curGlyphRange = prevRange
+                            curLineRect = prevRect
                             moved += 1
                         }
                     }
                 }
                 
-                guard moved > 0 else { return location }
+                if moved == 0 {
+                    return self.verticalLocation(from: location, direction: direction)
+                }
                 if onExtraLine {
                     return string.length
                 }
                 
                 let targetCharRange = layoutManager.characterRange(forGlyphRange: curGlyphRange, actualGlyphRange: nil)
+                if targetCharRange.location == NSNotFound || targetCharRange.length == 0 {
+                    return self.verticalLocation(from: location, direction: direction)
+                }
                 var contentEnd = NSMaxRange(targetCharRange)
                 while contentEnd > targetCharRange.location {
                     let ch = string.character(at: contentEnd - 1)
@@ -2841,22 +2928,48 @@ final class VimEngine {
                     return targetCharRange.location
                 }
                 
-                let goalX = self.preferredVisualX ?? curLineRect.minX
-                if goalX == .greatestFiniteMagnitude {
-                    return string.rangeOfComposedCharacterSequence(at: contentEnd - 1).location
+                // If the target visual line is dedicated to an inline image token (optional whitespace around it),
+                // land directly on the token's leading boundary so Normal-mode cursor sits cleanly on the image line.
+                let lineTokens = self.inlineImageTokens(
+                    in: NSRange(location: targetCharRange.location, length: contentEnd - targetCharRange.location),
+                    of: string
+                )
+                if lineTokens.count == 1, let onlyToken = lineTokens.first {
+                    let prefixRange = NSRange(location: targetCharRange.location, length: onlyToken.range.location - targetCharRange.location)
+                    let suffixRange = NSRange(location: onlyToken.range.upperBound, length: contentEnd - onlyToken.range.upperBound)
+                    let prefixTrim = prefixRange.length > 0 ? string.substring(with: prefixRange).trimmingCharacters(in: .whitespaces) : ""
+                    let suffixTrim = suffixRange.length > 0 ? string.substring(with: suffixRange).trimmingCharacters(in: .whitespaces) : ""
+                    if prefixTrim.isEmpty && suffixTrim.isEmpty {
+                        return onlyToken.range.location
+                    }
                 }
                 
+                let goalX = self.preferredVisualX ?? curLineRect.minX
+                if goalX == .greatestFiniteMagnitude {
+                    return self.normalizeLocationForNormalMode(
+                        string.rangeOfComposedCharacterSequence(at: contentEnd - 1).location,
+                        in: string
+                    )
+                }
+                
+                // Use `lineFragmentUsedRect.midY` (not `curLineRect.midY`) because inline image lines expand
+                // `lineFragmentRect.height` downward for the image card while glyphs live in the top used rect!
+                let usedRect = layoutManager.lineFragmentUsedRect(forGlyphAt: curGlyphRange.location, effectiveRange: nil)
+                let probeY = usedRect.height > 0 ? usedRect.midY : (curLineRect.minY + min(curLineRect.height * 0.5, 10))
                 let finiteMaxX = (curLineRect.maxX.isFinite && curLineRect.maxX < 1_000_000)
                     ? curLineRect.maxX - 0.5
                     : max(curLineRect.minX, goalX)
                 let probeX = max(curLineRect.minX, min(goalX, finiteMaxX))
-                let probePoint = CGPoint(x: probeX, y: curLineRect.midY)
+                let probePoint = CGPoint(x: probeX, y: probeY)
                 let rawHitGlyph = layoutManager.glyphIndex(for: probePoint, in: textContainer, fractionOfDistanceThroughGlyph: nil)
                 let clampedGlyph = max(curGlyphRange.location, min(rawHitGlyph, max(curGlyphRange.location, NSMaxRange(curGlyphRange) - 1)))
                 let rawChar = layoutManager.characterIndexForGlyph(at: clampedGlyph)
                 let maxChar = max(targetCharRange.location, contentEnd - 1)
                 let clampedChar = max(targetCharRange.location, min(rawChar, maxChar))
-                return string.rangeOfComposedCharacterSequence(at: clampedChar).location
+                return self.normalizeLocationForNormalMode(
+                    string.rangeOfComposedCharacterSequence(at: clampedChar).location,
+                    in: string
+                )
             }
         }
         
@@ -2904,7 +3017,7 @@ final class VimEngine {
         }
         let maxOffset = max(0, contentLength - 1)
         let clampedOffset = min(column, maxOffset)
-        return target.location + clampedOffset
+        return self.normalizeLocationForNormalMode(target.location + clampedOffset, in: string)
     }
     
     
@@ -3234,8 +3347,13 @@ final class VimEngine {
     private func characterRange(count: Int) -> NSRange {
         
         guard let textView else { return NSRange(location: 0, length: 0) }
+        let string = textView.string as NSString
         let location = textView.selectedRange().location
-        let length = (textView.string as NSString).length
+        let length = string.length
+        guard location < length else { return NSRange(location: location, length: 0) }
+        if count == 1, let token = self.inlineImageToken(containing: location, in: string) {
+            return token.range
+        }
         return NSRange(location: location, length: min(count, max(0, length - location)))
     }
     

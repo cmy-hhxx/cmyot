@@ -160,7 +160,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     
     static var effectiveConfiguration: AIConfiguration {
         
-        let base = AIConfiguration.current
+        let base = AIBotStore.shared.resolvedConfiguration(for: .ghost)
         let routing = Self.shared.resolveModelRouting(baseConfig: base)
         var config = base
         if !routing.effectiveModel.isEmpty {
@@ -645,7 +645,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
             return
         }
         
-        let baseConfig = AIConfiguration.current
+        let baseConfig = AIBotStore.shared.resolvedConfiguration(for: .ghost)
         let routing = self.resolveModelRouting(baseConfig: baseConfig)
         guard !routing.effectiveModel.isEmpty, !routing.isReasoningBlocked else { return }
         

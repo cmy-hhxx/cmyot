@@ -241,6 +241,27 @@ private struct UserAvatarToolbarBadgeLabel: View {
     }
     
     
+    /// Builds a 9-slice stretchable alpha mask so `NSVisualEffectView`'s backdrop layer and
+    /// borderless `NSPanel` shadow clip cleanly to exact rounded corners (zero square corner artifacts).
+    static func makeRoundedMaskImage(cornerRadius: CGFloat) -> NSImage {
+        let side = cornerRadius * 2 + 2
+        let size = NSSize(width: side, height: side)
+        let image = NSImage(size: size, flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(
+            top: cornerRadius,
+            left: cornerRadius,
+            bottom: cornerRadius,
+            right: cornerRadius
+        )
+        image.resizingMode = .stretch
+        return image
+    }
+    
+    
     private func showFloatingPanel() {
         
         guard let hostWindow = self.window else { return }
@@ -253,18 +274,22 @@ private struct UserAvatarToolbarBadgeLabel: View {
             }
         )
         
+        let cornerRadius: CGFloat = 16
         let vfx = NSVisualEffectView()
         vfx.material = .popover
         vfx.blendingMode = .behindWindow
         vfx.state = .active
+        vfx.maskImage = Self.makeRoundedMaskImage(cornerRadius: cornerRadius)
         vfx.wantsLayer = true
-        vfx.layer?.cornerRadius = 16
+        vfx.layer?.cornerRadius = cornerRadius
         vfx.layer?.masksToBounds = true
+        vfx.layer?.backgroundColor = NSColor.clear.cgColor
         vfx.layer?.borderWidth = 0.75
-        vfx.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+        vfx.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.32).cgColor
         
         let contentView = AnyView(
             rootView
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] newHeight in
                     Task { @MainActor in
                         self?.repositionFloatingPanel(preferredHeight: newHeight)
@@ -276,6 +301,8 @@ private struct UserAvatarToolbarBadgeLabel: View {
         hosting.view.translatesAutoresizingMaskIntoConstraints = false
         hosting.view.wantsLayer = true
         hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
+        hosting.view.layer?.cornerRadius = cornerRadius
+        hosting.view.layer?.masksToBounds = true
         vfx.addSubview(hosting.view)
         NSLayoutConstraint.activate([
             hosting.view.leadingAnchor.constraint(equalTo: vfx.leadingAnchor),
@@ -302,6 +329,7 @@ private struct UserAvatarToolbarBadgeLabel: View {
         panel.isOpaque = false
         panel.hasShadow = true
         panel.contentView = vfx
+        panel.invalidateShadow()
         panel.alphaValue = 0
         
         hostWindow.addChildWindow(panel, ordered: .above)
@@ -333,6 +361,7 @@ private struct UserAvatarToolbarBadgeLabel: View {
             visibleScreenFrame: screenFrame
         )
         panel.setFrame(updated, display: true)
+        panel.invalidateShadow()
     }
     
     
@@ -407,6 +436,14 @@ enum AvatarColorExtractor {
         let primary: Color
         let secondary: Color
         let tertiary: Color
+        let accent: Color
+        
+        init(primary: Color, secondary: Color, tertiary: Color, accent: Color? = nil) {
+            self.primary = primary
+            self.secondary = secondary
+            self.tertiary = tertiary
+            self.accent = accent ?? primary
+        }
     }
     
     private static var cache: [String: Palette] = [:]
@@ -414,15 +451,26 @@ enum AvatarColorExtractor {
     private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     
     
+    private static func cacheSignature(for profile: UserProfile, image: NSImage?) -> String {
+        if let data = profile.avatarData, !data.isEmpty {
+            let head = data.prefix(8).map { String(format: "%02x", $0) }.joined()
+            let tail = data.suffix(8).map { String(format: "%02x", $0) }.joined()
+            return "\(profile.id)|\(data.count)|\(head)|\(tail)|\(profile.avatarColorHex)"
+        }
+        let imgPtr = image.map { String(UInt(bitPattern: ObjectIdentifier($0))) } ?? "nil"
+        return "\(profile.id)|\(imgPtr)|\(profile.avatarColorHex)"
+    }
+    
+    
     /// Builds a cached Apple Music–style vibrance-boosted, pre-blurred ambient mesh directly from
     /// the user's real avatar artwork so the hero card inherits its organic spatial color layout.
     static func blurredAmbientArtwork(for profile: UserProfile, image: NSImage?) -> NSImage? {
         guard let image else { return nil }
-        let key = "\(profile.id)|\(profile.avatarData?.count ?? 0)"
+        let key = Self.cacheSignature(for: profile, image: image)
         if let cached = self.blurredArtworkCache[key] {
             return cached
         }
-        guard let smallBitmap = Self.downsample(image, side: 72),
+        guard let smallBitmap = Self.downsample(image, side: 72, innerCropFraction: 0.14),
               let cg = smallBitmap.cgImage
         else { return nil }
         
@@ -431,8 +479,8 @@ enum AvatarColorExtractor {
         
         if let colorFilter = CIFilter(name: "CIColorControls") {
             colorFilter.setValue(current, forKey: kCIInputImageKey)
-            colorFilter.setValue(1.42, forKey: kCIInputSaturationKey)
-            colorFilter.setValue(1.06, forKey: kCIInputContrastKey)
+            colorFilter.setValue(1.52, forKey: kCIInputSaturationKey)
+            colorFilter.setValue(1.08, forKey: kCIInputContrastKey)
             colorFilter.setValue(0.02, forKey: kCIInputBrightnessKey)
             if let adjusted = colorFilter.outputImage {
                 current = adjusted
@@ -441,7 +489,7 @@ enum AvatarColorExtractor {
         
         if let blurFilter = CIFilter(name: "CIGaussianBlur") {
             blurFilter.setValue(current.clampedToExtent(), forKey: kCIInputImageKey)
-            blurFilter.setValue(16.0, forKey: kCIInputRadiusKey)
+            blurFilter.setValue(15.0, forKey: kCIInputRadiusKey)
             if let blurred = blurFilter.outputImage?.cropped(to: input.extent) {
                 current = blurred
             }
@@ -457,7 +505,7 @@ enum AvatarColorExtractor {
     }
     
     
-    private static func downsample(_ image: NSImage, side: Int) -> NSBitmapImageRep? {
+    private static func downsample(_ image: NSImage, side: Int, innerCropFraction: CGFloat = 0) -> NSBitmapImageRep? {
         guard let rep = NSBitmapImageRep(
             bitmapDataPlanes: nil,
             pixelsWide: side,
@@ -466,16 +514,30 @@ enum AvatarColorExtractor {
             samplesPerPixel: 4,
             hasAlpha: true,
             isPlanar: false,
-            colorSpaceName: .deviceRGB,
+            colorSpaceName: .calibratedRGB,
             bytesPerRow: 0,
             bitsPerPixel: 0
         ) else { return nil }
         let target = NSSize(width: side, height: side)
         rep.size = target
+        let srcSize = image.size
+        let srcRect: NSRect
+        if innerCropFraction > 0, srcSize.width > 4, srcSize.height > 4 {
+            let insetX = srcSize.width * innerCropFraction
+            let insetY = srcSize.height * innerCropFraction
+            srcRect = NSRect(
+                x: insetX,
+                y: insetY,
+                width: max(1, srcSize.width - insetX * 2),
+                height: max(1, srcSize.height - insetY * 2)
+            )
+        } else {
+            srcRect = .zero
+        }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
         NSGraphicsContext.current?.imageInterpolation = .medium
-        image.draw(in: NSRect(origin: .zero, size: target), from: .zero, operation: .copy, fraction: 1.0)
+        image.draw(in: NSRect(origin: .zero, size: target), from: srcRect, operation: .copy, fraction: 1.0)
         NSGraphicsContext.restoreGraphicsState()
         return rep
     }
@@ -483,7 +545,7 @@ enum AvatarColorExtractor {
     
     static func extractPalette(for profile: UserProfile, image: NSImage?) -> Palette {
         
-        let key = "\(profile.id)|\(profile.avatarData?.count ?? 0)|\(profile.avatarColorHex)"
+        let key = Self.cacheSignature(for: profile, image: image)
         if let cached = self.cache[key] {
             return cached
         }
@@ -492,11 +554,12 @@ enum AvatarColorExtractor {
         let fallback = Palette(
             primary: self.softAtmosphericColor(from: fallbackBase, hueOffset: 0, saturationScale: 0.9),
             secondary: self.softAtmosphericColor(from: fallbackBase, hueOffset: 0.072, saturationScale: 0.85),
-            tertiary: self.softAtmosphericColor(from: fallbackBase, hueOffset: 0.161, saturationScale: 0.80)
+            tertiary: self.softAtmosphericColor(from: fallbackBase, hueOffset: 0.161, saturationScale: 0.80),
+            accent: self.vividAccentColor(from: fallbackBase)
         )
         
         guard let image,
-              let bitmap = Self.downsample24x24(image)
+              let bitmap = Self.downsample(image, side: 32)
         else {
             self.cache[key] = fallback
             return fallback
@@ -509,53 +572,85 @@ enum AvatarColorExtractor {
             var weightSum: Double = 0
         }
         
-        var buckets = Array(repeating: Bucket(), count: 12)
-        let center = 11.5
-        let twoSigmaSq = 2.0 * 7.5 * 7.5
+        // 24 finer hue buckets (15° each); strictly skip achromatic white/gray/black pixels so
+        // neutral backgrounds (which have hue == 0) never pollute the Red bucket!
+        let bucketCount = 24
+        var chromaticBuckets = Array(repeating: Bucket(), count: bucketCount)
+        var fallbackBucket = Bucket()
+        let center = 15.5
+        let twoSigmaSq = 2.0 * 11.5 * 11.5
         
-        for y in 0..<24 {
-            for x in 0..<24 {
+        for y in 0..<32 {
+            for x in 0..<32 {
                 guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
-                if color.alphaComponent < 0.25 { continue }
+                if color.alphaComponent < 0.35 { continue }
                 
                 var hue: CGFloat = 0, sat: CGFloat = 0, bri: CGFloat = 0, alpha: CGFloat = 0
                 color.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alpha)
                 
-                // Gaussian center-weighting avoids corner backgrounds overpowering the portrait mood
                 let dx = Double(x) - center
                 let dy = Double(y) - center
-                let gaussian = exp(-(dx * dx + dy * dy) / twoSigmaSq)
-                let lumaWeight: Double = (bri < 0.10 || bri > 0.94) ? 0.22 : 1.0
-                let chromaWeight = (0.14 + Double(sat) * 1.15) * lumaWeight * gaussian
-                let idx = min(11, max(0, Int(hue * 12.0)))
+                let gaussian = 0.45 + 0.55 * exp(-(dx * dx + dy * dy) / twoSigmaSq)
                 
-                buckets[idx].rSum += Double(color.redComponent) * chromaWeight
-                buckets[idx].gSum += Double(color.greenComponent) * chromaWeight
-                buckets[idx].bSum += Double(color.blueComponent) * chromaWeight
-                buckets[idx].weightSum += chromaWeight
+                fallbackBucket.rSum += Double(color.redComponent) * gaussian
+                fallbackBucket.gSum += Double(color.greenComponent) * gaussian
+                fallbackBucket.bSum += Double(color.blueComponent) * gaussian
+                fallbackBucket.weightSum += gaussian
+                
+                // Ignore near-white, near-black, and neutral gray pixels from hue voting
+                guard sat >= 0.14, bri >= 0.12, !(bri > 0.94 && sat < 0.20) else { continue }
+                
+                // Favor rich mid-to-bright chromatic accents (Apple Music artwork style)
+                let midLumaBoost = 1.0 - abs(Double(bri) - 0.58) * 0.65
+                let chromaWeight = pow(Double(sat), 1.65) * max(0.35, midLumaBoost) * gaussian
+                let idx = min(bucketCount - 1, max(0, Int(hue * CGFloat(bucketCount))))
+                
+                chromaticBuckets[idx].rSum += Double(color.redComponent) * chromaWeight
+                chromaticBuckets[idx].gSum += Double(color.greenComponent) * chromaWeight
+                chromaticBuckets[idx].bSum += Double(color.blueComponent) * chromaWeight
+                chromaticBuckets[idx].weightSum += chromaWeight
             }
         }
         
-        let ranked = buckets.enumerated()
-            .filter { $0.element.weightSum > 0 }
+        let ranked = chromaticBuckets.enumerated()
+            .filter { $0.element.weightSum > 0.01 }
             .sorted { $0.element.weightSum > $1.element.weightSum }
         
-        guard let top = ranked.first else {
+        let primaryNS: NSColor
+        if let top = ranked.first {
+            // Merge immediate neighbor buckets (+/- 15°) for cleaner hue centroid
+            let prevIdx = (top.offset - 1 + bucketCount) % bucketCount
+            let nextIdx = (top.offset + 1) % bucketCount
+            let combinedWeight = top.element.weightSum
+                + chromaticBuckets[prevIdx].weightSum * 0.45
+                + chromaticBuckets[nextIdx].weightSum * 0.45
+            let r = (top.element.rSum + chromaticBuckets[prevIdx].rSum * 0.45 + chromaticBuckets[nextIdx].rSum * 0.45) / combinedWeight
+            let g = (top.element.gSum + chromaticBuckets[prevIdx].gSum * 0.45 + chromaticBuckets[nextIdx].gSum * 0.45) / combinedWeight
+            let b = (top.element.bSum + chromaticBuckets[prevIdx].bSum * 0.45 + chromaticBuckets[nextIdx].bSum * 0.45) / combinedWeight
+            primaryNS = NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
+        } else if fallbackBucket.weightSum > 0 {
+            // Monochrome / near-black / near-white avatar: preserve cool slate harmony instead of inventing red
+            let r = fallbackBucket.rSum / fallbackBucket.weightSum
+            let g = fallbackBucket.gSum / fallbackBucket.weightSum
+            let b = fallbackBucket.bSum / fallbackBucket.weightSum
+            let avg = NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
+            var h: CGFloat = 0, s: CGFloat = 0, br: CGFloat = 0, a: CGFloat = 0
+            avg.getHue(&h, saturation: &s, brightness: &br, alpha: &a)
+            primaryNS = (s < 0.08)
+                ? NSColor(hue: 0.60, saturation: 0.26, brightness: max(0.62, br), alpha: 1)
+                : avg
+        } else {
             self.cache[key] = fallback
             return fallback
         }
         
-        let primaryNS = NSColor(
-            srgbRed: top.element.rSum / top.element.weightSum,
-            green: top.element.gSum / top.element.weightSum,
-            blue: top.element.bSum / top.element.weightSum,
-            alpha: 1
-        )
-        let primary = Self.softAtmosphericColor(from: primaryNS, hueOffset: 0, saturationScale: 0.92)
+        let primary = Self.softAtmosphericColor(from: primaryNS, hueOffset: 0, saturationScale: 0.96)
+        let accent = Self.vividAccentColor(from: primaryNS)
         
+        let topOffset = ranked.first?.offset ?? 0
         let second = ranked.first { candidate in
-            let dist = min(abs(candidate.offset - top.offset), 12 - abs(candidate.offset - top.offset))
-            return dist >= 2
+            let dist = min(abs(candidate.offset - topOffset), bucketCount - abs(candidate.offset - topOffset))
+            return dist >= 3
         }
         let secondaryNS: NSColor
         let secondary: Color
@@ -566,17 +661,30 @@ enum AvatarColorExtractor {
                 blue: second.element.bSum / second.element.weightSum,
                 alpha: 1
             )
-            secondary = Self.softAtmosphericColor(from: secondaryNS, hueOffset: 0, saturationScale: 0.88)
+            secondary = Self.softAtmosphericColor(from: secondaryNS, hueOffset: 0, saturationScale: 0.90)
         } else {
             secondaryNS = primaryNS
             secondary = Self.softAtmosphericColor(from: primaryNS, hueOffset: 0.072, saturationScale: 0.85)
         }
         
-        let tertiary = Self.softAtmosphericColor(from: secondaryNS, hueOffset: 0.095, saturationScale: 0.80)
+        let tertiary = Self.softAtmosphericColor(from: secondaryNS, hueOffset: 0.095, saturationScale: 0.82)
         
-        let palette = Palette(primary: primary, secondary: secondary, tertiary: tertiary)
+        let palette = Palette(primary: primary, secondary: secondary, tertiary: tertiary, accent: accent)
         self.cache[key] = palette
         return palette
+    }
+    
+    
+    /// Faithful vibrant accent derived directly from the avatar's winning chromatic cluster.
+    private static func vividAccentColor(from color: NSColor) -> Color {
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        let srgb = color.usingColorSpace(.sRGB) ?? color
+        srgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        let resolvedSat = min(0.82, max(0.38, s * 1.05))
+        let resolvedBri = min(0.88, max(0.56, b * 0.95 + 0.08))
+        let hsb = NSColor(hue: h, saturation: resolvedSat, brightness: resolvedBri, alpha: 1.0)
+            .usingColorSpace(.sRGB) ?? srgb
+        return Color(nsColor: hsb)
     }
     
     
@@ -601,30 +709,6 @@ enum AvatarColorExtractor {
                                brightness: resolvedBri,
                                alpha: 1.0).usingColorSpace(.sRGB) ?? srgb
         return Color(nsColor: hsbColor)
-    }
-    
-    
-    private static func downsample24x24(_ image: NSImage) -> NSBitmapImageRep? {
-        
-        guard let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: 24,
-            pixelsHigh: 24,
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        ) else { return nil }
-        
-        rep.size = NSSize(width: 24, height: 24)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        image.draw(in: NSRect(x: 0, y: 0, width: 24, height: 24), from: .zero, operation: .copy, fraction: 1.0)
-        NSGraphicsContext.restoreGraphicsState()
-        return rep
     }
 }
 
@@ -771,18 +855,22 @@ nonisolated enum ToolbarCapsuleTodoHelper {
             self?.closeDropdown()
         })
         
+        let cornerRadius: CGFloat = 14
         let vfx = NSVisualEffectView()
         vfx.material = .popover
         vfx.blendingMode = .behindWindow
         vfx.state = .active
+        vfx.maskImage = UserAvatarToolbarButtonView.makeRoundedMaskImage(cornerRadius: cornerRadius)
         vfx.wantsLayer = true
-        vfx.layer?.cornerRadius = 14
+        vfx.layer?.cornerRadius = cornerRadius
         vfx.layer?.masksToBounds = true
+        vfx.layer?.backgroundColor = NSColor.clear.cgColor
         vfx.layer?.borderWidth = 0.75
         vfx.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.32).cgColor
         
         let contentView = AnyView(
             rootView
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] newHeight in
                     Task { @MainActor in
                         self?.repositionDropdown(preferredHeight: newHeight)
@@ -794,6 +882,8 @@ nonisolated enum ToolbarCapsuleTodoHelper {
         hosting.view.translatesAutoresizingMaskIntoConstraints = false
         hosting.view.wantsLayer = true
         hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
+        hosting.view.layer?.cornerRadius = cornerRadius
+        hosting.view.layer?.masksToBounds = true
         vfx.addSubview(hosting.view)
         NSLayoutConstraint.activate([
             hosting.view.leadingAnchor.constraint(equalTo: vfx.leadingAnchor),
@@ -824,6 +914,7 @@ nonisolated enum ToolbarCapsuleTodoHelper {
         panel.isOpaque = false
         panel.hasShadow = true
         panel.contentView = vfx
+        panel.invalidateShadow()
         panel.alphaValue = 0
         
         hostWindow.addChildWindow(panel, ordered: .above)
@@ -854,6 +945,7 @@ nonisolated enum ToolbarCapsuleTodoHelper {
             visibleScreenFrame: screenFrame
         )
         panel.setFrame(updated, display: true)
+        panel.invalidateShadow()
     }
     
     
@@ -1067,7 +1159,7 @@ private struct ToolbarCapsuleTodoDropdownView: View {
             VStack(alignment: .leading, spacing: 10) {
                 // Header
                 HStack(spacing: 8) {
-                    Text(AppLanguage.text("胶囊待办", en: "Capsule Todos"))
+                    Text(AppLanguage.text("待办", en: "Todos"))
                         .font(.system(size: 13, weight: .semibold))
                     
                     if !prioritized.isEmpty {
@@ -1143,7 +1235,7 @@ private struct ToolbarCapsuleTodoDropdownView: View {
                             Button {
                                 self.submitTodo()
                             } label: {
-                                Text(AppLanguage.text("添加到胶囊", en: "Add Todo"))
+                                Text(AppLanguage.text("添加待办", en: "Add Todo"))
                                     .font(.system(size: 11.5, weight: .semibold))
                                     .foregroundStyle(tokens.onAccentInk)
                                     .padding(.horizontal, 12)
@@ -1404,12 +1496,12 @@ struct UserProfilePopoverView: View {
                             Text(AppLanguage.text("环绕弹幕", en: "Orbit Tags"))
                                 .font(.system(size: 10.5, weight: .medium))
                         }
-                        .foregroundStyle(self.isDanmakuEnabled ? studioTokens.accentText : .secondary)
+                        .foregroundStyle(self.isDanmakuEnabled ? ambient.accent : .secondary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3.5)
                         .background(
                             self.isDanmakuEnabled
-                                ? studioTokens.positivePillBg
+                                ? ambient.accent.opacity(self.colorScheme == .dark ? 0.22 : 0.14)
                                 : self.surfaceFill,
                             in: Capsule()
                         )
@@ -1422,7 +1514,7 @@ struct UserProfilePopoverView: View {
                 AvatarSurroundingDanmakuStage(
                     tags: self.isDanmakuEnabled ? tags : [],
                     selectedTagID: self.selectedTag?.id,
-                    accent: studioTokens.accent,
+                    accent: ambient.accent,
                     secondaryAccent: ambient.secondary,
                     shockwaveTimestamp: self.shockwaveTimestamp,
                     onTapTag: { tapped in
@@ -1436,7 +1528,7 @@ struct UserProfilePopoverView: View {
                     } label: {
                         ZStack(alignment: .bottom) {
                             Circle()
-                                .strokeBorder(ambient.primary.opacity(self.avatarPulseOpacity), lineWidth: 2)
+                                .strokeBorder(ambient.accent.opacity(self.avatarPulseOpacity), lineWidth: 2)
                                 .frame(width: 78, height: 78)
                                 .scaleEffect(self.avatarPulseScale)
                             
@@ -1456,7 +1548,7 @@ struct UserProfilePopoverView: View {
                                 .scaleEffect(self.avatarSquish ? 0.85 : (self.isAvatarDropTargeted ? 1.08 : (self.isAvatarHovered ? 1.04 : 1.0)))
                                 .rotationEffect(.degrees(self.avatarSpinAngle))
                                 .shadow(
-                                    color: ambient.primary.opacity(0.28),
+                                    color: ambient.accent.opacity(0.36),
                                     radius: 14,
                                     y: 4
                                 )
@@ -2047,6 +2139,20 @@ struct SoftAvatarAuroraBackdrop: View {
                         let driftY = CGFloat(cos(t * 0.22) * 10)
                         
                         ZStack {
+                            // Extracted dominant accent wash anchors the hero card to the avatar's true color
+                            RadialGradient(
+                                colors: [self.palette.accent.opacity(self.isDark ? 0.42 : 0.30), .clear],
+                                center: UnitPoint(x: 0.30 + sin(t * 0.25) * 0.08, y: 0.26),
+                                startRadius: 8,
+                                endRadius: 215
+                            )
+                            RadialGradient(
+                                colors: [self.palette.secondary.opacity(self.isDark ? 0.32 : 0.22), .clear],
+                                center: UnitPoint(x: 0.76, y: 0.36 + cos(t * 0.22) * 0.08),
+                                startRadius: 8,
+                                endRadius: 205
+                            )
+                            
                             if let cover = self.blurredCoverImage {
                                 // Authentic Apple Music cover-art ambient mesh strictly bounded to `geo.size`
                                 Image(nsImage: cover)
@@ -2055,7 +2161,7 @@ struct SoftAvatarAuroraBackdrop: View {
                                     .frame(width: side, height: side)
                                     .rotationEffect(angleA)
                                     .offset(x: driftX, y: driftY)
-                                    .opacity(self.isDark ? 0.56 : 0.44)
+                                    .opacity(self.isDark ? 0.54 : 0.46)
                                 
                                 Image(nsImage: cover)
                                     .resizable()
@@ -2063,42 +2169,29 @@ struct SoftAvatarAuroraBackdrop: View {
                                     .frame(width: side * 1.10, height: side * 1.10)
                                     .rotationEffect(angleB)
                                     .offset(x: -driftX * 0.8, y: -driftY * 0.8)
-                                    .blendMode(self.isDark ? .softLight : .plusLighter)
-                                    .opacity(self.isDark ? 0.48 : 0.34)
+                                    .blendMode(self.isDark ? .softLight : .overlay)
+                                    .opacity(self.isDark ? 0.44 : 0.30)
                             } else {
-                                // Organic mesh fallback for monogram avatars
                                 RadialGradient(
-                                    colors: [self.palette.primary.opacity(self.isDark ? 0.42 : 0.28), .clear],
-                                    center: UnitPoint(x: 0.28 + sin(t * 0.25) * 0.08, y: 0.24),
-                                    startRadius: 8,
-                                    endRadius: 210
-                                )
-                                RadialGradient(
-                                    colors: [self.palette.secondary.opacity(self.isDark ? 0.36 : 0.24), .clear],
-                                    center: UnitPoint(x: 0.78, y: 0.32 + cos(t * 0.22) * 0.08),
-                                    startRadius: 8,
-                                    endRadius: 200
-                                )
-                                RadialGradient(
-                                    colors: [self.palette.tertiary.opacity(self.isDark ? 0.28 : 0.18), .clear],
+                                    colors: [self.palette.tertiary.opacity(self.isDark ? 0.28 : 0.20), .clear],
                                     center: .bottom,
                                     startRadius: 8,
                                     endRadius: 190
                                 )
                             }
                             
-                            // Apple Music atmospheric scrim + seamless vertical integration into card surface
+                            // Clean atmospheric scrim preserving extracted chroma while keeping nickname legible
                             LinearGradient(
                                 stops: self.isDark
                                     ? [
-                                        .init(color: Color.black.opacity(0.24), location: 0.0),
-                                        .init(color: Color.black.opacity(0.32), location: 0.55),
-                                        .init(color: Color.black.opacity(0.52), location: 1.0),
+                                        .init(color: Color.black.opacity(0.16), location: 0.0),
+                                        .init(color: Color.black.opacity(0.24), location: 0.55),
+                                        .init(color: Color.black.opacity(0.42), location: 1.0),
                                     ]
                                     : [
-                                        .init(color: Color.white.opacity(0.46), location: 0.0),
-                                        .init(color: Color.white.opacity(0.58), location: 0.55),
-                                        .init(color: Color.white.opacity(0.76), location: 1.0),
+                                        .init(color: Color.white.opacity(0.26), location: 0.0),
+                                        .init(color: Color.white.opacity(0.36), location: 0.55),
+                                        .init(color: Color.white.opacity(0.56), location: 1.0),
                                     ],
                                 startPoint: .top,
                                 endPoint: .bottom
@@ -2332,16 +2425,6 @@ private struct OrbitingUniqueLaneView: View {
     @Environment(\.colorScheme) private var colorScheme
     
     
-    private static func toneSymbol(for tone: PersonalityTagTone) -> String {
-        switch tone {
-            case .warm: "flame.fill"
-            case .sharp: "bolt.fill"
-            case .playful: "sparkle"
-            case .calm: "leaf.fill"
-        }
-    }
-    
-    
     var body: some View {
         ZStack {
             ForEach(Array(self.tags.enumerated()), id: \.element.id) { idx, tag in
@@ -2386,20 +2469,14 @@ private struct OrbitingUniqueLaneView: View {
                     Button {
                         self.onTap(tag)
                     } label: {
-                        HStack(spacing: 4.5) {
-                            Image(systemName: Self.toneSymbol(for: tag.tone))
-                                .font(.system(size: 8.5, weight: .bold))
-                                .foregroundStyle(isSelected ? Color.white : toneColor)
-                            
-                            Text(tag.label)
-                                .font(.system(size: fontSize, weight: .semibold, design: .rounded))
-                                .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.92))
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: true)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4.5)
-                        .fixedSize(horizontal: true, vertical: true)
+                        Text(tag.label)
+                            .font(.system(size: fontSize, weight: .semibold, design: .rounded))
+                            .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.92))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: true)
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 4.5)
+                            .fixedSize(horizontal: true, vertical: true)
                         .background {
                             if isSelected {
                                 Capsule().fill(self.accent)

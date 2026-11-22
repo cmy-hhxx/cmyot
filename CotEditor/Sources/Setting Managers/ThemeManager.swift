@@ -154,6 +154,16 @@ import URLUtils
         
         let usesDark = self.usesDarkAppearance(inDarkMode: inDarkMode)
         
+        if let parsed = StudioPaletteManager.parseStudioThemeName(settingName) {
+            let canonical = StudioPaletteManager.themeName(for: parsed.paletteID, preferDark: usesDark)
+            if !self.settingNames.contains(canonical),
+               let synthesized = StudioPaletteManager.shared.synthesizedTheme(named: canonical)
+            {
+                try? self.save(setting: synthesized, name: canonical)
+            }
+            return canonical
+        }
+        
         if let equivalentSettingName = self.equivalentSettingName(to: settingName, forDark: usesDark) {
             return equivalentSettingName
         }
@@ -180,6 +190,16 @@ import URLUtils
     ///   - forDark: `true` when the dark mode version should be returned.
     /// - Returns: A setting name, or `nil` if none exists.
     func equivalentSettingName(to name: String, forDark: Bool) -> String? {
+        
+        if let parsed = StudioPaletteManager.parseStudioThemeName(name) {
+            let canonical = StudioPaletteManager.themeName(for: parsed.paletteID, preferDark: forDark)
+            if !self.settingNames.contains(canonical),
+               let synthesized = StudioPaletteManager.shared.synthesizedTheme(named: canonical)
+            {
+                try? self.save(setting: synthesized, name: canonical)
+            }
+            return canonical
+        }
         
         let baseName = name.replacing(/\ \((Dark|Light)\)$/, with: "", maxReplacements: 1)
         

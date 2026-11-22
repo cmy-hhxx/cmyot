@@ -223,10 +223,10 @@ struct Round17FeatureTests {
         #expect(yearly.activeDays >= 1)
         #expect(manager.availableHeatmapYears(referenceDate: now).contains(currentYear))
         
-        let todayModels = manager.todayModelDistribution(referenceDate: now)
-        #expect(todayModels.count == 2)
-        let todayFeatures = manager.todayFeatureDistribution(referenceDate: now)
-        let featureShareSum = todayFeatures.reduce(0.0) { $0 + $1.share }
+        let models30 = manager.modelDistribution(days: 30)
+        #expect(models30.count == 2)
+        let features30 = manager.featureDistribution(days: 30)
+        let featureShareSum = features30.reduce(0.0) { $0 + $1.share }
         #expect(abs(featureShareSum - 1.0) < 0.001)
         let todayTotals = manager.aiUsageTotals(forTodayOnly: true, referenceDate: now)
         #expect(todayTotals.requests == 3)
@@ -373,8 +373,6 @@ struct Round17FeatureTests {
         
         let series14 = manager.dailySeries(days: 14, referenceDate: now)
         #expect(series14.count == 14)
-        let rhythm = manager.weekdayActivityDistribution(days: 90, referenceDate: now)
-        #expect(rhythm.count == 7)
         _ = pastKey
     }
     
@@ -421,8 +419,7 @@ struct Round17FeatureTests {
             WorkspaceCenterIcons.documentCenterIcon(isActive: true),
             WorkspaceCenterIcons.terminalIcon(),
             WorkspaceCenterIcons.aiSettingsIcon(),
-            WorkspaceCenterIcons.inspectorIcon(),
-            WorkspaceCenterIcons.moreIcon(),
+            WorkspaceCenterIcons.settingsIcon(),
         ]
         for icon in icons {
             #expect(icon.size.width == 18)
@@ -430,49 +427,6 @@ struct Round17FeatureTests {
         }
         #expect(WorkspaceCenterIcons.analyticsDashboardIcon(isActive: false).isTemplate == true)
         #expect(WorkspaceCenterIcons.analyticsDashboardIcon(isActive: true).isTemplate == false)
-    }
-    
-    
-    @Test func rollingHeatmapEndsAtTodayAndHumanDayStorySpeaksPlainChinese() throws {
-        
-        let tempDir = FileManager.default.temporaryDirectory
-            .appending(path: "cot_rolling_story_\(UUID().uuidString)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-        
-        let db = CotLocalDatabase(customURL: tempDir.appending(path: "rolling.sqlite3"))
-        let manager = AnalyticsManager(database: db)
-        let now = Date()
-        let todayKey = AnalyticsManager.dateKey(for: now)
-        
-        manager.recordTypedCharacters(680)
-        manager.flushPendingStats()
-        manager.recordGhostCompletionAccepted(charCount: 160, isFromAI: true)
-        
-        let rolling = manager.rollingHeatmap(weeks: 26, referenceDate: now)
-        #expect(rolling.weeks.count == 26)
-        #expect(rolling.weeks.allSatisfy { $0.count == 7 })
-        
-        let visible = manager.orderedVisibleCells(in: rolling)
-        #expect(visible.last?.dateKey == todayKey)
-        #expect(visible.allSatisfy { !$0.isFuture })
-        let futureCells = rolling.weeks.flatMap(\.self).filter(\.isFuture)
-        let allFutureEmpty = futureCells.allSatisfy { $0.level == 0 && $0.typedChars == 0 }
-        #expect(allFutureEmpty)
-        
-        let todayCell = try #require(manager.cell(forDateKey: todayKey, in: rolling))
-        let todayStory = manager.humanDayStory(for: todayCell, referenceDate: now)
-        #expect(todayStory.dateBadge.hasPrefix("今天"))
-        #expect(!todayStory.headline.contains("Tokens"))
-        #expect(!todayStory.headline.contains("活跃度"))
-        #expect(!todayStory.headline.contains("累计输入"))
-        #expect(todayStory.highlights.allSatisfy { !$0.contains("Tokens") && !$0.contains("ms") })
-        
-        let pastEmptyCell = try #require(visible.first(where: { $0.dateKey != todayKey && $0.typedChars == 0 }))
-        let emptyStory = manager.humanDayStory(for: pastEmptyCell, referenceDate: now)
-        #expect(emptyStory.moodTag.isEmpty)
-        #expect(!emptyStory.headline.isEmpty)
-        #expect(!emptyStory.headline.contains("火力全开"))
     }
     
     
@@ -600,44 +554,6 @@ struct Round17FeatureTests {
         let full2025 = manager.yearlyHeatmap(year: 2025, referenceDate: ref, trimFutureWeeks: true)
         let months2025 = full2025.monthLabels.map(\.month)
         #expect(months2025 == Array(1...12))
-    }
-    
-    
-    @Test func aiConsumptionHeatmapTracksAIUsageWithoutFutureCells() throws {
-        
-        let tempDir = FileManager.default.temporaryDirectory
-            .appending(path: "cot_ai_heat_\(UUID().uuidString)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-        
-        let db = CotLocalDatabase(customURL: tempDir.appending(path: "ai_heat.sqlite3"))
-        let manager = AnalyticsManager(database: db)
-        let now = Date()
-        let todayKey = AnalyticsManager.dateKey(for: now)
-        
-        manager.recordAIUsage(
-            feature: "completion",
-            model: "gpt-4o-mini",
-            provider: "OpenAI",
-            inputTokens: 1200,
-            outputTokens: 320,
-            latencyMs: 410,
-            at: now
-        )
-        manager.flushPendingStats()
-        
-        let heatmap = manager.aiConsumptionHeatmap(weeks: 12, referenceDate: now)
-        #expect(heatmap.weeks.count == 12)
-        
-        let todayCell = try #require(manager.cell(forDateKey: todayKey, in: heatmap))
-        #expect(todayCell.level > 0)
-        #expect(todayCell.inputTokens == 1200)
-        #expect(todayCell.outputTokens == 320)
-        
-        let allCells = heatmap.weeks.flatMap { $0 }
-        let futureCells = allCells.filter { $0.isFuture }
-        let futureEmpty = futureCells.allSatisfy { $0.level == 0 }
-        #expect(futureEmpty)
     }
     
     

@@ -50,10 +50,7 @@ struct Round22FeatureTests {
     }
     
     
-    @Test func cotPassLabelsStayConciseAndBrandLineEngineRespondsToPointer() {
-        
-        #expect(CotPassSettingsView.conciseBadgeTitle(aiConceptTitle: "夜猫高频速记写手", lifetimeTypedChars: 0).count <= 4)
-        #expect(CotPassSettingsView.conciseBadgeTitle(aiConceptTitle: nil, lifetimeTypedChars: 60_000).count <= 4)
+    @Test func brandLineEngineRespondsToPointer() {
         
         let centerLum = BrandLinePassEngine.luminance(normX: 0.5, normY: 0.5)
         let cornerLum = BrandLinePassEngine.luminance(normX: 0.02, normY: 0.02)
@@ -133,22 +130,6 @@ struct Round22FeatureTests {
             visibleScreenFrame: visibleFrame
         )
         #expect(clampedBottom.minY >= visibleFrame.minY + 14)
-    }
-    
-    
-    @Test func todoMascotRosterIncludesMainstreamMoeCompanionsAndMoodStates() {
-        
-        #expect(TodoMascotKind.concreteMoeRoster.contains(.deepseekFish))
-        #expect(TodoMascotKind.concreteMoeRoster.contains(.claudeChibi))
-        #expect(TodoMascotKind.concreteMoeRoster.contains(.openAIMaid))
-        #expect(TodoMascotKind.concreteMoeRoster.contains(.geminiTwin))
-        #expect(TodoMascotKind.concreteMoeRoster.contains(.qwenGirl))
-        #expect(TodoMascotKind.concreteMoeRoster.contains(.kimiGirl))
-        #expect(TodoMascotKind.concreteMoeRoster.contains(.grokGirl))
-        #expect(MascotMoodState.allCases.count == 5)
-        
-        let resolved = TodoMascotKind.autoMix.resolvedKind(for: "task-123")
-        #expect(TodoMascotKind.concreteMoeRoster.contains(resolved))
     }
     
     

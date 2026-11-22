@@ -23,6 +23,26 @@ import AppKit
 import Foundation
 import Observation
 
+/// Framing anchor used when displaying an AI Gijinka artwork inside portrait/square/pack cards.
+nonisolated enum AIGijinkaCropAnchor: String, Sendable, Equatable, Hashable {
+    case top
+    case center
+    case leading
+}
+
+/// One verified illustration belonging to an AI Gijinka character from https://genderswapai.com/zh-CN/ai-gijinka/gallery
+nonisolated struct AIGijinkaArtwork: Identifiable, Sendable, Equatable, Hashable {
+    
+    let id: String
+    let title: String
+    let urlString: String
+    let cropAnchor: AIGijinkaCropAnchor
+    
+    var url: URL? {
+        URL(string: self.urlString)
+    }
+}
+
 /// Verified AI Gijinka (AI 娘化) character metadata sourced from https://genderswapai.com/zh-CN/ai-gijinka/gallery
 nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashable {
     
@@ -30,11 +50,30 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
     let name: String
     let brand: String
     let accentHex: String
-    let portraitURLString: String
+    let artworks: [AIGijinkaArtwork]
     let attribution: String
     
+    var portraitURLString: String {
+        self.artworks.first?.urlString ?? ""
+    }
+    
     var portraitURL: URL? {
-        URL(string: self.portraitURLString)
+        self.artworks.first?.url
+    }
+    
+    /// Picks a deterministic artwork for `botID` so multiple agents sharing the same model display
+    /// varied portraits/wallpapers/costume variants unless the user explicitly selected `variantOverride`.
+    func artwork(for botID: AIBotID, variantOverride: Int? = nil) -> AIGijinkaArtwork {
+        guard !self.artworks.isEmpty else {
+            return AIGijinkaArtwork(id: self.id, title: "立绘", urlString: "", cropAnchor: .top)
+        }
+        let count = self.artworks.count
+        if let variantOverride {
+            let safe = ((variantOverride % count) + count) % count
+            return self.artworks[safe]
+        }
+        let botIndex = AIBotID.allCases.firstIndex(of: botID) ?? 0
+        return self.artworks[botIndex % count]
     }
     
     // MARK: Verified Gallery Roster (https://genderswapai.com/zh-CN/ai-gijinka/gallery)
@@ -44,7 +83,16 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "DeepSeek 娘",
         brand: "DeepSeek",
         accentHex: "#3B82F6",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/a7f2339608c7598bfc36/images/thumbnails/fa016e468ce466b5-900.webp",
+        artworks: [
+            .init(id: "deepseek-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/a7f2339608c7598bfc36/images/thumbnails/fa016e468ce466b5-900.webp", cropAnchor: .top),
+            .init(id: "deepseek-v4f", title: "小肥鱼 V4F", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/2965a0cc3b4dd6563f3d/images/thumbnails/63df98cdf2532a80-893.webp", cropAnchor: .top),
+            .init(id: "deepseek-v4f-vision", title: "V4F 视觉版本", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/dfe0e6427689829ee02c/images/thumbnails/d123ee06600c9b17-893.webp", cropAnchor: .top),
+            .init(id: "deepseek-harness", title: "Harness 定稿", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/f031deb5cbc35a042584/images/thumbnails/126293fa283a366d-900.webp", cropAnchor: .top),
+            .init(id: "deepseek-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/9d732eb193ed564e98e1/images/thumbnails/df5759c12817ef85-1920.webp", cropAnchor: .center),
+            .init(id: "deepseek-maid-1", title: "女仆装三视图（一）", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/110653dc690bf5a2cebb/images/thumbnails/67695e90a9756c70-1920.webp", cropAnchor: .leading),
+            .init(id: "deepseek-court-maid", title: "宫廷侍女装三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/c24c5c0e56e8a3ae3492/images/thumbnails/dfecfe5d50e52d3e-1920.webp", cropAnchor: .leading),
+            .init(id: "deepseek-maid-2", title: "女仆装三视图（二）", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/b40ae1e58ed3f8b021b4/images/thumbnails/f80ad24d8f76ba3c-1920.webp", cropAnchor: .leading),
+        ],
         attribution: "上善无形 原角色 · ZipZipPipe 二创"
     )
     static let qwen = AIGijinkaCharacter(
@@ -52,7 +100,11 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "Qwen 娘",
         brand: "Qwen",
         accentHex: "#7C5CFC",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/f8c3c51016dedaab132c/images/thumbnails/a0b12bd5c8ba80f6-893.webp",
+        artworks: [
+            .init(id: "qwen-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/f8c3c51016dedaab132c/images/thumbnails/a0b12bd5c8ba80f6-893.webp", cropAnchor: .top),
+            .init(id: "qwen-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/4f9e498f0d693239db03/images/thumbnails/05e731a917802e65-1920.webp", cropAnchor: .center),
+            .init(id: "qwen-3view", title: "新版配色三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/74a4c908c0db3e5e4bf8/images/thumbnails/1adb45eb369f2713-1920.webp", cropAnchor: .leading),
+        ],
         attribution: "ZipZipPipe"
     )
     static let claude = AIGijinkaCharacter(
@@ -60,7 +112,10 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "Claude 娘",
         brand: "Claude",
         accentHex: "#D97757",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/2ba8b6f44f542e2a7247/images/thumbnails/55c9212015554e52-893.webp",
+        artworks: [
+            .init(id: "claude-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/2ba8b6f44f542e2a7247/images/thumbnails/55c9212015554e52-893.webp", cropAnchor: .top),
+            .init(id: "claude-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/f9ea638805f3d5811040/images/thumbnails/fd3fd6e827db2d34-1920.webp", cropAnchor: .center),
+        ],
         attribution: "ZipZipPipe"
     )
     static let gpt = AIGijinkaCharacter(
@@ -68,7 +123,13 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "GPT 娘",
         brand: "OpenAI GPT",
         accentHex: "#10A37F",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/de058742c92d4755bf95/images/thumbnails/b3603b73a0ff93c4-893.webp",
+        artworks: [
+            .init(id: "gpt-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/de058742c92d4755bf95/images/thumbnails/b3603b73a0ff93c4-893.webp", cropAnchor: .top),
+            .init(id: "gpt-astra", title: "GPT-6 Astra 服装差分", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/bb995e89d7f1a8b4a7b9/images/thumbnails/2ef822f23878e6d0-900.webp", cropAnchor: .top),
+            .init(id: "gpt-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/cf615e75f10015312a2d/images/thumbnails/d10685767b9f3454-1920.webp", cropAnchor: .center),
+            .init(id: "gpt-dragon-3view", title: "龙娘三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/d782985b4f94ad1c2791/images/thumbnails/8808efdef41aa7dc-1920.webp", cropAnchor: .leading),
+            .init(id: "gpt-codex-3view", title: "Codex 龙娘三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/5890f06e744918123d9f/images/thumbnails/3fe9e1e94207e56d-1920.webp", cropAnchor: .leading),
+        ],
         attribution: "ZipZipPipe"
     )
     static let gemini = AIGijinkaCharacter(
@@ -76,7 +137,9 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "Gemini 娘",
         brand: "Gemini",
         accentHex: "#6366F1",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/aaac639ab8832f4101cc/images/thumbnails/f2cd51da09151c5e-893.webp",
+        artworks: [
+            .init(id: "gemini-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/aaac639ab8832f4101cc/images/thumbnails/f2cd51da09151c5e-893.webp", cropAnchor: .top),
+        ],
         attribution: "ZipZipPipe"
     )
     static let kimi = AIGijinkaCharacter(
@@ -84,7 +147,11 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "Kimi 娘",
         brand: "Kimi",
         accentHex: "#2563EB",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/8c11c4f574f587de685f/images/thumbnails/c484cd8df7ca4503-900.webp",
+        artworks: [
+            .init(id: "kimi-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/8c11c4f574f587de685f/images/thumbnails/c484cd8df7ca4503-900.webp", cropAnchor: .top),
+            .init(id: "kimi-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/e4aca75ac3347fc882cd/images/thumbnails/dc05b35f5abba1fc-1920.webp", cropAnchor: .center),
+            .init(id: "kimi-3view", title: "非对称服装三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/fe1ac7ee1d45c95cefbc/images/thumbnails/8d137caf33126478-1920.webp", cropAnchor: .leading),
+        ],
         attribution: "ZipZipPipe"
     )
     static let glm = AIGijinkaCharacter(
@@ -92,7 +159,11 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "GLM 娘",
         brand: "GLM",
         accentHex: "#4F46E5",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/ba11aade767c0931712d/images/thumbnails/519b4801c990b582-900.webp",
+        artworks: [
+            .init(id: "glm-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/ba11aade767c0931712d/images/thumbnails/519b4801c990b582-900.webp", cropAnchor: .top),
+            .init(id: "glm-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/77e8ee8d6d1e80ddf27f/images/thumbnails/a4a483e6f57a3930-1920.webp", cropAnchor: .center),
+            .init(id: "glm-3view", title: "三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/9bae5826e94e4b9a1358/images/thumbnails/fc3c855fb7bf947c-1920.webp", cropAnchor: .leading),
+        ],
         attribution: "ZipZipPipe"
     )
     static let minimax = AIGijinkaCharacter(
@@ -100,7 +171,11 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "MiniMax 娘",
         brand: "MiniMax",
         accentHex: "#F97316",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/dee336736d63d24b1fe9/images/thumbnails/2bfd13f9dce1375a-893.webp",
+        artworks: [
+            .init(id: "minimax-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/dee336736d63d24b1fe9/images/thumbnails/2bfd13f9dce1375a-893.webp", cropAnchor: .top),
+            .init(id: "group-small-models", title: "小模型合照", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/caede817bc7cb3a688cf/images/thumbnails/b032141e70a44c11-1254.webp", cropAnchor: .center),
+            .init(id: "group-generative-models", title: "生成式模型合照", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/08e4404c2a3d0ad9eb72/images/thumbnails/61572a8995cccf0b-1254.webp", cropAnchor: .center),
+        ],
         attribution: "ZipZipPipe"
     )
     static let grok = AIGijinkaCharacter(
@@ -108,7 +183,10 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "Grok 娘",
         brand: "Grok",
         accentHex: "#E11D48",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/84f22675b1de27a301bb/images/thumbnails/2d67a5b5e9333d2a-893.webp",
+        artworks: [
+            .init(id: "grok-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/84f22675b1de27a301bb/images/thumbnails/2d67a5b5e9333d2a-893.webp", cropAnchor: .top),
+            .init(id: "grok-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/088377c049f99b6efc40/images/thumbnails/bbae62006856c6d7-1920.webp", cropAnchor: .center),
+        ],
         attribution: "ZipZipPipe"
     )
     static let seed = AIGijinkaCharacter(
@@ -116,7 +194,10 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "Seed 娘",
         brand: "Seed",
         accentHex: "#14B8A6",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/4f19bfa2b672e4f0be5f/images/thumbnails/a057509e1c7a1c7b-893.webp",
+        artworks: [
+            .init(id: "seed-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/4f19bfa2b672e4f0be5f/images/thumbnails/a057509e1c7a1c7b-893.webp", cropAnchor: .top),
+            .init(id: "seed-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/b0898ac625edcdc6c8a3/images/thumbnails/624aee2a317470bf-1920.webp", cropAnchor: .center),
+        ],
         attribution: "ZipZipPipe"
     )
     static let llama = AIGijinkaCharacter(
@@ -124,7 +205,9 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "Llama 娘",
         brand: "Llama",
         accentHex: "#0284C7",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/34dfab0eb53f03784a56/images/thumbnails/b7b2b1eb2944b447-893.webp",
+        artworks: [
+            .init(id: "llama-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/34dfab0eb53f03784a56/images/thumbnails/b7b2b1eb2944b447-893.webp", cropAnchor: .top),
+        ],
         attribution: "ZipZipPipe"
     )
     static let mistral = AIGijinkaCharacter(
@@ -132,7 +215,10 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "Mistral 娘",
         brand: "Mistral",
         accentHex: "#EA580C",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/24db1a2988c079602bcd/images/thumbnails/6a3f749264072f9b-893.webp",
+        artworks: [
+            .init(id: "mistral-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/24db1a2988c079602bcd/images/thumbnails/6a3f749264072f9b-893.webp", cropAnchor: .top),
+            .init(id: "group-small-models", title: "小模型合照", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/caede817bc7cb3a688cf/images/thumbnails/b032141e70a44c11-1254.webp", cropAnchor: .center),
+        ],
         attribution: "ZipZipPipe"
     )
     static let perplexity = AIGijinkaCharacter(
@@ -140,7 +226,10 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "Perplexity 娘",
         brand: "Perplexity",
         accentHex: "#0EA5E9",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/aea80738da0125d51607/images/thumbnails/2c2ec51fb37bb22c-893.webp",
+        artworks: [
+            .init(id: "perplexity-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/aea80738da0125d51607/images/thumbnails/2c2ec51fb37bb22c-893.webp", cropAnchor: .top),
+            .init(id: "group-small-models", title: "小模型合照", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/caede817bc7cb3a688cf/images/thumbnails/b032141e70a44c11-1254.webp", cropAnchor: .center),
+        ],
         attribution: "ZipZipPipe"
     )
     static let rwkv = AIGijinkaCharacter(
@@ -148,7 +237,11 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "RWKV 娘",
         brand: "RWKV",
         accentHex: "#6D28D9",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/cfcff0d3cde5c4467279/images/thumbnails/f26d7e21b758b0d2-900.webp",
+        artworks: [
+            .init(id: "rwkv-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/cfcff0d3cde5c4467279/images/thumbnails/f26d7e21b758b0d2-900.webp", cropAnchor: .top),
+            .init(id: "rwkv-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/d1a295323a150fcbc081/images/thumbnails/848488e6d6fad5c3-1920.webp", cropAnchor: .center),
+            .init(id: "group-small-models", title: "小模型合照", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/caede817bc7cb3a688cf/images/thumbnails/b032141e70a44c11-1254.webp", cropAnchor: .center),
+        ],
         attribution: "ZipZipPipe"
     )
     static let wenxin = AIGijinkaCharacter(
@@ -156,7 +249,11 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "文心娘",
         brand: "ERNIE",
         accentHex: "#2563EB",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/ec9ed6cc38fcc4cad67f/images/thumbnails/f2b1946a48f9eb39-893.webp",
+        artworks: [
+            .init(id: "wenxin-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/ec9ed6cc38fcc4cad67f/images/thumbnails/f2b1946a48f9eb39-893.webp", cropAnchor: .top),
+            .init(id: "wenxin-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/91929bd34e2410447367/images/thumbnails/32531736a52bbba5-1920.webp", cropAnchor: .center),
+            .init(id: "wenxin-group", title: "文心一言与 Fable 5 合照", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/9e1a7091e12c1b50e0a4/images/thumbnails/2ad096e882c4f641-1254.webp", cropAnchor: .center),
+        ],
         attribution: "ZipZipPipe"
     )
     static let hunyuan = AIGijinkaCharacter(
@@ -164,7 +261,9 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "混元娘",
         brand: "Hunyuan",
         accentHex: "#0EA5E9",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/cb1e522a2574e1f756d0/images/thumbnails/ecbd2e85491bb864-900.webp",
+        artworks: [
+            .init(id: "hunyuan-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/cb1e522a2574e1f756d0/images/thumbnails/ecbd2e85491bb864-900.webp", cropAnchor: .top),
+        ],
         attribution: "ZipZipPipe"
     )
     static let image2 = AIGijinkaCharacter(
@@ -172,7 +271,10 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         name: "Image 2 黑龙娘",
         brand: "Image 2",
         accentHex: "#334155",
-        portraitURLString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/0dec595b48b2416aabb4/images/thumbnails/6693e2746ed4eafc-893.webp",
+        artworks: [
+            .init(id: "image2-portrait", title: "黑龙娘立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/0dec595b48b2416aabb4/images/thumbnails/6693e2746ed4eafc-893.webp", cropAnchor: .top),
+            .init(id: "image2-3view", title: "黑龙娘三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/f6e87f9a16662344f088/images/thumbnails/70bde0e5e5d91f48-1920.webp", cropAnchor: .leading),
+        ],
         attribution: "ZipZipPipe"
     )
     
@@ -257,8 +359,8 @@ final class AIGijinkaImageLoader {
     }
     
     
-    func image(for character: AIGijinkaCharacter) -> NSImage? {
-        let key = character.id
+    func image(for artwork: AIGijinkaArtwork) -> NSImage? {
+        let key = artwork.id
         if let cached = self.images[key] {
             return cached
         }
@@ -267,8 +369,21 @@ final class AIGijinkaImageLoader {
             self.images[key] = diskImage
             return diskImage
         }
-        self.triggerFetchIfNeeded(for: character)
+        self.triggerFetchIfNeeded(for: artwork)
         return nil
+    }
+    
+    
+    func image(for character: AIGijinkaCharacter) -> NSImage? {
+        guard let primary = character.artworks.first else { return nil }
+        return self.image(for: primary)
+    }
+    
+    
+    func prefetch(_ artworks: [AIGijinkaArtwork]) {
+        for artwork in Set(artworks) {
+            _ = self.image(for: artwork)
+        }
     }
     
     
@@ -279,11 +394,11 @@ final class AIGijinkaImageLoader {
     }
     
     
-    private func triggerFetchIfNeeded(for character: AIGijinkaCharacter) {
-        let key = character.id
+    private func triggerFetchIfNeeded(for artwork: AIGijinkaArtwork) {
+        let key = artwork.id
         guard !self.inFlight.contains(key),
               ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
-              let url = character.portraitURL
+              let url = artwork.url
         else { return }
         
         self.inFlight.insert(key)
@@ -489,39 +604,48 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
 }
 
 
-/// Per-bot persisted configuration (enabled toggle, dedicated model override, tone/persona, and temperature).
+/// Per-bot persisted configuration (enabled toggle, dedicated endpoint & model override,
+/// tone/persona, temperature, and optional gallery artwork variant index).
 nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     
     var isEnabled: Bool = true
+    var endpointID: UUID? = nil
     var modelOverride: String = ""
     var customPersona: String = ""
     var temperature: Double? = nil
+    var artworkVariantIndex: Int? = nil
     
     
     init(
         isEnabled: Bool = true,
+        endpointID: UUID? = nil,
         modelOverride: String = "",
         customPersona: String = "",
-        temperature: Double? = nil
+        temperature: Double? = nil,
+        artworkVariantIndex: Int? = nil
     ) {
         self.isEnabled = isEnabled
+        self.endpointID = endpointID
         self.modelOverride = modelOverride
         self.customPersona = customPersona
         self.temperature = temperature
+        self.artworkVariantIndex = artworkVariantIndex
     }
     
     
     enum CodingKeys: String, CodingKey {
-        case isEnabled, modelOverride, customPersona, temperature
+        case isEnabled, endpointID, modelOverride, customPersona, temperature, artworkVariantIndex
     }
     
     
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        self.endpointID = try container.decodeIfPresent(UUID.self, forKey: .endpointID)
         self.modelOverride = try container.decodeIfPresent(String.self, forKey: .modelOverride) ?? ""
         self.customPersona = try container.decodeIfPresent(String.self, forKey: .customPersona) ?? ""
         self.temperature = try container.decodeIfPresent(Double.self, forKey: .temperature)
+        self.artworkVariantIndex = try container.decodeIfPresent(Int.self, forKey: .artworkVariantIndex)
     }
 }
 
@@ -649,14 +773,23 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     }
     
     
-    /// Resolves the effective `AIConfiguration` for a bot, honoring any per-bot model override & temperature.
+    /// Resolves the effective `AIConfiguration` for a bot, honoring any per-bot endpoint selection,
+    /// model override, and temperature.
     func resolvedConfiguration(
         for botID: AIBotID,
-        baseConfig: AIConfiguration? = nil
+        baseConfig: AIConfiguration? = nil,
+        endpoints: [AIEndpointProfile]? = nil
     ) -> AIConfiguration {
         
-        var resolved = baseConfig ?? AIConfiguration.current
         let botConfig = self.config(for: botID)
+        var resolved: AIConfiguration
+        if let targetEndpointID = botConfig.endpointID,
+           let matchedEndpoint = (endpoints ?? AIEndpointStore.profiles).first(where: { $0.id == targetEndpointID })
+        {
+            resolved = matchedEndpoint.configuration(apiKey: AIEndpointStore.apiKey(for: matchedEndpoint))
+        } else {
+            resolved = baseConfig ?? AIConfiguration.current
+        }
         if !botConfig.modelOverride.isEmpty {
             resolved.model = botConfig.modelOverride
         }

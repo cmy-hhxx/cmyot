@@ -46,6 +46,7 @@ struct AppearanceSettingsView: View {
     @AppStorage(.lineHeight) private var lineHeight
     @AppStorage(.documentAppearance) private var documentAppearance
     @AppStorage(.windowAlpha) private var windowAlpha
+    @State private var studioPalette = StudioPaletteManager.shared
     
     @State private var selectingFont: Data?
     @State private var isMonospacedFontAlertPresented = false
@@ -124,7 +125,10 @@ struct AppearanceSettingsView: View {
             }
             
             Section {
-                Picker(selection: $documentAppearance) {
+                Picker(selection: Binding(
+                    get: { self.documentAppearance },
+                    set: { self.studioPalette.applyAppearanceMode($0) }
+                )) {
                     ForEach(AppearanceMode.allCases, id: \.self) {
                         Text($0.label)
                     }
@@ -189,11 +193,39 @@ struct AppearanceSettingsView: View {
             }
             
             Section {
-                ThemeView()
-                    .frame(height: 228)
-                    .listRowInsets(EdgeInsets())
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                    ForEach(StudioPaletteID.allCases) { preset in
+                        let triad = self.studioPalette.triad(for: preset)
+                        let isSelected = (self.studioPalette.selectedID == preset)
+                        let accent = StudioPaletteManager.swiftUIColor(hex: triad.accentHex)
+                        Button {
+                            self.studioPalette.selectPalette(preset, syncEditorTheme: true)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Circle().fill(accent).frame(width: 10, height: 10)
+                                Text(preset.displayName)
+                                    .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                if isSelected {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(accent)
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 32)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color.primary.opacity(isSelected ? 0.08 : 0.03))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 4)
             } header: {
-                Text("Theme", tableName: "ThemeEditor")
+                Text(AppLanguage.text("全局配色（10 套）", en: "Color Palettes (10)"))
             }
         }
     }

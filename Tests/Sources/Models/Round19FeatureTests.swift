@@ -220,15 +220,6 @@ struct Round19FeatureTests {
         let pulse = analytics.hourlyWritingPulse(for: stats.dateKey)
         #expect(pulse.count == 24)
         #expect(pulse[currentHour] >= 420)
-        
-        // Verify daily story contains zero template buzzwords
-        let hm = analytics.yearlyHeatmap(year: Calendar.current.component(.year, from: Date()), trimFutureWeeks: true)
-        let todayCell = try #require(hm.weeks.flatMap(\.self).first(where: { $0.dateKey == stats.dateKey }))
-        let story = analytics.humanDayStory(for: todayCell)
-        #expect(story.moodTag.isEmpty)
-        #expect(!story.headline.contains("火力全开"))
-        #expect(!story.headline.contains("人机协作"))
-        #expect(!story.headline.contains("点击跳转"))
     }
     
     

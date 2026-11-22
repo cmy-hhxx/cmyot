@@ -636,9 +636,9 @@ enum BotCollectionLayoutMode: String, CaseIterable, Identifiable {
 
 struct AIBotsSettingsView: View {
     
-    /// Exact deterministic content width (`700 - 176 sidebar - 1 divider - 48 padding = 475pt`)
-    /// so entering the Agents pane NEVER triggers a post-mount geometry feedback jump.
-    private static let fixedStageWidth: CGFloat = 475
+    /// Exact deterministic content width (`780 - 204 sidebar - 1 divider - 48 padding = 527pt`)
+    /// so entering the Agents pane matches all other panes flush edge-to-edge with zero geometry jump.
+    private static let fixedStageWidth: CGFloat = 527
     
     @Environment(\.colorScheme) private var colorScheme
     
@@ -647,6 +647,7 @@ struct AIBotsSettingsView: View {
     @State private var imageLoader = AIGijinkaImageLoader.shared
     @State private var layoutMode: BotCollectionLayoutMode = .card
     @State private var inspectingBot: AIBotID?
+    @State private var allEndpoints: [AIEndpointProfile] = []
     @State private var activeEndpoint: AIEndpointProfile?
     @State private var globalPersona: String = ""
     @State private var hoveredBotID: AIBotID?
@@ -681,26 +682,51 @@ struct AIBotsSettingsView: View {
     }
     
     
-    /// Resolves the AI 娘化 character strictly from the model selected for `botID`
-    /// (bot's `modelOverride` if specified, otherwise the active endpoint's selected model).
+    private func resolvedEndpoint(for config: AIBotConfig) -> AIEndpointProfile? {
+        if let endpointID = config.endpointID,
+           let matched = self.allEndpoints.first(where: { $0.id == endpointID })
+        {
+            return matched
+        }
+        return self.activeEndpoint
+    }
+    
+    
+    /// Resolves the AI 娘化 character strictly from the model & endpoint selected for `botID`.
     private func resolvedCharacter(for botID: AIBotID, config: AIBotConfig) -> AIGijinkaCharacter? {
+        let endpoint = self.resolvedEndpoint(for: config)
         let overrideModel = config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
         if !overrideModel.isEmpty {
-            return AIGijinkaCharacter.resolve(modelName: overrideModel)
+            return AIGijinkaCharacter.resolve(
+                modelName: overrideModel,
+                endpointName: endpoint?.displayName,
+                baseURL: endpoint?.baseURL
+            )
         }
         return AIGijinkaCharacter.resolve(
-            modelName: self.activeEndpoint?.displayModel,
-            endpointName: self.activeEndpoint?.displayName,
-            baseURL: self.activeEndpoint?.baseURL
+            modelName: endpoint?.displayModel,
+            endpointName: endpoint?.displayName,
+            baseURL: endpoint?.baseURL
         )
     }
     
     
     private func prefetchResolvedCharacters() {
-        let chars = AIBotID.allCases.compactMap { botID in
-            self.resolvedCharacter(for: botID, config: self.botStore.config(for: botID))
+        let artworks = AIBotID.allCases.compactMap { botID -> AIGijinkaArtwork? in
+            let config = self.botStore.config(for: botID)
+            guard let character = self.resolvedCharacter(for: botID, config: config) else { return nil }
+            return character.artwork(for: botID, variantOverride: config.artworkVariantIndex)
         }
-        self.imageLoader.prefetch(chars)
+        self.imageLoader.prefetch(artworks)
+    }
+    
+    
+    private static func swiftUIAlignment(for anchor: AIGijinkaCropAnchor) -> Alignment {
+        switch anchor {
+            case .top: .top
+            case .center: .center
+            case .leading: .topLeading
+        }
     }
     
     
@@ -712,13 +738,13 @@ struct AIBotsSettingsView: View {
         let cols = 3
         let rowsCount = Int(ceil(Double(bots.count) / Double(cols)))
         let cardGap: CGFloat = 12
-        let cardWidth = floor((Self.fixedStageWidth - cardGap * CGFloat(cols - 1)) / CGFloat(cols)) // 150pt
-        let portraitHeight: CGFloat = 176
-        let cardRowStride: CGFloat = portraitHeight + 48
+        let cardWidth = floor((Self.fixedStageWidth - cardGap * CGFloat(cols - 1)) / CGFloat(cols)) // 167pt
+        let portraitHeight: CGFloat = 220 // Clean 3:4 portrait aspect ratio
+        let cardRowStride: CGFloat = portraitHeight + 52
         let stageHeight: CGFloat = switch self.layoutMode {
             case .list: CGFloat(bots.count) * 64.0
             case .card: CGFloat(rowsCount) * cardRowStride
-            case .pack: 236.0
+            case .pack: 244.0
         }
         let enabledCount = bots.filter { self.botStore.config(for: $0).isEnabled }.count
         
@@ -820,11 +846,14 @@ struct AIBotsSettingsView: View {
         cardGap: CGFloat,
         cardRowStride: CGFloat
     ) -> some View {
+        let endpoint = self.resolvedEndpoint(for: config)
         let character = self.resolvedCharacter(for: botID, config: config)
+        let artwork = character?.artwork(for: botID, variantOverride: config.artworkVariantIndex)
         let accent = Color(hexString: character?.accentHex ?? botID.accentHex)
-        let portrait = character.flatMap { self.imageLoader.image(for: $0) }
+        let portrait = artwork.flatMap { self.imageLoader.image(for: $0) }
+        let cropAlignment = Self.swiftUIAlignment(for: artwork?.cropAnchor ?? .top)
         let effectiveModelLabel = config.modelOverride.isEmpty
-            ? (self.activeEndpoint?.displayModel ?? AppLanguage.text("未选择模型", en: "No Model"))
+            ? (endpoint?.displayModel ?? AppLanguage.text("未选择模型", en: "No Model"))
             : config.modelOverride
         let isHovered = (self.hoveredBotID == botID)
         
@@ -856,8 +885,8 @@ struct AIBotsSettingsView: View {
                 posY = CGFloat(row) * cardRowStride
                 rotation = 0
             case .pack:
-                artWidth = 92
-                artHeight = 124
+                artWidth = 96
+                artHeight = 128
                 artCorner = 12
                 itemWidth = artWidth
                 let spread: CGFloat = 28.0
@@ -869,34 +898,29 @@ struct AIBotsSettingsView: View {
         }
         
         return ZStack(alignment: .topLeading) {
-            // Persistent AI Gijinka Portrait Frame (never swapped across layout modes)
+            // Persistent AI Gijinka Portrait Frame (full-bleed 3:4 cover with smart crop anchor)
             ZStack {
                 RoundedRectangle(cornerRadius: artCorner, style: .continuous)
                     .fill(
-                        self.colorScheme == .dark
-                            ? Color(red: 0.14, green: 0.14, blue: 0.16)
-                            : Color(red: 0.97, green: 0.97, blue: 0.98)
+                        LinearGradient(
+                            colors: [
+                                accent.opacity(self.colorScheme == .dark ? 0.16 : 0.10),
+                                self.colorScheme == .dark
+                                    ? Color(red: 0.12, green: 0.12, blue: 0.15)
+                                    : Color(red: 0.96, green: 0.96, blue: 0.98),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
                     )
                 
                 if let portrait {
-                    if self.layoutMode == .card {
-                        Image(nsImage: portrait)
-                            .resizable()
-                            .interpolation(.high)
-                            .scaledToFit()
-                            .padding(.top, 6)
-                            .padding(.horizontal, 4)
-                            .frame(width: artWidth, height: artHeight, alignment: .bottom)
-                            .opacity(config.isEnabled ? 1.0 : 0.48)
-                    } else {
-                        // Face-framed upper crop in List & Pack views
-                        Image(nsImage: portrait)
-                            .resizable()
-                            .interpolation(.high)
-                            .scaledToFill()
-                            .frame(width: artWidth, height: artHeight, alignment: .top)
-                            .opacity(config.isEnabled ? 1.0 : 0.48)
-                    }
+                    Image(nsImage: portrait)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFill()
+                        .frame(width: artWidth, height: artHeight, alignment: cropAlignment)
+                        .opacity(config.isEnabled ? 1.0 : 0.45)
                 } else {
                     VStack(spacing: 5) {
                         Image(systemName: botID.symbolName)
@@ -910,6 +934,20 @@ struct AIBotsSettingsView: View {
                                 .padding(.horizontal, 8)
                         }
                     }
+                }
+                
+                if self.layoutMode == .card, portrait != nil {
+                    // Subtle lower vignette & artwork style tag for magazine-grade card finish
+                    VStack {
+                        Spacer()
+                        LinearGradient(
+                            colors: [Color.clear, Color.black.opacity(0.32)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 34)
+                    }
+                    .allowsHitTesting(false)
                 }
             }
             .frame(width: artWidth, height: artHeight)
@@ -1053,6 +1091,8 @@ struct AIBotsSettingsView: View {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
                         self.inspectingBot = nil
                     }
+                    self.reload()
+                    self.prefetchResolvedCharacters()
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "chevron.left")
@@ -1074,10 +1114,15 @@ struct AIBotsSettingsView: View {
             
             AIBotInlineInspectorView(
                 botID: botID,
+                allEndpoints: self.allEndpoints,
                 activeEndpoint: self.activeEndpoint,
                 globalPersona: self.globalPersona,
                 cardSurface: self.cardSurface,
-                cardBorder: self.cardBorder
+                cardBorder: self.cardBorder,
+                onEndpointsUpdated: {
+                    self.reload()
+                    self.prefetchResolvedCharacters()
+                }
             )
         }
     }
@@ -1094,6 +1139,7 @@ struct AIBotsSettingsView: View {
     
     private func reload() {
         let profiles = AIEndpointStore.profiles
+        self.allEndpoints = profiles
         let activeID = AIEndpointStore.activeID ?? profiles.first?.id
         self.activeEndpoint = profiles.first(where: { $0.id == activeID })
         self.globalPersona = CotLocalDatabase.shared.aiPersona
@@ -1107,10 +1153,12 @@ struct AIBotsSettingsView: View {
 private struct AIBotInlineInspectorView: View {
     
     let botID: AIBotID
+    let allEndpoints: [AIEndpointProfile]
     let activeEndpoint: AIEndpointProfile?
     let globalPersona: String
     let cardSurface: Color
     let cardBorder: Color
+    var onEndpointsUpdated: () -> Void = {}
     
     @State private var botStore = AIBotStore.shared
     @State private var analytics = AnalyticsManager.shared
@@ -1123,32 +1171,83 @@ private struct AIBotInlineInspectorView: View {
     @State private var nextTokenDebounceMs: Int = 420
     @State private var nextTokenDailyCap: Int = 300
     
+    @State private var fetchedModelsByEndpoint: [UUID: [String]] = [:]
+    @State private var fetchingEndpointIDs: Set<UUID> = []
+    
     @State private var sampleInput: String = ""
     @State private var sampleOutput: String = ""
     @State private var testError: String?
     @State private var isTesting = false
     
     
+    private var effectiveEndpoint: AIEndpointProfile? {
+        if let endpointID = self.config.endpointID,
+           let matched = self.allEndpoints.first(where: { $0.id == endpointID })
+        {
+            return matched
+        }
+        return self.activeEndpoint
+    }
+    
+    
     private var resolvedCharacter: AIGijinkaCharacter? {
+        let endpoint = self.effectiveEndpoint
         let overrideModel = self.config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
         if !overrideModel.isEmpty {
-            return AIGijinkaCharacter.resolve(modelName: overrideModel)
+            return AIGijinkaCharacter.resolve(
+                modelName: overrideModel,
+                endpointName: endpoint?.displayName,
+                baseURL: endpoint?.baseURL
+            )
         }
         return AIGijinkaCharacter.resolve(
-            modelName: self.activeEndpoint?.displayModel,
-            endpointName: self.activeEndpoint?.displayName,
-            baseURL: self.activeEndpoint?.baseURL
+            modelName: endpoint?.displayModel,
+            endpointName: endpoint?.displayName,
+            baseURL: endpoint?.baseURL
         )
     }
     
     
+    private func selectableModels(for profile: AIEndpointProfile) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        let fetched = self.fetchedModelsByEndpoint[profile.id] ?? []
+        let providerDefault = profile.provider == .custom ? [] : [profile.provider.defaultModel]
+        let candidates = profile.availableModelIDs + fetched + providerDefault
+        for raw in candidates {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            result.append(trimmed)
+        }
+        return result
+    }
+    
+    
+    private func cropAlignment(for anchor: AIGijinkaCropAnchor) -> Alignment {
+        switch anchor {
+            case .top: .top
+            case .center: .center
+            case .leading: .topLeading
+        }
+    }
+    
+    
     var body: some View {
+        let endpoint = self.effectiveEndpoint
         let character = self.resolvedCharacter
+        let artwork = character?.artwork(for: self.botID, variantOverride: self.config.artworkVariantIndex)
         let accent = Color(hexString: character?.accentHex ?? self.botID.accentHex)
-        let portrait = character.flatMap { self.imageLoader.image(for: $0) }
+        let portrait = artwork.flatMap { self.imageLoader.image(for: $0) }
         let modelLabel = self.config.modelOverride.isEmpty
-            ? (self.activeEndpoint?.displayModel ?? AppLanguage.text("未选择模型", en: "No Model"))
+            ? (endpoint?.displayModel ?? AppLanguage.text("未选择模型", en: "No Model"))
             : self.config.modelOverride
+        let endpointTag: String = if let selectedID = self.config.endpointID,
+                                     let ep = self.allEndpoints.first(where: { $0.id == selectedID })
+        {
+            ep.displayName
+        } else {
+            AppLanguage.text("默认端点", en: "Default")
+        }
         
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
@@ -1160,27 +1259,72 @@ private struct AIBotInlineInspectorView: View {
                             .resizable()
                             .interpolation(.high)
                             .scaledToFill()
-                            .frame(width: 52, height: 64, alignment: .top)
+                            .frame(width: 60, height: 80, alignment: self.cropAlignment(for: artwork?.cropAnchor ?? .top))
                     } else {
                         Image(systemName: self.botID.symbolName)
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(accent)
                     }
                 }
-                .frame(width: 52, height: 64)
+                .frame(width: 60, height: 80)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .strokeBorder(accent.opacity(0.35), lineWidth: 0.75)
                 )
                 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(self.botID.displayName)
                         .font(.system(size: 15, weight: .semibold))
                     Text(character.map { "\($0.name) · \(modelLabel)" } ?? modelLabel)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    
+                    if let character, character.artworks.count > 1 {
+                        Menu {
+                            Button {
+                                self.config.artworkVariantIndex = nil
+                                self.saveBotConfig()
+                            } label: {
+                                if self.config.artworkVariantIndex == nil {
+                                    Label(AppLanguage.text("自动分配形象", en: "Auto Variant"), systemImage: "checkmark")
+                                } else {
+                                    Text(AppLanguage.text("自动分配形象", en: "Auto Variant"))
+                                }
+                            }
+                            Divider()
+                            ForEach(Array(character.artworks.enumerated()), id: \.element.id) { idx, item in
+                                Button {
+                                    self.config.artworkVariantIndex = idx
+                                    self.saveBotConfig()
+                                } label: {
+                                    if artwork?.id == item.id && self.config.artworkVariantIndex != nil {
+                                        Label(item.title, systemImage: "checkmark")
+                                    } else {
+                                        Text(item.title)
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "photo.stack")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                Text(artwork?.title ?? AppLanguage.text("切换立绘", en: "Switch Art"))
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .lineLimit(1)
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 8, weight: .semibold))
+                            }
+                            .foregroundStyle(accent)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(accent.opacity(0.11), in: Capsule())
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                    }
                 }
                 
                 Spacer()
@@ -1195,35 +1339,131 @@ private struct AIBotInlineInspectorView: View {
             
             Divider()
             
-            HStack(spacing: 10) {
-                Text("专属模型")
-                    .font(.system(size: 12.5, weight: .medium))
-                    .frame(width: 66, alignment: .leading)
-                
-                TextField(self.activeEndpoint?.displayModel ?? "默认", text: self.$config.modelOverride)
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: self.config.modelOverride) { _, _ in
-                        self.saveBotConfig()
-                    }
-                
-                if let endpoint = self.activeEndpoint, !endpoint.availableModelIDs.isEmpty {
+            // Endpoint + Model Selector (supports ANY model under ANY configured endpoint)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Text(AppLanguage.text("端点模型", en: "Model"))
+                        .font(.system(size: 12.5, weight: .medium))
+                        .frame(width: 66, alignment: .leading)
+                    
                     Menu {
-                        Button("默认") {
+                        Button {
+                            let previousBrand = self.resolvedCharacter?.id
+                            self.config.endpointID = nil
                             self.config.modelOverride = ""
+                            if self.resolvedCharacter?.id != previousBrand {
+                                self.config.artworkVariantIndex = nil
+                            }
                             self.saveBotConfig()
+                        } label: {
+                            let isFollowingDefault = (self.config.endpointID == nil && self.config.modelOverride.isEmpty)
+                            let defaultDesc = self.activeEndpoint.map {
+                                "\($0.displayName) · \($0.displayModel ?? AppLanguage.text("默认", en: "Default"))"
+                            } ?? AppLanguage.text("全局默认", en: "Global Default")
+                            if isFollowingDefault {
+                                Label("跟随全局默认 (\(defaultDesc))", systemImage: "checkmark")
+                            } else {
+                                Text("跟随全局默认 (\(defaultDesc))")
+                            }
                         }
-                        Divider()
-                        ForEach(endpoint.availableModelIDs, id: \.self) { id in
-                            Button(id) {
-                                self.config.modelOverride = id
-                                self.saveBotConfig()
+                        
+                        if !self.allEndpoints.isEmpty {
+                            Divider()
+                            ForEach(self.allEndpoints) { profile in
+                                let models = self.selectableModels(for: profile)
+                                let isDefaultEndpoint = (profile.id == self.activeEndpoint?.id)
+                                let sectionHeader = isDefaultEndpoint
+                                    ? "\(profile.displayName)（当前默认）"
+                                    : profile.displayName
+                                
+                                Section(sectionHeader) {
+                                    ForEach(models, id: \.self) { modelID in
+                                        let isPicked = (self.config.endpointID == profile.id && self.config.modelOverride == modelID)
+                                        Button {
+                                            let previousBrand = self.resolvedCharacter?.id
+                                            self.config.endpointID = profile.id
+                                            self.config.modelOverride = modelID
+                                            if self.resolvedCharacter?.id != previousBrand {
+                                                self.config.artworkVariantIndex = nil
+                                            }
+                                            self.saveBotConfig()
+                                        } label: {
+                                            if isPicked {
+                                                Label(modelID, systemImage: "checkmark")
+                                            } else {
+                                                Text(modelID)
+                                            }
+                                        }
+                                    }
+                                    
+                                    Button {
+                                        Task { await self.fetchModels(for: profile) }
+                                    } label: {
+                                        Label(
+                                            self.fetchingEndpointIDs.contains(profile.id)
+                                                ? "正在刷新模型…"
+                                                : "刷新「\(profile.displayName)」模型列表",
+                                            systemImage: "arrow.triangle.2.circlepath"
+                                        )
+                                    }
+                                    .disabled(self.fetchingEndpointIDs.contains(profile.id))
+                                }
                             }
                         }
                     } label: {
-                        Image(systemName: "chevron.up.chevron.down")
+                        HStack(spacing: 6) {
+                            if !self.fetchingEndpointIDs.isEmpty {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Image(systemName: "cpu")
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundStyle(accent)
+                            }
+                            Text("\(endpointTag) · \(modelLabel)")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 9)
+                        .frame(height: 28)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .strokeBorder(self.cardBorder, lineWidth: 0.75)
+                        )
                     }
                     .menuStyle(.borderlessButton)
-                    .fixedSize()
+                    .menuIndicator(.hidden)
+                }
+                
+                HStack(spacing: 10) {
+                    Text(AppLanguage.text("自定义ID", en: "Custom ID"))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 66, alignment: .leading)
+                    
+                    TextField(endpoint?.displayModel ?? "输入任意模型 ID（覆盖默认）", text: self.$config.modelOverride)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                        .onChange(of: self.config.modelOverride) { _, _ in
+                            self.saveBotConfig()
+                        }
+                    
+                    if self.config.endpointID != nil || !self.config.modelOverride.isEmpty {
+                        Button(AppLanguage.text("默认", en: "Reset")) {
+                            self.config.endpointID = nil
+                            self.config.modelOverride = ""
+                            self.config.artworkVariantIndex = nil
+                            self.saveBotConfig()
+                        }
+                        .controlSize(.small)
+                    }
                 }
             }
             
@@ -1426,6 +1666,25 @@ private struct AIBotInlineInspectorView: View {
     
     private func saveBotConfig() {
         self.botStore.updateConfig(self.config, for: self.botID)
+    }
+    
+    
+    private func fetchModels(for profile: AIEndpointProfile) async {
+        self.fetchingEndpointIDs.insert(profile.id)
+        defer { self.fetchingEndpointIDs.remove(profile.id) }
+        let config = profile.configuration(apiKey: AIEndpointStore.apiKey(for: profile))
+        do {
+            let models = try await AIService.shared.fetchModels(configuration: config)
+            let ids = models.map(\.id)
+            self.fetchedModelsByEndpoint[profile.id] = ids
+            var updated = profile
+            updated.rememberModels(Array(ids.prefix(24)))
+            AIEndpointStore.save(updated, apiKey: AIEndpointStore.apiKey(for: profile))
+            CotLocalDatabase.shared.syncAIEndpointsToDatabase()
+            self.onEndpointsUpdated()
+        } catch {
+            self.testError = "刷新「\(profile.displayName)」模型失败：\(error.localizedDescription)"
+        }
     }
     
     

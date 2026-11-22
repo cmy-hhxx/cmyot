@@ -169,6 +169,18 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
                 }
                 let applyAppearance = {
                     window.appearance = targetAppearance
+                    let resolvedDark: Bool = switch value {
+                        case .light: false
+                        case .dark: true
+                        case .default:
+                            window.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                    }
+                    if UserDefaults.standard[.theme].hasPrefix("Studio · ") {
+                        StudioPaletteManager.shared.applyPaletteToEditorTheme(
+                            preferDark: resolvedDark,
+                            updateDocumentAppearance: false
+                        )
+                    }
                     window.toolbar?.validateVisibleItems()
                 }
                 if window.isVisible, window.appearance != targetAppearance {
@@ -965,7 +977,7 @@ extension DocumentWindowController: NSToolbarDelegate {
             case .pinnedTodos:
                 let item = NSToolbarItem(itemIdentifier: itemIdentifier)
                 item.label = AppLanguage.text("待办", en: "Todos")
-                item.toolTip = AppLanguage.text("胶囊待办（优先显示快到期事项，点击展开全部）", en: "Capsule Todos")
+                item.toolTip = AppLanguage.text("待办（优先显示快到期事项，点击展开全部）", en: "Todos")
                 item.view = ToolbarCapsuleTodoButtonView()
                 item.isNavigational = false
                 item.visibilityPriority = .high

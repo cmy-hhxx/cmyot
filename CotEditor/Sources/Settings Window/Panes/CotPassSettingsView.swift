@@ -47,16 +47,16 @@ nonisolated enum CotPassTier: String, Codable, Sendable, Equatable {
     
     var accessLabel: String {
         switch self {
-            case .explorer: AppLanguage.text("免费", en: "FREE")
-            case .pro, .founder: AppLanguage.text("付费", en: "PAID")
+            case .explorer: "Free"
+            case .pro, .founder: "FULL"
         }
     }
     
     
     var summaryLabel: String {
         switch self {
-            case .explorer: "免费"
-            case .pro, .founder: "付费"
+            case .explorer: "Free"
+            case .pro, .founder: "FULL"
         }
     }
 }
@@ -629,22 +629,6 @@ struct CotPassSettingsView: View {
     }
     
     
-    static func conciseBadgeTitle(aiConceptTitle: String?, lifetimeTypedChars: Int) -> String {
-        if let raw = aiConceptTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !raw.isEmpty
-        {
-            if raw.count <= 4 {
-                return raw
-            }
-            return String(raw.prefix(4))
-        }
-        if lifetimeTypedChars >= 50_000 { return "万字大神" }
-        if lifetimeTypedChars >= 10_000 { return "笔耕狠人" }
-        if lifetimeTypedChars >= 2_000 { return "稳产写手" }
-        return "执笔新锐"
-    }
-    
-    
     var body: some View {
         let activeProfile = self.profileManager.activeProfile
         let avatarImage = self.profileManager.avatarImage(for: activeProfile)
@@ -779,7 +763,232 @@ struct CotPassSettingsView: View {
 }
 
 
-// MARK: - Horizontal Collector Pass Card (Avatar-Contour Scanline Canvas)
+// MARK: - Blue Fluted Glass Backdrop (leibox.pantoria.cn/docs/animations/blue-fluted-glass)
+
+/// Faithfully reproduces the LeiBox Blue Fluted Glass fragment shader in CPU-vectorized Swift:
+/// - Seamless 28-second periodic organic cobalt/Prussian/ice-blue fluid field (`trunk`, `crown`, `base`, `hole`)
+/// - Vertical fluted glass refraction (`ribCount = 44`) with quadratic vertical lens bend
+/// - 5-tap vertical frosted diffusion & specular facet sheen on deep-blue ridges
+nonisolated enum BlueFlutedGlassRenderer {
+    
+    static let periodSeconds: Double = 28.0
+    static let defaultWidth: Int = 176
+    static let defaultHeight: Int = 106
+    static let defaultRibCount: Double = 44.0
+    
+    private static let colorSpace = CGColorSpaceCreateDeviceRGB()
+    
+    @inline(__always)
+    private static func smoothstep(_ edge0: Double, _ edge1: Double, _ x: Double) -> Double {
+        let t = max(0.0, min(1.0, (x - edge0) / (edge1 - edge0)))
+        return t * t * (3.0 - 2.0 * t)
+    }
+    
+    @inline(__always)
+    private static func blob(
+        px: Double, py: Double,
+        cx: Double, cy: Double,
+        invRx: Double, invRy: Double,
+        cosA: Double, sinA: Double
+    ) -> Double {
+        let dx = px - cx
+        let dy = py - cy
+        let qx = (cosA * dx - sinA * dy) * invRx
+        let qy = (sinA * dx + cosA * dy) * invRy
+        return exp(-(qx * qx + qy * qy))
+    }
+    
+    /// Renders one frame of the Blue Fluted Glass field at `time` (seconds) into an RGBA `CGImage`.
+    static func renderFrame(
+        time: Double,
+        width: Int = Self.defaultWidth,
+        height: Int = Self.defaultHeight,
+        ribCount: Double = Self.defaultRibCount
+    ) -> CGImage? {
+        guard width > 0, height > 0 else { return nil }
+        
+        let wrapped = time.truncatingRemainder(dividingBy: Self.periodSeconds)
+        let phase = (wrapped < 0 ? wrapped + Self.periodSeconds : wrapped) * (2.0 * .pi / Self.periodSeconds)
+        let s = sin(phase)
+        let c = cos(phase)
+        let s2 = sin(2.0 * phase)
+        let twoPhase = 2.0 * phase
+        
+        // Precompute per-frame blob centers, inverse radii, and rotation trig
+        let trunkCx = 0.52 + 0.15 * s - 0.07 * s2
+        let trunkCy = 0.76
+        let trunkInvRx = 1.0 / 0.235
+        let trunkInvRy = 1.0 / 0.46
+        let trunkRot = -0.12 - 0.52 * s
+        let trunkCos = cos(trunkRot)
+        let trunkSin = sin(trunkRot)
+        
+        let crownCx = 0.77 - 0.55 * s
+        let crownCy = 0.20 - 0.10 * s2
+        let crownInvRx = 1.0 / 0.235
+        let crownInvRy = 1.0 / 0.23
+        let crownRot = -0.50 + 0.45 * s
+        let crownCos = cos(crownRot)
+        let crownSin = sin(crownRot)
+        
+        let holeCx = 0.85 - 0.55 * s
+        let holeCy = 0.59 - 0.13 * s
+        let holeInvRx = 1.0 / (0.19 + 0.025 * c)
+        let holeInvRy = 1.0 / 0.32
+        let holeRot = 0.10 + 0.50 * s
+        let holeCos = cos(holeRot)
+        let holeSin = sin(holeRot)
+        
+        // Precompute per-column fluted rib geometry & edge sheen
+        var colRib = [Double](repeating: 0, count: width)
+        var colRefrX = [Double](repeating: 0, count: width)
+        var colRefrDy = [Double](repeating: 0, count: width)
+        var colSheenFactor = [Double](repeating: 0, count: width)
+        var colBaseY = [Double](repeating: 0, count: width)
+        
+        let invW = 1.0 / Double(width)
+        let invH = 1.0 / Double(height)
+        
+        for x in 0..<width {
+            let u = (Double(x) + 0.5) * invW
+            let scaled = u * ribCount
+            let rib = (scaled - floor(scaled)) - 0.5
+            let rx = u + rib * 0.018
+            let dy = (rib * rib - 0.0833) * 0.034
+            let edge = pow(abs(rib) * 2.0, 10.0)
+            colRib[x] = rib
+            colRefrX[x] = rx
+            colRefrDy[x] = dy
+            colSheenFactor[x] = rib * 0.65 + edge * 0.24
+            colBaseY[x] = 1.045 - 0.17 * rx + 0.075 * sin(rx * 5.0 + twoPhase)
+        }
+        
+        @inline(__always)
+        func sampleDensity(rx: Double, py: Double, baseYHint: Double) -> Double {
+            let px = rx + 0.025 * sin(py * 7.0 + twoPhase)
+            let trunk = Self.blob(px: px, py: py, cx: trunkCx, cy: trunkCy, invRx: trunkInvRx, invRy: trunkInvRy, cosA: trunkCos, sinA: trunkSin)
+            let crown = Self.blob(px: px, py: py, cx: crownCx, cy: crownCy, invRx: crownInvRx, invRy: crownInvRy, cosA: crownCos, sinA: crownSin)
+            let baseY = 1.045 - 0.17 * px + 0.075 * sin(px * 5.0 + twoPhase)
+            let bd = (py - baseY) / 0.092
+            let base = exp(-(bd * bd))
+            let hole = Self.blob(px: px, py: py, cx: holeCx, cy: holeCy, invRx: holeInvRx, invRy: holeInvRy, cosA: holeCos, sinA: holeSin)
+            _ = baseYHint
+            return (trunk + 0.56 * crown + 0.90 * base) * (1.0 - 0.78 * hole)
+        }
+        
+        let byteCount = width * height * 4
+        var pixels = [UInt8](repeating: 255, count: byteCount)
+        
+        pixels.withUnsafeMutableBufferPointer { buf in
+            guard let ptr = buf.baseAddress else { return }
+            
+            for y in 0..<height {
+                // Top-to-bottom UV (0 = top, 1 = bottom, matching WebGL canvas orientation)
+                let v = (Double(y) + 0.5) * invH
+                let rowOffset = y * width * 4
+                
+                for x in 0..<width {
+                    let rx = colRefrX[x]
+                    let ry = v + colRefrDy[x]
+                    let baseHint = colBaseY[x]
+                    
+                    // 5-tap vertical frost softening matching reference shader weights
+                    let d0 = sampleDensity(rx: rx, py: ry, baseYHint: baseHint)
+                    let d1 = sampleDensity(rx: rx, py: ry + 0.025, baseYHint: baseHint)
+                    let d2 = sampleDensity(rx: rx, py: ry - 0.025, baseYHint: baseHint)
+                    let d3 = sampleDensity(rx: rx, py: ry + 0.055, baseYHint: baseHint)
+                    let d4 = sampleDensity(rx: rx, py: ry - 0.055, baseYHint: baseHint)
+                    let density = d0 * 0.40 + (d1 + d2) * 0.24 + (d3 + d4) * 0.06
+                    
+                    // Exact 5-stop sRGB palette ramp (#F4F4F4 -> #A8CCE3 -> #1A7ABA -> #042247 -> #020616)
+                    var r = 0.957
+                    var g = 0.957
+                    var b = 0.957
+                    
+                    let k1 = Self.smoothstep(0.015, 0.20, density)
+                    r += (0.660 - r) * k1
+                    g += (0.800 - g) * k1
+                    b += (0.890 - b) * k1
+                    
+                    let k2 = Self.smoothstep(0.16, 0.49, density)
+                    r += (0.100 - r) * k2
+                    g += (0.480 - g) * k2
+                    b += (0.730 - b) * k2
+                    
+                    let k3 = Self.smoothstep(0.40, 0.73, density)
+                    r += (0.015 - r) * k3
+                    g += (0.135 - g) * k3
+                    b += (0.280 - b) * k3
+                    
+                    let k4 = Self.smoothstep(0.62, 0.93, density)
+                    r += (0.008 - r) * k4
+                    g += (0.025 - g) * k4
+                    b += (0.087 - b) * k4
+                    
+                    // Specular rib facet sheen restricted to blue regions
+                    let blueMask = (1.0 - r) * Self.smoothstep(0.02, 0.18, b - r)
+                    let sheen = colSheenFactor[x] * blueMask
+                    r = max(0.0, min(1.0, r + 0.018 * sheen))
+                    g = max(0.0, min(1.0, g + 0.025 * sheen))
+                    b = max(0.0, min(1.0, b + 0.030 * sheen))
+                    
+                    let offset = rowOffset + x * 4
+                    ptr[offset]     = UInt8(r * 255.0 + 0.5)
+                    ptr[offset + 1] = UInt8(g * 255.0 + 0.5)
+                    ptr[offset + 2] = UInt8(b * 255.0 + 0.5)
+                    ptr[offset + 3] = 255
+                }
+            }
+        }
+        
+        let data = Data(pixels)
+        guard let provider = CGDataProvider(data: data as CFData) else { return nil }
+        return CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: Self.colorSpace,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: true,
+            intent: .defaultIntent
+        )
+    }
+}
+
+
+private struct BlueFlutedGlassBackdropView: View {
+    
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: AnimationConstants.isReducedMotionEnabled)) { context in
+            let t = AnimationConstants.isReducedMotionEnabled ? 6.5 : context.date.timeIntervalSinceReferenceDate
+            if let cgImage = BlueFlutedGlassRenderer.renderFrame(time: t) {
+                Image(decorative: cgImage, scale: 1.0)
+                    .resizable()
+                    .interpolation(.medium)
+                    .scaledToFill()
+                    .blur(radius: 0.45)
+            } else {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.957, green: 0.957, blue: 0.957),
+                        Color(red: 0.10, green: 0.48, blue: 0.73),
+                        Color(red: 0.008, green: 0.025, blue: 0.087),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+
+// MARK: - Horizontal Collector Pass Card (Blue Fluted Glass + Avatar-Contour Scanlines)
 
 struct CotPassCardView: View {
     
@@ -800,16 +1009,29 @@ struct CotPassCardView: View {
     
     var body: some View {
         let accent = Color(hexString: self.theme.matrixColorHex)
-        let topBg = Color(hexString: self.theme.backgroundTopHex)
-        let bottomBg = Color(hexString: self.theme.backgroundBottomHex)
-        let primaryText: Color = self.theme.isLightSurface ? Color(red: 0.10, green: 0.11, blue: 0.10) : Color.white
-        let mutedText: Color = self.theme.isLightSurface ? Color.black.opacity(0.48) : Color.white.opacity(0.46)
-        let dividerStroke: Color = self.theme.isLightSurface ? Color.black.opacity(0.09) : Color.white.opacity(0.10)
+        let primaryText = Color.white
+        let mutedText = Color.white.opacity(0.74)
+        let dividerStroke = Color.white.opacity(0.24)
+        let opticalShadow = Color(red: 0.0, green: 0.075, blue: 0.18, opacity: 0.42)
         let engine = self.brandLineEngine ?? self.fallbackEngine
         
         ZStack {
-            // Subtle tonal base
-            LinearGradient(colors: [topBg, bottomBg], startPoint: .topLeading, endPoint: .bottomTrailing)
+            // Animated Blue Fluted Glass backdrop (leibox.pantoria.cn/docs/animations/blue-fluted-glass)
+            BlueFlutedGlassBackdropView()
+            
+            // Gentle optical scrims at top header & bottom metadata bar to guarantee crisp white typography
+            // while keeping the luminous fluted-glass fluid field unobstructed across the card body
+            LinearGradient(
+                stops: [
+                    .init(color: Color(red: 0.015, green: 0.10, blue: 0.24, opacity: 0.26), location: 0.0),
+                    .init(color: Color.clear, location: 0.28),
+                    .init(color: Color.clear, location: 0.56),
+                    .init(color: Color(red: 0.008, green: 0.035, blue: 0.11, opacity: 0.42), location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .allowsHitTesting(false)
             
             // Avatar-contour vertical scanline reconstruction + spring pointer repulsion + reticle boxes
             TimelineView(.animation(minimumInterval: self.isHovered ? (1.0 / 60.0) : (1.0 / 12.0), paused: AnimationConstants.isReducedMotionEnabled)) { context in
@@ -823,7 +1045,7 @@ struct CotPassCardView: View {
                     let colStep = canvasSize.width / CGFloat(max(1, cols - 1))
                     let rowStep = canvasSize.height / CGFloat(rows)
                     let widths: [CGFloat] = [0.34, 0.88, 1.70, 2.65]
-                    let alphas: [Double] = [0.02, 0.18, 0.38, 0.62]
+                    let alphas: [Double] = [0.02, 0.22, 0.46, 0.72]
                     let noiseYShift = t * 0.44
                     
                     for c in 0..<cols {
@@ -851,8 +1073,7 @@ struct CotPassCardView: View {
                             var seg = Path()
                             seg.move(to: CGPoint(x: x0, y: y0))
                             seg.addLine(to: CGPoint(x: x1, y: y1))
-                            let a = self.theme.isLightSurface ? alphas[tier] * 0.82 : alphas[tier]
-                            graphics.stroke(seg, with: .color(accent.opacity(a)), style: StrokeStyle(lineWidth: widths[tier], lineCap: .round))
+                            graphics.stroke(seg, with: .color(accent.opacity(alphas[tier])), style: StrokeStyle(lineWidth: widths[tier], lineCap: .round))
                         }
                     }
                     
@@ -866,15 +1087,15 @@ struct CotPassCardView: View {
                             )
                             graphics.stroke(
                                 Path(roundedRect: rect, cornerRadius: 2),
-                                with: .color(accent.opacity(0.55)),
-                                lineWidth: 0.85
+                                with: .color(Color.white.opacity(0.68)),
+                                lineWidth: 0.9
                             )
                             var leader = Path()
                             leader.move(to: pointer)
                             leader.addLine(to: CGPoint(x: rect.midX, y: rect.midY))
                             graphics.stroke(
                                 leader,
-                                with: .color(accent.opacity(0.32)),
+                                with: .color(Color.white.opacity(0.42)),
                                 style: StrokeStyle(lineWidth: 0.75, dash: [3, 2])
                             )
                         }
@@ -885,14 +1106,14 @@ struct CotPassCardView: View {
             
             // Inner registration hairline
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(dividerStroke, lineWidth: 0.75)
+                .strokeBorder(Color.white.opacity(0.24), lineWidth: 0.75)
                 .padding(8)
                 .allowsHitTesting(false)
             
             // Subtle specular sheen tracking cursor
             RadialGradient(
                 colors: [
-                    (self.theme.isLightSurface ? Color.white : accent).opacity(self.isHovered ? 0.18 : 0.05),
+                    Color.white.opacity(self.isHovered ? 0.24 : 0.07),
                     .clear,
                 ],
                 center: self.specularPoint,
@@ -908,9 +1129,11 @@ struct CotPassCardView: View {
                         Circle()
                             .fill(accent)
                             .frame(width: 6, height: 6)
+                            .shadow(color: opticalShadow, radius: 2, y: 1)
                         Text("COTEDITOR PASS")
                             .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(accent)
+                            .foregroundStyle(primaryText)
+                            .shadow(color: opticalShadow, radius: 3, y: 1)
                     }
                     
                     Spacer()
@@ -918,6 +1141,7 @@ struct CotPassCardView: View {
                     Text("NO.\(self.serialCode)")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(mutedText)
+                        .shadow(color: opticalShadow, radius: 3, y: 1)
                 }
                 
                 Spacer(minLength: 16)
@@ -927,12 +1151,14 @@ struct CotPassCardView: View {
                     UserAvatarCircleView(profile: self.profile, size: 48, customImage: self.avatarImage)
                         .overlay(
                             Circle()
-                                .strokeBorder(accent.opacity(0.65), lineWidth: 1.2)
+                                .strokeBorder(Color.white.opacity(0.72), lineWidth: 1.2)
                         )
+                        .shadow(color: opticalShadow, radius: 6, y: 2)
                     
                     Text(self.profile.displayName)
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(primaryText)
+                        .shadow(color: opticalShadow, radius: 4, y: 1)
                         .lineLimit(1)
                 }
                 
@@ -951,7 +1177,8 @@ struct CotPassCardView: View {
                         showStatusDot: true,
                         accent: accent,
                         primary: primaryText,
-                        muted: mutedText
+                        muted: mutedText,
+                        shadowColor: opticalShadow
                     )
                     
                     self.passFieldCell(
@@ -960,7 +1187,8 @@ struct CotPassCardView: View {
                         showStatusDot: false,
                         accent: accent,
                         primary: primaryText,
-                        muted: mutedText
+                        muted: mutedText,
+                        shadowColor: opticalShadow
                     )
                     
                     self.passFieldCell(
@@ -969,7 +1197,8 @@ struct CotPassCardView: View {
                         showStatusDot: false,
                         accent: accent,
                         primary: primaryText,
-                        muted: mutedText
+                        muted: mutedText,
+                        shadowColor: opticalShadow
                     )
                 }
             }
@@ -980,9 +1209,9 @@ struct CotPassCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(accent.opacity(self.isHovered ? 0.52 : 0.28), lineWidth: 1)
+                .strokeBorder(Color.white.opacity(self.isHovered ? 0.45 : 0.26), lineWidth: 1)
         )
-        .shadow(color: Color.black.opacity(self.theme.isLightSurface ? 0.10 : 0.28), radius: 16, y: 6)
+        .shadow(color: Color(red: 0.01, green: 0.08, blue: 0.22, opacity: 0.26), radius: 18, y: 7)
     }
     
     
@@ -992,22 +1221,26 @@ struct CotPassCardView: View {
         showStatusDot: Bool,
         accent: Color,
         primary: Color,
-        muted: Color
+        muted: Color,
+        shadowColor: Color
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label)
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                 .foregroundStyle(muted)
+                .shadow(color: shadowColor, radius: 2, y: 1)
             
             HStack(spacing: 5) {
                 if showStatusDot {
                     Circle()
                         .fill(accent)
                         .frame(width: 5.5, height: 5.5)
+                        .shadow(color: shadowColor, radius: 2, y: 1)
                 }
                 Text(value)
                     .font(.system(size: 13, weight: .semibold, design: .monospaced))
                     .foregroundStyle(primary)
+                    .shadow(color: shadowColor, radius: 3, y: 1)
                     .lineLimit(1)
             }
         }

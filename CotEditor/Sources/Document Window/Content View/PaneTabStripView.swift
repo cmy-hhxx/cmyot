@@ -20,38 +20,6 @@
 //
 
 import AppKit
-import SwiftUI
-
-/// SwiftUI wrapper around the native AppKit `PaneTabStripNSView`, kept for previews and compatibility.
-struct PaneTabStripView: NSViewRepresentable {
-    
-    var state: PaneTabState
-    
-    func makeNSView(context: Context) -> PaneTabStripNSView {
-        
-        let view = PaneTabStripNSView()
-        view.state = self.state
-        self.state.onRequestInlineRename = { [weak view] tab in
-            view?.beginInlineRename(for: tab)
-        }
-        return view
-    }
-    
-    
-    func updateNSView(_ nsView: PaneTabStripNSView, context: Context) {
-        
-        _ = self.state.tabs.map { ($0.id, $0.title, $0.isPinned, $0.isEdited, $0.isClosable) }
-        _ = self.state.selectedTab?.id
-        _ = self.state.refreshRevision
-        
-        nsView.state = self.state
-        self.state.onRequestInlineRename = { [weak nsView] tab in
-            nsView?.beginInlineRename(for: tab)
-        }
-        nsView.reloadTabs()
-    }
-}
-
 
 // MARK: - Native AppKit Tab Strip
 

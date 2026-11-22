@@ -198,14 +198,22 @@ struct Round24FeatureTests {
     }
     
     
-    // MARK: 5. CotPass Metadata & Avatar Contour Extraction
+    // MARK: 5. CotPass Metadata, Blue Fluted Glass & Avatar Contour Extraction
     
-    @Test func cotPassTierFieldsAndAvatarContourLuminanceField() {
+    @Test func cotPassTierFieldsAndAvatarContourLuminanceField() throws {
         #expect(CotPassTier.explorer.statusLabel == "LANDED")
         #expect(CotPassTier.pro.statusLabel == "LANDED")
-        #expect(CotPassTier.explorer.summaryLabel == "免费")
-        #expect(CotPassTier.pro.summaryLabel == "付费")
-        #expect(CotPassTier.founder.summaryLabel == "付费")
+        #expect(CotPassTier.explorer.accessLabel == "Free")
+        #expect(CotPassTier.pro.accessLabel == "FULL")
+        #expect(CotPassTier.founder.accessLabel == "FULL")
+        #expect(CotPassTier.explorer.summaryLabel == "Free")
+        #expect(CotPassTier.pro.summaryLabel == "FULL")
+        #expect(CotPassTier.founder.summaryLabel == "FULL")
+        
+        // Blue Fluted Glass backdrop renders valid RGBA frame with expected dimensions
+        let flutedFrame = try #require(BlueFlutedGlassRenderer.renderFrame(time: 4.2, width: 64, height: 40))
+        #expect(flutedFrame.width == 64)
+        #expect(flutedFrame.height == 40)
         
         // Render a synthetic high-contrast portrait image and confirm Sobel contour extraction produces signal
         let avatar = NSImage(size: NSSize(width: 96, height: 96))
@@ -219,6 +227,66 @@ struct Round24FeatureTests {
         let field = BrandLinePassEngine.buildAvatarContourField(from: avatar)
         #expect(field.count == BrandLinePassEngine.gridSize * BrandLinePassEngine.gridSize)
         #expect((field.max() ?? 0) > 0.5)
+    }
+    
+    
+    // MARK: 5B. Cross-Endpoint Agent Routing, Multi-Artwork Diversity & Popover Rounded Mask
+    
+    @Test func agentCrossEndpointRoutingMultiArtworkDiversityAndPopoverMask() throws {
+        // 1. Popover rounded mask is 9-slice stretchable (prevents square white corner bleed)
+        let mask = UserAvatarToolbarButtonView.makeRoundedMaskImage(cornerRadius: 16)
+        #expect(mask.resizingMode == .stretch)
+        #expect(mask.capInsets.top == 16 && mask.capInsets.left == 16)
+        
+        // 2. Multi-artwork diversity: agents sharing DeepSeek / GPT get varied artworks by default
+        #expect(AIGijinkaCharacter.deepseek.artworks.count >= 8)
+        #expect(AIGijinkaCharacter.gpt.artworks.count >= 5)
+        let artA = AIGijinkaCharacter.deepseek.artwork(for: .ghost)
+        let artB = AIGijinkaCharacter.deepseek.artwork(for: .translate)
+        let artC = AIGijinkaCharacter.deepseek.artwork(for: .summarize)
+        #expect(artA.id != artB.id)
+        #expect(artB.id != artC.id)
+        #expect(AIGijinkaCharacter.deepseek.artwork(for: .ghost, variantOverride: 4).id == AIGijinkaCharacter.deepseek.artworks[4].id)
+        
+        // 3. Per-bot endpointID + modelOverride routes cleanly across endpoints
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appending(path: "cot_r24_bot_routing_\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        
+        let db = CotLocalDatabase(customURL: tempRoot.appending(path: "test.sqlite3"))
+        let store = AIBotStore(database: db)
+        let anthropicEndpoint = AIEndpointProfile(
+            name: "Anthropic Work",
+            endpoint: .anthropicMessages,
+            baseURL: "https://api.anthropic.com/v1",
+            model: "claude-3-7-sonnet",
+            savedModels: ["claude-3-7-sonnet", "claude-3-5-haiku"]
+        )
+        let deepSeekEndpoint = AIEndpointProfile(
+            name: "DeepSeek Default",
+            endpoint: .openAIChatCompletions,
+            baseURL: "https://api.deepseek.com/v1",
+            model: "deepseek-chat"
+        )
+        store.updateConfig(
+            AIBotConfig(
+                isEnabled: true,
+                endpointID: anthropicEndpoint.id,
+                modelOverride: "claude-3-5-haiku",
+                artworkVariantIndex: 1
+            ),
+            for: .translate
+        )
+        
+        let resolved = store.resolvedConfiguration(
+            for: .translate,
+            baseConfig: deepSeekEndpoint.configuration(apiKey: "ds-key"),
+            endpoints: [deepSeekEndpoint, anthropicEndpoint]
+        )
+        #expect(resolved.endpoint == .anthropicMessages)
+        #expect(resolved.baseURL == "https://api.anthropic.com/v1")
+        #expect(resolved.model == "claude-3-5-haiku")
     }
     
     

@@ -195,11 +195,14 @@ private enum SettingsDesignTokens {
     static let sidebarWidth: CGFloat = 204
     static let detailWidth: CGFloat = 575 // 204 + 1 + 575 == 780
     static let contentPadding: CGFloat = 24
-    static let sectionSpacing: CGFloat = 20
+    static let sectionSpacing: CGFloat = 18
     static let sectionTitleSpacing: CGFloat = 6
-    static let rowHeight: CGFloat = 44
-    static let cardCornerRadius: CGFloat = 10
-    static let segmentedWidth: CGFloat = 172
+    static let rowHeight: CGFloat = 42
+    static let cardCornerRadius: CGFloat = 12
+    static let segmentedWidth: CGFloat = 188
+    static let controlWidth: CGFloat = 188
+    static let sliderWidth: CGFloat = 140
+    static let readoutWidth: CGFloat = 40
     
     static let sidebarClusters: [[SidebarSettingsItem]] = [
         [.general, .appIcon, .appearance, .wallpaper],
@@ -213,19 +216,34 @@ private struct SidebarSettingsRootView: View {
     
     @Bindable var state: SidebarSettingsState
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(.documentAppearance) private var documentAppearance
+    @State private var studioPalette = StudioPaletteManager.shared
     @State private var dbStatusMessage: String?
     @State private var hoveredItem: SidebarSettingsItem?
     @Namespace private var sidebarSelectionNamespace
     
     
+    private var resolvedColorScheme: ColorScheme? {
+        switch self.documentAppearance {
+            case .default: nil
+            case .light: .light
+            case .dark: .dark
+        }
+    }
+    
     private var contentBackground: Color {
-        self.colorScheme == .dark
+        let isDark = (self.resolvedColorScheme ?? self.colorScheme) == .dark
+        return isDark
             ? Color(red: 0.118, green: 0.118, blue: 0.125) // #1E1E20
             : Color(red: 0.961, green: 0.961, blue: 0.969) // #F5F5F7
     }
     
     
     var body: some View {
+        let isDark = (self.resolvedColorScheme ?? self.colorScheme) == .dark
+        let accent = self.studioPalette.tokens(isDark: isDark).accent
+        let onAccent = self.studioPalette.tokens(isDark: isDark).onAccentInk
+        
         HStack(spacing: 0) {
             // Left Translucent Apple-style Sidebar
             ZStack(alignment: .topLeading) {
@@ -235,10 +253,17 @@ private struct SidebarSettingsRootView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Spacer().frame(height: 32)
                     
-                    ForEach(Array(SettingsDesignTokens.sidebarClusters.enumerated()), id: \.offset) { _, cluster in
+                    ForEach(Array(SettingsDesignTokens.sidebarClusters.enumerated()), id: \.offset) { clusterIdx, cluster in
+                        if clusterIdx > 0 {
+                            Rectangle()
+                                .fill(isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
+                                .frame(height: 0.5)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                        }
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(cluster) { item in
-                                self.sidebarRow(item)
+                                self.sidebarRow(item, isDark: isDark, accent: accent, onAccent: onAccent)
                             }
                         }
                     }
@@ -251,7 +276,7 @@ private struct SidebarSettingsRootView: View {
             .frame(width: SettingsDesignTokens.sidebarWidth)
             
             Rectangle()
-                .fill(self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.08))
+                .fill(isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.08))
                 .frame(width: 1)
                 .ignoresSafeArea()
             
@@ -285,7 +310,7 @@ private struct SidebarSettingsRootView: View {
                     .frame(height: 52)
                     
                     Rectangle()
-                        .fill(self.colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.07))
+                        .fill(isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.07))
                         .frame(height: 0.5)
                     
                     Group {
@@ -319,17 +344,19 @@ private struct SidebarSettingsRootView: View {
             width: SidebarSettingsWindowController.fixedContentSize.width,
             height: SidebarSettingsWindowController.fixedContentSize.height
         )
+        .preferredColorScheme(self.resolvedColorScheme)
+        .tint(accent)
         .environment(\.locale, AppLanguage.current.locale)
     }
     
     
     @ViewBuilder
-    private func sidebarRow(_ item: SidebarSettingsItem) -> some View {
+    private func sidebarRow(_ item: SidebarSettingsItem, isDark: Bool, accent: Color, onAccent: Color) -> some View {
         let isSelected = (self.state.selectedItem == item)
         let isHovered = (self.hoveredItem == item)
         
         Button {
-            withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
                 self.state.selectedItem = item
             }
         } label: {
@@ -343,7 +370,7 @@ private struct SidebarSettingsRootView: View {
                 
                 Text(item.title)
                     .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? Color.white : Color.primary)
+                    .foregroundStyle(isSelected ? onAccent : Color.primary)
                     .lineLimit(1)
                 
                 Spacer()
@@ -352,13 +379,12 @@ private struct SidebarSettingsRootView: View {
             .frame(height: 32)
             .background {
                 if isSelected {
-                    RoundedRectangle(cornerRadius: 7.5, style: .continuous)
-                        .fill(Color.accentColor)
-                        .shadow(color: Color.accentColor.opacity(0.24), radius: 4, y: 1)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(accent)
                         .matchedGeometryEffect(id: "sidebarActiveTab", in: self.sidebarSelectionNamespace)
                 } else if isHovered {
-                    RoundedRectangle(cornerRadius: 7.5, style: .continuous)
-                        .fill(self.colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.045))
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.045))
                 }
             }
             .contentShape(Rectangle())
@@ -850,8 +876,8 @@ private struct SidebarGeneralSettingsPane: View {
                 }
             }
             
-            // 3. 启动选项
-            SettingsGroupCard(title: AppLanguage.text("启动选项", en: "Startup")) {
+            // 3. 启动与语言
+            SettingsGroupCard(title: AppLanguage.text("启动与语言", en: "Startup & Language")) {
                 SettingsItemRow(label: AppLanguage.text("界面语言", en: "Language")) {
                     Picker("", selection: self.$language) {
                         ForEach(AppLanguage.allCases, id: \.self) { lang in
@@ -859,10 +885,10 @@ private struct SidebarGeneralSettingsPane: View {
                         }
                     }
                     .labelsHidden()
-                    .fixedSize()
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                     .onChange(of: self.language) { _, newValue in
                         newValue.apply()
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
                             self.isLanguageConfirmationPresented = true
                         }
                     }
@@ -901,7 +927,7 @@ private struct SidebarGeneralSettingsPane: View {
                         Text(AppLanguage.text("不执行动作", en: "Do Nothing")).tag(NoDocumentOnLaunchOption.none)
                     }
                     .labelsHidden()
-                    .fixedSize()
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
                 
                 SettingsRowDivider()
@@ -1073,20 +1099,21 @@ private struct SidebarAppIconSettingsPane: View {
                         self.handleDrop(providers: providers)
                     }
                     
-                    HStack(spacing: 10) {
-                        Button(AppLanguage.text("上传图片", en: "Upload")) {
-                            self.pickCustomArtwork()
-                        }
-                        .controlSize(.small)
+                    HStack(spacing: 8) {
+                        Spacer()
                         
                         Button(AppLanguage.text("恢复默认", en: "Reset")) {
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
                                 self.iconManager.resetToDefault()
                             }
                         }
                         .controlSize(.small)
                         
-                        Spacer()
+                        Button(AppLanguage.text("上传图片", en: "Upload")) {
+                            self.pickCustomArtwork()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                     }
                 }
                 .padding(14)
@@ -1217,17 +1244,18 @@ private struct SidebarAppIconSettingsPane: View {
                 .padding(12)
             }
             
-            // 4. Stepless Fine-Tuning Controls
+            // 4. Stepless Fine-Tuning Controls (strictly aligned to SettingsDesignTokens.controlWidth)
             SettingsGroupCard(title: AppLanguage.text("样式", en: "Style")) {
                 SettingsItemRow(label: AppLanguage.text("镶边粗细", en: "Border Width")) {
                     HStack(spacing: 8) {
                         Slider(value: self.specBinding(\.borderWidth), in: 0...10)
-                            .frame(width: 150)
+                            .frame(width: SettingsDesignTokens.sliderWidth)
                         Text(String(format: "%.1f", self.iconManager.spec.borderWidth))
                             .font(.system(size: 12).monospacedDigit())
                             .foregroundStyle(.secondary)
-                            .frame(width: 34, alignment: .trailing)
+                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
                     }
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
                 
                 SettingsRowDivider()
@@ -1235,12 +1263,13 @@ private struct SidebarAppIconSettingsPane: View {
                 SettingsItemRow(label: AppLanguage.text("画面缩放", en: "Artwork Zoom")) {
                     HStack(spacing: 8) {
                         Slider(value: self.specBinding(\.imageZoom), in: 0.80...1.35)
-                            .frame(width: 150)
+                            .frame(width: SettingsDesignTokens.sliderWidth)
                         Text("\(Int((self.iconManager.spec.imageZoom * 100).rounded()))%")
                             .font(.system(size: 12).monospacedDigit())
                             .foregroundStyle(.secondary)
-                            .frame(width: 38, alignment: .trailing)
+                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
                     }
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
                 
                 SettingsRowDivider()
@@ -1248,12 +1277,13 @@ private struct SidebarAppIconSettingsPane: View {
                 SettingsItemRow(label: AppLanguage.text("圆角曲率", en: "Corner Curvature")) {
                     HStack(spacing: 8) {
                         Slider(value: self.specBinding(\.cornerRoundness), in: 0.16...0.50)
-                            .frame(width: 150)
+                            .frame(width: SettingsDesignTokens.sliderWidth)
                         Text("\(Int((self.iconManager.spec.cornerRoundness * 100).rounded()))%")
                             .font(.system(size: 12).monospacedDigit())
                             .foregroundStyle(.secondary)
-                            .frame(width: 38, alignment: .trailing)
+                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
                     }
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
                 
                 SettingsRowDivider()
@@ -1261,12 +1291,13 @@ private struct SidebarAppIconSettingsPane: View {
                 SettingsItemRow(label: AppLanguage.text("表面水晶流光", en: "Crystal Gloss")) {
                     HStack(spacing: 8) {
                         Slider(value: self.specBinding(\.glossIntensity), in: 0.0...1.0)
-                            .frame(width: 150)
+                            .frame(width: SettingsDesignTokens.sliderWidth)
                         Text("\(Int((self.iconManager.spec.glossIntensity * 100).rounded()))%")
                             .font(.system(size: 12).monospacedDigit())
                             .foregroundStyle(.secondary)
-                            .frame(width: 38, alignment: .trailing)
+                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
                     }
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
                 
                 SettingsRowDivider()
@@ -1278,7 +1309,7 @@ private struct SidebarAppIconSettingsPane: View {
                         }
                     }
                     .labelsHidden()
-                    .fixedSize()
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
                 
                 if self.iconManager.spec.imageZoom < 0.99 {
@@ -1465,14 +1496,15 @@ private struct SidebarWallpaperSettingsPane: View {
                             ),
                             in: 0.04...0.48
                         )
-                        .frame(width: 152)
+                        .frame(width: SettingsDesignTokens.sliderWidth)
                         .disabled(!self.manager.spec.isEnabled)
                         
                         Text("\(Int((self.manager.spec.opacity * 100).rounded()))%")
                             .font(.system(size: 12).monospacedDigit())
                             .foregroundStyle(.secondary)
-                            .frame(width: 38, alignment: .trailing)
+                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
                     }
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
                 
                 SettingsRowDivider()
@@ -1486,14 +1518,15 @@ private struct SidebarWallpaperSettingsPane: View {
                             ),
                             in: 0...32
                         )
-                        .frame(width: 152)
+                        .frame(width: SettingsDesignTokens.sliderWidth)
                         .disabled(!self.manager.spec.isEnabled)
                         
                         Text("\(Int(self.manager.spec.blurRadius.rounded())) px")
                             .font(.system(size: 12).monospacedDigit())
                             .foregroundStyle(.secondary)
-                            .frame(width: 42, alignment: .trailing)
+                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
                     }
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
             }
         }
@@ -1916,7 +1949,7 @@ private struct InlineFontFamilySelector: View {
 }
 
 
-// MARK: - 3. 外观 (Designer 3-Color Swatches + Window + Theme)
+// MARK: - 3. 外观 (10 套统一深浅配色 · 编辑器 / 侧边栏 / 热力图 / 卡片全局一致)
 
 private struct SidebarAppearanceSettingsPane: View {
     
@@ -1924,138 +1957,65 @@ private struct SidebarAppearanceSettingsPane: View {
     @AppStorage(.documentAppearance) private var documentAppearance
     @AppStorage(.windowAlpha) private var windowAlpha
     @State private var studioPalette = StudioPaletteManager.shared
-    @State private var syncedToast: String?
     
-    private var customLightBinding: Binding<Color> {
+    private var appearanceModeBinding: Binding<AppearanceMode> {
         Binding(
-            get: { StudioPaletteManager.swiftUIColor(hex: self.studioPalette.customLightHex) },
-            set: { self.studioPalette.customLightHex = StudioPaletteManager.hexString(from: NSColor($0)) }
-        )
-    }
-    
-    private var customDarkBinding: Binding<Color> {
-        Binding(
-            get: { StudioPaletteManager.swiftUIColor(hex: self.studioPalette.customDarkHex) },
-            set: { self.studioPalette.customDarkHex = StudioPaletteManager.hexString(from: NSColor($0)) }
-        )
-    }
-    
-    private var customAccentBinding: Binding<Color> {
-        Binding(
-            get: { StudioPaletteManager.swiftUIColor(hex: self.studioPalette.customAccentHex) },
-            set: { self.studioPalette.customAccentHex = StudioPaletteManager.hexString(from: NSColor($0)) }
+            get: { self.documentAppearance },
+            set: { newMode in
+                self.studioPalette.applyAppearanceMode(newMode)
+            }
         )
     }
     
     
     var body: some View {
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
-            // 1. Curated Designer Color Triads (Synced Globally & to Data Dashboard)
-            SettingsGroupCard(title: AppLanguage.text("配色方案", en: "Color System")) {
-                VStack(alignment: .leading, spacing: 10) {
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                        ForEach(StudioPaletteID.allCases) { preset in
-                            self.paletteCard(preset)
-                        }
-                    }
-                    
-                    if self.studioPalette.selectedID == .custom {
-                        HStack(spacing: 14) {
-                            HStack(spacing: 5) {
-                                Text(AppLanguage.text("浅底色", en: "Light"))
-                                    .font(.system(size: 11.5))
-                                    .foregroundStyle(.secondary)
-                                ColorPicker("", selection: self.customLightBinding, supportsOpacity: false)
-                                    .labelsHidden()
-                            }
-                            HStack(spacing: 5) {
-                                Text(AppLanguage.text("深底色", en: "Dark"))
-                                    .font(.system(size: 11.5))
-                                    .foregroundStyle(.secondary)
-                                ColorPicker("", selection: self.customDarkBinding, supportsOpacity: false)
-                                    .labelsHidden()
-                            }
-                            HStack(spacing: 5) {
-                                Text(AppLanguage.text("主亮色", en: "Accent"))
-                                    .font(.system(size: 11.5))
-                                    .foregroundStyle(.secondary)
-                                ColorPicker("", selection: self.customAccentBinding, supportsOpacity: false)
-                                    .labelsHidden()
-                            }
-                            Spacer()
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
-                        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
-                    
-                    SettingsRowDivider()
-                        .padding(.horizontal, -12)
-                    
-                    HStack(spacing: 10) {
-                        Button(AppLanguage.text("应用至浅色正文主题", en: "Sync Light Editor Theme")) {
-                            self.studioPalette.applyPaletteToEditorTheme(preferDark: false)
-                            self.showSyncedToast(AppLanguage.text("已生成并应用浅色正文主题", en: "Applied Light Theme"))
-                        }
-                        .controlSize(.small)
-                        
-                        Button(AppLanguage.text("应用至深色正文主题", en: "Sync Dark Editor Theme")) {
-                            self.studioPalette.applyPaletteToEditorTheme(preferDark: true)
-                            self.showSyncedToast(AppLanguage.text("已生成并应用深色正文主题", en: "Applied Dark Theme"))
-                        }
-                        .controlSize(.small)
-                        
-                        Spacer()
-                        
-                        if let syncedToast = self.syncedToast {
-                            Text(syncedToast)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                                .fixedSize()
-                        }
-                    }
-                }
-                .padding(12)
-            }
-            
-            SettingsGroupCard(title: AppLanguage.text("窗口外观", en: "Window Appearance")) {
-                SettingsItemRow(label: AppLanguage.text("深浅模式", en: "Appearance Mode")) {
-                    Picker("", selection: self.$documentAppearance) {
+            // 1. 深浅模式（始终与当前所选配色保持深浅一致）
+            SettingsGroupCard(title: AppLanguage.text("外观模式", en: "Appearance Mode")) {
+                SettingsItemRow(label: AppLanguage.text("深浅模式", en: "Mode")) {
+                    Picker("", selection: self.appearanceModeBinding) {
                         Text(AppLanguage.text("跟随系统", en: "System")).tag(AppearanceMode.default)
                         Text(AppLanguage.text("浅色", en: "Light")).tag(AppearanceMode.light)
                         Text(AppLanguage.text("深色", en: "Dark")).tag(AppearanceMode.dark)
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
-                    .frame(width: SettingsDesignTokens.segmentedWidth)
+                    .frame(width: SettingsDesignTokens.controlWidth)
+                }
+            }
+            
+            // 2. 固定 10 套全局统一配色（含深浅双模式，同步覆盖编辑器、侧边栏、热力图与卡片）
+            SettingsGroupCard(title: AppLanguage.text("配色方案（10 套）", en: "Color Palettes (10)")) {
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
+                    spacing: 10
+                ) {
+                    ForEach(StudioPaletteID.allCases) { preset in
+                        self.paletteCard(preset)
+                    }
+                }
+                .padding(12)
+            }
+            
+            // 3. 窗口透明度与光标配色
+            SettingsGroupCard(title: AppLanguage.text("窗口与光标", en: "Window & Cursor")) {
+                SettingsItemRow(label: AppLanguage.text("窗口不透明度", en: "Window Opacity")) {
+                    HStack(spacing: 8) {
+                        Slider(value: self.$windowAlpha, in: 0.2...1.0)
+                            .frame(width: SettingsDesignTokens.sliderWidth)
+                        Text(self.windowAlpha, format: .percent.precision(.fractionLength(0)))
+                            .font(.system(size: 12).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+                    }
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
                 
                 SettingsRowDivider()
                 
-                SettingsItemRow(label: AppLanguage.text("窗口不透明度", en: "Window Opacity")) {
-                    HStack(spacing: 6) {
-                        Slider(value: self.$windowAlpha, in: 0.2...1.0)
-                            .frame(width: 118)
-                        Text(self.windowAlpha, format: .percent.precision(.fractionLength(0)))
-                            .font(.system(size: 12.5).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 38, alignment: .trailing)
-                    }
-                    .frame(width: SettingsDesignTokens.segmentedWidth, alignment: .trailing)
-                }
-            }
-            
-            SettingsGroupCard(title: AppLanguage.text("光标配色", en: "Cursor Color")) {
                 SettingsItemRow(label: AppLanguage.text("光标颜色", en: "Insertion Point")) {
                     CustomCursorColorControl()
                 }
-            }
-            
-            SettingsGroupCard(title: AppLanguage.text("配色主题", en: "Syntax Themes")) {
-                ThemeView()
-                    .frame(height: 344)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .padding(6)
             }
         }
     }
@@ -2063,46 +2023,44 @@ private struct SidebarAppearanceSettingsPane: View {
     
     @ViewBuilder
     private func paletteCard(_ preset: StudioPaletteID) -> some View {
-        let triad = self.studioPalette.triad(for: preset)
+        let lightTokens = self.studioPalette.tokens(isDark: false, id: preset)
+        let darkTokens = self.studioPalette.tokens(isDark: true, id: preset)
         let isSelected = (self.studioPalette.selectedID == preset)
-        let darkSwatch = StudioPaletteManager.swiftUIColor(hex: triad.darkInkHex)
-        let lightSwatch = StudioPaletteManager.swiftUIColor(hex: triad.lightPaperHex)
-        let accentSwatch = StudioPaletteManager.swiftUIColor(hex: triad.accentHex)
+        let accentSwatch = (self.colorScheme == .dark) ? darkTokens.accentText : lightTokens.accent
         
         Button {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.80)) {
-                self.studioPalette.selectPalette(preset)
-                self.studioPalette.syncActiveEditorTheme(preferDark: self.colorScheme == .dark, applyIfNonStudio: true)
+            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
+                self.studioPalette.selectPalette(preset, syncEditorTheme: true)
             }
         } label: {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 4) {
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(darkSwatch)
-                        .frame(height: 18)
-                        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5))
-                    
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(lightSwatch)
-                        .frame(height: 18)
-                        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5))
-                    
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(accentSwatch)
-                        .frame(height: 18)
+            VStack(alignment: .leading, spacing: 8) {
+                // Split Light / Dark live preview strip (Left = Light, Right = Dark)
+                HStack(spacing: 0) {
+                    self.miniPreviewHalf(tokens: lightTokens)
+                    self.miniPreviewHalf(tokens: darkTokens)
                 }
+                .frame(height: 36)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
+                )
                 
-                HStack(spacing: 5) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(accentSwatch)
+                        .frame(width: 8, height: 8)
+                    
                     Text(preset.displayName)
                         .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
                         .foregroundStyle(.primary)
-                        .fixedSize()
+                        .lineLimit(1)
                     
-                    Spacer()
+                    Spacer(minLength: 4)
                     
                     if isSelected {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 12))
+                            .font(.system(size: 13))
                             .foregroundStyle(accentSwatch)
                     }
                 }
@@ -2114,7 +2072,7 @@ private struct SidebarAppearanceSettingsPane: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(isSelected ? accentSwatch.opacity(0.75) : Color.primary.opacity(0.08), lineWidth: isSelected ? 1.5 : 0.75)
+                    .strokeBorder(isSelected ? accentSwatch.opacity(0.80) : Color.primary.opacity(0.08), lineWidth: isSelected ? 1.5 : 0.75)
             )
         }
         .buttonStyle(.plain)
@@ -2122,20 +2080,35 @@ private struct SidebarAppearanceSettingsPane: View {
     }
     
     
-    private func showSyncedToast(_ msg: String) {
-        withAnimation(.easeOut(duration: 0.16)) {
-            self.syncedToast = msg
-        }
-        Task {
-            try? await Task.sleep(for: .seconds(2.4))
-            await MainActor.run {
-                if self.syncedToast == msg {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        self.syncedToast = nil
+    private func miniPreviewHalf(tokens: StudioColorTokens) -> some View {
+        ZStack(alignment: .leading) {
+            tokens.canvasTop
+            
+            HStack(spacing: 4) {
+                // Mini sidebar sliver
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(tokens.card)
+                    .frame(width: 14, height: 24)
+                
+                // Mini editor lines + heatmap dots
+                VStack(alignment: .leading, spacing: 3.5) {
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(tokens.accent)
+                        .frame(width: 28, height: 3.5)
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(tokens.primaryInk.opacity(0.55))
+                        .frame(width: 44, height: 3)
+                    HStack(spacing: 2.5) {
+                        RoundedRectangle(cornerRadius: 1).fill(tokens.heat1).frame(width: 5, height: 5)
+                        RoundedRectangle(cornerRadius: 1).fill(tokens.heat2).frame(width: 5, height: 5)
+                        RoundedRectangle(cornerRadius: 1).fill(tokens.heat3).frame(width: 5, height: 5)
+                        RoundedRectangle(cornerRadius: 1).fill(tokens.heat4).frame(width: 5, height: 5)
                     }
                 }
             }
+            .padding(.horizontal, 6)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -2359,20 +2332,20 @@ private struct SidebarFormatSettingsPane: View {
     
     private var formatMainContent: some View {
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
-            SettingsGroupCard(title: "换行标准") {
-                SettingsItemRow(label: "默认换行符") {
+            SettingsGroupCard(title: AppLanguage.text("文档格式", en: "Document Format")) {
+                SettingsItemRow(label: AppLanguage.text("默认换行符", en: "Line Ending")) {
                     Picker("", selection: self.$lineEnding) {
                         ForEach(LineEnding.allCases.filter(\.isBasic), id: \.self) {
                             Text(verbatim: "\($0.description) (\($0.label))").tag($0.index)
                         }
                     }
                     .labelsHidden()
-                    .fixedSize()
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
-            }
-            
-            SettingsGroupCard(title: "文本编码") {
-                SettingsItemRow(label: "默认编码") {
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("默认编码", en: "Default Encoding")) {
                     Picker("", selection: self.fileEncoding) {
                         ForEach(Array(self.encodingManager.fileEncodings.enumerated()), id: \.offset) { _, enc in
                             if let enc {
@@ -2383,32 +2356,12 @@ private struct SidebarFormatSettingsPane: View {
                         }
                     }
                     .labelsHidden()
-                    .fixedSize()
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
                 
                 SettingsRowDivider()
                 
-                SettingsItemRow(label: AppLanguage.text("编码优先顺序", en: "Encoding Priority")) {
-                    Button(AppLanguage.text("调整顺序", en: "Edit Order")) {
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
-                            self.isEncodingListPresented = true
-                        }
-                    }
-                    .controlSize(.small)
-                }
-                
-                SettingsRowDivider()
-                
-                SettingsItemRow(label: "识别文档内编码声明") {
-                    Toggle("", isOn: self.$referToEncodingTag)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                }
-            }
-            
-            SettingsGroupCard(title: "语法高亮") {
-                SettingsItemRow(label: "默认语法") {
+                SettingsItemRow(label: AppLanguage.text("默认语法", en: "Default Syntax")) {
                     Picker("", selection: self.$syntax) {
                         Text("无").tag(SyntaxName.none)
                         Divider()
@@ -2417,7 +2370,27 @@ private struct SidebarFormatSettingsPane: View {
                         }
                     }
                     .labelsHidden()
-                    .fixedSize()
+                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
+                }
+            }
+            
+            SettingsGroupCard(title: AppLanguage.text("编码识别", en: "Encoding Detection")) {
+                SettingsItemRow(label: AppLanguage.text("识别文档内编码声明", en: "Refer to Encoding Tag")) {
+                    Toggle("", isOn: self.$referToEncodingTag)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("编码优先顺序", en: "Encoding Priority")) {
+                    Button(AppLanguage.text("调整顺序", en: "Edit Order")) {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+                            self.isEncodingListPresented = true
+                        }
+                    }
+                    .controlSize(.small)
                 }
             }
         }
@@ -2439,8 +2412,8 @@ private struct SidebarEffectsSettingsPane: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
-            SettingsGroupCard(title: "打字反馈") {
-                SettingsItemRow(label: "打字粒子特效") {
+            SettingsGroupCard(title: AppLanguage.text("编辑器动效", en: "Editor Motion")) {
+                SettingsItemRow(label: AppLanguage.text("打字粒子特效", en: "Typing Particles")) {
                     Toggle("", isOn: self.$typewriterEnabled)
                         .labelsHidden()
                         .toggleStyle(.switch)
@@ -2451,26 +2424,27 @@ private struct SidebarEffectsSettingsPane: View {
                         }
                 }
                 
-                SettingsRowDivider()
-                
-                SettingsItemRow(label: "粒子风格") {
-                    Picker("", selection: self.$typewriterStyle) {
-                        ForEach(TypingEffectPreset.allCases) { preset in
-                            Text(preset.displayName).tag(preset)
+                if self.typewriterEnabled {
+                    SettingsRowDivider()
+                    
+                    SettingsItemRow(label: AppLanguage.text("粒子风格", en: "Particle Style")) {
+                        Picker("", selection: self.$typewriterStyle) {
+                            ForEach(TypingEffectPreset.allCases) { preset in
+                                Text(preset.displayName).tag(preset)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
+                        .onChange(of: self.typewriterStyle) { _, val in
+                            CotLocalDatabase.shared.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
+                            UserDefaults.standard.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
                         }
                     }
-                    .labelsHidden()
-                    .fixedSize()
-                    .disabled(!self.typewriterEnabled)
-                    .onChange(of: self.typewriterStyle) { _, val in
-                        CotLocalDatabase.shared.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
-                        UserDefaults.standard.set(val.rawValue, forKey: CotLocalDatabase.ConfigKey.typewriterEffectStyle)
-                    }
                 }
-            }
-            
-            SettingsGroupCard(title: "光标动效") {
-                SettingsItemRow(label: "Vim 流体光标尾迹") {
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("Vim 流体光标尾迹", en: "Vim Fluid Cursor Trail")) {
                     Toggle("", isOn: self.$vimCursorTrailEnabled)
                         .labelsHidden()
                         .toggleStyle(.switch)
@@ -2480,9 +2454,9 @@ private struct SidebarEffectsSettingsPane: View {
                             UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
                         }
                 }
-            }
-            
-            SettingsGroupCard(title: AppLanguage.text("性格弹幕", en: "Orbit Danmaku")) {
+                
+                SettingsRowDivider()
+                
                 SettingsItemRow(label: AppLanguage.text("头像环绕弹幕", en: "Avatar Orbit Tags")) {
                     Toggle("", isOn: self.$autoPersonalityEnabled)
                         .labelsHidden()
