@@ -75,7 +75,7 @@ final class TerminalViewController: NSViewController {
     // MARK: Private Properties
     
     private var terminalView: LocalProcessTerminalView?
-    private var processSource: DispatchSourceProcess?
+    private var processSource: (any DispatchSourceProcess)?
     private var hasStarted = false
     private var isShutDown = false
     private var themeObservers: Set<AnyCancellable> = []

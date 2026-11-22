@@ -59,6 +59,24 @@ struct PaneTabStripView: NSViewRepresentable {
     
     var state: PaneTabState?
     
+    /// Unified chrome palette derived from the active editor theme & Studio Palette.
+    var chromePalette: WindowChromePalette? {
+        didSet {
+            guard self.chromePalette != oldValue else { return }
+            self.newTabButton.chromePalette = self.chromePalette
+            if let chromePalette = self.chromePalette {
+                self.newTabButton.contentTintColor = chromePalette.inactiveTabText
+            } else {
+                self.newTabButton.contentTintColor = .secondaryLabelColor
+            }
+            for itemView in self.tabViews.values {
+                itemView.chromePalette = self.chromePalette
+            }
+            self.refreshInsertionIndicatorAppearance()
+            self.needsDisplay = true
+        }
+    }
+    
     var isRenaming: Bool { self.renamingTabID != nil }
     
     private let scrollView = NonDraggableScrollView()
@@ -67,7 +85,6 @@ struct PaneTabStripView: NSViewRepresentable {
     private let insertionIndicator = NSView()
     
     private var tabViews: [UUID: PaneTabItemView] = [:]
-    private var orderedTabIDs: [UUID] = []
     private var baseTabFrames: [UUID: NSRect] = [:]
     private var tabFrames: [UUID: NSRect] = [:]
     
@@ -84,7 +101,6 @@ struct PaneTabStripView: NSViewRepresentable {
     // Drag state
     private var draggingTab: PaneTab?
     private var activeDragTabID: UUID?
-    private var dragStartScreenPoint: NSPoint?
     private var dropInsertionIndex: Int?
     
     private static let tabHeight: CGFloat = 24
@@ -190,7 +206,7 @@ struct PaneTabStripView: NSViewRepresentable {
     private func refreshInsertionIndicatorAppearance() {
         
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
-            let accent = NSColor.controlAccentColor
+            let accent = self.chromePalette?.accent ?? NSColor.controlAccentColor
             self.insertionIndicator.layer?.backgroundColor = accent.withAlphaComponent(0.14).cgColor
             self.insertionIndicator.layer?.borderColor = accent.withAlphaComponent(0.72).cgColor
             self.insertionIndicator.layer?.shadowColor = accent.cgColor
@@ -211,8 +227,6 @@ struct PaneTabStripView: NSViewRepresentable {
             self.tabViews.removeValue(forKey: id)
         }
         
-        self.orderedTabIDs = state.tabs.map(\.id)
-        
         for tab in state.tabs {
             let itemView: PaneTabItemView
             if let existing = self.tabViews[tab.id] {
@@ -220,6 +234,7 @@ struct PaneTabStripView: NSViewRepresentable {
             } else {
                 itemView = PaneTabItemView()
                 itemView.stripView = self
+                itemView.chromePalette = self.chromePalette
                 self.documentContainer.addSubview(itemView)
                 self.tabViews[tab.id] = itemView
             }
@@ -699,7 +714,6 @@ struct PaneTabStripView: NSViewRepresentable {
         self.commitInlineRenameIfNeeded()
         self.draggingTab = tab
         self.activeDragTabID = tab.id
-        self.dragStartScreenPoint = NSEvent.mouseLocation
         itemView.setDragSourceActive(true, animated: true)
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         
@@ -729,7 +743,6 @@ struct PaneTabStripView: NSViewRepresentable {
         let detachedTab = self.draggingTab
         self.draggingTab = nil
         self.activeDragTabID = nil
-        self.dragStartScreenPoint = nil
         self.dropInsertionIndex = nil
         self.hideInsertionIndicator()
         for view in self.tabViews.values {
@@ -964,6 +977,14 @@ private final class CenteredIconButton: NSButton {
     private var trackingArea: NSTrackingArea?
     private var isPointerHovered = false
     
+    var chromePalette: WindowChromePalette? {
+        didSet {
+            guard self.chromePalette != oldValue else { return }
+            self.refreshIcon()
+            self.refreshHoverFill()
+        }
+    }
+    
     private static let ease = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
     
     override var mouseDownCanMoveWindow: Bool { false }
@@ -1110,8 +1131,8 @@ private final class CenteredIconButton: NSButton {
         guard self.isPointerHovered else { return self.baseTintColor }
         switch self.hoverStyle {
             case .close: return .systemRed
-            case .newTab, .standard: return .labelColor
-            case .pin: return .controlAccentColor
+            case .newTab, .standard: return self.chromePalette?.activeTabText ?? .labelColor
+            case .pin: return self.chromePalette?.accent ?? .controlAccentColor
         }
     }
     
@@ -1119,8 +1140,13 @@ private final class CenteredIconButton: NSButton {
     private func hoverFillColor(pressed: Bool = false) -> NSColor {
         
         switch self.hoverStyle {
-            case .close: NSColor.systemRed.withAlphaComponent(pressed ? 0.2 : 0.12)
-            default: NSColor.labelColor.withAlphaComponent(pressed ? 0.14 : 0.08)
+            case .close:
+                return NSColor.systemRed.withAlphaComponent(pressed ? 0.2 : 0.12)
+            default:
+                if let chromePalette = self.chromePalette {
+                    return pressed ? chromePalette.activeTabText.withAlphaComponent(0.14) : chromePalette.hoveredTabFill
+                }
+                return NSColor.labelColor.withAlphaComponent(pressed ? 0.14 : 0.08)
         }
     }
     
@@ -1214,6 +1240,16 @@ private final class TabStripContainerView: NSView {
 @MainActor final class PaneTabItemView: NSView {
     
     weak var stripView: PaneTabStripNSView?
+    
+    var chromePalette: WindowChromePalette? {
+        didSet {
+            guard self.chromePalette != oldValue else { return }
+            self.pinButton.chromePalette = self.chromePalette
+            self.closeButton.chromePalette = self.chromePalette
+            self.applyChromePaletteTint()
+            self.updateBackground(animated: false)
+        }
+    }
     
     private var tab: PaneTab?
     private var isSelected = false
@@ -1367,13 +1403,13 @@ private final class TabStripContainerView: NSView {
         self.lastConfiguredEdited = tab.isEdited
         
         self.titleLabel.stringValue = tab.title
-        self.titleLabel.textColor = isSelected ? .labelColor : .secondaryLabelColor
         self.titleLabel.font = .systemFont(ofSize: 12, weight: isSelected ? .medium : .regular)
         let baseTip = tab.document.fileURL?.path(percentEncoded: false) ?? tab.title
         self.toolTip = tab.isEdited ? "\(baseTip) · 未保存 (按 ⌘S 保存)" : "\(baseTip) · 已保存"
         
         self.pinButton.isHidden = !tab.isPinned
         self.editedDot.isHidden = isRenaming
+        self.applyChromePaletteTint()
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
             self.statusDotLayer.backgroundColor = tab.isEdited
                 ? NSColor.systemOrange.cgColor
@@ -1701,7 +1737,7 @@ private final class TabStripContainerView: NSView {
         
         let field = TabRenameTextField(initialTitle: initialTitle)
         field.font = .systemFont(ofSize: 12, weight: .medium)
-        field.textColor = .labelColor
+        field.textColor = self.chromePalette?.activeTabText ?? .labelColor
         field.isEditable = true
         field.isSelectable = true
         field.usesSingleLineMode = true
@@ -1752,6 +1788,10 @@ private final class TabStripContainerView: NSView {
         let imageSize = NSSize(width: cardSize.width + shadowPadding * 2, height: cardSize.height + shadowPadding * 2)
         let isEdited = (self.tab?.isEdited == true)
         let title = (self.tab?.title ?? "") as NSString
+        let palette = self.chromePalette
+        let cardFill = palette?.activeTabFill ?? NSColor.windowBackgroundColor.withAlphaComponent(0.96)
+        let strokeAccent = palette?.accent ?? NSColor.controlAccentColor
+        let textColor = palette?.activeTabText ?? NSColor.labelColor
         
         return NSImage(size: imageSize, flipped: true) { _ in
             let cardRect = NSRect(origin: NSPoint(x: shadowPadding, y: shadowPadding), size: cardSize)
@@ -1763,7 +1803,7 @@ private final class TabStripContainerView: NSView {
             shadow.shadowBlurRadius = 8
             shadow.shadowOffset = NSSize(width: 0, height: -3)
             shadow.set()
-            NSColor.windowBackgroundColor.withAlphaComponent(0.96).setFill()
+            cardFill.withAlphaComponent(0.96).setFill()
             path.fill()
             NSGraphicsContext.restoreGraphicsState()
             
@@ -1775,7 +1815,7 @@ private final class TabStripContainerView: NSView {
             NSColor.white.withAlphaComponent(0.32).setFill()
             topHighlight.fill()
             
-            NSColor.controlAccentColor.withAlphaComponent(0.84).setStroke()
+            strokeAccent.withAlphaComponent(0.84).setStroke()
             path.lineWidth = 1.3
             path.stroke()
             
@@ -1785,7 +1825,7 @@ private final class TabStripContainerView: NSView {
             
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-                .foregroundColor: NSColor.labelColor,
+                .foregroundColor: textColor,
             ]
             let lineHeight = ceil(NSFont.systemFont(ofSize: 12, weight: .medium).boundingRectForFont.height)
             let textRect = NSRect(
@@ -1800,12 +1840,27 @@ private final class TabStripContainerView: NSView {
     }
     
     
+    private func applyChromePaletteTint() {
+        
+        let palette = self.chromePalette
+        let isEmphasized = (self.isSelected || self.isHovered)
+        let titleColor = isEmphasized
+            ? (palette?.activeTabText ?? .labelColor)
+            : (palette?.inactiveTabText ?? .secondaryLabelColor)
+        self.titleLabel.textColor = titleColor
+        self.inlineTextField?.textColor = palette?.activeTabText ?? .labelColor
+        self.pinButton.contentTintColor = palette?.accent ?? .controlAccentColor
+        self.closeButton.contentTintColor = titleColor
+    }
+    
+    
     private func updateBackground(animated: Bool = false) {
         
         guard let layer = self.layer else { return }
         let duration: CFTimeInterval = (animated && !AnimationConstants.isReducedMotionEnabled) ? 0.14 : 0
         let ease = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
         let scale = max(self.window?.backingScaleFactor ?? 2, 1)
+        let palette = self.chromePalette
         
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
             let targetFill: CGColor
@@ -1817,22 +1872,28 @@ private final class TabStripContainerView: NSView {
             let targetAccentOpacity: Float
             
             if self.isRenaming {
-                let surface: NSColor = self.effectiveAppearance.isDark
+                let surface: NSColor = palette?.activeTabFill ?? (self.effectiveAppearance.isDark
                     ? (NSColor.controlBackgroundColor.blended(withFraction: 0.16, of: .white)?.withAlphaComponent(0.92) ?? .controlBackgroundColor)
-                    : (NSColor.textBackgroundColor.blended(withFraction: 0.18, of: .windowBackgroundColor) ?? .textBackgroundColor)
+                    : (NSColor.textBackgroundColor.blended(withFraction: 0.18, of: .windowBackgroundColor) ?? .textBackgroundColor))
+                let renameAccent = palette?.accent ?? .controlAccentColor
                 targetFill = surface.cgColor
-                targetBorderColor = NSColor.controlAccentColor.withAlphaComponent(0.68).cgColor
+                targetBorderColor = renameAccent.withAlphaComponent(0.68).cgColor
                 targetBorderWidth = 1.0
-                targetShadowColor = NSColor.controlAccentColor.cgColor
+                targetShadowColor = renameAccent.cgColor
                 targetShadowOpacity = 0.22
                 targetShadowRadius = 2.5
                 targetAccentOpacity = 0
             } else {
-                let fill: NSColor = self.isSelected
-                    ? NSColor.labelColor.withAlphaComponent(0.09)
-                    : (self.isHovered ? NSColor.labelColor.withAlphaComponent(0.05) : .clear)
+                let fill: NSColor
+                if self.isSelected {
+                    fill = palette?.activeTabFill ?? NSColor.labelColor.withAlphaComponent(0.09)
+                } else if self.isHovered {
+                    fill = palette?.hoveredTabFill ?? NSColor.labelColor.withAlphaComponent(0.05)
+                } else {
+                    fill = .clear
+                }
                 targetFill = fill.cgColor
-                targetBorderColor = NSColor.separatorColor.cgColor
+                targetBorderColor = (palette?.activeTabBorder ?? NSColor.separatorColor).cgColor
                 targetBorderWidth = self.isSelected ? 1 / scale : 0
                 targetShadowColor = NSColor.clear.cgColor
                 targetShadowOpacity = 0
@@ -1881,11 +1942,12 @@ private final class TabStripContainerView: NSView {
             CATransaction.begin()
             CATransaction.setAnimationDuration(duration)
             CATransaction.setAnimationTimingFunction(ease)
-            self.activeAccentBar.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.8).cgColor
+            let accentBarColor = palette?.accent ?? NSColor.controlAccentColor
+            self.activeAccentBar.backgroundColor = accentBarColor.withAlphaComponent(0.84).cgColor
             self.activeAccentBar.opacity = targetAccentOpacity
             CATransaction.commit()
         }
-        self.titleLabel.textColor = (self.isSelected || self.isHovered) ? .labelColor : .secondaryLabelColor
+        self.applyChromePaletteTint()
     }
     
     

@@ -204,7 +204,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     private var wallpaperObserver: AnyCancellable?
     private var windowOpacityObserver: NSKeyValueObservation?
     private var keyStateObservers: [any NSObjectProtocol] = []
-    private var scrollClipObserver: NSObjectProtocol?
+    private var scrollClipObserver: (any NSObjectProtocol)?
     private var inlineImageCardEntries: [InlineImageCardEntry] = []
     private var selectedInlineImageIdentifier: String?
     private var liveInlineImageHUDText: String?
@@ -234,6 +234,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let transparent = NSImage(size: NSSize(width: 1, height: 1))
         return NSCursor(image: transparent, hotSpot: .zero)
     }()
+    
+    // Cmd-key link preview underline state
+    private var isCommandKeyHeld = false
+    private var commandLinkUnderlineRanges: [NSRange] = []
+    private var hoveredCommandLinkRange: NSRange?
+    private var commandFlagsMonitor: Any?
     
     
     // MARK: Lifecycle
@@ -290,6 +296,18 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         self.resizeSpringTimer = nil
         self.dimensionPillHideWorkItem?.cancel()
         self.dimensionPillHideWorkItem = nil
+        if let monitor = self.commandFlagsMonitor {
+            NSEvent.removeMonitor(monitor)
+            self.commandFlagsMonitor = nil
+        }
+        if let scrollClipObserver = self.scrollClipObserver {
+            NotificationCenter.default.removeObserver(scrollClipObserver)
+            self.scrollClipObserver = nil
+        }
+        self.keyStateObservers.forEach(NotificationCenter.default.removeObserver)
+        self.keyStateObservers.removeAll()
+        self.windowOpacityObserver = nil
+        self.wallpaperObserver = nil
     }
     
     
@@ -313,12 +331,16 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     override func cursorUpdate(with event: NSEvent) {
         
+        let point = self.convert(event.locationInWindow, from: nil)
         if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true {
-            let point = self.convert(event.locationInWindow, from: nil)
             if self.activeDraggingResizeHandle != nil || self.selectedInlineImageEntry()?.hitTestHandle(at: point) != nil {
                 self.hiddenResizeHandleCursor.set()
                 return
             }
+        }
+        if self.isCommandKeyHeld, self.urlMatchAtPoint(point) != nil {
+            NSCursor.pointingHand.set()
+            return
         }
         super.cursorUpdate(with: event)
     }
@@ -326,11 +348,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     override func mouseMoved(with event: NSEvent) {
         
+        let point = self.convert(event.locationInWindow, from: nil)
         if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true,
            let selected = self.selectedInlineImageEntry(),
            self.activeDraggingResizeHandle == nil
         {
-            let point = self.convert(event.locationInWindow, from: nil)
             let hit = selected.hitTestHandle(at: point)
             if hit != self.hoveredResizeHandle {
                 let previous = self.hoveredResizeHandle
@@ -359,6 +381,20 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.window?.invalidateCursorRects(for: self)
         }
         
+        if self.isCommandKeyHeld {
+            let hoveredRange = self.urlMatchAtPoint(point)?.range
+            if hoveredRange != self.hoveredCommandLinkRange {
+                self.refreshCommandLinkUnderlines(hoveredRange: hoveredRange)
+                if hoveredRange == nil {
+                    self.window?.invalidateCursorRects(for: self)
+                }
+            }
+            if hoveredRange != nil {
+                NSCursor.pointingHand.set()
+                return
+            }
+        }
+        
         super.mouseMoved(with: event)
     }
     
@@ -374,7 +410,21 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.window?.invalidateCursorRects(for: self)
             self.needsDisplay = true
         }
+        if self.isCommandKeyHeld, self.hoveredCommandLinkRange != nil {
+            self.refreshCommandLinkUnderlines(hoveredRange: nil)
+            self.window?.invalidateCursorRects(for: self)
+        }
         super.mouseExited(with: event)
+    }
+    
+    
+    override func flagsChanged(with event: NSEvent) {
+        
+        super.flagsChanged(with: event)
+        self.updateCommandKeyLinkState(
+            modifierFlags: event.modifierFlags,
+            mouseLocationInWindow: self.window?.mouseLocationOutsideOfEventStream
+        )
     }
     
     
@@ -472,6 +522,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         guard super.resignFirstResponder() else { return false }
         
         self.clearGhostSuggestion(animated: false)
+        self.clearCommandLinkUnderlines()
         self.funEffects.resetCursorTracking()
         self.vimEngine.handleFocusLost()
         
@@ -502,6 +553,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             NotificationCenter.default.removeObserver(scrollObserver)
             self.scrollClipObserver = nil
         }
+        if let monitor = self.commandFlagsMonitor {
+            NSEvent.removeMonitor(monitor)
+            self.commandFlagsMonitor = nil
+        }
         
         if let window {
             self.wantsLayer = true
@@ -519,14 +574,26 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                         if self?.activeGhostSuggestion != nil || self?.funEffects.isShowingGhostThinking == true {
                             self?.clearGhostSuggestion(animated: false, cancelAI: false)
                         }
+                        if self?.isCommandKeyHeld == true {
+                            self?.refreshCommandLinkUnderlines(hoveredRange: self?.hoveredCommandLinkRange)
+                        }
                     }
                 }
             }
             
+            self.commandFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                guard let self, let window = self.window, window.isKeyWindow else { return event }
+                self.updateCommandKeyLinkState(
+                    modifierFlags: event.modifierFlags,
+                    mouseLocationInWindow: window.mouseLocationOutsideOfEventStream
+                )
+                return event
+            }
+            
             // apply window opacity & global editor wallpaper transparency
-            self.windowOpacityObserver = window.observe(\.isOpaque, options: [.initial, .new]) { [unowned self] _, _ in
-                MainActor.assumeIsolated { [unowned self] in
-                    self.refreshWallpaperTransparency()
+            self.windowOpacityObserver = window.observe(\.isOpaque, options: [.initial, .new]) { [weak self] _, _ in
+                MainActor.assumeIsolated {
+                    self?.refreshWallpaperTransparency()
                 }
             }
             
@@ -540,17 +607,20 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             // observe key window state for insertion points drawing and automatic period substitution
             self.keyStateObservers.forEach(NotificationCenter.default.removeObserver)
             self.keyStateObservers = [
-                NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [unowned self] _ in
-                    MainActor.assumeIsolated { [unowned self] in
+                NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
                         self.invalidateInsertionIndicatorDisplayMode()
                         self.invalidateAutomaticPeriodSubstitution()
                         self.syncNativeCaretVisibility()
                         self.funEffects.syncVimCursor(animated: false)
                     }
                 },
-                NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [unowned self] _ in
-                    MainActor.assumeIsolated { [unowned self] in
+                NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
                         self.clearGhostSuggestion(animated: false)
+                        self.clearCommandLinkUnderlines()
                         self.funEffects.resetCursorTracking()
                         self.invalidateInsertionIndicatorDisplayMode()
                         self.invalidateAutomaticPeriodSubstitution()
@@ -559,6 +629,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             ]
         } else {
             self.clearGhostSuggestion(animated: false)
+            self.clearCommandLinkUnderlines()
             self.funEffects.resetCursorTracking()
             self.keyStateObservers.forEach(NotificationCenter.default.removeObserver)
             self.keyStateObservers.removeAll()
@@ -691,18 +762,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         self.isPerformingRectangularSelection = false
         
-        // Show or dismiss Notes-style floating highlight palette on non-empty mouse selection
-        if !event.modifierFlags.contains(.option),
-           !event.modifierFlags.contains(.control),
-           !self.selectedRange.isEmpty,
-           let document = self.documentViewController?.document(for: self)
-        {
-            NotesTextColorPaletteController.shared.present(
-                for: self,
-                document: document,
-                selectedRange: self.selectedRange
-            )
-        } else {
+        // Text highlighting is intentionally right-click only (never auto-popped on selection)
+        if NotesTextColorPaletteController.shared.isVisible {
             NotesTextColorPaletteController.shared.dismiss(animated: true)
         }
     }
@@ -775,6 +836,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         if self.funEffects.ownsVimCursorDrawing {
             self.funEffects.syncVimCursor(animated: true)
+        }
+        
+        if self.isCommandKeyHeld {
+            self.refreshCommandLinkUnderlines(hoveredRange: self.hoveredCommandLinkRange)
         }
     }
     
@@ -922,16 +987,107 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    /// Computes an adaptive caret rect aligned with an inline image card when the insertion point sits directly before/after it.
+    private func inlineImageCaretFrame(for location: Int) -> NSRect? {
+        
+        guard
+            let layoutManager = self.layoutManager as? LayoutManager,
+            layoutManager.rendersPlainTextInlineImages,
+            let textContainer = self.textContainer
+        else { return nil }
+        
+        let nsString = self.string as NSString
+        guard nsString.length > 0 else { return nil }
+        
+        let clampedLoc = min(max(0, location), nsString.length)
+        if clampedLoc == nsString.length, nsString.character(at: clampedLoc - 1) == 0x0A {
+            return nil
+        }
+        
+        let probeLoc = min(clampedLoc, nsString.length - 1)
+        let lineRange = nsString.lineRange(for: NSRange(location: probeLoc, length: 0))
+        let tokens = PlainTextInlineImageStore.shared.findTokens(in: nsString, range: lineRange)
+        guard !tokens.isEmpty else { return nil }
+        
+        var matched: (token: (range: NSRange, identifier: String), edge: CaretImageEdge)?
+        for token in tokens {
+            if clampedLoc == token.range.location {
+                matched = (token, .leading)
+                break
+            } else if clampedLoc == token.range.upperBound || NSLocationInRange(clampedLoc, token.range) {
+                matched = (token, .trailing)
+                break
+            }
+        }
+        guard let matched else { return nil }
+        
+        let cardRect: NSRect
+        if let cached = self.inlineImageCardEntries.first(where: {
+            $0.identifier == matched.token.identifier && $0.tokenRange == matched.token.range
+        }) {
+            cardRect = cached.rect
+        } else {
+            let docURL = self.currentInlineImageDocURL
+            guard PlainTextInlineImageStore.shared.image(for: matched.token.identifier, documentURL: docURL) != nil else {
+                return nil
+            }
+            layoutManager.ensureLayout(forCharacterRange: matched.token.range)
+            let glyphIndex = layoutManager.glyphIndexForCharacter(at: matched.token.range.location)
+            guard layoutManager.isValidGlyphIndex(glyphIndex) else { return nil }
+            
+            let fragmentRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
+            let glyphLocation = layoutManager.location(forGlyphAt: glyphIndex)
+            let rawContainerW = textContainer.size.width
+            let finiteContainerW = (rawContainerW.isFinite && rawContainerW > 0 && rawContainerW <= 100_000)
+                ? rawContainerW
+                : (self.enclosingScrollView?.documentVisibleRect.width ?? self.bounds.width)
+            let containerWidth = max(160, finiteContainerW.isFinite ? min(16_384, finiteContainerW) : 800)
+            let maxCardWidth = PlainTextInlineImageStore.effectiveMaxImageWidth(
+                containerWidth: containerWidth,
+                glyphX: glyphLocation.x
+            )
+            guard let geom = PlainTextInlineImageStore.shared.displayGeometry(
+                for: matched.token.identifier,
+                documentURL: docURL,
+                containerWidth: containerWidth,
+                maxImageWidth: maxCardWidth
+            ) else { return nil }
+            
+            let tx = geom.transform
+            let boxW = geom.rotatedBoxSize.width + 8
+            let boxH = geom.rotatedBoxSize.height + 8
+            let baseX = fragmentRect.minX + self.textContainerOrigin.x + glyphLocation.x
+            let minX = self.textContainerOrigin.x + 8
+            let maxX = max(minX, self.textContainerOrigin.x + containerWidth - boxW - 8)
+            let clampedX = min(maxX, max(minX, baseX + tx.offsetX))
+            let cardTopY = fragmentRect.minY + self.textContainerOrigin.y + 4 + max(0, tx.offsetY)
+            cardRect = NSRect(x: clampedX, y: cardTopY, width: boxW, height: boxH)
+        }
+        
+        return BoundingBoxResizeMath.adaptiveCaretRect(
+            forImageCardRect: cardRect,
+            edge: matched.edge,
+            singleLineHeight: self.singleLineHeight,
+            textContainerMinX: self.textContainerOrigin.x
+        )
+    }
+    
+    
     override func layout() {
         
         super.layout()
         
         let maxHeight = self.singleLineHeight
         let shouldHide = !self.isEditable || self.funEffects.ownsVimCursorDrawing
+        let adaptiveCaret: NSRect? = (!shouldHide && self.selectedRanges.count == 1 && self.selectedRange().length == 0)
+            ? self.inlineImageCaretFrame(for: self.selectedRange().location)
+            : nil
         for subview in self.subviews where subview is NSTextInsertionIndicator && !self.insertionIndicators.contains(where: { $0 === subview }) {
             guard let indicator = subview as? NSTextInsertionIndicator else { continue }
             if shouldHide {
                 indicator.displayMode = .hidden
+            } else if let adaptiveCaret {
+                indicator.frame = adaptiveCaret
             } else if indicator.frame.height > maxHeight + 2 {
                 var frame = indicator.frame
                 frame.size.height = maxHeight
@@ -945,13 +1101,28 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         guard self.isEditable else { return }
         let cursorColor = self.effectiveCursorColor
+        let adaptiveCaret: NSRect? = (self.selectedRanges.count == 1 && self.selectedRange().length == 0)
+            ? self.inlineImageCaretFrame(for: self.selectedRange().location)
+            : nil
         var caretRect = rect
         let maxLineHeight = self.singleLineHeight
-        if caretRect.height > maxLineHeight + 2 {
+        if adaptiveCaret == nil, caretRect.height > maxLineHeight + 2 {
             caretRect.size.height = maxLineHeight
         }
         
         guard UserDefaults.standard[.vimMode], VimState.shared.mode != .insert else {
+            if let adaptiveCaret {
+                guard flag else { return }
+                NSGraphicsContext.saveGraphicsState()
+                cursorColor.setFill()
+                NSBezierPath(
+                    roundedRect: adaptiveCaret,
+                    xRadius: adaptiveCaret.width * 0.5,
+                    yRadius: adaptiveCaret.width * 0.5
+                ).fill()
+                NSGraphicsContext.restoreGraphicsState()
+                return
+            }
             // On lines with inline image cards, AppKit's super.drawInsertionPoint can still extend
             // or ignore height; draw a crisp 2pt single-line caret directly in that case.
             if rect.height > maxLineHeight + 2 {
@@ -975,7 +1146,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         var block = caretRect
-        block.size.width = self.blockCursorWidth()
+        if let adaptiveCaret {
+            block.origin.x = adaptiveCaret.minX
+            block.origin.y = adaptiveCaret.minY
+            block.size.height = adaptiveCaret.height
+        }
+        block.size.width = max(4, self.blockCursorWidth())
         
         NSGraphicsContext.saveGraphicsState()
         if VimState.shared.mode == .replace {
@@ -1000,7 +1176,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let fallbackSpace = self.spaceWidth > 0 ? self.spaceWidth : 8
         guard location < string.length else { return fallbackSpace }
         
-        let sample = string.substring(with: NSRange(location: location, length: 1))
+        let charRange = string.rangeOfComposedCharacterSequence(at: location)
+        let sample = string.substring(with: charRange)
         if sample == "\n" || sample == "\r" {
             return fallbackSpace
         }
@@ -1499,7 +1676,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         let nsString = self.string as NSString
-        let range = NSIntersectionRange(self.selectedRange(), NSRange(location: 0, length: nsString.length))
+        let raw = self.selectedRange()
+        let clampedLoc = min(max(0, raw.location), nsString.length)
+        let clampedEnd = min(max(clampedLoc, raw.upperBound), nsString.length)
+        let range = NSRange(location: clampedLoc, length: clampedEnd - clampedLoc)
         let needsLeadingNewline = range.location > 0 && nsString.character(at: range.location - 1) != 0x0A
         let hasFollowingNewline = range.upperBound < nsString.length && nsString.character(at: range.upperBound) == 0x0A
         
@@ -1692,6 +1872,16 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     try await self?.highlightInstances()
                 }
             }
+        }
+        
+        if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true,
+           !stillSelectingFlag,
+           selectedRanges.count == 1,
+           let newLoc = selectedRanges.first?.location,
+           self.inlineImageCaretFrame(for: newLoc) != nil || self.inlineImageCaretFrame(for: previousLocation) != nil
+        {
+            self.needsLayout = true
+            self.invalidateInsertionIndicatorDisplayMode()
         }
         
         if shouldTrackVimCursor,
@@ -1909,10 +2099,22 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         selectAllItem.isEnabled = !self.string.isEmpty
         menu.addItem(selectAllItem)
         
-        if let documentViewController = self.documentViewController, hasSelection {
+        let selectedRange = self.selectedRange()
+        let selectedSnippet: String = if selectedRange.length > 0,
+                                         selectedRange.upperBound <= (self.string as NSString).length
+        {
+            (self.string as NSString).substring(with: selectedRange)
+        } else {
+            ""
+        }
+        let canHighlightSelection = hasSelection && NotesTextColorPaletteController.shouldPresent(for: selectedSnippet)
+        
+        if let documentViewController = self.documentViewController, canHighlightSelection {
             menu.addItem(.separator())
             
-            // The five colors are direct menu items, not a submenu: one click paints.
+            let highlightSubmenu = NSMenu()
+            highlightSubmenu.autoenablesItems = false
+            
             for (index, color) in HighlightColor.allCases.enumerated() {
                 let item = NSMenuItem(title: color.localizedName,
                                       action: #selector(DocumentViewController.applyHighlight(_:)),
@@ -1920,17 +2122,36 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 item.tag = index
                 item.target = documentViewController
                 item.image = Self.swatchImage(for: color)
-                menu.addItem(item)
+                highlightSubmenu.addItem(item)
             }
             
-            menu.addItem(.separator())
+            highlightSubmenu.addItem(.separator())
+            
+            let customPaletteItem = NSMenuItem(
+                title: AppLanguage.text("自定义颜色…", en: "Custom Color…"),
+                action: #selector(DocumentViewController.openHighlightColorPalette(_:)),
+                keyEquivalent: ""
+            )
+            customPaletteItem.target = documentViewController
+            customPaletteItem.image = NSImage(systemSymbolName: "paintpalette", accessibilityDescription: nil)
+            highlightSubmenu.addItem(customPaletteItem)
             
             let clearItem = NSMenuItem(title: String(localized: "chrome.contextMenu.clearHighlight",
                                                      defaultValue: "Clear Highlight", table: "Chrome"),
                                        action: #selector(DocumentViewController.removeHighlight(_:)),
                                        keyEquivalent: "")
             clearItem.target = documentViewController
-            menu.addItem(clearItem)
+            clearItem.image = NSImage(systemSymbolName: "eraser", accessibilityDescription: nil)
+            highlightSubmenu.addItem(clearItem)
+            
+            let highlightRootItem = NSMenuItem(
+                title: AppLanguage.text("文字高亮", en: "Highlight"),
+                action: nil,
+                keyEquivalent: ""
+            )
+            highlightRootItem.image = NSImage(systemSymbolName: "highlighter", accessibilityDescription: nil)
+            highlightRootItem.submenu = highlightSubmenu
+            menu.addItem(highlightRootItem)
         }
         
         return menu
@@ -2238,15 +2459,27 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    /// Returns a finite, bounded container width for inline image layout & manipulation even when line wrapping is disabled.
+    private var effectiveInlineImageContainerWidth: CGFloat {
+        let rawContainerW = self.textContainer?.size.width ?? self.bounds.width
+        let finiteContainerW = (rawContainerW.isFinite && rawContainerW > 0 && rawContainerW <= 100_000)
+            ? rawContainerW
+            : (self.enclosingScrollView?.documentVisibleRect.width ?? self.bounds.width)
+        return max(160, finiteContainerW.isFinite ? min(16_384, finiteContainerW) : 800)
+    }
+    
+    
     /// Renders inline image cards (supporting stepless scale, offset, rotation, and Freeform selection handles).
     private func drawPlainTextInlineImages(in dirtyRect: NSRect) {
         
         self.inlineImageCardEntries.removeAll()
         
+        // Scan `visibleRect` (falling back to `dirtyRect`) so partial repaints (caret blink / line highlight)
+        // never wipe `inlineImageCardEntries` and break hit-testing for visible images.
+        let scanRect = self.visibleRect.isEmpty ? dirtyRect : self.visibleRect.union(dirtyRect)
         guard
             let layoutManager = self.layoutManager as? LayoutManager,
-            let textContainer = self.textContainer,
-            let rawVisibleCharRange = self.range(for: dirtyRect, withoutAdditionalLayout: true)
+            let rawVisibleCharRange = self.range(for: scanRect, withoutAdditionalLayout: true)
         else { return }
         
         let nsString = self.string as NSString
@@ -2263,11 +2496,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let borderColor = (self.theme?.text.color ?? .labelColor).withAlphaComponent(0.12)
         let fillColor = self.theme?.background.color ?? .controlBackgroundColor
         let accentColor = StudioPaletteManager.shared.activeNSAccentColor
-        let rawContainerW = textContainer.size.width
-        let finiteContainerW = (rawContainerW.isFinite && rawContainerW > 0 && rawContainerW <= 100_000)
-            ? rawContainerW
-            : (self.enclosingScrollView?.documentVisibleRect.width ?? self.bounds.width)
-        let containerWidth = max(160, finiteContainerW.isFinite ? min(16_384, finiteContainerW) : 800)
+        let containerWidth = self.effectiveInlineImageContainerWidth
         let canvasMidX = self.textContainerOrigin.x + containerWidth * 0.5
         
         if self.showInlineImageCenterGuide {
@@ -2566,7 +2795,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     private func applyInlineImageLayoutUpdate() {
         (self.layoutManager as? LayoutManager)?.invalidateInlineImageLayout()
+        self.needsLayout = true
         self.needsDisplay = true
+        self.invalidateInsertionIndicatorDisplayMode()
+        if self.funEffects.ownsVimCursorDrawing {
+            self.funEffects.syncVimCursor(animated: false)
+        }
     }
     
     
@@ -2718,7 +2952,30 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         if let parsed, parsed.isFinite {
             let docURL = self.currentInlineImageDocURL
             var tx = PlainTextInlineImageStore.shared.transform(for: identifier, documentURL: docURL)
-            if isWidth {
+            let containerWidth = self.effectiveInlineImageContainerWidth
+            let maxCardW = max(BoundingBoxResizeMath.minWidth, containerWidth - 24)
+            
+            if let natural = PlainTextInlineImageStore.shared.naturalSize(for: identifier, documentURL: docURL),
+               natural.width > 0, natural.height > 0
+            {
+                let aspect = natural.width / natural.height
+                let candidate: NSSize
+                if isWidth {
+                    let w = max(BoundingBoxResizeMath.minWidth, min(maxCardW, round(parsed)))
+                    candidate = NSSize(width: w, height: max(BoundingBoxResizeMath.minHeight, round(w / aspect)))
+                } else {
+                    let h = max(BoundingBoxResizeMath.minHeight, min(1600, round(parsed)))
+                    candidate = NSSize(width: max(BoundingBoxResizeMath.minWidth, round(h * aspect)), height: h)
+                }
+                let optimal = BoundingBoxResizeMath.optimalRestoredSize(
+                    currentSize: candidate,
+                    naturalSize: natural,
+                    maxWidth: maxCardW,
+                    maxHeight: 1600
+                )
+                tx.customWidth = optimal.width
+                tx.customHeight = optimal.height
+            } else if isWidth {
                 tx.customWidth = max(BoundingBoxResizeMath.minWidth, min(2400, round(parsed)))
             } else {
                 tx.customHeight = max(BoundingBoxResizeMath.minHeight, min(1600, round(parsed)))
@@ -2738,11 +2995,15 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         let isWidth = self.editingDimensionIsWidth ?? true
         let identifier = self.selectedInlineImageIdentifier
+        let rawText = editor.currentEditor()?.string ?? editor.stringValue
         self.editingDimensionIsWidth = nil
         self.inlineDimensionEditor = nil
+        // Silence delegate callbacks before ending editing / removing so cancel never commits and commit never fires twice.
+        (editor as? InlineDimensionEditorField)?.finishSilently()
+        self.window?.endEditing(for: editor)
         editor.removeFromSuperview()
         if commit, let identifier {
-            self.commitInlineDimensionEdit(raw: editor.stringValue, identifier: identifier, isWidth: isWidth)
+            self.commitInlineDimensionEdit(raw: rawText, identifier: identifier, isWidth: isWidth)
         } else {
             self.window?.makeFirstResponder(self)
             self.scheduleHideDimensionPills()
@@ -2765,10 +3026,17 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             width: entry.drawSize.width,
             height: entry.drawSize.height
         )
-        let containerWidth = max(160, self.textContainer?.size.width ?? self.bounds.width)
+        let containerWidth = self.effectiveInlineImageContainerWidth
         let minXBound = self.textContainerOrigin.x + 8
         let maxXBound = self.textContainerOrigin.x + max(180, containerWidth) - 8
         let minYBound = startImageFrame.minY - max(0, startTx.offsetY)
+        let naturalSize = PlainTextInlineImageStore.shared.naturalSize(for: entry.identifier, documentURL: docURL)
+        let naturalAspectRatio: CGFloat = {
+            if let naturalSize, naturalSize.height > 0 {
+                return naturalSize.width / naturalSize.height
+            }
+            return startImageFrame.height > 0 ? (startImageFrame.width / startImageFrame.height) : 1
+        }()
         
         self.activeDraggingResizeHandle = handle
         self.dimensionPillHideWorkItem?.cancel()
@@ -2808,8 +3076,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 y: worldDx * sinR + worldDy * cosR
             )
             
-            let nextFrame = BoundingBoxResizeMath.resizedFrame(
+            let nextFrame = BoundingBoxResizeMath.aspectPreservingResizedFrame(
                 startFrame: startImageFrame,
+                naturalAspectRatio: naturalAspectRatio,
                 handle: handle,
                 delta: localDelta,
                 minXBound: minXBound,
@@ -2893,7 +3162,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         guard let window = self.window else { return }
         let docURL = self.currentInlineImageDocURL
         let startTx = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
-        let containerWidth = max(160, self.textContainer?.size.width ?? self.bounds.width)
+        let containerWidth = self.effectiveInlineImageContainerWidth
         let canvasMidX = self.textContainerOrigin.x + containerWidth * 0.5
         var didMove = false
         
@@ -3071,7 +3340,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
               let entry = self.entry(for: payload)
         else { return }
         let docURL = self.currentInlineImageDocURL
-        let containerWidth = max(160, self.textContainer?.size.width ?? self.bounds.width)
+        let containerWidth = self.effectiveInlineImageContainerWidth
         let maxOffset = max(0, (self.textContainerOrigin.x + containerWidth - entry.rect.width - 8) - entry.baseAnchorX)
         var tx = PlainTextInlineImageStore.shared.transform(for: payload.identifier, documentURL: docURL)
         switch sender.tag {
@@ -3142,15 +3411,16 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     
     private func deleteInlineImageToken(range: NSRange, identifier: String) {
-        let nsLen = (self.string as NSString).length
-        if NSMaxRange(range) <= nsLen,
-           self.shouldChangeText(in: range, replacementString: "")
-        {
-            self.replaceCharacters(in: range, with: "")
-            self.didChangeText()
-            if self.selectedInlineImageIdentifier == identifier {
-                self.selectedInlineImageIdentifier = nil
-            }
+        let nsString = self.string as NSString
+        guard NSMaxRange(range) <= nsString.length else { return }
+        let snippet = nsString.substring(with: range)
+        guard snippet.contains(identifier),
+              self.shouldChangeText(in: range, replacementString: "")
+        else { return }
+        self.replaceCharacters(in: range, with: "")
+        self.didChangeText()
+        if self.selectedInlineImageIdentifier == identifier {
+            self.selectedInlineImageIdentifier = nil
         }
     }
     
@@ -3162,7 +3432,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         let docURL = self.currentInlineImageDocURL
         let current = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
-        let containerWidth = max(160, self.textContainer?.size.width ?? self.bounds.width)
+        let containerWidth = self.effectiveInlineImageContainerWidth
         let maxOffset = max(120, (self.textContainerOrigin.x + containerWidth - entry.rect.width - 8) - entry.baseAnchorX)
         
         let popover = NSPopover()
@@ -3178,6 +3448,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 if abs(resolved.scale - prev.scale) > 0.001 {
                     resolved.customWidth = nil
                     resolved.customHeight = nil
+                } else {
+                    resolved.customWidth = prev.customWidth
+                    resolved.customHeight = prev.customHeight
                 }
                 PlainTextInlineImageStore.shared.setTransform(resolved, for: entry.identifier, documentURL: docURL)
                 self.selectedInlineImageIdentifier = entry.identifier
@@ -3250,6 +3523,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     func vimCursorRect(at location: Int) -> NSRect? {
         
         guard let layoutManager, let textContainer else { return nil }
+        if let adaptive = self.inlineImageCaretFrame(for: location) {
+            let caretWidth = max(4, self.spaceWidth > 0 ? self.spaceWidth : 8)
+            return NSRect(x: adaptive.minX, y: adaptive.minY, width: caretWidth, height: adaptive.height)
+        }
         let string = self.string as NSString
         let length = string.length
         let lineH = self.singleLineHeight
@@ -4303,7 +4580,6 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.enclosingScrollView?.drawsBackground = shouldDrawSolid
         }
         self.needsDisplay = true
-        self.enclosingScrollView?.verticalRulerView?.needsDisplay = true
     }
     
     
@@ -4691,6 +4967,13 @@ extension EditorTextView {
     /// Detects a URL directly under `point` in view coordinates for `Cmd + Click` navigation.
     private func urlAtPoint(_ point: NSPoint) -> URL? {
         
+        self.urlMatchAtPoint(point)?.url
+    }
+    
+    
+    /// Detects both the URL and its document character range under `point` in view coordinates.
+    private func urlMatchAtPoint(_ point: NSPoint) -> (url: URL, range: NSRange)? {
+        
         guard
             let layoutManager = self.layoutManager,
             let textContainer = self.textContainer,
@@ -4712,7 +4995,138 @@ extension EditorTextView {
         let lineRange = nsString.lineRange(for: NSRange(location: charIndex, length: 0))
         let lineString = nsString.substring(with: lineRange)
         let localOffset = charIndex - lineRange.location
-        return URLDetector.detectedURL(in: lineString, at: localOffset)
+        guard let match = URLDetector.detectedLinkMatches(in: lineString)
+            .first(where: { NSLocationInRange(localOffset, $0.range) })
+        else { return nil }
+        
+        let globalRange = NSRange(location: lineRange.location + match.range.location, length: match.range.length)
+        return (match.url, globalRange)
+    }
+    
+    
+    private func isPureCommandModifier(_ flags: NSEvent.ModifierFlags) -> Bool {
+        
+        flags.intersection(.deviceIndependentFlagsMask) == [.command]
+    }
+    
+    
+    private func updateCommandKeyLinkState(modifierFlags: NSEvent.ModifierFlags, mouseLocationInWindow: NSPoint?) {
+        
+        let shouldHighlight = self.isPureCommandModifier(modifierFlags) && (self.window?.isKeyWindow == true)
+        guard shouldHighlight else {
+            let hadCmd = self.isCommandKeyHeld || !self.commandLinkUnderlineRanges.isEmpty
+            self.clearCommandLinkUnderlines()
+            if hadCmd {
+                self.window?.invalidateCursorRects(for: self)
+            }
+            return
+        }
+        
+        var hoveredRange: NSRange?
+        if let mouseLocationInWindow {
+            let point = self.convert(mouseLocationInWindow, from: nil)
+            if self.bounds.contains(point) {
+                hoveredRange = self.urlMatchAtPoint(point)?.range
+            }
+        }
+        
+        let needsRefresh = !self.isCommandKeyHeld || hoveredRange != self.hoveredCommandLinkRange
+        self.isCommandKeyHeld = true
+        if needsRefresh {
+            self.refreshCommandLinkUnderlines(hoveredRange: hoveredRange)
+        }
+        
+        if hoveredRange != nil {
+            NSCursor.pointingHand.set()
+        } else if needsRefresh {
+            self.window?.invalidateCursorRects(for: self)
+        }
+    }
+    
+    
+    private func removeTemporaryLinkUnderlines(in layoutManager: NSLayoutManager, fullRange: NSRange) {
+        let marked = self.markedRange()
+        if marked.length == 0 || marked.location == NSNotFound {
+            layoutManager.removeTemporaryAttribute(.underlineStyle, forCharacterRange: fullRange)
+            layoutManager.removeTemporaryAttribute(.underlineColor, forCharacterRange: fullRange)
+        } else {
+            let safeMarked = NSIntersectionRange(marked, fullRange)
+            if safeMarked.location > 0 {
+                let prefix = NSRange(location: 0, length: safeMarked.location)
+                layoutManager.removeTemporaryAttribute(.underlineStyle, forCharacterRange: prefix)
+                layoutManager.removeTemporaryAttribute(.underlineColor, forCharacterRange: prefix)
+            }
+            let suffixStart = NSMaxRange(safeMarked)
+            if suffixStart < fullRange.length {
+                let suffix = NSRange(location: suffixStart, length: fullRange.length - suffixStart)
+                layoutManager.removeTemporaryAttribute(.underlineStyle, forCharacterRange: suffix)
+                layoutManager.removeTemporaryAttribute(.underlineColor, forCharacterRange: suffix)
+            }
+        }
+    }
+    
+    
+    private func refreshCommandLinkUnderlines(hoveredRange: NSRange?) {
+        
+        guard let layoutManager = self.layoutManager else { return }
+        let nsString = self.string as NSString
+        let totalLength = nsString.length
+        guard totalLength > 0 else {
+            self.commandLinkUnderlineRanges = []
+            self.hoveredCommandLinkRange = nil
+            return
+        }
+        
+        let fullRange = NSRange(location: 0, length: totalLength)
+        let rawVisible = self.range(for: self.visibleRect, withoutAdditionalLayout: true) ?? NSRange(location: 0, length: 0)
+        let clampedVisible = NSIntersectionRange(rawVisible, fullRange)
+        let scanRange: NSRange = clampedVisible.length > 0 ? nsString.lineRange(for: clampedVisible) : NSRange(location: 0, length: 0)
+        
+        let marked = self.markedRange()
+        let detectedRanges: [NSRange] = scanRange.length > 0
+            ? URLDetector.detectedLinkRanges(in: self.string, range: scanRange).filter {
+                marked.length == 0 || NSIntersectionRange($0, marked).length == 0
+            }
+            : []
+        
+        let hadPrevious = !self.commandLinkUnderlineRanges.isEmpty
+        self.hoveredCommandLinkRange = hoveredRange
+        self.commandLinkUnderlineRanges = detectedRanges
+        
+        guard hadPrevious || !detectedRanges.isEmpty else { return }
+        
+        let isDark = self.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let accentColor = StudioPaletteManager.shared.chromePalette(for: self.theme, isDark: isDark).accent
+        let subtleColor = accentColor.withAlphaComponent(0.68)
+        
+        layoutManager.groupTemporaryAttributesUpdate(in: fullRange) {
+            self.removeTemporaryLinkUnderlines(in: layoutManager, fullRange: fullRange)
+            for linkRange in detectedRanges {
+                let color = (hoveredRange == linkRange) ? accentColor : subtleColor
+                layoutManager.addTemporaryAttributes([
+                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                    .underlineColor: color,
+                ], forCharacterRange: linkRange)
+            }
+        }
+    }
+    
+    
+    private func clearCommandLinkUnderlines() {
+        
+        let hadUnderlines = !self.commandLinkUnderlineRanges.isEmpty || self.isCommandKeyHeld
+        self.isCommandKeyHeld = false
+        self.commandLinkUnderlineRanges = []
+        self.hoveredCommandLinkRange = nil
+        
+        guard hadUnderlines, let layoutManager = self.layoutManager else { return }
+        let totalLength = (self.string as NSString).length
+        guard totalLength > 0 else { return }
+        
+        let fullRange = NSRange(location: 0, length: totalLength)
+        layoutManager.groupTemporaryAttributesUpdate(in: fullRange) {
+            self.removeTemporaryLinkUnderlines(in: layoutManager, fullRange: fullRange)
+        }
     }
     
     
@@ -4812,18 +5226,6 @@ private struct InlineImageCardEntry {
     }
     
     
-    func rotatedCorners() -> [NSPoint] {
-        let hw = self.unrotatedCardSize.width * 0.5
-        let hh = self.unrotatedCardSize.height * 0.5
-        return [
-            self.rotatedPoint(local: NSPoint(x: -hw, y: -hh)),
-            self.rotatedPoint(local: NSPoint(x: hw, y: -hh)),
-            self.rotatedPoint(local: NSPoint(x: hw, y: hh)),
-            self.rotatedPoint(local: NSPoint(x: -hw, y: hh)),
-        ]
-    }
-    
-    
     func rotationKnobCenter() -> NSPoint {
         self.rotatedPoint(local: NSPoint(x: 0, y: -self.unrotatedCardSize.height * 0.5 - 22))
     }
@@ -4868,6 +5270,13 @@ private final class InlineDimensionEditorField: NSTextField, NSTextFieldDelegate
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+    
+    func finishSilently() {
+        self.didFinish = true
+        self.delegate = nil
+        self.onCommit = nil
+        self.onCancel = nil
     }
     
     override func cancelOperation(_ sender: Any?) {

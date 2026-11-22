@@ -101,6 +101,29 @@ struct StudioColorTokens: Equatable, Sendable {
 }
 
 
+/// Harmonized window chrome colors (titlebar, tab bar, status bar, toolbar pills) derived
+/// from the active editor `Theme` and the user's `StudioPaletteManager` accent triad.
+struct WindowChromePalette: Equatable, Sendable {
+    
+    let isDark: Bool
+    let titlebarBackground: NSColor
+    let tabBarBackground: NSColor
+    let tabBarSeparator: NSColor
+    let activeTabFill: NSColor
+    let activeTabBorder: NSColor
+    let hoveredTabFill: NSColor
+    let activeTabText: NSColor
+    let inactiveTabText: NSColor
+    let accent: NSColor
+    let statusBarBackground: NSColor
+    let statusBarSeparator: NSColor
+    let statusBarText: NSColor
+    let toolbarPillFill: NSColor
+    let toolbarPillHoverFill: NSColor
+    let toolbarPillText: NSColor
+}
+
+
 @MainActor @Observable
 final class StudioPaletteManager {
     
@@ -453,6 +476,108 @@ final class StudioPaletteManager {
         UserDefaults.standard[.theme] = themeName
         UserDefaults.standard[.pinsThemeAppearance] = true
         UserDefaults.standard[.documentAppearance] = preferDark ? AppearanceMode.dark : AppearanceMode.light
+    }
+    
+    
+    /// Syncs the active editor theme with the current Studio Palette when the user is already using a Studio theme,
+    /// or when `applyIfNonStudio` is enabled, keeping the editor and tab chrome visually unified.
+    func syncActiveEditorTheme(preferDark: Bool, applyIfNonStudio: Bool = false) {
+        let currentThemeName = UserDefaults.standard[.theme]
+        if currentThemeName.hasPrefix("Studio · ") {
+            let currentlyDark = ThemeManager.isDark(name: currentThemeName)
+            self.applyPaletteToEditorTheme(preferDark: currentlyDark)
+        } else if applyIfNonStudio {
+            self.applyPaletteToEditorTheme(preferDark: preferDark)
+        }
+    }
+    
+    
+    /// Resolves a unified, theme-aware window chrome palette so the tab bar, titlebar, status bar,
+    /// and toolbar pills harmonize with the active editor theme and Studio Palette without clashing.
+    func chromePalette(for theme: Theme?, isDark appearanceIsDark: Bool) -> WindowChromePalette {
+        let _ = self.revision
+        let triad = self.triad()
+        let isDark = theme?.isDarkTheme ?? appearanceIsDark
+        
+        let fallbackEditorBg: NSColor = isDark
+            ? Self.nsColor(hex: triad.darkInkHex)
+            : (self.selectedID == .matchaParchment
+                ? Self.nsColor(hex: triad.lightPaperHex)
+                : Self.blend(Self.nsColor(hex: triad.lightPaperHex), with: .white, ratio: 0.52))
+        let fallbackText: NSColor = isDark
+            ? Self.nsColor(hex: triad.lightPaperHex)
+            : Self.nsColor(hex: triad.darkInkHex)
+        
+        let editorBg = (theme?.background.color ?? fallbackEditorBg).usingColorSpace(.sRGB)
+            ?? (theme?.background.color ?? fallbackEditorBg)
+        let themeText = (theme?.text.color ?? fallbackText).usingColorSpace(.sRGB)
+            ?? (theme?.text.color ?? fallbackText)
+        let rawAccent = Self.nsColor(hex: triad.accentHex)
+        
+        if isDark {
+            let bgLum = Self.relativeLuminance(editorBg)
+            let tabBarBg = bgLum < 0.08
+                ? Self.blend(editorBg, with: .white, ratio: 0.032)
+                : Self.blend(editorBg, with: .black, ratio: 0.20)
+            let activeTabFill = Self.blend(editorBg, with: .white, ratio: 0.092)
+            let activeTabBorder = themeText.withAlphaComponent(0.13)
+            let hoveredTabFill = themeText.withAlphaComponent(0.065)
+            let separator = themeText.withAlphaComponent(0.10)
+            let activeText = themeText.withAlphaComponent(0.95)
+            let inactiveText = themeText.withAlphaComponent(0.56)
+            let accent = Self.ensureDarkModeVisibility(rawAccent)
+            let pillFill = Self.blend(editorBg, with: .white, ratio: 0.14)
+            let pillHover = Self.blend(editorBg, with: .white, ratio: 0.20)
+            
+            return WindowChromePalette(
+                isDark: true,
+                titlebarBackground: tabBarBg,
+                tabBarBackground: tabBarBg,
+                tabBarSeparator: separator,
+                activeTabFill: activeTabFill,
+                activeTabBorder: activeTabBorder,
+                hoveredTabFill: hoveredTabFill,
+                activeTabText: activeText,
+                inactiveTabText: inactiveText,
+                accent: accent,
+                statusBarBackground: tabBarBg,
+                statusBarSeparator: separator,
+                statusBarText: inactiveText,
+                toolbarPillFill: pillFill,
+                toolbarPillHoverFill: pillHover,
+                toolbarPillText: activeText
+            )
+        } else {
+            let tabBarBg = Self.blend(editorBg, with: themeText, ratio: 0.044)
+            let activeTabFill = Self.blend(editorBg, with: .white, ratio: 0.50)
+            let activeTabBorder = themeText.withAlphaComponent(0.11)
+            let hoveredTabFill = themeText.withAlphaComponent(0.055)
+            let separator = themeText.withAlphaComponent(0.095)
+            let activeText = themeText.withAlphaComponent(0.92)
+            let inactiveText = themeText.withAlphaComponent(0.54)
+            let accent = Self.ensureLightModeTextContrast(rawAccent, against: activeTabFill)
+            let pillFill = Self.blend(editorBg, with: themeText, ratio: 0.08)
+            let pillHover = Self.blend(editorBg, with: themeText, ratio: 0.13)
+            
+            return WindowChromePalette(
+                isDark: false,
+                titlebarBackground: tabBarBg,
+                tabBarBackground: tabBarBg,
+                tabBarSeparator: separator,
+                activeTabFill: activeTabFill,
+                activeTabBorder: activeTabBorder,
+                hoveredTabFill: hoveredTabFill,
+                activeTabText: activeText,
+                inactiveTabText: inactiveText,
+                accent: accent,
+                statusBarBackground: tabBarBg,
+                statusBarSeparator: separator,
+                statusBarText: inactiveText,
+                toolbarPillFill: pillFill,
+                toolbarPillHoverFill: pillHover,
+                toolbarPillText: activeText
+            )
+        }
     }
     
     

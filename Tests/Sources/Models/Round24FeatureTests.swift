@@ -37,6 +37,9 @@ struct Round24FeatureTests {
         #expect(!NotesTextColorPaletteController.shouldPresent(for: "⟦🖼demo-id⟧"))
         #expect(NotesTextColorPaletteController.shouldPresent(for: "hello"))
         #expect(NotesTextColorPaletteController.shouldPresent(for: "  中文高亮  "))
+        
+        // Highlighting is right-click only and never auto-opens on selection
+        #expect(!NotesTextColorPaletteController.shared.isVisible)
     }
     
     
@@ -132,18 +135,66 @@ struct Round24FeatureTests {
     }
     
     
-    // MARK: 4. AI Gijinka Mapping for All Bots
+    // MARK: 4. AI Gijinka Model-Driven Resolution
     
-    @Test func allBotsExposeValidAIGijinkaCharacters() {
-        var seenNames = Set<String>()
-        for bot in AIBotID.allCases {
-            let gijinka = bot.gijinkaCharacter
-            #expect(!gijinka.name.isEmpty)
-            #expect(gijinka.portraitURL != nil)
-            #expect(gijinka.portraitURLString.hasPrefix("https://"))
-            seenNames.insert(gijinka.name)
+    @Test func aiGijinkaResolvesStrictlyFromSelectedModel() {
+        #expect(AIGijinkaCharacter.resolve(modelName: "deepseek-chat") == .deepseek)
+        #expect(AIGijinkaCharacter.resolve(modelName: "anthropic/claude-3.7-sonnet", endpointName: "OpenRouter", baseURL: "https://openrouter.ai/api/v1") == .claude)
+        #expect(AIGijinkaCharacter.resolve(modelName: "qwen-max") == .qwen)
+        #expect(AIGijinkaCharacter.resolve(modelName: "gpt-4o-mini") == .gpt)
+        #expect(AIGijinkaCharacter.resolve(modelName: "gemini-2.5-pro") == .gemini)
+        #expect(AIGijinkaCharacter.resolve(modelName: "moonshot-v1-8k") == .kimi)
+        #expect(AIGijinkaCharacter.resolve(modelName: "glm-4-plus") == .glm)
+        #expect(AIGijinkaCharacter.resolve(modelName: "MiniMax-Text-01") == .minimax)
+        #expect(AIGijinkaCharacter.resolve(modelName: "grok-3") == .grok)
+        #expect(AIGijinkaCharacter.resolve(modelName: "doubao-seed-1.6") == .seed)
+        #expect(AIGijinkaCharacter.resolve(modelName: "meta-llama/llama-3.3-70b") == .llama)
+        #expect(AIGijinkaCharacter.resolve(modelName: "mistral-large") == .mistral)
+        #expect(AIGijinkaCharacter.resolve(modelName: "sonar-pro") == .perplexity)
+        #expect(AIGijinkaCharacter.resolve(modelName: "custom-model", endpointName: "DeepSeek", baseURL: "https://api.deepseek.com/v1") == .deepseek)
+        #expect(AIGijinkaCharacter.resolve(modelName: "my-unknown-local-model") == nil)
+        #expect(AIGijinkaCharacter.resolve(modelName: nil) == nil)
+        
+        for character in AIGijinkaCharacter.allCharacters {
+            #expect(character.portraitURL != nil)
+            #expect(character.portraitURLString.hasPrefix("https://"))
         }
-        #expect(seenNames.count == AIBotID.allCases.count)
+    }
+    
+    
+    // MARK: 4B. User Profile Popover Bounded Fitting Height (No Background Overflow)
+    
+    @Test func userProfilePopoverStaysWithinExpectedHeightBounds() {
+        let controller = NSHostingController(rootView: UserProfilePopoverView())
+        let size = controller.sizeThatFits(in: CGSize(width: 348, height: 600))
+        #expect(abs(size.width - 348) <= 2)
+        #expect(size.height >= 240 && size.height <= 420)
+        
+        // Verify Apple Music cover-art backdrop with an oversized image never inflates parent VStack fittingSize
+        let largeCover = NSImage(size: NSSize(width: 512, height: 512))
+        largeCover.lockFocus()
+        NSColor.systemIndigo.setFill()
+        NSRect(x: 0, y: 0, width: 512, height: 512).fill()
+        largeCover.unlockFocus()
+        
+        let palette = AvatarColorExtractor.Palette(primary: .blue, secondary: .purple, tertiary: .teal)
+        let card = VStack {
+            Text("Header").frame(height: 20)
+            Color.clear.frame(height: 180)
+        }
+        .frame(width: 328)
+        .background {
+            SoftAvatarAuroraBackdrop(
+                palette: palette,
+                blurredCoverImage: largeCover,
+                surface: .clear,
+                isDark: true
+            )
+        }
+        let cardController = NSHostingController(rootView: card)
+        let cardSize = cardController.sizeThatFits(in: CGSize(width: 328, height: 600))
+        #expect(abs(cardSize.width - 328) <= 2)
+        #expect(cardSize.height >= 200 && cardSize.height <= 230)
     }
     
     
@@ -223,7 +274,7 @@ struct Round24FeatureTests {
     @Test func settingsWindowLocksSizingOptionsToPreventJumping() throws {
         let controller = SidebarSettingsWindowController()
         let window = try #require(controller.window)
-        #expect(abs(window.contentLayoutRect.width - 700) <= 2)
+        #expect(abs(window.contentLayoutRect.width - 780) <= 2)
         if let hosting = window.contentViewController as? NSHostingController<AnyView> {
             #expect(hosting.sizingOptions.isEmpty)
         }

@@ -51,9 +51,9 @@ struct Round20FeatureTests {
         
         let controller = SidebarSettingsWindowController()
         let window = try #require(controller.window)
-        #expect(abs(window.contentLayoutRect.width - 700) <= 2)
-        #expect(abs(window.minSize.width - 700) <= 2)
-        #expect(abs(window.maxSize.width - 700) <= 2)
+        #expect(abs(window.contentLayoutRect.width - 780) <= 2)
+        #expect(abs(window.minSize.width - 780) <= 2)
+        #expect(abs(window.maxSize.width - 780) <= 2)
         window.close()
     }
     

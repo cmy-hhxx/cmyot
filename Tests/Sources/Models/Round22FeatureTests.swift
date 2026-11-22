@@ -45,7 +45,7 @@ struct Round22FeatureTests {
         
         let controller = SidebarSettingsWindowController()
         let window = try #require(controller.window)
-        #expect(abs(window.contentLayoutRect.width - 700) <= 2)
+        #expect(abs(window.contentLayoutRect.width - 780) <= 2)
         window.close()
     }
     

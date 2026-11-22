@@ -133,7 +133,6 @@ private struct UserAvatarToolbarBadgeLabel: View {
     private var globalMouseMonitor: Any?
     private var keyMonitor: Any?
     private var windowCloseObserver: (any NSObjectProtocol)?
-    private var panelSizeObserver: NSObjectProtocol?
     
     
     override init(frame frameRect: NSRect) {
@@ -273,6 +272,7 @@ private struct UserAvatarToolbarBadgeLabel: View {
                 }
         )
         let hosting = NSHostingController(rootView: contentView)
+        hosting.sizingOptions = []
         hosting.view.translatesAutoresizingMaskIntoConstraints = false
         hosting.view.wantsLayer = true
         hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
@@ -283,10 +283,8 @@ private struct UserAvatarToolbarBadgeLabel: View {
             hosting.view.topAnchor.constraint(equalTo: vfx.topAnchor),
             hosting.view.bottomAnchor.constraint(equalTo: vfx.bottomAnchor),
         ])
-        hosting.view.layoutSubtreeIfNeeded()
-        
-        let fitted = hosting.view.fittingSize
-        let size = NSSize(width: 348, height: max(260, fitted.height))
+        let fitted = hosting.sizeThatFits(in: CGSize(width: 348, height: 520))
+        let size = NSSize(width: 348, height: min(520, max(280, ceil(fitted.height))))
         let btnInWindow = self.convert(self.bounds, to: nil)
         let btnScreen = hostWindow.convertToScreen(btnInWindow)
         let screenFrame = (hostWindow.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -324,7 +322,7 @@ private struct UserAvatarToolbarBadgeLabel: View {
     private func repositionFloatingPanel(preferredHeight: CGFloat) {
         
         guard let panel = self.panel, let hostWindow = self.window, preferredHeight > 120 else { return }
-        let clampedH = min(640, max(240, preferredHeight))
+        let clampedH = min(520, max(260, ceil(preferredHeight)))
         guard abs(panel.frame.height - clampedH) > 1.5 else { return }
         let btnInWindow = self.convert(self.bounds, to: nil)
         let btnScreen = hostWindow.convertToScreen(btnInWindow)
@@ -671,9 +669,7 @@ nonisolated enum ToolbarCapsuleTodoHelper {
         if item.hasDeadline {
             return PinnedTodoUrgency.compactBadgeText(item.dueDate.timeIntervalSince(now))
         }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: item.createdAt)
+        return item.createdAt.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
     }
     
     
@@ -708,17 +704,10 @@ nonisolated enum ToolbarCapsuleTodoHelper {
     
     
     override init(frame frameRect: NSRect) {
-        var triggerHandler: (() -> Void)?
-        let trigger = ToolbarCapsuleTodoTriggerView(
-            onToggle: { triggerHandler?() },
-            onWidthChange: { _ in }
-        )
-        self.hostingView = NSHostingView(rootView: trigger)
+        let placeholder = ToolbarCapsuleTodoTriggerView(onToggle: {}, onWidthChange: { _ in })
+        self.hostingView = NSHostingView(rootView: placeholder)
         super.init(frame: NSRect(x: 0, y: 0, width: 120, height: 28))
         
-        triggerHandler = { [weak self] in
-            self?.toggleDropdown()
-        }
         self.hostingView.rootView = ToolbarCapsuleTodoTriggerView(
             onToggle: { [weak self] in self?.toggleDropdown() },
             onWidthChange: { [weak self] width in self?.updateContainerWidth(width) }
@@ -801,6 +790,7 @@ nonisolated enum ToolbarCapsuleTodoHelper {
                 }
         )
         let hosting = NSHostingController(rootView: contentView)
+        hosting.sizingOptions = []
         hosting.view.translatesAutoresizingMaskIntoConstraints = false
         hosting.view.wantsLayer = true
         hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
@@ -811,10 +801,8 @@ nonisolated enum ToolbarCapsuleTodoHelper {
             hosting.view.topAnchor.constraint(equalTo: vfx.topAnchor),
             hosting.view.bottomAnchor.constraint(equalTo: vfx.bottomAnchor),
         ])
-        hosting.view.layoutSubtreeIfNeeded()
-        
-        let fitted = hosting.view.fittingSize
-        let size = NSSize(width: 324, height: min(480, max(168, fitted.height)))
+        let fitted = hosting.sizeThatFits(in: CGSize(width: 324, height: 480))
+        let size = NSSize(width: 324, height: min(480, max(168, ceil(fitted.height))))
         let btnInWindow = self.convert(self.bounds, to: nil)
         let btnScreen = hostWindow.convertToScreen(btnInWindow)
         let screenFrame = (hostWindow.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -1185,6 +1173,7 @@ private struct ToolbarCapsuleTodoDropdownView: View {
             }
             .padding(12)
             .frame(width: 324)
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
     
@@ -1679,6 +1668,7 @@ struct UserProfilePopoverView: View {
                             .foregroundStyle(self.isDashboardHovered ? studioTokens.accentText : .secondary)
                     }
                     .padding(.horizontal, 10)
+                    .frame(maxWidth: .infinity)
                     .frame(height: 44)
                     .background(
                         self.isDashboardHovered ? self.surfaceFill : self.cardSurface,
@@ -1733,7 +1723,7 @@ struct UserProfilePopoverView: View {
                     .padding(.trailing, 7)
                 }
                 .frame(height: 44)
-                .frame(maxWidth: 148)
+                .frame(maxWidth: .infinity)
                 .background(
                     self.isSettingsHovered ? self.surfaceFill : self.cardSurface,
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -1761,6 +1751,7 @@ struct UserProfilePopoverView: View {
         }
         .padding(10)
         .frame(width: 348)
+        .fixedSize(horizontal: false, vertical: true)
         .onAppear {
             self.editingName = self.manager.activeProfile.displayName
             self.greeting = Self.nextRandomGreeting()
@@ -2031,7 +2022,7 @@ struct UserProfilePopoverView: View {
 
 // MARK: - Apple Music–Style Diffused Cover-Art Ambient Backdrop
 
-private struct SoftAvatarAuroraBackdrop: View {
+struct SoftAvatarAuroraBackdrop: View {
     
     let palette: AvatarColorExtractor.Palette
     let blurredCoverImage: NSImage?
@@ -2042,85 +2033,82 @@ private struct SoftAvatarAuroraBackdrop: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
         
-        TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: AnimationConstants.isReducedMotionEnabled)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            let angleA = Angle.degrees(t * 2.2)
-            let angleB = Angle.degrees(-t * 1.6 + 110)
-            let driftX = CGFloat(sin(t * 0.28) * 14)
-            let driftY = CGFloat(cos(t * 0.22) * 10)
-            
-            ZStack {
-                shape.fill(self.surface)
-                
-                if let cover = self.blurredCoverImage {
-                    // Authentic Apple Music cover-art ambient mesh:
-                    // dual counter-rotating pre-blurred vibrance-boosted copies of the actual avatar
-                    ZStack {
-                        Image(nsImage: cover)
-                            .resizable()
-                            .interpolation(.medium)
-                            .scaledToFill()
-                            .scaleEffect(1.48)
-                            .rotationEffect(angleA)
-                            .offset(x: driftX, y: driftY)
-                            .opacity(self.isDark ? 0.56 : 0.44)
+        shape
+            .fill(self.surface)
+            .overlay {
+                GeometryReader { geo in
+                    let side = max(geo.size.width, geo.size.height) * 1.48
+                    
+                    TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: AnimationConstants.isReducedMotionEnabled)) { context in
+                        let t = context.date.timeIntervalSinceReferenceDate
+                        let angleA = Angle.degrees(t * 2.2)
+                        let angleB = Angle.degrees(-t * 1.6 + 110)
+                        let driftX = CGFloat(sin(t * 0.28) * 14)
+                        let driftY = CGFloat(cos(t * 0.22) * 10)
                         
-                        Image(nsImage: cover)
-                            .resizable()
-                            .interpolation(.medium)
-                            .scaledToFill()
-                            .scaleEffect(1.62)
-                            .rotationEffect(angleB)
-                            .offset(x: -driftX * 0.8, y: -driftY * 0.8)
-                            .blendMode(self.isDark ? .softLight : .plusLighter)
-                            .opacity(self.isDark ? 0.48 : 0.34)
+                        ZStack {
+                            if let cover = self.blurredCoverImage {
+                                // Authentic Apple Music cover-art ambient mesh strictly bounded to `geo.size`
+                                Image(nsImage: cover)
+                                    .resizable()
+                                    .interpolation(.medium)
+                                    .frame(width: side, height: side)
+                                    .rotationEffect(angleA)
+                                    .offset(x: driftX, y: driftY)
+                                    .opacity(self.isDark ? 0.56 : 0.44)
+                                
+                                Image(nsImage: cover)
+                                    .resizable()
+                                    .interpolation(.medium)
+                                    .frame(width: side * 1.10, height: side * 1.10)
+                                    .rotationEffect(angleB)
+                                    .offset(x: -driftX * 0.8, y: -driftY * 0.8)
+                                    .blendMode(self.isDark ? .softLight : .plusLighter)
+                                    .opacity(self.isDark ? 0.48 : 0.34)
+                            } else {
+                                // Organic mesh fallback for monogram avatars
+                                RadialGradient(
+                                    colors: [self.palette.primary.opacity(self.isDark ? 0.42 : 0.28), .clear],
+                                    center: UnitPoint(x: 0.28 + sin(t * 0.25) * 0.08, y: 0.24),
+                                    startRadius: 8,
+                                    endRadius: 210
+                                )
+                                RadialGradient(
+                                    colors: [self.palette.secondary.opacity(self.isDark ? 0.36 : 0.24), .clear],
+                                    center: UnitPoint(x: 0.78, y: 0.32 + cos(t * 0.22) * 0.08),
+                                    startRadius: 8,
+                                    endRadius: 200
+                                )
+                                RadialGradient(
+                                    colors: [self.palette.tertiary.opacity(self.isDark ? 0.28 : 0.18), .clear],
+                                    center: .bottom,
+                                    startRadius: 8,
+                                    endRadius: 190
+                                )
+                            }
+                            
+                            // Apple Music atmospheric scrim + seamless vertical integration into card surface
+                            LinearGradient(
+                                stops: self.isDark
+                                    ? [
+                                        .init(color: Color.black.opacity(0.24), location: 0.0),
+                                        .init(color: Color.black.opacity(0.32), location: 0.55),
+                                        .init(color: Color.black.opacity(0.52), location: 1.0),
+                                    ]
+                                    : [
+                                        .init(color: Color.white.opacity(0.46), location: 0.0),
+                                        .init(color: Color.white.opacity(0.58), location: 0.55),
+                                        .init(color: Color.white.opacity(0.76), location: 1.0),
+                                    ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        }
+                        .frame(width: geo.size.width, height: geo.size.height)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-                } else {
-                    // Organic mesh fallback for monogram avatars
-                    ZStack {
-                        RadialGradient(
-                            colors: [self.palette.primary.opacity(self.isDark ? 0.42 : 0.28), .clear],
-                            center: UnitPoint(x: 0.28 + sin(t * 0.25) * 0.08, y: 0.24),
-                            startRadius: 8,
-                            endRadius: 210
-                        )
-                        RadialGradient(
-                            colors: [self.palette.secondary.opacity(self.isDark ? 0.36 : 0.24), .clear],
-                            center: UnitPoint(x: 0.78, y: 0.32 + cos(t * 0.22) * 0.08),
-                            startRadius: 8,
-                            endRadius: 200
-                        )
-                        RadialGradient(
-                            colors: [self.palette.tertiary.opacity(self.isDark ? 0.28 : 0.18), .clear],
-                            center: .bottom,
-                            startRadius: 8,
-                            endRadius: 190
-                        )
-                    }
-                    .blur(radius: 20)
                 }
-                
-                // Apple Music atmospheric scrim + seamless vertical integration into card surface
-                LinearGradient(
-                    stops: self.isDark
-                        ? [
-                            .init(color: Color.black.opacity(0.24), location: 0.0),
-                            .init(color: Color.black.opacity(0.32), location: 0.55),
-                            .init(color: Color.black.opacity(0.52), location: 1.0),
-                        ]
-                        : [
-                            .init(color: Color.white.opacity(0.46), location: 0.0),
-                            .init(color: Color.white.opacity(0.58), location: 0.55),
-                            .init(color: Color.white.opacity(0.76), location: 1.0),
-                        ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
             }
             .clipShape(shape)
-        }
     }
 }
 

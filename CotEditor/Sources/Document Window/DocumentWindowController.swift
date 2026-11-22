@@ -1263,8 +1263,8 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.isBordered = true
                 item.label = AppLanguage.text("只读锁定", en: "Edit")
                 item.toolTip = AppLanguage.text("切换读写状态 / 锁定防误改", en: "Prevent the document from being edited")
-                item.stateImages[.on] = WorkspaceCenterIcons.editableIcon(isEditable: true)
-                item.stateImages[.off] = WorkspaceCenterIcons.editableIcon(isEditable: false)
+                item.stateImages[.on] = WorkspaceCenterIcons.editableIcon(isEditable: false)
+                item.stateImages[.off] = WorkspaceCenterIcons.editableIcon(isEditable: true)
                 item.action = #selector(DocumentViewController.toggleEditable)
                 item.isNavigational = true
                 return item

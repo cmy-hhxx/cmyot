@@ -53,7 +53,7 @@ final class CotLogger: @unchecked Sendable {
     private let dayFormatter: DateFormatter
     private let timestampFormatter: DateFormatter
     private var lastPrunedDayKey: String?
-    private static var hasInstalledHooks = false
+    private nonisolated(unsafe) static var hasInstalledHooks = false
     
     
     init(

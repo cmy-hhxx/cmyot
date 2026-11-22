@@ -44,6 +44,15 @@ final class DocumentWindow: NSWindow {
         }
     }
     
+    /// Harmonized titlebar & chrome fill color resolved from the active editor theme and Studio Palette.
+    var chromeBackgroundColor: NSColor? {
+        
+        didSet {
+            guard self.chromeBackgroundColor != oldValue else { return }
+            self.applyBackgroundOpacity()
+        }
+    }
+    
     @objc dynamic var backgroundAlpha: Double = 1.0 {
         
         didSet {
@@ -69,7 +78,9 @@ final class DocumentWindow: NSWindow {
         if self.isOpaque != shouldBeOpaque {
             self.isOpaque = shouldBeOpaque
         }
-        self.backgroundColor = shouldBeOpaque ? nil : self.contentBackgroundColor.withAlphaComponent(self.backgroundAlpha)
+        self.backgroundColor = shouldBeOpaque
+            ? (self.chromeBackgroundColor ?? self.contentBackgroundColor)
+            : self.contentBackgroundColor.withAlphaComponent(self.backgroundAlpha)
         
         self.invalidateShadow()
         self.contentView?.needsDisplay = true

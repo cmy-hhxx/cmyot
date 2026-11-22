@@ -37,6 +37,7 @@ struct StatusBar: View {
     @MainActor @Observable final class Model {
         
         var document: DataDocument?  { willSet { self.invalidateObservation(document: newValue) } }
+        var chromePalette: WindowChromePalette?
         
         private var isActive: Bool = true
         private var defaultsObserver: AnyCancellable?
@@ -146,10 +147,17 @@ struct StatusBar: View {
                     .frame(height: 24)
             }
         }
-        .background(.windowBackground)
+        .background {
+            if let chrome = self.model.chromePalette {
+                Color(nsColor: chrome.statusBarBackground)
+            } else {
+                Rectangle().fill(.windowBackground)
+            }
+        }
+        .foregroundStyle(self.model.chromePalette.map { Color(nsColor: $0.statusBarText) } ?? .secondary)
         .overlay(alignment: .top) {
             Rectangle()
-                .fill(Color(nsColor: .separatorColor).opacity(0.65))
+                .fill(Color(nsColor: self.model.chromePalette?.statusBarSeparator ?? NSColor.separatorColor.withAlphaComponent(0.65)))
                 .frame(height: 1 / max(NSScreen.main?.backingScaleFactor ?? 2, 1))
         }
     }
@@ -287,7 +295,7 @@ private struct DocumentSaveStatusBadge: View {
         .onReceive(self.document.$hasUncommittedChanges) { _ in
             self.syncDirtyState()
         }
-        .onReceive(self.document.$lastManualSaveDate) { date in
+        .onReceive(self.document.$lastManualSaveDate.dropFirst()) { date in
             self.syncDirtyState()
             if date != nil {
                 withAnimation(.easeOut(duration: 0.16)) {

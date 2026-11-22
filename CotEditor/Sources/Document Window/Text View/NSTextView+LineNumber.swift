@@ -76,19 +76,26 @@ extension NSTextView {
         while index < range.upperBound {  // process logical lines
             let lineRange = self.lineRange(at: index)
             let lineGlyphIndex = layoutManager.glyphIndexForCharacter(at: lineRange.lowerBound)
-            let lineRect = layoutManager.lineFragmentRect(forGlyphAt: lineGlyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
-            let isSelected: Bool = selectedRanges.contains {
-                if options.contains(.onlySelectionBoundary) {
-                    lineRange.contains($0.lowerBound)
-                    || (!$0.isEmpty && lineRange.lowerBound < $0.upperBound && $0.upperBound <= lineRange.upperBound)
-                } else {
-                    lineRange.intersects($0)
+            if layoutManager.isValidGlyphIndex(lineGlyphIndex) {
+                var lineRect = layoutManager.lineFragmentRect(forGlyphAt: lineGlyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
+                if lineRect.isEmpty {
+                    lineRect = layoutManager.lineFragmentRect(forGlyphAt: lineGlyphIndex, effectiveRange: nil)
                 }
-            } || (lineRange.upperBound == length &&
-                  selectedRanges.last?.lowerBound == length &&
-                  layoutManager.extraLineFragmentRect.isEmpty)
-            
-            body(lineRect, lineNumber, isSelected)
+                if !lineRect.isEmpty {
+                    let isSelected: Bool = selectedRanges.contains {
+                        if options.contains(.onlySelectionBoundary) {
+                            lineRange.contains($0.lowerBound)
+                            || (!$0.isEmpty && lineRange.lowerBound < $0.upperBound && $0.upperBound <= lineRange.upperBound)
+                        } else {
+                            lineRange.intersects($0)
+                        }
+                    } || (lineRange.upperBound == length &&
+                          selectedRanges.last?.lowerBound == length &&
+                          layoutManager.extraLineFragmentRect.isEmpty)
+                    
+                    body(lineRect, lineNumber, isSelected)
+                }
+            }
             
             index = lineRange.upperBound
             lineNumber += 1

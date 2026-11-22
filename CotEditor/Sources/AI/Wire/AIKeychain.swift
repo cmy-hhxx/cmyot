@@ -36,8 +36,8 @@ nonisolated enum AIKeychain {
     private static let legacyAccount = "api-key"
     
     private static let lock = NSLock()
-    private static var cachedSecrets: [String: String]?
-    private static var customStoreURL: URL?
+    private nonisolated(unsafe) static var cachedSecrets: [String: String]?
+    private nonisolated(unsafe) static var customStoreURL: URL?
     
     
     // MARK: Public Computed Properties

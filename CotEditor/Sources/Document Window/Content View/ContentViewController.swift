@@ -264,7 +264,7 @@ final class ContentViewController: NSSplitViewController {
     
     private var terminalItem: NSSplitViewItem?
     private var terminalViewController: TerminalViewController?
-    private var windowCloseObserver: NSObjectProtocol?
+    private var windowCloseObserver: (any NSObjectProtocol)?
     private var centerEscMonitor: Any?
     private var centerHostView: NSHostingView<WorkspaceCenterHostView>?
     private var wallpaperBackdropView: EditorWallpaperBackdropView?
@@ -338,8 +338,13 @@ final class ContentViewController: NSSplitViewController {
                                                                              object: window,
                                                                              queue: .main)
             { [weak self] _ in
-                self?.hideTerminal()
+                MainActor.assumeIsolated {
+                    self?.hideTerminal()
+                }
             }
+        }
+        if self.activeCenter != nil {
+            self.installCenterEscMonitor()
         }
     }
     
@@ -794,6 +799,7 @@ final class ContentViewController: NSSplitViewController {
             return
         }
         
+        guard self.isViewLoaded, !self.splitViewItems.isEmpty else { return }
         self.splitViewItems[0] = NSSplitViewItem(viewController: .viewController(document: self.document))
     }
 }

@@ -134,6 +134,9 @@ private final class SidebarSettingsWindow: NSWindow {
 @MainActor
 final class SidebarSettingsWindowController: NSWindowController {
     
+    /// Optimal macOS System Settings–proportioned fixed window size (non-resizable).
+    static let fixedContentSize = NSSize(width: 780, height: 560)
+    
     private let state = SidebarSettingsState()
     
     
@@ -143,13 +146,18 @@ final class SidebarSettingsWindowController: NSWindowController {
         hostingController.sizingOptions = []
         
         let window = SidebarSettingsWindow(contentViewController: hostingController)
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.setContentSize(NSSize(width: 700, height: 610))
-        window.minSize = NSSize(width: 700, height: 560)
-        window.maxSize = NSSize(width: 700, height: 1200)
+        window.collectionBehavior.insert(.fullScreenNone)
+        window.standardWindowButton(.zoomButton)?.isEnabled = false
+        window.setContentSize(Self.fixedContentSize)
+        window.contentMinSize = Self.fixedContentSize
+        window.contentMaxSize = Self.fixedContentSize
+        let lockedFrameSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: Self.fixedContentSize)).size
+        window.minSize = lockedFrameSize
+        window.maxSize = lockedFrameSize
         window.center()
         
         super.init(window: window)
@@ -184,13 +192,20 @@ final class SidebarSettingsWindowController: NSWindowController {
 
 private enum SettingsDesignTokens {
     
-    static let sidebarWidth: CGFloat = 176
+    static let sidebarWidth: CGFloat = 204
+    static let detailWidth: CGFloat = 575 // 204 + 1 + 575 == 780
     static let contentPadding: CGFloat = 24
     static let sectionSpacing: CGFloat = 20
-    static let sectionTitleSpacing: CGFloat = 7
-    static let rowHeight: CGFloat = 40
-    static let cardCornerRadius: CGFloat = 11
-    static let segmentedWidth: CGFloat = 164
+    static let sectionTitleSpacing: CGFloat = 6
+    static let rowHeight: CGFloat = 44
+    static let cardCornerRadius: CGFloat = 10
+    static let segmentedWidth: CGFloat = 172
+    
+    static let sidebarClusters: [[SidebarSettingsItem]] = [
+        [.general, .appIcon, .appearance, .wallpaper],
+        [.typography, .editing, .format, .effects],
+        [.models, .bots, .keyBindings, .pass],
+    ]
 }
 
 
@@ -199,28 +214,33 @@ private struct SidebarSettingsRootView: View {
     @Bindable var state: SidebarSettingsState
     @Environment(\.colorScheme) private var colorScheme
     @State private var dbStatusMessage: String?
+    @State private var hoveredItem: SidebarSettingsItem?
     @Namespace private var sidebarSelectionNamespace
     
     
     private var contentBackground: Color {
         self.colorScheme == .dark
-            ? Color(red: 0.11, green: 0.11, blue: 0.12)
-            : Color(red: 0.96, green: 0.96, blue: 0.97)
+            ? Color(red: 0.118, green: 0.118, blue: 0.125) // #1E1E20
+            : Color(red: 0.961, green: 0.961, blue: 0.969) // #F5F5F7
     }
     
     
     var body: some View {
         HStack(spacing: 0) {
-            // Left Translucent Sidebar (10 crisp atomic tabs)
+            // Left Translucent Apple-style Sidebar
             ZStack(alignment: .topLeading) {
                 SidebarVisualEffectBackdrop()
                     .ignoresSafeArea()
                 
-                VStack(alignment: .leading, spacing: 3) {
-                    Spacer().frame(height: 40)
+                VStack(alignment: .leading, spacing: 10) {
+                    Spacer().frame(height: 32)
                     
-                    ForEach(SidebarSettingsItem.allCases) { item in
-                        self.sidebarRow(item)
+                    ForEach(Array(SettingsDesignTokens.sidebarClusters.enumerated()), id: \.offset) { _, cluster in
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(cluster) { item in
+                                self.sidebarRow(item)
+                            }
+                        }
                     }
                     
                     Spacer()
@@ -231,16 +251,16 @@ private struct SidebarSettingsRootView: View {
             .frame(width: SettingsDesignTokens.sidebarWidth)
             
             Rectangle()
-                .fill(self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.07))
+                .fill(self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.08))
                 .frame(width: 1)
                 .ignoresSafeArea()
             
-            // Right Detail Canvas (487pt wide with symmetric 24pt horizontal gutters -> 439pt cards)
+            // Right Detail Canvas
             ZStack(alignment: .topLeading) {
                 self.contentBackground.ignoresSafeArea()
                 
                 VStack(alignment: .leading, spacing: 0) {
-                    // Header strip aligned optically with sidebar clearance
+                    // Header strip aligned optically with traffic lights
                     HStack(spacing: 10) {
                         SettingsSquircleBadge(
                             symbolName: self.state.selectedItem.symbolName,
@@ -248,7 +268,8 @@ private struct SidebarSettingsRootView: View {
                             size: 22
                         )
                         Text(self.state.selectedItem.title)
-                            .font(.system(size: 15.5, weight: .semibold))
+                            .font(.system(size: 16, weight: .semibold))
+                            .contentTransition(.interpolate)
                         
                         Spacer()
                         
@@ -263,30 +284,41 @@ private struct SidebarSettingsRootView: View {
                     .padding(.horizontal, SettingsDesignTokens.contentPadding)
                     .frame(height: 52)
                     
-                    Divider()
-                        .opacity(0.45)
+                    Rectangle()
+                        .fill(self.colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.07))
+                        .frame(height: 0.5)
                     
-                    if self.state.selectedItem == .keyBindings {
-                        KeyBindingsSettingsView(usesFlexibleFrame: true)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        ScrollView {
-                            self.detailContent
-                                .padding(.horizontal, SettingsDesignTokens.contentPadding)
-                                .padding(.top, 20)
-                                .padding(.bottom, 28)
-                                .frame(width: 523, alignment: .topLeading)
+                    Group {
+                        if self.state.selectedItem == .keyBindings {
+                            KeyBindingsSettingsView(usesFlexibleFrame: true)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            ScrollView {
+                                self.detailContent
+                                    .padding(.horizontal, SettingsDesignTokens.contentPadding)
+                                    .padding(.top, 20)
+                                    .padding(.bottom, 28)
+                                    .frame(width: SettingsDesignTokens.detailWidth, alignment: .topLeading)
+                            }
+                            .frame(width: SettingsDesignTokens.detailWidth)
+                            .frame(maxHeight: .infinity)
                         }
-                        .frame(width: 523)
-                        .frame(maxHeight: .infinity)
                     }
+                    .id(self.state.selectedItem)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .offset(y: 4)),
+                        removal: .opacity
+                    ))
                 }
             }
-            .frame(width: 523)
+            .frame(width: SettingsDesignTokens.detailWidth)
             .frame(maxHeight: .infinity)
+            .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20), value: self.state.selectedItem)
         }
-        .frame(width: 700)
-        .frame(maxHeight: .infinity)
+        .frame(
+            width: SidebarSettingsWindowController.fixedContentSize.width,
+            height: SidebarSettingsWindowController.fixedContentSize.height
+        )
         .environment(\.locale, AppLanguage.current.locale)
     }
     
@@ -294,34 +326,49 @@ private struct SidebarSettingsRootView: View {
     @ViewBuilder
     private func sidebarRow(_ item: SidebarSettingsItem) -> some View {
         let isSelected = (self.state.selectedItem == item)
+        let isHovered = (self.hoveredItem == item)
         
         Button {
-            withAnimation(.timingCurve(0.25, 0.8, 0.25, 1, duration: 0.20)) {
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
                 self.state.selectedItem = item
             }
         } label: {
             HStack(spacing: 9) {
-                SettingsSquircleBadge(symbolName: item.symbolName, color: item.badgeColor, size: 20)
+                SettingsSquircleBadge(
+                    symbolName: item.symbolName,
+                    color: item.badgeColor,
+                    size: 20,
+                    isSelected: isSelected
+                )
                 
                 Text(item.title)
                     .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
                     .lineLimit(1)
                 
                 Spacer()
             }
             .padding(.horizontal, 8)
-            .frame(height: 30)
+            .frame(height: 32)
             .background {
                 if isSelected {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(self.colorScheme == .dark ? Color.white.opacity(0.13) : Color.black.opacity(0.085))
+                    RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                        .fill(Color.accentColor)
+                        .shadow(color: Color.accentColor.opacity(0.24), radius: 4, y: 1)
                         .matchedGeometryEffect(id: "sidebarActiveTab", in: self.sidebarSelectionNamespace)
+                } else if isHovered {
+                    RoundedRectangle(cornerRadius: 7.5, style: .continuous)
+                        .fill(self.colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.045))
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) {
+                self.hoveredItem = hovering ? item : (self.hoveredItem == item ? nil : self.hoveredItem)
+            }
+        }
     }
     
     
@@ -431,16 +478,36 @@ private struct SettingsSquircleBadge: View {
     let symbolName: String
     let color: Color
     let size: CGFloat
+    var isSelected: Bool = false
     
     var body: some View {
-        RoundedRectangle(cornerRadius: max(5, self.size * 0.27), style: .continuous)
-            .fill(self.color)
+        let radius = max(5, self.size * 0.27)
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [self.color.opacity(0.88), self.color],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
             .frame(width: self.size, height: self.size)
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [Color.white.opacity(self.isSelected ? 0.50 : 0.32), Color.clear],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.5
+                    )
+            )
             .overlay(
                 Image(systemName: self.symbolName)
                     .font(.system(size: self.size * 0.52, weight: .semibold))
                     .foregroundStyle(.white)
             )
+            .shadow(color: self.color.opacity(0.22), radius: 1.5, y: 0.5)
     }
 }
 
@@ -456,9 +523,9 @@ private struct SettingsGroupCard<Content: View>: View {
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionTitleSpacing) {
             if let title {
                 Text(title)
-                    .font(.system(size: 11.5, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .padding(.leading, 3)
+                    .padding(.leading, 4)
             }
             
             VStack(alignment: .leading, spacing: 0) {
@@ -468,10 +535,15 @@ private struct SettingsGroupCard<Content: View>: View {
             .background(
                 RoundedRectangle(cornerRadius: SettingsDesignTokens.cardCornerRadius, style: .continuous)
                     .fill(self.colorScheme == .dark ? Color.white.opacity(0.055) : Color.white)
+                    .shadow(
+                        color: self.colorScheme == .dark ? Color.clear : Color.black.opacity(0.03),
+                        radius: 1.5,
+                        y: 0.5
+                    )
             )
             .overlay(
                 RoundedRectangle(cornerRadius: SettingsDesignTokens.cardCornerRadius, style: .continuous)
-                    .strokeBorder(self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.07), lineWidth: 1)
+                    .strokeBorder(self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.08), lineWidth: 0.5)
             )
         }
     }
@@ -507,9 +579,9 @@ private struct SettingsRowDivider: View {
     
     var body: some View {
         Rectangle()
-            .fill(self.colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
-            .frame(height: 1)
-            .padding(.horizontal, 14)
+            .fill(self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.07))
+            .frame(height: 0.5)
+            .padding(.leading, 14)
     }
 }
 
@@ -960,11 +1032,11 @@ private struct SidebarAppIconSettingsPane: View {
         let _ = self.iconManager.customImageVersion
         
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
-            // 1. Live macOS Dock Showcase
-            SettingsGroupCard(title: AppLanguage.text("实时程序坞预览", en: "Live Dock Preview")) {
-                VStack(spacing: 14) {
+            // 1. Dock Showcase (no small-font explanatory captions)
+            SettingsGroupCard(title: nil) {
+                VStack(spacing: 12) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
                             .fill(
                                 LinearGradient(
                                     colors: self.colorScheme == .dark
@@ -974,12 +1046,12 @@ private struct SidebarAppIconSettingsPane: View {
                                     endPoint: .bottom
                                 )
                             )
-                            .frame(height: 146)
+                            .frame(height: 144)
                         
                         // Frosted mini Dock shelf beneath icon
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .fill(.ultraThinMaterial)
-                            .frame(width: 170, height: 34)
+                            .frame(width: 170, height: 32)
                             .offset(y: 44)
                             .shadow(color: .black.opacity(self.colorScheme == .dark ? 0.35 : 0.10), radius: 10, y: 4)
                         
@@ -991,7 +1063,7 @@ private struct SidebarAppIconSettingsPane: View {
                             .animation(.spring(response: 0.28, dampingFraction: 0.72), value: self.isDropTargeted)
                     }
                     .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
                             .strokeBorder(
                                 self.isDropTargeted ? Color.accentColor : Color.clear,
                                 style: StrokeStyle(lineWidth: 2, dash: [6, 4])
@@ -1002,12 +1074,12 @@ private struct SidebarAppIconSettingsPane: View {
                     }
                     
                     HStack(spacing: 10) {
-                        Button(AppLanguage.text("上传自定义图片", en: "Upload Custom Artwork")) {
+                        Button(AppLanguage.text("上传图片", en: "Upload")) {
                             self.pickCustomArtwork()
                         }
                         .controlSize(.small)
                         
-                        Button(AppLanguage.text("恢复默认乌萨奇", en: "Reset Default")) {
+                        Button(AppLanguage.text("恢复默认", en: "Reset")) {
                             withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
                                 self.iconManager.resetToDefault()
                             }
@@ -1015,17 +1087,13 @@ private struct SidebarAppIconSettingsPane: View {
                         .controlSize(.small)
                         
                         Spacer()
-                        
-                        Text(AppLanguage.text("支持拖入图片", en: "Drop Image Above"))
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
                     }
                 }
                 .padding(14)
             }
             
             // 2. Built-in Chiikawa Artwork & Custom Source
-            SettingsGroupCard(title: AppLanguage.text("图标原画库", en: "Icon Artwork")) {
+            SettingsGroupCard(title: AppLanguage.text("图标", en: "Icon")) {
                 HStack(spacing: 10) {
                     ForEach(AppIconSource.allCases) { source in
                         let isSelected = (self.iconManager.spec.source == source)
@@ -1059,13 +1127,13 @@ private struct SidebarAppIconSettingsPane: View {
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 13, style: .continuous)
                                         .strokeBorder(
-                                            isSelected ? StudioPaletteManager.shared.activeAccentColor : Color.primary.opacity(0.10),
-                                            lineWidth: isSelected ? 2.2 : 0.75
+                                            isSelected ? Color.accentColor : Color.primary.opacity(0.10),
+                                            lineWidth: isSelected ? 2.0 : 0.5
                                         )
                                 )
                                 
                                 Text(source.displayName)
-                                    .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
+                                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                                     .foregroundStyle(isSelected ? .primary : .secondary)
                                     .lineLimit(1)
                             }
@@ -1084,9 +1152,9 @@ private struct SidebarAppIconSettingsPane: View {
             }
             
             // 3. Rim / Gold Inlay Style Presets
-            SettingsGroupCard(title: AppLanguage.text("镶边工艺样式", en: "Bezel & Gold Inlay Style")) {
+            SettingsGroupCard(title: AppLanguage.text("边框", en: "Frame")) {
                 VStack(alignment: .leading, spacing: 10) {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 8)], spacing: 8) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
                         ForEach(AppIconBorderStyle.allCases) { style in
                             let isSelected = (self.iconManager.spec.borderStyle == style)
                             Button {
@@ -1109,17 +1177,17 @@ private struct SidebarAppIconSettingsPane: View {
                                         )
                                         .frame(width: 12, height: 12)
                                         .overlay(
-                                            Circle().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.6)
+                                            Circle().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5)
                                         )
                                     
                                     Text(style.displayName)
-                                        .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
+                                        .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                                         .foregroundStyle(isSelected ? .primary : .secondary)
                                         .fixedSize()
                                 }
                                 .padding(.horizontal, 9)
                                 .frame(maxWidth: .infinity)
-                                .frame(height: 30)
+                                .frame(height: 32)
                                 .background(
                                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                                         .fill(isSelected ? Color.primary.opacity(self.colorScheme == .dark ? 0.12 : 0.07) : Color.primary.opacity(0.03))
@@ -1137,8 +1205,8 @@ private struct SidebarAppIconSettingsPane: View {
                     if self.iconManager.spec.borderStyle == .customColor {
                         HStack {
                             Text(AppLanguage.text("自定义镶边颜色", en: "Custom Rim Color"))
-                                .font(.system(size: 12.5))
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 13))
+                                .foregroundStyle(.primary)
                             Spacer()
                             ColorPicker("", selection: self.customRimBinding, supportsOpacity: false)
                                 .labelsHidden()
@@ -1150,7 +1218,7 @@ private struct SidebarAppIconSettingsPane: View {
             }
             
             // 4. Stepless Fine-Tuning Controls
-            SettingsGroupCard(title: AppLanguage.text("无极精调参数", en: "Fine Adjustments")) {
+            SettingsGroupCard(title: AppLanguage.text("样式", en: "Style")) {
                 SettingsItemRow(label: AppLanguage.text("镶边粗细", en: "Border Width")) {
                     HStack(spacing: 8) {
                         Slider(value: self.specBinding(\.borderWidth), in: 0...10)
@@ -1304,8 +1372,8 @@ private struct SidebarWallpaperSettingsPane: View {
         let selectedItem = items.first { $0.id == self.manager.spec.selectedID } ?? items.first
         
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
-            // 1. Live Miniature Editor Stage (real-time opacity & blur preview, zero-lag)
-            SettingsGroupCard(title: AppLanguage.text("实时画布预览", en: "Live Canvas Preview")) {
+            // 1. Miniature Editor Stage
+            SettingsGroupCard(title: nil) {
                 VStack(spacing: 12) {
                     self.liveEditorPreviewStage(selectedItem: selectedItem)
                         .frame(height: 184)
@@ -1464,16 +1532,6 @@ private struct SidebarWallpaperSettingsPane: View {
                     Circle().fill(Color(red: 0.30, green: 0.78, blue: 0.38)).frame(width: 7, height: 7)
                     
                     Spacer()
-                    
-                    Text(self.manager.spec.isEnabled ? AppLanguage.text("已启用", en: "Active") : AppLanguage.text("未启用", en: "Off"))
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(self.manager.spec.isEnabled ? accent : .secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(
-                            (self.manager.spec.isEnabled ? accent.opacity(0.16) : Color.primary.opacity(0.06)),
-                            in: Capsule()
-                        )
                 }
                 .padding(.horizontal, 12)
                 .frame(height: 28)
@@ -1893,7 +1951,7 @@ private struct SidebarAppearanceSettingsPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
             // 1. Curated Designer Color Triads (Synced Globally & to Data Dashboard)
-            SettingsGroupCard(title: AppLanguage.text("全局高级配色方案（同步数据看板与界面）", en: "Global Designer Color System")) {
+            SettingsGroupCard(title: AppLanguage.text("配色方案", en: "Color System")) {
                 VStack(alignment: .leading, spacing: 10) {
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                         ForEach(StudioPaletteID.allCases) { preset in
@@ -2014,6 +2072,7 @@ private struct SidebarAppearanceSettingsPane: View {
         Button {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.80)) {
                 self.studioPalette.selectPalette(preset)
+                self.studioPalette.syncActiveEditorTheme(preferDark: self.colorScheme == .dark, applyIfNonStudio: true)
             }
         } label: {
             VStack(alignment: .leading, spacing: 7) {
@@ -2040,10 +2099,6 @@ private struct SidebarAppearanceSettingsPane: View {
                         .fixedSize()
                     
                     Spacer()
-                    
-                    Text(triad.accentHex)
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
                     
                     if isSelected {
                         Image(systemName: "checkmark.circle.fill")
@@ -2112,40 +2167,11 @@ private struct SidebarEditingSettingsPane: View {
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
             SettingsGroupCard(title: AppLanguage.text("Vim 模态编辑", en: "Vim Modal Editing")) {
                 SettingsItemRow(label: AppLanguage.text("启用 Vim 模式", en: "Enable Vim Mode")) {
-                    HStack(spacing: 8) {
-                        Text(self.vimMode
-                             ? AppLanguage.text("已启用", en: "Enabled")
-                             : AppLanguage.text("标准输入", en: "Standard"))
-                            .font(.system(size: 10.5, weight: .semibold))
-                            .foregroundStyle(self.vimMode ? Color.accentColor : Color.secondary)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(
-                                (self.vimMode ? Color.accentColor : Color.primary).opacity(0.08),
-                                in: Capsule()
-                            )
-                        
-                        Toggle("", isOn: self.$vimMode)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
-                    }
+                    Toggle("", isOn: self.$vimMode)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
                 }
-                SettingsRowDivider()
-                HStack(alignment: .center, spacing: 6) {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    Text(AppLanguage.text(
-                        "开启后支持 Normal / Insert / Visual 模态快捷键与弹性块状光标；关闭后恢复常规输入，避免误触无法打字",
-                        en: "Enable Normal / Insert / Visual modal keybindings and elastic cursor; disable for standard direct typing."
-                    ))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
             }
             
             SettingsGroupCard(title: "视图辅助") {

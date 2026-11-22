@@ -274,8 +274,10 @@ import Observation
         // Deliver every chunk before the request returns. A detached task here used to let a
         // late chunk land after the final result, which flipped finished UI back to "running".
         let nonisolatedPartial: (@Sendable (String) async -> Void)? = onPartial.map { callback in
-            { partial in
-                await callback(partial)
+            { @Sendable partial in
+                await MainActor.run {
+                    callback(partial)
+                }
             }
         }
         

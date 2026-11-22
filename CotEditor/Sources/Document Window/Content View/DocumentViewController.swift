@@ -103,6 +103,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     /// Posted when the window is split or un-split, or when a pane changes its tabs.
     static let splitLayoutDidChangeNotification = Notification.Name("DocumentViewControllerSplitLayoutDidChange")
     
+    /// Posted when the harmonized window chrome palette updates for theme, appearance, or Studio Palette changes.
+    static let didUpdateChromePaletteNotification = Notification.Name("DocumentViewControllerDidUpdateChromePalette")
+    
     private static let maximumNumberOfSplitEditors = 4
     private static let maximumNumberOfTabsPerPane = 8
     
@@ -128,6 +131,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     /// The theme applied to the editor, for views that should match its look.
     var currentTheme: Theme?  { self.theme }
+    
+    /// Unified chrome palette shared across titlebar, tab strip, status bar, and toolbar pills.
+    private(set) var currentChromePalette: WindowChromePalette?
     
     
     private var observers: Set<AnyCancellable> = []
@@ -245,14 +251,16 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             // observe appearance change for theme toggle
             self.view.publisher(for: \.effectiveAppearance)
                 .sink { [weak self] appearance in
+                    guard let self, self.viewIfLoaded?.window != nil else { return }
                     guard
-                        let self,
                         !UserDefaults.standard[.pinsThemeAppearance],
-                        self.viewIfLoaded?.window != nil,
                         let currentThemeName = self.themeName,
                         let themeName = ThemeManager.shared.equivalentSettingName(to: currentThemeName, forDark: appearance.isDark),
                         currentThemeName != themeName
-                    else { return }
+                    else {
+                        self.updateWindowChromePalette()
+                        return
+                    }
                     
                     if let window = self.viewIfLoaded?.window, window.isVisible, !window.isAppearanceTransitionActive {
                         window.performSmoothAppearanceTransition(duration: 0.28) {
@@ -261,6 +269,11 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                     } else {
                         self.setTheme(name: themeName)
                     }
+                },
+            
+            NotificationCenter.default.publisher(for: StudioPaletteManager.paletteDidChangeNotification)
+                .sink { [weak self] _ in
+                    self?.updateWindowChromePalette()
                 },
             
             // observe focus change
@@ -336,6 +349,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         // Bring the previous tabs back into a single pane. The old split/window tree is not
         // recreated, so restarting never reopens a cluttered multi-pane layout.
         self.restorePersistedPaneTabsIfNeeded()
+        
+        self.updateWindowChromePalette()
         
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.view.window else { return }
@@ -876,10 +891,10 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     // MARK: Action Messages
     
-    /// Reset the syntax parse for the entire document.
+    /// Reset the syntax parse for the currently focused document.
     @IBAction func recolorAll(_ sender: Any?) {
         
-        self.document.syntaxController.parseAll()
+        self.focusedDocument.syntaxController.parseAll()
     }
     
     
@@ -965,6 +980,21 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.highlightSelection { document, range in
             document.removeHighlights(in: range)
         }
+    }
+    
+    
+    /// Opens the floating custom highlight color palette only when explicitly requested from the context menu.
+    @IBAction func openHighlightColorPalette(_ sender: Any?) {
+        
+        guard let textView = self.focusedChild?.textView else { return }
+        let range = textView.selectedRange()
+        guard range.length > 0, let document = self.document(for: textView) else { return }
+        
+        NotesTextColorPaletteController.shared.present(
+            for: textView,
+            document: document,
+            selectedRange: range
+        )
     }
     
     
@@ -2574,6 +2604,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 let index = parentGroup.splitViewItems.firstIndex(where: { $0.viewController === group })
             else { break }
             
+            self.clearProportionConstraints(for: group.splitView)
             group.removeSplitViewItem(group.splitViewItems[0])
             self.removeItem(for: group, from: parentGroup)
             parentGroup.insertSplitViewItem(self.makeSplitViewItem(for: remaining), at: index)
@@ -3477,6 +3508,10 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                                                name: EditorTextView.DidLiveChangeSelectionMessage.name,
                                                object: viewController.textView)
         
+        if let palette = self.currentChromePalette {
+            viewController.applyChromePalette(palette)
+        }
+        
         return viewController
     }
     
@@ -3705,13 +3740,34 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         self.themeName = resolvedName
         self.document.syntaxController.theme = theme
+        for doc in self.paneDocuments where doc !== self.document {
+            doc.syntaxController.theme = theme
+        }
         
         for textView in self.textViews {
             textView.theme = theme
             textView.layoutManager?.invalidateHighlight(theme: theme)
         }
         
+        self.updateWindowChromePalette()
         self.invalidateRestorableState()
+    }
+    
+    
+    /// Recomputes and broadcasts the unified window chrome palette across titlebar, tab strip, status bar, and toolbar pills.
+    func updateWindowChromePalette() {
+        
+        let isDark = (self.viewIfLoaded?.effectiveAppearance ?? NSApp.effectiveAppearance).isDark
+        let palette = StudioPaletteManager.shared.chromePalette(for: self.theme, isDark: isDark)
+        self.currentChromePalette = palette
+        
+        if let docWindow = self.viewIfLoaded?.window as? DocumentWindow {
+            docWindow.chromeBackgroundColor = palette.titlebarBackground
+        }
+        for editorVC in self.editorViewControllers {
+            editorVC.applyChromePalette(palette)
+        }
+        NotificationCenter.default.post(name: Self.didUpdateChromePaletteNotification, object: self)
     }
     
     

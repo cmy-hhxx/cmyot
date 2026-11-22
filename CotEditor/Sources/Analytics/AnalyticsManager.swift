@@ -101,7 +101,7 @@ nonisolated struct DailyWritingStats: Identifiable, Codable, Sendable, Equatable
         self.localAcceptedChars = try c.decodeIfPresent(Int.self, forKey: .localAcceptedChars) ?? 0
         self.maxSingleAcceptChars = try c.decodeIfPresent(Int.self, forKey: .maxSingleAcceptChars) ?? 0
         let decodedHourly = try c.decodeIfPresent([Int].self, forKey: .hourlyTypedChars)
-        self.hourlyTypedChars = (decodedHourly?.count == 24) ? decodedHourly! : Array(repeating: 0, count: 24)
+        self.hourlyTypedChars = (decodedHourly.flatMap { $0.count == 24 ? $0 : nil }) ?? Array(repeating: 0, count: 24)
         self.updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
     }
 }
@@ -132,22 +132,6 @@ nonisolated struct ModelUsageSummary: Identifiable, Sendable, Equatable {
     var requests: Int
     var inputTokens: Int
     var outputTokens: Int
-    var share: Double
-    
-    var id: String { self.model }
-    var totalTokens: Int { self.inputTokens + self.outputTokens }
-}
-
-
-/// Aggregated request, token, latency, and success rate per model over a lookback window.
-nonisolated struct ModelPerformanceSummary: Identifiable, Sendable, Equatable {
-    
-    var model: String
-    var requests: Int
-    var inputTokens: Int
-    var outputTokens: Int
-    var averageLatencyMs: Int
-    var successRate: Double
     var share: Double
     
     var id: String { self.model }
@@ -454,6 +438,8 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     
     private let database: CotLocalDatabase
     private var pendingTypedCharsDelta: Int = 0
+    private var pendingTypedDateKey: String?
+    private var pendingTypedHour: Int?
     private var flushTask: Task<Void, Never>?
     private var backgroundDigestTask: Task<Void, Never>?
     
@@ -494,18 +480,6 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     }
     
     
-    static func formatCompactTokenCount(_ count: Int) -> String {
-        
-        if count >= 1_000_000 {
-            return String(format: "%.1fm", Double(count) / 1_000_000.0)
-        }
-        if count >= 1_000 {
-            return String(format: "%.1fk", Double(count) / 1_000.0)
-        }
-        return "\(count)"
-    }
-    
-    
     static func featureDisplayName(for feature: String) -> String {
         
         switch feature {
@@ -532,10 +506,26 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         
         guard count > 0 else { return }
         let now = Date()
+        let currentDateKey = Self.dateKey(for: now)
+        let hour = Calendar.current.component(.hour, from: now)
+        
+        // Flush any buffered chars from an earlier hour/day before switching buckets.
+        if self.pendingTypedCharsDelta > 0,
+           self.pendingTypedDateKey != currentDateKey || self.pendingTypedHour != hour
+        {
+            self.flushPendingStats()
+        }
+        
+        // If midnight rolled over while the app stayed open, reset `todayStats` to the new day.
+        if self.todayStats.dateKey != currentDateKey {
+            self.todayStats = DailyWritingStats(dateKey: currentDateKey)
+        }
+        
         self.lastKeystrokeAt = now
         self.pendingTypedCharsDelta += count
+        self.pendingTypedDateKey = currentDateKey
+        self.pendingTypedHour = hour
         self.todayStats.typedChars += count
-        let hour = Calendar.current.component(.hour, from: now)
         if (0..<24).contains(hour) {
             if self.todayStats.hourlyTypedChars.count != 24 {
                 self.todayStats.hourlyTypedChars = Array(repeating: 0, count: 24)
@@ -561,11 +551,13 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         
         guard self.pendingTypedCharsDelta > 0 else { return }
         let delta = self.pendingTypedCharsDelta
-        self.pendingTypedCharsDelta = 0
         let now = Date()
-        let todayKey = Self.dateKey(for: now)
-        let hour = Calendar.current.component(.hour, from: now)
-        self.database.incrementDailyWritingStats(dateKey: todayKey, typedChars: delta, hourBucket: hour)
+        let targetDateKey = self.pendingTypedDateKey ?? Self.dateKey(for: now)
+        let targetHour = self.pendingTypedHour ?? Calendar.current.component(.hour, from: now)
+        self.pendingTypedCharsDelta = 0
+        self.pendingTypedDateKey = nil
+        self.pendingTypedHour = nil
+        self.database.incrementDailyWritingStats(dateKey: targetDateKey, typedChars: delta, hourBucket: targetHour)
         self.reloadFromDatabase()
     }
     
@@ -672,14 +664,20 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         
         let stats = self.database.fetchDailyWritingStats(sinceDateKey: "2000-01-01")
         self.recentDailyStats = stats
-        if var existingToday = stats.first(where: { $0.dateKey == todayKey }) {
-            existingToday.typedChars += self.pendingTypedCharsDelta
-            self.todayStats = existingToday
-        } else {
-            var fresh = DailyWritingStats(dateKey: todayKey)
-            fresh.typedChars = self.pendingTypedCharsDelta
-            self.todayStats = fresh
+        let pendingForToday = (self.pendingTypedDateKey == nil || self.pendingTypedDateKey == todayKey)
+            ? self.pendingTypedCharsDelta
+            : 0
+        var resolvedToday = stats.first(where: { $0.dateKey == todayKey }) ?? DailyWritingStats(dateKey: todayKey)
+        if pendingForToday > 0 {
+            resolvedToday.typedChars += pendingForToday
+            if let pendingHour = self.pendingTypedHour, (0..<24).contains(pendingHour) {
+                if resolvedToday.hourlyTypedChars.count != 24 {
+                    resolvedToday.hourlyTypedChars = Array(repeating: 0, count: 24)
+                }
+                resolvedToday.hourlyTypedChars[pendingHour] += pendingForToday
+            }
         }
+        self.todayStats = resolvedToday
         
         self.recentAIEvents = self.database.fetchAIUsageEvents(sinceDateKey: aiSinceKey)
         self.todayDigest = self.database.fetchDailyAIDigest(forDateKey: todayKey)
@@ -700,7 +698,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
                     documents: self.database.documents,
                     weeklyReports: self.database.weeklyReports,
                     stats: self.recentDailyStats,
-                    streak: 0,
+                    streak: self.currentWritingStreak,
                     fingerprint: decodedProfile.sourceFingerprint
                 )
                 self.personalityProfile = refreshed
@@ -1500,54 +1498,6 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     }
     
     
-    /// Longest consecutive active-day streak inside a given calendar year.
-    func longestWritingStreak(year: Int, referenceDate: Date = Date()) -> Int {
-        
-        let heatmap = self.yearlyHeatmap(year: year, referenceDate: referenceDate)
-        let cells = heatmap.weeks.flatMap { $0 }.filter { !$0.isOutOfYear && !$0.isFuture }
-        var best = 0
-        var current = 0
-        for cell in cells {
-            if cell.level > 0 {
-                current += 1
-                if current > best { best = current }
-            } else {
-                current = 0
-            }
-        }
-        return best
-    }
-    
-    
-    /// Average AI request latency in milliseconds for today or a rolling `days` window.
-    func averageLatencyMs(forTodayOnly: Bool, days: Int = 30, referenceDate: Date = Date()) -> Int {
-        
-        let filtered: [AIUsageEvent]
-        if forTodayOnly {
-            let key = Self.dateKey(for: referenceDate)
-            filtered = self.recentAIEvents.filter { $0.dateKey == key && $0.latencyMs > 0 }
-        } else {
-            let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: referenceDate) ?? referenceDate
-            filtered = self.recentAIEvents.filter { $0.timestamp >= cutoff && $0.latencyMs > 0 }
-        }
-        guard !filtered.isEmpty else { return 0 }
-        return filtered.reduce(0) { $0 + $1.latencyMs } / filtered.count
-    }
-    
-    
-    /// Documents created or updated on `referenceDate` (newest first).
-    func todayTouchedDocuments(referenceDate: Date = Date()) -> [StoredDocumentRecord] {
-        
-        let key = Self.dateKey(for: referenceDate)
-        return self.database.documents.filter { doc in
-            !doc.id.hasPrefix("weekly:") && (
-                Self.dateKey(for: doc.updatedAt) == key ||
-                doc.createdAt.map { Self.dateKey(for: $0) == key } == true
-            )
-        }
-    }
-    
-    
     /// Builds full rich details for a clicked heatmap cell, including models, features, documents, and daily digest.
     func dayDetail(for cell: HeatmapDayCell) -> HeatmapDayDetail {
         
@@ -1584,18 +1534,6 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             digest: digest,
             averageLatencyMs: avgLatency
         )
-    }
-    
-    
-    /// Steps forward/backward by `deltaDays` within `year`, returning `nil` if out of year or in the future.
-    func adjacentHeatmapCell(from dateKey: String, deltaDays: Int, in year: Int, referenceDate: Date = Date()) -> HeatmapDayCell? {
-        
-        let heatmap = self.yearlyHeatmap(year: year, referenceDate: referenceDate)
-        let validCells = heatmap.weeks.flatMap { $0 }.filter { !$0.isOutOfYear && !$0.isFuture }
-        guard let idx = validCells.firstIndex(where: { $0.dateKey == dateKey }) else { return nil }
-        let nextIdx = idx + deltaDays
-        guard validCells.indices.contains(nextIdx) else { return nil }
-        return validCells[nextIdx]
     }
     
     
@@ -1882,28 +1820,28 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     var tomorrowReminders: [UserReminder] {
         
         let tomorrowKey = Self.dateKey(for: Self.tomorrowDate())
-        return self.reminders.filter { !$0.isCompleted && $0.dueDayKey == tomorrowKey }
+        return self.reminders.filter { !$0.isCompleted && $0.hasDeadline && $0.dueDayKey == tomorrowKey }
     }
     
     
     var todayReminders: [UserReminder] {
         
         let todayKey = Self.dateKey()
-        return self.reminders.filter { !$0.isCompleted && $0.dueDayKey == todayKey }
+        return self.reminders.filter { !$0.isCompleted && $0.hasDeadline && $0.dueDayKey == todayKey }
     }
     
     
     var overdueReminders: [UserReminder] {
         
         let todayKey = Self.dateKey()
-        return self.reminders.filter { !$0.isCompleted && $0.dueDayKey < todayKey }
+        return self.reminders.filter { !$0.isCompleted && $0.hasDeadline && $0.dueDayKey < todayKey }
     }
     
     
     var upcomingReminders: [UserReminder] {
         
         let tomorrowKey = Self.dateKey(for: Self.tomorrowDate())
-        return self.reminders.filter { !$0.isCompleted && $0.dueDayKey > tomorrowKey }
+        return self.reminders.filter { !$0.isCompleted && $0.hasDeadline && $0.dueDayKey > tomorrowKey }
     }
     
     
@@ -2400,38 +2338,6 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     
     // MARK: Studio Ledger Analytics Helpers
     
-    /// Highest single-day typed character record across all history (or within a specific year).
-    func personalRecordTypedChars(inYear year: Int? = nil) -> (chars: Int, dateKey: String)? {
-        
-        var allStats = self.recentDailyStats
-        if !allStats.contains(where: { $0.dateKey == self.todayStats.dateKey }) {
-            allStats.append(self.todayStats)
-        } else {
-            allStats = allStats.map { $0.dateKey == self.todayStats.dateKey ? self.todayStats : $0 }
-        }
-        
-        let prefix = year.map { String(format: "%04d-", $0) }
-        let candidates = allStats.filter { stat in
-            stat.typedChars > 0 && (prefix.map { stat.dateKey.hasPrefix($0) } ?? true)
-        }
-        guard let best = candidates.max(by: { $0.typedChars < $1.typedChars }) else { return nil }
-        return (best.typedChars, best.dateKey)
-    }
-    
-    
-    /// Historical percentile rank (0–100) of `chars` among active writing days.
-    func typedPercentile(for chars: Int) -> Int {
-        
-        guard chars > 0 else { return 0 }
-        let activeCounts = self.recentDailyStats
-            .filter { $0.typedChars > 0 && $0.dateKey != self.todayStats.dateKey }
-            .map(\.typedChars)
-        guard !activeCounts.isEmpty else { return 100 }
-        let beaten = activeCounts.filter { $0 < chars }.count
-        return Int((Double(beaten) * 100.0 / Double(activeCounts.count)).rounded())
-    }
-    
-    
     /// Returns a 24-element hourly activity array (`0...23`) for `dateKey`, falling back to document/AI timestamps.
     func hourlyWritingPulse(for dateKey: String) -> [Int] {
         
@@ -2460,89 +2366,6 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             }
         }
         return fallback
-    }
-    
-    
-    /// Aggregates model latency, success rate, request count, and token breakdown.
-    func modelPerformanceSummaries(
-        forTodayOnly: Bool,
-        days: Int = 30,
-        referenceDate: Date = Date()
-    ) -> [ModelPerformanceSummary] {
-        
-        let events: [AIUsageEvent]
-        if forTodayOnly {
-            let key = Self.dateKey(for: referenceDate)
-            events = self.recentAIEvents.filter { $0.dateKey == key }
-        } else {
-            let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: referenceDate) ?? referenceDate
-            events = self.recentAIEvents.filter { $0.timestamp >= cutoff }
-        }
-        guard !events.isEmpty else { return [] }
-        
-        let totalRequests = max(1, events.count)
-        let grouped = Dictionary(grouping: events, by: \.model)
-        return grouped.map { model, items in
-            let latencies = items.map(\.latencyMs).filter { $0 > 0 }
-            let avgLatency = latencies.isEmpty ? 0 : latencies.reduce(0, +) / latencies.count
-            let okCount = items.filter(\.success).count
-            return ModelPerformanceSummary(
-                model: model,
-                requests: items.count,
-                inputTokens: items.reduce(0) { $0 + $1.inputTokens },
-                outputTokens: items.reduce(0) { $0 + $1.outputTokens },
-                averageLatencyMs: avgLatency,
-                successRate: Double(okCount) / Double(max(1, items.count)),
-                share: Double(items.count) / Double(totalRequests)
-            )
-        }
-        .sorted { lhs, rhs in
-            if lhs.requests != rhs.requests { return lhs.requests > rhs.requests }
-            return lhs.totalTokens > rhs.totalTokens
-        }
-    }
-    
-    
-    /// Computes how many requests local zero-cost completions intercepted and how many tokens that saved.
-    func estimatedTokensSavedByLocalHits(
-        forTodayOnly: Bool,
-        days: Int = 30,
-        referenceDate: Date = Date()
-    ) -> (localHits: Int, estimatedTokens: Int) {
-        
-        let localHits: Int
-        if forTodayOnly {
-            localHits = self.todayStats.localHits
-        } else {
-            let series = self.dailySeries(days: days, referenceDate: referenceDate)
-            localHits = series.reduce(0) { $0 + $1.localHits }
-        }
-        
-        let nextTokenEvents = self.recentAIEvents.filter { $0.feature == "nextToken" && $0.totalTokens > 0 }
-        let avgNextTokens = nextTokenEvents.isEmpty
-            ? 350
-            : max(120, nextTokenEvents.reduce(0) { $0 + $1.totalTokens } / nextTokenEvents.count)
-        return (localHits: localHits, estimatedTokens: localHits * avgNextTokens)
-    }
-    
-    
-    /// Returns recent AI invocations newest first for the compute receipt feed.
-    func recentAIEventsSlice(
-        forTodayOnly: Bool,
-        days: Int = 30,
-        limit: Int = 8,
-        referenceDate: Date = Date()
-    ) -> [AIUsageEvent] {
-        
-        let filtered: [AIUsageEvent]
-        if forTodayOnly {
-            let key = Self.dateKey(for: referenceDate)
-            filtered = self.recentAIEvents.filter { $0.dateKey == key }
-        } else {
-            let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: referenceDate) ?? referenceDate
-            filtered = self.recentAIEvents.filter { $0.timestamp >= cutoff }
-        }
-        return Array(filtered.sorted(by: { $0.timestamp > $1.timestamp }).prefix(max(0, limit)))
     }
     
     
@@ -2590,6 +2413,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             ) else { return }
         }
         
+        var didWriteInitialFallback = false
         if self.personalityProfile == nil {
             let initialFallback = UserPersonalityAnalyzer.makeLocalHeuristicFallback(
                 documents: self.database.documents,
@@ -2599,6 +2423,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
                 fingerprint: corpus.fingerprint
             )
             self.savePersonalityProfile(initialFallback)
+            didWriteInitialFallback = true
         }
         
         if corpus.charCount < 20 && self.database.documents.isEmpty && self.database.weeklyReports.isEmpty {
@@ -2613,14 +2438,16 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         let resolvedConfig = AIBotStore.shared.resolvedConfiguration(for: .persona, baseConfig: baseConfig)
         
         if !resolvedConfig.isUsable {
-            let fallback = UserPersonalityAnalyzer.makeLocalHeuristicFallback(
-                documents: self.database.documents,
-                weeklyReports: self.database.weeklyReports,
-                stats: self.recentDailyStats,
-                streak: self.currentWritingStreak,
-                fingerprint: corpus.fingerprint
-            )
-            self.savePersonalityProfile(fallback)
+            if !didWriteInitialFallback {
+                let fallback = UserPersonalityAnalyzer.makeLocalHeuristicFallback(
+                    documents: self.database.documents,
+                    weeklyReports: self.database.weeklyReports,
+                    stats: self.recentDailyStats,
+                    streak: self.currentWritingStreak,
+                    fingerprint: corpus.fingerprint
+                )
+                self.savePersonalityProfile(fallback)
+            }
             if force {
                 self.personalityErrorMessage = "未配置可用 AI 端点，已根据本地写作轨迹生成初判。"
             }
@@ -2776,17 +2603,6 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     
     
     // MARK: Round 20 Dashboard Helpers (Candid AI Take, Manuscripts & Achievements)
-    
-    var lifetimeTypedChars: Int {
-        
-        var total = self.todayStats.typedChars
-        let todayKey = self.todayStats.dateKey
-        for stat in self.recentDailyStats where stat.dateKey != todayKey {
-            total += stat.typedChars
-        }
-        return total
-    }
-    
     
     /// Translates a typed character count into a tangible physical milestone for the Typed Achievement view.
     static func tangibleWritingEquivalent(for chars: Int) -> (badge: String, detail: String) {
@@ -2958,23 +2774,6 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     }
     
     
-    /// Returns documents and weekly reports touched on the specific day of `cell`.
-    func dayTouchedManuscripts(
-        for cell: HeatmapDayCell,
-        referenceDate: Date = Date(),
-        limit: Int = 6
-    ) -> [TouchedManuscriptItem] {
-        
-        let detail = self.dayDetail(for: cell)
-        return self.buildManuscriptItems(
-            docs: detail.documents,
-            reports: detail.weeklyReports,
-            referenceDate: referenceDate,
-            limit: limit
-        )
-    }
-    
-    
     private func buildManuscriptItems(
         docs: [StoredDocumentRecord],
         reports: [StoredWeeklyReport],
@@ -3073,5 +2872,268 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         dateFormatter.locale = Locale(identifier: "zh_CN")
         dateFormatter.dateFormat = "M月d日"
         return dateFormatter.string(from: date)
+    }
+}
+
+
+// MARK: - Busyness, Mood & Done-Today Dashboard Models
+
+/// One 2-hour radial petal in the Dashboard's Nightingale Rose Chart.
+nonisolated struct BusynessHourSlice: Identifiable, Hashable, Sendable {
+    
+    var index: Int          // 0...11 representing 00:00-02:00 ... 22:00-24:00
+    var label: String       // e.g. "08-10"
+    var intensity: Double   // 0.0...1.0 normalized radius
+    var rawChars: Int
+    var rawAIRequests: Int
+    
+    var id: Int { self.index }
+}
+
+
+/// Aggregated busyness score and 12 radial slices for the Nightingale Rose visualization.
+nonisolated struct BusynessMetrics: Sendable, Equatable {
+    
+    var score: Int                      // 0...100
+    var activeHours: Int                // Number of active 1-hour slots today
+    var peakHourLabel: String           // e.g. "14:00"
+    var slices: [BusynessHourSlice]     // 12 two-hour petals
+}
+
+
+/// Outer sub-dimension arc in the 2-ring Emotion Sunburst Chart.
+nonisolated struct MoodSubSegment: Identifiable, Hashable, Sendable {
+    
+    var id: String
+    var label: String
+    var value: Double
+}
+
+
+/// Inner mood tone sector in the 2-ring Emotion Sunburst Chart.
+nonisolated struct MoodRingSegment: Identifiable, Hashable, Sendable {
+    
+    var id: String
+    var label: String
+    var tone: PersonalityTagTone
+    var weight: Double
+    var children: [MoodSubSegment]
+}
+
+
+/// Aggregated mood index and hierarchical 2-ring Sunburst dataset.
+nonisolated struct MoodMetrics: Sendable, Equatable {
+    
+    var score: Int                      // 0...100
+    var dominantLabel: String
+    var segments: [MoodRingSegment]
+}
+
+
+extension AnalyticsManager {
+    
+    /// Computes today's 12 two-hour busyness slices and composite index (0...100) from typing pulse & AI requests.
+    var busynessMetrics: BusynessMetrics {
+        let _ = self.revision
+        let todayKey = Self.dateKey()
+        let rawHourly = (self.todayStats.dateKey == todayKey && self.todayStats.hourlyTypedChars.count == 24)
+            ? self.todayStats.hourlyTypedChars
+            : Array(repeating: 0, count: 24)
+        let hourlyChars = rawHourly
+        let calendar = Calendar.current
+        
+        var hourlyAI = Array(repeating: 0, count: 24)
+        for event in self.recentAIEvents where event.dateKey == todayKey {
+            let h = calendar.component(.hour, from: event.timestamp)
+            if (0..<24).contains(h) {
+                hourlyAI[h] += 1
+            }
+        }
+        
+        var hourlyWeight = Array(repeating: 0.0, count: 24)
+        for h in 0..<24 {
+            hourlyWeight[h] = Double(hourlyChars[h]) + Double(hourlyAI[h] * 90)
+        }
+        
+        var activeHours = 0
+        var bestHour = calendar.component(.hour, from: Date())
+        var bestHourWeight = -1.0
+        for h in 0..<24 {
+            if hourlyWeight[h] > 0 {
+                activeHours += 1
+            }
+            if hourlyWeight[h] > bestHourWeight {
+                bestHourWeight = hourlyWeight[h]
+                bestHour = h
+            }
+        }
+        
+        var bucketRawWeights: [Double] = []
+        var bucketChars: [Int] = []
+        var bucketAI: [Int] = []
+        for slot in 0..<12 {
+            let h0 = slot * 2
+            let h1 = h0 + 1
+            let chars = hourlyChars[h0] + hourlyChars[h1]
+            let ai = hourlyAI[h0] + hourlyAI[h1]
+            bucketChars.append(chars)
+            bucketAI.append(ai)
+            bucketRawWeights.append(Double(chars) + Double(ai * 90))
+        }
+        
+        let maxWeight = max(120.0, bucketRawWeights.max() ?? 0.0)
+        let slices: [BusynessHourSlice] = (0..<12).map { slot in
+            let start = slot * 2
+            let end = start + 2
+            let label = String(format: "%02d-%02d", start, end)
+            let w = bucketRawWeights[slot]
+            let intensity = w > 0 ? min(1.0, max(0.14, sqrt(w / maxWeight))) : 0.08
+            return BusynessHourSlice(
+                index: slot,
+                label: label,
+                intensity: intensity,
+                rawChars: bucketChars[slot],
+                rawAIRequests: bucketAI[slot]
+            )
+        }
+        
+        let stats = self.todayStats
+        let charFactor = min(46.0, Double(stats.typedChars + stats.aiCompletedChars) / 45.0)
+        let aiFactor = min(24.0, Double(stats.aiRequests) * 2.4)
+        let spreadFactor = min(22.0, Double(activeHours) * 3.0)
+        let saveFactor = min(8.0, Double(stats.documentsSaved + stats.filesCreated) * 1.6)
+        let totalScore = Int((charFactor + aiFactor + spreadFactor + saveFactor).rounded())
+        
+        let peakLabel = bestHourWeight > 0
+            ? String(format: "%02d:00", bestHour)
+            : String(format: "%02d:00", calendar.component(.hour, from: Date()))
+        
+        return BusynessMetrics(
+            score: min(100, max(0, totalScore)),
+            activeHours: activeHours,
+            peakHourLabel: peakLabel,
+            slices: slices
+        )
+    }
+    
+    
+    /// Computes today's hierarchical 2-ring Sunburst emotion distribution from activity rhythm & personality profile.
+    var moodMetrics: MoodMetrics {
+        let _ = self.revision
+        let stats = self.todayStats
+        let todayKey = Self.dateKey()
+        let hourly = self.hourlyWritingPulse(for: todayKey)
+        let bestHourEntry = hourly.enumerated().max(by: { $0.element < $1.element })
+        let peakHour = (bestHourEntry.map { $0.element > 0 ? $0.offset : nil } ?? nil) ?? 10
+        let tags = self.personalityProfile?.tags ?? []
+        
+        func toneBoost(for tone: PersonalityTagTone) -> Double {
+            Double(tags.filter { $0.tone == tone }.count) * 18.0
+        }
+        
+        let deepWork = max(16.0, Double(stats.typedChars) * 0.035 + Double(stats.documentsSaved) * 6.0 + toneBoost(for: .calm))
+        let sharpDrive = max(14.0, Double(stats.aiRequests) * 4.5 + Double(stats.aiCompletedChars) * 0.03 + toneBoost(for: .sharp))
+        let warmFlow = max(12.0, (peakHour >= 6 && peakHour <= 18 ? 22.0 : 12.0) + Double(stats.filesCreated) * 8.0 + toneBoost(for: .warm))
+        let playfulSpark = max(10.0, Double(stats.localHits) * 3.5 + Double(stats.aiCompletionAccepts) * 2.5 + toneBoost(for: .playful))
+        
+        let calmChildren = [
+            MoodSubSegment(id: "calm-deep", label: "沉浸手写", value: max(6.0, Double(stats.typedChars) * 0.02 + 8.0)),
+            MoodSubSegment(id: "calm-polish", label: "精修推敲", value: max(5.0, Double(stats.documentsSaved) * 4.0 + 7.0)),
+        ]
+        let sharpChildren = [
+            MoodSubSegment(id: "sharp-ai", label: "AI协同", value: max(6.0, Double(stats.aiRequests) * 3.0 + 6.0)),
+            MoodSubSegment(id: "sharp-speed", label: "高速产出", value: max(5.0, Double(stats.aiCompletedChars) * 0.02 + 7.0)),
+        ]
+        let warmChildren = [
+            MoodSubSegment(id: "warm-create", label: "新建灵感", value: max(5.0, Double(stats.filesCreated) * 6.0 + 7.0)),
+            MoodSubSegment(id: "warm-rhythm", label: "日间节律", value: max(5.0, (peakHour >= 7 && peakHour <= 19) ? 14.0 : 6.0)),
+        ]
+        let playfulChildren = [
+            MoodSubSegment(id: "playful-accept", label: "瞬时采纳", value: max(4.0, Double(stats.aiCompletionAccepts) * 2.5 + 6.0)),
+            MoodSubSegment(id: "playful-local", label: "轻快试错", value: max(4.0, Double(stats.localHits) * 3.0 + 5.0)),
+        ]
+        
+        let segments: [MoodRingSegment] = [
+            MoodRingSegment(id: "calm", label: "专注", tone: .calm, weight: deepWork, children: calmChildren),
+            MoodRingSegment(id: "sharp", label: "高效", tone: .sharp, weight: sharpDrive, children: sharpChildren),
+            MoodRingSegment(id: "warm", label: "灵感", tone: .warm, weight: warmFlow, children: warmChildren),
+            MoodRingSegment(id: "playful", label: "松弛", tone: .playful, weight: playfulSpark, children: playfulChildren),
+        ]
+        
+        let dominant = segments.max(by: { $0.weight < $1.weight })?.label ?? "专注"
+        let hasActivity = (stats.typedChars + stats.aiCompletedChars + stats.aiRequests) > 0
+        let rawScore: Int
+        if hasActivity {
+            let positiveRatio = (deepWork + warmFlow + playfulSpark * 0.8 + sharpDrive * 0.65)
+                / max(1.0, deepWork + sharpDrive + warmFlow + playfulSpark)
+            let volumeBonus = min(22.0, Double(stats.typedChars + stats.aiCompletedChars) / 80.0 + Double(stats.aiCompletionAccepts) * 1.5)
+            rawScore = min(98, max(54, Int((56.0 + positiveRatio * 20.0 + volumeBonus).rounded())))
+        } else {
+            rawScore = 72
+        }
+        
+        return MoodMetrics(score: rawScore, dominantLabel: dominant, segments: segments)
+    }
+    
+    
+    /// Clean, capsule-free bullet points summarizing what the user worked on today ("干了啥").
+    var doneTodayPoints: [String] {
+        let _ = self.revision
+        let todayKey = Self.dateKey()
+        var points: [String] = []
+        
+        if let digest = self.todayDigest,
+           digest.dateKey == todayKey,
+           digest.modelUsed != "本地摘要"
+        {
+            let parsed = Self.structuredSummaryPoints(from: digest.summary, maxPoints: 5)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            points.append(contentsOf: parsed)
+        }
+        
+        let calendar = Calendar.current
+        let todayDocs = self.recentTouchedManuscripts(referenceDate: Date(), limit: 5)
+            .filter { calendar.isDateInToday($0.updatedAt) }
+        for item in todayDocs where points.count < 5 {
+            let line = "推进《\(item.title)》(\(item.charCount.formatted()) 字)"
+            if !points.contains(where: { $0.contains(item.title) }) {
+                points.append(line)
+            }
+        }
+        
+        let stats = self.todayStats
+        if stats.typedChars > 0, points.count < 5 {
+            points.append("手写输入 \(stats.typedChars.formatted()) 字，保存文档 \(stats.documentsSaved) 次")
+        }
+        if stats.aiRequests > 0, points.count < 5 {
+            points.append("完成 \(stats.aiRequests) 次 AI 协助，消耗 \((stats.inputTokens + stats.outputTokens).formatted()) tokens")
+        }
+        
+        if points.isEmpty {
+            let todayKey = Self.dateKey()
+            let todayCell = HeatmapDayCell(
+                dateKey: todayKey,
+                date: Date(),
+                typedChars: stats.typedChars,
+                aiCompletedChars: stats.aiCompletedChars,
+                aiCompletionAccepts: stats.aiCompletionAccepts,
+                filesCreated: stats.filesCreated,
+                documentsSaved: stats.documentsSaved,
+                aiRequests: stats.aiRequests,
+                inputTokens: stats.inputTokens,
+                outputTokens: stats.outputTokens,
+                localHits: stats.localHits,
+                level: 0,
+                isFuture: false
+            )
+            let fallback = self.candidDailyTakePoints(for: todayCell, referenceDate: Date(), baselineDailyChars: 0)
+                .prefix(3)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            points.append(contentsOf: fallback)
+        }
+        
+        return Array(points.prefix(5))
     }
 }

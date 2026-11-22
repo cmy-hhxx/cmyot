@@ -40,6 +40,8 @@ import SyntaxParsers
     
     private var trailingHostingView: NSHostingView<NavigationBarTrailingControls>?
     private var backgroundContainer: PaneNavigationBarBackgroundView?
+    private let chromeModel = NavigationBarChromeModel()
+    private var chromePalette: WindowChromePalette?
     
     var isRenamingTab: Bool { self.tabStripView.isRenaming }
     
@@ -76,7 +78,8 @@ import SyntaxParsers
         
         let trailingControls = NavigationBarTrailingControls(
             outlineNavigator: self.outlineNavigator,
-            tabs: self.tabs
+            tabs: self.tabs,
+            chromeModel: self.chromeModel
         )
         let trailingHost = NSHostingView(rootView: trailingControls)
         trailingHost.translatesAutoresizingMaskIntoConstraints = false
@@ -101,6 +104,11 @@ import SyntaxParsers
         container.setAccessibilityLabel(String(localized: "Navigation Bar", table: "Document", comment: "accessibility label"))
         
         self.backgroundContainer = container
+        if let palette = self.chromePalette {
+            container.chromePalette = palette
+            self.tabStripView.chromePalette = palette
+            self.chromeModel.chromePalette = palette
+        }
         self.view = container
     }
     
@@ -109,6 +117,17 @@ import SyntaxParsers
         
         super.viewDidLoad()
         self.tabStripView.reloadTabs()
+    }
+    
+    
+    func applyChromePalette(_ palette: WindowChromePalette) {
+        
+        self.chromePalette = palette
+        self.chromeModel.chromePalette = palette
+        if self.isViewLoaded {
+            self.backgroundContainer?.chromePalette = palette
+            self.tabStripView.chromePalette = palette
+        }
     }
     
     
@@ -137,7 +156,21 @@ import SyntaxParsers
 }
 
 
+@MainActor @Observable
+private final class NavigationBarChromeModel {
+    
+    var chromePalette: WindowChromePalette?
+}
+
+
 private final class PaneNavigationBarBackgroundView: NSView {
+    
+    var chromePalette: WindowChromePalette? {
+        didSet {
+            guard self.chromePalette != oldValue else { return }
+            self.needsDisplay = true
+        }
+    }
     
     private let separatorLayer = CALayer()
     
@@ -163,8 +196,13 @@ private final class PaneNavigationBarBackgroundView: NSView {
     override func updateLayer() {
         
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
-            self.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-            self.separatorLayer.backgroundColor = NSColor.separatorColor.cgColor
+            if let palette = self.chromePalette {
+                self.layer?.backgroundColor = palette.tabBarBackground.cgColor
+                self.separatorLayer.backgroundColor = palette.tabBarSeparator.cgColor
+            } else {
+                self.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+                self.separatorLayer.backgroundColor = NSColor.separatorColor.cgColor
+            }
         }
     }
     
@@ -186,6 +224,7 @@ private struct NavigationBarTrailingControls: View {
     
     @State var outlineNavigator: OutlineNavigator
     @State var tabs: PaneTabState
+    var chromeModel: NavigationBarChromeModel
     
     
     var body: some View {
@@ -193,6 +232,7 @@ private struct NavigationBarTrailingControls: View {
         HStack(alignment: .center, spacing: 2) {
             if self.outlineNavigator.items?.isEmpty == false {
                 Divider()
+                    .overlay(self.chromeModel.chromePalette.map { Color(nsColor: $0.tabBarSeparator) })
                     .frame(height: 14)
                     .padding(.horizontal, 4)
                 
@@ -201,11 +241,15 @@ private struct NavigationBarTrailingControls: View {
             }
             
             if self.tabs.canClosePane {
-                ClosePaneAnimatedButton(action: self.tabs.onClosePane)
+                ClosePaneAnimatedButton(
+                    chromePalette: self.chromeModel.chromePalette,
+                    action: self.tabs.onClosePane
+                )
                     .frame(width: 22, height: 24, alignment: .center)
                     .help(String(localized: "Close split editor", table: "Document", comment: "tooltip for button"))
             }
         }
+        .foregroundStyle(self.chromeModel.chromePalette.map { Color(nsColor: $0.inactiveTabText) } ?? .primary)
         .buttonStyle(.borderless)
         .controlSize(.small)
     }
@@ -268,6 +312,7 @@ struct NavigationBar: View {
 /// Close-pane button: a quarter turn and a soft red fill on hover, matching the tab close buttons.
 private struct ClosePaneAnimatedButton: View {
     
+    var chromePalette: WindowChromePalette? = nil
     var action: () -> Void
     
     @State private var isHovered = false
@@ -277,7 +322,7 @@ private struct ClosePaneAnimatedButton: View {
         Button(action: self.action) {
             Image(systemName: "xmark")
                 .font(.system(size: 8.5, weight: .medium))
-                .foregroundStyle(self.isHovered ? Color.red : Color.secondary)
+                .foregroundStyle(self.isHovered ? Color.red : (self.chromePalette.map { Color(nsColor: $0.inactiveTabText) } ?? Color.secondary))
                 .rotationEffect(.degrees(self.isHovered ? 90 : 0))
                 .frame(width: 18, height: 18, alignment: .center)
                 .background(

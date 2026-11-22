@@ -101,6 +101,7 @@ final class LineNumberView: NSView {
     private var textViewObservers: Set<AnyCancellable> = []
     
     private var draggingInfo: DraggingInfo?
+    private var isDrawingNumbers = false
     
     
     // MARK: Lifecycle
@@ -111,6 +112,9 @@ final class LineNumberView: NSView {
         self.drawingInfo = DrawingInfo(font: self.lineNumberFont, fontSize: textView.font!.pointSize, scale: textView.scale)
         
         super.init(frame: .zero)
+        
+        self.wantsLayer = true
+        self.layerContentsRedrawPolicy = .onSetNeedsDisplay
         
         self.observeTextView(textView)
     }
@@ -216,8 +220,20 @@ final class LineNumberView: NSView {
         
         guard
             let textView = self.textView,
+            let textContainer = textView.textContainer,
             let layoutManager = textView.layoutManager as? LayoutManager
         else { return }
+        
+        self.isDrawingNumbers = true
+        defer { self.isDrawingNumbers = false }
+        
+        // Ensure layout for the visible viewport (with a 64pt vertical margin) before reading line fragments
+        // so lines near the bottom edge never render with stale or unlaid-out rects while typing.
+        var visibleContainerRect = textView.visibleRect.offset(by: -textView.textContainerOrigin).insetBy(dx: 0, dy: -64)
+        visibleContainerRect.origin.y = max(0, visibleContainerRect.minY)
+        if visibleContainerRect.width > 0, visibleContainerRect.height > 0, visibleContainerRect.height.isFinite {
+            layoutManager.ensureLayout(forBoundingRect: visibleContainerRect, in: textContainer)
+        }
         
         guard
             let range = textView.range(for: textView.visibleRect, withoutAdditionalLayout: true),
@@ -236,6 +252,7 @@ final class LineNumberView: NSView {
         
         let isVerticalText = textView.layoutOrientation == .vertical
         let scale = textView.scale
+        let backingScale = max(self.window?.backingScaleFactor ?? 2, 1)
         
         // adjust drawing coordinate
         let relativePoint = self.convert(NSPoint.zero, from: textView)
@@ -252,7 +269,8 @@ final class LineNumberView: NSView {
         // draw labels
         let options: NSTextView.LineEnumerationOptions = isVerticalText ? .onlySelectionBoundary : []
         textView.enumerateLineFragments(in: range, options: options) { lineRect, lineNumber, isSelected in
-            let y = (scale * -lineRect.minY) - lineOffset
+            let rawY = (scale * -lineRect.minY) - lineOffset
+            let y = (rawY * backingScale).rounded() / backingScale
             
             // draw tick
             if isVerticalText {
@@ -341,7 +359,9 @@ final class LineNumberView: NSView {
                 fatalError()
         }
         
-        self.thickness = thickness.rounded(.up)
+        let nextThickness = thickness.rounded(.up)
+        guard nextThickness != self.thickness else { return }
+        self.thickness = nextThickness
     }
     
     
@@ -362,24 +382,43 @@ final class LineNumberView: NSView {
                 .map { $0.object as! NSTextStorage }
                 .filter { $0.editedMask.contains(.editedCharacters) }
                 .sink { [weak self] _ in
+                    guard let self, !self.isDrawingNumbers else { return }
                     // -> The digit of the line numbers affect thickness.
-                    if self?.orientation == .horizontal {
-                        self?.invalidateThickness()
+                    if self.orientation == .horizontal {
+                        self.invalidateThickness()
                     }
-                    self?.needsDisplay = true
+                    self.needsDisplay = true
+                },
+            
+            NotificationCenter.default.publisher(for: NSText.didChangeNotification, object: textView)
+                .sink { [weak self] _ in
+                    guard let self, !self.isDrawingNumbers else { return }
+                    self.needsDisplay = true
                 },
             
             NotificationCenter.default.publisher(for: EditorTextView.DidLiveChangeSelectionMessage.name, object: textView)
-                .sink { [weak self] _ in self?.needsDisplay = true },
+                .sink { [weak self] _ in
+                    guard let self, !self.isDrawingNumbers else { return }
+                    self.needsDisplay = true
+                },
             
             NotificationCenter.default.publisher(for: NSView.frameDidChangeNotification, object: textView)
-                .sink { [weak self] _ in self?.needsDisplay = true },
+                .sink { [weak self] _ in
+                    guard let self, !self.isDrawingNumbers else { return }
+                    self.needsDisplay = true
+                },
             
             NotificationCenter.default.publisher(for: NSView.boundsDidChangeNotification, object: textView.enclosingScrollView?.contentView)
-                .sink { [weak self] _ in self?.needsDisplay = true },
+                .sink { [weak self] _ in
+                    guard let self, !self.isDrawingNumbers else { return }
+                    self.needsDisplay = true
+                },
             
             textView.publisher(for: \.defaultParagraphStyle?.lineHeightMultiple)
-                .sink { [weak self] _ in self?.needsDisplay = true },
+                .sink { [weak self] _ in
+                    guard let self, !self.isDrawingNumbers else { return }
+                    self.needsDisplay = true
+                },
             
             textView.publisher(for: \.textColor, options: .initial)
                 .compactMap(\.self)
@@ -395,7 +434,10 @@ final class LineNumberView: NSView {
                 .sink { [weak self] _ in self?.invalidateDrawingInfo() },
             
             NotificationCenter.default.publisher(for: WallpaperManager.didChangeNotification)
-                .sink { [weak self] _ in self?.needsDisplay = true },
+                .sink { [weak self] _ in
+                    guard let self, !self.isDrawingNumbers else { return }
+                    self.needsDisplay = true
+                },
         ]
     }
 }

@@ -117,6 +117,13 @@ final class EditorViewController: NSSplitViewController {
     private(set) var suppressesEditorFocusOnTabSelect = false
     
     
+    /// Applies the unified theme-aware window chrome palette to this pane's navigation & tab bar.
+    func applyChromePalette(_ palette: WindowChromePalette) {
+        
+        self.navigationBarViewController.applyChromePalette(palette)
+    }
+    
+    
     // MARK: Lifecycle
     
     init(document: Document, splitState: SplitState) {

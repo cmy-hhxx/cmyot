@@ -116,6 +116,8 @@ final class StackedToolbarClusterView: NSView {
     private var heightConstraint: NSLayoutConstraint?
     private var isHoveredInside = false
     private var isMenuOpen = false
+    private var chromePalette: WindowChromePalette?
+    private var studioPaletteObserver: (any NSObjectProtocol)?
     
     var currentProgress: Double { self.spring.position }
     
@@ -166,6 +168,15 @@ final class StackedToolbarClusterView: NSView {
         }
         
         self.refreshAppearanceAndLabels()
+        self.studioPaletteObserver = NotificationCenter.default.addObserver(
+            forName: StudioPaletteManager.paletteDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshAppearanceAndLabels()
+            }
+        }
         let initialWidth = self.currentClusterWidth
         let wc = self.widthAnchor.constraint(equalToConstant: initialWidth)
         let hc = self.heightAnchor.constraint(equalToConstant: Self.pillHeight)
@@ -183,6 +194,10 @@ final class StackedToolbarClusterView: NSView {
     
     
     isolated deinit {
+        if let observer = self.studioPaletteObserver {
+            NotificationCenter.default.removeObserver(observer)
+            self.studioPaletteObserver = nil
+        }
         self.springTimer?.invalidate()
         self.springTimer = nil
     }
@@ -297,7 +312,7 @@ final class StackedToolbarClusterView: NSView {
         
         let p = self.spring.position
         let viewW = max(self.bounds.width, self.currentClusterWidth)
-        var rightEdge = viewW
+        let rightEdge = viewW
         
         // Anchor rightmost pill flush right; each preceding pill slides leftward cleanly from under its neighbor.
         let lastIdx = self.pillButtons.count - 1
@@ -318,17 +333,29 @@ final class StackedToolbarClusterView: NSView {
     }
     
     
+    func applyChromePalette(_ palette: WindowChromePalette) {
+        
+        guard self.chromePalette != palette else { return }
+        self.chromePalette = palette
+        self.refreshAppearanceAndLabels()
+    }
+    
+    
     private func refreshAppearanceAndLabels() {
-        let isDark = self.effectiveAppearance.isDark
-        let accent = StudioPaletteManager.shared.activeNSAccentColor
-        let halo = self.titlebarCutoutColor(isDark: isDark)
+        let isDark = self.chromePalette?.isDark ?? self.effectiveAppearance.isDark
+        let palette = self.chromePalette ?? StudioPaletteManager.shared.chromePalette(for: nil, isDark: isDark)
+        let accent = palette.accent
+        let halo = self.titlebarCutoutColor(isDark: isDark, palette: palette)
         for btn in self.pillButtons {
-            btn.refreshStyle(isDark: isDark, accent: accent, haloColor: halo)
+            btn.refreshStyle(isDark: isDark, accent: accent, haloColor: halo, chromePalette: palette)
         }
     }
     
     
-    private func titlebarCutoutColor(isDark: Bool) -> NSColor {
+    private func titlebarCutoutColor(isDark: Bool, palette: WindowChromePalette?) -> NSColor {
+        if let palette {
+            return palette.titlebarBackground
+        }
         if let bg = self.window?.backgroundColor, bg != .clear {
             return bg.usingColorSpace(.sRGB) ?? (isDark ? NSColor(white: 0.14, alpha: 1) : NSColor(white: 0.94, alpha: 1))
         }
@@ -466,7 +493,7 @@ private final class StackedCapsulePillButton: NSButton {
     }
     
     
-    func refreshStyle(isDark: Bool, accent: NSColor, haloColor: NSColor) {
+    func refreshStyle(isDark: Bool, accent: NSColor, haloColor: NSColor, chromePalette: WindowChromePalette? = nil) {
         let isActive = self.item.isActiveProvider()
         let nextTitle = self.item.titleProvider(isActive)
         self.labelField.stringValue = nextTitle
@@ -477,7 +504,6 @@ private final class StackedCapsulePillButton: NSButton {
         ]).width)
         self.naturalWidth = max(56, min(110, 8 + 14 + 4 + textWidth + 10))
         
-        // Colors follow stacked-metadata palette: dark #393939/#e7e7e7, light #dedede/#242424, active accent highlight
         let bgColor: NSColor
         let fgColor: NSColor
         if isActive {
@@ -485,6 +511,9 @@ private final class StackedCapsulePillButton: NSButton {
                 ? accent.blended(withFraction: 0.14, of: .white) ?? accent
                 : accent
             fgColor = .white
+        } else if let chromePalette {
+            bgColor = self.isPillHovered ? chromePalette.toolbarPillHoverFill : chromePalette.toolbarPillFill
+            fgColor = chromePalette.toolbarPillText
         } else if isDark {
             bgColor = self.isPillHovered
                 ? NSColor(srgbRed: 0.275, green: 0.275, blue: 0.285, alpha: 1)

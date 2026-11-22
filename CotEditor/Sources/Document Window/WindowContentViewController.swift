@@ -229,6 +229,7 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
             self.statusBarModel.document = focusedDoc
             focusedDoc.counter.refreshNow()
         }
+        self.statusBarModel.chromePalette = self.documentViewController?.currentChromePalette
         self.focusObservers = [
             NotificationCenter.default.publisher(for: EditorTextView.DidBecomeFirstResponderMessage.name)
                 .map { $0.object as! EditorTextView }
@@ -254,6 +255,12 @@ final class WindowContentViewController: NSSplitViewController, NSToolbarItemVal
                 .sink { [weak self] in
                     self?.statusBarModel.document = $0
                     $0.counter.refreshNow()
+                },
+            NotificationCenter.default.publisher(for: DocumentViewController.didUpdateChromePaletteNotification)
+                .compactMap { $0.object as? DocumentViewController }
+                .filter { [weak self] in $0 === self?.documentViewController }
+                .sink { [weak self] docVC in
+                    self?.statusBarModel.chromePalette = docVC.currentChromePalette
                 },
         ]
         

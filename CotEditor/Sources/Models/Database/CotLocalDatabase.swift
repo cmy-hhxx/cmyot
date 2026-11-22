@@ -196,6 +196,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let pinnedTodoMascot = "todo.mascotKind"
         static let editorWallpaperSpecJSON = "appearance.wallpaperSpecJSON"
         static let editorWallpaperCustomCatalogJSON = "appearance.wallpaperCustomCatalogJSON"
+        static let aiHotNewsCacheJSON = "analytics.aiHotNewsCacheJSON"
     }
     
     static let weeklyReportsDidChangeNotification = Notification.Name("CotLocalDatabaseWeeklyReportsDidChange")
@@ -232,7 +233,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     
     private var db: OpaquePointer?
     private let transientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    private var userDefaultsSyncObserver: NSObjectProtocol?
+    private var userDefaultsSyncObserver: (any NSObjectProtocol)?
     private var userDefaultsSyncTask: Task<Void, Never>?
     private var isApplyingSyncedDefaults = false
     

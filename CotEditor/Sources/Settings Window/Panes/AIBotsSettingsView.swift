@@ -42,6 +42,7 @@ struct AIModelsSettingsView: View {
     @State private var endpointStatus: [UUID: EndpointProbeStatus] = [:]
     @State private var fetchedModels: [UUID: [AIModel]] = [:]
     @State private var fetchingModelsIDs: Set<UUID> = []
+    @State private var imageLoader = AIGijinkaImageLoader.shared
     
     
     private struct EndpointEditTarget: Identifiable {
@@ -290,6 +291,12 @@ struct AIModelsSettingsView: View {
         let fetched = self.fetchedModels[profile.id] ?? []
         let isFetching = self.fetchingModelsIDs.contains(profile.id)
         let isConfirmingDelete = (self.confirmDeleteID == profile.id)
+        let gijinka = AIGijinkaCharacter.resolve(
+            modelName: profile.displayModel,
+            endpointName: profile.displayName,
+            baseURL: profile.baseURL
+        )
+        let portrait = gijinka.flatMap { self.imageLoader.image(for: $0) }
         
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -301,6 +308,28 @@ struct AIModelsSettingsView: View {
                             .font(.system(size: 14.5))
                             .foregroundStyle(isActive ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
                             .frame(width: 18)
+                        
+                        if let gijinka {
+                            ZStack {
+                                Circle()
+                                    .fill(Color(hexString: gijinka.accentHex).opacity(0.14))
+                                if let portrait {
+                                    Image(nsImage: portrait)
+                                        .resizable()
+                                        .interpolation(.high)
+                                        .scaledToFill()
+                                        .frame(width: 24, height: 24, alignment: .top)
+                                } else {
+                                    Text(String(gijinka.brand.prefix(1)))
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(Color(hexString: gijinka.accentHex))
+                                }
+                            }
+                            .frame(width: 24, height: 24)
+                            .clipShape(Circle())
+                            .overlay(Circle().strokeBorder(self.cardBorder, lineWidth: 0.75))
+                            .help(gijinka.name)
+                        }
                         
                         Text(profile.displayName)
                             .font(.system(size: 13, weight: isActive ? .semibold : .regular))
@@ -643,11 +672,35 @@ struct AIBotsSettingsView: View {
         .frame(width: Self.fixedStageWidth, alignment: .topLeading)
         .onAppear {
             self.reload()
-            self.imageLoader.prefetchAll()
+            self.prefetchResolvedCharacters()
         }
         .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
             self.reload()
+            self.prefetchResolvedCharacters()
         }
+    }
+    
+    
+    /// Resolves the AI 娘化 character strictly from the model selected for `botID`
+    /// (bot's `modelOverride` if specified, otherwise the active endpoint's selected model).
+    private func resolvedCharacter(for botID: AIBotID, config: AIBotConfig) -> AIGijinkaCharacter? {
+        let overrideModel = config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !overrideModel.isEmpty {
+            return AIGijinkaCharacter.resolve(modelName: overrideModel)
+        }
+        return AIGijinkaCharacter.resolve(
+            modelName: self.activeEndpoint?.displayModel,
+            endpointName: self.activeEndpoint?.displayName,
+            baseURL: self.activeEndpoint?.baseURL
+        )
+    }
+    
+    
+    private func prefetchResolvedCharacters() {
+        let chars = AIBotID.allCases.compactMap { botID in
+            self.resolvedCharacter(for: botID, config: self.botStore.config(for: botID))
+        }
+        self.imageLoader.prefetch(chars)
     }
     
     
@@ -756,7 +809,6 @@ struct AIBotsSettingsView: View {
     }
     
     
-    @ViewBuilder
     private func morphingBotNode(
         botID: AIBotID,
         index: Int,
@@ -768,9 +820,12 @@ struct AIBotsSettingsView: View {
         cardGap: CGFloat,
         cardRowStride: CGFloat
     ) -> some View {
-        let character = botID.gijinkaCharacter
-        let accent = Color(hexString: character.accentHex)
-        let portrait = self.imageLoader.image(for: botID)
+        let character = self.resolvedCharacter(for: botID, config: config)
+        let accent = Color(hexString: character?.accentHex ?? botID.accentHex)
+        let portrait = character.flatMap { self.imageLoader.image(for: $0) }
+        let effectiveModelLabel = config.modelOverride.isEmpty
+            ? (self.activeEndpoint?.displayModel ?? AppLanguage.text("未选择模型", en: "No Model"))
+            : config.modelOverride
         let isHovered = (self.hoveredBotID == botID)
         
         let itemWidth: CGFloat
@@ -843,14 +898,16 @@ struct AIBotsSettingsView: View {
                             .opacity(config.isEnabled ? 1.0 : 0.48)
                     }
                 } else {
-                    VStack(spacing: 4) {
+                    VStack(spacing: 5) {
                         Image(systemName: botID.symbolName)
                             .font(.system(size: min(artWidth * 0.34, 24), weight: .medium))
                             .foregroundStyle(accent)
                         if self.layoutMode == .card {
-                            Text(character.name)
+                            Text(character?.name ?? effectiveModelLabel)
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .padding(.horizontal, 8)
                         }
                     }
                 }
@@ -881,16 +938,21 @@ struct AIBotsSettingsView: View {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 6) {
-                            Text(character.name)
+                            Text(botID.displayName)
                                 .font(.system(size: 13.5, weight: .semibold))
                                 .foregroundStyle(config.isEnabled ? .primary : .secondary)
-                            Text(botID.displayName)
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(.secondary)
+                            if let character {
+                                Text(character.name)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(accent)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1.5)
+                                    .background(accent.opacity(self.colorScheme == .dark ? 0.16 : 0.10), in: Capsule())
+                            }
                         }
                         
                         HStack(spacing: 6) {
-                            Text(config.modelOverride.isEmpty ? (self.activeEndpoint?.displayModel ?? "默认模型") : config.modelOverride)
+                            Text(effectiveModelLabel)
                                 .font(.system(size: 11))
                                 .foregroundStyle(.tertiary)
                                 .lineLimit(1)
@@ -938,11 +1000,11 @@ struct AIBotsSettingsView: View {
                 }
             }
             
-            // Card view caption under standing portrait (clean gallery typography)
+            // Card view caption under standing portrait (bot role primary + resolved AI 娘 / model subtitle)
             if self.layoutMode == .card {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 5) {
-                        Text(character.name)
+                        Text(botID.displayName)
                             .font(.system(size: 12.5, weight: .semibold))
                             .foregroundStyle(config.isEnabled ? .primary : .secondary)
                             .lineLimit(1)
@@ -954,7 +1016,7 @@ struct AIBotsSettingsView: View {
                             .frame(width: 6.5, height: 6.5)
                     }
                     
-                    Text(botID.displayName)
+                    Text(character?.name ?? effectiveModelLabel)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -977,7 +1039,7 @@ struct AIBotsSettingsView: View {
             }
         }
         .pointerStyle(.link)
-        .help("\(character.name) · \(botID.displayName)")
+        .help(character.map { "\(botID.displayName) · \($0.name)" } ?? "\(botID.displayName) · \(effectiveModelLabel)")
     }
     
     
@@ -1052,6 +1114,7 @@ private struct AIBotInlineInspectorView: View {
     
     @State private var botStore = AIBotStore.shared
     @State private var analytics = AnalyticsManager.shared
+    @State private var imageLoader = AIGijinkaImageLoader.shared
     @State private var config: AIBotConfig = AIBotConfig()
     @State private var promptText: String = ""
     
@@ -1066,10 +1129,26 @@ private struct AIBotInlineInspectorView: View {
     @State private var isTesting = false
     
     
+    private var resolvedCharacter: AIGijinkaCharacter? {
+        let overrideModel = self.config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !overrideModel.isEmpty {
+            return AIGijinkaCharacter.resolve(modelName: overrideModel)
+        }
+        return AIGijinkaCharacter.resolve(
+            modelName: self.activeEndpoint?.displayModel,
+            endpointName: self.activeEndpoint?.displayName,
+            baseURL: self.activeEndpoint?.baseURL
+        )
+    }
+    
+    
     var body: some View {
-        let character = self.botID.gijinkaCharacter
-        let accent = Color(hexString: character.accentHex)
-        let portrait = AIGijinkaImageLoader.shared.image(for: self.botID)
+        let character = self.resolvedCharacter
+        let accent = Color(hexString: character?.accentHex ?? self.botID.accentHex)
+        let portrait = character.flatMap { self.imageLoader.image(for: $0) }
+        let modelLabel = self.config.modelOverride.isEmpty
+            ? (self.activeEndpoint?.displayModel ?? AppLanguage.text("未选择模型", en: "No Model"))
+            : self.config.modelOverride
         
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
@@ -1096,11 +1175,12 @@ private struct AIBotInlineInspectorView: View {
                 )
                 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(character.name)
+                    Text(self.botID.displayName)
                         .font(.system(size: 15, weight: .semibold))
-                    Text("\(self.botID.displayName) · \(character.brand)")
+                    Text(character.map { "\($0.name) · \(modelLabel)" } ?? modelLabel)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
                 
                 Spacer()

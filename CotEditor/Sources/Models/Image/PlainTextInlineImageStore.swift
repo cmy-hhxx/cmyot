@@ -97,9 +97,14 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "tif", "bmp"]
     
     private let lock = NSLock()
-    private var imageCache: [String: NSImage] = [:]
+    private let imageCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 64
+        return cache
+    }()
     private var imageSizeCache: [String: NSSize] = [:]
     private var transformsByFolder: [String: [String: InlineImageTransform]] = [:]
+    private let persistQueue = DispatchQueue(label: "com.coteditor.inline-image-transforms", qos: .utility)
     
     
     /// Extracts an image from the pasteboard for `Cmd+V` pasting, handling screenshots,
@@ -168,20 +173,12 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
             return nil
         }
         
+        let key = self.cacheKey(for: filename, documentURL: documentURL)
         self.lock.withLock {
-            if let normalized = NSImage(data: pngData) {
-                let logicalSize = Self.naturalImageSize(for: normalized)
-                self.imageCache[targetURL.path] = normalized
-                self.imageCache[filename] = normalized
-                self.imageSizeCache[targetURL.path] = logicalSize
-                self.imageSizeCache[filename] = logicalSize
-            } else {
-                let logicalSize = Self.naturalImageSize(for: image)
-                self.imageCache[targetURL.path] = image
-                self.imageCache[filename] = image
-                self.imageSizeCache[targetURL.path] = logicalSize
-                self.imageSizeCache[filename] = logicalSize
-            }
+            let cachedImage = NSImage(data: pngData) ?? image
+            let logicalSize = Self.naturalImageSize(for: cachedImage)
+            self.imageCache.setObject(cachedImage, forKey: key as NSString)
+            self.imageSizeCache[key] = logicalSize
         }
         
         return ("⟦🖼 \(filename)⟧", targetURL)
@@ -239,11 +236,11 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     }
     
     
-    /// Resolves and caches the `NSImage` for a token identifier.
+    /// Resolves and caches the `NSImage` for a token identifier scoped strictly to `documentURL`.
     func image(for identifier: String, documentURL: URL?) -> NSImage? {
         
         let cacheKey = self.cacheKey(for: identifier, documentURL: documentURL)
-        if let cached = self.lock.withLock({ self.imageCache[cacheKey] ?? self.imageCache[identifier] }) {
+        if let cached = self.lock.withLock({ self.imageCache.object(forKey: cacheKey as NSString) }) {
             return cached
         }
         
@@ -252,10 +249,8 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
         {
             let logicalSize = Self.naturalImageSize(for: loaded)
             self.lock.withLock {
-                self.imageCache[cacheKey] = loaded
-                self.imageCache[identifier] = loaded
+                self.imageCache.setObject(loaded, forKey: cacheKey as NSString)
                 self.imageSizeCache[cacheKey] = logicalSize
-                self.imageSizeCache[identifier] = logicalSize
             }
             return loaded
         }
@@ -323,21 +318,6 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     }
     
     
-    /// Returns an aspect-fit rectangle centered inside `bounds`, preserving exact `imageSize` proportions.
-    static func aspectFitRect(imageSize: NSSize, in bounds: NSRect) -> NSRect {
-        
-        guard imageSize.width > 0, imageSize.height > 0, bounds.width > 0, bounds.height > 0 else {
-            return bounds
-        }
-        let scale = min(bounds.width / imageSize.width, bounds.height / imageSize.height)
-        let width = imageSize.width * scale
-        let height = imageSize.height * scale
-        let x = bounds.minX + (bounds.width - width) / 2
-        let y = bounds.minY + (bounds.height - height) / 2
-        return NSRect(x: x, y: y, width: width, height: height)
-    }
-    
-    
     /// Returns the persisted stepless transform for an image token, defaulting to `.identity`.
     func transform(for identifier: String, documentURL: URL?) -> InlineImageTransform {
         
@@ -371,12 +351,28 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
             self.transformsByFolder[folderKey] = map
             return map
         }
-        self.saveTransformMap(updatedMap, in: folder)
+        // Serialize disk writes off the main thread so 120Hz live resize/drag never stalls UI.
+        self.persistQueue.async {
+            Self.writeTransformMap(updatedMap, in: folder)
+        }
     }
     
     
     func resetTransform(for identifier: String, documentURL: URL?) {
         self.setTransform(.identity, for: identifier, documentURL: documentURL)
+    }
+    
+    
+    /// Returns the cached or computed logical display size (preserving natural pixel aspect ratio) for `identifier`.
+    func naturalSize(for identifier: String, documentURL: URL?) -> NSSize? {
+        let cacheKey = self.cacheKey(for: identifier, documentURL: documentURL)
+        if let cached = self.lock.withLock({ self.imageSizeCache[cacheKey] }) {
+            return cached
+        }
+        if let img = self.image(for: identifier, documentURL: documentURL) {
+            return Self.naturalImageSize(for: img)
+        }
+        return nil
     }
     
     
@@ -389,17 +385,9 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
         maxImageHeight: CGFloat = 260
     ) -> InlineImageDisplayGeometry? {
         
-        let cacheKey = self.cacheKey(for: identifier, documentURL: documentURL)
-        let naturalSize: NSSize?
-        if let cached = self.lock.withLock({ self.imageSizeCache[cacheKey] ?? self.imageSizeCache[identifier] }) {
-            naturalSize = cached
-        } else if let img = self.image(for: identifier, documentURL: documentURL) {
-            naturalSize = Self.naturalImageSize(for: img)
-        } else {
-            naturalSize = nil
-        }
-        
-        guard let imgSize = naturalSize, imgSize.width > 0, imgSize.height > 0 else { return nil }
+        guard let imgSize = self.naturalSize(for: identifier, documentURL: documentURL),
+              imgSize.width > 0, imgSize.height > 0
+        else { return nil }
         
         let baseScale = min(maxImageWidth / imgSize.width, maxImageHeight / imgSize.height, 1.0)
         let baseDrawW = max(1, round(imgSize.width * baseScale))
@@ -427,8 +415,16 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
         if transform.customWidth != nil || transform.customHeight != nil {
             let fallbackW = round(baseDrawW * transform.scale)
             let fallbackH = round(baseDrawH * transform.scale)
-            clampedW = max(64, min(canvasMaxW, round(transform.customWidth ?? fallbackW)))
-            clampedH = max(48, min(1600, round(transform.customHeight ?? fallbackH)))
+            let rawW = max(64, min(canvasMaxW, round(transform.customWidth ?? fallbackW)))
+            let rawH = max(48, min(1600, round(transform.customHeight ?? fallbackH)))
+            let optimal = BoundingBoxResizeMath.optimalRestoredSize(
+                currentSize: NSSize(width: rawW, height: rawH),
+                naturalSize: imgSize,
+                maxWidth: canvasMaxW,
+                maxHeight: 1600
+            )
+            clampedW = optimal.width
+            clampedH = optimal.height
         } else {
             let rawScaledW = baseDrawW * transform.scale
             clampedW = max(64, min(canvasMaxW, round(rawScaledW)))
@@ -512,7 +508,7 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     }
     
     
-    private func saveTransformMap(_ map: [String: InlineImageTransform], in folder: URL) {
+    private static func writeTransformMap(_ map: [String: InlineImageTransform], in folder: URL) {
         let url = folder.appending(path: "image-transforms.json")
         if map.isEmpty {
             try? FileManager.default.removeItem(at: url)

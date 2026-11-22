@@ -63,16 +63,16 @@ enum AnimationConstants {
     // MARK: - Timing Functions
 
     /// Standard easing for most transitions. Matches `CAMediaTimingFunctionName.easeInEaseOut`.
-    static let easeInOut = CAMediaTimingFunction(name: .easeInEaseOut)
+    static var easeInOut: CAMediaTimingFunction { CAMediaTimingFunction(name: .easeInEaseOut) }
 
     /// Decelerating easing for elements entering the screen.
-    static let easeOut = CAMediaTimingFunction(name: .easeOut)
+    static var easeOut: CAMediaTimingFunction { CAMediaTimingFunction(name: .easeOut) }
 
     /// Accelerating easing for elements leaving the screen.
-    static let easeIn = CAMediaTimingFunction(name: .easeIn)
+    static var easeIn: CAMediaTimingFunction { CAMediaTimingFunction(name: .easeIn) }
 
     /// Linear easing. Use only for continuous or looping animations.
-    static let linear = CAMediaTimingFunction(name: .linear)
+    static var linear: CAMediaTimingFunction { CAMediaTimingFunction(name: .linear) }
 
 
     // MARK: - SwiftUI Animations

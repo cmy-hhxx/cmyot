@@ -125,29 +125,52 @@ import ValueRange
 
 extension URLDetector {
     
+    private nonisolated static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+    
+    
+    /// Synchronously detects all clickable URLs and their trimmed UTF-16 ranges inside `range` of `text`,
+    /// without mutating text storage attributes.
+    nonisolated static func detectedLinkMatches(in text: String, range: NSRange? = nil) -> [(url: URL, range: NSRange)] {
+        
+        let nsText = text as NSString
+        guard nsText.length > 0 else { return [] }
+        let targetRange = range.map { NSIntersectionRange($0, NSRange(location: 0, length: nsText.length)) }
+            ?? NSRange(location: 0, length: nsText.length)
+        guard targetRange.length > 0, let detector = Self.linkDetector else { return [] }
+        
+        return detector.matches(in: text, range: targetRange).compactMap { match in
+            let trimmedRange = self.trimUnbalancedTrailingDelimiters(in: nsText, range: match.range)
+            guard trimmedRange.length > 0 else { return nil }
+            
+            let rawText = nsText.substring(with: trimmedRange)
+            if let cleanedURL = URL(string: rawText), cleanedURL.scheme != nil {
+                return (cleanedURL, trimmedRange)
+            }
+            if let fallbackURL = match.url {
+                return (fallbackURL, trimmedRange)
+            }
+            return nil
+        }
+    }
+    
+    
+    /// Returns all trimmed clickable URL ranges inside `range` of `text`.
+    nonisolated static func detectedLinkRanges(in text: String, range: NSRange? = nil) -> [NSRange] {
+        
+        self.detectedLinkMatches(in: text, range: range).map(\.range)
+    }
+    
+    
     /// Synchronously detects a clickable URL at a UTF-16 offset within a single line of text,
     /// without attaching `.link` attributes to the text storage.
     nonisolated static func detectedURL(in line: String, at utf16Offset: Int) -> URL? {
         
         let nsLine = line as NSString
         guard utf16Offset >= 0, utf16Offset < nsLine.length else { return nil }
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
         
-        let fullRange = NSRange(location: 0, length: nsLine.length)
-        for match in detector.matches(in: line, range: fullRange) {
-            let trimmedRange = self.trimUnbalancedTrailingDelimiters(in: nsLine, range: match.range)
-            guard trimmedRange.length > 0, NSLocationInRange(utf16Offset, trimmedRange) else { continue }
-            
-            let rawText = nsLine.substring(with: trimmedRange)
-            if let cleanedURL = URL(string: rawText), cleanedURL.scheme != nil {
-                return cleanedURL
-            }
-            if let fallbackURL = match.url {
-                return fallbackURL
-            }
-        }
-        
-        return nil
+        return self.detectedLinkMatches(in: line)
+            .first { NSLocationInRange(utf16Offset, $0.range) }?
+            .url
     }
     
     
