@@ -229,6 +229,8 @@ enum WorkspaceCenterIcons {
 
 final class ContentViewController: NSSplitViewController {
     
+    static let didChangeActiveCenterNotification = Notification.Name("CotEditorContentViewControllerDidChangeActiveCenter")
+    
     // MARK: Public Properties
     
     var document: DataDocument?  { didSet { self.updateDocument(from: oldValue) } }
@@ -253,6 +255,7 @@ final class ContentViewController: NSSplitViewController {
     private var centerEscMonitor: Any?
     private var centerHostView: NSHostingView<WorkspaceCenterHostView>?
     private var pinnedTodoOverlayView: PinnedTodoOverlayContainerView?
+    private var wallpaperBackdropView: EditorWallpaperBackdropView?
     private let centerHostModel = WorkspaceCenterHostModel()
     private let weeklyReportState = WeeklyReportCenterState()
     private let documentCenterState = DocumentCenterState()
@@ -300,6 +303,17 @@ final class ContentViewController: NSSplitViewController {
         self.splitViewItems = [
             NSSplitViewItem(viewController: .viewController(document: self.document)),
         ]
+        
+        let wallpaperView = EditorWallpaperBackdropView(frame: .zero)
+        wallpaperView.translatesAutoresizingMaskIntoConstraints = false
+        self.view.addSubview(wallpaperView, positioned: .below, relativeTo: self.splitView)
+        NSLayoutConstraint.activate([
+            wallpaperView.leadingAnchor.constraint(equalTo: self.view.leadingAnchor),
+            wallpaperView.trailingAnchor.constraint(equalTo: self.view.trailingAnchor),
+            wallpaperView.topAnchor.constraint(equalTo: self.view.topAnchor),
+            wallpaperView.bottomAnchor.constraint(equalTo: self.view.bottomAnchor),
+        ])
+        self.wallpaperBackdropView = wallpaperView
         
         let todoOverlay = PinnedTodoOverlayContainerView(frame: .zero)
         todoOverlay.translatesAutoresizingMaskIntoConstraints = false
@@ -457,6 +471,7 @@ final class ContentViewController: NSSplitViewController {
             let rootView = self.makeCenterHostView()
             let hostingView = NSHostingView(rootView: rootView)
             hostingView.translatesAutoresizingMaskIntoConstraints = false
+            hostingView.wantsLayer = true
             self.view.addSubview(hostingView, positioned: .above, relativeTo: self.splitView)
             NSLayoutConstraint.activate([
                 hostingView.leadingAnchor.constraint(equalTo: self.view.leadingAnchor),
@@ -465,6 +480,22 @@ final class ContentViewController: NSSplitViewController {
                 hostingView.bottomAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.bottomAnchor),
             ])
             self.centerHostView = hostingView
+        }
+        
+        if let host = self.centerHostView, let layer = host.layer {
+            host.layoutSubtreeIfNeeded()
+            let anim = CAKeyframeAnimation(keyPath: "transform.scale")
+            anim.values = [0.988, 1.0]
+            anim.keyTimes = [0.0, 1.0]
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0.0
+            fade.toValue = 1.0
+            let group = CAAnimationGroup()
+            group.animations = [anim, fade]
+            group.duration = 0.20
+            group.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0.8, 0.25, 1.0)
+            layer.removeAllAnimations()
+            layer.add(group, forKey: "centerArrive")
         }
         
         self.splitView.isHidden = true
@@ -476,6 +507,7 @@ final class ContentViewController: NSSplitViewController {
         
         self.installCenterEscMonitor()
         self.view.window?.toolbar?.validateVisibleItems()
+        NotificationCenter.default.post(name: Self.didChangeActiveCenterNotification, object: self)
     }
     
     
@@ -489,6 +521,7 @@ final class ContentViewController: NSSplitViewController {
         self.view.window?.invalidateCursorRects(for: self.view)
         
         self.view.window?.toolbar?.validateVisibleItems()
+        NotificationCenter.default.post(name: Self.didChangeActiveCenterNotification, object: self)
         if let textView = self.documentViewController?.focusedTextView {
             self.view.window?.makeFirstResponderDiscardingMarkedText(textView)
         }
@@ -589,8 +622,14 @@ final class ContentViewController: NSSplitViewController {
                 event.keyCode == 53  // Escape
             else { return event }
             
-            if let responder = event.window?.firstResponder as? NSTextView, responder.hasMarkedText() {
-                return event
+            if let responder = event.window?.firstResponder as? NSTextView {
+                if responder.hasMarkedText() {
+                    return event
+                }
+                if responder.isEditable {
+                    event.window?.makeFirstResponder(nil)
+                    return nil
+                }
             }
             self.hideInWindowCenter()
             return nil
@@ -668,6 +707,7 @@ final class ContentViewController: NSSplitViewController {
 
         self.terminalItem = item
         self.terminalViewController = viewController
+        NotificationCenter.default.post(name: Self.didChangeActiveCenterNotification, object: self)
         
         viewController.start(in: self.terminalWorkingDirectory)
         
@@ -693,6 +733,7 @@ final class ContentViewController: NSSplitViewController {
         self.terminalItem = nil
         let viewController = self.terminalViewController
         self.terminalViewController = nil
+        NotificationCenter.default.post(name: Self.didChangeActiveCenterNotification, object: self)
         
         // terminate the shell before the view (and its PTY) goes away
         viewController?.shutdown()
@@ -833,5 +874,92 @@ private struct WorkspaceCenterHostView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))
+    }
+}
+
+
+/// Draws the active editor theme ground composited with `WallpaperManager`'s pre-blurred artwork
+/// underneath split panes so text readability and cursor contrast stay effortless.
+@MainActor
+private final class EditorWallpaperBackdropView: NSView {
+    
+    private var wallpaperObserver: (any NSObjectProtocol)?
+    private var themeBgObserver: NSKeyValueObservation?
+    
+    
+    override init(frame frameRect: NSRect) {
+        
+        super.init(frame: frameRect)
+        
+        self.wantsLayer = true
+        self.wallpaperObserver = NotificationCenter.default.addObserver(
+            forName: WallpaperManager.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.needsDisplay = true
+            }
+        }
+    }
+    
+    
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    
+    isolated deinit {
+        if let observer = self.wallpaperObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+    
+    
+    override func viewDidMoveToWindow() {
+        
+        super.viewDidMoveToWindow()
+        self.themeBgObserver = nil
+        if let docWindow = self.window as? DocumentWindow {
+            self.themeBgObserver = docWindow.observe(\.backgroundColor, options: [.new]) { [weak self] _, _ in
+                MainActor.assumeIsolated {
+                    self?.needsDisplay = true
+                }
+            }
+        }
+        self.needsDisplay = true
+    }
+    
+    
+    override func draw(_ dirtyRect: NSRect) {
+        
+        let baseColor = (self.window as? DocumentWindow)?.contentBackgroundColor ?? .textBackgroundColor
+        baseColor.setFill()
+        dirtyRect.fill()
+        
+        let spec = WallpaperManager.shared.spec
+        guard spec.isEnabled,
+              let artwork = WallpaperManager.shared.activeBackdropImage()
+        else { return }
+        
+        let imgSize = artwork.size
+        guard imgSize.width > 0, imgSize.height > 0, self.bounds.width > 0, self.bounds.height > 0 else { return }
+        
+        // Aspect-fill crop so the wallpaper seamlessly covers any split aspect ratio
+        let scale = max(self.bounds.width / imgSize.width, self.bounds.height / imgSize.height)
+        let drawW = imgSize.width * scale
+        let drawH = imgSize.height * scale
+        let drawRect = NSRect(
+            x: (self.bounds.width - drawW) * 0.5,
+            y: (self.bounds.height - drawH) * 0.5,
+            width: drawW,
+            height: drawH
+        )
+        
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        artwork.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: CGFloat(spec.opacity))
+        NSGraphicsContext.restoreGraphicsState()
     }
 }

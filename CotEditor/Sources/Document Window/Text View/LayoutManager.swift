@@ -470,10 +470,15 @@ extension LayoutManager: NSLayoutManagerDelegate {
     }
     
     
-    /// Applies syntax highlighting on printing also.
+    /// Applies syntax highlighting and Notes-style highlight foreground tints without mutating syntax attributes.
     func layoutManager(_ layoutManager: NSLayoutManager, shouldUseTemporaryAttributes attrs: [NSAttributedString.Key: Any] = [:], forDrawingToScreen toScreen: Bool, atCharacterIndex charIndex: Int, effectiveRange effectiveCharRange: NSRangePointer?) -> [NSAttributedString.Key: Any]? {
         
-        attrs
+        if let noteColor = attrs[.notesHighlightTextColor] as? NSColor {
+            var updated = attrs
+            updated[.foregroundColor] = noteColor
+            return updated
+        }
+        return attrs
     }
 }
 

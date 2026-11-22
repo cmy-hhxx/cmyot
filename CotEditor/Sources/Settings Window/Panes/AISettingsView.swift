@@ -915,6 +915,9 @@ private struct AIEndpointRow: View {
 
 struct StoredDocumentsSheetView: View {
     
+    var isEmbeddedInline: Bool = false
+    var onDone: (() -> Void)? = nil
+    
     @Environment(\.dismiss) private var dismiss
     @State private var selectedTab = 0
     @State private var newConfigKey = ""
@@ -925,14 +928,14 @@ struct StoredDocumentsSheetView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("本地 SQLite 数据库管理")
-                    .font(.headline)
+                    .font(self.isEmbeddedInline ? .subheadline.weight(.semibold) : .headline)
                 Spacer()
                 Picker("", selection: self.$selectedTab) {
                     Text("已存文档 (\(CotLocalDatabase.shared.documents.count))").tag(0)
-                    Text("键值配置接口 (\(CotLocalDatabase.shared.configEntries.count))").tag(1)
+                    Text("键值配置 (\(CotLocalDatabase.shared.configEntries.count))").tag(1)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 280)
+                .frame(width: self.isEmbeddedInline ? 210 : 280)
             }
             
             if self.selectedTab == 0 {
@@ -950,7 +953,11 @@ struct StoredDocumentsSheetView: View {
                             Button("打开为新标签") {
                                 _ = try? (NSDocumentController.shared as? DocumentController)?
                                     .openUntitledDocument(content: record.content, title: record.title, display: true)
-                                self.dismiss()
+                                if let onDone = self.onDone {
+                                    onDone()
+                                } else {
+                                    self.dismiss()
+                                }
                             }
                             .controlSize(.small)
                             
@@ -963,14 +970,14 @@ struct StoredDocumentsSheetView: View {
                         }
                     }
                 }
-                .frame(height: 280)
+                .frame(height: 260)
             } else {
                 List {
                     ForEach(CotLocalDatabase.shared.configEntries) { entry in
                         HStack(alignment: .top, spacing: 8) {
                             Text(entry.key)
                                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                .frame(width: 180, alignment: .leading)
+                                .frame(width: 150, alignment: .leading)
                             Text(entry.value)
                                 .font(.system(size: 11, design: .monospaced))
                                 .lineLimit(1)
@@ -986,14 +993,14 @@ struct StoredDocumentsSheetView: View {
                         }
                     }
                 }
-                .frame(height: 240)
+                .frame(height: 220)
                 
                 HStack(spacing: 8) {
                     TextField(text: self.$newConfigKey, prompt: Text("配置 Key (如 custom.signature)"), label: EmptyView.init)
                         .labelsHidden()
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(1)
-                        .frame(width: 190)
+                        .frame(maxWidth: 168)
                     TextField(text: self.$newConfigValue, prompt: Text("配置 Value"), label: EmptyView.init)
                         .labelsHidden()
                         .textFieldStyle(.roundedBorder)
@@ -1017,13 +1024,18 @@ struct StoredDocumentsSheetView: View {
                     .truncationMode(.middle)
                 Spacer()
                 Button("完成") {
-                    self.dismiss()
+                    if let onDone = self.onDone {
+                        onDone()
+                    } else {
+                        self.dismiss()
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
-        .frame(width: 600)
+        .padding(self.isEmbeddedInline ? 14 : 20)
+        .frame(width: self.isEmbeddedInline ? nil : 600)
+        .frame(maxWidth: self.isEmbeddedInline ? .infinity : nil)
         .environment(\.locale, AppLanguage.current.locale)
     }
 }

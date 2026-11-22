@@ -101,6 +101,35 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         var zeta: CGFloat
     }
     
+    private struct VisualBandSpringState {
+        var minX: CGFloat
+        var velMinX: CGFloat = 0
+        var maxX: CGFloat
+        var velMaxX: CGFloat = 0
+        var minY: CGFloat
+        var velMinY: CGFloat = 0
+        var maxY: CGFloat
+        var velMaxY: CGFloat = 0
+        var target: NSRect
+        
+        var currentRect: NSRect {
+            NSRect(
+                x: min(self.minX, self.maxX),
+                y: min(self.minY, self.maxY),
+                width: max(2, abs(self.maxX - self.minX)),
+                height: max(4, abs(self.maxY - self.minY))
+            )
+        }
+        
+        init(rect: NSRect) {
+            self.minX = rect.minX
+            self.maxX = rect.maxX
+            self.minY = rect.minY
+            self.maxY = rect.maxY
+            self.target = rect
+        }
+    }
+    
     private final class DisplayLinkProxy: NSObject {
         weak var owner: EditorFunEffectsController?
         init(owner: EditorFunEffectsController) { self.owner = owner }
@@ -166,6 +195,16 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private var currentCursorAlpha: CGFloat = 0.56
     private static let trailLayerCount = 4
     
+    // Elastic GPU-composited Vim Visual Selection bands (`v` / `V`)
+    private var vimVisualRootLayer: CALayer?
+    private var vimVisualBandLayers: [CAShapeLayer] = []
+    private var vimVisualAnchorDotLayer: CAShapeLayer?
+    private var vimVisualStates: [VisualBandSpringState] = []
+    private var isVimVisualActive = false
+    private var isPlayingVisualYankPulse = false
+    private var visualSelectionColor: NSColor = .controlAccentColor
+    private static let maxVisualBandLayers = 64
+    
     
     init(textView: EditorTextView) {
         
@@ -191,6 +230,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.fluidCursor = nil
         self.currentTargetRect = nil
         self.trailRects.removeAll()
+        self.hideVimVisualSelection(animated: false, withYankPulse: false)
         self.hideGhostSuggestion(animated: false)
         self.hideComboHud(animated: false)
         
@@ -211,6 +251,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         guard self.ownsVimCursorDrawing, let textView = self.textView else {
             self.hideVimCursorOnly()
+            self.hideVimVisualSelection(animated: false, withYankPulse: false)
             return
         }
         let loc: Int
@@ -227,6 +268,9 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             return
         }
         self.moveVimCursor(to: rect, color: textView.effectiveCursorColor, animated: animated)
+        if VimState.shared.mode != .visual && !self.isPlayingVisualYankPulse {
+            self.hideVimVisualSelection(animated: false, withYankPulse: false)
+        }
     }
     
     
@@ -237,11 +281,191 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.fluidCursor = nil
         self.currentTargetRect = nil
         self.trailRects.removeAll()
+        self.hideVimVisualSelection(animated: false, withYankPulse: false)
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         self.vimCursorLayer?.opacity = 0
         for layer in self.vimTrailLayers {
+            layer.opacity = 0
+        }
+        CATransaction.commit()
+    }
+    
+    
+    /// Syncs elastic rounded selection bands & anchor marker for Vim `v` / `V` Visual mode.
+    func syncVimVisualSelection(
+        range: NSRange,
+        anchorLocation: Int?,
+        activeLocation: Int?,
+        isLinewise: Bool,
+        animated: Bool
+    ) {
+        guard self.ownsVimCursorDrawing,
+              VimState.shared.mode == .visual,
+              let textView = self.textView,
+              let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer,
+              let hostLayer = self.ensureClippedHostLayer(for: textView)
+        else {
+            self.hideVimVisualSelection(animated: false, withYankPulse: false)
+            return
+        }
+        
+        self.ensureVimVisualLayers(in: hostLayer)
+        let accent = NSColor.controlAccentColor.blended(withFraction: 0.25, of: textView.effectiveCursorColor)
+            ?? textView.effectiveCursorColor
+        self.visualSelectionColor = accent
+        
+        let stringLength = (textView.string as NSString).length
+        let clampedRange = NSIntersectionRange(range, NSRange(location: 0, length: stringLength))
+        var targetRects: [NSRect] = []
+        
+        if clampedRange.length > 0 {
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: clampedRange, actualCharacterRange: nil)
+            let containerOrigin = textView.textContainerOrigin
+            layoutManager.enumerateEnclosingRects(
+                forGlyphRange: glyphRange,
+                withinSelectedGlyphRange: glyphRange,
+                in: textContainer
+            ) { rect, _ in
+                var adjusted = rect.offsetBy(dx: containerOrigin.x, dy: containerOrigin.y)
+                if isLinewise {
+                    adjusted.size.width = max(adjusted.width, max(16, textContainer.size.width - adjusted.minX))
+                } else {
+                    adjusted.size.width = max(adjusted.width, 6)
+                }
+                adjusted = adjusted.insetBy(dx: -2, dy: -0.5)
+                if adjusted.width > 0, adjusted.height > 0 {
+                    targetRects.append(adjusted)
+                }
+            }
+        } else if let anchorLocation, let cursorRect = textView.vimCursorRect(at: anchorLocation) {
+            targetRects.append(cursorRect.insetBy(dx: -2, dy: -0.5))
+        }
+        
+        if targetRects.count > Self.maxVisualBandLayers {
+            targetRects = Array(targetRects.prefix(Self.maxVisualBandLayers))
+        }
+        
+        let wasActive = self.isVimVisualActive
+        self.isVimVisualActive = !targetRects.isEmpty
+        
+        // Update subtle anchor pin dot at `anchorLocation`
+        if let anchorDot = self.vimVisualAnchorDotLayer,
+           let anchorLocation,
+           let anchorRect = textView.vimCursorRect(at: anchorLocation)
+        {
+            let dotSize: CGFloat = 5.0
+            let dotFrame = CGRect(
+                x: anchorRect.minX - dotSize * 0.5,
+                y: anchorRect.minY - 2.5,
+                width: dotSize,
+                height: dotSize
+            )
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            anchorDot.path = CGPath(ellipseIn: CGRect(origin: .zero, size: dotFrame.size), transform: nil)
+            anchorDot.frame = dotFrame
+            anchorDot.fillColor = accent.withAlphaComponent(0.92).cgColor
+            anchorDot.shadowColor = accent.cgColor
+            anchorDot.shadowOpacity = 0.5
+            anchorDot.shadowRadius = 4
+            anchorDot.shadowOffset = .zero
+            anchorDot.opacity = targetRects.isEmpty ? 0 : 1
+            CATransaction.commit()
+        }
+        
+        guard animated && textView.window != nil && !targetRects.isEmpty else {
+            self.vimVisualStates = targetRects.map(VisualBandSpringState.init(rect:))
+            self.applyVisualBandLayersImmediate()
+            return
+        }
+        
+        // Match existing band spring states by index; newly revealed lines bloom from previous band edge or anchor slit
+        var updatedStates: [VisualBandSpringState] = []
+        updatedStates.reserveCapacity(targetRects.count)
+        let activeFallbackRect = activeLocation.flatMap { textView.vimCursorRect(at: $0) }
+        
+        for (idx, target) in targetRects.enumerated() {
+            if idx < self.vimVisualStates.count {
+                var existing = self.vimVisualStates[idx]
+                existing.target = target
+                updatedStates.append(existing)
+            } else {
+                let seedRect: NSRect
+                if !wasActive {
+                    // Subtle bloom from slightly narrower center slit when first entering `v` / `V`
+                    seedRect = target.insetBy(dx: min(target.width * 0.35, 10), dy: 2)
+                } else if let prev = updatedStates.last?.currentRect ?? activeFallbackRect {
+                    let seedWidth = isLinewise ? max(24, target.width * 0.35) : max(6, min(14, target.width))
+                    seedRect = NSRect(x: target.minX, y: prev.midY - target.height * 0.4, width: seedWidth, height: target.height * 0.85)
+                } else {
+                    seedRect = target.insetBy(dx: min(target.width * 0.35, 10), dy: 2)
+                }
+                var state = VisualBandSpringState(rect: seedRect)
+                state.target = target
+                updatedStates.append(state)
+            }
+        }
+        
+        self.vimVisualStates = updatedStates
+        self.startOrResumeDisplayLink(for: textView)
+    }
+    
+    
+    /// Hides the elastic Vim visual selection bands, optionally playing a brief luminous confirm flash (e.g. on `y`).
+    func hideVimVisualSelection(animated: Bool = false, withYankPulse: Bool) {
+        
+        let hadBands = self.isVimVisualActive || !self.vimVisualStates.isEmpty
+        self.isVimVisualActive = false
+        
+        if withYankPulse, hadBands, let root = self.vimVisualRootLayer {
+            self.isPlayingVisualYankPulse = true
+            let accent = self.visualSelectionColor
+            for (idx, layer) in self.vimVisualBandLayers.enumerated() where idx < self.vimVisualStates.count {
+                let targetRect = self.vimVisualStates[idx].target
+                layer.fillColor = accent.withAlphaComponent(0.36).cgColor
+                layer.strokeColor = accent.withAlphaComponent(0.85).cgColor
+                layer.path = CGPath(roundedRect: targetRect, cornerWidth: 4.5, cornerHeight: 4.5, transform: nil)
+                layer.opacity = 1.0
+            }
+            self.vimVisualStates.removeAll()
+            self.vimVisualAnchorDotLayer?.opacity = 0
+            
+            root.removeAllAnimations()
+            let pulse = CAKeyframeAnimation(keyPath: "opacity")
+            pulse.values = [1.0, 1.0, 0.0]
+            pulse.keyTimes = [0.0, 0.25, 1.0]
+            pulse.duration = 0.24
+            pulse.isRemovedOnCompletion = true
+            CATransaction.begin()
+            CATransaction.setCompletionBlock { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.isPlayingVisualYankPulse = false
+                    guard !self.isVimVisualActive else { return }
+                    CATransaction.begin()
+                    CATransaction.setDisableActions(true)
+                    for layer in self.vimVisualBandLayers {
+                        layer.opacity = 0
+                    }
+                    self.vimVisualRootLayer?.opacity = 1
+                    CATransaction.commit()
+                }
+            }
+            root.add(pulse, forKey: "visualYankPulse")
+            CATransaction.commit()
+            return
+        }
+        
+        self.isPlayingVisualYankPulse = false
+        self.vimVisualStates.removeAll()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        self.vimVisualAnchorDotLayer?.opacity = 0
+        for layer in self.vimVisualBandLayers {
+            layer.removeAllAnimations()
             layer.opacity = 0
         }
         CATransaction.commit()
@@ -1399,11 +1623,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     
     private func stepVimCursorDisplayLink(_ link: CADisplayLink) {
         
-        guard self.ownsVimCursorDrawing,
-              let cursorLayer = self.vimCursorLayer,
-              var state = self.fluidCursor,
-              let targetRect = self.currentTargetRect
-        else {
+        guard self.ownsVimCursorDrawing else {
             link.isPaused = true
             return
         }
@@ -1412,122 +1632,201 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         let dt = CGFloat(min(max(now - self.lastStepTime, 1.0 / 240.0), 1.0 / 24.0))
         self.lastStepTime = now
         
-        let targetCenter = CGPoint(x: targetRect.midX, y: targetRect.midY)
-        let (nx, nvx) = Self.stepUnderdampedSpring(
-            pos: state.center.x,
-            vel: state.centerVelocity.x,
-            target: targetCenter.x,
-            omega: state.omega,
-            zeta: state.zeta,
-            dt: dt
-        )
-        let (ny, nvy) = Self.stepUnderdampedSpring(
-            pos: state.center.y,
-            vel: state.centerVelocity.y,
-            target: targetCenter.y,
-            omega: state.omega,
-            zeta: state.zeta,
-            dt: dt
-        )
-        let (nw, nvw) = Self.stepUnderdampedSpring(
-            pos: state.size.width,
-            vel: state.sizeVelocity.width,
-            target: targetRect.width,
-            omega: 42.0,
-            zeta: 0.94,
-            dt: dt
-        )
-        let (nh, nvh) = Self.stepUnderdampedSpring(
-            pos: state.size.height,
-            vel: state.sizeVelocity.height,
-            target: targetRect.height,
-            omega: 42.0,
-            zeta: 0.94,
-            dt: dt
-        )
-        
-        state.center = CGPoint(x: nx, y: ny)
-        state.centerVelocity = CGPoint(x: nvx, y: nvy)
-        state.size = CGSize(width: nw, height: nh)
-        state.sizeVelocity = CGSize(width: nvw, height: nvh)
-        self.fluidCursor = state
-        
-        let posError = hypot(nx - targetCenter.x, ny - targetCenter.y)
-        let sizeError = max(abs(nw - targetRect.width), abs(nh - targetRect.height))
-        let speed = hypot(nvx, nvy)
-        
-        if self.trailRects.count != Self.trailLayerCount {
-            self.trailRects = Array(repeating: targetRect, count: Self.trailLayerCount)
+        var visualSettled = true
+        if self.isVimVisualActive && !self.vimVisualStates.isEmpty {
+            visualSettled = self.stepVisualBands(dt: dt)
         }
         
-        let renderedRect = Self.fluidStretchedRect(
-            center: state.center,
-            baseSize: state.size,
-            velocity: state.centerVelocity
-        )
-        
-        // Update 4-tap frame-rate-independent lagged wake behind the active cursor capsule.
-        let trailFollowRates: [CGFloat] = [34.0, 26.0, 20.0, 15.0]
-        var leadRect = renderedRect
-        var maxTrailGap: CGFloat = 0
-        for idx in 0..<Self.trailLayerCount {
-            let alpha = 1.0 - exp(-trailFollowRates[idx] * dt)
-            let prev = self.trailRects[idx]
-            let nextRect = NSRect(
-                x: prev.origin.x + (leadRect.origin.x - prev.origin.x) * alpha,
-                y: prev.origin.y + (leadRect.origin.y - prev.origin.y) * alpha,
-                width: prev.width + (leadRect.width - prev.width) * alpha,
-                height: prev.height + (leadRect.height - prev.height) * alpha
+        var cursorSettled = true
+        if let cursorLayer = self.vimCursorLayer,
+           var state = self.fluidCursor,
+           let targetRect = self.currentTargetRect
+        {
+            let targetCenter = CGPoint(x: targetRect.midX, y: targetRect.midY)
+            let (nx, nvx) = Self.stepUnderdampedSpring(
+                pos: state.center.x,
+                vel: state.centerVelocity.x,
+                target: targetCenter.x,
+                omega: state.omega,
+                zeta: state.zeta,
+                dt: dt
             )
-            self.trailRects[idx] = nextRect
-            maxTrailGap = max(maxTrailGap, hypot(nextRect.midX - renderedRect.midX, nextRect.midY - renderedRect.midY))
-            leadRect = nextRect
-        }
-        
-        if posError < 0.12 && sizeError < 0.12 && speed < 1.5 && maxTrailGap < 0.25 {
-            state.center = targetCenter
-            state.centerVelocity = .zero
-            state.size = targetRect.size
-            state.sizeVelocity = .zero
-            self.fluidCursor = state
-            self.trailRects = Array(repeating: targetRect, count: Self.trailLayerCount)
+            let (ny, nvy) = Self.stepUnderdampedSpring(
+                pos: state.center.y,
+                vel: state.centerVelocity.y,
+                target: targetCenter.y,
+                omega: state.omega,
+                zeta: state.zeta,
+                dt: dt
+            )
+            let (nw, nvw) = Self.stepUnderdampedSpring(
+                pos: state.size.width,
+                vel: state.sizeVelocity.width,
+                target: targetRect.width,
+                omega: 42.0,
+                zeta: 0.94,
+                dt: dt
+            )
+            let (nh, nvh) = Self.stepUnderdampedSpring(
+                pos: state.size.height,
+                vel: state.sizeVelocity.height,
+                target: targetRect.height,
+                omega: 42.0,
+                zeta: 0.94,
+                dt: dt
+            )
             
-            let radius = Self.cursorCornerRadius(for: targetRect)
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            let settledPath = CGPath(roundedRect: targetRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
-            cursorLayer.path = settledPath
-            cursorLayer.shadowPath = settledPath
-            for layer in self.vimTrailLayers {
-                layer.opacity = 0
+            state.center = CGPoint(x: nx, y: ny)
+            state.centerVelocity = CGPoint(x: nvx, y: nvy)
+            state.size = CGSize(width: nw, height: nh)
+            state.sizeVelocity = CGSize(width: nvw, height: nvh)
+            self.fluidCursor = state
+            
+            let posError = hypot(nx - targetCenter.x, ny - targetCenter.y)
+            let sizeError = max(abs(nw - targetRect.width), abs(nh - targetRect.height))
+            let speed = hypot(nvx, nvy)
+            
+            if self.trailRects.count != Self.trailLayerCount {
+                self.trailRects = Array(repeating: targetRect, count: Self.trailLayerCount)
             }
-            CATransaction.commit()
-            link.isPaused = true
-            return
+            
+            let renderedRect = Self.fluidStretchedRect(
+                center: state.center,
+                baseSize: state.size,
+                velocity: state.centerVelocity
+            )
+            
+            let trailFollowRates: [CGFloat] = [34.0, 26.0, 20.0, 15.0]
+            var leadRect = renderedRect
+            var maxTrailGap: CGFloat = 0
+            for idx in 0..<Self.trailLayerCount {
+                let alpha = 1.0 - exp(-trailFollowRates[idx] * dt)
+                let prev = self.trailRects[idx]
+                let nextRect = NSRect(
+                    x: prev.origin.x + (leadRect.origin.x - prev.origin.x) * alpha,
+                    y: prev.origin.y + (leadRect.origin.y - prev.origin.y) * alpha,
+                    width: prev.width + (leadRect.width - prev.width) * alpha,
+                    height: prev.height + (leadRect.height - prev.height) * alpha
+                )
+                self.trailRects[idx] = nextRect
+                maxTrailGap = max(maxTrailGap, hypot(nextRect.midX - renderedRect.midX, nextRect.midY - renderedRect.midY))
+                leadRect = nextRect
+            }
+            
+            if posError < 0.12 && sizeError < 0.12 && speed < 1.5 && maxTrailGap < 0.25 {
+                state.center = targetCenter
+                state.centerVelocity = .zero
+                state.size = targetRect.size
+                state.sizeVelocity = .zero
+                self.fluidCursor = state
+                self.trailRects = Array(repeating: targetRect, count: Self.trailLayerCount)
+                
+                let radius = Self.cursorCornerRadius(for: targetRect)
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                let settledPath = CGPath(roundedRect: targetRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+                cursorLayer.path = settledPath
+                cursorLayer.shadowPath = settledPath
+                for layer in self.vimTrailLayers {
+                    layer.opacity = 0
+                }
+                CATransaction.commit()
+                cursorSettled = true
+            } else {
+                cursorSettled = false
+                let radius = Self.cursorCornerRadius(for: renderedRect)
+                let path = CGPath(roundedRect: renderedRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+                let motionActivity = min(1.0, max(speed / 240.0, max(posError, maxTrailGap) / 14.0))
+                
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                for (idx, layer) in self.vimTrailLayers.enumerated() where idx < self.trailRects.count {
+                    let base = self.trailRects[idx]
+                    let tailParams = Self.trailFrameParameters(
+                        layerIndex: idx,
+                        activity: motionActivity,
+                        cursorAlpha: self.currentCursorAlpha
+                    )
+                    let insetX = base.width * (1.0 - tailParams.scale) * 0.5
+                    let insetY = base.height * (1.0 - tailParams.scale) * 0.5
+                    let scaledRect = base.insetBy(dx: insetX, dy: insetY)
+                    let tailRadius = Self.cursorCornerRadius(for: scaledRect)
+                    layer.path = CGPath(roundedRect: scaledRect, cornerWidth: tailRadius, cornerHeight: tailRadius, transform: nil)
+                    layer.opacity = Float(tailParams.alpha)
+                }
+                cursorLayer.path = path
+                cursorLayer.shadowPath = path
+                CATransaction.commit()
+            }
         }
         
-        let radius = Self.cursorCornerRadius(for: renderedRect)
-        let path = CGPath(roundedRect: renderedRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
-        let motionActivity = min(1.0, max(speed / 240.0, max(posError, maxTrailGap) / 14.0))
+        if cursorSettled && visualSettled {
+            link.isPaused = true
+        }
+    }
+    
+    
+    private func stepVisualBands(dt: CGFloat) -> Bool {
+        
+        var allSettled = true
+        let omega: CGFloat = 36.0
+        let zeta: CGFloat = 0.78
+        
+        for idx in self.vimVisualStates.indices {
+            var s = self.vimVisualStates[idx]
+            let t = s.target
+            let (nMinX, vMinX) = Self.stepUnderdampedSpring(pos: s.minX, vel: s.velMinX, target: t.minX, omega: omega, zeta: zeta, dt: dt)
+            let (nMaxX, vMaxX) = Self.stepUnderdampedSpring(pos: s.maxX, vel: s.velMaxX, target: t.maxX, omega: omega, zeta: zeta, dt: dt)
+            let (nMinY, vMinY) = Self.stepUnderdampedSpring(pos: s.minY, vel: s.velMinY, target: t.minY, omega: 40.0, zeta: 0.84, dt: dt)
+            let (nMaxY, vMaxY) = Self.stepUnderdampedSpring(pos: s.maxY, vel: s.velMaxY, target: t.maxY, omega: 40.0, zeta: 0.84, dt: dt)
+            
+            let err = max(
+                max(abs(nMinX - t.minX), abs(nMaxX - t.maxX)),
+                max(abs(nMinY - t.minY), abs(nMaxY - t.maxY))
+            )
+            let vel = max(max(abs(vMinX), abs(vMaxX)), max(abs(vMinY), abs(vMaxY)))
+            
+            if err < 0.14 && vel < 2.0 {
+                s.minX = t.minX; s.velMinX = 0
+                s.maxX = t.maxX; s.velMaxX = 0
+                s.minY = t.minY; s.velMinY = 0
+                s.maxY = t.maxY; s.velMaxY = 0
+            } else {
+                s.minX = nMinX; s.velMinX = vMinX
+                s.maxX = nMaxX; s.velMaxX = vMaxX
+                s.minY = nMinY; s.velMinY = vMinY
+                s.maxY = nMaxY; s.velMaxY = vMaxY
+                allSettled = false
+            }
+            self.vimVisualStates[idx] = s
+        }
+        
+        self.applyVisualBandLayersImmediate()
+        return allSettled
+    }
+    
+    
+    private func applyVisualBandLayersImmediate() {
+        
+        let accent = self.visualSelectionColor
+        let fill = accent.withAlphaComponent(0.22).cgColor
+        let stroke = accent.withAlphaComponent(0.50).cgColor
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for (idx, layer) in self.vimTrailLayers.enumerated() where idx < self.trailRects.count {
-            let base = self.trailRects[idx]
-            let tailParams = Self.trailFrameParameters(
-                layerIndex: idx,
-                activity: motionActivity,
-                cursorAlpha: self.currentCursorAlpha
-            )
-            let insetX = base.width * (1.0 - tailParams.scale) * 0.5
-            let insetY = base.height * (1.0 - tailParams.scale) * 0.5
-            let scaledRect = base.insetBy(dx: insetX, dy: insetY)
-            let tailRadius = Self.cursorCornerRadius(for: scaledRect)
-            layer.path = CGPath(roundedRect: scaledRect, cornerWidth: tailRadius, cornerHeight: tailRadius, transform: nil)
-            layer.opacity = Float(tailParams.alpha)
+        for (idx, layer) in self.vimVisualBandLayers.enumerated() {
+            if idx < self.vimVisualStates.count {
+                let rect = self.vimVisualStates[idx].currentRect
+                let radius = min(4.5, max(2.5, rect.height * 0.20))
+                layer.path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+                layer.fillColor = fill
+                layer.strokeColor = stroke
+                layer.lineWidth = 1.0
+                layer.opacity = 1.0
+            } else {
+                layer.opacity = 0
+            }
         }
-        cursorLayer.path = path
-        cursorLayer.shadowPath = path
         CATransaction.commit()
     }
     
@@ -1663,6 +1962,13 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.vimCursorLayer = nil
         self.vimTrailLayers.removeAll()
         self.trailRects.removeAll()
+        
+        self.vimVisualRootLayer?.removeFromSuperlayer()
+        self.vimVisualRootLayer = nil
+        self.vimVisualBandLayers.removeAll()
+        self.vimVisualAnchorDotLayer = nil
+        self.vimVisualStates.removeAll()
+        self.isVimVisualActive = false
     }
     
     
@@ -1818,6 +2124,33 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         cursor.opacity = 0
         root.addSublayer(cursor)
         self.vimCursorLayer = cursor
+    }
+    
+    
+    private func ensureVimVisualLayers(in hostLayer: CALayer) {
+        
+        self.resetHostedLayersIfNeeded(for: hostLayer)
+        guard self.vimVisualRootLayer == nil else { return }
+        
+        let root = CALayer()
+        root.zPosition = 172
+        hostLayer.addSublayer(root)
+        self.vimVisualRootLayer = root
+        
+        var bands: [CAShapeLayer] = []
+        bands.reserveCapacity(Self.maxVisualBandLayers)
+        for _ in 0..<Self.maxVisualBandLayers {
+            let band = CAShapeLayer()
+            band.opacity = 0
+            root.addSublayer(band)
+            bands.append(band)
+        }
+        self.vimVisualBandLayers = bands
+        
+        let anchorDot = CAShapeLayer()
+        anchorDot.opacity = 0
+        root.addSublayer(anchorDot)
+        self.vimVisualAnchorDotLayer = anchorDot
     }
     
     

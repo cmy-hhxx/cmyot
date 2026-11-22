@@ -53,6 +53,7 @@ struct StatusBar: View {
     
     @AppStorage(.showStatusBar) private var showsStatusBar
     @AppStorage(.donationBadgeType) private var badgeType
+    @AppStorage(.vimMode) private var vimMode
     
     @State private var hasDonated: Bool = false
     @State private var vim = VimState.shared
@@ -61,24 +62,26 @@ struct StatusBar: View {
     var body: some View {
         
         HStack(alignment: .center, spacing: 8) {
-            // Vim mode indicator, or the `:` command line while it is being typed.
-            if let commandLine = self.vim.commandLine {
-                Text(commandLine)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.primary)
-                    .padding(.horizontal, 6)
-                    .frame(height: 17)
-                    .background(RoundedRectangle(cornerRadius: 4.5, style: .continuous).fill(Color.accentColor.opacity(0.14)))
-            } else {
-                Text(self.vim.mode.label)
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .kerning(0.4)
-                    .foregroundStyle(self.vimModeColor)
-                    .padding(.horizontal, 6)
-                    .frame(minWidth: 52, minHeight: 17, maxHeight: 17)
-                    .background(RoundedRectangle(cornerRadius: 4.5, style: .continuous).fill(self.vimModeColor.opacity(0.14)))
-                    .overlay(RoundedRectangle(cornerRadius: 4.5, style: .continuous).strokeBorder(self.vimModeColor.opacity(0.24), lineWidth: 0.5))
-                    .fixedSize()
+            if self.vimMode {
+                // Vim mode indicator, or the `:` command line while it is being typed.
+                if let commandLine = self.vim.commandLine {
+                    Text(commandLine)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 6)
+                        .frame(height: 17)
+                        .background(RoundedRectangle(cornerRadius: 4.5, style: .continuous).fill(Color.accentColor.opacity(0.14)))
+                } else {
+                    Text(self.vim.mode.label)
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .kerning(0.4)
+                        .foregroundStyle(self.vimModeColor)
+                        .padding(.horizontal, 6)
+                        .frame(minWidth: 52, minHeight: 17, maxHeight: 17)
+                        .background(RoundedRectangle(cornerRadius: 4.5, style: .continuous).fill(self.vimModeColor.opacity(0.14)))
+                        .overlay(RoundedRectangle(cornerRadius: 4.5, style: .continuous).strokeBorder(self.vimModeColor.opacity(0.24), lineWidth: 0.5))
+                        .fixedSize()
+                }
             }
             
             if let document = self.model.document as? Document {

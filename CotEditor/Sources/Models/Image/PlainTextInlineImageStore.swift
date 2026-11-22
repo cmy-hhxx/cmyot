@@ -23,19 +23,23 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
-/// Stepless user customization transform (zoom, free X/Y offset, rotation) for an inline image.
+/// Stepless user customization transform (zoom, free X/Y offset, rotation, or explicit pixel size) for an inline image.
 nonisolated struct InlineImageTransform: Codable, Equatable, Sendable {
     
     var scale: CGFloat = 1.0          // 0.15 ... 4.0 (stepless)
     var offsetX: CGFloat = 0.0        // Horizontal offset inside editor canvas
     var offsetY: CGFloat = 0.0        // Extra top padding (0 ... 240)
     var rotationDegrees: CGFloat = 0  // Stepless angle (-180 ... +180)
+    var customWidth: CGFloat? = nil   // Explicit bounding-box width (>= 64pt)
+    var customHeight: CGFloat? = nil  // Explicit bounding-box height (>= 48pt)
     
     var isIdentity: Bool {
         abs(self.scale - 1.0) < 0.001 &&
         abs(self.offsetX) < 0.5 &&
         abs(self.offsetY) < 0.5 &&
-        abs(self.rotationDegrees) < 0.1
+        abs(self.rotationDegrees) < 0.1 &&
+        self.customWidth == nil &&
+        self.customHeight == nil
     }
     
     static let identity = InlineImageTransform()
@@ -49,6 +53,12 @@ nonisolated struct InlineImageTransform: Codable, Equatable, Sendable {
         if deg > 180 { deg -= 360 }
         if deg < -180 { deg += 360 }
         copy.rotationDegrees = deg
+        if let w = self.customWidth {
+            copy.customWidth = max(64, min(2400, round(w)))
+        }
+        if let h = self.customHeight {
+            copy.customHeight = max(48, min(2400, round(h)))
+        }
         return copy
     }
 }
@@ -406,12 +416,21 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
             )
         }
         
-        // When user explicitly scales (> 1.0), break past the 460pt thumbnail cap up to full editor canvas width.
+        // When user explicitly resizes or scales (> 1.0), break past the 460pt thumbnail cap up to full editor canvas width.
         let canvasMaxW = max(maxImageWidth, max(160, containerWidth - 24))
-        let rawScaledW = baseDrawW * transform.scale
-        let clampedW = max(36, min(canvasMaxW, round(rawScaledW)))
         let aspect = imgSize.height / imgSize.width
-        let clampedH = max(24, round(clampedW * aspect))
+        let clampedW: CGFloat
+        let clampedH: CGFloat
+        if transform.customWidth != nil || transform.customHeight != nil {
+            let fallbackW = round(baseDrawW * transform.scale)
+            let fallbackH = round(baseDrawH * transform.scale)
+            clampedW = max(64, min(canvasMaxW, round(transform.customWidth ?? fallbackW)))
+            clampedH = max(48, min(1600, round(transform.customHeight ?? fallbackH)))
+        } else {
+            let rawScaledW = baseDrawW * transform.scale
+            clampedW = max(64, min(canvasMaxW, round(rawScaledW)))
+            clampedH = max(48, round(clampedW * aspect))
+        }
         
         let rad = abs(transform.rotationDegrees) * .pi / 180.0
         let cosA = abs(cos(rad))

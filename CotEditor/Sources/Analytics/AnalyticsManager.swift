@@ -448,6 +448,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     private(set) var isAnalyzingPersonality: Bool = false
     private(set) var personalityErrorMessage: String?
     private(set) var revision: Int = 0
+    private(set) var lastKeystrokeAt: Date = .distantPast
     
     // MARK: Private Properties
     
@@ -530,9 +531,11 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     func recordTypedCharacters(_ count: Int) {
         
         guard count > 0 else { return }
+        let now = Date()
+        self.lastKeystrokeAt = now
         self.pendingTypedCharsDelta += count
         self.todayStats.typedChars += count
-        let hour = Calendar.current.component(.hour, from: Date())
+        let hour = Calendar.current.component(.hour, from: now)
         if (0..<24).contains(hour) {
             if self.todayStats.hourlyTypedChars.count != 24 {
                 self.todayStats.hourlyTypedChars = Array(repeating: 0, count: 24)
@@ -2153,19 +2156,20 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         config.reasoningEffort = "low"
         
         let prompt = """
-        请你像一个坐在我工位旁边的聪明损友兼老搭档，看看我今天写的东西和待办，给我来几句掏心窝子的“今日点评”。
+        请你像一个坐在我工位旁边的聪明损友兼老搭档，看看我今天写的内容与待办，给我来几句掏心窝子的“AI 锐评”。
         要求：
         1. 分成 3-4 条短点，用换行符 \\n 隔开，每条 16-45 字，不要带编号或项目符号。
-        2. 彻底戒掉公文腔、汇报腔、鸡汤味和AI客套话！直接说人话，通俗易懂，聊我今天到底干了啥、卡在哪儿、写得顺不顺、该夸还是该吐槽。
-        3. 允许俏皮、幽默和无伤大雅的口头小脏话（比如“卧槽”“牛逼”“别特么死磕了”“纯摸鱼回血不丢人”），要有真实朋友的温度，不能恶意人身攻击。
-        4. 请严格以 JSON 格式输出（不要包含额外解释）：
+        2. 严禁出现任何文档标题、文件名或书名号《》（很多标题是系统随机起的，带标题会让人看不懂）；请直接聊内容、节奏、卡点、修改行为或现象！
+        3. 彻底戒掉公文腔、汇报腔和AI客套话！直接说人话，通俗易懂，允许俏皮和无伤大雅的口头小脏话（比如“卧槽”“牛逼”“别特么死磕了”）。
+        4. 允许克制点缀 emoji 表情，仅在你觉得这里放一个表情能明显升华情绪/笑点时才放（整段总共 1-2 个以内，绝不刷屏堆砌）。
+        5. 请严格以 JSON 格式输出（不要包含额外解释）：
         {"summary":"第一条点评\\n第二条点评\\n第三条点评","topics":["关键词1","关键词2"],"tomorrow_focus":"28字以内直白说出明天先搞哪件事"}
 
         \(corpus.promptText)
         """
         
         let messages: [AIMessage] = [
-            .system("你是用户的毒舌又暖心的写作老友。说话极其接地气、一针见血、分点清晰、允许俏皮和口头小脏话，绝不端着。"),
+            .system("你是用户的毒舌又暖心的写作老友。说话极其接地气、一针见血、分点清晰、不提任何文档标题名、克制使用极少量点睛emoji。"),
             .user(prompt),
         ]
         
@@ -2334,7 +2338,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
                 let docTitle = doc.displayName ?? "未命名文档"
                 usedTitles.insert(docTitle)
                 totalChars += text.count
-                segments.append("【当前文档：\(docTitle)】\n\(String(text.prefix(1200)))")
+                segments.append("【写作片段 #\(segments.count + 1)】\n\(String(text.prefix(1200)))")
                 if segments.count >= 6 { break }
             }
         }
@@ -2346,7 +2350,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             guard !trimmed.isEmpty else { continue }
             usedTitles.insert(record.title)
             totalChars += trimmed.count
-            segments.append("【文档：\(record.title)】\n\(String(trimmed.prefix(1000)))")
+            segments.append("【写作片段 #\(segments.count + 1)】\n\(String(trimmed.prefix(1000)))")
             if segments.count >= 8 { break }
         }
         
@@ -2360,7 +2364,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         }
         
         let combined = segments.joined(separator: "\n\n")
-        let digest = SHA256.hash(data: Data(combined.utf8))
+        let digest = SHA256.hash(data: Data(("v3-notitle|" + combined).utf8))
         let fingerprint = digest.map { String(format: "%02x", $0) }.joined()
         return (combined, totalChars, fingerprint)
     }
@@ -2834,7 +2838,8 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     }
     
     
-    /// Produces 3–4 candid, plain-spoken, cheeky bullet points summarizing what AI thinks about this day.
+    /// Produces 3–4 candid, plain-spoken, phenomenon-first bullet points summarizing this day
+    /// without citing random/playful document titles and with sparing, high-impact emoji accents.
     func candidDailyTakePoints(
         for cell: HeatmapDayCell,
         referenceDate: Date = Date(),
@@ -2844,12 +2849,18 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         let detail = self.dayDetail(for: cell)
         let todayKey = Self.dateKey(for: referenceDate)
         let isToday = (cell.dateKey == todayKey)
+        let docTitles = detail.documents.map(\.title) + detail.weeklyReports.map(\.title)
         
         if let digest = detail.digest, digest.modelUsed != "本地摘要" {
             var aiPoints = Self.structuredSummaryPoints(from: digest.summary, maxPoints: 4)
-            let focus = digest.tomorrowFocus.trimmingCharacters(in: .whitespacesAndNewlines)
+                .map { Self.sanitizeCandidPoint($0, knownTitles: docTitles) }
+                .filter { !$0.isEmpty }
+            let focus = Self.sanitizeCandidPoint(
+                digest.tomorrowFocus.trimmingCharacters(in: .whitespacesAndNewlines),
+                knownTitles: docTitles
+            )
             if !focus.isEmpty && aiPoints.count < 4 && !aiPoints.contains(where: { $0.contains(focus) }) {
-                aiPoints.append("明天建议一上来就先搞定：\(focus)")
+                aiPoints.append("明天一上来先把正事推掉：\(focus)")
             }
             if aiPoints.count >= 2 {
                 return aiPoints
@@ -2859,63 +2870,77 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         var points: [String] = []
         let typed = cell.typedChars
         let ai = cell.aiCompletedChars
-        let docTitles = detail.documents.map(\.title) + detail.weeklyReports.map(\.title)
         let typedText = typed.formatted(.number.grouping(.automatic))
         let aiText = ai.formatted(.number.grouping(.automatic))
-        let firstDocText = docTitles.first.map { "，主要在撸《\($0)》" } ?? ""
         
         if typed == 0 && ai == 0 && docTitles.isEmpty {
             if isToday {
-                points.append("今天目前还是零字起步，纯纯蓄力摸鱼回血中——歇会儿不丢人，别硬坐着干瞪眼。")
-                points.append("真想开动的话，随便新建一篇写两句大白话就行，先写坨丑的比完美主义卡死强一百倍。")
+                points.append("今天目前还是零字起步，纯纯蓄力摸鱼回血中——歇会儿不丢人 🐟")
+                points.append("真想开动的话随便敲两行大白话就行，先写坨丑的比完美主义卡死强一百倍。")
             } else {
                 points.append("这天键盘歇了个彻底，估计是出门忙正事或者干脆放空回血去了。")
-                points.append("没留下字迹也挺好，写东西本来就讲究张弛有度，总不能天天绷着。")
+                points.append("没留字迹也挺好，写东西本来就讲究张弛有度，总不能天天绷着。")
             }
         } else if baselineDailyChars > 100 && typed >= Int(Double(baselineDailyChars) * 1.45) {
-            points.append("卧槽，\(isToday ? "今天" : "这天")手速直接干拉满了！一口气手搓了 \(typedText) 字\(firstDocText)，比平时均值猛了一大截，牛逼。")
+            points.append("卧槽，\(isToday ? "今天" : "这天")手速直接拉满了！一口气手搓了 \(typedText) 字，比平时均值猛了一大截 🔥")
         } else if typed >= 1200 {
-            points.append("\(isToday ? "今天" : "这天")手感是真的顺，实打实敲了 \(typedText) 字\(firstDocText)，这输出节奏贼稳。")
+            points.append("\(isToday ? "今天" : "这天")手感是真的顺，实打实敲了 \(typedText) 字，这输出节奏贼稳。")
         } else if typed > 0 {
-            points.append("\(isToday ? "今天" : "这天")不紧不慢写了 \(typedText) 字\(firstDocText)，没瞎赶工反而把思路理得挺清。")
-        } else if let first = docTitles.first {
-            points.append("\(isToday ? "今天" : "这天")先开起了《\(first)》的骨架，把摊子铺开就是个好头。")
+            points.append("\(isToday ? "今天" : "这天")不紧不慢写了 \(typedText) 字，没瞎赶工反而把思路理得挺清。")
+        } else {
+            points.append("\(isToday ? "今天" : "这天")先把摊子和骨架支棱起来了，开个头就不算白忙活。")
         }
         
         if let peak = self.peakFlowWindow(for: cell.dateKey) {
             if peak.chronotype == "深夜心流派" {
-                points.append("夜深人静果然是你的主场，\(peak.hourRange) 那会儿一小时灌进去 \(peak.peakChars) 字，夜猫子实锤。")
+                points.append("夜深人静果然是你的主场，\(peak.hourRange) 那会儿一小时灌进去 \(peak.peakChars) 字，夜猫子实锤 🦉")
             } else if peak.chronotype == "晨间清醒派" {
-                points.append("大清早脑子最灵光，\(peak.hourRange) 状态起飞，趁热打铁干了 \(peak.peakChars) 字。")
+                points.append("大清早脑子最灵光，\(peak.hourRange) 状态直接起飞，趁热打铁干了 \(peak.peakChars) 字。")
             }
         } else if docTitles.count >= 2 {
-            points.append("在《\(docTitles[0])》和《\(docTitles[1])》这 \(docTitles.count) 篇之间来回打磨，想法没断档。")
-        } else if let first = docTitles.first, points.count < 2 {
-            points.append("\(isToday ? "今天" : "这天")就盯死《\(first)》这一篇往下啃，没到处瞎开新坑就是胜利。")
+            points.append("在 \(docTitles.count) 份草稿之间来回切换打磨，灵感线程始终没断档。")
+        } else if !docTitles.isEmpty, points.count < 2 {
+            points.append("\(isToday ? "今天" : "这天")就盯死这一处往下啃，没到处瞎开新坑就是胜利。")
         }
         
         if cell.aiCompletionAccepts >= 3 {
-            points.append("顺手按了 \(cell.aiCompletionAccepts) 次 Tab 让 AI 帮你接了 \(aiText) 字，省力偷懒这方面你算是玩明白了。")
+            points.append("顺手按了 \(cell.aiCompletionAccepts) 次 Tab 让 AI 接了 \(aiText) 字，省力偷懒这方面算是玩明白了。")
         } else if cell.documentsSaved >= 4 {
-            points.append("前前后后保存修改了 \(cell.documentsSaved) 次，看得出来你在死抠细节；差不多就往下写，别特么死磕第一段。")
+            points.append("前前后后反复存盘打磨了 \(cell.documentsSaved) 次，别特么死磕第一段了，赶紧往下推 🫠")
         } else if cell.filesCreated > 0 {
-            points.append("新开了 \(cell.filesCreated) 篇草稿把灵感先占住坑，后面顺着往里填肉就完事了。")
+            points.append("新开了 \(cell.filesCreated) 个坑位先把灵感占住，后面顺着往里填肉就完事。")
         } else if !detail.weeklyReports.isEmpty {
-            points.append("把本周的账拢进了《\(detail.weeklyReports[0].title)》，复盘这步走得挺稳。")
+            points.append("顺手把这周的账拢进了复盘里，节奏走得挺稳。")
         }
         
         if isToday {
             if let pinned = self.pinnedTodos.first {
-                points.append("屏幕角落还钉着「\(pinned.title)」盯着你呢，顺手把它消掉就能爽快收工。")
+                points.append("屏幕角落还钉着「\(pinned.title)」盯着你呢，顺手消掉就能爽快收工。")
             } else if let next = self.tomorrowReminders.first {
-                points.append("明天头一件事已经挂上号了：先别墨迹，把「\(next.title)」干掉再说。")
+                points.append("明天头一件事已经挂上号：先别墨迹，把「\(next.title)」搞定再说。")
             }
         }
         
         if points.count < 3 {
-            points.append("整体步调挺舒服，保持这种说人话、直给重点的写字劲儿就对了。")
+            points.append("整体步调挺舒服，继续保持这种直给重点的节奏就对了。")
         }
         return Array(points.prefix(4))
+    }
+    
+    
+    /// Strips book-title brackets `《…》` and arbitrary playful filenames from review text so comments focus on writing behavior.
+    static func sanitizeCandidPoint(_ text: String, knownTitles: [String]) -> String {
+        var result = text
+        result = result.replacingOccurrences(of: #"《[^》]{1,40}》"#, with: "这份草稿", options: .regularExpression)
+        for title in knownTitles {
+            let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else { continue }
+            result = result.replacingOccurrences(of: "\(clean)那篇文档", with: "草稿")
+            result = result.replacingOccurrences(of: "\(clean)那文档", with: "草稿")
+            result = result.replacingOccurrences(of: "\(clean)里", with: "草稿里")
+            result = result.replacingOccurrences(of: clean, with: "当前草稿")
+        }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     

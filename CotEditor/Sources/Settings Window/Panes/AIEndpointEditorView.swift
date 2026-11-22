@@ -54,12 +54,21 @@ struct AIEndpointEditorView: View {
     @State private var testSucceeded = false
     
     private let isNew: Bool
+    private let isEmbeddedInline: Bool
+    private let onCancel: (() -> Void)?
     private let onSave: (AIEndpointProfile, String) -> Void
     
     
     // MARK: Lifecycle
     
-    init(profile: AIEndpointProfile, apiKey: String, isNew: Bool, onSave: @escaping (AIEndpointProfile, String) -> Void) {
+    init(
+        profile: AIEndpointProfile,
+        apiKey: String,
+        isNew: Bool,
+        isEmbeddedInline: Bool = false,
+        onCancel: (() -> Void)? = nil,
+        onSave: @escaping (AIEndpointProfile, String) -> Void
+    ) {
         
         self._draft = State(initialValue: profile)
         self._apiKey = State(initialValue: apiKey)
@@ -73,6 +82,8 @@ struct AIEndpointEditorView: View {
             .joined(separator: "\n")
         self._customHeadersText = State(initialValue: formattedHeaders)
         self.isNew = isNew
+        self.isEmbeddedInline = isEmbeddedInline
+        self.onCancel = onCancel
         self.onSave = onSave
     }
     
@@ -95,7 +106,7 @@ struct AIEndpointEditorView: View {
                         Text("ai.settings.endpoint.name.label", tableName: "AI")
                     }
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: Self.controlWidth)
+                    .frame(maxWidth: self.isEmbeddedInline ? .infinity : Self.controlWidth)
                 }
                 
                 GridRow {
@@ -144,7 +155,7 @@ struct AIEndpointEditorView: View {
                         Text("ai.settings.baseURL.label", tableName: "AI")
                     }
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: Self.controlWidth)
+                    .frame(maxWidth: self.isEmbeddedInline ? .infinity : Self.controlWidth)
                     .help(Text("ai.settings.baseURL.caption", tableName: "AI"))
                 }
                 
@@ -179,7 +190,7 @@ struct AIEndpointEditorView: View {
                         .disabled(!self.draft.endpoint.requiresAPIKey)
                         .help(self.isAPIKeyVisible ? "隐藏 API Key" : "显示 API Key")
                     }
-                    .frame(width: Self.controlWidth)
+                    .frame(maxWidth: self.isEmbeddedInline ? .infinity : Self.controlWidth)
                 }
                 
                 GridRow {
@@ -240,7 +251,7 @@ struct AIEndpointEditorView: View {
                                 .controlSize(.small)
                         }
                     }
-                    .frame(width: Self.controlWidth)
+                    .frame(maxWidth: self.isEmbeddedInline ? .infinity : Self.controlWidth)
                 }
                 
                 GridRow {
@@ -270,7 +281,8 @@ struct AIEndpointEditorView: View {
                     
                     TextEditor(text: self.$customHeadersText)
                         .font(.system(.caption, design: .monospaced))
-                        .frame(width: Self.controlWidth, height: 48)
+                        .frame(height: 48)
+                        .frame(maxWidth: self.isEmbeddedInline ? .infinity : Self.controlWidth)
                         .scrollContentBackground(.hidden)
                         .padding(4)
                         .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
@@ -289,7 +301,7 @@ struct AIEndpointEditorView: View {
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .help(fetchError)
-                            .frame(width: Self.controlWidth, alignment: .leading)
+                            .frame(maxWidth: self.isEmbeddedInline ? .infinity : Self.controlWidth, alignment: .leading)
                     }
                 }
             }
@@ -321,7 +333,11 @@ struct AIEndpointEditorView: View {
                 Spacer()
                 
                 Button {
-                    self.dismiss()
+                    if let onCancel = self.onCancel {
+                        onCancel()
+                    } else {
+                        self.dismiss()
+                    }
                 } label: {
                     Text("ai.result.cancel", tableName: "AI")
                 }
@@ -329,15 +345,20 @@ struct AIEndpointEditorView: View {
                 
                 Button {
                     self.onSave(self.preparedDraft(), self.apiKey)
-                    self.dismiss()
+                    if let onCancel = self.onCancel {
+                        onCancel()
+                    } else {
+                        self.dismiss()
+                    }
                 } label: {
                     Text("ai.settings.endpoint.save", tableName: "AI")
                 }
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
-        .frame(width: 560)
+        .padding(self.isEmbeddedInline ? 14 : 20)
+        .frame(width: self.isEmbeddedInline ? nil : 560)
+        .frame(maxWidth: self.isEmbeddedInline ? .infinity : nil, alignment: .leading)
         .environment(\.locale, AppLanguage.current.locale)
         .task { await self.autoFetchModels() }
     }

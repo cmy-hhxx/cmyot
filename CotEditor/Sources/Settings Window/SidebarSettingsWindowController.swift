@@ -27,13 +27,14 @@ import FileEncoding
 import LineEnding
 import SyntaxFormat
 
-// MARK: - Sidebar Navigation Model (11 Atomic Tabs)
+// MARK: - Sidebar Navigation Model (12 Atomic Tabs)
 
 enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
     
     case general
     case appIcon
     case appearance
+    case wallpaper
     case typography
     case editing
     case format
@@ -50,6 +51,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .general: AppLanguage.text("通用", en: "General")
             case .appIcon: AppLanguage.text("图标", en: "App Icon")
             case .appearance: AppLanguage.text("外观", en: "Appearance")
+            case .wallpaper: AppLanguage.text("壁纸", en: "Wallpaper")
             case .typography: AppLanguage.text("字体", en: "Fonts")
             case .editing: AppLanguage.text("编辑", en: "Editing")
             case .format: AppLanguage.text("格式", en: "Format")
@@ -66,6 +68,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .general: "gearshape.fill"
             case .appIcon: "sparkles.rectangle.stack.fill"
             case .appearance: "paintpalette.fill"
+            case .wallpaper: "photo.on.rectangle.angled"
             case .typography: "textformat.size"
             case .editing: "square.and.pencil"
             case .format: "doc.text.fill"
@@ -82,6 +85,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .general: Color(red: 0.56, green: 0.56, blue: 0.58)
             case .appIcon: Color(red: 0.85, green: 0.65, blue: 0.16)
             case .appearance: Color(red: 0.44, green: 0.36, blue: 0.70)
+            case .wallpaper: Color(red: 0.18, green: 0.52, blue: 0.88)
             case .typography: Color(red: 0.25, green: 0.48, blue: 0.92)
             case .editing: Color(red: 0.04, green: 0.52, blue: 1.00)
             case .format: Color(red: 0.14, green: 0.65, blue: 0.58)
@@ -194,6 +198,7 @@ private struct SidebarSettingsRootView: View {
     @Bindable var state: SidebarSettingsState
     @Environment(\.colorScheme) private var colorScheme
     @State private var dbStatusMessage: String?
+    @Namespace private var sidebarSelectionNamespace
     
     
     private var contentBackground: Color {
@@ -263,6 +268,11 @@ private struct SidebarSettingsRootView: View {
                     if self.state.selectedItem == .keyBindings {
                         KeyBindingsSettingsView(usesFlexibleFrame: true)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .id(self.state.selectedItem)
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .offset(y: 8)),
+                                removal: .opacity
+                            ))
                     } else {
                         ScrollView {
                             self.detailContent
@@ -270,6 +280,11 @@ private struct SidebarSettingsRootView: View {
                                 .padding(.top, 18)
                                 .padding(.bottom, 26)
                                 .frame(maxWidth: .infinity, alignment: .topLeading)
+                                .id(self.state.selectedItem)
+                                .transition(.asymmetric(
+                                    insertion: .opacity.combined(with: .offset(y: 8)),
+                                    removal: .opacity
+                                ))
                         }
                     }
                 }
@@ -277,7 +292,7 @@ private struct SidebarSettingsRootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: 700)
-        .frame(minHeight: 520)
+        .frame(minHeight: 540)
         .environment(\.locale, AppLanguage.current.locale)
     }
     
@@ -287,7 +302,7 @@ private struct SidebarSettingsRootView: View {
         let isSelected = (self.state.selectedItem == item)
         
         Button {
-            withAnimation(.easeOut(duration: 0.14)) {
+            withAnimation(.timingCurve(0.25, 0.8, 0.25, 1, duration: 0.20)) {
                 self.state.selectedItem = item
             }
         } label: {
@@ -303,10 +318,13 @@ private struct SidebarSettingsRootView: View {
             }
             .padding(.horizontal, 8)
             .frame(height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isSelected ? (self.colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.08)) : Color.clear)
-            )
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(self.colorScheme == .dark ? Color.white.opacity(0.13) : Color.black.opacity(0.085))
+                        .matchedGeometryEffect(id: "sidebarActiveTab", in: self.sidebarSelectionNamespace)
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -325,6 +343,8 @@ private struct SidebarSettingsRootView: View {
                 SidebarAppIconSettingsPane()
             case .appearance:
                 SidebarAppearanceSettingsPane()
+            case .wallpaper:
+                SidebarWallpaperSettingsPane()
             case .typography:
                 SidebarTypographySettingsPane()
             case .editing:
@@ -523,9 +543,50 @@ private struct SidebarGeneralSettingsPane: View {
     @State private var editingActiveName = ""
     @State private var isEditingActiveName = false
     @State private var isShowingStoredDocs = false
+    @State private var isShowingVersionDetails = false
     
     
     var body: some View {
+        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+            if self.isShowingStoredDocs {
+                VStack(alignment: .leading, spacing: 12) {
+                    Button {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                            self.isShowingStoredDocs = false
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text(AppLanguage.text("返回通用设置", en: "Back to General"))
+                                .font(.system(size: 12.5, weight: .medium))
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(Color.primary.opacity(0.06), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    
+                    SettingsGroupCard(title: AppLanguage.text("本地文档库与配置", en: "Document Vault")) {
+                        StoredDocumentsSheetView(isEmbeddedInline: true) {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                                self.isShowingStoredDocs = false
+                            }
+                        }
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .trailing)))
+            } else {
+                self.generalMainContent
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+            }
+        }
+    }
+    
+    
+    private var generalMainContent: some View {
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
             // 1. 本地账户
             SettingsGroupCard(title: "本地账户") {
@@ -715,7 +776,9 @@ private struct SidebarGeneralSettingsPane: View {
                 
                 SettingsItemRow(label: AppLanguage.text("本地文档库", en: "Document Vault")) {
                     Button(AppLanguage.text("管理文档", en: "Manage")) {
-                        self.isShowingStoredDocs = true
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                            self.isShowingStoredDocs = true
+                        }
                     }
                     .controlSize(.small)
                 }
@@ -733,8 +796,34 @@ private struct SidebarGeneralSettingsPane: View {
                     .fixedSize()
                     .onChange(of: self.language) { _, newValue in
                         newValue.apply()
-                        self.isLanguageConfirmationPresented = true
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                            self.isLanguageConfirmationPresented = true
+                        }
                     }
+                }
+                
+                if self.isLanguageConfirmationPresented {
+                    SettingsRowDivider()
+                    HStack(spacing: 10) {
+                        Text(AppLanguage.text("语言已切换，重启 CotEditor 后完整生效", en: "Restart CotEditor to apply language"))
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(AppLanguage.text("稍后", en: "Later")) {
+                            withAnimation(.easeOut(duration: 0.14)) {
+                                self.isLanguageConfirmationPresented = false
+                            }
+                        }
+                        .controlSize(.small)
+                        Button(AppLanguage.text("立即重启", en: "Relaunch")) {
+                            (NSApp.delegate as? AppDelegate)?.needsRelaunch = true
+                            NSApp.terminate(nil)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
                 }
                 
                 SettingsRowDivider()
@@ -771,24 +860,28 @@ private struct SidebarGeneralSettingsPane: View {
             // 4. 关于版本
             SettingsGroupCard(title: AppLanguage.text("关于版本", en: "Version")) {
                 SettingsItemRow(label: "\(Bundle.main.bundleName) \(Bundle.main.shortVersion) (\(Bundle.main.bundleVersion))") {
-                    Button(AppLanguage.text("版本详情", en: "About")) {
-                        NSApp.orderFrontStandardAboutPanel(nil)
+                    Button(self.isShowingVersionDetails ? AppLanguage.text("收起详情", en: "Hide") : AppLanguage.text("版本详情", en: "Details")) {
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            self.isShowingVersionDetails.toggle()
+                        }
                     }
                     .controlSize(.small)
                 }
+                
+                if self.isShowingVersionDetails {
+                    SettingsRowDivider()
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Bundle ID · \(Bundle.main.bundleIdentifier ?? "local.cmy.Cot")")
+                        Text(AppLanguage.text("数据目录 · \(CotLocalDatabase.shared.databaseURL.deletingLastPathComponent().path)", en: "Database · \(CotLocalDatabase.shared.databaseURL.path)"))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                }
             }
-        }
-        .sheet(isPresented: self.$isShowingStoredDocs) {
-            StoredDocumentsSheetView()
-        }
-        .confirmationDialog("需要重启生效", isPresented: self.$isLanguageConfirmationPresented) {
-            Button("立即重启") {
-                (NSApp.delegate as? AppDelegate)?.needsRelaunch = true
-                NSApp.terminate(nil)
-            }
-            Button("稍后", role: .cancel) {}
-        } message: {
-            Text("界面语言将在重启 CotEditor 后完整生效。")
         }
     }
     
@@ -1201,7 +1294,437 @@ private struct SidebarAppIconSettingsPane: View {
 }
 
 
-// MARK: - 2. 字体
+// MARK: - 1C. 壁纸 (Album-Cover-Tunnel 3D Showcase + Custom Upload)
+
+private struct SidebarWallpaperSettingsPane: View {
+    
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var manager = WallpaperManager.shared
+    @State private var tunnelDepth: Double = 0
+    @State private var dragStartDepth: Double?
+    @State private var hoveredID: String?
+    @State private var isDropTargeted = false
+    
+    
+    private struct TunnelInstance: Identifiable {
+        let id: String
+        let item: WallpaperItem
+        let x3d: Double
+        let y3d: Double
+        let relZ: Double
+        let isCenterHero: Bool
+        let isLeftHeroTrack: Bool
+    }
+    
+    
+    var body: some View {
+        let _ = self.manager.catalogVersion
+        let items = self.manager.allItems
+        let selectedItem = items.first { $0.id == self.manager.spec.selectedID } ?? items.first
+        
+        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+            // 1. Streamlined 3D Perspective Cover Tunnel Showcase
+            SettingsGroupCard(title: AppLanguage.text("3D 壁纸画廊隧道", en: "3D Wallpaper Tunnel")) {
+                VStack(spacing: 12) {
+                    ZStack(alignment: .bottom) {
+                        self.tunnelStage(items: items, selectedItem: selectedItem)
+                            .frame(height: 238)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .strokeBorder(
+                                        self.isDropTargeted ? StudioPaletteManager.shared.activeAccentColor : Color.white.opacity(0.10),
+                                        style: self.isDropTargeted ? StrokeStyle(lineWidth: 2, dash: [6, 4]) : StrokeStyle(lineWidth: 0.75)
+                                    )
+                            )
+                            .onDrop(of: [.image, .fileURL], isTargeted: self.$isDropTargeted) { providers in
+                                self.handleDrop(providers: providers)
+                            }
+                    }
+                    
+                    HStack(spacing: 8) {
+                        Button {
+                            self.stepTunnel(delta: -1, items: items)
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .controlSize(.small)
+                        .help(AppLanguage.text("上一张壁纸", en: "Previous"))
+                        
+                        Button {
+                            self.stepTunnel(delta: 1, items: items)
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .controlSize(.small)
+                        .help(AppLanguage.text("下一张壁纸", en: "Next"))
+                        
+                        if let selectedItem {
+                            Text(selectedItem.title)
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .lineLimit(1)
+                        }
+                        
+                        Spacer()
+                        
+                        if let selectedItem, selectedItem.isCustom {
+                            Button(role: .destructive) {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                                    self.manager.deleteCustomWallpaper(id: selectedItem.id)
+                                }
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .controlSize(.small)
+                            .help(AppLanguage.text("删除此自定义壁纸", en: "Delete Custom Wallpaper"))
+                        }
+                        
+                        Button {
+                            self.pickCustomWallpaperImage()
+                        } label: {
+                            Label(AppLanguage.text("上传图片", en: "Upload"), systemImage: "photo.badge.plus")
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                .padding(12)
+            }
+            
+            // 2. Concise Rendering Controls
+            SettingsGroupCard(title: AppLanguage.text("编辑器背景显示", en: "Editor Backdrop")) {
+                SettingsItemRow(label: AppLanguage.text("启用编辑器壁纸", en: "Enable Wallpaper")) {
+                    Toggle("", isOn: Binding(
+                        get: { self.manager.spec.isEnabled },
+                        set: { val in
+                            withAnimation(.easeOut(duration: 0.16)) {
+                                self.manager.spec.isEnabled = val
+                            }
+                        }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("壁纸画面浓度", en: "Wallpaper Opacity")) {
+                    HStack(spacing: 8) {
+                        Slider(
+                            value: Binding(
+                                get: { self.manager.spec.opacity },
+                                set: { self.manager.spec.opacity = $0 }
+                            ),
+                            in: 0.04...0.48
+                        )
+                        .frame(width: 150)
+                        .disabled(!self.manager.spec.isEnabled)
+                        
+                        Text("\(Int((self.manager.spec.opacity * 100).rounded()))%")
+                            .font(.system(size: 12).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 38, alignment: .trailing)
+                    }
+                }
+                
+                SettingsRowDivider()
+                
+                SettingsItemRow(label: AppLanguage.text("柔焦模糊半径", en: "Soft Blur Radius")) {
+                    HStack(spacing: 8) {
+                        Slider(
+                            value: Binding(
+                                get: { self.manager.spec.blurRadius },
+                                set: { self.manager.spec.blurRadius = $0 }
+                            ),
+                            in: 0...32
+                        )
+                        .frame(width: 150)
+                        .disabled(!self.manager.spec.isEnabled)
+                        
+                        Text("\(Int(self.manager.spec.blurRadius.rounded())) px")
+                            .font(.system(size: 12).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 42, alignment: .trailing)
+                    }
+                }
+            }
+        }
+        .onAppear {
+            if let idx = items.firstIndex(where: { $0.id == self.manager.spec.selectedID }) {
+                self.tunnelDepth = Double(idx)
+            }
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func tunnelStage(items: [WallpaperItem], selectedItem: WallpaperItem?) -> some View {
+        GeometryReader { geo in
+            let W = geo.size.width
+            let H = geo.size.height
+            let accent = selectedItem.map { Color(hexString: $0.accentHex) } ?? StudioPaletteManager.shared.activeAccentColor
+            let instances = self.buildTunnelInstances(items: items)
+            
+            ZStack {
+                // Deep cosmos backdrop (#05060F + subtle radial nebula core)
+                Color(red: 0.024, green: 0.027, blue: 0.062)
+                
+                RadialGradient(
+                    colors: [accent.opacity(0.32), Color(red: 0.10, green: 0.09, blue: 0.34).opacity(0.28), .clear],
+                    center: UnitPoint(x: 0.56, y: 0.32),
+                    startRadius: 12,
+                    endRadius: W * 0.72
+                )
+                
+                // Twinkling depth motes inside tunnel
+                Canvas { ctx, sz in
+                    for i in 0..<28 {
+                        let px = CGFloat((i * 73 + 19) % 100) / 100.0 * sz.width
+                        let py = CGFloat((i * 41 + 11) % 100) / 100.0 * sz.height
+                        let r: CGFloat = (i % 3 == 0) ? 1.4 : 0.9
+                        ctx.fill(Path(ellipseIn: CGRect(x: px, y: py, width: r * 2, height: r * 2)), with: .color(.white.opacity(0.36)))
+                    }
+                }
+                .allowsHitTesting(false)
+                
+                // Perspective 3D Tunnel Cards sorted far-to-near
+                ForEach(instances) { inst in
+                    let focal: Double = 3.2
+                    let zClamped = max(0.3, inst.relZ)
+                    let projScale = focal / (focal + zClamped * 1.45)
+                    let baseSide: CGFloat = 104
+                    let cardSide = baseSide * CGFloat(projScale)
+                    
+                    // Perspective projection with subtle 10deg cinematic tunnel roll
+                    let tiltRad: Double = 0.14
+                    let rotX = inst.x3d * cos(tiltRad) - inst.y3d * sin(tiltRad)
+                    let rotY = inst.x3d * sin(tiltRad) + inst.y3d * cos(tiltRad)
+                    let screenX = W * 0.5 + CGFloat(rotX * projScale * 138.0)
+                    let screenY = H * 0.5 - CGFloat(rotY * projScale * 98.0)
+                    let isCardHovered = (self.hoveredID == inst.id)
+                    let isSelected = (self.manager.spec.selectedID == inst.item.id && self.manager.spec.isEnabled)
+                    let fogAlpha = max(0.08, min(1.0, exp(-max(0.0, zClamped - 0.5) * 0.42)))
+                    let liftScale: CGFloat = isCardHovered ? 1.12 : (inst.isCenterHero ? 1.04 : 1.0)
+                    let artwork = self.manager.artworkImage(for: inst.item.id)
+                    
+                    ZStack {
+                        Image(nsImage: artwork)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFill()
+                            .frame(width: cardSide, height: cardSide)
+                            .clipShape(RoundedRectangle(cornerRadius: max(5, cardSide * 0.10), style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: max(5, cardSide * 0.10), style: .continuous)
+                                    .strokeBorder(
+                                        isSelected && inst.isCenterHero
+                                            ? Color(hexString: inst.item.accentHex)
+                                            : Color.white.opacity(isCardHovered ? 0.65 : (inst.isCenterHero ? 0.34 : 0.14)),
+                                        lineWidth: (isSelected && inst.isCenterHero) ? 2.0 : 0.9
+                                    )
+                            )
+                            .shadow(
+                                color: Color.black.opacity(inst.isCenterHero ? 0.55 : 0.35),
+                                radius: inst.isCenterHero ? 18 : 8,
+                                y: inst.isCenterHero ? 10 : 4
+                            )
+                        
+                        // Frosted caption pill on center Hero cover
+                        if inst.isCenterHero {
+                            VStack {
+                                Spacer()
+                                Text(inst.item.title)
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(.ultraThinMaterial, in: Capsule())
+                                    .padding(.bottom, 6)
+                            }
+                        }
+                    }
+                    .frame(width: cardSide, height: cardSide)
+                    .scaleEffect(liftScale)
+                    .opacity(fogAlpha)
+                    .position(x: screenX, y: screenY)
+                    .onHover { inside in
+                        withAnimation(.spring(response: 0.22, dampingFraction: 0.78)) {
+                            self.hoveredID = inside ? inst.id : (self.hoveredID == inst.id ? nil : self.hoveredID)
+                        }
+                    }
+                    .onTapGesture {
+                        self.flyWallpaperToCenter(item: inst.item, items: items)
+                    }
+                    .pointerStyle(.link)
+                }
+                
+                // Concise bottom usage cue
+                VStack {
+                    Spacer()
+                    Text(AppLanguage.text("拖动穿行隧道 · 点击封面切换 · 拖入图片自定义", en: "Drag tunnel · Click cover to activate · Drop image"))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.55))
+                        .padding(.bottom, 8)
+                }
+                .allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        let base = self.dragStartDepth ?? self.tunnelDepth
+                        if self.dragStartDepth == nil {
+                            self.dragStartDepth = base
+                        }
+                        self.tunnelDepth = base - Double(value.translation.height) * 0.022
+                    }
+                    .onEnded { value in
+                        let base = self.dragStartDepth ?? self.tunnelDepth
+                        self.dragStartDepth = nil
+                        let predicted = base - Double(value.predictedEndTranslation.height) * 0.022
+                        let snapped = predicted.rounded()
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.36)) {
+                            self.tunnelDepth = snapped
+                        }
+                        let count = max(1, items.count)
+                        let mod = ((Int(snapped) % count) + count) % count
+                        if items.indices.contains(mod) {
+                            self.manager.selectWallpaper(id: items[mod].id, enableIfDisabled: true)
+                        }
+                    }
+            )
+        }
+    }
+    
+    
+    private func buildTunnelInstances(items: [WallpaperItem]) -> [TunnelInstance] {
+        guard !items.isEmpty else { return [] }
+        let count = items.count
+        let layerOffset = self.tunnelDepth
+        let baseLayer = Int(floor(layerOffset))
+        var result: [TunnelInstance] = []
+        
+        // Checkerboard tunnel across 5 receding layers from k = 4 down to k = 0 (far to near)
+        for relLayer in stride(from: 4, through: 0, by: -1) {
+            let k = baseLayer + relLayer
+            let relZ = Double(k) - layerOffset
+            guard relZ >= -0.35 else { continue }
+            
+            let wrappedLayer = ((k % count) + count) % count
+            for j in -1...1 {
+                for i in -2...2 {
+                    // Checkerboard parity: avoid uniform grid clutter
+                    guard (abs(i + j + relLayer) % 2 == 0) || (i == 0 && j == 0) else { continue }
+                    let isHero = (relLayer == 0 && i == 0 && j == 0)
+                    let idx: Int
+                    if i == 0 && j == 0 {
+                        idx = wrappedLayer
+                    } else {
+                        let raw = abs(i * 3 + j * 5 + relLayer * 2 + wrappedLayer) % count
+                        idx = raw
+                    }
+                    let item = items[idx]
+                    result.append(TunnelInstance(
+                        id: "\(k)_\(i)_\(j)",
+                        item: item,
+                        x3d: Double(i) * 1.16,
+                        y3d: Double(j) * 0.96,
+                        relZ: max(0.0, relZ + 0.08),
+                        isCenterHero: isHero,
+                        isLeftHeroTrack: i == 0 && j == 0
+                    ))
+                }
+            }
+        }
+        return result.sorted { $0.relZ > $1.relZ }
+    }
+    
+    
+    private func stepTunnel(delta: Int, items: [WallpaperItem]) {
+        guard !items.isEmpty else { return }
+        let next = self.tunnelDepth.rounded() + Double(delta)
+        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.36)) {
+            self.tunnelDepth = next
+        }
+        let mod = ((Int(next) % items.count) + items.count) % items.count
+        self.manager.selectWallpaper(id: items[mod].id, enableIfDisabled: true)
+    }
+    
+    
+    private func flyWallpaperToCenter(item: WallpaperItem, items: [WallpaperItem]) {
+        guard let idx = items.firstIndex(where: { $0.id == item.id }) else { return }
+        let count = Double(max(1, items.count))
+        let base = self.tunnelDepth
+        let k = (base - Double(idx)) / count
+        let nearest = Double(idx) + k.rounded() * count
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.80)) {
+            self.tunnelDepth = nearest
+        }
+        self.manager.selectWallpaper(id: item.id, enableIfDisabled: true)
+    }
+    
+    
+    private func pickCustomWallpaperImage() {
+        let panel = NSOpenPanel()
+        panel.title = AppLanguage.text("选择壁纸图片", en: "Choose Wallpaper Image")
+        panel.allowedContentTypes = [.image, .png, .jpeg, .heic, .tiff]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
+            let baseTitle = url.deletingPathExtension().lastPathComponent
+            Task { @MainActor in
+                if let saved = self.manager.saveCustomWallpaper(image, title: baseTitle),
+                   let idx = self.manager.allItems.firstIndex(where: { $0.id == saved.id })
+                {
+                    withAnimation(.spring(response: 0.36, dampingFraction: 0.80)) {
+                        self.tunnelDepth = Double(idx)
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    let url: URL? = if let data = item as? Data {
+                        URL(dataRepresentation: data, relativeTo: nil)
+                    } else {
+                        item as? URL
+                    }
+                    guard let url, let image = NSImage(contentsOf: url) else { return }
+                    let title = url.deletingPathExtension().lastPathComponent
+                    Task { @MainActor in
+                        _ = self.manager.saveCustomWallpaper(image, title: title)
+                        self.tunnelDepth = 0
+                    }
+                }
+                return true
+            }
+            if provider.canLoadObject(ofClass: NSImage.self) {
+                provider.loadObject(ofClass: NSImage.self) { object, _ in
+                    guard let image = object as? NSImage else { return }
+                    Task { @MainActor in
+                        _ = self.manager.saveCustomWallpaper(image)
+                        self.tunnelDepth = 0
+                    }
+                }
+                return true
+            }
+        }
+        return false
+    }
+}
+
+
+// MARK: - 2. 字体 (Zero-Popup Inline Font Picker)
 
 private struct SidebarTypographySettingsPane: View {
     
@@ -1214,6 +1737,9 @@ private struct SidebarTypographySettingsPane: View {
     @AppStorage(.monospacedLigature) private var monospacedLigature
     
     @AppStorage(.lineHeight) private var lineHeight
+    
+    @State private var isChoosingStandardFont = false
+    @State private var isChoosingMonospacedFont = false
     
     private var standardFont: Binding<NSFont> {
         Binding(
@@ -1240,9 +1766,19 @@ private struct SidebarTypographySettingsPane: View {
                             .foregroundStyle(.secondary)
                             .fixedSize()
                         FontSizeStepper(AppLanguage.text("字号", en: "Size"), font: self.standardFont)
-                        FontPicker(AppLanguage.text("选择字体", en: "Choose Font"), selection: self.standardFont)
-                            .controlSize(.small)
+                        Button(self.isChoosingStandardFont ? AppLanguage.text("收起", en: "Done") : AppLanguage.text("选择字体", en: "Choose Font")) {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                                self.isChoosingStandardFont.toggle()
+                            }
+                        }
+                        .controlSize(.small)
                     }
+                }
+                
+                if self.isChoosingStandardFont {
+                    SettingsRowDivider()
+                    InlineFontFamilySelector(selection: self.standardFont, preferMonospacedOnly: false)
+                        .padding(12)
                 }
                 
                 SettingsRowDivider()
@@ -1272,9 +1808,19 @@ private struct SidebarTypographySettingsPane: View {
                             .foregroundStyle(.secondary)
                             .fixedSize()
                         FontSizeStepper(AppLanguage.text("字号", en: "Size"), font: self.monospacedFont)
-                        FontPicker(AppLanguage.text("选择字体", en: "Choose Font"), selection: self.monospacedFont)
-                            .controlSize(.small)
+                        Button(self.isChoosingMonospacedFont ? AppLanguage.text("收起", en: "Done") : AppLanguage.text("选择字体", en: "Choose Font")) {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                                self.isChoosingMonospacedFont.toggle()
+                            }
+                        }
+                        .controlSize(.small)
                     }
+                }
+                
+                if self.isChoosingMonospacedFont {
+                    SettingsRowDivider()
+                    InlineFontFamilySelector(selection: self.monospacedFont, preferMonospacedOnly: true)
+                        .padding(12)
                 }
                 
                 SettingsRowDivider()
@@ -1309,6 +1855,95 @@ private struct SidebarTypographySettingsPane: View {
                     }
                 }
             }
+        }
+    }
+}
+
+
+/// Inline searchable font family & weight chooser replacing modal `NSFontPanel`.
+private struct InlineFontFamilySelector: View {
+    
+    @Binding var selection: NSFont
+    let preferMonospacedOnly: Bool
+    
+    @State private var searchQuery = ""
+    @State private var showAllFamilies: Bool
+    
+    init(selection: Binding<NSFont>, preferMonospacedOnly: Bool) {
+        self._selection = selection
+        self.preferMonospacedOnly = preferMonospacedOnly
+        self._showAllFamilies = State(initialValue: !preferMonospacedOnly)
+    }
+    
+    private var filteredFamilies: [String] {
+        let manager = NSFontManager.shared
+        let all = manager.availableFontFamilies
+        let pool: [String]
+        if self.showAllFamilies {
+            pool = all
+        } else {
+            pool = all.filter { fam in
+                guard let font = NSFont(name: fam, size: 12) else { return false }
+                return font.isFixedPitch || manager.traits(of: font).contains(.fixedPitchFontMask)
+            }
+        }
+        let q = self.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return pool }
+        return pool.filter { $0.localizedCaseInsensitiveContains(q) }
+    }
+    
+    var body: some View {
+        let currentFamily = self.selection.familyName ?? self.selection.fontName
+        
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                TextField(AppLanguage.text("搜索字体族…", en: "Search fonts…"), text: self.$searchQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                
+                if self.preferMonospacedOnly {
+                    Toggle(AppLanguage.text("显示全部字体", en: "All Fonts"), isOn: self.$showAllFamilies)
+                        .toggleStyle(.checkbox)
+                        .controlSize(.small)
+                }
+            }
+            
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(self.filteredFamilies, id: \.self) { family in
+                        let isSelected = (family == currentFamily)
+                        Button {
+                            let size = self.selection.pointSize
+                            if let updated = NSFontManager.shared.font(withFamily: family, traits: [], weight: 5, size: size) {
+                                self.selection = updated
+                            }
+                        } label: {
+                            HStack {
+                                Text(family)
+                                    .font(.custom(family, size: 12.5))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Spacer()
+                                if isSelected {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 10.5, weight: .bold))
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                            .frame(height: 24)
+                            .background(
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(height: 138)
+            .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
     }
 }
@@ -1566,6 +2201,44 @@ private struct SidebarEditingSettingsPane: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+            SettingsGroupCard(title: AppLanguage.text("Vim 模态编辑", en: "Vim Modal Editing")) {
+                SettingsItemRow(label: AppLanguage.text("启用 Vim 模式", en: "Enable Vim Mode")) {
+                    HStack(spacing: 8) {
+                        Text(self.vimMode
+                             ? AppLanguage.text("已启用", en: "Enabled")
+                             : AppLanguage.text("标准输入", en: "Standard"))
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(self.vimMode ? Color.accentColor : Color.secondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(
+                                (self.vimMode ? Color.accentColor : Color.primary).opacity(0.08),
+                                in: Capsule()
+                            )
+                        
+                        Toggle("", isOn: self.$vimMode)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                    }
+                }
+                SettingsRowDivider()
+                HStack(alignment: .center, spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Text(AppLanguage.text(
+                        "开启后支持 Normal / Insert / Visual 模态快捷键与弹性块状光标；关闭后恢复常规输入，避免误触无法打字",
+                        en: "Enable Normal / Insert / Visual modal keybindings and elastic cursor; disable for standard direct typing."
+                    ))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+            }
+            
             SettingsGroupCard(title: "视图辅助") {
                 SettingsItemRow(label: "显示行号") {
                     Toggle("", isOn: self.$showLineNumbers)
@@ -1672,15 +2345,6 @@ private struct SidebarEditingSettingsPane: View {
                         }
                 }
             }
-            
-            SettingsGroupCard(title: "模态编辑") {
-                SettingsItemRow(label: "启用 Vim 模式") {
-                    Toggle("", isOn: self.$vimMode)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                }
-            }
         }
         .onAppear {
             self.plainTextImagesEnabled = CotLocalDatabase.shared.bool(
@@ -1719,6 +2383,47 @@ private struct SidebarFormatSettingsPane: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+            if self.isEncodingListPresented {
+                VStack(alignment: .leading, spacing: 12) {
+                    Button {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                            self.isEncodingListPresented = false
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text(AppLanguage.text("返回格式设置", en: "Back to Format"))
+                                .font(.system(size: 12.5, weight: .medium))
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(Color.primary.opacity(0.06), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    
+                    SettingsGroupCard(title: AppLanguage.text("编码优先顺序", en: "Encoding Priority")) {
+                        EncodingListView(defaultEncoding: self.encodingManager.defaultEncoding, isEmbeddedInline: true) {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                                self.isEncodingListPresented = false
+                            }
+                        }
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .trailing)))
+            } else {
+                self.formatMainContent
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+            }
+        }
+        .onReceive(SyntaxManager.shared.$settingNames) { self.syntaxNames = $0 }
+    }
+    
+    
+    private var formatMainContent: some View {
+        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
             SettingsGroupCard(title: "换行标准") {
                 SettingsItemRow(label: "默认换行符") {
                     Picker("", selection: self.$lineEnding) {
@@ -1750,7 +2455,9 @@ private struct SidebarFormatSettingsPane: View {
                 
                 SettingsItemRow(label: AppLanguage.text("编码优先顺序", en: "Encoding Priority")) {
                     Button(AppLanguage.text("调整顺序", en: "Edit Order")) {
-                        self.isEncodingListPresented = true
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                            self.isEncodingListPresented = true
+                        }
                     }
                     .controlSize(.small)
                 }
@@ -1778,10 +2485,6 @@ private struct SidebarFormatSettingsPane: View {
                     .fixedSize()
                 }
             }
-        }
-        .onReceive(SyntaxManager.shared.$settingNames) { self.syntaxNames = $0 }
-        .sheet(isPresented: self.$isEncodingListPresented) {
-            EncodingListView(defaultEncoding: self.encodingManager.defaultEncoding)
         }
     }
 }

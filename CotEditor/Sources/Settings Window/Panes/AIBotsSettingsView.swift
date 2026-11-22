@@ -22,7 +22,7 @@
 import AppKit
 import SwiftUI
 
-// MARK: - 模型 (API 端点 & 全局人设)
+// MARK: - 模型 (API 端点 & 全局人设 · 零弹窗全内联)
 
 struct AIModelsSettingsView: View {
     
@@ -38,7 +38,7 @@ struct AIModelsSettingsView: View {
     @State private var profiles: [AIEndpointProfile] = []
     @State private var activeID: UUID?
     @State private var editingEndpointTarget: EndpointEditTarget?
-    @State private var pendingDeletion: AIEndpointProfile?
+    @State private var confirmDeleteID: UUID?
     @State private var endpointStatus: [UUID: EndpointProbeStatus] = [:]
     @State private var fetchedModels: [UUID: [AIModel]] = [:]
     @State private var fetchingModelsIDs: Set<UUID> = []
@@ -60,10 +60,78 @@ struct AIModelsSettingsView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
+            if let target = self.editingEndpointTarget {
+                self.inlineEndpointEditor(target)
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+            } else {
+                self.mainModelsContent
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+            }
+        }
+        .onAppear {
+            self.reload()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
+            self.reload()
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func inlineEndpointEditor(_ target: EndpointEditTarget) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Button {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                        self.editingEndpointTarget = nil
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(AppLanguage.text("返回模型端点", en: "Back to Endpoints"))
+                            .font(.system(size: 12.5, weight: .medium))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(self.cardSurface, in: Capsule())
+                    .overlay(Capsule().strokeBorder(self.cardBorder, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                
+                Spacer()
+            }
+            
+            VStack(alignment: .leading, spacing: 0) {
+                AIEndpointEditorView(
+                    profile: target.profile,
+                    apiKey: target.apiKey,
+                    isNew: target.isNew,
+                    isEmbeddedInline: true,
+                    onCancel: {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                            self.editingEndpointTarget = nil
+                        }
+                    },
+                    onSave: { profile, apiKey in
+                        self.saveEndpoint(profile, apiKey: apiKey)
+                    }
+                )
+            }
+            .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
+        }
+    }
+    
+    
+    private var mainModelsContent: some View {
+        VStack(alignment: .leading, spacing: 20) {
             // Section 1: 服务端点
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text("服务端点")
+                    Text(AppLanguage.text("服务端点", en: "Endpoints"))
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .padding(.leading, 3)
@@ -79,7 +147,7 @@ struct AIModelsSettingsView: View {
                             Image(systemName: "network.slash")
                                 .font(.title2)
                                 .foregroundStyle(.tertiary)
-                            Text("尚未配置 AI 服务端点")
+                            Text(AppLanguage.text("尚未配置 AI 服务端点", en: "No Endpoints Configured"))
                                 .font(.system(size: 13, weight: .medium))
                         }
                         .frame(maxWidth: .infinity)
@@ -99,7 +167,7 @@ struct AIModelsSettingsView: View {
                         Button {
                             self.beginAddingEndpoint()
                         } label: {
-                            Label("添加自定义端点", systemImage: "plus")
+                            Label(AppLanguage.text("添加自定义端点", en: "Add Endpoint"), systemImage: "plus")
                         }
                         .controlSize(.small)
                         
@@ -110,7 +178,7 @@ struct AIModelsSettingsView: View {
                                 }
                             }
                         } label: {
-                            Text("从预设模板新建")
+                            Text(AppLanguage.text("从预设模板新建", en: "From Preset"))
                         }
                         .controlSize(.small)
                         .fixedSize()
@@ -126,17 +194,17 @@ struct AIModelsSettingsView: View {
             
             // Section 2: 全局人设
             VStack(alignment: .leading, spacing: 7) {
-                Text("全局人设")
+                Text(AppLanguage.text("全局人设", en: "Global Persona"))
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .padding(.leading, 3)
                 
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 10) {
-                        Text("全局共享人设")
+                        Text(AppLanguage.text("全局共享人设", en: "Shared System Persona"))
                             .font(.system(size: 13))
                         Spacer()
-                        Button(self.isEditingGlobalPersona ? "收起" : "编辑") {
+                        Button(self.isEditingGlobalPersona ? AppLanguage.text("收起", en: "Collapse") : AppLanguage.text("编辑", en: "Edit")) {
                             withAnimation(.easeOut(duration: 0.16)) {
                                 self.isEditingGlobalPersona.toggle()
                             }
@@ -187,30 +255,6 @@ struct AIModelsSettingsView: View {
                 .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
             }
         }
-        .onAppear {
-            self.reload()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
-            self.reload()
-        }
-        .sheet(item: self.$editingEndpointTarget) { target in
-            AIEndpointEditorView(profile: target.profile, apiKey: target.apiKey, isNew: target.isNew) { profile, apiKey in
-                self.saveEndpoint(profile, apiKey: apiKey)
-            }
-        }
-        .alert("删除 AI 端点？", isPresented: Binding(
-            get: { self.pendingDeletion != nil },
-            set: { if !$0 { self.pendingDeletion = nil } }
-        )) {
-            Button("删除", role: .destructive) {
-                if let target = self.pendingDeletion {
-                    self.deleteEndpoint(target)
-                }
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("将移除该端点的接口地址及本地 API Key。")
-        }
     }
     
     
@@ -230,7 +274,7 @@ struct AIModelsSettingsView: View {
             Circle()
                 .fill(isUsable ? Color.green : Color.orange)
                 .frame(width: 6, height: 6)
-            Text(activeProfile?.displayName ?? "未配置端点")
+            Text(activeProfile?.displayName ?? AppLanguage.text("未配置端点", en: "Unconfigured"))
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(activeProfile != nil ? Color.secondary : Color.orange)
                 .lineLimit(1)
@@ -245,6 +289,7 @@ struct AIModelsSettingsView: View {
         let probe = self.endpointStatus[profile.id]
         let fetched = self.fetchedModels[profile.id] ?? []
         let isFetching = self.fetchingModelsIDs.contains(profile.id)
+        let isConfirmingDelete = (self.confirmDeleteID == profile.id)
         
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -269,7 +314,7 @@ struct AIModelsSettingsView: View {
                 
                 Menu {
                     if !fetched.isEmpty {
-                        Section("接口实时返回") {
+                        Section(AppLanguage.text("接口实时返回", en: "Fetched Models")) {
                             ForEach(fetched) { model in
                                 Button(model.name) {
                                     self.switchModel(model.id, on: profile)
@@ -279,7 +324,7 @@ struct AIModelsSettingsView: View {
                     }
                     let saved = profile.availableModelIDs
                     if !saved.isEmpty {
-                        Section("已保存模型") {
+                        Section(AppLanguage.text("已保存模型", en: "Saved Models")) {
                             ForEach(saved, id: \.self) { modelID in
                                 Button(modelID) {
                                     self.switchModel(modelID, on: profile)
@@ -288,7 +333,7 @@ struct AIModelsSettingsView: View {
                         }
                     }
                     Divider()
-                    Button("刷新模型列表", systemImage: "arrow.triangle.2.circlepath") {
+                    Button(AppLanguage.text("刷新模型列表", en: "Refresh Models"), systemImage: "arrow.triangle.2.circlepath") {
                         Task { await self.fetchModels(for: profile) }
                     }
                 } label: {
@@ -298,7 +343,7 @@ struct AIModelsSettingsView: View {
                         } else {
                             Image(systemName: "cpu").font(.system(size: 10))
                         }
-                        Text(profile.displayModel ?? "未选模型")
+                        Text(profile.displayModel ?? AppLanguage.text("未选模型", en: "No Model"))
                             .font(.system(size: 11.5))
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -309,65 +354,88 @@ struct AIModelsSettingsView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .frame(maxWidth: 136)
+                    .frame(maxWidth: 132)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
                 
-                HStack(spacing: 7) {
-                    Button {
-                        Task { await self.testEndpoint(profile) }
-                    } label: {
-                        if case .running = probe {
-                            ProgressView().controlSize(.small).frame(width: 14, height: 14)
-                        } else {
-                            Image(systemName: "play.circle")
+                if isConfirmingDelete {
+                    HStack(spacing: 5) {
+                        Button(AppLanguage.text("确认删除", en: "Delete"), role: .destructive) {
+                            withAnimation(.easeOut(duration: 0.16)) {
+                                self.deleteEndpoint(profile)
+                            }
                         }
+                        .controlSize(.mini)
+                        Button(AppLanguage.text("取消", en: "Cancel")) {
+                            withAnimation(.easeOut(duration: 0.14)) {
+                                self.confirmDeleteID = nil
+                            }
+                        }
+                        .controlSize(.mini)
                     }
-                    .help("测试连通性")
-                    
-                    Button {
-                        var copy = profile
-                        copy.id = UUID()
-                        copy.name = "\(profile.displayName) 副本"
-                        self.editingEndpointTarget = EndpointEditTarget(
-                            profile: copy,
-                            apiKey: AIEndpointStore.apiKey(for: profile),
-                            isNew: true
-                        )
-                    } label: {
-                        Image(systemName: "doc.on.doc")
+                } else {
+                    HStack(spacing: 7) {
+                        Button {
+                            Task { await self.testEndpoint(profile) }
+                        } label: {
+                            if case .running = probe {
+                                ProgressView().controlSize(.small).frame(width: 14, height: 14)
+                            } else {
+                                Image(systemName: "play.circle")
+                            }
+                        }
+                        .help(AppLanguage.text("测试连通性", en: "Test Connection"))
+                        
+                        Button {
+                            var copy = profile
+                            copy.id = UUID()
+                            copy.name = "\(profile.displayName) 副本"
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                                self.editingEndpointTarget = EndpointEditTarget(
+                                    profile: copy,
+                                    apiKey: AIEndpointStore.apiKey(for: profile),
+                                    isNew: true
+                                )
+                            }
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .help(AppLanguage.text("复制端点", en: "Duplicate"))
+                        
+                        Button {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                                self.editingEndpointTarget = EndpointEditTarget(
+                                    profile: profile,
+                                    apiKey: AIEndpointStore.apiKey(for: profile),
+                                    isNew: false
+                                )
+                            }
+                        } label: {
+                            Image(systemName: "pencil")
+                        }
+                        .help(AppLanguage.text("编辑", en: "Edit"))
+                        
+                        Button {
+                            withAnimation(.easeOut(duration: 0.14)) {
+                                self.confirmDeleteID = profile.id
+                            }
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .help(AppLanguage.text("删除", en: "Delete"))
                     }
-                    .help("复制端点")
-                    
-                    Button {
-                        self.editingEndpointTarget = EndpointEditTarget(
-                            profile: profile,
-                            apiKey: AIEndpointStore.apiKey(for: profile),
-                            isNew: false
-                        )
-                    } label: {
-                        Image(systemName: "pencil")
-                    }
-                    .help("编辑")
-                    
-                    Button {
-                        self.pendingDeletion = profile
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .help("删除")
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
             }
             
             if let probe {
                 HStack(spacing: 6) {
                     switch probe {
                         case .running:
-                            Text("正在测速")
+                            Text(AppLanguage.text("正在测速", en: "Testing"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         case .succeeded(let reply, let latencyMs):
@@ -435,7 +503,9 @@ struct AIModelsSettingsView: View {
         } else {
             profile = AIEndpointProfile()
         }
-        self.editingEndpointTarget = EndpointEditTarget(profile: profile, apiKey: "", isNew: true)
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+            self.editingEndpointTarget = EndpointEditTarget(profile: profile, apiKey: "", isNew: true)
+        }
     }
     
     
@@ -485,7 +555,7 @@ struct AIModelsSettingsView: View {
         CotLocalDatabase.shared.syncAIEndpointsToDatabase()
         self.endpointStatus[profile.id] = nil
         self.fetchedModels[profile.id] = nil
-        self.pendingDeletion = nil
+        self.confirmDeleteID = nil
         self.reload()
     }
     
@@ -508,7 +578,32 @@ struct AIModelsSettingsView: View {
 }
 
 
-// MARK: - 智能体 (Builtin Specialized AI Bots)
+// MARK: - 智能体 (Collection Layout Morph: List / Card / Pack + Inline Inspector)
+
+enum BotCollectionLayoutMode: String, CaseIterable, Identifiable {
+    case list
+    case card
+    case pack
+    
+    var id: String { self.rawValue }
+    
+    var title: String {
+        switch self {
+            case .list: AppLanguage.text("列表视图", en: "List view")
+            case .card: AppLanguage.text("卡片视图", en: "Card view")
+            case .pack: AppLanguage.text("叠放视图", en: "Pack view")
+        }
+    }
+    
+    var icon: String {
+        switch self {
+            case .list: "list.bullet"
+            case .card: "square.grid.2x2"
+            case .pack: "square.stack.3d.up"
+        }
+    }
+}
+
 
 struct AIBotsSettingsView: View {
     
@@ -516,9 +611,14 @@ struct AIBotsSettingsView: View {
     
     @State private var botStore = AIBotStore.shared
     @State private var analytics = AnalyticsManager.shared
+    @State private var layoutMode: BotCollectionLayoutMode = .list
     @State private var inspectingBot: AIBotID?
     @State private var activeEndpoint: AIEndpointProfile?
     @State private var globalPersona: String = ""
+    @State private var stageWidth: CGFloat = 439
+    @State private var hoveredBotID: AIBotID?
+    
+    @Namespace private var modePillNamespace
     
     
     var body: some View {
@@ -526,37 +626,19 @@ struct AIBotsSettingsView: View {
             self.analytics.featureDistribution(days: 30).map { ($0.feature, $0.requests) },
             uniquingKeysWith: { first, _ in first }
         )
-        let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
         
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 7) {
-                Text("内置智能体")
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 3)
-                
-                LazyVGrid(columns: columns, spacing: 10) {
-                    ForEach(AIBotID.allCases) { botID in
-                        let cfg = self.botStore.config(for: botID)
-                        let calls = featureCounts[botID.analyticsFeatureKey] ?? 0
-                        BotCardView(
-                            botID: botID,
-                            config: cfg,
-                            recentCalls: calls,
-                            defaultModelLabel: self.activeEndpoint?.displayModel ?? "跟随默认",
-                            cardSurface: self.cardSurface,
-                            cardBorder: self.cardBorder,
-                            onToggle: { enabled in
-                                var updated = cfg
-                                updated.isEnabled = enabled
-                                self.botStore.updateConfig(updated, for: botID)
-                            },
-                            onInspect: {
-                                self.inspectingBot = botID
-                            }
-                        )
-                    }
-                }
+        VStack(alignment: .leading, spacing: 14) {
+            if let botID = self.inspectingBot {
+                self.inlineInspector(for: botID)
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+            } else {
+                self.morphingCollectionView(featureCounts: featureCounts)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { w in
+            if abs(w - self.stageWidth) > 2 && w > 120 {
+                self.stageWidth = w
             }
         }
         .onAppear {
@@ -565,11 +647,320 @@ struct AIBotsSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
             self.reload()
         }
-        .sheet(item: self.$inspectingBot) { botID in
-            AIBotInspectorSheet(
+    }
+    
+    
+    // MARK: Morphing List / Card / Pack Collection Stage
+    
+    @ViewBuilder
+    private func morphingCollectionView(featureCounts: [String: Int]) -> some View {
+        let bots = AIBotID.allCases
+        let cols = 3
+        let rowsCount = Int(ceil(Double(bots.count) / Double(cols)))
+        let cardGap: CGFloat = 14
+        let cardSize = max(92, floor((self.stageWidth - cardGap * CGFloat(cols - 1)) / CGFloat(cols)))
+        let stageHeight: CGFloat = switch self.layoutMode {
+            case .list: CGFloat(bots.count) * 64.0
+            case .card: CGFloat(rowsCount) * (cardSize + 44.0)
+            case .pack: 214.0
+        }
+        let enabledCount = bots.filter { self.botStore.config(for: $0).isEnabled }.count
+        
+        VStack(alignment: .leading, spacing: 14) {
+            // Segmented Layout Switcher with a SINGLE shared sliding capsule
+            HStack(spacing: 6) {
+                ForEach(BotCollectionLayoutMode.allCases) { mode in
+                    let isSelected = (self.layoutMode == mode)
+                    Button {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.42)) {
+                            self.layoutMode = mode
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: mode.icon)
+                                .font(.system(size: 11, weight: .medium))
+                            Text(mode.title)
+                                .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
+                        }
+                        .foregroundStyle(isSelected ? .primary : .secondary)
+                        .padding(.horizontal, 12)
+                        .frame(height: 30)
+                        .background {
+                            if isSelected {
+                                Capsule()
+                                    .fill(self.colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.085))
+                                    .matchedGeometryEffect(id: "botLayoutPill", in: self.modePillNamespace)
+                            }
+                        }
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                }
+                
+                Spacer()
+                
+                Text("\(enabledCount)/\(bots.count) 已启用")
+                    .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            
+            // Divider hairline fades in card view just like collection-layout-morph
+            Rectangle()
+                .fill(self.cardBorder)
+                .frame(height: 1)
+                .opacity(self.layoutMode == .card ? 0.0 : 1.0)
+                .animation(.easeOut(duration: 0.22), value: self.layoutMode)
+            
+            // Unified Identity-Preserving Morph Stage
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(bots.enumerated()), id: \.element) { index, botID in
+                    let cfg = self.botStore.config(for: botID)
+                    let calls = featureCounts[botID.analyticsFeatureKey] ?? 0
+                    self.morphingBotNode(
+                        botID: botID,
+                        index: index,
+                        total: bots.count,
+                        config: cfg,
+                        recentCalls: calls,
+                        cardSize: cardSize,
+                        cardGap: cardGap
+                    )
+                }
+                
+                // Pack summary label beneath stacked cards
+                if self.layoutMode == .pack {
+                    VStack(spacing: 4) {
+                        Text(AppLanguage.text("内置智能体卡组（共 \(bots.count) 位）", en: "\(bots.count) Built-in Agents"))
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Text(AppLanguage.text("点击任一张卡牌即可进入人设与指令调教", en: "Click any card to configure"))
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .offset(y: 136)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                }
+            }
+            .frame(width: self.stageWidth, height: stageHeight, alignment: .topLeading)
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func morphingBotNode(
+        botID: AIBotID,
+        index: Int,
+        total: Int,
+        config: AIBotConfig,
+        recentCalls: Int,
+        cardSize: CGFloat,
+        cardGap: CGFloat
+    ) -> some View {
+        let accent = Color(hexString: botID.accentHex)
+        let isHovered = (self.hoveredBotID == botID)
+        
+        let itemWidth: CGFloat
+        let badgeSize: CGFloat
+        let badgeCorner: CGFloat
+        let posX: CGFloat
+        let posY: CGFloat
+        let rotation: Double
+        
+        switch self.layoutMode {
+            case .list:
+                badgeSize = 48
+                badgeCorner = 10
+                itemWidth = self.stageWidth
+                posX = 0
+                posY = CGFloat(index) * 64.0
+                rotation = 0
+            case .card:
+                badgeSize = cardSize
+                badgeCorner = 14
+                itemWidth = cardSize
+                let col = index % 3
+                let row = index / 3
+                posX = CGFloat(col) * (cardSize + cardGap)
+                posY = CGFloat(row) * (cardSize + 44.0)
+                rotation = 0
+            case .pack:
+                badgeSize = 84
+                badgeCorner = 16
+                itemWidth = badgeSize
+                let spread: CGFloat = 24.0
+                let mid = Double(total - 1) * 0.5
+                let offsetIndex = Double(index) - mid
+                posX = (self.stageWidth - badgeSize) * 0.5 + CGFloat(offsetIndex) * spread
+                posY = 16 + abs(CGFloat(offsetIndex)) * 4.5 - (isHovered ? 12 : 0)
+                rotation = offsetIndex * 5.2
+        }
+        
+        return ZStack(alignment: .topLeading) {
+            // Persistent Bot Artwork Tile (never swapped across modes!)
+            RoundedRectangle(cornerRadius: badgeCorner, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            accent.opacity(config.isEnabled ? 0.95 : 0.42),
+                            accent.opacity(config.isEnabled ? 0.72 : 0.28),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: badgeSize, height: badgeSize)
+                .overlay {
+                    Image(systemName: botID.symbolName)
+                        .font(.system(size: badgeSize * 0.40, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: badgeCorner, style: .continuous)
+                        .strokeBorder(Color.white.opacity(self.colorScheme == .dark ? 0.20 : 0.42), lineWidth: 1)
+                )
+                .shadow(
+                    color: (self.layoutMode == .pack ? accent.opacity(0.24) : Color.black.opacity(0.10)),
+                    radius: self.layoutMode == .pack ? 10 : 4,
+                    y: self.layoutMode == .pack ? 5 : 2
+                )
+                .rotationEffect(.degrees(rotation))
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
+                        self.inspectingBot = botID
+                    }
+                }
+            
+            // List view metadata right of tile
+            if self.layoutMode == .list {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(botID.displayName)
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(config.isEnabled ? .primary : .secondary)
+                        
+                        HStack(spacing: 6) {
+                            Text(config.modelOverride.isEmpty ? (self.activeEndpoint?.displayModel ?? "默认模型") : config.modelOverride)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            if recentCalls > 0 {
+                                Text("· \(recentCalls) 次")
+                                    .font(.system(size: 11).monospacedDigit())
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    Toggle("", isOn: Binding(
+                        get: { config.isEnabled },
+                        set: { enabled in
+                            var updated = config
+                            updated.isEnabled = enabled
+                            self.botStore.updateConfig(updated, for: botID)
+                        }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    
+                    Button {
+                        withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
+                            self.inspectingBot = botID
+                        }
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(isHovered ? accent : Color(nsColor: .tertiaryLabelColor))
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.leading, badgeSize + 14)
+                .frame(width: itemWidth, height: badgeSize, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
+                        self.inspectingBot = botID
+                    }
+                }
+            }
+            
+            // Card view compact caption under tile
+            if self.layoutMode == .card {
+                HStack(spacing: 4) {
+                    Text(botID.displayName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(config.isEnabled ? .primary : .secondary)
+                        .lineLimit(1)
+                    
+                    Spacer(minLength: 2)
+                    
+                    Circle()
+                        .fill(config.isEnabled ? accent : Color.primary.opacity(0.18))
+                        .frame(width: 7, height: 7)
+                }
+                .frame(width: cardSize)
+                .offset(y: cardSize + 8)
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
+                        self.inspectingBot = botID
+                    }
+                }
+            }
+        }
+        .frame(width: itemWidth, alignment: .topLeading)
+        .offset(x: posX, y: posY)
+        .zIndex(Double(index) + (isHovered && self.layoutMode == .pack ? 20 : 0))
+        .onHover { hovering in
+            withAnimation(.spring(response: 0.22, dampingFraction: 0.80)) {
+                self.hoveredBotID = hovering ? botID : (self.hoveredBotID == botID ? nil : self.hoveredBotID)
+            }
+        }
+        .pointerStyle(.link)
+        .help(botID.displayName)
+    }
+    
+    
+    // MARK: Inline Bot Inspector (Zero Modal Sheets)
+    
+    @ViewBuilder
+    private func inlineInspector(for botID: AIBotID) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Button {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                        self.inspectingBot = nil
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(AppLanguage.text("返回智能体", en: "Back to Agents"))
+                            .font(.system(size: 12.5, weight: .medium))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(self.cardSurface, in: Capsule())
+                    .overlay(Capsule().strokeBorder(self.cardBorder, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                
+                Spacer()
+            }
+            
+            AIBotInlineInspectorView(
                 botID: botID,
                 activeEndpoint: self.activeEndpoint,
-                globalPersona: self.globalPersona
+                globalPersona: self.globalPersona,
+                cardSurface: self.cardSurface,
+                cardBorder: self.cardBorder
             )
         }
     }
@@ -594,88 +985,15 @@ struct AIBotsSettingsView: View {
 }
 
 
-// MARK: - Bot Card
+// MARK: - Inline Bot Inspector
 
-private struct BotCardView: View {
-    
-    let botID: AIBotID
-    let config: AIBotConfig
-    let recentCalls: Int
-    let defaultModelLabel: String
-    let cardSurface: Color
-    let cardBorder: Color
-    let onToggle: (Bool) -> Void
-    let onInspect: () -> Void
-    
-    @State private var isHovered = false
-    
-    
-    var body: some View {
-        let accent = Color(hexString: self.botID.accentHex)
-        
-        HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(accent.opacity(self.config.isEnabled ? 1.0 : 0.35))
-                .frame(width: 28, height: 28)
-                .overlay(
-                    Image(systemName: self.botID.symbolName)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                )
-            
-            Text(self.botID.displayName)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(self.config.isEnabled ? .primary : .secondary)
-                .lineLimit(1)
-            
-            Spacer(minLength: 4)
-            
-            Toggle("", isOn: Binding(
-                get: { self.config.isEnabled },
-                set: { self.onToggle($0) }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            
-            Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(self.isHovered ? accent : Color(nsColor: .tertiaryLabelColor))
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 52)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(self.cardSurface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(self.isHovered ? accent.opacity(0.45) : self.cardBorder, lineWidth: 1)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .onTapGesture {
-            self.onInspect()
-        }
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.14)) {
-                self.isHovered = hovering
-            }
-        }
-        .pointerStyle(.link)
-    }
-}
-
-
-// MARK: - Bot Inspector Sheet
-
-private struct AIBotInspectorSheet: View {
-    
-    @Environment(\.dismiss) private var dismiss
+private struct AIBotInlineInspectorView: View {
     
     let botID: AIBotID
     let activeEndpoint: AIEndpointProfile?
     let globalPersona: String
+    let cardSurface: Color
+    let cardBorder: Color
     
     @State private var botStore = AIBotStore.shared
     @State private var analytics = AnalyticsManager.shared
@@ -700,10 +1018,10 @@ private struct AIBotInspectorSheet: View {
             HStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(accent)
-                    .frame(width: 38, height: 38)
+                    .frame(width: 36, height: 36)
                     .overlay(
                         Image(systemName: self.botID.symbolName)
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(.white)
                     )
                 
@@ -722,147 +1040,133 @@ private struct AIBotInspectorSheet: View {
             
             Divider()
             
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 10) {
-                        Text("专属模型")
-                            .font(.system(size: 12.5, weight: .medium))
-                            .frame(width: 70, alignment: .leading)
-                        
-                        TextField(
-                            self.activeEndpoint?.displayModel ?? "默认",
-                            text: self.$config.modelOverride
-                        )
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: self.config.modelOverride) { _, _ in
-                            self.saveBotConfig()
-                        }
-                        
-                        if let endpoint = self.activeEndpoint, !endpoint.availableModelIDs.isEmpty {
-                            Menu {
-                                Button("默认") {
-                                    self.config.modelOverride = ""
-                                    self.saveBotConfig()
-                                }
-                                Divider()
-                                ForEach(endpoint.availableModelIDs, id: \.self) { id in
-                                    Button(id) {
-                                        self.config.modelOverride = id
-                                        self.saveBotConfig()
-                                    }
-                                }
-                            } label: {
-                                Image(systemName: "chevron.up.chevron.down")
-                            }
-                            .menuStyle(.borderlessButton)
-                            .fixedSize()
-                        }
+            HStack(spacing: 10) {
+                Text("专属模型")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .frame(width: 66, alignment: .leading)
+                
+                TextField(self.activeEndpoint?.displayModel ?? "默认", text: self.$config.modelOverride)
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: self.config.modelOverride) { _, _ in
+                        self.saveBotConfig()
                     }
-                    
-                    HStack(spacing: 10) {
-                        Text("专属人设")
-                            .font(.system(size: 12.5, weight: .medium))
-                            .frame(width: 70, alignment: .leading)
-                        
-                        TextField(
-                            "默认",
-                            text: self.$config.customPersona
-                        )
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: self.config.customPersona) { _, _ in
+                
+                if let endpoint = self.activeEndpoint, !endpoint.availableModelIDs.isEmpty {
+                    Menu {
+                        Button("默认") {
+                            self.config.modelOverride = ""
                             self.saveBotConfig()
                         }
-                        
-                        if !self.config.customPersona.isEmpty {
-                            Button("重置") {
-                                self.config.customPersona = ""
+                        Divider()
+                        ForEach(endpoint.availableModelIDs, id: \.self) { id in
+                            Button(id) {
+                                self.config.modelOverride = id
                                 self.saveBotConfig()
                             }
-                            .controlSize(.small)
                         }
+                    } label: {
+                        Image(systemName: "chevron.up.chevron.down")
                     }
-                    
-                    if self.botID == .ghost {
-                        self.ghostControls
-                    }
-                    
-                    if self.botID == .persona {
-                        self.personaControls
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("Bot 核心指令 (Prompt)")
-                                .font(.system(size: 12.5, weight: .medium))
-                            Spacer()
-                            Button("恢复默认指令") {
-                                self.promptText = self.botID.defaultSystemPrompt
-                                self.botStore.setSystemPrompt(self.promptText, for: self.botID)
-                            }
-                            .controlSize(.mini)
-                            .disabled(self.promptText == self.botID.defaultSystemPrompt)
-                        }
-                        
-                        TextEditor(text: self.$promptText)
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .frame(height: 120)
-                            .padding(6)
-                            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-                            )
-                            .onChange(of: self.promptText) { _, newValue in
-                                self.botStore.setSystemPrompt(newValue, for: self.botID)
-                            }
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Label("Bot 实时试聊测试", systemImage: "play.circle.fill")
-                                .font(.system(size: 12.5, weight: .semibold))
-                                .foregroundStyle(accent)
-                            Spacer()
-                            Button {
-                                Task { await self.runSandboxTest() }
-                            } label: {
-                                if self.isTesting {
-                                    ProgressView().controlSize(.mini)
-                                } else {
-                                    Text("试跑一次")
-                                }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(accent)
-                            .controlSize(.small)
-                            .disabled(self.isTesting)
-                        }
-                        
-                        TextField("输入测试内容", text: self.$sampleInput, axis: .vertical)
-                            .textFieldStyle(.roundedBorder)
-                            .lineLimit(2...4)
-                        
-                        if let testError = self.testError {
-                            Text(testError)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                        } else if !self.sampleOutput.isEmpty {
-                            ScrollView {
-                                Text(self.sampleOutput)
-                                    .font(.system(size: 11.5))
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .frame(maxHeight: 110)
-                            .padding(8)
-                            .background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        }
-                    }
-                    .padding(12)
-                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                 }
-                .padding(.trailing, 4)
             }
+            
+            HStack(spacing: 10) {
+                Text("专属人设")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .frame(width: 66, alignment: .leading)
+                
+                TextField("默认", text: self.$config.customPersona)
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: self.config.customPersona) { _, _ in
+                        self.saveBotConfig()
+                    }
+                
+                if !self.config.customPersona.isEmpty {
+                    Button("重置") {
+                        self.config.customPersona = ""
+                        self.saveBotConfig()
+                    }
+                    .controlSize(.small)
+                }
+            }
+            
+            if self.botID == .ghost {
+                self.ghostControls
+            }
+            
+            if self.botID == .persona {
+                self.personaControls
+            }
+            
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("核心指令 (Prompt)")
+                        .font(.system(size: 12.5, weight: .medium))
+                    Spacer()
+                    Button("恢复默认") {
+                        self.promptText = self.botID.defaultSystemPrompt
+                        self.botStore.setSystemPrompt(self.promptText, for: self.botID)
+                    }
+                    .controlSize(.mini)
+                    .disabled(self.promptText == self.botID.defaultSystemPrompt)
+                }
+                
+                TextEditor(text: self.$promptText)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .frame(height: 106)
+                    .padding(6)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                    )
+                    .onChange(of: self.promptText) { _, newValue in
+                        self.botStore.setSystemPrompt(newValue, for: self.botID)
+                    }
+            }
+            
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("实时试聊测试", systemImage: "play.circle.fill")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(accent)
+                    Spacer()
+                    Button {
+                        Task { await self.runSandboxTest() }
+                    } label: {
+                        if self.isTesting {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Text("试跑一次")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(accent)
+                    .controlSize(.small)
+                    .disabled(self.isTesting)
+                }
+                
+                TextField("输入测试内容", text: self.$sampleInput, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(2...3)
+                
+                if let testError = self.testError {
+                    Text(testError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                } else if !self.sampleOutput.isEmpty {
+                    Text(self.sampleOutput)
+                        .font(.system(size: 11.5))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
+            .padding(10)
+            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             
             HStack {
                 Button("全部恢复默认", role: .destructive) {
@@ -870,17 +1174,12 @@ private struct AIBotInspectorSheet: View {
                     self.loadInitialState()
                 }
                 .controlSize(.small)
-                
                 Spacer()
-                
-                Button("完成") {
-                    self.dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
-        .frame(width: 560, height: 590)
+        .padding(14)
+        .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
         .onAppear {
             self.loadInitialState()
         }
@@ -895,7 +1194,7 @@ private struct AIBotInspectorSheet: View {
                     UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.inlineCompletionEnabled)
                 }
             
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 Picker("策略", selection: self.$nextTokenStrategy) {
                     Text("智能省流").tag(AINextTokenStrategy.smart)
                     Text("积极伴写").tag(AINextTokenStrategy.proactive)
@@ -930,7 +1229,7 @@ private struct AIBotInspectorSheet: View {
             }
         }
         .padding(10)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
     
     
@@ -950,7 +1249,7 @@ private struct AIBotInspectorSheet: View {
             .disabled(self.analytics.isAnalyzingPersonality)
         }
         .padding(10)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
     
     

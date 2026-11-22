@@ -242,12 +242,6 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 .throttle(for: 0.1, scheduler: DispatchQueue.main, latest: true)
                 .sink { [weak self] in self?.setTheme(name: $0) },
             
-            // observe editable change
-            self.document.$isEditable
-                .sink { [weak self] isEditable in
-                    self?.textViews.forEach { $0.isEditable = isEditable }
-                },
-            
             // observe appearance change for theme toggle
             self.view.publisher(for: \.effectiveAppearance)
                 .sink { [weak self] appearance in
@@ -499,6 +493,27 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         
         switch item.action {
+            case #selector(toggleEditable), #selector(Document.toggleEditable(_:)):
+                let editable = self.focusedDocument.isEditable
+                if let menuItem = item as? NSMenuItem {
+                    menuItem.title = editable
+                        ? AppLanguage.text("锁定文档（演示防误触）", en: "Lock Document (Presentation Mode)")
+                        : AppLanguage.text("解除文档锁定", en: "Unlock Document")
+                    menuItem.image = NSImage(
+                        systemSymbolName: editable ? "lock" : "lock.open",
+                        accessibilityDescription: nil
+                    )
+                    if #unavailable(macOS 26) {
+                        menuItem.image = nil
+                    }
+                } else if let toolbarItem = item as? StatableToolbarItem {
+                    toolbarItem.state = editable ? .off : .on
+                    toolbarItem.toolTip = editable
+                        ? AppLanguage.text("点击锁定当前文档，防止演示/讲解时误操作", en: "Lock current document to prevent accidental edits")
+                        : AppLanguage.text("当前处于只读锁定模式，点击解锁编辑", en: "Document is locked read-only; click to unlock")
+                }
+                return true
+                
             case #selector(toggleAppearanceMode):
                 let isDark = (self.view.window?.effectiveAppearance ?? NSApp.effectiveAppearance).isDark
                 (item as? StatableToolbarItem)?.state = isDark ? .on : .off
@@ -1226,10 +1241,18 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
+    /// Toggles read-only lock mode on the currently focused document tab/pane so presentations never suffer accidental edits.
+    @IBAction func toggleEditable(_ sender: Any?) {
+        
+        self.focusedDocument.toggleEditable(sender)
+        self.view.window?.toolbar?.validateVisibleItems()
+    }
+    
+    
     /// Inserts an image into a Plain Text document as an inline `⟦🖼 ...⟧` card.
     @IBAction func insertPlainTextImage(_ sender: Any?) {
         
-        guard let textView = self.focusedTextView, let window = textView.window else {
+        guard let textView = self.focusedTextView, let window = textView.window, textView.isEditable else {
             NSSound.beep()
             return
         }
@@ -1238,9 +1261,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         if let clipboardImage = PlainTextInlineImageStore.shared.extractImage(from: .general),
            let stored = PlainTextInlineImageStore.shared.store(image: clipboardImage, for: docURL)
         {
-            textView.insertText(stored.token, replacementRange: textView.selectedRange())
-            textView.layoutManager?.invalidateLayout(forCharacterRange: textView.string.range, actualCharacterRange: nil)
-            textView.needsDisplay = true
+            textView.insertInlineImageTokenCleanly(stored.token)
             return
         }
         
@@ -1250,10 +1271,10 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         openPanel.beginSheetModal(for: window) { [weak textView] response in
             guard response == .OK, let url = openPanel.url else { return }
             Task { @MainActor in
-                guard let textView, let stored = PlainTextInlineImageStore.shared.storeImageFile(at: url, for: docURL) else { return }
-                textView.insertText(stored.token, replacementRange: textView.selectedRange())
-                textView.layoutManager?.invalidateLayout(forCharacterRange: textView.string.range, actualCharacterRange: nil)
-                textView.needsDisplay = true
+                guard let textView, textView.isEditable,
+                      let stored = PlainTextInlineImageStore.shared.storeImageFile(at: url, for: docURL)
+                else { return }
+                textView.insertInlineImageTokenCleanly(stored.token)
             }
         }
     }

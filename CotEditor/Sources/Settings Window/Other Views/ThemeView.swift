@@ -536,14 +536,19 @@ private struct ThemeEditorView: View {
             HStack {
                 Spacer()
                 Button(String(localized: "Show theme file information", table: "ThemeEditor"), systemImage: "info") {
-                    self.isMetadataPresenting.toggle()
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        self.isMetadataPresenting.toggle()
+                    }
                 }
                 .symbolVariant(.circle)
                 .labelStyle(.iconOnly)
-                .popover(isPresented: $isMetadataPresenting, arrowEdge: .trailing) {
-                    ThemeMetadataView(metadata: $theme.metadata ?? .init(), isEditable: !self.isBundled)
-                }
                 .buttonStyle(.borderless)
+            }
+            
+            if self.isMetadataPresenting {
+                Divider()
+                ThemeMetadataView(metadata: $theme.metadata ?? .init(), isEditable: !self.isBundled)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .accessibilityElement(children: .contain)

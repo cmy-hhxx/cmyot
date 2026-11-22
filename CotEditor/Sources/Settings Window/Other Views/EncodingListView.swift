@@ -68,11 +68,20 @@ struct EncodingListView: View {
     
     @Environment(\.undoManager) private var undoManager
     @Environment(\.dismiss) private var dismiss
+    private let isEmbeddedInline: Bool
+    private let onDone: (() -> Void)?
     
     
-    init(defaultEncoding: FileEncoding, defaults: UserDefaults = .standard) {
+    init(
+        defaultEncoding: FileEncoding,
+        defaults: UserDefaults = .standard,
+        isEmbeddedInline: Bool = false,
+        onDone: (() -> Void)? = nil
+    ) {
         
         self.model = Model(defaultEncoding: defaultEncoding.encoding.cfEncoding, defaults: defaults)
+        self.isEmbeddedInline = isEmbeddedInline
+        self.onDone = onDone
     }
     
     
@@ -169,17 +178,26 @@ struct EncodingListView: View {
                 
                 SubmitButtonGroup {
                     self.model.save()
-                    self.dismiss()
+                    if let onDone = self.onDone {
+                        onDone()
+                    } else {
+                        self.dismiss()
+                    }
                 } cancelAction: {
-                    self.dismiss()
+                    if let onDone = self.onDone {
+                        onDone()
+                    } else {
+                        self.dismiss()
+                    }
                 }
             }
         }
         .onAppear {
             self.model.undoManager = self.undoManager
         }
-        .scenePadding()
-        .frame(idealWidth: 380, maxHeight: 450)
+        .padding(self.isEmbeddedInline ? 14 : 20)
+        .frame(maxWidth: self.isEmbeddedInline ? .infinity : nil)
+        .frame(idealWidth: self.isEmbeddedInline ? nil : 380, maxHeight: self.isEmbeddedInline ? nil : 450)
     }
 }
 

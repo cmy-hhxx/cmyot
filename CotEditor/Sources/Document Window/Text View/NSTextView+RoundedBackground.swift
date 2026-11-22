@@ -71,6 +71,46 @@ extension NSTextView {
     }
     
     
+    /// Draws translucent `2pt`-radius highlight bands for `.notesHighlightFillColor`, merging adjacent rects on the same line.
+    final func drawNotesHighlights(range dirtyRange: NSRange, in dirtyRect: NSRect) {
+        
+        guard let layoutManager = self.layoutManager else { return }
+        
+        var coloredRects: [NSColor: [NSRect]] = [:]
+        layoutManager.enumerateTemporaryAttribute(.notesHighlightFillColor, type: NSColor.self, in: dirtyRange) { color, range, _ in
+            let lineRects = self.boundingRects(for: range)
+                .map(self.centerScanRect)
+                .filter { !$0.isEmpty && $0.intersects(dirtyRect) }
+            guard !lineRects.isEmpty else { return }
+            
+            var merged: [NSRect] = []
+            for rect in lineRects {
+                if let last = merged.last,
+                   abs(last.minY - rect.minY) <= 1.5,
+                   abs(last.height - rect.height) <= 2.5,
+                   rect.minX <= last.maxX + 2.5
+                {
+                    merged[merged.count - 1] = last.union(rect)
+                } else {
+                    merged.append(rect)
+                }
+            }
+            coloredRects[color, default: []] += merged
+        }
+        
+        guard !coloredRects.isEmpty else { return }
+        
+        NSGraphicsContext.saveGraphicsState()
+        for (color, rects) in coloredRects {
+            color.setFill()
+            for rect in rects {
+                NSBezierPath(roundedRect: rect, xRadius: 2.0, yRadius: 2.0).fill()
+            }
+        }
+        NSGraphicsContext.restoreGraphicsState()
+    }
+    
+    
     // MARK: Private Methods
     
     /// Returns fragment bezier paths of which a rounded rect for given range consists.

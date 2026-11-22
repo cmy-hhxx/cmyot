@@ -83,7 +83,16 @@ extension NSAttributedString.Key {
     
     // MARK: Public Properties
     
-    @ObservationIgnored @Published @objc var isEditable = true  { didSet { self.invalidateRestorableState() } }  // @objc for AppleScript support
+    static let didChangeEditableNotification = Notification.Name("CotEditorDocumentDidChangeEditable")
+    
+    @ObservationIgnored @Published @objc var isEditable = true {
+        didSet {
+            self.invalidateRestorableState()
+            if oldValue != self.isEditable {
+                NotificationCenter.default.post(name: Self.didChangeEditableNotification, object: self)
+            }
+        }
+    }  // @objc for AppleScript support
     var isTransient = false  // untitled & empty document that was created automatically
     var isExplicitlyNamed = false  // true once user or AI deliberately renames this document
     @ObservationIgnored @Published var hasUncommittedChanges = false
@@ -723,6 +732,7 @@ extension NSAttributedString.Key {
     override func prepareSavePanel(_ savePanel: NSSavePanel) -> Bool {
         
         savePanel.allowsOtherFileTypes = true
+        savePanel.showsTagField = false
         
         // workaround the issue that NSDocument cannot resolve the file extension
         // from a dynamic UTType, falling back to .txt (2026-03, macOS 26)
@@ -735,13 +745,19 @@ extension NSAttributedString.Key {
             }
         }
         
-        // set accessory view
-        let saveOptions = SaveOptions(isExecutable: self.isExecutable)
-        self.saveOptions = saveOptions
-        let accessory = SavePanelAccessory(options: saveOptions)
-        let accessoryView = NSHostingView(rootView: accessory)
-        accessoryView.sizingOptions = .intrinsicContentSize
-        savePanel.accessoryView = accessoryView
+        // Only surface "Make file executable" for script/shell syntaxes so ordinary notes stay clutter-free
+        let scriptSyntaxes: Set<String> = ["Shell Script", "Python", "Ruby", "Perl", "PHP", "Lua", "JavaScript", "TypeScript", "Makefile"]
+        if scriptSyntaxes.contains(self.syntaxName) || self.isExecutable {
+            let saveOptions = SaveOptions(isExecutable: self.isExecutable)
+            self.saveOptions = saveOptions
+            let accessory = SavePanelAccessory(options: saveOptions)
+            let accessoryView = NSHostingView(rootView: accessory)
+            accessoryView.sizingOptions = .intrinsicContentSize
+            savePanel.accessoryView = accessoryView
+        } else {
+            self.saveOptions = nil
+            savePanel.accessoryView = nil
+        }
         
         return true
     }
@@ -769,23 +785,17 @@ extension NSAttributedString.Key {
         
         if self.hasUnautosavedChanges, !self.allowsLossySaving, !self.canBeConverted() {
             let alert = NSAlert()
-            alert.messageText = String(
-                localized: "DocumentClosingAlert.message",
-                defaultValue: "Do you want to save the changes made to the document “\(self.displayName!)”?",
-                comment: "Refer the same sentence in AppKit.framework by Apple."
+            alert.messageText = AppLanguage.text(
+                "要保存对文档「\(self.displayName!)」的更改吗？",
+                en: "Save changes made to “\(self.displayName!)”?"
             ) + "\n" + LossyEncodingError(encoding: self.fileEncoding).localizedDescription
-            alert.informativeText = String(
-                localized: "DocumentClosingAlert.lossyEncoding.informativeText",
-                defaultValue: "Your changes will be lost if you don’t save them. Incompatible characters are either substituted or removed in saving.",
-                comment: "For the first sentence, refer the same sentence in AppKit.framework by Apple. For the latter one, refer the DocumentSavingAlert.lossyEncoding.recoverySuggestion.")
-            alert.addButton(withTitle: String(
-                localized: "DocumentSavingError.lossyEncoding.recoveryOption.save",
-                defaultValue: "Save Available Text"))
-            alert.addButton(withTitle: String(
-                localized: "DocumentClosingAlert.button.dontSave",
-                defaultValue: "Don’t Save",
-                comment: "Refer the same sentence in AppKit.framework by Apple."))
-            alert.addButton(withTitle: String(localized: .cancel))
+            alert.informativeText = AppLanguage.text(
+                "当前编码无法完整保留部分字符，保存时将替换或移除不兼容字符。",
+                en: "Incompatible characters are either substituted or removed in saving."
+            )
+            alert.addButton(withTitle: AppLanguage.text("保存可用文本", en: "Save Available Text"))
+            alert.addButton(withTitle: AppLanguage.text("不保存", en: "Don’t Save"))
+            alert.addButton(withTitle: AppLanguage.text("取消", en: "Cancel"))
             alert.buttons[1].hasDestructiveAction = true
             alert.window.identifier = .contentDependentAlert
             
@@ -799,12 +809,11 @@ extension NSAttributedString.Key {
                 switch returnCode {
                     case .alertFirstButtonReturn:  // Save
                         self.allowsLossySaving = true
-                        super.canClose(withDelegate: delegate, shouldClose: shouldCloseSelector, contextInfo: contextInfo)
+                        self.presentMinimalClosePromptIfNeeded(withDelegate: delegate, shouldClose: shouldCloseSelector, contextInfo: contextInfo)
                     case .alertSecondButtonReturn:  // Don't Save
-                        // tell the document can be closed without saving
                         DelegateContext(delegate: delegate, selector: shouldCloseSelector, contextInfo: contextInfo)
                             .perform(from: self, flag: true)
-                    default:  // Cancel (or the sheet was dismissed programmatically)
+                    default:  // Cancel
                         DelegateContext(delegate: delegate, selector: shouldCloseSelector, contextInfo: contextInfo)
                             .perform(from: self, flag: false)
                 }
@@ -812,7 +821,73 @@ extension NSAttributedString.Key {
             return
         }
         
-        super.canClose(withDelegate: delegate, shouldClose: shouldCloseSelector, contextInfo: contextInfo)
+        self.presentMinimalClosePromptIfNeeded(withDelegate: delegate, shouldClose: shouldCloseSelector, contextInfo: contextInfo)
+    }
+    
+    
+    /// Replaces macOS's verbose English save/delete close dialog with an ultra-concise 1-click Chinese sheet.
+    private func presentMinimalClosePromptIfNeeded(withDelegate delegate: Any, shouldClose shouldCloseSelector: Selector?, contextInfo: UnsafeMutableRawPointer?) {
+        
+        let needsPrompt = self.hasUnautosavedChanges
+            || self.isDocumentEdited
+            || (self.fileURL == nil && !self.textStorage.string.isEmpty)
+        
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+              needsPrompt,
+              let hostWindow = self.windowForSheet,
+              hostWindow.isVisible
+        else {
+            super.canClose(withDelegate: delegate, shouldClose: shouldCloseSelector, contextInfo: contextInfo)
+            return
+        }
+        
+        let context = DelegateContext(delegate: delegate, selector: shouldCloseSelector, contextInfo: contextInfo)
+        let title = self.displayName ?? AppLanguage.text("未命名", en: "Untitled")
+        let isUntitled = (self.fileURL == nil)
+        let suggestedExt = self.syntaxController.syntax.fileMap.extensions?.first ?? "txt"
+        
+        MinimalCloseConfirmController.presentSheet(
+            documentTitle: title,
+            isUntitled: isUntitled,
+            suggestedExtension: suggestedExt,
+            on: hostWindow
+        ) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+                case .cancel:
+                    context.perform(from: self, flag: false)
+                case .discard:
+                    if self.fileURL == nil, let autosavedURL = self.autosavedContentsFileURL {
+                        try? FileManager.default.removeItem(at: autosavedURL)
+                    }
+                    self.updateChangeCount(.changeCleared)
+                    context.perform(from: self, flag: true)
+                case .save(let customTargetURL):
+                    let destinationURL = customTargetURL ?? self.fileURL
+                    guard let destinationURL else {
+                        context.perform(from: self, flag: false)
+                        return
+                    }
+                    let operation: NSDocument.SaveOperationType = (self.fileURL == nil) ? .saveAsOperation : .saveOperation
+                    let typeName = self.fileType
+                        ?? (try? NSDocumentController.shared.typeForContents(of: destinationURL))
+                        ?? UTType.plainText.identifier
+                    self.save(to: destinationURL, ofType: typeName, for: operation) { error in
+                        Task { @MainActor in
+                            if let error {
+                                self.presentErrorAsSheet(error)
+                                context.perform(from: self, flag: false)
+                            } else {
+                                if self.fileURL == nil {
+                                    self.fileURL = destinationURL
+                                }
+                                self.updateChangeCount(.changeCleared)
+                                context.perform(from: self, flag: true)
+                            }
+                        }
+                    }
+            }
+        }
     }
     
     
@@ -1865,9 +1940,9 @@ private extension Document {
 }
 
 
-// MARK: - Private Extensions
+// MARK: - Extensions
 
-private extension NSUserInterfaceItemIdentifier {
+extension NSUserInterfaceItemIdentifier {
     
     /// The identifier for alert sheets asking questions that depend on the current document contents.
     static let contentDependentAlert = NSUserInterfaceItemIdentifier("contentDependentAlert")

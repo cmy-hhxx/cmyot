@@ -435,7 +435,7 @@ struct DocumentCenterView: View {
         ZStack(alignment: .bottom) {
             HStack(spacing: 0) {
                 self.sidebar(items: displayedItems, activeItem: activeItem)
-                    .frame(width: 276)
+                    .frame(width: 356)
                 
                 Rectangle()
                     .fill(Color.primary.opacity(0.07))
@@ -483,41 +483,41 @@ struct DocumentCenterView: View {
     }
     
     
-    private func selectedItem(in items: [DocumentCenterState.ManagedDocumentItem]) -> DocumentCenterState.ManagedDocumentItem? {
-        
-        guard let selectedID = self.state.selectedID else { return items.first }
-        return items.first(where: { $0.id == selectedID }) ?? items.first
+    @State private var selectedFolderID: String = "__all__"
+    
+    private var visibleItemsInSelectedFolder: [DocumentCenterState.ManagedDocumentItem] {
+        let allDisplayed = self.state.displayedItems
+        if self.state.showingTrash || self.selectedFolderID == "__all__" {
+            return allDisplayed
+        }
+        return self.state.groupSections.first(where: { $0.id == self.selectedFolderID })?.items ?? allDisplayed
     }
     
     
-    // MARK: Sidebar
+    private func selectedItem(in items: [DocumentCenterState.ManagedDocumentItem]) -> DocumentCenterState.ManagedDocumentItem? {
+        
+        let folderItems = self.visibleItemsInSelectedFolder
+        guard let selectedID = self.state.selectedID else { return folderItems.first ?? items.first }
+        return folderItems.first(where: { $0.id == selectedID })
+            ?? items.first(where: { $0.id == selectedID })
+            ?? folderItems.first
+            ?? items.first
+    }
+    
+    
+    // MARK: Sidebar (Glass Folder Deck + Spacious 1-Click Rows)
     
     private func sidebar(
         items: [DocumentCenterState.ManagedDocumentItem],
         activeItem: DocumentCenterState.ManagedDocumentItem?
     ) -> some View {
         
-        VStack(spacing: 0) {
+        let folderColumns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+        let currentItems = self.visibleItemsInSelectedFolder
+        
+        return VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .center, spacing: 8) {
-                    Image(systemName: self.state.showingTrash ? "trash.fill" : "square.stack.3d.up.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(self.state.showingTrash ? Color.secondary : Color.accentColor)
-                        .frame(width: 18, height: 18)
-                    
-                    Text(self.state.showingTrash ? "废纸篓" : "文档中心")
-                        .font(.system(size: 13.5, weight: .semibold))
-                    
-                    Text("\(self.state.showingTrash ? self.state.trashedItems.count : items.count)")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1.5)
-                        .background(Color.primary.opacity(0.06), in: Capsule())
-                    
-                    Spacer()
-                    
                     if let onDismiss = self.onDismiss {
                         Button {
                             onDismiss()
@@ -526,150 +526,158 @@ struct DocumentCenterView: View {
                                 Image(systemName: "chevron.left")
                                     .font(.system(size: 10, weight: .semibold))
                                 Text("返回")
-                                    .font(.system(size: 11.5, weight: .medium))
+                                    .font(.system(size: 12, weight: .medium))
                             }
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 6))
+                            .padding(.horizontal, 10)
+                            .frame(height: 28)
+                            .background(Color.primary.opacity(0.06), in: Capsule())
                         }
                         .buttonStyle(.plain)
                         .pointerStyle(.link)
                         .help("返回编辑器 (Esc)")
                     }
-                }
-                .frame(height: 24)
-                
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.tertiary)
                     
-                    TextField("搜索文档标题或内容…", text: self.$state.searchText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12.5))
+                    Text(self.state.showingTrash ? "废纸篓" : "文档中心")
+                        .font(.system(size: 14.5, weight: .semibold))
                     
-                    if !self.state.searchText.isEmpty {
-                        Button {
-                            self.state.searchText = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .frame(height: 28)
-                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.06), lineWidth: 1))
-                
-                Button {
-                    self.isRenaming = false
-                    self.state.showingTrash.toggle()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: self.state.showingTrash ? "tray.full" : "trash")
-                            .font(.system(size: 11.5, weight: .medium))
-                        Text(self.state.showingTrash ? "返回文档列表" : "废纸篓")
-                            .font(.system(size: 12, weight: .medium))
-                        Spacer()
-                        Text("\(self.state.trashedItems.count)")
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 9)
-                    .frame(height: 26)
-                    .background(
-                        self.state.showingTrash
-                            ? Color.primary.opacity(0.075)
-                            : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 6)
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .help(self.state.showingTrash ? "返回正常文档列表" : "查看已删除的文档，可恢复或彻底删除")
-                
-                if !self.state.showingTrash {
-                    HStack(spacing: 6) {
-                    Button {
-                        self.openAll(items: items)
-                    } label: {
-                        Label("打开全部 (\(items.count))", systemImage: "square.stack.3d.up")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(items.isEmpty)
-                    .pointerStyle(.link)
-                    .help("一键将列表中的所有文档作为标签页在当前窗口打开")
+                    Text("\(self.state.showingTrash ? self.state.trashedItems.count : items.count)")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Color.primary.opacity(0.06), in: Capsule())
                     
-                    Button {
-                        self.pendingAssignAfterGroupCreate = nil
-                        self.newGroupDraft = ""
-                        self.isCreatingGroup.toggle()
-                    } label: {
-                        Image(systemName: "folder.badge.plus")
-                    }
-                    .controlSize(.small)
-                    .pointerStyle(.link)
-                    .help("新建文档分组")
+                    Spacer(minLength: 4)
                     
-                    if let onCreateNewDocument = self.onCreateNewDocument {
+                    if let onCreateNewDocument = self.onCreateNewDocument, !self.state.showingTrash {
                         Button {
                             onCreateNewDocument()
                         } label: {
                             Label("新建", systemImage: "plus")
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .padding(.horizontal, 9)
+                                .frame(height: 28)
                         }
+                        .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                         .pointerStyle(.link)
                         .help("新建空白文档")
                     }
                 }
                 
-                if self.isCreatingGroup {
+                HStack(spacing: 8) {
                     HStack(spacing: 6) {
-                        TextField("新分组名称…", text: self.$newGroupDraft)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 12))
-                            .onSubmit {
-                                self.commitCreateGroup()
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                        
+                        TextField("搜索文档标题或内容…", text: self.$state.searchText)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12.5))
+                        
+                        if !self.state.searchText.isEmpty {
+                            Button {
+                                self.state.searchText = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.tertiary)
                             }
-                        Button("创建") {
-                            self.commitCreateGroup()
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.mini)
-                        .pointerStyle(.link)
-                        Button("取消") {
-                            self.isCreatingGroup = false
-                            self.pendingAssignAfterGroupCreate = nil
-                        }
-                        .controlSize(.mini)
-                        .pointerStyle(.link)
                     }
-                    .padding(.top, 2)
-                }
+                    .padding(.horizontal, 10)
+                    .frame(height: 32)
+                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    
+                    Button {
+                        self.isRenaming = false
+                        self.state.showingTrash.toggle()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: self.state.showingTrash ? "folder" : "trash")
+                                .font(.system(size: 11.5, weight: .medium))
+                            Text("\(self.state.trashedItems.count)")
+                                .font(.system(size: 11, design: .monospaced))
+                        }
+                        .foregroundStyle(self.state.showingTrash ? Color.accentColor : Color.secondary)
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .background(
+                            (self.state.showingTrash ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.05)),
+                            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(self.state.showingTrash ? "返回正常文档" : "查看废纸篓")
                 }
                 
-                if self.state.showingTrash, !self.state.trashedItems.isEmpty {
+                if !self.state.showingTrash {
+                    HStack(spacing: 8) {
+                        Button {
+                            self.openAll(items: currentItems)
+                        } label: {
+                            Label("全部在编辑器打开 (\(currentItems.count))", systemImage: "square.stack.3d.up")
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 28)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(currentItems.isEmpty)
+                        .pointerStyle(.link)
+                        
+                        Button {
+                            self.pendingAssignAfterGroupCreate = nil
+                            self.newGroupDraft = ""
+                            self.isCreatingGroup.toggle()
+                        } label: {
+                            Label("新建分组", systemImage: "folder.badge.plus")
+                                .frame(height: 28)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .pointerStyle(.link)
+                    }
+                    
+                    if self.isCreatingGroup {
+                        HStack(spacing: 6) {
+                            TextField("新分组名称…", text: self.$newGroupDraft)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 12))
+                                .onSubmit {
+                                    self.commitCreateGroup()
+                                }
+                            Button("创建") {
+                                self.commitCreateGroup()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .pointerStyle(.link)
+                            Button("取消") {
+                                self.isCreatingGroup = false
+                                self.pendingAssignAfterGroupCreate = nil
+                            }
+                            .controlSize(.small)
+                            .pointerStyle(.link)
+                        }
+                    }
+                } else if !self.state.trashedItems.isEmpty {
                     Button(role: .destructive) {
                         self.confirmEmptyTrash()
                     } label: {
                         Label("清空废纸篓", systemImage: "trash.slash")
                             .frame(maxWidth: .infinity)
+                            .frame(height: 28)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .pointerStyle(.link)
-                    .help("彻底删除废纸篓中的所有文档")
                 }
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 14)
             .padding(.vertical, 12)
             
             Rectangle()
@@ -677,123 +685,146 @@ struct DocumentCenterView: View {
                 .frame(height: 1)
             
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    if self.state.showingTrash {
-                        if self.state.displayedItems.isEmpty {
-                            Text(self.state.searchText.isEmpty ? "废纸篓是空的" : "没有匹配的文档")
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(.tertiary)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 10)
-                        } else {
-                            ForEach(self.state.displayedItems) { item in
-                                TrashSidebarRow(
-                                    item: item,
-                                    isSelected: activeItem?.id == item.id,
+                VStack(alignment: .leading, spacing: 14) {
+                    if !self.state.showingTrash {
+                        // Glass Folder Shelf
+                        LazyVGrid(columns: folderColumns, spacing: 12) {
+                            GlassFolderCardView(
+                                title: "全部文档",
+                                count: items.count,
+                                theme: .aurora,
+                                sheets: items.prefix(4).map {
+                                    GlassFolderSheetItem(id: $0.id, title: $0.title, meta: "\($0.characterCount) 字", accentHex: $0.isDirty ? "#E5983C" : "#44C997")
+                                },
+                                isSelected: self.selectedFolderID == "__all__",
+                                onSelect: {
+                                    self.isRenaming = false
+                                    self.selectedFolderID = "__all__"
+                                },
+                                onAdd: self.onCreateNewDocument,
+                                onOpenAll: { self.openAll(items: items) }
+                            )
+                            
+                            ForEach(Array(self.state.groupSections.enumerated()), id: \.element.id) { idx, section in
+                                let folderTheme = section.isUngrouped ? GlassFolderTheme.glacier : GlassFolderTheme.rotatingTheme(forIndex: idx + 1)
+                                GlassFolderCardView(
+                                    title: section.name,
+                                    count: section.items.count,
+                                    theme: folderTheme,
+                                    sheets: section.items.prefix(4).map {
+                                        GlassFolderSheetItem(id: $0.id, title: $0.title, meta: "\($0.characterCount) 字", accentHex: "#6F97C2")
+                                    },
+                                    isSelected: self.selectedFolderID == section.id,
                                     onSelect: {
                                         self.isRenaming = false
-                                        self.state.selectedID = item.id
+                                        self.selectedFolderID = section.id
                                     },
-                                    onRestore: {
-                                        self.restore(item: item)
+                                    onAdd: self.onCreateNewDocument,
+                                    onRename: section.isUngrouped ? nil : {
+                                        self.groupRenameDraft = section.name
+                                        self.renamingGroupName = section.name
                                     },
-                                    onPermanentlyDelete: {
-                                        self.permanentlyDelete(item: item)
+                                    onOpenAll: { self.openAll(items: section.items) },
+                                    onDeleteGroup: section.isUngrouped ? nil : {
+                                        self.db.deleteDocumentGroup(named: section.name)
+                                        if self.selectedFolderID == section.id {
+                                            self.selectedFolderID = "__all__"
+                                        }
+                                        self.state.refresh()
+                                        self.showToast("已解散分组「\(section.name)」")
                                     }
                                 )
-                                .padding(.leading, 12)
                             }
                         }
-                    } else {
-                    ForEach(self.state.groupSections) { section in
-                        let isExpanded = !self.state.collapsedGroups.contains(section.id) || !self.state.searchText.isEmpty
                         
-                        DocumentGroupHeaderRow(
-                            section: section,
-                            isExpanded: isExpanded,
-                            isRenaming: self.renamingGroupName == section.name && !section.isUngrouped,
-                            renameDraft: self.$groupRenameDraft,
-                            onToggleExpand: {
-                                if self.state.collapsedGroups.contains(section.id) {
-                                    self.state.collapsedGroups.remove(section.id)
-                                } else {
-                                    self.state.collapsedGroups.insert(section.id)
+                        if let renamingGroupName = self.renamingGroupName {
+                            HStack(spacing: 6) {
+                                TextField("重命名分组「\(renamingGroupName)」", text: self.$groupRenameDraft)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(size: 12))
+                                    .onSubmit {
+                                        self.commitGroupRename(oldName: renamingGroupName)
+                                    }
+                                Button("保存") {
+                                    self.commitGroupRename(oldName: renamingGroupName)
                                 }
-                            },
-                            onBeginRename: {
-                                self.groupRenameDraft = section.name
-                                self.renamingGroupName = section.name
-                            },
-                            onCommitRename: {
-                                self.commitGroupRename(oldName: section.name)
-                            },
-                            onCancelRename: {
-                                self.renamingGroupName = nil
-                            },
-                            onOpenAllInGroup: {
-                                self.openAll(items: section.items)
-                            },
-                            onDeleteGroup: {
-                                self.db.deleteDocumentGroup(named: section.name)
-                                self.state.refresh()
-                                self.showToast("已解散分组「\(section.name)」，文档已移至未分组")
-                            },
-                            onDropItemID: { droppedID in
-                                guard let dropped = self.state.items.first(where: { $0.id == droppedID }) else { return }
-                                self.move(item: dropped, toGroup: section.isUngrouped ? "" : section.name)
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                Button("取消") {
+                                    self.renamingGroupName = nil
+                                }
+                                .controlSize(.small)
                             }
-                        )
+                        }
                         
-                        if isExpanded {
-                            if section.items.isEmpty {
-                                Text("暂无文档，右键文档可移入此分组")
-                                    .font(.system(size: 11))
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.06))
+                            .frame(height: 1)
+                    }
+                    
+                    // Easy-to-click Spacious Document Rows
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        if self.state.showingTrash {
+                            if self.state.displayedItems.isEmpty {
+                                Text(self.state.searchText.isEmpty ? "废纸篓是空的" : "没有匹配的文档")
+                                    .font(.system(size: 12))
                                     .foregroundStyle(.tertiary)
-                                    .padding(.leading, 26)
-                                    .padding(.vertical, 6)
+                                    .padding(.vertical, 12)
                             } else {
-                                ForEach(section.items) { item in
-                                    DocumentSidebarRow(
+                                ForEach(self.state.displayedItems) { item in
+                                    TrashSidebarRow(
                                         item: item,
                                         isSelected: activeItem?.id == item.id,
-                                        statusColor: self.statusColor(for: item),
-                                        availableGroups: self.db.documentGroups,
                                         onSelect: {
                                             self.isRenaming = false
                                             self.state.selectedID = item.id
                                         },
-                                        onOpen: {
-                                            self.open(item: item)
-                                        },
-                                        onRename: {
-                                            self.state.selectedID = item.id
-                                            self.renameDraft = item.title
-                                            self.isRenaming = true
-                                            DispatchQueue.main.async {
-                                                self.isRenameFieldFocused = true
-                                            }
-                                        },
-                                        onMoveToGroup: { groupName in
-                                            self.move(item: item, toGroup: groupName)
-                                        },
-                                        onCreateGroupAndMove: {
-                                            self.pendingAssignAfterGroupCreate = item
-                                            self.newGroupDraft = ""
-                                            self.isCreatingGroup = true
-                                        },
-                                        onDelete: {
-                                            self.delete(item: item, in: items)
-                                        }
+                                        onRestore: { self.restore(item: item) },
+                                        onPermanentlyDelete: { self.permanentlyDelete(item: item) }
                                     )
-                                    .padding(.leading, 12)
                                 }
+                            }
+                        } else if currentItems.isEmpty {
+                            Text("此文件夹暂无文档")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                                .padding(.vertical, 12)
+                        } else {
+                            ForEach(currentItems) { item in
+                                DocumentSidebarRow(
+                                    item: item,
+                                    isSelected: activeItem?.id == item.id,
+                                    statusColor: self.statusColor(for: item),
+                                    availableGroups: self.db.documentGroups,
+                                    onSelect: {
+                                        self.isRenaming = false
+                                        self.state.selectedID = item.id
+                                    },
+                                    onOpen: { self.open(item: item) },
+                                    onRename: {
+                                        self.state.selectedID = item.id
+                                        self.renameDraft = item.title
+                                        self.isRenaming = true
+                                        DispatchQueue.main.async {
+                                            self.isRenameFieldFocused = true
+                                        }
+                                    },
+                                    onMoveToGroup: { groupName in
+                                        self.move(item: item, toGroup: groupName)
+                                    },
+                                    onCreateGroupAndMove: {
+                                        self.pendingAssignAfterGroupCreate = item
+                                        self.newGroupDraft = ""
+                                        self.isCreatingGroup = true
+                                    },
+                                    onDelete: { self.delete(item: item, in: items) }
+                                )
                             }
                         }
                     }
-                    }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
             }
         }
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.45))
@@ -945,7 +976,29 @@ struct DocumentCenterView: View {
                 
                 Spacer(minLength: 8)
                 
-                if !item.isTrashed {
+                if item.isTrashed {
+                    HStack(spacing: 8) {
+                        Button {
+                            self.restore(item: item)
+                        } label: {
+                            Label("恢复文档", systemImage: "arrow.uturn.backward")
+                                .frame(height: 28)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .pointerStyle(.link)
+                        
+                        Button(role: .destructive) {
+                            self.permanentlyDelete(item: item)
+                        } label: {
+                            Label("彻底删除", systemImage: "trash.slash")
+                                .frame(height: 28)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .pointerStyle(.link)
+                    }
+                } else {
                     HStack(spacing: 8) {
                         Button {
                             let pboard = NSPasteboard.general
@@ -959,6 +1012,7 @@ struct DocumentCenterView: View {
                             }
                         } label: {
                             Label(self.copiedFlag ? "已拷贝" : "拷贝全文", systemImage: self.copiedFlag ? "checkmark" : "doc.on.doc")
+                                .frame(height: 28)
                         }
                         .controlSize(.small)
                         .pointerStyle(.link)
@@ -967,6 +1021,7 @@ struct DocumentCenterView: View {
                             self.open(item: item)
                         } label: {
                             Label("在编辑器打开", systemImage: "arrow.up.right.square")
+                                .frame(height: 28)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
@@ -975,7 +1030,7 @@ struct DocumentCenterView: View {
                 }
             }
             .padding(.horizontal, 24)
-            .frame(height: 52)
+            .frame(height: 56)
             
             Rectangle()
                 .fill(Color.primary.opacity(0.06))
@@ -1035,6 +1090,8 @@ struct DocumentCenterView: View {
             liveDoc.showWindows()
         } else if let path = item.filePath, FileManager.default.fileExists(atPath: path) {
             NSDocumentController.shared.openDocument(withContentsOf: URL(filePath: path), display: true) { _, _, _ in }
+        } else if let stored = item.storedRecord {
+            AnalyticsDashboardWindowController.shared.openDocument(stored)
         }
     }
     
@@ -1483,61 +1540,95 @@ private struct DocumentSidebarRow: View {
     
     var body: some View {
         
-        HStack(alignment: .center, spacing: 8) {
-            Circle()
-                .fill(self.statusColor)
-                .frame(width: 6.5, height: 6.5)
-            
-            Text(self.item.title)
-                .font(.system(size: 12.5, weight: self.isSelected ? .semibold : .regular))
-                .foregroundStyle(self.isSelected ? Color.primary : Color.primary.opacity(0.88))
-                .lineLimit(1)
-            
-            Spacer(minLength: 4)
-            
+        HStack(alignment: .center, spacing: 10) {
             Button {
-                self.onDelete()
+                self.onSelect()
             } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(self.isTrashHovered ? Color.red : Color.secondary)
-                    .frame(width: 22, height: 22)
-                    .background(
-                        self.isTrashHovered ? Color.red.opacity(0.14) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 5)
-                    )
+                HStack(alignment: .center, spacing: 10) {
+                    Circle()
+                        .fill(self.statusColor)
+                        .frame(width: 7, height: 7)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(self.item.title)
+                            .font(.system(size: 13, weight: self.isSelected ? .semibold : .medium))
+                            .foregroundStyle(self.isSelected ? Color.primary : Color.primary.opacity(0.9))
+                            .lineLimit(1)
+                        
+                        HStack(spacing: 6) {
+                            Text("\(self.item.characterCount) 字")
+                            if !self.item.groupName.isEmpty {
+                                Text("·")
+                                Text(self.item.groupName)
+                            }
+                        }
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    }
+                    
+                    Spacer(minLength: 4)
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .pointerStyle(.link)
-            .opacity((self.isHovered || self.isSelected) ? 1.0 : 0.0)
-            .allowsHitTesting(self.isHovered || self.isSelected)
-            .onHover { hovering in
-                self.isTrashHovered = hovering
+            
+            if self.isHovered || self.isSelected {
+                Button {
+                    self.onOpen()
+                } label: {
+                    Text("打开")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .background(Color.accentColor, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help("在编辑器标签页打开「\(self.item.title)」")
+                
+                Button {
+                    self.onDelete()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(self.isTrashHovered ? Color.red : Color.secondary)
+                        .frame(width: 24, height: 24)
+                        .background(
+                            self.isTrashHovered ? Color.red.opacity(0.14) : Color.primary.opacity(0.05),
+                            in: Circle()
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .onHover { hovering in
+                    self.isTrashHovered = hovering
+                }
+                .help("移到废纸篓「\(self.item.title)」")
             }
-            .help("移到废纸篓「\(self.item.title)」")
         }
-        .padding(.horizontal, 10)
-        .frame(height: 30)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            self.isSelected
-                ? Color.accentColor.opacity(0.14)
-                : (self.isHovered ? Color.primary.opacity(0.05) : Color.clear),
-            in: RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                    self.isSelected
+                        ? Color.accentColor.opacity(0.14)
+                        : (self.isHovered ? Color.primary.opacity(0.05) : Color.primary.opacity(0.02))
+                )
         )
-        .contentShape(Rectangle())
-        .pointerStyle(.link)
-        .draggable(self.item.id)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(
+                    self.isSelected ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.05),
+                    lineWidth: 0.75
+                )
+        )
         .onHover { hovering in
             self.isHovered = hovering
-        }
-        // Single-click selects immediately with 0ms delay; double-click (clickCount >= 2) opens directly.
-        .onTapGesture {
-            if (NSApp.currentEvent?.clickCount ?? 1) >= 2 {
-                self.onOpen()
-            } else {
-                self.onSelect()
-            }
         }
         .contextMenu {
             Button("在当前窗口打开") { self.onOpen() }

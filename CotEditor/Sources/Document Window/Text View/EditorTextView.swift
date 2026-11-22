@@ -211,6 +211,29 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     private weak var imagePreviewPopover: NSPopover?
     private weak var imageTransformPopover: NSPopover?
     
+    // Bounding Box Resize & handle morph animation state
+    private var inlineImageTrackingArea: NSTrackingArea?
+    private var hoveredResizeHandle: BoundingBoxHandle?
+    private var activeDraggingResizeHandle: BoundingBoxHandle?
+    private var resizeMorphSprings: [BoundingBoxHandle: BoundingBoxMorphSpring] = {
+        Dictionary(uniqueKeysWithValues: BoundingBoxHandle.allCases.map { ($0, BoundingBoxMorphSpring()) })
+    }()
+    private var resizePressSprings: [BoundingBoxHandle: BoundingBoxMorphSpring] = {
+        Dictionary(uniqueKeysWithValues: BoundingBoxHandle.allCases.map { ($0, BoundingBoxMorphSpring()) })
+    }()
+    private var resizeSpringTimer: Timer?
+    private var resizeSpringLastTimestamp: TimeInterval = 0
+    private var visibleDimensionPills: (showWidth: Bool, showHeight: Bool, anchorCorner: BoundingBoxHandle) = (false, false, .bottomRight)
+    private var dimensionPillHideWorkItem: DispatchWorkItem?
+    private var widthPillRect: NSRect = .zero
+    private var heightPillRect: NSRect = .zero
+    private weak var inlineDimensionEditor: NSTextField?
+    private var editingDimensionIsWidth: Bool?
+    private lazy var hiddenResizeHandleCursor: NSCursor = {
+        let transparent = NSImage(size: NSSize(width: 1, height: 1))
+        return NSCursor(image: transparent, hotSpot: .zero)
+    }()
+    
     
     // MARK: Lifecycle
     
@@ -258,6 +281,99 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     required init?(coder: NSCoder) {
         
         fatalError("init(coder:) has not been implemented")
+    }
+    
+    
+    isolated deinit {
+        self.resizeSpringTimer?.invalidate()
+        self.resizeSpringTimer = nil
+        self.dimensionPillHideWorkItem?.cancel()
+        self.dimensionPillHideWorkItem = nil
+    }
+    
+    
+    override func updateTrackingAreas() {
+        
+        super.updateTrackingAreas()
+        
+        if let existing = self.inlineImageTrackingArea {
+            self.removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        self.addTrackingArea(area)
+        self.inlineImageTrackingArea = area
+    }
+    
+    
+    override func cursorUpdate(with event: NSEvent) {
+        
+        if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true {
+            let point = self.convert(event.locationInWindow, from: nil)
+            if self.activeDraggingResizeHandle != nil || self.selectedInlineImageEntry()?.hitTestHandle(at: point) != nil {
+                self.hiddenResizeHandleCursor.set()
+                return
+            }
+        }
+        super.cursorUpdate(with: event)
+    }
+    
+    
+    override func mouseMoved(with event: NSEvent) {
+        
+        if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true,
+           let selected = self.selectedInlineImageEntry(),
+           self.activeDraggingResizeHandle == nil
+        {
+            let point = self.convert(event.locationInWindow, from: nil)
+            let hit = selected.hitTestHandle(at: point)
+            if hit != self.hoveredResizeHandle {
+                let previous = self.hoveredResizeHandle
+                self.hoveredResizeHandle = hit
+                for handle in BoundingBoxHandle.allCases {
+                    self.resizeMorphSprings[handle]?.target = (handle == hit) ? 1.0 : 0.0
+                }
+                self.startResizeSpringTimerIfNeeded()
+                self.needsDisplay = true
+                if hit != nil {
+                    self.hiddenResizeHandleCursor.set()
+                } else if previous != nil {
+                    self.window?.invalidateCursorRects(for: self)
+                    NSCursor.iBeam.set()
+                }
+            } else if hit != nil {
+                self.hiddenResizeHandleCursor.set()
+                return
+            }
+        } else if self.hoveredResizeHandle != nil {
+            self.hoveredResizeHandle = nil
+            for handle in BoundingBoxHandle.allCases {
+                self.resizeMorphSprings[handle]?.target = 0.0
+            }
+            self.startResizeSpringTimerIfNeeded()
+            self.window?.invalidateCursorRects(for: self)
+        }
+        
+        super.mouseMoved(with: event)
+    }
+    
+    
+    override func mouseExited(with event: NSEvent) {
+        
+        if self.hoveredResizeHandle != nil, self.activeDraggingResizeHandle == nil {
+            self.hoveredResizeHandle = nil
+            for handle in BoundingBoxHandle.allCases {
+                self.resizeMorphSprings[handle]?.target = 0.0
+            }
+            self.startResizeSpringTimerIfNeeded()
+            self.window?.invalidateCursorRects(for: self)
+            self.needsDisplay = true
+        }
+        super.mouseExited(with: event)
     }
     
     
@@ -406,14 +522,20 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 }
             }
             
-            // apply window opacity
-            self.windowOpacityObserver = window.observe(\.isOpaque, options: [.initial, .new]) { [unowned self] _, change in
-                guard let new = change.newValue else { return }
+            // apply window opacity & global editor wallpaper transparency
+            self.windowOpacityObserver = window.observe(\.isOpaque, options: [.initial, .new]) { [unowned self] _, _ in
                 MainActor.assumeIsolated { [unowned self] in
-                    self.drawsBackground = new
-                    self.enclosingScrollView?.drawsBackground = new
+                    self.refreshWallpaperTransparency()
                 }
             }
+            
+            NotificationCenter.default.publisher(for: WallpaperManager.didChangeNotification)
+                .sink { [weak self] _ in
+                    self?.refreshWallpaperTransparency()
+                }
+                .store(in: &self.fontObservers)
+            
+            self.refreshWallpaperTransparency()
             
             // observe key window state for insertion points drawing and automatic period substitution
             self.keyStateObservers.forEach(NotificationCenter.default.removeObserver)
@@ -516,18 +638,21 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return
         }
         
-        // Direct manipulation on inline images (left-click selects / drags position, corners scale steplessly, knob rotates; zooming popover is right-click only)
+        // Direct manipulation on inline images (left-click selects / drags position, 8 handles morph & resize, knob rotates; zooming popover is right-click only)
         if !event.modifierFlags.contains(.command),
            event.clickCount >= 1,
            (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true,
            self.handleInlineImageMouseDown(at: self.mouseDownPoint, modifiers: event.modifierFlags)
         {
+            NotesTextColorPaletteController.shared.dismiss(animated: false)
             self.window?.makeFirstResponder(self)
             return
         }
         
         if self.selectedInlineImageIdentifier != nil {
             self.selectedInlineImageIdentifier = nil
+            self.dismissInlineDimensionEditor(commit: false)
+            self.clearInlineImageDimensionPills()
             self.needsDisplay = true
         }
         
@@ -564,16 +689,48 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         self.isPerformingRectangularSelection = false
+        
+        // Show or dismiss Notes-style floating highlight palette on non-empty mouse selection
+        if !event.modifierFlags.contains(.option),
+           !event.modifierFlags.contains(.control),
+           !self.selectedRange.isEmpty,
+           let document = self.documentViewController?.document(for: self)
+        {
+            NotesTextColorPaletteController.shared.present(
+                for: self,
+                document: document,
+                selectedRange: self.selectedRange
+            )
+        } else {
+            NotesTextColorPaletteController.shared.dismiss(animated: true)
+        }
     }
     
     
     /// The Esc key is pressed.
     override func cancelOperation(_ sender: Any?) {
         
+        if self.inlineDimensionEditor != nil {
+            self.dismissInlineDimensionEditor(commit: false)
+            return
+        }
+        
+        if NotesTextColorPaletteController.shared.isVisible {
+            NotesTextColorPaletteController.shared.dismiss(animated: true)
+            return
+        }
+        
         if self.selectedInlineImageIdentifier != nil {
             self.selectedInlineImageIdentifier = nil
             self.liveInlineImageHUDText = nil
             self.showInlineImageCenterGuide = false
+            self.clearInlineImageDimensionPills()
+            self.hoveredResizeHandle = nil
+            for handle in BoundingBoxHandle.allCases {
+                self.resizeMorphSprings[handle]?.target = 0
+                self.resizePressSprings[handle]?.target = 0
+            }
+            self.window?.invalidateCursorRects(for: self)
             self.needsDisplay = true
             return
         }
@@ -597,6 +754,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     override func didChangeText() {
         
+        NotesTextColorPaletteController.shared.dismiss(animated: false)
         self.ghostTextVersion &+= 1
         if !self.isUpdatingGhostSuggestion {
             self.clearGhostSuggestion(animated: false)
@@ -665,6 +823,74 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 (subview as? NSTextInsertionIndicator)?.displayMode = .hidden
             }
         }
+        
+        // Suppress AppKit's static sharp-cornered selection fill while our GPU spring Visual bands render
+        let useElasticVisualOverlay = hideNative
+            && VimState.shared.mode == .visual
+            && VimState.shared.visualOwnerID == ObjectIdentifier(self)
+        let desiredSelectionBg: NSColor = useElasticVisualOverlay
+            ? .clear
+            : (self.theme?.selectionColor ?? NSColor.selectedTextBackgroundColor)
+        if self.selectedTextAttributes[.backgroundColor] as? NSColor != desiredSelectionBg {
+            self.selectedTextAttributes[.backgroundColor] = desiredSelectionBg
+        }
+    }
+    
+    
+    /// Updates caret, visual bands, and modal state immediately when UserDefaults `.vimMode` toggles.
+    func applyVimModeSetting(_ enabled: Bool) {
+        
+        if !enabled {
+            let ownID = ObjectIdentifier(self)
+            if VimState.shared.visualOwnerID == ownID {
+                VimState.shared.visualActiveLocation = nil
+                VimState.shared.visualOwnerID = nil
+            }
+            if VimState.shared.mode != .normal || VimState.shared.commandLine != nil {
+                VimState.shared.commandLine = nil
+                VimState.shared.mode = .normal
+            }
+            self.funEffects.hideVimVisualSelection(withYankPulse: false)
+        }
+        
+        self.funEffects.syncVimCursor(animated: false)
+        self.syncNativeCaretVisibility()
+        self.updateInsertionPointStateAndRestartTimer(self.isEditable && !self.funEffects.ownsVimCursorDrawing)
+        self.needsDisplay = true
+    }
+    
+    
+    /// Locks or unlocks editing in presentation mode: clears interactive overlays & hides carets when read-only.
+    func applyEditableLockState(_ editable: Bool) {
+        
+        self.isEditable = editable
+        self.isSelectable = true
+        
+        if !editable {
+            self.clearGhostSuggestion(animated: false, cancelAI: true)
+            self.selectedInlineImageIdentifier = nil
+            self.liveInlineImageHUDText = nil
+            self.showInlineImageCenterGuide = false
+            self.dismissInlineDimensionEditor(commit: false)
+            self.clearInlineImageDimensionPills()
+            NotesTextColorPaletteController.shared.dismiss(animated: false)
+            
+            if UserDefaults.standard[.vimMode],
+               VimState.shared.mode == .insert || VimState.shared.mode == .replace
+            {
+                VimState.shared.mode = .normal
+            }
+            self.updateInsertionPointStateAndRestartTimer(false)
+            for subview in self.subviews where subview is NSTextInsertionIndicator && !self.insertionIndicators.contains(where: { $0 === subview }) {
+                (subview as? NSTextInsertionIndicator)?.displayMode = .hidden
+            }
+        } else {
+            self.updateInsertionPointStateAndRestartTimer(!self.funEffects.ownsVimCursorDrawing)
+        }
+        
+        self.funEffects.syncVimCursor(animated: false)
+        self.syncNativeCaretVisibility()
+        self.needsDisplay = true
     }
     
     
@@ -685,6 +911,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     override var shouldDrawInsertionPoint: Bool {
         
+        if !self.isEditable {
+            return false
+        }
         if self.funEffects.ownsVimCursorDrawing {
             return false
         }
@@ -692,8 +921,28 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    override func layout() {
+        
+        super.layout()
+        
+        let maxHeight = self.singleLineHeight
+        let shouldHide = !self.isEditable || self.funEffects.ownsVimCursorDrawing
+        for subview in self.subviews where subview is NSTextInsertionIndicator && !self.insertionIndicators.contains(where: { $0 === subview }) {
+            guard let indicator = subview as? NSTextInsertionIndicator else { continue }
+            if shouldHide {
+                indicator.displayMode = .hidden
+            } else if indicator.frame.height > maxHeight + 2 {
+                var frame = indicator.frame
+                frame.size.height = maxHeight
+                indicator.frame = frame
+            }
+        }
+    }
+    
+    
     override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
         
+        guard self.isEditable else { return }
         let cursorColor = self.effectiveCursorColor
         var caretRect = rect
         let maxLineHeight = self.singleLineHeight
@@ -763,6 +1012,26 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     override func keyDown(with event: NSEvent) {
         
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        
+        // Strictly block unintended edits while in Presentation Lock Mode, allowing only read-only navigation & Cmd shortcuts.
+        if !self.isEditable {
+            if self.handleControlAPrefix(event) { return }
+            if flags.contains(.command) {
+                super.keyDown(with: event)
+                return
+            }
+            if UserDefaults.standard[.vimMode], self.vimEngine.handleKeyDown(event) {
+                return
+            }
+            let navKeyCodes: Set<UInt16> = [115, 116, 119, 121, 123, 124, 125, 126, 53] // Home/PgUp/End/PgDn/Arrows/Esc
+            if navKeyCodes.contains(event.keyCode) {
+                super.keyDown(with: event)
+            } else {
+                NSSound.beep()
+            }
+            return
+        }
+        
         if !self.hasMarkedText(), event.keyCode == 48 {
             // Option+Tab always forces literal Tab formatting even when a ghost candidate is visible.
             if flags == .option {
@@ -1183,6 +1452,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     override func paste(_ sender: Any?) {
         
+        guard self.isEditable else {
+            NSSound.beep()
+            return
+        }
         self.clearGhostSuggestion(animated: false)
         let pboard = NSPasteboard.general
         let document = self.textStorage.flatMap { self.documentViewController?.document(for: $0) }
@@ -1194,21 +1467,59 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
            let image = PlainTextInlineImageStore.shared.extractImage(from: pboard),
            let stored = PlainTextInlineImageStore.shared.store(image: image, for: docURL)
         {
-            let insertionText = rendersPlainTextImages ? stored.token : "![image](.cot-assets/\(stored.fileURL.lastPathComponent))"
-            let range = self.selectedRange()
-            if self.shouldChangeText(in: range, replacementString: insertionText) {
-                self.replaceCharacters(in: range, with: insertionText)
-                self.didChangeText()
+            if rendersPlainTextImages {
+                self.insertInlineImageTokenCleanly(stored.token)
             } else {
-                self.insertText(insertionText, replacementRange: range)
+                let insertionText = "![image](.cot-assets/\(stored.fileURL.lastPathComponent))"
+                let range = self.selectedRange()
+                if self.shouldChangeText(in: range, replacementString: insertionText) {
+                    self.replaceCharacters(in: range, with: insertionText)
+                    self.didChangeText()
+                } else {
+                    self.insertText(insertionText, replacementRange: range)
+                }
+                self.layoutManager?.invalidateLayout(forCharacterRange: self.string.range, actualCharacterRange: nil)
+                self.scrollRangeToVisible(self.selectedRange())
+                self.needsDisplay = true
             }
-            self.layoutManager?.invalidateLayout(forCharacterRange: self.string.range, actualCharacterRange: nil)
-            self.scrollRangeToVisible(self.selectedRange())
-            self.needsDisplay = true
             return
         }
         
         super.paste(sender)
+    }
+    
+    
+    /// Inserts an inline image token onto its own clean line and positions the caret on a normal-height line directly below it.
+    func insertInlineImageTokenCleanly(_ token: String) {
+        
+        guard self.isEditable else {
+            NSSound.beep()
+            return
+        }
+        
+        let nsString = self.string as NSString
+        let range = NSIntersectionRange(self.selectedRange(), NSRange(location: 0, length: nsString.length))
+        let needsLeadingNewline = range.location > 0 && nsString.character(at: range.location - 1) != 0x0A
+        let hasFollowingNewline = range.upperBound < nsString.length && nsString.character(at: range.upperBound) == 0x0A
+        
+        let leading = needsLeadingNewline ? "\n" : ""
+        let trailing = hasFollowingNewline ? "" : "\n"
+        let insertionText = leading + token + trailing
+        let postInsertCaret = range.location + (leading as NSString).length + (token as NSString).length + 1
+        
+        if self.shouldChangeText(in: range, replacementString: insertionText) {
+            self.replaceCharacters(in: range, with: insertionText)
+            self.didChangeText()
+        } else {
+            self.insertText(insertionText, replacementRange: range)
+        }
+        
+        let finalLength = (self.string as NSString).length
+        let clampedCaret = min(max(0, postInsertCaret), finalLength)
+        self.setSelectedRange(NSRange(location: clampedCaret, length: 0))
+        (self.layoutManager as? LayoutManager)?.invalidateInlineImageLayout()
+        self.scrollRangeToVisible(self.selectedRange())
+        self.needsDisplay = true
     }
     
     
@@ -1317,6 +1628,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         self.needsUpdateLineHighlight = true
         
         let hasEmptySelection = selectedRanges.allSatisfy { $0.isEmpty }
+        if !stillSelectingFlag, hasEmptySelection, NotesTextColorPaletteController.shared.isVisible {
+            NotesTextColorPaletteController.shared.dismiss(animated: true)
+        }
         if selectedRanges != previousSelectedRanges, previousHadSelection || !hasEmptySelection {
             if UserDefaults.standard[.vimMode], VimState.shared.mode == .visual {
                 self.setNeedsDisplay(self.visibleRect, avoidAdditionalLayout: true)
@@ -1793,6 +2107,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.drawCurrentLine(range: range, in: rect)
         }
         
+        self.drawNotesHighlights(range: range, in: rect)
         self.drawRoundedBackground(range: range, in: rect)
     }
     
@@ -1856,7 +2171,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     /// Handles trackpad pinch gesture when an inline image is selected or under the pointer.
     func handleInlineImageMagnify(with event: NSEvent) -> Bool {
         
-        guard (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true else {
+        guard self.isEditable,
+              (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true else {
             return false
         }
         let point = self.convert(event.locationInWindow, from: nil)
@@ -1885,7 +2201,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     /// Trackpad two-finger rotation gesture on a selected or hovered inline image performs stepless angle adjustment.
     override func rotate(with event: NSEvent) {
         
-        guard (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true else {
+        guard self.isEditable,
+              (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true else {
             super.rotate(with: event)
             return
         }
@@ -1990,6 +2307,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             let entry = InlineImageCardEntry(
                 rect: cardRect,
                 unrotatedCardSize: unrotatedCardRect.size,
+                drawSize: geom.drawSize,
                 center: center,
                 rotationDegrees: tx.rotationDegrees,
                 scale: tx.scale,
@@ -2000,7 +2318,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.inlineImageCardEntries.append(entry)
             
             let isSelected = (self.selectedInlineImageIdentifier == token.identifier)
-            let repaintBounds = isSelected ? cardRect.insetBy(dx: -36, dy: -44) : cardRect
+            let repaintBounds = isSelected ? cardRect.insetBy(dx: -48, dy: -52) : cardRect
             guard repaintBounds.intersects(dirtyRect) else { continue }
             
             NSGraphicsContext.saveGraphicsState()
@@ -2011,20 +2329,17 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             xform.rotate(byDegrees: tx.rotationDegrees)
             xform.concat()
             
-            let cardPath = NSBezierPath(roundedRect: unrotatedCardRect, xRadius: 6, yRadius: 6)
+            let cardPath = NSBezierPath(roundedRect: unrotatedCardRect, xRadius: isSelected ? 2 : 6, yRadius: isSelected ? 2 : 6)
             fillColor.setFill()
             cardPath.fill()
-            if isSelected {
-                accentColor.withAlphaComponent(0.92).setStroke()
-                cardPath.lineWidth = 1.6
-            } else {
+            if !isSelected {
                 borderColor.setStroke()
                 cardPath.lineWidth = 0.75
+                cardPath.stroke()
             }
-            cardPath.stroke()
             
             let drawRect = unrotatedCardRect.insetBy(dx: 4, dy: 4)
-            let clipPath = NSBezierPath(roundedRect: drawRect, xRadius: 4, yRadius: 4)
+            let clipPath = NSBezierPath(roundedRect: drawRect, xRadius: isSelected ? 1 : 4, yRadius: isSelected ? 1 : 4)
             clipPath.addClip()
             image.draw(
                 in: drawRect,
@@ -2037,52 +2352,79 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             NSGraphicsContext.restoreGraphicsState()
             
             if isSelected {
-                self.drawSelectionHandles(for: entry, accentColor: accentColor)
+                self.drawSelectionHandles(for: entry, accentColor: accentColor, haloColor: fillColor)
             }
         }
     }
     
     
-    private func drawSelectionHandles(for entry: InlineImageCardEntry, accentColor: NSColor) {
+    private func drawSelectionHandles(
+        for entry: InlineImageCardEntry,
+        accentColor: NSColor,
+        haloColor: NSColor
+    ) {
         
-        let corners = entry.rotatedCorners()
-        let topMid = entry.rotatedPoint(local: NSPoint(x: 0, y: -entry.unrotatedCardSize.height * 0.5))
-        let rotKnob = entry.rotationKnobCenter()
+        let specBlue = NSColor(srgbRed: 30.0 / 255.0, green: 137.0 / 255.0, blue: 245.0 / 255.0, alpha: 1.0)
+        let unrotatedRect = NSRect(
+            x: -entry.unrotatedCardSize.width * 0.5,
+            y: -entry.unrotatedCardSize.height * 0.5,
+            width: entry.unrotatedCardSize.width,
+            height: entry.unrotatedCardSize.height
+        )
         
+        // 1. Rotated box perimeter (`1px` sharp dashed `[4, 3]`), center axis guide during edge drag, & rotation knob
         NSGraphicsContext.saveGraphicsState()
+        let xform = NSAffineTransform()
+        xform.translateX(by: entry.center.x, yBy: entry.center.y)
+        xform.rotate(byDegrees: entry.rotationDegrees)
+        xform.concat()
         
-        // Stem from top edge center to rotation handle
-        let stem = NSBezierPath()
-        stem.lineWidth = 1.25
-        stem.move(to: topMid)
-        stem.line(to: rotKnob)
-        accentColor.withAlphaComponent(0.85).setStroke()
-        stem.stroke()
+        let dashedBox = NSBezierPath(rect: unrotatedRect)
+        dashedBox.lineWidth = 1.0
+        dashedBox.setLineDash([4, 3], count: 2, phase: 0)
+        specBlue.setStroke()
+        dashedBox.stroke()
         
-        // 4 circular corner scale handles
-        for corner in corners {
-            let handleRect = NSRect(x: corner.x - 4.5, y: corner.y - 4.5, width: 9, height: 9)
-            let circle = NSBezierPath(ovalIn: handleRect)
-            NSColor.white.setFill()
-            circle.fill()
-            accentColor.setStroke()
-            circle.lineWidth = 1.6
-            circle.stroke()
+        if let dragging = self.activeDraggingResizeHandle {
+            if dragging.isHorizontalEdge {
+                let guide = NSBezierPath()
+                guide.lineWidth = 0.8
+                guide.setLineDash([1.2, 3], count: 2, phase: 0)
+                guide.move(to: NSPoint(x: unrotatedRect.minX, y: 0))
+                guide.line(to: NSPoint(x: unrotatedRect.maxX, y: 0))
+                specBlue.withAlphaComponent(0.42).setStroke()
+                guide.stroke()
+            } else if dragging.isVerticalEdge {
+                let guide = NSBezierPath()
+                guide.lineWidth = 0.8
+                guide.setLineDash([1.2, 3], count: 2, phase: 0)
+                guide.move(to: NSPoint(x: 0, y: unrotatedRect.minY))
+                guide.line(to: NSPoint(x: 0, y: unrotatedRect.maxY))
+                specBlue.withAlphaComponent(0.42).setStroke()
+                guide.stroke()
+            }
         }
         
-        // Top circular rotation knob
-        let knobRect = NSRect(x: rotKnob.x - 7.5, y: rotKnob.y - 7.5, width: 15, height: 15)
+        let topMidLocal = NSPoint(x: 0, y: unrotatedRect.minY)
+        let rotKnobLocal = NSPoint(x: 0, y: unrotatedRect.minY - 22)
+        let stem = NSBezierPath()
+        stem.lineWidth = 1.25
+        stem.move(to: topMidLocal)
+        stem.line(to: rotKnobLocal)
+        specBlue.withAlphaComponent(0.82).setStroke()
+        stem.stroke()
+        
+        let knobRect = NSRect(x: rotKnobLocal.x - 7.5, y: rotKnobLocal.y - 7.5, width: 15, height: 15)
         let knobPath = NSBezierPath(ovalIn: knobRect)
         NSColor.windowBackgroundColor.setFill()
         knobPath.fill()
-        accentColor.setStroke()
-        knobPath.lineWidth = 1.5
+        specBlue.setStroke()
+        knobPath.lineWidth = 1.4
         knobPath.stroke()
         if let rotateIcon = NSImage(systemSymbolName: "arrow.trianglehead.2.clockwise.rotate.90", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 8.5, weight: .bold))
         {
-            let tinted = rotateIcon.tinted(with: accentColor)
-            tinted.draw(
+            rotateIcon.tinted(with: specBlue).draw(
                 in: knobRect.insetBy(dx: 3, dy: 3),
                 from: .zero,
                 operation: .sourceOver,
@@ -2091,8 +2433,85 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 hints: nil
             )
         }
+        NSGraphicsContext.restoreGraphicsState()
         
-        // Live HUD readout pill during interactive adjustment
+        // 2. Eight morphing 10-vertex handles (10×10 square <-> rotated directional double-arrow)
+        NSGraphicsContext.saveGraphicsState()
+        for handle in BoundingBoxHandle.allCases {
+            let center = entry.handlePoint(for: handle)
+            let morph = self.resizeMorphSprings[handle]?.value
+                ?? ((self.activeDraggingResizeHandle == handle || self.hoveredResizeHandle == handle) ? 1 : 0)
+            let press = self.resizePressSprings[handle]?.value
+                ?? ((self.activeDraggingResizeHandle == handle) ? 1 : 0)
+            let poly = BoundingBoxHandleMorph.bezierPath(
+                for: handle,
+                center: center,
+                progress: morph,
+                extraRotationDegrees: entry.rotationDegrees
+            )
+            poly.lineJoinStyle = .round
+            poly.lineCapStyle = .round
+            
+            haloColor.setStroke()
+            poly.lineWidth = 3.0
+            poly.stroke()
+            
+            let fillColor = NSColor.white.blended(withFraction: max(0, min(1, press)), of: specBlue) ?? .white
+            fillColor.setFill()
+            poly.fill()
+            
+            specBlue.setStroke()
+            poly.lineWidth = 0.9
+            poly.stroke()
+        }
+        
+        // 3. Interactive `18pt` rounded integer dimension pills (clickable to type exact W/H)
+        self.widthPillRect = .zero
+        self.heightPillRect = .zero
+        let isEditingAnyDimension = (self.editingDimensionIsWidth != nil)
+        let showW = self.visibleDimensionPills.showWidth || isEditingAnyDimension
+        let showH = self.visibleDimensionPills.showHeight || isEditingAnyDimension
+        let anchorHandle = isEditingAnyDimension ? .bottomRight : self.visibleDimensionPills.anchorCorner
+        let anchorPt = entry.handlePoint(for: anchorHandle)
+        
+        func drawDimensionPill(text: String, center: NSPoint, fill: NSColor) -> NSRect {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
+                .foregroundColor: NSColor.white,
+            ]
+            let attrStr = NSAttributedString(string: text, attributes: attrs)
+            let sz = attrStr.size()
+            let pillW = max(28, ceil(sz.width) + 12)
+            let pillH: CGFloat = 18
+            let x = max(self.bounds.minX + 6, min(self.bounds.maxX - pillW - 6, center.x - pillW * 0.5))
+            let y = max(self.bounds.minY + 4, min(self.bounds.maxY - pillH - 4, center.y - pillH * 0.5))
+            let pillRect = NSRect(x: x, y: y, width: pillW, height: pillH)
+            fill.setFill()
+            NSBezierPath(roundedRect: pillRect, xRadius: pillH * 0.5, yRadius: pillH * 0.5).fill()
+            attrStr.draw(at: NSPoint(x: pillRect.minX + (pillW - sz.width) * 0.5, y: pillRect.minY + (pillH - sz.height) * 0.5))
+            return pillRect
+        }
+        
+        if showW && self.editingDimensionIsWidth != true {
+            let inwardX: CGFloat = anchorHandle.isWest ? 32 : -32
+            let centerW = NSPoint(x: anchorPt.x + inwardX, y: anchorPt.y)
+            self.widthPillRect = drawDimensionPill(
+                text: "\(Int(round(entry.drawSize.width)))",
+                center: centerW,
+                fill: specBlue
+            )
+        }
+        if showH && self.editingDimensionIsWidth != false {
+            let inwardY: CGFloat = anchorHandle.isNorth ? 25 : -25
+            let centerH = NSPoint(x: anchorPt.x, y: anchorPt.y + inwardY)
+            self.heightPillRect = drawDimensionPill(
+                text: "\(Int(round(entry.drawSize.height)))",
+                center: centerH,
+                fill: specBlue
+            )
+        }
+        
+        // Live HUD readout pill during rotation or free move
         if let hud = self.liveInlineImageHUDText {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold),
@@ -2147,18 +2566,28 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     
     private func handleInlineImageMouseDown(at point: NSPoint, modifiers: NSEvent.ModifierFlags) -> Bool {
-        // 1. Check active selection's rotation & corner scale handles first
+        guard self.isEditable else { return false }
+        // 1. Check active selection's dimension pills (click to type exact pixels), rotation knob & 8 resize handles
         if let selected = self.selectedInlineImageEntry() {
+            if !self.widthPillRect.isEmpty, self.widthPillRect.insetBy(dx: -4, dy: -4).contains(point) {
+                self.beginInlineDimensionEdit(for: selected, isWidth: true)
+                return true
+            }
+            if !self.heightPillRect.isEmpty, self.heightPillRect.insetBy(dx: -4, dy: -4).contains(point) {
+                self.beginInlineDimensionEdit(for: selected, isWidth: false)
+                return true
+            }
+            
+            self.dismissInlineDimensionEditor(commit: true)
+            
             let rotCenter = selected.rotationKnobCenter()
             if hypot(point.x - rotCenter.x, point.y - rotCenter.y) <= 11 {
                 self.trackInlineImageRotation(for: selected, initialPoint: point)
                 return true
             }
-            for corner in selected.rotatedCorners() {
-                if hypot(point.x - corner.x, point.y - corner.y) <= 10 {
-                    self.trackInlineImageScale(for: selected, startPoint: point)
-                    return true
-                }
+            if let handle = selected.hitTestHandle(at: point) {
+                self.trackInlineImageResize(for: selected, handle: handle, startPoint: point)
+                return true
             }
         }
         
@@ -2166,6 +2595,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         guard let hit = self.inlineImageCardEntries.first(where: { $0.hitTestImage(point: point) }) else {
             return false
         }
+        self.dismissInlineDimensionEditor(commit: false)
         self.selectedInlineImageIdentifier = hit.identifier
         self.needsDisplay = true
         self.trackInlineImageDragMove(for: hit, startPoint: point)
@@ -2173,26 +2603,244 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
-    private func trackInlineImageScale(for entry: InlineImageCardEntry, startPoint: NSPoint) {
+    private func startResizeSpringTimerIfNeeded() {
+        
+        guard self.resizeSpringTimer == nil else { return }
+        self.resizeSpringLastTimestamp = ProcessInfo.processInfo.systemUptime
+        self.resizeSpringTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.stepResizeSprings()
+            }
+        }
+    }
+    
+    
+    private func stepResizeSprings() {
+        
+        let now = ProcessInfo.processInfo.systemUptime
+        let dt = CGFloat(min(0.032, max(0.001, now - self.resizeSpringLastTimestamp)))
+        self.resizeSpringLastTimestamp = now
+        
+        var anyMoving = false
+        for handle in BoundingBoxHandle.allCases {
+            if self.resizeMorphSprings[handle]?.step(dt: dt) == true {
+                anyMoving = true
+            }
+            if self.resizePressSprings[handle]?.step(dt: dt) == true {
+                anyMoving = true
+            }
+        }
+        
+        self.needsDisplay = true
+        if !anyMoving {
+            self.resizeSpringTimer?.invalidate()
+            self.resizeSpringTimer = nil
+        }
+    }
+    
+    
+    private func clearInlineImageDimensionPills() {
+        
+        self.dimensionPillHideWorkItem?.cancel()
+        self.dimensionPillHideWorkItem = nil
+        self.visibleDimensionPills = (false, false, .bottomRight)
+        self.widthPillRect = .zero
+        self.heightPillRect = .zero
+    }
+    
+    
+    private func scheduleHideDimensionPills() {
+        
+        self.dimensionPillHideWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.activeDraggingResizeHandle == nil, self.editingDimensionIsWidth == nil else { return }
+            self.clearInlineImageDimensionPills()
+            self.needsDisplay = true
+        }
+        self.dimensionPillHideWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3, execute: item)
+    }
+    
+    
+    private func beginInlineDimensionEdit(for entry: InlineImageCardEntry, isWidth: Bool) {
+        
+        self.dismissInlineDimensionEditor(commit: true)
+        self.dimensionPillHideWorkItem?.cancel()
+        self.dimensionPillHideWorkItem = nil
+        self.visibleDimensionPills = (true, true, .bottomRight)
+        self.editingDimensionIsWidth = isWidth
+        
+        let cornerPt = entry.handlePoint(for: .bottomRight)
+        let center = isWidth
+            ? NSPoint(x: cornerPt.x - 32, y: cornerPt.y)
+            : NSPoint(x: cornerPt.x, y: cornerPt.y - 25)
+        let fieldRect = NSRect(x: center.x - 27, y: center.y - 10, width: 54, height: 20)
+        
+        let currentValue = Int(round(isWidth ? entry.drawSize.width : entry.drawSize.height))
+        let identifier = entry.identifier
+        let field = InlineDimensionEditorField(frame: fieldRect)
+        field.stringValue = "\(currentValue)"
+        field.onCommit = { [weak self] raw in
+            self?.commitInlineDimensionEdit(raw: raw, identifier: identifier, isWidth: isWidth)
+        }
+        field.onCancel = { [weak self] in
+            self?.dismissInlineDimensionEditor(commit: false)
+        }
+        self.addSubview(field)
+        self.inlineDimensionEditor = field
+        self.window?.makeFirstResponder(field)
+        field.selectText(nil)
+        self.needsDisplay = true
+    }
+    
+    
+    private func commitInlineDimensionEdit(raw: String, identifier: String, isWidth: Bool) {
+        
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = Double(trimmed).map { CGFloat($0) }
+        self.dismissInlineDimensionEditor(commit: false)
+        
+        if let parsed, parsed.isFinite {
+            let docURL = self.currentInlineImageDocURL
+            var tx = PlainTextInlineImageStore.shared.transform(for: identifier, documentURL: docURL)
+            if isWidth {
+                tx.customWidth = max(BoundingBoxResizeMath.minWidth, min(2400, round(parsed)))
+            } else {
+                tx.customHeight = max(BoundingBoxResizeMath.minHeight, min(1600, round(parsed)))
+            }
+            PlainTextInlineImageStore.shared.setTransform(tx, for: identifier, documentURL: docURL)
+            self.applyInlineImageLayoutUpdate()
+        }
+        self.scheduleHideDimensionPills()
+    }
+    
+    
+    private func dismissInlineDimensionEditor(commit: Bool) {
+        
+        guard let editor = self.inlineDimensionEditor else {
+            self.editingDimensionIsWidth = nil
+            return
+        }
+        let isWidth = self.editingDimensionIsWidth ?? true
+        let identifier = self.selectedInlineImageIdentifier
+        self.editingDimensionIsWidth = nil
+        self.inlineDimensionEditor = nil
+        editor.removeFromSuperview()
+        if commit, let identifier {
+            self.commitInlineDimensionEdit(raw: editor.stringValue, identifier: identifier, isWidth: isWidth)
+        } else {
+            self.window?.makeFirstResponder(self)
+            self.scheduleHideDimensionPills()
+            self.needsDisplay = true
+        }
+    }
+    
+    
+    private func trackInlineImageResize(
+        for entry: InlineImageCardEntry,
+        handle: BoundingBoxHandle,
+        startPoint: NSPoint
+    ) {
         guard let window = self.window else { return }
         let docURL = self.currentInlineImageDocURL
-        let baseTransform = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
-        let startDist = max(14.0, hypot(startPoint.x - entry.center.x, startPoint.y - entry.center.y))
-        let startScale = baseTransform.scale
+        let startTx = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+        let startImageFrame = NSRect(
+            x: entry.center.x - entry.drawSize.width * 0.5,
+            y: entry.center.y - entry.drawSize.height * 0.5,
+            width: entry.drawSize.width,
+            height: entry.drawSize.height
+        )
+        let containerWidth = max(160, self.textContainer?.size.width ?? self.bounds.width)
+        let minXBound = self.textContainerOrigin.x + 8
+        let maxXBound = self.textContainerOrigin.x + max(180, containerWidth) - 8
+        let minYBound = startImageFrame.minY - max(0, startTx.offsetY)
         
-        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+        self.activeDraggingResizeHandle = handle
+        self.dimensionPillHideWorkItem?.cancel()
+        self.dimensionPillHideWorkItem = nil
+        self.visibleDimensionPills = (
+            showWidth: handle.isCorner || handle.isHorizontalEdge,
+            showHeight: handle.isCorner || handle.isVerticalEdge,
+            anchorCorner: handle
+        )
+        for candidate in BoundingBoxHandle.allCases {
+            self.resizeMorphSprings[candidate]?.target = (candidate == handle) ? 1.0 : 0.0
+            self.resizePressSprings[candidate]?.target = (candidate == handle) ? 1.0 : 0.0
+        }
+        self.startResizeSpringTimerIfNeeded()
+        self.hiddenResizeHandleCursor.set()
+        self.needsDisplay = true
+        
+        let negRad = -entry.rotationDegrees * .pi / 180.0
+        let cosR = cos(negRad)
+        let sinR = sin(negRad)
+        var wasCancelled = false
+        
+        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .keyDown]) {
+            if event.type == .keyDown {
+                if event.keyCode == 53 { // Escape cancels current resize
+                    wasCancelled = true
+                    break
+                }
+                continue
+            }
+            
             let curPt = self.convert(event.locationInWindow, from: nil)
-            let curDist = max(8.0, hypot(curPt.x - entry.center.x, curPt.y - entry.center.y))
-            let ratio = curDist / startDist
-            var updated = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
-            updated.scale = max(0.15, min(4.0, startScale * ratio))
+            let worldDx = curPt.x - startPoint.x
+            let worldDy = curPt.y - startPoint.y
+            let localDelta = NSPoint(
+                x: worldDx * cosR - worldDy * sinR,
+                y: worldDx * sinR + worldDy * cosR
+            )
+            
+            let nextFrame = BoundingBoxResizeMath.resizedFrame(
+                startFrame: startImageFrame,
+                handle: handle,
+                delta: localDelta,
+                minXBound: minXBound,
+                minYBound: minYBound,
+                maxXBound: maxXBound,
+                maxYBound: minYBound + 1600
+            )
+            
+            var updated = startTx
+            updated.customWidth = nextFrame.width
+            updated.customHeight = nextFrame.height
+            updated.offsetX = startTx.offsetX + (nextFrame.minX - startImageFrame.minX)
+            updated.offsetY = max(0, min(240, startTx.offsetY + (nextFrame.minY - startImageFrame.minY)))
             PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL)
-            self.liveInlineImageHUDText = "\(Int((updated.scale * 100).rounded()))%"
+            
+            self.stepResizeSprings()
             self.applyInlineImageLayoutUpdate()
             
             if event.type == .leftMouseUp { break }
         }
-        self.liveInlineImageHUDText = nil
+        
+        if wasCancelled {
+            PlainTextInlineImageStore.shared.setTransform(startTx, for: entry.identifier, documentURL: docURL)
+            self.applyInlineImageLayoutUpdate()
+        }
+        
+        self.activeDraggingResizeHandle = nil
+        let endPt = self.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let stillHoveringHandle = self.selectedInlineImageEntry()?.hitTestHandle(at: endPt)
+        self.hoveredResizeHandle = stillHoveringHandle
+        for candidate in BoundingBoxHandle.allCases {
+            self.resizeMorphSprings[candidate]?.target = (candidate == stillHoveringHandle) ? 1.0 : 0.0
+            self.resizePressSprings[candidate]?.target = 0.0
+        }
+        self.startResizeSpringTimerIfNeeded()
+        if stillHoveringHandle != nil {
+            self.hiddenResizeHandleCursor.set()
+        } else {
+            self.window?.invalidateCursorRects(for: self)
+            NSCursor.iBeam.set()
+        }
+        if wasCancelled {
+            self.clearInlineImageDimensionPills()
+        } else {
+            self.scheduleHideDimensionPills()
+        }
         self.needsDisplay = true
     }
     
@@ -2291,6 +2939,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return m
         }
         
+        let editable = self.isEditable
         menu.addItem(item(
             AppLanguage.text("查看大图", en: "Zoom Preview"),
             systemImage: "arrow.up.left.and.arrow.down.right",
@@ -2299,7 +2948,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         menu.addItem(item(
             AppLanguage.text("调整大小、位置与旋转", en: "Adjust Size, Position & Rotation"),
             systemImage: "slider.horizontal.3",
-            action: #selector(inlineImageContextOpenTransformPanel(_:))
+            action: #selector(inlineImageContextOpenTransformPanel(_:)),
+            enabled: editable
         ))
         
         menu.addItem(.separator())
@@ -2308,20 +2958,22 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             AppLanguage.text("向左旋转 90°", en: "Rotate Left 90°"),
             systemImage: "rotate.left",
             action: #selector(inlineImageContextRotateByTag(_:)),
-            tag: -90
+            tag: -90,
+            enabled: editable
         ))
         menu.addItem(item(
             AppLanguage.text("向右旋转 90°", en: "Rotate Right 90°"),
             systemImage: "rotate.right",
             action: #selector(inlineImageContextRotateByTag(_:)),
-            tag: 90
+            tag: 90,
+            enabled: editable
         ))
         
         let alignMenu = NSMenu()
         alignMenu.autoenablesItems = false
-        alignMenu.addItem(item(AppLanguage.text("靠左对齐", en: "Align Left"), action: #selector(inlineImageContextAlignByTag(_:)), tag: 0))
-        alignMenu.addItem(item(AppLanguage.text("水平居中", en: "Align Center"), action: #selector(inlineImageContextAlignByTag(_:)), tag: 1))
-        alignMenu.addItem(item(AppLanguage.text("靠右对齐", en: "Align Right"), action: #selector(inlineImageContextAlignByTag(_:)), tag: 2))
+        alignMenu.addItem(item(AppLanguage.text("靠左对齐", en: "Align Left"), action: #selector(inlineImageContextAlignByTag(_:)), tag: 0, enabled: editable))
+        alignMenu.addItem(item(AppLanguage.text("水平居中", en: "Align Center"), action: #selector(inlineImageContextAlignByTag(_:)), tag: 1, enabled: editable))
+        alignMenu.addItem(item(AppLanguage.text("靠右对齐", en: "Align Right"), action: #selector(inlineImageContextAlignByTag(_:)), tag: 2, enabled: editable))
         let alignParent = NSMenuItem(
             title: AppLanguage.text("图片位置对齐", en: "Align Position"),
             action: nil,
@@ -2329,13 +2981,14 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         )
         alignParent.image = NSImage(systemSymbolName: "rectangle.center.inset.filled", accessibilityDescription: nil)
         alignParent.submenu = alignMenu
+        alignParent.isEnabled = editable
         menu.addItem(alignParent)
         
         menu.addItem(item(
             AppLanguage.text("恢复原始大小与角度", en: "Reset Transform"),
             systemImage: "arrow.counterclockwise",
             action: #selector(inlineImageContextResetTransform(_:)),
-            enabled: !currentTx.isIdentity
+            enabled: editable && !currentTx.isIdentity
         ))
         
         menu.addItem(.separator())
@@ -2363,7 +3016,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         menu.addItem(item(
             AppLanguage.text("删除图片", en: "Delete Image"),
             systemImage: "trash",
-            action: #selector(inlineImageContextDelete(_:))
+            action: #selector(inlineImageContextDelete(_:)),
+            enabled: editable
         ))
         
         return menu
@@ -2461,6 +3115,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             ?? InlineImageCardEntry(
                 rect: NSRect(x: 20, y: 20, width: 220, height: 140),
                 unrotatedCardSize: NSSize(width: 220, height: 140),
+                drawSize: NSSize(width: 212, height: 132),
                 center: NSPoint(x: 130, y: 90),
                 rotationDegrees: 0,
                 scale: 1,
@@ -2503,7 +3158,13 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             maxOffsetX: maxOffset,
             onChange: { [weak self] nextTransform in
                 guard let self else { return }
-                PlainTextInlineImageStore.shared.setTransform(nextTransform, for: entry.identifier, documentURL: docURL)
+                var resolved = nextTransform
+                let prev = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+                if abs(resolved.scale - prev.scale) > 0.001 {
+                    resolved.customWidth = nil
+                    resolved.customHeight = nil
+                }
+                PlainTextInlineImageStore.shared.setTransform(resolved, for: entry.identifier, documentURL: docURL)
                 self.selectedInlineImageIdentifier = entry.identifier
                 self.applyInlineImageLayoutUpdate()
             },
@@ -3607,8 +4268,27 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         (self.window as? DocumentWindow)?.contentBackgroundColor = theme.background.color
         self.enclosingScrollView?.backgroundColor = theme.background.color
         self.enclosingScrollView?.scrollerKnobStyle = theme.isDarkTheme ? .light : .dark
+        self.refreshWallpaperTransparency()
         
         self.setNeedsDisplay(self.visibleRect, avoidAdditionalLayout: true)
+    }
+    
+    
+    /// Allows the window's blurred `EditorWallpaperBackdropView` to shine cleanly behind all split panes when enabled.
+    private func refreshWallpaperTransparency() {
+        
+        let isWindowOpaque = self.window?.isOpaque ?? true
+        let wallpaperActive = WallpaperManager.shared.spec.isEnabled
+        let shouldDrawSolid = isWindowOpaque && !wallpaperActive
+        
+        if self.drawsBackground != shouldDrawSolid {
+            self.drawsBackground = shouldDrawSolid
+        }
+        if self.enclosingScrollView?.drawsBackground != shouldDrawSolid {
+            self.enclosingScrollView?.drawsBackground = shouldDrawSolid
+        }
+        self.needsDisplay = true
+        self.enclosingScrollView?.verticalRulerView?.needsDisplay = true
     }
     
     
@@ -4081,6 +4761,7 @@ private struct InlineImageCardEntry {
     
     let rect: NSRect
     let unrotatedCardSize: NSSize
+    let drawSize: NSSize
     let center: NSPoint
     let rotationDegrees: CGFloat
     let scale: CGFloat
@@ -4097,6 +4778,22 @@ private struct InlineImageCardEntry {
             x: self.center.x + local.x * c - local.y * s,
             y: self.center.y + local.x * s + local.y * c
         )
+    }
+    
+    
+    func handlePoint(for handle: BoundingBoxHandle) -> NSPoint {
+        self.rotatedPoint(local: handle.localPoint(size: self.unrotatedCardSize))
+    }
+    
+    
+    func hitTestHandle(at point: NSPoint) -> BoundingBoxHandle? {
+        for handle in BoundingBoxHandle.allCases {
+            let pt = self.handlePoint(for: handle)
+            if abs(point.x - pt.x) <= 15 && abs(point.y - pt.y) <= 15 {
+                return handle
+            }
+        }
+        return nil
     }
     
     
@@ -4126,6 +4823,64 @@ private struct InlineImageCardEntry {
         let hw = self.unrotatedCardSize.width * 0.5 + 3
         let hh = self.unrotatedCardSize.height * 0.5 + 3
         return abs(lx) <= hw && abs(ly) <= hh
+    }
+}
+
+
+private final class InlineDimensionEditorField: NSTextField, NSTextFieldDelegate {
+    
+    var onCommit: ((String) -> Void)?
+    var onCancel: (() -> Void)?
+    private var didFinish = false
+    
+    
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        self.isBordered = false
+        self.isBezeled = false
+        self.drawsBackground = false
+        self.focusRingType = .none
+        self.alignment = .center
+        self.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        self.textColor = NSColor(srgbRed: 0.09, green: 0.09, blue: 0.09, alpha: 1)
+        self.wantsLayer = true
+        self.layer?.backgroundColor = NSColor(srgbRed: 0.957, green: 0.957, blue: 0.957, alpha: 1).cgColor
+        self.layer?.borderColor = NSColor(srgbRed: 30.0 / 255.0, green: 137.0 / 255.0, blue: 245.0 / 255.0, alpha: 1).cgColor
+        self.layer?.borderWidth = 1.3
+        self.layer?.cornerRadius = 9
+        self.delegate = self
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func cancelOperation(_ sender: Any?) {
+        guard !self.didFinish else { return }
+        self.didFinish = true
+        self.onCancel?()
+    }
+    
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            guard !self.didFinish else { return true }
+            self.didFinish = true
+            self.onCommit?(self.stringValue)
+            return true
+        }
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            guard !self.didFinish else { return true }
+            self.didFinish = true
+            self.onCancel?()
+            return true
+        }
+        return false
+    }
+    
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard !self.didFinish else { return }
+        self.didFinish = true
+        self.onCommit?(self.stringValue)
     }
 }
 

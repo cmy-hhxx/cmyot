@@ -29,12 +29,13 @@ import Testing
 @MainActor
 struct Round20FeatureTests {
     
-    // MARK: 1. Settings 11 Atomic Tabs, Zero "与", and Balanced 700pt Proportions
+    // MARK: 1. Settings 12 Atomic Tabs, Zero "与", and Balanced 700pt Proportions
     
-    @Test func settingsHasElevenAtomicTabsWithoutYuAndUsesGoldenProportions() throws {
+    @Test func settingsHasTwelveAtomicTabsWithoutYuAndUsesGoldenProportions() throws {
         
         let items = SidebarSettingsItem.allCases
-        #expect(items.count == 11)
+        #expect(items.count == 12)
+        #expect(items.contains(.wallpaper))
         
         for item in items {
             #expect(!item.title.contains("与"), "Tab title should be atomic without 与: \(item.title)")

@@ -34,12 +34,28 @@ nonisolated struct PinnedTodoUrgencyMetrics: Sendable, Equatable {
 }
 
 
-/// Playful animated IP companion styles rendered inside pinned todo capsules.
+/// Expressive multi-state behavior for the moe AI vendor companions.
+nonisolated enum MascotMoodState: String, CaseIterable, Sendable, Equatable {
+    
+    case idle
+    case working
+    case slacking
+    case urgent
+    case celebrating
+}
+
+
+/// Playful anthropomorphized ("娘化") mainstream AI vendor companions + Usagi rendered inside todo capsules.
 nonisolated enum TodoMascotKind: String, CaseIterable, Identifiable, Codable, Sendable {
     
     case autoMix
-    case claudeChibi
     case deepseekFish
+    case claudeChibi
+    case openAIMaid
+    case geminiTwin
+    case qwenGirl
+    case kimiGirl
+    case grokGirl
     case usagiPixel
     
     var id: String { self.rawValue }
@@ -47,18 +63,29 @@ nonisolated enum TodoMascotKind: String, CaseIterable, Identifiable, Codable, Se
     
     var displayName: String {
         switch self {
-            case .autoMix: AppLanguage.text("灵动混搭", en: "Auto Mix")
-            case .claudeChibi: AppLanguage.text("Claude 小橘灵", en: "Claude Chibi")
-            case .deepseekFish: AppLanguage.text("DeepSeek 像素大肥鱼", en: "Pixel Whale")
+            case .autoMix: AppLanguage.text("AI 娘轮换", en: "Auto Mix")
+            case .deepseekFish: AppLanguage.text("DeepSeek 大肥鱼女仆", en: "DeepSeek Whale Maid")
+            case .claudeChibi: AppLanguage.text("Claude 暖橘文学娘", en: "Claude Literary Girl")
+            case .openAIMaid: AppLanguage.text("ChatGPT 薄荷机娘", en: "ChatGPT Mint Girl")
+            case .geminiTwin: AppLanguage.text("Gemini 星璇双子娘", en: "Gemini Star Girl")
+            case .qwenGirl: AppLanguage.text("千问 紫棠古风娘", en: "Qwen Girl")
+            case .kimiGirl: AppLanguage.text("Kimi 月华少女", en: "Kimi Moon Girl")
+            case .grokGirl: AppLanguage.text("Grok 黑猫酷妹", en: "Grok Cat Girl")
             case .usagiPixel: AppLanguage.text("像素乌萨奇", en: "Pixel Usagi")
         }
     }
     
     
-    /// Resolves `.autoMix` deterministically per item ID so consecutive pills show diverse IP buddies.
+    /// Concrete moe vendor roster eligible for `.autoMix` assignment.
+    static let concreteMoeRoster: [TodoMascotKind] = [
+        .deepseekFish, .claudeChibi, .openAIMaid, .geminiTwin, .qwenGirl, .kimiGirl, .grokGirl,
+    ]
+    
+    
+    /// Resolves `.autoMix` deterministically per item ID so consecutive pills feature distinct AI girls.
     func resolvedKind(for seedID: String) -> TodoMascotKind {
         guard self == .autoMix else { return self }
-        let concrete: [TodoMascotKind] = [.claudeChibi, .deepseekFish, .usagiPixel]
+        let concrete = Self.concreteMoeRoster
         let sum = seedID.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
         return concrete[abs(sum) % concrete.count]
     }
@@ -81,8 +108,7 @@ nonisolated enum TodoMascotKind: String, CaseIterable, Identifiable, Codable, Se
 }
 
 
-/// Featherweight urgency model that gently shifts capsule accent and subtle emphasis
-/// without ever hijacking or obstructing the editor canvas.
+/// Featherweight urgency model that gently shifts capsule accent without obstructing the editor canvas.
 nonisolated enum PinnedTodoUrgency {
     
     static func metrics(
@@ -130,23 +156,23 @@ nonisolated enum PinnedTodoUrgency {
         
         if remaining <= 0 {
             let overdueRatio = min(1.0, (-remaining) / 300.0)
-            fontSize = 13.4 + CGFloat(overdueRatio) * 0.4
+            fontSize = 13.0 + CGFloat(overdueRatio) * 0.4
             urgencyLevel = 4
         } else if remaining <= 45 || effectiveProgress >= 0.96 {
             let countdownRatio = min(1.0, max(0.0, 1.0 - remaining / 45.0))
-            fontSize = 13.1 + CGFloat(countdownRatio) * 0.3
+            fontSize = 12.8 + CGFloat(countdownRatio) * 0.3
             urgencyLevel = 4
         } else if effectiveProgress >= 0.72 {
             let localT = (effectiveProgress - 0.72) / 0.24
-            fontSize = 12.8 + CGFloat(localT) * 0.4
+            fontSize = 12.6 + CGFloat(localT) * 0.3
             urgencyLevel = 3
         } else if effectiveProgress >= 0.45 {
             let localT = (effectiveProgress - 0.45) / 0.27
-            fontSize = 12.5 + CGFloat(localT) * 0.3
+            fontSize = 12.4 + CGFloat(localT) * 0.2
             urgencyLevel = 2
         } else {
             let localT = effectiveProgress / 0.45
-            fontSize = 12.2 + CGFloat(localT) * 0.3
+            fontSize = 12.2 + CGFloat(localT) * 0.2
             urgencyLevel = 1
         }
         
@@ -224,201 +250,422 @@ nonisolated enum PinnedTodoUrgency {
 }
 
 
-// MARK: - Animated IP Companions (Claude Chibi & DeepSeek Pixel Fat Fish & Pixel Usagi)
+// MARK: - Animated Moe AI Girl Companions (DeepSeek 大肥鱼女仆 & Mainstream AI Vendors)
 
-/// Reusable animated pixel/chibi mascot companion that breathes inside todo capsules.
+/// Multi-state expressive moe AI companion rendered inside compact todo capsules.
 struct PinnedTodoMascotAvatar: View {
     
     let kind: TodoMascotKind
     var isHovered: Bool = false
     var isUrgent: Bool = false
     var isCompleting: Bool = false
-    var size: CGFloat = 22
+    var size: CGFloat = 24
     var phaseSeed: Double = 0
     
     @Environment(\.colorScheme) private var colorScheme
+    @State private var analytics = AnalyticsManager.shared
+    
+    
+    private struct MoeStyle {
+        let hairTop: Color
+        let hairBottom: Color
+        let ornament: Color
+        let collar: Color
+        let cheek: Color
+    }
+    
+    
+    static func moodState(
+        now: Date,
+        phaseSeed: Double,
+        isHovered: Bool,
+        isUrgent: Bool,
+        isCompleting: Bool,
+        lastKeystrokeAt: Date
+    ) -> MascotMoodState {
+        if isCompleting || isHovered { return .celebrating }
+        if isUrgent { return .urgent }
+        if now.timeIntervalSince(lastKeystrokeAt) <= 2.4 { return .working }
+        let slot = (now.timeIntervalSinceReferenceDate + phaseSeed).truncatingRemainder(dividingBy: 14.0)
+        if slot >= 10.5 { return .slacking }
+        return .idle
+    }
     
     
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: AnimationConstants.isReducedMotionEnabled)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate + self.phaseSeed
-            let bob = self.isCompleting
-                ? -4.5
-                : (sin(t * (self.isUrgent ? 7.2 : 2.6)) * (self.isHovered ? 1.8 : 1.1))
-            let tilt = self.isCompleting
-                ? 14.0
-                : (self.isHovered ? sin(t * 5.0) * 6.0 : (self.isUrgent ? sin(t * 14.0) * 4.5 : sin(t * 1.4) * 2.0))
+            let now = context.date
+            let t = now.timeIntervalSinceReferenceDate + self.phaseSeed
+            let mood = Self.moodState(
+                now: now,
+                phaseSeed: self.phaseSeed,
+                isHovered: self.isHovered,
+                isUrgent: self.isUrgent,
+                isCompleting: self.isCompleting,
+                lastKeystrokeAt: self.analytics.lastKeystrokeAt
+            )
+            
+            let bob: Double = switch mood {
+                case .celebrating: -3.2 + sin(t * 7.5) * 1.4
+                case .urgent: sin(t * 9.0) * 1.6
+                case .working: abs(sin(t * 6.5)) * -1.8
+                case .slacking: sin(t * 1.4) * 0.9 + 0.6
+                case .idle: sin(t * 2.4) * 1.0
+            }
+            let tilt: Double = switch mood {
+                case .celebrating: sin(t * 5.2) * 7.0
+                case .urgent: sin(t * 13.0) * 4.5
+                case .working: sin(t * 6.0) * 3.0
+                case .slacking: -5.0 + sin(t * 1.2) * 2.0
+                case .idle: sin(t * 1.4) * 1.8
+            }
             
             Canvas { ctx, canvasSize in
-                switch self.kind {
-                    case .claudeChibi, .autoMix:
-                        Self.drawClaudeChibi(in: ctx, size: canvasSize, t: t, happy: self.isHovered || self.isCompleting, urgent: self.isUrgent)
-                    case .deepseekFish:
-                        Self.drawPixelDeepSeekFish(in: ctx, size: canvasSize, t: t, happy: self.isHovered || self.isCompleting, urgent: self.isUrgent, isDark: self.colorScheme == .dark)
-                    case .usagiPixel:
-                        Self.drawPixelUsagi(in: ctx, size: canvasSize, t: t, happy: self.isHovered || self.isCompleting, isDark: self.colorScheme == .dark)
+                if self.kind == .usagiPixel {
+                    Self.drawPixelUsagi(in: ctx, size: canvasSize, t: t, happy: mood == .celebrating, isDark: self.colorScheme == .dark)
+                } else {
+                    Self.drawMoeAICompanion(
+                        in: ctx,
+                        size: canvasSize,
+                        kind: self.kind,
+                        mood: mood,
+                        t: t,
+                        isDark: self.colorScheme == .dark
+                    )
                 }
             }
             .frame(width: self.size, height: self.size)
             .offset(y: bob)
             .rotationEffect(.degrees(tilt))
-            .scaleEffect(self.isCompleting ? 1.24 : (self.isHovered ? 1.10 : 1.0))
-            .animation(.spring(response: 0.28, dampingFraction: 0.64), value: self.isCompleting)
-            .animation(.spring(response: 0.25, dampingFraction: 0.72), value: self.isHovered)
+            .scaleEffect(self.isCompleting ? 1.22 : (self.isHovered ? 1.09 : 1.0))
+            .animation(.spring(response: 0.26, dampingFraction: 0.68), value: self.isCompleting)
+            .animation(.spring(response: 0.24, dampingFraction: 0.72), value: self.isHovered)
         }
     }
     
     
-    private static func drawClaudeChibi(in ctx: GraphicsContext, size: CGSize, t: Double, happy: Bool, urgent: Bool) {
+    private static func style(for kind: TodoMascotKind) -> MoeStyle {
+        switch kind {
+            case .deepseekFish, .autoMix:
+                MoeStyle(
+                    hairTop: Color(red: 0.22, green: 0.45, blue: 0.98),
+                    hairBottom: Color(red: 0.50, green: 0.76, blue: 1.00),
+                    ornament: .white,
+                    collar: Color(red: 0.14, green: 0.23, blue: 0.56),
+                    cheek: Color(red: 1.00, green: 0.62, blue: 0.74)
+                )
+            case .claudeChibi:
+                MoeStyle(
+                    hairTop: Color(red: 0.85, green: 0.46, blue: 0.32),
+                    hairBottom: Color(red: 0.95, green: 0.64, blue: 0.48),
+                    ornament: Color(red: 1.00, green: 0.84, blue: 0.52),
+                    collar: Color(red: 0.36, green: 0.22, blue: 0.18),
+                    cheek: Color(red: 1.00, green: 0.65, blue: 0.62)
+                )
+            case .openAIMaid:
+                MoeStyle(
+                    hairTop: Color(red: 0.10, green: 0.66, blue: 0.51),
+                    hairBottom: Color(red: 0.42, green: 0.88, blue: 0.74),
+                    ornament: .white,
+                    collar: Color(red: 0.08, green: 0.30, blue: 0.25),
+                    cheek: Color(red: 1.00, green: 0.68, blue: 0.75)
+                )
+            case .geminiTwin:
+                MoeStyle(
+                    hairTop: Color(red: 0.36, green: 0.48, blue: 0.98),
+                    hairBottom: Color(red: 0.66, green: 0.54, blue: 0.98),
+                    ornament: Color(red: 0.86, green: 0.94, blue: 1.00),
+                    collar: Color(red: 0.24, green: 0.28, blue: 0.64),
+                    cheek: Color(red: 1.00, green: 0.66, blue: 0.78)
+                )
+            case .qwenGirl:
+                MoeStyle(
+                    hairTop: Color(red: 0.44, green: 0.30, blue: 0.92),
+                    hairBottom: Color(red: 0.70, green: 0.56, blue: 0.98),
+                    ornament: Color(red: 0.98, green: 0.82, blue: 0.44),
+                    collar: Color(red: 0.28, green: 0.18, blue: 0.58),
+                    cheek: Color(red: 1.00, green: 0.64, blue: 0.76)
+                )
+            case .kimiGirl:
+                MoeStyle(
+                    hairTop: Color(red: 0.19, green: 0.48, blue: 0.88),
+                    hairBottom: Color(red: 0.76, green: 0.88, blue: 0.99),
+                    ornament: Color(red: 1.00, green: 0.88, blue: 0.48),
+                    collar: Color(red: 0.14, green: 0.22, blue: 0.42),
+                    cheek: Color(red: 1.00, green: 0.68, blue: 0.78)
+                )
+            case .grokGirl:
+                MoeStyle(
+                    hairTop: Color(red: 0.16, green: 0.17, blue: 0.22),
+                    hairBottom: Color(red: 0.34, green: 0.36, blue: 0.44),
+                    ornament: Color(red: 0.92, green: 0.94, blue: 0.98),
+                    collar: Color(red: 0.10, green: 0.10, blue: 0.13),
+                    cheek: Color(red: 0.98, green: 0.56, blue: 0.66)
+                )
+            case .usagiPixel:
+                MoeStyle(
+                    hairTop: Color(red: 1.00, green: 0.93, blue: 0.68),
+                    hairBottom: Color(red: 1.00, green: 0.86, blue: 0.52),
+                    ornament: Color(red: 1.00, green: 0.64, blue: 0.74),
+                    collar: Color(red: 0.35, green: 0.25, blue: 0.20),
+                    cheek: Color(red: 1.00, green: 0.64, blue: 0.74)
+                )
+        }
+    }
+    
+    
+    private static func drawMoeAICompanion(
+        in ctx: GraphicsContext,
+        size: CGSize,
+        kind: TodoMascotKind,
+        mood: MascotMoodState,
+        t: Double,
+        isDark: Bool
+    ) {
+        let style = Self.style(for: kind)
         let w = size.width
         let h = size.height
-        let cx = w * 0.5
-        let cy = h * 0.53
-        let r = min(w, h) * 0.40
+        let cx = w * 0.50
+        let headY = h * 0.46
+        let r = min(w, h) * 0.34
+        let hairGrad = Gradient(colors: [style.hairTop, style.hairBottom])
         
-        // 8 plump rounded starburst lobes creating Claude's warm sunburst silhouette
-        let terracotta = urgent
-            ? Color(red: 0.94, green: 0.36, blue: 0.28)
-            : Color(red: 0.85, green: 0.47, blue: 0.34)
-        let warmGlow = Color(red: 0.97, green: 0.67, blue: 0.52)
-        
-        let rays = 10
-        let breatheAngle = sin(t * 1.2) * 0.08
-        for i in 0..<rays {
-            let theta = Double(i) * (.pi * 2.0 / Double(rays)) + breatheAngle
-            let px = cx + cos(theta) * (r * 0.64)
-            let py = cy + sin(theta) * (r * 0.64)
-            let lobeR = r * (i % 2 == 0 ? 0.34 : 0.27)
-            let rect = CGRect(x: px - lobeR, y: py - lobeR, width: lobeR * 2, height: lobeR * 2)
-            ctx.fill(Path(ellipseIn: rect), with: .color(terracotta))
+        // 1. Character-specific back silhouette (whale tail for 大肥鱼女仆, twin-buns for ChatGPT/Qwen, cat ears for Grok)
+        switch kind {
+            case .deepseekFish, .autoMix:
+                // Wagging chubby whale tail behind left shoulder + bilateral ear-fins
+                let wag = sin(t * (mood == .urgent ? 12.0 : 4.2)) * 2.2
+                var tail = Path()
+                tail.move(to: CGPoint(x: cx - r * 0.55, y: headY + r * 0.45))
+                tail.addQuadCurve(
+                    to: CGPoint(x: cx - r * 1.18, y: headY + r * 0.15 + wag),
+                    control: CGPoint(x: cx - r * 0.98, y: headY + r * 0.65)
+                )
+                tail.addLine(to: CGPoint(x: cx - r * 1.02, y: headY + r * 0.52 + wag))
+                tail.addQuadCurve(
+                    to: CGPoint(x: cx - r * 0.45, y: headY + r * 0.75),
+                    control: CGPoint(x: cx - r * 0.85, y: headY + r * 0.82)
+                )
+                tail.closeSubpath()
+                ctx.fill(tail, with: .color(style.hairTop))
+                
+                // Whale ear-fins
+                for side in [-1.0, 1.0] {
+                    var fin = Path()
+                    let baseX = cx + side * r * 0.86
+                    fin.move(to: CGPoint(x: baseX, y: headY - r * 0.12))
+                    fin.addQuadCurve(
+                        to: CGPoint(x: baseX + side * r * 0.36, y: headY + r * 0.12),
+                        control: CGPoint(x: baseX + side * r * 0.34, y: headY - r * 0.24)
+                    )
+                    fin.addQuadCurve(
+                        to: CGPoint(x: baseX, y: headY + r * 0.22),
+                        control: CGPoint(x: baseX + side * r * 0.18, y: headY + r * 0.24)
+                    )
+                    fin.closeSubpath()
+                    ctx.fill(fin, with: .color(style.hairBottom))
+                }
+            case .openAIMaid, .qwenGirl:
+                // Twin odango buns
+                for side in [-1.0, 1.0] {
+                    let bx = cx + side * r * 0.78
+                    let by = headY - r * 0.68
+                    let bunR = r * 0.32
+                    ctx.fill(Path(ellipseIn: CGRect(x: bx - bunR, y: by - bunR, width: bunR * 2, height: bunR * 2)), with: .color(style.hairTop))
+                    ctx.fill(Path(ellipseIn: CGRect(x: bx - bunR * 0.42, y: by - bunR * 0.42, width: bunR * 0.84, height: bunR * 0.84)), with: .color(style.ornament))
+                }
+            case .grokGirl:
+                // Sharp cat-ear headset
+                for side in [-1.0, 1.0] {
+                    var ear = Path()
+                    ear.move(to: CGPoint(x: cx + side * r * 0.28, y: headY - r * 0.75))
+                    ear.addLine(to: CGPoint(x: cx + side * r * 0.78, y: headY - r * 1.18))
+                    ear.addLine(to: CGPoint(x: cx + side * r * 0.90, y: headY - r * 0.42))
+                    ear.closeSubpath()
+                    ctx.fill(ear, with: .color(style.hairTop))
+                }
+            default:
+                break
         }
         
-        let coreRect = CGRect(x: cx - r * 0.72, y: cy - r * 0.70, width: r * 1.44, height: r * 1.40)
+        // 2. Back hair volume
+        let backHair = CGRect(x: cx - r * 1.04, y: headY - r * 0.92, width: r * 2.08, height: r * 1.92)
         ctx.fill(
-            Path(ellipseIn: coreRect),
-            with: .linearGradient(
-                Gradient(colors: [warmGlow, terracotta]),
-                startPoint: CGPoint(x: cx, y: cy - r),
-                endPoint: CGPoint(x: cx, y: cy + r)
-            )
+            Path(roundedRect: backHair, cornerRadius: r * 0.88),
+            with: .linearGradient(hairGrad, startPoint: CGPoint(x: cx, y: backHair.minY), endPoint: CGPoint(x: cx, y: backHair.maxY))
         )
         
-        // Kawaii cheeks
-        let cheekColor = Color(red: 1.0, green: 0.72, blue: 0.70).opacity(0.85)
-        ctx.fill(Path(ellipseIn: CGRect(x: cx - r * 0.48, y: cy + r * 0.08, width: r * 0.24, height: r * 0.14)), with: .color(cheekColor))
-        ctx.fill(Path(ellipseIn: CGRect(x: cx + r * 0.24, y: cy + r * 0.08, width: r * 0.24, height: r * 0.14)), with: .color(cheekColor))
+        // 3. Cute Maid / Signature Collar Outfit at bottom
+        let bodyRect = CGRect(x: cx - r * 0.64, y: headY + r * 0.56, width: r * 1.28, height: r * 0.66)
+        ctx.fill(Path(roundedRect: bodyRect, cornerRadius: r * 0.30), with: .color(style.collar))
+        // White collar bib / lace
+        var apron = Path()
+        apron.move(to: CGPoint(x: cx - r * 0.38, y: headY + r * 0.58))
+        apron.addLine(to: CGPoint(x: cx, y: headY + r * 0.95))
+        apron.addLine(to: CGPoint(x: cx + r * 0.38, y: headY + r * 0.58))
+        apron.closeSubpath()
+        ctx.fill(apron, with: .color(.white.opacity(0.95)))
+        // Tiny bow knot
+        ctx.fill(
+            Path(ellipseIn: CGRect(x: cx - r * 0.12, y: headY + r * 0.74, width: r * 0.24, height: r * 0.16)),
+            with: .color(style.hairTop)
+        )
         
-        // Eyes: natural blink cycle + "^ ^" happy crescent when hovered/completing
-        let ink = Color(red: 0.16, green: 0.10, blue: 0.08)
-        let cycle = t.truncatingRemainder(dividingBy: 3.4)
-        let isBlinking = cycle > 3.22
+        // 4. Plump Chibi Face (porcelain warm peach)
+        let chubbyFactor: CGFloat = (kind == .deepseekFish || kind == .autoMix) ? 0.86 : 0.78
+        let faceRect = CGRect(x: cx - r * chubbyFactor, y: headY - r * 0.62, width: r * chubbyFactor * 2, height: r * 1.32)
+        ctx.fill(
+            Path(ellipseIn: faceRect),
+            with: .color(Color(red: 1.00, green: 0.93, blue: 0.88))
+        )
         
-        if happy {
-            for side in [-1.0, 1.0] {
-                var arc = Path()
-                let ex = cx + side * r * 0.24
-                let ey = cy - r * 0.02
-                arc.move(to: CGPoint(x: ex - r * 0.11, y: ey + r * 0.04))
-                arc.addQuadCurve(to: CGPoint(x: ex + r * 0.11, y: ey + r * 0.04), control: CGPoint(x: ex, y: ey - r * 0.14))
-                ctx.stroke(arc, with: .color(ink), style: StrokeStyle(lineWidth: max(1.1, w * 0.065), lineCap: .round))
-            }
-        } else if isBlinking {
-            for side in [-1.0, 1.0] {
-                let ex = cx + side * r * 0.24
-                let ey = cy - r * 0.01
-                let rect = CGRect(x: ex - r * 0.10, y: ey, width: r * 0.20, height: max(1.0, h * 0.045))
-                ctx.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(ink))
-            }
-        } else {
-            for side in [-1.0, 1.0] {
-                let ex = cx + side * r * 0.24
-                let ey = cy - r * 0.05
-                let eyeR = max(1.1, r * 0.11)
-                ctx.fill(Path(ellipseIn: CGRect(x: ex - eyeR, y: ey - eyeR, width: eyeR * 2, height: eyeR * 2.2)), with: .color(ink))
-                ctx.fill(Path(ellipseIn: CGRect(x: ex - eyeR * 0.35, y: ey - eyeR * 0.55, width: eyeR * 0.7, height: eyeR * 0.7)), with: .color(.white))
-            }
+        // 5. Bangs + Bouncy Ahoge (呆毛)
+        var bangs = Path()
+        bangs.move(to: CGPoint(x: cx - r * 0.90, y: headY - r * 0.22))
+        bangs.addQuadCurve(to: CGPoint(x: cx - r * 0.24, y: headY - r * 0.68), control: CGPoint(x: cx - r * 0.64, y: headY - r * 0.84))
+        bangs.addLine(to: CGPoint(x: cx - r * 0.08, y: headY - r * 0.24))
+        bangs.addLine(to: CGPoint(x: cx + r * 0.08, y: headY - r * 0.58))
+        bangs.addLine(to: CGPoint(x: cx + r * 0.24, y: headY - r * 0.26))
+        bangs.addQuadCurve(to: CGPoint(x: cx + r * 0.90, y: headY - r * 0.22), control: CGPoint(x: cx + r * 0.64, y: headY - r * 0.84))
+        bangs.addArc(center: CGPoint(x: cx, y: headY - r * 0.20), radius: r * 0.92, startAngle: .zero, endAngle: .degrees(180), clockwise: true)
+        bangs.closeSubpath()
+        ctx.fill(bangs, with: .color(style.hairTop))
+        
+        // Ahoge curl at crown
+        let ahogeSway = sin(t * 3.8) * 1.4
+        var ahoge = Path()
+        ahoge.move(to: CGPoint(x: cx, y: headY - r * 0.90))
+        ahoge.addQuadCurve(
+            to: CGPoint(x: cx + r * 0.22 + ahogeSway, y: headY - r * 1.26),
+            control: CGPoint(x: cx - r * 0.14, y: headY - r * 1.22)
+        )
+        ctx.stroke(ahoge, with: .color(style.hairTop), style: StrokeStyle(lineWidth: max(1.4, w * 0.075), lineCap: .round))
+        
+        // 6. Signature Headwear / Hairpins
+        switch kind {
+            case .deepseekFish, .autoMix:
+                // White frilly maid headband
+                var brim = Path()
+                brim.move(to: CGPoint(x: cx - r * 0.70, y: headY - r * 0.72))
+                brim.addQuadCurve(to: CGPoint(x: cx + r * 0.70, y: headY - r * 0.72), control: CGPoint(x: cx, y: headY - r * 1.04))
+                ctx.stroke(brim, with: .color(.white), style: StrokeStyle(lineWidth: max(2.2, w * 0.11), lineCap: .round))
+            case .geminiTwin:
+                // Glowing 4-point star hairpin
+                let sx = cx + r * 0.45
+                let sy = headY - r * 0.62
+                let sr = r * 0.22
+                var star = Path()
+                star.move(to: CGPoint(x: sx, y: sy - sr))
+                star.addLine(to: CGPoint(x: sx + sr * 0.35, y: sy - sr * 0.35))
+                star.addLine(to: CGPoint(x: sx + sr, y: sy))
+                star.addLine(to: CGPoint(x: sx + sr * 0.35, y: sy + sr * 0.35))
+                star.addLine(to: CGPoint(x: sx, y: sy + sr))
+                star.addLine(to: CGPoint(x: sx - sr * 0.35, y: sy + sr * 0.35))
+                star.addLine(to: CGPoint(x: sx - sr, y: sy))
+                star.addLine(to: CGPoint(x: sx - sr * 0.35, y: sy - sr * 0.35))
+                star.closeSubpath()
+                ctx.fill(star, with: .color(style.ornament))
+            case .kimiGirl:
+                // Glowing crescent-moon clip
+                let mx = cx - r * 0.44
+                let my = headY - r * 0.62
+                ctx.fill(Path(ellipseIn: CGRect(x: mx - r * 0.18, y: my - r * 0.18, width: r * 0.36, height: r * 0.36)), with: .color(style.ornament))
+            default:
+                // Warm accent hair clip
+                ctx.fill(Path(roundedRect: CGRect(x: cx + r * 0.28, y: headY - r * 0.66, width: r * 0.34, height: r * 0.14), cornerRadius: 2), with: .color(style.ornament))
         }
         
-        // Tiny smile dot
-        var mouth = Path()
-        mouth.move(to: CGPoint(x: cx - r * 0.10, y: cy + r * 0.20))
-        mouth.addQuadCurve(to: CGPoint(x: cx + r * 0.10, y: cy + r * 0.20), control: CGPoint(x: cx, y: cy + r * 0.31))
-        ctx.stroke(mouth, with: .color(ink), style: StrokeStyle(lineWidth: max(1.0, w * 0.05), lineCap: .round))
-    }
-    
-    
-    private static func drawPixelDeepSeekFish(in ctx: GraphicsContext, size: CGSize, t: Double, happy: Bool, urgent: Bool, isDark: Bool) {
-        // 12x12 crisp pixel art grid for DeepSeek 大肥鱼 (chubby cerulean pixel whale/fish)
-        let wagFrame = Int(t * (urgent ? 8.0 : (happy ? 5.0 : 2.6))) % 2
-        let bubbleStep = Int(t * 2.2) % 3
+        // 7. Rosy Kawaii Cheeks
+        let cheekAlpha = (mood == .celebrating || mood == .urgent) ? 0.92 : 0.72
+        let cheekSize = (mood == .urgent) ? CGSize(width: r * 0.34, height: r * 0.20) : CGSize(width: r * 0.28, height: r * 0.16)
+        ctx.fill(Path(ellipseIn: CGRect(x: cx - r * 0.56, y: headY + r * 0.16, width: cheekSize.width, height: cheekSize.height)), with: .color(style.cheek.opacity(cheekAlpha)))
+        ctx.fill(Path(ellipseIn: CGRect(x: cx + r * 0.56 - cheekSize.width, y: headY + r * 0.16, width: cheekSize.width, height: cheekSize.height)), with: .color(style.cheek.opacity(cheekAlpha)))
         
-        let gridA: [String] = [
-            "............",
-            "....SS......",
-            ".....S......",
-            "..BBBBBB....",
-            ".BHHHHHHB...",
-            "BBHBBBBBBBT.",
-            "BBBEBBBBBBTT",
-            "BBBCWWWWBBT.",
-            ".BWWWWWWWB..",
-            "..BWWWWWB...",
-            "...BBBBB....",
-            "............",
-        ]
-        let gridB: [String] = [
-            "............",
-            ".....SS.....",
-            "....S.......",
-            "..BBBBBB....",
-            ".BHHHHHHBT..",
-            "BBHBBBBBBTT.",
-            "BBBEBBBBBBT.",
-            "BBBCWWWWBB..",
-            ".BWWWWWWWB..",
-            "..BWWWWWB...",
-            "...BBBBB....",
-            "............",
-        ]
+        // 8. Expressive Multi-State Eyes & Mouth
+        let ink = Color(red: 0.16, green: 0.12, blue: 0.18)
+        let blinkCycle = t.truncatingRemainder(dividingBy: 3.6)
+        let isBlinking = (blinkCycle > 3.44)
         
-        var rows = (wagFrame == 0) ? gridA : gridB
-        // Animate tiny pixel water spout droplet
-        var row0 = Array(rows[0])
-        row0[3 + (bubbleStep % 2)] = "S"
-        rows[0] = String(row0)
-        
-        let px = size.width / 12.0
-        let py = size.height / 12.0
-        let blue = urgent ? Color(red: 0.38, green: 0.44, blue: 0.98) : Color(red: 0.22, green: 0.43, blue: 0.96)
-        let highlight = Color(red: 0.46, green: 0.69, blue: 1.00)
-        let belly = isDark ? Color(red: 0.92, green: 0.95, blue: 1.00) : Color(red: 0.96, green: 0.98, blue: 1.00)
-        let tail = Color(red: 0.16, green: 0.34, blue: 0.86)
-        let cheek = Color(red: 1.00, green: 0.60, blue: 0.72)
-        let spout = Color(red: 0.48, green: 0.85, blue: 0.98)
-        let eye = Color(red: 0.08, green: 0.10, blue: 0.18)
-        
-        for (r, line) in rows.enumerated() {
-            for (c, ch) in line.enumerated() {
-                let color: Color? = switch ch {
-                    case "B": blue
-                    case "H": highlight
-                    case "W": belly
-                    case "T": tail
-                    case "C": cheek
-                    case "E": eye
-                    case "S": spout
-                    default: nil
+        switch mood {
+            case .celebrating:
+                // ^ ^ Happy crescent eyes
+                for side in [-1.0, 1.0] {
+                    var arc = Path()
+                    let ex = cx + side * r * 0.30
+                    let ey = headY + r * 0.02
+                    arc.move(to: CGPoint(x: ex - r * 0.13, y: ey + r * 0.04))
+                    arc.addQuadCurve(to: CGPoint(x: ex + r * 0.13, y: ey + r * 0.04), control: CGPoint(x: ex, y: ey - r * 0.18))
+                    ctx.stroke(arc, with: .color(ink), style: StrokeStyle(lineWidth: max(1.2, w * 0.065), lineCap: .round))
                 }
-                guard let color else { continue }
-                let rect = CGRect(x: CGFloat(c) * px, y: CGFloat(r) * py, width: ceil(px), height: ceil(py))
-                ctx.fill(Path(rect), with: .color(color))
-            }
+            case .urgent:
+                // > < Panicked flustered eyes
+                var leftE = Path()
+                leftE.move(to: CGPoint(x: cx - r * 0.42, y: headY - r * 0.08))
+                leftE.addLine(to: CGPoint(x: cx - r * 0.20, y: headY + r * 0.04))
+                leftE.addLine(to: CGPoint(x: cx - r * 0.42, y: headY + r * 0.14))
+                var rightE = Path()
+                rightE.move(to: CGPoint(x: cx + r * 0.42, y: headY - r * 0.08))
+                rightE.addLine(to: CGPoint(x: cx + r * 0.20, y: headY + r * 0.04))
+                rightE.addLine(to: CGPoint(x: cx + r * 0.42, y: headY + r * 0.14))
+                ctx.stroke(leftE, with: .color(ink), style: StrokeStyle(lineWidth: max(1.2, w * 0.06), lineCap: .round, lineJoin: .round))
+                ctx.stroke(rightE, with: .color(ink), style: StrokeStyle(lineWidth: max(1.2, w * 0.06), lineCap: .round, lineJoin: .round))
+                // Sweat droplet
+                let dropY = headY - r * 0.26 + CGFloat((t * 8.0).truncatingRemainder(dividingBy: 3.0))
+                ctx.fill(Path(ellipseIn: CGRect(x: cx + r * 0.68, y: dropY, width: r * 0.16, height: r * 0.24)), with: .color(Color(red: 0.46, green: 0.84, blue: 1.0)))
+            default:
+                if isBlinking || mood == .slacking {
+                    for side in [-1.0, 1.0] {
+                        let ex = cx + side * r * 0.30
+                        let ey = headY + r * 0.03
+                        var line = Path()
+                        line.move(to: CGPoint(x: ex - r * 0.12, y: ey))
+                        line.addLine(to: CGPoint(x: ex + r * 0.12, y: ey))
+                        ctx.stroke(line, with: .color(ink), style: StrokeStyle(lineWidth: max(1.2, w * 0.06), lineCap: .round))
+                    }
+                } else {
+                    for side in [-1.0, 1.0] {
+                        let ex = cx + side * r * 0.30
+                        let ey = headY + r * 0.01
+                        let er = max(1.3, r * 0.14)
+                        ctx.fill(Path(ellipseIn: CGRect(x: ex - er, y: ey - er * 1.15, width: er * 2, height: er * 2.3)), with: .color(ink))
+                        // Highlight sparkle
+                        let gl = er * 0.55
+                        ctx.fill(Path(ellipseIn: CGRect(x: ex - er * 0.42, y: ey - er * 0.65, width: gl, height: gl)), with: .color(.white))
+                    }
+                }
+        }
+        
+        // Tiny cat/w-mouth or smile
+        var mouth = Path()
+        mouth.move(to: CGPoint(x: cx - r * 0.11, y: headY + r * 0.28))
+        mouth.addQuadCurve(to: CGPoint(x: cx + r * 0.11, y: headY + r * 0.28), control: CGPoint(x: cx, y: headY + r * (mood == .celebrating ? 0.44 : 0.38)))
+        ctx.stroke(mouth, with: .color(ink), style: StrokeStyle(lineWidth: max(1.0, w * 0.05), lineCap: .round))
+        
+        // 9. Mood-specific micro prop: Steaming white rice bowl / working sparkle
+        if mood == .slacking {
+            // Iconic DeepSeek 大肥鱼白米饭 bowl on corner!
+            let bx = cx + r * 0.58
+            let by = headY + r * 0.56
+            ctx.fill(Path(ellipseIn: CGRect(x: bx - r * 0.28, y: by - r * 0.16, width: r * 0.56, height: r * 0.30)), with: .color(.white))
+            var bowl = Path()
+            bowl.addRoundedRect(in: CGRect(x: bx - r * 0.30, y: by - r * 0.02, width: r * 0.60, height: r * 0.32), cornerSize: CGSize(width: r * 0.18, height: r * 0.18))
+            ctx.fill(bowl, with: .color(isDark ? Color(red: 0.84, green: 0.90, blue: 0.98) : style.hairTop))
+        } else if mood == .working {
+            // Rhythmic typing sparkle beside crown
+            let sx = cx + r * 0.88
+            let sy = headY - r * 0.72 + CGFloat(sin(t * 9.0) * 1.6)
+            var spark = Path()
+            let sr = r * 0.18
+            spark.move(to: CGPoint(x: sx, y: sy - sr))
+            spark.addLine(to: CGPoint(x: sx, y: sy + sr))
+            spark.move(to: CGPoint(x: sx - sr, y: sy))
+            spark.addLine(to: CGPoint(x: sx + sr, y: sy))
+            ctx.stroke(spark, with: .color(Color(red: 1.0, green: 0.86, blue: 0.36)), style: StrokeStyle(lineWidth: 1.3, lineCap: .round))
         }
     }
     
     
     private static func drawPixelUsagi(in ctx: GraphicsContext, size: CGSize, t: Double, happy: Bool, isDark: Bool) {
-        // 12x12 pixel art bunny inspired by 乌萨奇
         let hopFrame = Int(t * (happy ? 5.0 : 2.2)) % 2
         let rows: [String] = [
             "...EE..EE...",
@@ -494,8 +741,6 @@ private struct ReportInteractiveRectModifier: ViewModifier {
 
 // MARK: - AppKit Transparent Overlay Container
 
-/// Transparent AppKit container hovering above the split editor whose `hitTest(_:)` passes
-/// all pointer events through to `EditorTextView` outside active capsule bounds.
 @MainActor
 final class PinnedTodoOverlayContainerView: NSView {
     
@@ -549,7 +794,7 @@ final class PinnedTodoOverlayContainerView: NSView {
 }
 
 
-// MARK: - Plump Layered Dynamic-Island Capsule Overlay Rendering
+// MARK: - Compact Content-Hugging Glass Capsules (Zero Wasted Space + Generous Button Hit Targets)
 
 struct PinnedTodoOverlayView: View {
     
@@ -620,15 +865,15 @@ struct PinnedTodoOverlayView: View {
         if self.isCollapsed {
             self.collapsedPeekCapsule(evaluated: evaluated, now: now)
                 .padding(.vertical, 12)
-                .padding(.trailing, 16)
+                .padding(.trailing, 14)
         } else {
-            VStack(alignment: .trailing, spacing: 8) {
+            VStack(alignment: .trailing, spacing: 7) {
                 ForEach(Array(evaluated.prefix(4).enumerated()), id: \.element.0.id) { index, pair in
                     self.layeredCapsule(item: pair.0, metrics: pair.1, now: now, index: index)
                 }
             }
             .padding(.vertical, 12)
-            .padding(.trailing, 16)
+            .padding(.trailing, 14)
         }
     }
     
@@ -648,8 +893,8 @@ struct PinnedTodoOverlayView: View {
                 self.isCollapsed = false
             }
         } label: {
-            HStack(spacing: 7) {
-                PinnedTodoMascotAvatar(kind: mascot, isHovered: true, size: 20)
+            HStack(spacing: 6) {
+                PinnedTodoMascotAvatar(kind: mascot, isHovered: true, size: 22)
                 
                 Text("\(evaluated.count)")
                     .font(.system(size: 12, weight: .bold).monospacedDigit())
@@ -666,10 +911,11 @@ struct PinnedTodoOverlayView: View {
             }
             .padding(.leading, 8)
             .padding(.trailing, 10)
-            .frame(height: 30)
+            .frame(height: 32)
             .background {
                 self.capsulePlinthBackground(accent: accent)
             }
+            .fixedSize()
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)
@@ -706,107 +952,93 @@ struct PinnedTodoOverlayView: View {
         let accent = isCompleting ? tokens.accentText : self.urgencyAccent(for: metrics.urgencyLevel, tokens: tokens)
         let mascot = self.selectedMascot.resolvedKind(for: item.id)
         
-        HStack(alignment: .center, spacing: 8) {
-            // 1. Live IP Companion Well (tap to cycle companion)
+        // Strictly content-hugging HStack: zero blank middle whitespace, generous 28×28 hit targets!
+        HStack(alignment: .center, spacing: 5) {
+            // 1. Live AI Girl Companion Well (30×30 tap target)
             Button {
                 self.cycleMascotPreference()
             } label: {
                 ZStack {
                     Circle()
-                        .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.045))
-                        .frame(width: 26, height: 26)
+                        .fill(accent.opacity(self.colorScheme == .dark ? 0.14 : 0.08))
+                        .frame(width: 28, height: 28)
                     
                     PinnedTodoMascotAvatar(
                         kind: mascot,
                         isHovered: isHovered,
                         isUrgent: metrics.urgencyLevel >= 3,
                         isCompleting: isCompleting,
-                        size: 20,
+                        size: 22,
                         phaseSeed: Double(index) * 1.17
                     )
                 }
+                .frame(width: 30, height: 30)
+                .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .pointerStyle(.link)
-            .help(AppLanguage.text("点击切换小伙伴：\(mascot.displayName)", en: "Click to switch companion: \(mascot.displayName)"))
+            .help(AppLanguage.text("点击切换伙伴：\(mascot.displayName)", en: "Switch Companion: \(mascot.displayName)"))
             
-            // 2. Concise 1-line title
+            // 2. Content-hugging title (capped width, zero blank gap)
             Text(item.title)
                 .font(.system(size: metrics.fontSize, weight: .medium))
                 .foregroundStyle(isCompleting ? .secondary : .primary)
-                .strikethrough(isCompleting)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .strikethrough(isCompleting)
+                .frame(maxWidth: 164, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.trailing, item.hasDeadline ? 0 : 2)
             
-            // 3. Soft nested countdown pill (zero hard border)
+            // 3. Soft countdown pill
             if item.hasDeadline {
                 let remaining = item.dueDate.timeIntervalSince(now)
                 Text(PinnedTodoUrgency.compactBadgeText(remaining))
                     .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
                     .foregroundStyle(accent)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
+                    .padding(.horizontal, 6.5)
+                    .padding(.vertical, 2.5)
                     .background(accent.opacity(self.colorScheme == .dark ? 0.18 : 0.11), in: Capsule())
                     .fixedSize()
             }
             
-            // 4. Progressive hover micro-actions
-            if isHovered && !isCompleting {
-                HStack(spacing: 4) {
-                    Menu {
-                        Button("+15 分钟") {
-                            self.analytics.snoozeReminder(id: item.id, by: 15 * 60)
-                        }
-                        Button("+1 小时") {
-                            self.analytics.snoozeReminder(id: item.id, by: 3600)
-                        }
-                        Button(AppLanguage.text("推迟到今晚 22:00", en: "Tonight 22:00")) {
-                            self.snoozeUntilTonight(item)
-                        }
-                    } label: {
-                        Image(systemName: "clock")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
-                            .background(Color.primary.opacity(0.06), in: Circle())
+            // 4. Stable 28×28 quick actions menu (Snooze / Collapse / Unpin) — zero width jump on hover!
+            if !isCompleting {
+                Menu {
+                    Button("+15 分钟") {
+                        self.analytics.snoozeReminder(id: item.id, by: 15 * 60)
                     }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .help(AppLanguage.text("延后提醒", en: "Snooze"))
-                    
-                    Button {
+                    Button("+1 小时") {
+                        self.analytics.snoozeReminder(id: item.id, by: 3600)
+                    }
+                    Button(AppLanguage.text("推迟到今晚 22:00", en: "Tonight 22:00")) {
+                        self.snoozeUntilTonight(item)
+                    }
+                    Divider()
+                    Button(AppLanguage.text("收起迷你胶囊", en: "Collapse")) {
                         withAnimation(.spring(response: 0.28, dampingFraction: 0.80)) {
                             self.isCollapsed = true
                         }
-                    } label: {
-                        Image(systemName: "minus")
-                            .font(.system(size: 9.5, weight: .bold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
-                            .background(Color.primary.opacity(0.06), in: Circle())
                     }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    .help(AppLanguage.text("收起迷你胶囊", en: "Collapse"))
-                    
-                    Button {
+                    Button(AppLanguage.text("取消置顶", en: "Unpin"), role: .destructive) {
                         self.analytics.unpinReminder(id: item.id)
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
-                            .background(Color.primary.opacity(0.06), in: Circle())
                     }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    .help(AppLanguage.text("取消置顶", en: "Unpin"))
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                        .background(Color.primary.opacity(isHovered ? 0.08 : 0.04), in: Circle())
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
-                .transition(.opacity.combined(with: .scale(scale: 0.88)))
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help(AppLanguage.text("延后 / 取消置顶", en: "Snooze or Unpin"))
             }
             
-            // 5. Borderless tactile complete pill button
+            // 5. Large comfortable 28×28 Complete Hit Target
             Button {
                 self.completeWithFeedback(item)
             } label: {
@@ -815,15 +1047,17 @@ struct PinnedTodoOverlayView: View {
                         .fill(
                             isCompleting
                                 ? Color(red: 0.20, green: 0.72, blue: 0.45)
-                                : accent.opacity(isCheckHovered ? 0.24 : 0.12)
+                                : accent.opacity(isCheckHovered ? 0.28 : 0.15)
                         )
-                        .frame(width: 22, height: 22)
+                        .frame(width: 24, height: 24)
                     
                     Image(systemName: isCompleting || isCheckHovered ? "checkmark" : "circle.fill")
-                        .font(.system(size: isCompleting || isCheckHovered ? 10.5 : 5, weight: .bold))
+                        .font(.system(size: isCompleting || isCheckHovered ? 11 : 5.5, weight: .bold))
                         .foregroundStyle(isCompleting ? .white : accent)
                 }
-                .scaleEffect(isCompleting ? 1.15 : (isCheckHovered ? 1.06 : 1.0))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+                .scaleEffect(isCompleting ? 1.14 : (isCheckHovered ? 1.06 : 1.0))
             }
             .buttonStyle(.plain)
             .pointerStyle(.link)
@@ -834,18 +1068,18 @@ struct PinnedTodoOverlayView: View {
             }
             .help(AppLanguage.text("打卡完成", en: "Complete"))
         }
-        .padding(.leading, 6)
-        .padding(.trailing, 7)
-        .frame(height: 36)
-        .frame(maxWidth: isHovered ? 380 : 284)
+        .padding(.leading, 5)
+        .padding(.trailing, 5)
+        .frame(height: 38)
+        .fixedSize()
         .background {
             self.capsulePlinthBackground(accent: accent)
         }
-        .scaleEffect(isCompleting ? 0.94 : (isHovered ? 1.018 : 1.0))
+        .scaleEffect(isCompleting ? 0.94 : (isHovered ? 1.015 : 1.0))
         .opacity(isCompleting ? 0.62 : 1.0)
         .help(metrics.remainingText.map { "\(item.title) · \($0)" } ?? item.title)
         .onHover { inside in
-            withAnimation(.spring(response: 0.26, dampingFraction: 0.80)) {
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.80)) {
                 self.hoveredID = inside ? item.id : (self.hoveredID == item.id ? nil : self.hoveredID)
             }
         }
@@ -890,8 +1124,8 @@ struct PinnedTodoOverlayView: View {
     private func capsulePlinthBackground(accent: Color) -> some View {
         let isDark = (self.colorScheme == .dark)
         let fillBase = isDark
-            ? Color(red: 0.09, green: 0.10, blue: 0.14).opacity(0.84)
-            : Color.white.opacity(0.90)
+            ? Color(red: 0.09, green: 0.10, blue: 0.14).opacity(0.86)
+            : Color.white.opacity(0.92)
         
         Capsule()
             .fill(.ultraThinMaterial)
@@ -904,7 +1138,6 @@ struct PinnedTodoOverlayView: View {
                     .fill(accent.opacity(isDark ? 0.07 : 0.035))
             )
             .overlay(
-                // Soft inner crystalline highlight along top arc ONLY (zero hard outline!)
                 Capsule()
                     .strokeBorder(
                         LinearGradient(
@@ -924,7 +1157,7 @@ struct PinnedTodoOverlayView: View {
     
     @ViewBuilder
     private func mascotMenuSection() -> some View {
-        Menu(AppLanguage.text("伴侣形象", en: "Companion IP")) {
+        Menu(AppLanguage.text("AI 娘伙伴", en: "AI Companion")) {
             ForEach(TodoMascotKind.allCases) { kind in
                 Button {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {

@@ -174,25 +174,35 @@ extension Document {
     }
     
     
-    /// Draws the current highlights over the text.
-    ///
-    /// Temporary attributes are used so that the highlights never become part of the text
-    /// storage, cannot be saved with the text and do not disturb the syntax highlighting.
+    /// Draws the current Notes-style highlights over the text using dedicated temporary keys so
+    /// syntax `.foregroundColor` attributes beneath remain intact when highlights are removed.
     func applyHighlightRendering() {
         
         let textStorage = self.textStorage
         let wholeRange = NSRange(location: 0, length: textStorage.length)
         
         for layoutManager in textStorage.layoutManagers {
-            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: wholeRange)
-            
-            for highlight in self.textHighlights {
-                let range = NSIntersectionRange(highlight.range, wholeRange)
-                guard range.length > 0 else { continue }
+            let apply = {
+                layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: wholeRange)
+                layoutManager.removeTemporaryAttribute(.notesHighlightFillColor, forCharacterRange: wholeRange)
+                layoutManager.removeTemporaryAttribute(.notesHighlightTextColor, forCharacterRange: wholeRange)
                 
-                layoutManager.addTemporaryAttribute(.backgroundColor,
-                                                    value: highlight.color.backgroundColor,
-                                                    forCharacterRange: range)
+                for highlight in self.textHighlights {
+                    let range = NSIntersectionRange(highlight.range, wholeRange)
+                    guard range.length > 0 else { continue }
+                    
+                    layoutManager.addTemporaryAttribute(.notesHighlightFillColor,
+                                                        value: highlight.color.backgroundColor,
+                                                        forCharacterRange: range)
+                    layoutManager.addTemporaryAttribute(.notesHighlightTextColor,
+                                                        value: highlight.color.noteTextColor,
+                                                        forCharacterRange: range)
+                }
+            }
+            if let customLM = layoutManager as? LayoutManager {
+                customLM.groupTemporaryAttributesUpdate(in: wholeRange, work: apply)
+            } else {
+                apply()
             }
             
             layoutManager.invalidateDisplay(forCharacterRange: wholeRange)

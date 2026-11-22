@@ -75,6 +75,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     private var documentsObserver: AnyCancellable?
     
     private var documentSyntaxObserver: AnyCancellable?
+    private var documentEditableObserver: AnyCancellable?
     private var focusObserver: AnyCancellable?
     private var editedStateObserver: AnyCancellable?
     private var isReviewingPaneDocuments = false
@@ -82,6 +83,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     private var pendingTitleVisibility: NSWindow.TitleVisibility?
     private var syntaxListObserver: AnyCancellable?
     private weak var syntaxPopUpButton: NSPopUpButton?
+    private let stackedToolbarClusters = NSHashTable<StackedToolbarClusterView>.weakObjects()
+    private var toolbarClusterObservers: Set<AnyCancellable> = []
     
     
     // MARK: Lifecycle
@@ -168,6 +171,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
                 let applyAppearance = {
                     window.appearance = targetAppearance
                     window.toolbar?.validateVisibleItems()
+                    self?.refreshStackedToolbarClusters()
                 }
                 if window.isVisible, window.appearance != targetAppearance {
                     window.performSmoothAppearanceTransition(duration: 0.28, updates: applyAppearance)
@@ -214,6 +218,17 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
             .compactMap { $0.object as? DocumentViewController }
             .filter { [weak self] in $0 === self?.documentViewController }
             .sink { [weak self] _ in self?.updateTitleVisibility() }
+        
+        // Keep stacked-metadata toolbar capsules synchronized with lock, active center, and accent palette changes
+        NotificationCenter.default.publisher(for: ContentViewController.didChangeActiveCenterNotification)
+            .sink { [weak self] _ in self?.refreshStackedToolbarClusters() }
+            .store(in: &self.toolbarClusterObservers)
+        NotificationCenter.default.publisher(for: Document.didChangeEditableNotification)
+            .sink { [weak self] _ in self?.refreshStackedToolbarClusters() }
+            .store(in: &self.toolbarClusterObservers)
+        NotificationCenter.default.publisher(for: StudioPaletteManager.paletteDidChangeNotification)
+            .sink { [weak self] _ in self?.refreshStackedToolbarClusters() }
+            .store(in: &self.toolbarClusterObservers)
     }
     
     
@@ -244,10 +259,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         self.window?.isMovableByWindowBackground = true
         
         // the split state may have been set before the window finished loading
-        if let titleVisibility = self.pendingTitleVisibility {
-            self.pendingTitleVisibility = nil
-            self.window?.titleVisibility = titleVisibility
-        }
+        // Keep top-left window title and subtitle hidden because pane tabs identify documents.
+        self.pendingTitleVisibility = nil
+        self.window?.titleVisibility = .hidden
+        self.window?.subtitle = ""
     }
     
     
@@ -355,15 +370,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         
         super.synchronizeWindowTitleWithDocumentName()
         
-        // Lets the title bar offer the proxy icon and rename-on-double-click.
-        self.window?.representedURL = self.fileDocument?.fileURL
-        
-        if self.isDirectoryDocument {
-            // display current document title as window subtitle
-            self.window?.subtitle = self.fileDocument?.fileURL?.lastPathComponent
-                ?? self.fileDocument?.displayName
-                ?? ""
-        }
+        self.window?.titleVisibility = .hidden
+        self.window?.representedURL = nil
+        self.window?.subtitle = ""
     }
     
     
@@ -487,6 +496,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
             self.followFocusedDocument(document)
         } else {
             self.documentSyntaxObserver = nil
+            self.documentEditableObserver = nil
         }
         
         self.updateRestorability()
@@ -532,21 +542,16 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     }
     
     
-    /// Hides the window title while the window is split into panes.
-    ///
-    /// Every pane names its document in its own navigation bar, so a window title would
-    /// only duplicate one of them. The subtitle (the vim mode indicator) is left alone.
+    /// Keeps the redundant top-left window title and mode subtitle hidden (pane tabs already show document titles).
     private func updateTitleVisibility() {
         
-        let titleVisibility: NSWindow.TitleVisibility = (self.documentViewController?.isSplit == true) ? .hidden : .visible
-        
         guard let window = self.window else {
-            // the split state can change before the window finishes loading
-            self.pendingTitleVisibility = titleVisibility
+            self.pendingTitleVisibility = .hidden
             return
         }
         
-        window.titleVisibility = titleVisibility
+        window.titleVisibility = .hidden
+        window.subtitle = ""
     }
     
     
@@ -596,8 +601,22 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         
         self.documentSyntaxObserver = document.$syntaxName
             .sink { [weak self] in self?.selectSyntaxPopUpItem(with: $0) }
+        self.documentEditableObserver = document.$isEditable
+            .sink { [weak self] _ in
+                self?.window?.toolbar?.validateVisibleItems()
+                self?.refreshStackedToolbarClusters()
+            }
         self.selectSyntaxPopUpItem(with: document.syntaxName)
         self.synchronizeWindowTitleWithDocumentName()
+        self.window?.toolbar?.validateVisibleItems()
+        self.refreshStackedToolbarClusters()
+    }
+    
+    
+    private func refreshStackedToolbarClusters() {
+        for cluster in self.stackedToolbarClusters.allObjects {
+            cluster.refreshState()
+        }
     }
     
     
@@ -740,7 +759,7 @@ private extension NSViewController {
 
 private extension NSToolbar.Identifier {
     
-    static let document = Self("Document.personal.10")
+    static let document = Self("Document.personal.11")
     static let directoryDocument = Self("DirectoryDocument")
 }
 
@@ -749,6 +768,10 @@ private extension NSToolbarItem.Identifier {
     
     private static let prefix = "com.coteditor.CotEditor.ToolbarItem."
     
+    
+    static let quickActionsCluster = Self(Self.prefix + "quickActionsCluster")
+    static let centersCluster = Self(Self.prefix + "centersCluster")
+    static let toolsCluster = Self(Self.prefix + "toolsCluster")
     
     static let syntax = Self(Self.prefix + "syntaxStyle")
     static let quickEmoji = Self(Self.prefix + "quickEmoji")
@@ -812,6 +835,9 @@ extension DocumentWindowController: NSToolbarDelegate {
     func toolbarImmovableItemIdentifiers(_ toolbar: NSToolbar) -> Set<NSToolbarItem.Identifier> {
         
         Set(self.directoryIdentifiers).union([
+            .quickActionsCluster,
+            .centersCluster,
+            .toolsCluster,
             .editable,
             .quickEmoji,
             .analyticsDashboard,
@@ -827,22 +853,13 @@ extension DocumentWindowController: NSToolbarDelegate {
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         
         self.directoryIdentifiers + [
-            .editable,
-            .space,
-            .quickEmoji,
-            .appearanceMode,
-            .space,
-            .analyticsDashboard,
-            .weeklyReportCenter,
-            .documentCenter,
+            .quickActionsCluster,
+            .centersCluster,
             .space,
             .syntax,
             .textScale,
             .space,
-            .terminal,
-            .aiSettings,
-            .inspector,
-            .more,
+            .toolsCluster,
             .flexibleSpace,
             .userProfile,
         ]
@@ -851,8 +868,11 @@ extension DocumentWindowController: NSToolbarDelegate {
     
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         
-        // Personal build: keep the toolbar minimal; Emoji, Dashboard, Appearance toggle, Weekly Report Center, and Document Center stay side-by-side, with user avatar pinned trailing top-right.
+        // Personal build: overlapping expandable stacked-metadata clusters keep controls compact & expressive.
         var identifiers = self.directoryIdentifiers + [
+            .quickActionsCluster,
+            .centersCluster,
+            .toolsCluster,
             .editable,
             .quickEmoji,
             .analyticsDashboard,
@@ -882,6 +902,118 @@ extension DocumentWindowController: NSToolbarDelegate {
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         
         switch itemIdentifier {
+            case .quickActionsCluster:
+                let cluster = StackedToolbarClusterView(items: [
+                    StackedToolbarCapsuleItem(
+                        id: "lock",
+                        title: { isLocked in AppLanguage.text(isLocked ? "已锁" : "锁定", en: isLocked ? "Locked" : "Lock") },
+                        tooltip: { isLocked in
+                            isLocked
+                                ? AppLanguage.text("当前处于只读锁定模式，点击解锁编辑", en: "Document is locked read-only; click to unlock")
+                                : AppLanguage.text("锁定文档（演示讲解防误操作）", en: "Lock document read-only for presentation")
+                        },
+                        image: { isLocked in WorkspaceCenterIcons.editableIcon(isEditable: !isLocked) },
+                        isActive: { [weak self] in self?.documentViewController?.focusedDocument.isEditable == false },
+                        action: { [weak self] in self?.documentViewController?.toggleEditable(nil) }
+                    ),
+                    StackedToolbarCapsuleItem(
+                        id: "emoji",
+                        title: { _ in AppLanguage.text("表情", en: "Emoji") },
+                        tooltip: { _ in AppLanguage.text("插入常用标点与表情", en: "Frequently used emoji") },
+                        image: { _ in WorkspaceCenterIcons.quickEmojiIcon() },
+                        menu: { DocumentWindowController.quickEmojiMenu() }
+                    ),
+                    StackedToolbarCapsuleItem(
+                        id: "appearance",
+                        title: { isDark in AppLanguage.text(isDark ? "深色" : "浅色", en: isDark ? "Dark" : "Light") },
+                        tooltip: { _ in AppLanguage.text("切换深色 / 浅色外观", en: "Toggle Light / Dark Mode") },
+                        image: { isDark in WorkspaceCenterIcons.appearanceModeIcon(isDark: isDark) },
+                        isActive: { [weak self] in
+                            (self?.window?.effectiveAppearance ?? NSApp.effectiveAppearance).isDark
+                        },
+                        action: { [weak self] in self?.documentViewController?.toggleAppearanceMode(nil) }
+                    ),
+                ])
+                if flag { self.stackedToolbarClusters.add(cluster) }
+                let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+                item.label = AppLanguage.text("快捷控制", en: "Quick Controls")
+                item.view = cluster
+                item.visibilityPriority = .high
+                return item
+                
+            case .centersCluster:
+                let cluster = StackedToolbarClusterView(items: [
+                    StackedToolbarCapsuleItem(
+                        id: "dashboard",
+                        title: { _ in AppLanguage.text("看板", en: "Stats") },
+                        tooltip: { _ in AppLanguage.text("打开 / 关闭数据看板", en: "Toggle Analytics Dashboard") },
+                        image: { isActive in WorkspaceCenterIcons.analyticsDashboardIcon(isActive: isActive) },
+                        isActive: { [weak self] in self?.workspaceContentViewController?.activeCenter == .dashboard },
+                        action: { [weak self] in self?.workspaceContentViewController?.toggleAnalyticsDashboard(nil) }
+                    ),
+                    StackedToolbarCapsuleItem(
+                        id: "weekly",
+                        title: { _ in AppLanguage.text("周报", en: "Weekly") },
+                        tooltip: { _ in AppLanguage.text("在当前窗口打开 / 关闭周报中心", en: "Toggle Weekly Report Center") },
+                        image: { isActive in WorkspaceCenterIcons.weeklyReportIcon(isActive: isActive) },
+                        isActive: { [weak self] in self?.workspaceContentViewController?.activeCenter == .weeklyReports },
+                        action: { [weak self] in self?.workspaceContentViewController?.toggleWeeklyReportCenter(nil) }
+                    ),
+                    StackedToolbarCapsuleItem(
+                        id: "docs",
+                        title: { _ in AppLanguage.text("文档", en: "Docs") },
+                        tooltip: { _ in AppLanguage.text("在当前窗口管理与浏览所有文档", en: "Toggle Document Center") },
+                        image: { isActive in WorkspaceCenterIcons.documentCenterIcon(isActive: isActive) },
+                        isActive: { [weak self] in self?.workspaceContentViewController?.activeCenter == .documents },
+                        action: { [weak self] in self?.workspaceContentViewController?.toggleDocumentCenter(nil) }
+                    ),
+                ])
+                if flag { self.stackedToolbarClusters.add(cluster) }
+                let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+                item.label = AppLanguage.text("工作区", en: "Workspace")
+                item.view = cluster
+                item.visibilityPriority = .high
+                return item
+                
+            case .toolsCluster:
+                let cluster = StackedToolbarClusterView(items: [
+                    StackedToolbarCapsuleItem(
+                        id: "terminal",
+                        title: { _ in AppLanguage.text("终端", en: "Term") },
+                        tooltip: { _ in AppLanguage.text("显示或隐藏底部内置终端", en: "Show or hide terminal") },
+                        image: { _ in WorkspaceCenterIcons.terminalIcon() },
+                        isActive: { [weak self] in self?.workspaceContentViewController?.isTerminalVisible == true },
+                        action: { [weak self] in self?.workspaceContentViewController?.toggleTerminal(nil) }
+                    ),
+                    StackedToolbarCapsuleItem(
+                        id: "ai",
+                        title: { _ in "AI" },
+                        tooltip: { _ in AppLanguage.text("配置 AI 模型、接口与智能体", en: "Configure AI models & bots") },
+                        image: { _ in WorkspaceCenterIcons.aiSettingsIcon() },
+                        action: { (NSApp.delegate as? AppDelegate)?.showAIPreferences(nil) }
+                    ),
+                    StackedToolbarCapsuleItem(
+                        id: "inspector",
+                        title: { _ in AppLanguage.text("检查", en: "Info") },
+                        tooltip: { _ in AppLanguage.text("显示 / 隐藏右侧信息检查器", en: "Show inspector") },
+                        image: { _ in WorkspaceCenterIcons.inspectorIcon() },
+                        action: { NSApp.sendAction(#selector(NSSplitViewController.toggleInspector), to: nil, from: nil) }
+                    ),
+                    StackedToolbarCapsuleItem(
+                        id: "more",
+                        title: { _ in AppLanguage.text("更多", en: "More") },
+                        tooltip: { _ in AppLanguage.text("更多视图与整理操作", en: "More actions") },
+                        image: { _ in WorkspaceCenterIcons.moreIcon() },
+                        menu: { DocumentWindowController.moreMenu() }
+                    ),
+                ])
+                if flag { self.stackedToolbarClusters.add(cluster) }
+                let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+                item.label = AppLanguage.text("工具", en: "Tools")
+                item.view = cluster
+                item.visibilityPriority = .high
+                return item
+                
             case .toggleSidebar:
                 let item = NSToolbarItem(itemIdentifier: itemIdentifier)
                 item.autovalidates = true
@@ -1255,7 +1387,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.toolTip = AppLanguage.text("切换读写状态 / 锁定防误改", en: "Prevent the document from being edited")
                 item.stateImages[.on] = WorkspaceCenterIcons.editableIcon(isEditable: true)
                 item.stateImages[.off] = WorkspaceCenterIcons.editableIcon(isEditable: false)
-                item.action = #selector(Document.toggleEditable)
+                item.action = #selector(DocumentViewController.toggleEditable)
                 item.isNavigational = true
                 return item
                 

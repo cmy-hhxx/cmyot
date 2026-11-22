@@ -393,6 +393,9 @@ final class LineNumberView: NSView {
             
             textView.publisher(for: \.scale)
                 .sink { [weak self] _ in self?.invalidateDrawingInfo() },
+            
+            NotificationCenter.default.publisher(for: WallpaperManager.didChangeNotification)
+                .sink { [weak self] _ in self?.needsDisplay = true },
         ]
     }
 }

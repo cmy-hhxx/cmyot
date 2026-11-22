@@ -123,6 +123,17 @@ final class VimEngine {
     
     // MARK: Key handling
     
+    private func guardEditable() -> Bool {
+        
+        guard self.textView?.isEditable != false else {
+            self.resetPending()
+            NSSound.beep()
+            return false
+        }
+        return true
+    }
+    
+    
     /// Handles a key event. Returns `true` when the event was consumed.
     func handleKeyDown(_ event: NSEvent) -> Bool {
         
@@ -130,6 +141,10 @@ final class VimEngine {
         
         let state = VimState.shared
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        
+        if !textView.isEditable, state.mode == .insert || state.mode == .replace {
+            self.enter(mode: .normal)
+        }
         
         // Command combinations stay native (⌘S, ⌘F, …).
         if flags.contains(.command) {
@@ -201,7 +216,9 @@ final class VimEngine {
             self.resetPending()
             switch event.charactersIgnoringModifiers?.lowercased() {
                 case "r":
-                    textView.undoManager?.redo()
+                    if self.guardEditable() {
+                        textView.undoManager?.redo()
+                    }
                     return true
                 case "d":
                     self.moveHalfPage(down: true)
@@ -352,6 +369,10 @@ final class VimEngine {
         
         // Resolve a pending operator with the next motion.
         if let op = self.pendingOperator {
+            if op != .yank && !self.guardEditable() {
+                self.updateStatus()
+                return true
+            }
             if character == "i" || character == "a" {
                 self.pendingTextObject = (op, character == "i")
                 self.updateStatus()
@@ -381,7 +402,8 @@ final class VimEngine {
                 case "e": self.moveBackwardWordEnd(big: false)
                 case "E": self.moveBackwardWordEnd(big: true)
                 case "_": self.moveLastNonBlankOfLine()
-                case "i": self.enter(mode: .insert)
+                case "i":
+                    if self.guardEditable() { self.enter(mode: .insert) }
                 default: break
             }
             self.count = nil
@@ -402,8 +424,10 @@ final class VimEngine {
         if self.pendingPrefix == "Z" {
             self.pendingPrefix = nil
             if character == "Z" {
-                self.saveDocument()
-                self.textView?.window?.performClose(nil)
+                if self.guardEditable() {
+                    self.saveDocument()
+                    self.textView?.window?.performClose(nil)
+                }
             } else if character == "Q" {
                 self.textView?.window?.performClose(nil)
             }
@@ -416,7 +440,9 @@ final class VimEngine {
         // Resolve `>>` / `<<`.
         if let prefix = self.pendingPrefix, prefix == ">" || prefix == "<" {
             self.pendingPrefix = nil
-            if character == prefix { self.indentLines(outdent: prefix == "<") }
+            if character == prefix, self.guardEditable() {
+                self.indentLines(outdent: prefix == "<")
+            }
             self.count = nil
             self.countUpdatedTimestamp = 0
             self.updateStatus()
@@ -479,11 +505,16 @@ final class VimEngine {
             case "*": self.searchWordUnderCursor(forward: true)
             case "#": self.searchWordUnderCursor(forward: false)
             case "%": self.jumpToMatchingBracket()
-            case "J": self.joinLines()
-            case "~": self.toggleCaseUnderCursor(count: self.takeCount())
-            case ">": self.pendingPrefix = ">"
-            case "<": self.pendingPrefix = "<"
+            case "J":
+                if self.guardEditable() { self.joinLines() }
+            case "~":
+                if self.guardEditable() { self.toggleCaseUnderCursor(count: self.takeCount()) }
+            case ">":
+                if self.guardEditable() { self.pendingPrefix = ">" }
+            case "<":
+                if self.guardEditable() { self.pendingPrefix = "<" }
             case ".":
+                guard self.guardEditable() else { break }
                 if let lastReplace = self.lastReplaceChar {
                     self.replaceCharactersUnderCursor(with: lastReplace.character, count: lastReplace.count)
                 } else if let lastChange = self.lastChange {
@@ -492,51 +523,65 @@ final class VimEngine {
                 }
                 
             case "r":
-                self.pendingReplaceChar = true
-                return true
+                if self.guardEditable() {
+                    self.pendingReplaceChar = true
+                    return true
+                }
             case "R":
-                self.enter(mode: .replace)
+                if self.guardEditable() { self.enter(mode: .replace) }
                 
-            case "d", "c", "y":
-                self.pendingOperator = OperatorKind(rawValue: character)
+            case "y":
+                self.pendingOperator = .yank
+            case "d", "c":
+                if self.guardEditable() {
+                    self.pendingOperator = OperatorKind(rawValue: character)
+                }
                 
             case "s":
-                let range = self.characterRange(count: self.takeCount())
-                self.delete(range)
-                self.enter(mode: .insert)
+                if self.guardEditable() {
+                    let range = self.characterRange(count: self.takeCount())
+                    self.delete(range)
+                    self.enter(mode: .insert)
+                }
             case "S":
-                self.substituteWholeLine()
+                if self.guardEditable() { self.substituteWholeLine() }
                 
             case "x":
-                let range = self.characterRange(count: self.takeCount())
-                self.delete(range)
+                if self.guardEditable() {
+                    let range = self.characterRange(count: self.takeCount())
+                    self.delete(range)
+                }
                 
             case "X":
-                let end = textView.selectedRange().location
-                let start = max(0, end - self.takeCount())
-                self.delete(NSRange(location: start, length: end - start))
+                if self.guardEditable() {
+                    let end = textView.selectedRange().location
+                    let start = max(0, end - self.takeCount())
+                    self.delete(NSRange(location: start, length: end - start))
+                }
                 
             case "D":
-                let range = self.toLineEnd(from: textView.selectedRange().location)
-                self.delete(range)
+                if self.guardEditable() {
+                    let range = self.toLineEnd(from: textView.selectedRange().location)
+                    self.delete(range)
+                }
                 
             case "C":
-                let range = self.toLineEnd(from: textView.selectedRange().location)
-                self.delete(range)
-                self.enter(mode: .insert)
+                if self.guardEditable() {
+                    let range = self.toLineEnd(from: textView.selectedRange().location)
+                    self.delete(range)
+                    self.enter(mode: .insert)
+                }
                 
             case "Y":
                 self.applyLinewiseOperator(.yank)
                 
             case "p":
-                self.paste(after: true)
+                if self.guardEditable() { self.paste(after: true) }
             case "P":
-                self.paste(after: false)
+                if self.guardEditable() { self.paste(after: false) }
                 
-            case "u":
-                self.textView?.undoManager?.undo()
-            case "U":
-                self.textView?.undoManager?.undo()
+            case "u", "U":
+                if self.guardEditable() { self.textView?.undoManager?.undo() }
             case "v":
                 let location = min(textView.selectedRange().location, max(0, (textView.string as NSString).length))
                 self.visualAnchor = location
@@ -557,27 +602,33 @@ final class VimEngine {
                 self.updateVisualSelection(to: active)
                 
             case "i":
-                self.enter(mode: .insert)
+                if self.guardEditable() { self.enter(mode: .insert) }
             case "a":
-                let string = textView.string as NSString
-                let loc = textView.selectedRange().location
-                let next = (loc < string.length && string.character(at: loc) != 10) ? loc + 1 : loc
-                self.setCursor(next)
-                self.enter(mode: .insert)
+                if self.guardEditable() {
+                    let string = textView.string as NSString
+                    let loc = textView.selectedRange().location
+                    let next = (loc < string.length && string.character(at: loc) != 10) ? loc + 1 : loc
+                    self.setCursor(next)
+                    self.enter(mode: .insert)
+                }
             case "I":
-                self.move(.firstNonBlank)
-                self.enter(mode: .insert)
+                if self.guardEditable() {
+                    self.move(.firstNonBlank)
+                    self.enter(mode: .insert)
+                }
             case "A":
-                let lineRange = self.lineRange(at: textView.selectedRange().location) ?? NSRange(location: 0, length: 0)
-                let string = textView.string as NSString
-                var end = NSMaxRange(lineRange)
-                if end > lineRange.location, string.character(at: end - 1) == 10 { end -= 1 }
-                self.setCursor(end)
-                self.enter(mode: .insert)
+                if self.guardEditable() {
+                    let lineRange = self.lineRange(at: textView.selectedRange().location) ?? NSRange(location: 0, length: 0)
+                    let string = textView.string as NSString
+                    var end = NSMaxRange(lineRange)
+                    if end > lineRange.location, string.character(at: end - 1) == 10 { end -= 1 }
+                    self.setCursor(end)
+                    self.enter(mode: .insert)
+                }
             case "o":
-                self.openLine(below: true)
+                if self.guardEditable() { self.openLine(below: true) }
             case "O":
-                self.openLine(below: false)
+                if self.guardEditable() { self.openLine(below: false) }
                 
             case ":":
                 self.commandBuffer = ""
@@ -668,46 +719,57 @@ final class VimEngine {
                     self.refreshCursor()
                 }
             case "r":
-                self.pendingReplaceChar = true
-                self.updateStatus()
-                return true
+                if self.guardEditable() {
+                    self.pendingReplaceChar = true
+                    self.updateStatus()
+                    return true
+                }
             case "~":
-                self.transformVisualCase(mode: .toggle)
+                if self.guardEditable() { self.transformVisualCase(mode: .toggle) }
             case "u":
-                self.transformVisualCase(mode: .lower)
+                if self.guardEditable() { self.transformVisualCase(mode: .lower) }
             case "U":
-                self.transformVisualCase(mode: .upper)
+                if self.guardEditable() { self.transformVisualCase(mode: .upper) }
             case ">":
-                self.indentVisualSelection(outdent: false)
+                if self.guardEditable() { self.indentVisualSelection(outdent: false) }
             case "<":
-                self.indentVisualSelection(outdent: true)
+                if self.guardEditable() { self.indentVisualSelection(outdent: true) }
             case "J":
-                self.joinLines()
-                self.endVisual()
+                if self.guardEditable() {
+                    self.joinLines()
+                    self.endVisual()
+                }
             case "y", "Y":
                 let range = self.visualRange()
                 self.register = (textView.string as NSString).substring(with: range)
                 self.registerIsLinewise = self.visualLinewise
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(self.register, forType: .string)
+                (textView as? EditorTextView)?.funEffects.hideVimVisualSelection(animated: true, withYankPulse: true)
                 self.endVisual(collapseTo: range.location)
             case "d", "D", "x", "X":
-                let range = self.visualRange()
-                self.register = (textView.string as NSString).substring(with: range)
-                self.registerIsLinewise = self.visualLinewise
-                self.delete(range)
-                self.endVisual()
+                if self.guardEditable() {
+                    let range = self.visualRange()
+                    self.register = (textView.string as NSString).substring(with: range)
+                    self.registerIsLinewise = self.visualLinewise
+                    self.delete(range)
+                    self.endVisual()
+                }
             case "c", "C", "s", "S":
-                let range = self.visualRange()
-                self.register = (textView.string as NSString).substring(with: range)
-                self.registerIsLinewise = self.visualLinewise
-                self.delete(range)
-                self.endVisual()
-                self.enter(mode: .insert)
+                if self.guardEditable() {
+                    let range = self.visualRange()
+                    self.register = (textView.string as NSString).substring(with: range)
+                    self.registerIsLinewise = self.visualLinewise
+                    self.delete(range)
+                    self.endVisual()
+                    self.enter(mode: .insert)
+                }
             case "p", "P":
-                let range = self.visualRange()
-                self.replace(range, with: self.register)
-                self.endVisual(collapseTo: range.location)
+                if self.guardEditable() {
+                    let range = self.visualRange()
+                    self.replace(range, with: self.register)
+                    self.endVisual(collapseTo: range.location)
+                }
             case "v", "V":
                 let active = VimState.shared.visualActiveLocation
                 self.endVisual(collapseTo: active)
@@ -770,6 +832,7 @@ final class VimEngine {
         }
         
         if trimmed.hasPrefix("s/") || trimmed.hasPrefix("%s/") {
+            guard self.guardEditable() else { return }
             self.executeSubstitute(command: trimmed)
             return
         }
@@ -2239,11 +2302,13 @@ final class VimEngine {
     }
     
     
-    /// Shows the current mode (or the `:` command / pending count/operator) in the window subtitle,
-    /// so it is always obvious which mode the editor is in.
+    /// Keeps `lastStatus` synchronized while leaving window chrome subtitle clean (Vim mode lives in the bottom status bar when enabled).
     private func updateStatus() {
         
         guard let window = self.textView?.window else { return }
+        if !window.subtitle.isEmpty {
+            window.subtitle = ""
+        }
         let state = VimState.shared
         let text: String
         if let commandLine = state.commandLine {
@@ -2256,7 +2321,6 @@ final class VimEngine {
         guard text != self.lastStatus else { return }
         
         self.lastStatus = text
-        window.subtitle = text
     }
     
     
@@ -2300,6 +2364,9 @@ final class VimEngine {
         VimState.shared.visualActiveLocation = nil
         VimState.shared.visualOwnerID = nil
         self.enter(mode: .normal)
+        if let editorTextView = self.textView as? EditorTextView {
+            editorTextView.syncNativeCaretVisibility()
+        }
         if let target {
             self.setCursor(target)
         }
@@ -2558,6 +2625,13 @@ final class VimEngine {
                     to: newRect,
                     color: editorTextView.effectiveCursorColor,
                     isContinuous: self.lastMoveWasContinuous
+                )
+                editorTextView.funEffects.syncVimVisualSelection(
+                    range: selectionRange,
+                    anchorLocation: clampedAnchor,
+                    activeLocation: clamped,
+                    isLinewise: self.visualLinewise,
+                    animated: true
                 )
             } else {
                 self.refreshCursor()

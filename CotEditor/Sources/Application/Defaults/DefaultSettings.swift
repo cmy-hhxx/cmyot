@@ -48,7 +48,7 @@ struct DefaultSettings {
             .monospacedFont: try? FontType.monospaced.systemFont().archivedData,
             .monospacedShouldAntialias: true,
             .monospacedLigature: false,
-            .vimMode: true,
+            .vimMode: false,
             .lineHeight: 1.3,
             .documentAppearance: AppearanceMode.default.rawValue,
             .windowAlpha: 1.0,

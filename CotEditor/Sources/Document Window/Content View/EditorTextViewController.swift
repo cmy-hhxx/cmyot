@@ -59,6 +59,7 @@ final class EditorTextViewController: NSViewController, NSServicesMenuRequestor,
     
     @ViewLoading private var lineNumberView: LineNumberView
     private weak var advancedCounterView: NSView?
+    private weak var presentationLockBanner: NSView?
     
     private var observers: Set<AnyCancellable> = []
     
@@ -194,6 +195,12 @@ final class EditorTextViewController: NSViewController, NSServicesMenuRequestor,
             self.document.$mode
                 .map(ModeManager.shared.setting(for:))
                 .sink { [weak self] in self?.textView.applyMode($0) },
+            self.document.$isEditable
+                .removeDuplicates()
+                .sink { [weak self] editable in self?.applyDocumentEditableState(editable) },
+            defaults.publisher(for: .vimMode, initial: true)
+                .removeDuplicates()
+                .sink { [weak self] enabled in self?.textView.applyVimModeSetting(enabled) },
             
             // observe text orientation for line number view
             self.textView.publisher(for: \.layoutOrientation, options: .initial)
@@ -223,6 +230,35 @@ final class EditorTextViewController: NSViewController, NSServicesMenuRequestor,
                 .assign(to: \.drawsSeparator, on: self.lineNumberView)
                 .store(in: &observers)
         }
+        
+        self.applyDocumentEditableState(self.document.isEditable)
+    }
+    
+    
+    private func applyDocumentEditableState(_ editable: Bool) {
+        
+        self.textView.applyEditableLockState(editable)
+        
+        if editable {
+            self.presentationLockBanner?.removeFromSuperview()
+            self.presentationLockBanner = nil
+            return
+        }
+        
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+              self.presentationLockBanner == nil
+        else { return }
+        
+        let pill = NSHostingView(rootView: PresentationLockBannerView { [weak self] in
+            self?.document.isEditable = true
+        })
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        self.view.addSubview(pill)
+        NSLayoutConstraint.activate([
+            pill.topAnchor.constraint(equalTo: self.view.topAnchor, constant: 10),
+            pill.trailingAnchor.constraint(equalTo: self.view.trailingAnchor, constant: -18),
+        ])
+        self.presentationLockBanner = pill
     }
     
     
@@ -680,5 +716,39 @@ private extension MultiCursorEditing {
     var selectsSingleCharacter: Bool {
         
         !self.hasMultipleInsertions && self.selectedString.compareCount(with: 1) == .equal
+    }
+}
+
+
+private struct PresentationLockBannerView: View {
+    
+    let onUnlock: () -> Void
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.orange)
+            
+            Text(AppLanguage.text("只读锁定中 · 防误改", en: "Presentation Lock · Read-Only"))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.primary)
+            
+            Button(action: self.onUnlock) {
+                Text(AppLanguage.text("解锁", en: "Unlock"))
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2.5)
+                    .background(Color.accentColor, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.75))
+        .shadow(color: .black.opacity(0.14), radius: 8, y: 2)
     }
 }

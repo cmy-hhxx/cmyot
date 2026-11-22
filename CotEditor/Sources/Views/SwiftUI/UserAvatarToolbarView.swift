@@ -114,13 +114,25 @@ private struct UserAvatarToolbarBadgeLabel: View {
 }
 
 
-/// Top-right toolbar avatar control that opens the flagship personal command hub popover.
+/// Top-right toolbar avatar control that opens the flagship personal command hub panel
+/// with screen-edge-safe anchoring (never clips off the right screen edge).
 @MainActor final class UserAvatarToolbarButtonView: NSView {
+    
+    private final class UserProfileFloatingPanel: NSPanel {
+        override var canBecomeKey: Bool { true }
+        override var canBecomeMain: Bool { false }
+    }
     
     private let hostingView: NSHostingView<UserAvatarToolbarBadgeLabel>
     private let clickButton = NSButton()
-    private var popover: NSPopover?
+    private var panel: UserProfileFloatingPanel?
+    private var panelHosting: NSHostingController<AnyView>?
     private var profileObserver: (any NSObjectProtocol)?
+    private var localMouseMonitor: Any?
+    private var globalMouseMonitor: Any?
+    private var keyMonitor: Any?
+    private var windowCloseObserver: (any NSObjectProtocol)?
+    private var panelSizeObserver: NSObjectProtocol?
     
     
     override init(frame frameRect: NSRect) {
@@ -180,12 +192,34 @@ private struct UserAvatarToolbarBadgeLabel: View {
         if let profileObserver = self.profileObserver {
             NotificationCenter.default.removeObserver(profileObserver)
         }
+        self.closeFloatingPanel()
     }
     
     
     override var intrinsicContentSize: NSSize {
         
         NSSize(width: 28, height: 28)
+    }
+    
+    
+    /// Computes the screen-clamped floating frame right-aligned beneath `buttonScreenRect` so it never clips off the edge.
+    static func anchoredPanelFrame(
+        buttonScreenRect: NSRect,
+        panelSize: NSSize,
+        visibleScreenFrame: NSRect
+    ) -> NSRect {
+        let margin: CGFloat = 14
+        let minX = visibleScreenFrame.minX + margin
+        let maxX = max(minX, visibleScreenFrame.maxX - panelSize.width - margin)
+        let preferredX = buttonScreenRect.maxX - panelSize.width + 6
+        let originX = max(minX, min(preferredX, maxX))
+        
+        let minY = visibleScreenFrame.minY + margin
+        let maxY = max(minY, visibleScreenFrame.maxY - panelSize.height - margin)
+        let preferredY = buttonScreenRect.minY - panelSize.height - 8
+        let originY = max(minY, min(preferredY, maxY))
+        
+        return NSRect(x: originX, y: originY, width: panelSize.width, height: panelSize.height)
     }
     
     
@@ -199,23 +233,168 @@ private struct UserAvatarToolbarBadgeLabel: View {
     
     @objc private func togglePopover(_ sender: Any?) {
         
-        if let popover = self.popover, popover.isShown {
-            popover.performClose(sender)
+        if let panel = self.panel, panel.isVisible {
+            self.closeFloatingPanel()
             return
         }
+        self.showFloatingPanel()
+    }
+    
+    
+    private func showFloatingPanel() {
         
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = true
+        guard let hostWindow = self.window else { return }
+        self.closeFloatingPanel()
+        
         let rootView = UserProfilePopoverView(
-            hostWindow: self.window,
-            closePopover: { [weak popover] in
-                popover?.performClose(nil)
+            hostWindow: hostWindow,
+            closePopover: { [weak self] in
+                self?.closeFloatingPanel()
             }
         )
-        popover.contentViewController = NSHostingController(rootView: rootView)
-        popover.show(relativeTo: self.bounds, of: self, preferredEdge: .maxY)
-        self.popover = popover
+        
+        let vfx = NSVisualEffectView()
+        vfx.material = .popover
+        vfx.blendingMode = .behindWindow
+        vfx.state = .active
+        vfx.wantsLayer = true
+        vfx.layer?.cornerRadius = 16
+        vfx.layer?.masksToBounds = true
+        vfx.layer?.borderWidth = 0.75
+        vfx.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+        
+        let contentView = AnyView(
+            rootView
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] newHeight in
+                    Task { @MainActor in
+                        self?.repositionFloatingPanel(preferredHeight: newHeight)
+                    }
+                }
+        )
+        let hosting = NSHostingController(rootView: contentView)
+        hosting.view.translatesAutoresizingMaskIntoConstraints = false
+        hosting.view.wantsLayer = true
+        hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
+        vfx.addSubview(hosting.view)
+        NSLayoutConstraint.activate([
+            hosting.view.leadingAnchor.constraint(equalTo: vfx.leadingAnchor),
+            hosting.view.trailingAnchor.constraint(equalTo: vfx.trailingAnchor),
+            hosting.view.topAnchor.constraint(equalTo: vfx.topAnchor),
+            hosting.view.bottomAnchor.constraint(equalTo: vfx.bottomAnchor),
+        ])
+        hosting.view.layoutSubtreeIfNeeded()
+        
+        let fitted = hosting.view.fittingSize
+        let size = NSSize(width: 348, height: max(260, fitted.height))
+        let btnInWindow = self.convert(self.bounds, to: nil)
+        let btnScreen = hostWindow.convertToScreen(btnInWindow)
+        let screenFrame = (hostWindow.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let frame = Self.anchoredPanelFrame(buttonScreenRect: btnScreen, panelSize: size, visibleScreenFrame: screenFrame)
+        
+        let panel = UserProfileFloatingPanel(
+            contentRect: frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        panel.level = .popUpMenu
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.contentView = vfx
+        panel.alphaValue = 0
+        
+        hostWindow.addChildWindow(panel, ordered: .above)
+        panel.makeKeyAndOrderFront(nil)
+        
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.16
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+            panel.animator().alphaValue = 1.0
+        }
+        
+        self.panel = panel
+        self.panelHosting = hosting
+        self.installMonitors(hostWindow: hostWindow, panel: panel)
+    }
+    
+    
+    private func repositionFloatingPanel(preferredHeight: CGFloat) {
+        
+        guard let panel = self.panel, let hostWindow = self.window, preferredHeight > 120 else { return }
+        let clampedH = min(640, max(240, preferredHeight))
+        guard abs(panel.frame.height - clampedH) > 1.5 else { return }
+        let btnInWindow = self.convert(self.bounds, to: nil)
+        let btnScreen = hostWindow.convertToScreen(btnInWindow)
+        let screenFrame = (hostWindow.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let updated = Self.anchoredPanelFrame(
+            buttonScreenRect: btnScreen,
+            panelSize: NSSize(width: 348, height: clampedH),
+            visibleScreenFrame: screenFrame
+        )
+        panel.setFrame(updated, display: true)
+    }
+    
+    
+    private func installMonitors(hostWindow: NSWindow, panel: UserProfileFloatingPanel) {
+        
+        self.localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self, weak panel] event in
+            guard let self, let panel, panel.isVisible else { return event }
+            if event.window === panel {
+                return event
+            }
+            if event.window === self.window {
+                let locInSelf = self.convert(event.locationInWindow, from: nil)
+                if self.bounds.contains(locInSelf) {
+                    return event
+                }
+            }
+            self.closeFloatingPanel()
+            return event
+        }
+        
+        self.globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor in
+                self?.closeFloatingPanel()
+            }
+        }
+        
+        self.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak panel] event in
+            guard let self, let panel, panel.isVisible, event.keyCode == 53 else { return event }
+            if let fieldEditor = panel.firstResponder as? NSTextView, fieldEditor.isFieldEditor {
+                return event
+            }
+            self.closeFloatingPanel()
+            return nil
+        }
+        
+        self.windowCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: hostWindow,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.closeFloatingPanel()
+            }
+        }
+    }
+    
+    
+    private func closeFloatingPanel() {
+        
+        if let m = self.localMouseMonitor { NSEvent.removeMonitor(m); self.localMouseMonitor = nil }
+        if let m = self.globalMouseMonitor { NSEvent.removeMonitor(m); self.globalMouseMonitor = nil }
+        if let m = self.keyMonitor { NSEvent.removeMonitor(m); self.keyMonitor = nil }
+        if let o = self.windowCloseObserver { NotificationCenter.default.removeObserver(o); self.windowCloseObserver = nil }
+        
+        if let panel = self.panel {
+            panel.parent?.removeChildWindow(panel)
+            panel.orderOut(nil)
+            panel.contentView = nil
+            self.panel = nil
+        }
+        self.panelHosting = nil
     }
 }
 
@@ -919,106 +1098,119 @@ struct UserProfilePopoverView: View {
         let isCompleting = self.completingTodoIDs.contains(item.id)
         let mascot = self.mascotMode.resolvedKind(for: item.id)
         
-        HStack(spacing: 8) {
-            ZStack {
-                Circle()
-                    .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.045))
-                    .frame(width: 24, height: 24)
-                PinnedTodoMascotAvatar(
-                    kind: mascot,
-                    isHovered: isHovered,
-                    isCompleting: isCompleting,
-                    size: 18,
-                    phaseSeed: Double(index) * 1.13
-                )
-            }
-            
-            Text(item.title)
-                .font(.system(size: 12.2, weight: .medium))
-                .foregroundStyle(isCompleting ? .secondary : .primary)
-                .strikethrough(isCompleting)
-                .lineLimit(1)
-            
-            Spacer(minLength: 4)
-            
-            if item.hasDeadline {
-                Text(PinnedTodoUrgency.compactBadgeText(item.dueDate.timeIntervalSinceNow))
-                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(accent)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(accent.opacity(self.colorScheme == .dark ? 0.18 : 0.11), in: Capsule())
-            }
-            
-            if isHovered && !isCompleting {
-                Button {
-                    self.analytics.snoozeReminder(id: item.id, by: 15 * 60)
-                } label: {
-                    Text("+15m")
-                        .font(.system(size: 9.5, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(self.surfaceFill, in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .help(AppLanguage.text("延后 15 分钟", en: "Snooze 15m"))
-                
-                Button {
-                    self.analytics.unpinReminder(id: item.id)
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 8.5, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18, height: 18)
-                        .background(self.surfaceFill, in: Circle())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .help(AppLanguage.text("取消置顶", en: "Unpin"))
-            }
-            
-            Button {
-                self.completePopoverTodo(item)
-            } label: {
+        HStack(alignment: .center, spacing: 6) {
+            // Content-hugging capsule with generous button hit targets
+            HStack(alignment: .center, spacing: 5) {
                 ZStack {
                     Circle()
-                        .fill(isCompleting ? Color(red: 0.20, green: 0.72, blue: 0.45) : accent.opacity(0.14))
-                        .frame(width: 20, height: 20)
-                    Image(systemName: isCompleting ? "checkmark" : "circle.fill")
-                        .font(.system(size: isCompleting ? 9.5 : 4.5, weight: .bold))
-                        .foregroundStyle(isCompleting ? .white : accent)
+                        .fill(accent.opacity(self.colorScheme == .dark ? 0.14 : 0.08))
+                        .frame(width: 26, height: 26)
+                    PinnedTodoMascotAvatar(
+                        kind: mascot,
+                        isHovered: isHovered,
+                        isCompleting: isCompleting,
+                        size: 20,
+                        phaseSeed: Double(index) * 1.13
+                    )
+                }
+                
+                Text(item.title)
+                    .font(.system(size: 12.2, weight: .medium))
+                    .foregroundStyle(isCompleting ? .secondary : .primary)
+                    .strikethrough(isCompleting)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 164, alignment: .leading)
+                    .fixedSize(horizontal: true, vertical: false)
+                
+                if item.hasDeadline {
+                    Text(PinnedTodoUrgency.compactBadgeText(item.dueDate.timeIntervalSinceNow))
+                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(accent)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(accent.opacity(self.colorScheme == .dark ? 0.18 : 0.11), in: Capsule())
+                }
+                
+                if !isCompleting {
+                    Button {
+                        self.analytics.snoozeReminder(id: item.id, by: 15 * 60)
+                    } label: {
+                        Text("+15m")
+                            .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(self.surfaceFill, in: Capsule())
+                            .frame(minWidth: 34, minHeight: 26)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(AppLanguage.text("延后 15 分钟", en: "Snooze 15m"))
+                    
+                    Button {
+                        self.analytics.unpinReminder(id: item.id)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22, height: 22)
+                            .background(self.surfaceFill, in: Circle())
+                            .frame(width: 26, height: 26)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(AppLanguage.text("取消置顶", en: "Unpin"))
+                }
+                
+                Button {
+                    self.completePopoverTodo(item)
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(isCompleting ? Color(red: 0.20, green: 0.72, blue: 0.45) : accent.opacity(0.16))
+                            .frame(width: 24, height: 24)
+                        Image(systemName: isCompleting ? "checkmark" : "circle.fill")
+                            .font(.system(size: isCompleting ? 10.5 : 5, weight: .bold))
+                            .foregroundStyle(isCompleting ? .white : accent)
+                    }
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help(AppLanguage.text("标记已完成", en: "Complete"))
+            }
+            .padding(.horizontal, 6)
+            .frame(height: 36)
+            .fixedSize()
+            .background(
+                Capsule()
+                    .fill(self.colorScheme == .dark ? Color.white.opacity(0.065) : Color.white.opacity(0.90))
+                    .shadow(color: Color.black.opacity(self.colorScheme == .dark ? 0.28 : 0.06), radius: 8, y: 3)
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: self.colorScheme == .dark
+                                ? [Color.white.opacity(0.15), Color.clear]
+                                : [Color.white.opacity(0.9), Color.black.opacity(0.05)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.65
+                    )
+            )
+            .onHover { hovering in
+                withAnimation(Self.quick) {
+                    self.hoveredTodoID = hovering ? item.id : (self.hoveredTodoID == item.id ? nil : self.hoveredTodoID)
                 }
             }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            .help(AppLanguage.text("标记已完成", en: "Complete"))
-        }
-        .padding(.horizontal, 7)
-        .frame(height: 34)
-        .background(
-            Capsule()
-                .fill(self.colorScheme == .dark ? Color.white.opacity(0.055) : Color.white.opacity(0.86))
-                .shadow(color: Color.black.opacity(self.colorScheme == .dark ? 0.28 : 0.06), radius: 8, y: 3)
-        )
-        .overlay(
-            Capsule()
-                .strokeBorder(
-                    LinearGradient(
-                        colors: self.colorScheme == .dark
-                            ? [Color.white.opacity(0.15), Color.clear]
-                            : [Color.white.opacity(0.9), Color.black.opacity(0.05)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.65
-                )
-        )
-        .onHover { hovering in
-            withAnimation(Self.quick) {
-                self.hoveredTodoID = hovering ? item.id : (self.hoveredTodoID == item.id ? nil : self.hoveredTodoID)
-            }
+            
+            Spacer(minLength: 0)
         }
     }
     
@@ -1472,7 +1664,7 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
     @State private var isPaused = false
     @Environment(\.colorScheme) private var colorScheme
     
-    private let stageWidth: CGFloat = 328
+    private let stageWidth: CGFloat = 304
     private let stageHeight: CGFloat = 180
     
     
