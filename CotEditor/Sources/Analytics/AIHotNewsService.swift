@@ -390,7 +390,20 @@ nonisolated struct NewsChatMessage: Identifiable, Codable, Hashable, Sendable {
 }
 
 
-/// Three-stop reasoning effort matching the LeiBox Reasoning Effort Slider (`Simple / Balanced / Deep`).
+/// Selectable gateway + model option shown in the Deep Agent NEWS Chat composer.
+nonisolated struct NewsChatModelOption: Identifiable, Hashable, Sendable {
+    
+    let endpointID: UUID
+    let endpointName: String
+    let modelID: String
+    
+    var id: String { "\(self.endpointID.uuidString)::\(self.modelID)" }
+    
+    var displayName: String { self.modelID }
+}
+
+
+/// Three-stop reasoning effort matching the LeiBox Deep Agent Composer (`简单 / 中度 / 深度`).
 nonisolated enum NewsReasoningEffort: Int, CaseIterable, Identifiable, Sendable {
     case simple = 0
     case balanced = 1
@@ -400,8 +413,8 @@ nonisolated enum NewsReasoningEffort: Int, CaseIterable, Identifiable, Sendable 
     
     var title: String {
         switch self {
-            case .simple: AppLanguage.text("极速", en: "Simple")
-            case .balanced: AppLanguage.text("均衡", en: "Balanced")
+            case .simple: AppLanguage.text("简单", en: "Simple")
+            case .balanced: AppLanguage.text("中度", en: "Medium")
             case .deep: AppLanguage.text("深度", en: "Deep")
         }
     }
@@ -414,14 +427,22 @@ nonisolated enum NewsReasoningEffort: Int, CaseIterable, Identifiable, Sendable 
         }
     }
     
+    var temperature: Double {
+        switch self {
+            case .simple: 0.35
+            case .balanced: 0.55
+            case .deep: 0.72
+        }
+    }
+    
     var styleDirective: String {
         switch self {
             case .simple:
-                "回答风格：极简直接，控制在 3-5 条短要点内，一针见血不展开废话。"
+                "回答风格：极简直接，用清晰的 Markdown 列表控制在 3～5 条核心要点内，不展开废话。"
             case .balanced:
-                "回答风格：条理清晰，兼顾核心事实、犀利观点与实操启发，方便复制分享。"
+                "回答风格：结构清晰的 Markdown 排版（含小标题、加粗关键词、要点列表），兼顾核心事实、犀利点评与实操启发。"
             case .deep:
-                "回答风格：深度拆解底层逻辑、隐含假设、反面视角与长期趋势，给出独到判断。"
+                "回答风格：深度分析型 Markdown（含分层标题、核心判断、反面视角、风险拆解与对比表格/引用），给出有洞察力的判断。"
         }
     }
 }
@@ -702,10 +723,10 @@ final class AIHotNewsService {
     
     func resolvedArticleBlocks(for item: AIHotNewsItem) -> [NewsArticleBlock] {
         if let loaded = self.articleContents[item.id]?.blocks, !loaded.isEmpty {
-            return loaded
+            return Self.sanitizedArticleBlocks(loaded)
         }
         if let embedded = item.contentBlocks, !embedded.isEmpty {
-            return embedded
+            return Self.sanitizedArticleBlocks(embedded)
         }
         let diskURL = self.diskArticleURL(for: item)
         if let data = try? Data(contentsOf: diskURL),
@@ -713,9 +734,37 @@ final class AIHotNewsService {
            !decoded.blocks.isEmpty
         {
             self.articleContents[item.id] = decoded
-            return decoded.blocks
+            return Self.sanitizedArticleBlocks(decoded.blocks)
         }
         return []
+    }
+    
+    
+    /// Strips empty/orphan headings (such as trailing "所属事件", "相关事件", "延伸阅读") that have no body content underneath.
+    nonisolated static func sanitizedArticleBlocks(_ blocks: [NewsArticleBlock]) -> [NewsArticleBlock] {
+        let boilerplateHeadings: Set<String> = [
+            "所属事件", "相关事件", "相关阅读", "延伸阅读", "相关推荐", "更多阅读", "原文链接",
+        ]
+        var cleaned: [NewsArticleBlock] = []
+        for (idx, block) in blocks.enumerated() {
+            if case .heading(_, let text) = block {
+                let norm = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if norm.isEmpty || boilerplateHeadings.contains(norm) {
+                    continue
+                }
+                // Drop heading if no non-heading content follows it
+                let hasFollowingBody = blocks.dropFirst(idx + 1).contains { next in
+                    if case .heading = next { return false }
+                    return true
+                }
+                if !hasFollowingBody { continue }
+            }
+            cleaned.append(block)
+        }
+        while case .heading = cleaned.last {
+            cleaned.removeLast()
+        }
+        return cleaned
     }
     
     
@@ -840,34 +889,93 @@ final class AIHotNewsService {
     }
     
     
+    /// Collects all usable models across configured API gateways, active gateway first.
+    static func availableChatModels() -> [NewsChatModelOption] {
+        let profiles = AIEndpointStore.profiles
+        let activeID = AIEndpointStore.activeID
+        let ordered = profiles.sorted { lhs, rhs in
+            if lhs.id == activeID { return true }
+            if rhs.id == activeID { return false }
+            return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+        }
+        
+        var seen = Set<String>()
+        var options: [NewsChatModelOption] = []
+        for profile in ordered {
+            let candidates = ([profile.model] + profile.savedModels + profile.provider.recommendedModels)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            for modelID in candidates {
+                let dedupeKey = "\(profile.id.uuidString)::\(modelID.lowercased())"
+                guard seen.insert(dedupeKey).inserted else { continue }
+                options.append(NewsChatModelOption(
+                    endpointID: profile.id,
+                    endpointName: profile.displayName,
+                    modelID: modelID
+                ))
+            }
+        }
+        return options
+    }
+    
+    
+    /// Resolves the exact `AIConfiguration` for the selected model and reasoning effort.
+    static func resolveChatConfiguration(
+        for selectedModel: NewsChatModelOption?,
+        effort: NewsReasoningEffort
+    ) -> AIConfiguration {
+        var config: AIConfiguration
+        if let selectedModel,
+           let profile = AIEndpointStore.profiles.first(where: { $0.id == selectedModel.endpointID })
+        {
+            var overridden = profile
+            overridden.model = selectedModel.modelID
+            config = overridden.configuration(apiKey: AIEndpointStore.apiKey(for: profile))
+        } else {
+            config = AIBotStore.shared.resolvedConfiguration(for: .summarize, baseConfig: .current)
+        }
+        config.reasoningEffort = effort.apiValue
+        config.temperature = effort.temperature
+        return config
+    }
+    
+    
     /// Triggers one-click sharp AI commentary & summary for `item` as the first chat turn.
-    func requestAICommentary(for item: AIHotNewsItem, effort: NewsReasoningEffort = .balanced) async {
+    func requestAICommentary(
+        for item: AIHotNewsItem,
+        effort: NewsReasoningEffort = .balanced,
+        selectedModel: NewsChatModelOption? = nil
+    ) async {
         let prompt = AppLanguage.text(
-            "帮我总结这篇文章的核心事实，并给出犀利点评和可落地的启发。",
-            en: "Summarize this article's core facts with sharp commentary and takeaways."
+            "请用结构化 Markdown 总结这篇文章的核心事实，给出犀利点评和可落地的启发。",
+            en: "Summarize this article's core facts in clean Markdown with sharp commentary and actionable takeaways."
         )
         await self.sendChatFollowUp(
             prompt,
             for: item,
-            displayUserText: AppLanguage.text("总结核心要点", en: "Summarize Key Points"),
+            displayUserText: AppLanguage.text("提炼核心事实与犀利点评", en: "Core facts & sharp critique"),
             saveAsBrief: true,
-            effort: effort
+            effort: effort,
+            selectedModel: selectedModel
         )
     }
     
     
-    /// Appends a user follow-up question and streams the AI reply in a simple multi-turn chat.
+    /// Appends a user follow-up question and streams the AI reply with a smooth typewriter cadence.
     func sendChatFollowUp(
         _ question: String,
         for item: AIHotNewsItem,
         displayUserText: String? = nil,
         saveAsBrief: Bool = false,
-        effort: NewsReasoningEffort = .balanced
+        effort: NewsReasoningEffort = .balanced,
+        selectedModel: NewsChatModelOption? = nil
     ) async {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         guard self.streamingChatItemID == nil else { return }
-        guard AIService.shared.isConfigured else {
+        
+        let resolvedConfig = Self.resolveChatConfiguration(for: selectedModel, effort: effort)
+        guard resolvedConfig.isUsable else {
             self.chatErrorMessage = AppLanguage.text("请先在「设置 → API 网关」配置 AI 模型", en: "Configure an AI model in Settings first")
             return
         }
@@ -884,7 +992,38 @@ final class AIHotNewsService {
         self.chatHistories[itemID] = history
         self.streamingChatItemID = itemID
         
+        // Smooth typewriter reveal state: chunks land in `targetBuffer`, ticker glides `shownCount` smoothly
+        var targetBuffer = ""
+        var shownCount = 0
+        var streamDone = false
+        
+        let typewriterTask = Task { @MainActor [weak self] in
+            while let self {
+                let targetChars = Array(targetBuffer)
+                if shownCount < targetChars.count {
+                    let backlog = targetChars.count - shownCount
+                    let step: Int = if streamDone {
+                        max(4, min(20, (backlog + 3) / 4))
+                    } else if backlog > 48 {
+                        6
+                    } else if backlog > 18 {
+                        3
+                    } else {
+                        2
+                    }
+                    shownCount = min(targetChars.count, shownCount + step)
+                    self.updateAssistantMessage(id: assistantID, itemID: itemID, text: String(targetChars.prefix(shownCount)))
+                } else if streamDone {
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(18))
+                if Task.isCancelled { break }
+            }
+        }
+        
         defer {
+            streamDone = true
+            typewriterTask.cancel()
             if self.streamingChatItemID == itemID {
                 self.streamingChatItemID = nil
             }
@@ -900,7 +1039,7 @@ final class AIHotNewsService {
         let systemContext = """
         你是一位视野敏锐、说人话的科技与资讯陪读搭子。请紧扣下面这篇资讯原文回答用户的点评、总结和追问。
         \(effort.styleDirective)
-        要求：直接给干货与犀利观点，结构清晰方便复制分享，不要废话客套。
+        要求：使用标准 Markdown 排版（善用标题、加粗、列表、引用、代码块或表格），直接给干货与犀利观点，方便用户阅读与复制分享，不要废话客套。
 
         标题：\(item.title)
         分类：\(item.resolvedCategory.label)\(sourceNote.isEmpty ? "" : " · \(sourceNote)")
@@ -918,16 +1057,30 @@ final class AIHotNewsService {
         wireMessages.append(.user(trimmed))
         
         do {
-            let output = try await AIService.shared.chat(wireMessages, analyticsFeature: "newsChat") { [weak self] partial in
-                guard let self else { return }
-                self.updateAssistantMessage(id: assistantID, itemID: itemID, text: partial)
+            let output = try await AIService.shared.chat(
+                wireMessages,
+                configuration: resolvedConfig,
+                analyticsFeature: "newsChat"
+            ) { partial in
+                if partial.count >= targetBuffer.count {
+                    targetBuffer = partial
+                }
             }
             let finalClean = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            targetBuffer = finalClean
+            streamDone = true
+            // Let the typewriter gracefully finish the final few characters (~0.35s max)
+            let deadline = Date().addingTimeInterval(0.35)
+            while shownCount < finalClean.count && Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+            typewriterTask.cancel()
             self.updateAssistantMessage(id: assistantID, itemID: itemID, text: finalClean)
             if saveAsBrief, !finalClean.isEmpty {
                 self.setAIBrief(finalClean, for: itemID)
             }
         } catch {
+            typewriterTask.cancel()
             self.chatErrorMessage = error.localizedDescription
             if var list = self.chatHistories[itemID],
                let idx = list.lastIndex(where: { $0.id == assistantID }),

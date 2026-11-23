@@ -424,6 +424,61 @@ nonisolated struct AIClient: Sendable {
     }
     
     
+    /// Returns whether `model` accepts OpenAI-style `reasoning_effort` / `reasoning.effort` controls.
+    static func supportsOpenAIReasoningEffort(for model: String) -> Bool {
+        let m = model.lowercased()
+        return m.contains("reasoner")
+            || m.contains("thinking")
+            || m.contains("qwq")
+            || m.contains("-r1")
+            || m.hasPrefix("o1")
+            || m.hasPrefix("o3")
+            || m.hasPrefix("o4")
+            || m.hasPrefix("gpt-5")
+            || m.contains("/o1")
+            || m.contains("/o3")
+            || m.contains("/o4")
+            || m.contains("/gpt-5")
+    }
+    
+    
+    /// Maps `"low" | "medium" | "high"` into Anthropic extended-thinking `budget_tokens`.
+    static func anthropicThinkingBudget(for effort: String?, model: String) -> Int? {
+        let m = model.lowercased()
+        let isThinkingCapable = m.contains("claude-3-7")
+            || m.contains("claude-3.7")
+            || m.contains("claude-sonnet-4")
+            || m.contains("claude-opus-4")
+            || m.contains("claude-haiku-4-5")
+            || m.contains("claude-4")
+        guard isThinkingCapable else { return nil }
+        switch effort?.lowercased() {
+            case "medium": return 4096
+            case "high": return 12288
+            default: return nil
+        }
+    }
+    
+    
+    /// Maps `"low" | "medium" | "high"` into Google Gemini `thinkingConfig.thinkingBudget`.
+    static func geminiThinkingBudget(for effort: String?, model: String) -> Int? {
+        let m = model.lowercased()
+        guard m.contains("gemini-2.5") || m.contains("gemini-3") || m.contains("thinking") else { return nil }
+        switch effort?.lowercased() {
+            case "low": return 512
+            case "medium": return 4096
+            case "high": return 12288
+            default: return nil
+        }
+    }
+    
+    
+    /// Internal test hook returning the wire JSON body for `messages`.
+    func debugRequestBody(for messages: [AIMessage], stream: Bool = true) -> [String: Any] {
+        self.body(for: messages, stream: stream)
+    }
+    
+    
     // MARK: Private Methods
     
     /// The JSON body for the protocol in use.
@@ -458,13 +513,8 @@ nonisolated struct AIClient: Sendable {
                 if !system.isEmpty {
                     body["instructions"] = system
                 }
-                let lowerModel = model.lowercased()
-                let isReasoning = lowerModel.contains("reasoner")
-                    || lowerModel.hasPrefix("o1")
-                    || lowerModel.hasPrefix("o3")
-                    || lowerModel.hasPrefix("o4")
-                    || lowerModel.hasPrefix("gpt-5")
-                if allowThinkingControl, !self.disablesThinking, isReasoning,
+                if allowThinkingControl, !self.disablesThinking,
+                   Self.supportsOpenAIReasoningEffort(for: model),
                    let effort = config.reasoningEffort, !effort.isEmpty
                 {
                     body["reasoning"] = ["effort": effort]
@@ -497,9 +547,8 @@ nonisolated struct AIClient: Sendable {
                         body["max_tokens"] = maxTokens
                     }
                 }
-                // For reasoning models (o1/o3/deepseek-reasoner), pass low reasoning effort to accelerate generation.
                 if allowThinkingControl, !self.disablesThinking,
-                   (lowerModel.contains("reasoner") || lowerModel.hasPrefix("o1") || lowerModel.hasPrefix("o3") || lowerModel.hasPrefix("o4")),
+                   Self.supportsOpenAIReasoningEffort(for: model),
                    let effort = config.reasoningEffort, !effort.isEmpty
                 {
                     body["reasoning_effort"] = effort
@@ -508,9 +557,13 @@ nonisolated struct AIClient: Sendable {
                 return body
                 
             case .anthropicMessages:
+                let anthropicThinkingBudget = (allowThinkingControl && !self.disablesThinking)
+                    ? Self.anthropicThinkingBudget(for: config.reasoningEffort, model: model)
+                    : nil
+                let resolvedMaxTokens = max(self.maxOutputTokens ?? 16384, (anthropicThinkingBudget ?? 0) + 4096)
                 var body: [String: Any] = [
                     "model": model,
-                    "max_tokens": self.maxOutputTokens ?? 16384,
+                    "max_tokens": resolvedMaxTokens,
                     "stream": stream,
                     "messages": conversation.map { message in
                         [
@@ -531,11 +584,17 @@ nonisolated struct AIClient: Sendable {
                 if !system.isEmpty {
                     body["system"] = system
                 }
-                if allowTemperature, Self.supportsTemperature(for: model), let temperature = config.temperature {
+                // Anthropic requires temperature unset when extended thinking is enabled
+                if anthropicThinkingBudget == nil,
+                   allowTemperature, Self.supportsTemperature(for: model),
+                   let temperature = config.temperature
+                {
                     body["temperature"] = temperature
                 }
                 if allowThinkingControl, self.disablesThinking {
                     body["thinking"] = ["type": "disabled"]
+                } else if let budget = anthropicThinkingBudget {
+                    body["thinking"] = ["type": "enabled", "budget_tokens": budget]
                 }
                 
                 return body
@@ -563,8 +622,15 @@ nonisolated struct AIClient: Sendable {
                 if let maxTokens = self.maxOutputTokens {
                     genConfig["maxOutputTokens"] = maxTokens
                 }
+                if allowTemperature, let temperature = config.temperature {
+                    genConfig["temperature"] = temperature
+                }
                 if allowThinkingControl, self.disablesThinking {
                     genConfig["thinkingConfig"] = ["thinkingBudget": 0]
+                } else if allowThinkingControl,
+                          let budget = Self.geminiThinkingBudget(for: config.reasoningEffort, model: model)
+                {
+                    genConfig["thinkingConfig"] = ["thinkingBudget": budget]
                 }
                 if !genConfig.isEmpty {
                     body["generationConfig"] = genConfig

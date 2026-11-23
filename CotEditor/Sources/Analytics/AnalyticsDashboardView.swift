@@ -1199,288 +1199,46 @@ struct AnalyticsDashboardView: View {
     
     
     private func doneTodayColumn(points: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "flame.fill")
-                    .font(.system(size: 13.5, weight: .medium))
-                    .foregroundStyle(self.palette.emerald)
-                    .frame(width: 16, alignment: .center)
-                
-                Text("干了啥")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(self.palette.pine)
-                
-                Spacer()
-                
-                if !points.isEmpty {
-                    let copiedAll = (self.copiedCardKey == "done-all")
-                    Button {
-                        self.copyDashboardText(points.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n"), key: "done-all")
-                    } label: {
-                        Image(systemName: copiedAll ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(copiedAll ? self.palette.emerald : self.palette.secondaryInk)
-                            .frame(width: 24, height: 24)
-                            .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    .help(AppLanguage.text("复制全部点评", en: "Copy All"))
-                }
-                
-                Button {
-                    Task {
-                        await self.analytics.refreshDoneTodayCommentary(force: true)
-                    }
-                } label: {
-                    Image(systemName: self.analytics.isRefreshingDoneToday ? "hourglass" : "arrow.clockwise")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(self.palette.secondaryInk)
-                        .frame(width: 24, height: 24)
-                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .disabled(self.analytics.isRefreshingDoneToday)
-                .help(AppLanguage.text("换一批犀利点评", en: "Refresh Commentary"))
+        DoneTodayEditorialCard(
+            points: points,
+            isRefreshing: self.analytics.isRefreshingDoneToday,
+            compact: self.isEmbeddedInSettings,
+            palette: self.palette,
+            copiedKey: self.copiedCardKey,
+            onCopy: { text, key in
+                self.copyDashboardText(text, key: key)
+            },
+            onRefresh: {
+                Task { await self.analytics.refreshDoneTodayCommentary(force: true) }
             }
-            .frame(height: 24)
-            
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 9) {
-                    if points.isEmpty {
-                        Text(AppLanguage.text("今天还没开张，先敲两行？", en: "Nothing logged yet today"))
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(self.palette.mutedInk)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 8)
-                    } else {
-                        ForEach(Array(points.enumerated()), id: \.offset) { idx, point in
-                            let itemKey = "done-\(idx)"
-                            let isCopied = (self.copiedCardKey == itemKey)
-                            let tagTone: Color = switch idx {
-                                case 0: self.palette.accentFill
-                                case 1: self.palette.emerald
-                                default: self.palette.mint
-                            }
-                            
-                            HStack(alignment: .top, spacing: 10) {
-                                Text(String(format: "%02d", idx + 1))
-                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(idx == 0 ? self.palette.tokens.onAccentInk : tagTone)
-                                    .frame(width: 22, height: 20)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(idx == 0 ? tagTone : tagTone.opacity(self.palette.tokens.isDark ? 0.18 : 0.12))
-                                    )
-                                    .padding(.top, 1)
-                                
-                                Text(point)
-                                    .font(.system(size: 12.5, weight: idx == 0 ? .medium : .regular))
-                                    .foregroundStyle(idx == 0 ? self.palette.pine : self.palette.secondaryInk)
-                                    .lineSpacing(3)
-                                    .textSelection(.enabled)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                
-                                Button {
-                                    self.copyDashboardText(point, key: itemKey)
-                                } label: {
-                                    Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundStyle(isCopied ? self.palette.emerald : self.palette.mutedInk)
-                                        .frame(width: 22, height: 22)
-                                        .background(self.palette.card.opacity(0.75), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                                        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                                }
-                                .buttonStyle(.plain)
-                                .pointerStyle(.link)
-                                .help(AppLanguage.text("复制这条点评", en: "Copy"))
-                            }
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(idx == 0 ? tagTone.opacity(self.palette.tokens.isDark ? 0.12 : 0.065) : self.palette.inset)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .strokeBorder(idx == 0 ? tagTone.opacity(0.28) : self.palette.hairline, lineWidth: 0.75)
-                            )
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(self.isEmbeddedInSettings ? 12 : 16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
+        )
     }
     
     
     private func predictedActionsColumn(predictions: [DocumentActionPrediction]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "scope")
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .foregroundStyle(self.palette.accentFill)
-                    .frame(width: 16, alignment: .center)
-                
-                Text("要干啥")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(self.palette.pine)
-                
-                Spacer()
-                
-                if !predictions.isEmpty {
-                    let copiedAll = (self.copiedCardKey == "action-all")
-                    Button {
-                        let text = predictions.enumerated().map { idx, p in
-                            let suffix = p.reason.isEmpty ? "" : "（\(p.reason)）"
-                            return "\(idx + 1). [\(p.urgency)] \(p.action)\(suffix)"
-                        }.joined(separator: "\n")
-                        self.copyDashboardText(text, key: "action-all")
-                    } label: {
-                        Image(systemName: copiedAll ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(copiedAll ? self.palette.emerald : self.palette.secondaryInk)
-                            .frame(width: 24, height: 24)
-                            .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    .help(AppLanguage.text("复制全部行动预测", en: "Copy All"))
+        NextActionsEditorialCard(
+            predictions: predictions,
+            isRefreshing: self.analytics.isPredictingActions,
+            compact: self.isEmbeddedInSettings,
+            palette: self.palette,
+            copiedKey: self.copiedCardKey,
+            resolveDocument: { pred in
+                self.analytics.storedDocument(id: pred.sourceDocumentID, title: pred.sourceDocumentTitle)
+            },
+            onOpenDocument: { doc in
+                if let onOpenDocument = self.onOpenDocument {
+                    onOpenDocument(doc)
+                } else {
+                    AnalyticsDashboardWindowController.shared.openDocument(doc)
                 }
-                
-                Button {
-                    Task {
-                        await self.analytics.refreshActionPredictions(force: true)
-                    }
-                } label: {
-                    Image(systemName: self.analytics.isPredictingActions ? "hourglass" : "arrow.clockwise")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(self.palette.secondaryInk)
-                        .frame(width: 24, height: 24)
-                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .disabled(self.analytics.isPredictingActions)
-                .help(AppLanguage.text("重新预测下一步", en: "Refresh Predictions"))
+            },
+            onCopy: { text, key in
+                self.copyDashboardText(text, key: key)
+            },
+            onRefresh: {
+                Task { await self.analytics.refreshActionPredictions(force: true) }
             }
-            .frame(height: 24)
-            
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 9) {
-                    if predictions.isEmpty {
-                        Text(AppLanguage.text("暂时没啥火烧眉毛的事", en: "No upcoming actions"))
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(self.palette.mutedInk)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 8)
-                    } else {
-                        ForEach(Array(predictions.enumerated()), id: \.element.id) { idx, pred in
-                            let linkedDoc = self.analytics.storedDocument(id: pred.sourceDocumentID, title: pred.sourceDocumentTitle)
-                            let itemKey = "action-\(pred.id)"
-                            let isCopied = (self.copiedCardKey == itemKey)
-                            let isHigh = (pred.urgency == "高" || idx == 0)
-                            let badgeColor: Color = isHigh ? self.palette.accentFill : (pred.urgency == "中" ? self.palette.emerald : self.palette.secondaryInk)
-                            let badgeText: String = pred.urgency == "高" ? "急" : (pred.urgency == "中" ? "推进" : "顺手")
-                            
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text(badgeText)
-                                        .font(.system(size: 9.5, weight: .bold))
-                                        .foregroundStyle(isHigh ? self.palette.tokens.onAccentInk : badgeColor)
-                                        .padding(.horizontal, 6)
-                                        .frame(height: 18)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                                .fill(isHigh ? badgeColor : badgeColor.opacity(self.palette.tokens.isDark ? 0.18 : 0.12))
-                                        )
-                                        .padding(.top, 1)
-                                    
-                                    Text(pred.action)
-                                        .font(.system(size: 12.5, weight: idx == 0 ? .semibold : .medium))
-                                        .foregroundStyle(idx == 0 ? self.palette.pine : self.palette.secondaryInk)
-                                        .lineSpacing(3)
-                                        .textSelection(.enabled)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                    
-                                    HStack(spacing: 4) {
-                                        Button {
-                                            let payload = pred.reason.isEmpty ? pred.action : "\(pred.action)（\(pred.reason)）"
-                                            self.copyDashboardText(payload, key: itemKey)
-                                        } label: {
-                                            Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                                                .font(.system(size: 10, weight: .medium))
-                                                .foregroundStyle(isCopied ? self.palette.emerald : self.palette.mutedInk)
-                                                .frame(width: 22, height: 22)
-                                                .background(self.palette.card.opacity(0.75), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                                                .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                                        }
-                                        .buttonStyle(.plain)
-                                        .pointerStyle(.link)
-                                        .help(AppLanguage.text("复制这条建议", en: "Copy"))
-                                        
-                                        if let linkedDoc {
-                                            Button {
-                                                if let onOpenDocument = self.onOpenDocument {
-                                                    onOpenDocument(linkedDoc)
-                                                } else {
-                                                    AnalyticsDashboardWindowController.shared.openDocument(linkedDoc)
-                                                }
-                                            } label: {
-                                                Image(systemName: "arrow.up.right.square")
-                                                    .font(.system(size: 10.5, weight: .medium))
-                                                    .foregroundStyle(self.palette.accentFill)
-                                                    .frame(width: 22, height: 22)
-                                                    .background(self.palette.card.opacity(0.75), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                                                    .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                                            }
-                                            .buttonStyle(.plain)
-                                            .pointerStyle(.link)
-                                            .help(AppLanguage.text("打开关联文档：\(linkedDoc.title)", en: "Open Document"))
-                                        }
-                                    }
-                                }
-                                
-                                if !pred.reason.isEmpty {
-                                    Text(pred.reason)
-                                        .font(.system(size: 11, weight: .regular))
-                                        .foregroundStyle(self.palette.mutedInk)
-                                        .textSelection(.enabled)
-                                        .lineLimit(2)
-                                        .padding(.leading, 32)
-                                }
-                            }
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(isHigh ? badgeColor.opacity(self.palette.tokens.isDark ? 0.11 : 0.06) : self.palette.inset)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .strokeBorder(isHigh ? badgeColor.opacity(0.28) : self.palette.hairline, lineWidth: 0.75)
-                            )
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(self.isEmbeddedInSettings ? 12 : 16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
+        )
     }
     
     
@@ -1526,6 +1284,551 @@ struct AnalyticsDashboardView: View {
             selectedYear: self.selectedYear,
             version: self.snapshotVersion
         )
+    }
+}
+
+
+/// Editorial "干了啥" card: featured headline lead quote + connected timeline feed + zero-clutter hover feedback.
+private struct DoneTodayEditorialCard: View {
+    
+    let points: [String]
+    let isRefreshing: Bool
+    let compact: Bool
+    let palette: DashPalette
+    let copiedKey: String?
+    let onCopy: (String, String) -> Void
+    let onRefresh: () -> Void
+    
+    @State private var isCardHovered = false
+    @State private var hoveredIndex: Int?
+    
+    
+    var body: some View {
+        let isDark = self.palette.tokens.isDark
+        
+        VStack(alignment: .leading, spacing: 12) {
+            // Clean editorial header with whisper-quiet hover refresh pill (zero resting icon clutter)
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(self.palette.emerald)
+                    .frame(width: 7, height: 7)
+                
+                Text("干了啥")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(self.palette.pine)
+                
+                Spacer(minLength: 4)
+                
+                if self.isRefreshing {
+                    Text(AppLanguage.text("点评中…", en: "Updating…"))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(self.palette.mutedInk)
+                } else if self.isCardHovered {
+                    Button(action: self.onRefresh) {
+                        Text(AppLanguage.text("换一批", en: "Refresh"))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(self.palette.secondaryInk)
+                            .padding(.horizontal, 8)
+                            .frame(height: 22)
+                            .background(self.palette.inset, in: Capsule())
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .transition(.opacity)
+                }
+            }
+            .frame(height: 24)
+            
+            ScrollView(.vertical, showsIndicators: false) {
+                if self.points.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(AppLanguage.text("今天还没开张", en: "Quiet desk so far"))
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(self.palette.pine.opacity(0.75))
+                        Text(AppLanguage.text("敲几行字，看看今天的犀利点评会怎么夸（或损）你。", en: "Start writing to see today's commentary."))
+                            .font(.system(size: 12))
+                            .foregroundStyle(self.palette.mutedInk)
+                            .lineSpacing(3)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        // Lead Headline Pull-Quote (#0)
+                        if let lead = self.points.first {
+                            let leadKey = "done-0"
+                            let isHover = (self.hoveredIndex == 0)
+                            let isCopied = (self.copiedKey == leadKey)
+                            
+                            ZStack(alignment: .bottomTrailing) {
+                                HStack(alignment: .top, spacing: 11) {
+                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [self.palette.accentFill, self.palette.emerald],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            )
+                                        )
+                                        .frame(width: 3)
+                                    
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(AppLanguage.text("今日主评", en: "HIGHLIGHT"))
+                                            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                                            .tracking(0.6)
+                                            .foregroundStyle(self.palette.accentFill)
+                                        
+                                        Text(lead)
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(self.palette.pine)
+                                            .lineSpacing(3.5)
+                                            .textSelection(.enabled)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                }
+                                .padding(.horizontal, 13)
+                                .padding(.vertical, 12)
+                                
+                                if isHover || isCopied {
+                                    self.floatingCopyPill(isCopied: isCopied) {
+                                        self.onCopy(lead, leadKey)
+                                    }
+                                    .padding(8)
+                                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                self.palette.accentFill.opacity(isDark ? 0.16 : 0.085),
+                                                self.palette.inset.opacity(isDark ? 0.65 : 0.72),
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .strokeBorder(
+                                        self.palette.accentFill.opacity(isHover ? 0.48 : 0.24),
+                                        lineWidth: isHover ? 1.0 : 0.75
+                                    )
+                            )
+                            .scaleEffect(isHover ? 1.008 : 1.0)
+                            .animation(.spring(response: 0.24, dampingFraction: 0.80), value: isHover)
+                            .onHover { inside in
+                                if inside { self.hoveredIndex = 0 }
+                                else if self.hoveredIndex == 0 { self.hoveredIndex = nil }
+                            }
+                            .contextMenu {
+                                self.doneContextMenu(point: lead, key: leadKey)
+                            }
+                        }
+                        
+                        // Connected Editorial Timeline Feed (#1...)
+                        let rest = Array(self.points.dropFirst())
+                        if !rest.isEmpty {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(Array(rest.enumerated()), id: \.offset) { offset, point in
+                                    let realIdx = offset + 1
+                                    let itemKey = "done-\(realIdx)"
+                                    let isHover = (self.hoveredIndex == realIdx)
+                                    let isCopied = (self.copiedKey == itemKey)
+                                    let isLast = (offset == rest.count - 1)
+                                    let dotColor = (offset == 0) ? self.palette.emerald : self.palette.mint
+                                    
+                                    HStack(alignment: .top, spacing: 10) {
+                                        // Minimal vertical timeline rail
+                                        VStack(spacing: 0) {
+                                            Circle()
+                                                .fill(isHover ? self.palette.accentFill : dotColor)
+                                                .frame(width: isHover ? 7 : 5.5, height: isHover ? 7 : 5.5)
+                                                .padding(.top, 11)
+                                            
+                                            if !isLast {
+                                                Rectangle()
+                                                    .fill(self.palette.hairlineStrong)
+                                                    .frame(width: 1)
+                                                    .frame(maxHeight: .infinity)
+                                                    .padding(.top, 4)
+                                            }
+                                        }
+                                        .frame(width: 10)
+                                        
+                                        ZStack(alignment: .bottomTrailing) {
+                                            Text(point)
+                                                .font(.system(size: 12.5, weight: isHover ? .medium : .regular))
+                                                .foregroundStyle(isHover ? self.palette.pine : self.palette.secondaryInk)
+                                                .lineSpacing(3)
+                                                .textSelection(.enabled)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 8)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                            
+                                            if isHover || isCopied {
+                                                self.floatingCopyPill(isCopied: isCopied) {
+                                                    self.onCopy(point, itemKey)
+                                                }
+                                                .padding(6)
+                                                .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                                            }
+                                        }
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                                .fill(isHover ? self.palette.insetHover : Color.clear)
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                                .strokeBorder(isHover ? self.palette.hairlineStrong : Color.clear, lineWidth: 0.7)
+                                        )
+                                    }
+                                    .animation(.spring(response: 0.22, dampingFraction: 0.82), value: isHover)
+                                    .onHover { inside in
+                                        if inside { self.hoveredIndex = realIdx }
+                                        else if self.hoveredIndex == realIdx { self.hoveredIndex = nil }
+                                    }
+                                    .contextMenu {
+                                        self.doneContextMenu(point: point, key: itemKey)
+                                    }
+                                }
+                            }
+                            .padding(.leading, 4)
+                        }
+                    }
+                    .padding(.vertical, 1)
+                }
+            }
+        }
+        .padding(self.compact ? 12 : 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: self.isCardHovered)
+        .animation(.easeOut(duration: 0.16), value: self.isCardHovered)
+        .onHover { inside in
+            if inside != self.isCardHovered {
+                self.isCardHovered = inside
+            }
+        }
+    }
+    
+    
+    private func floatingCopyPill(isCopied: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(isCopied ? AppLanguage.text("✓ 已复制", en: "✓ Copied") : AppLanguage.text("复制", en: "Copy"))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(isCopied ? self.palette.tokens.onAccentInk : self.palette.secondaryInk)
+                .padding(.horizontal, 8)
+                .frame(height: 20)
+                .background(
+                    Capsule()
+                        .fill(isCopied ? self.palette.emerald : self.palette.card.opacity(0.95))
+                        .shadow(color: self.palette.cardShadow, radius: 4, y: 1)
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(isCopied ? Color.clear : self.palette.hairlineStrong, lineWidth: 0.6)
+                )
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+    }
+    
+    
+    @ViewBuilder
+    private func doneContextMenu(point: String, key: String) -> some View {
+        Button(AppLanguage.text("复制这条点评", en: "Copy")) {
+            self.onCopy(point, key)
+        }
+        Button(AppLanguage.text("复制全部点评", en: "Copy All")) {
+            self.onCopy(self.points.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n"), "done-all")
+        }
+        Divider()
+        Button(AppLanguage.text("换一批犀利点评", en: "Refresh"), action: self.onRefresh)
+    }
+}
+
+
+/// Tactile interactive "要干啥" card: check-to-complete rings, priority accent stripe, clickable source doc tags,
+/// and whisper-quiet hover copy feedback (zero resting icon clutter).
+private struct NextActionsEditorialCard: View {
+    
+    let predictions: [DocumentActionPrediction]
+    let isRefreshing: Bool
+    let compact: Bool
+    let palette: DashPalette
+    let copiedKey: String?
+    let resolveDocument: (DocumentActionPrediction) -> StoredDocumentRecord?
+    let onOpenDocument: (StoredDocumentRecord) -> Void
+    let onCopy: (String, String) -> Void
+    let onRefresh: () -> Void
+    
+    @State private var isCardHovered = false
+    @State private var hoveredID: String?
+    @State private var completedIDs: Set<String> = []
+    
+    
+    var body: some View {
+        let isDark = self.palette.tokens.isDark
+        let doneCount = self.predictions.filter { self.completedIDs.contains($0.id) }.count
+        
+        VStack(alignment: .leading, spacing: 12) {
+            // Header with subtle progress badge & hover-only refresh text pill
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(self.palette.accentFill)
+                    .frame(width: 7, height: 7)
+                
+                Text("要干啥")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(self.palette.pine)
+                
+                if doneCount > 0 {
+                    Text("\(doneCount)/\(self.predictions.count)")
+                        .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(self.palette.emerald)
+                        .padding(.horizontal, 6.5)
+                        .frame(height: 18)
+                        .background(self.palette.tokens.positivePillBg, in: Capsule())
+                        .transition(.scale.combined(with: .opacity))
+                }
+                
+                Spacer(minLength: 4)
+                
+                if self.isRefreshing {
+                    Text(AppLanguage.text("推演中…", en: "Predicting…"))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(self.palette.mutedInk)
+                } else if self.isCardHovered {
+                    Button(action: self.onRefresh) {
+                        Text(AppLanguage.text("重新预测", en: "Refresh"))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(self.palette.secondaryInk)
+                            .padding(.horizontal, 8)
+                            .frame(height: 22)
+                            .background(self.palette.inset, in: Capsule())
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .transition(.opacity)
+                }
+            }
+            .frame(height: 24)
+            
+            ScrollView(.vertical, showsIndicators: false) {
+                if self.predictions.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(AppLanguage.text("暂无火烧眉毛的事", en: "All clear for now"))
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(self.palette.pine.opacity(0.75))
+                        Text(AppLanguage.text("继续写文档或记录待办，AI 会自动帮你盯紧最值得收口的下一步。", en: "AI will predict your highest-leverage next move from your notes."))
+                            .font(.system(size: 12))
+                            .foregroundStyle(self.palette.mutedInk)
+                            .lineSpacing(3)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                } else {
+                    VStack(alignment: .leading, spacing: 9) {
+                        ForEach(Array(self.predictions.enumerated()), id: \.element.id) { idx, pred in
+                            let linkedDoc = self.resolveDocument(pred)
+                            let isDone = self.completedIDs.contains(pred.id)
+                            let isHover = (self.hoveredID == pred.id)
+                            let itemKey = "action-\(pred.id)"
+                            let isCopied = (self.copiedKey == itemKey)
+                            let isHigh = (pred.urgency == "高" || idx == 0)
+                            let tone: Color = isDone
+                                ? self.palette.emerald
+                                : (isHigh ? self.palette.accentFill : (pred.urgency == "中" ? self.palette.emerald : self.palette.secondaryInk))
+                            let badgeText: String = pred.urgency == "高" ? "优先" : (pred.urgency == "中" ? "推进" : "顺手")
+                            
+                            ZStack(alignment: .bottomTrailing) {
+                                HStack(alignment: .top, spacing: 10) {
+                                    // Tactile spring check-off ring
+                                    Button {
+                                        withAnimation(.spring(response: 0.28, dampingFraction: 0.68)) {
+                                            if isDone {
+                                                self.completedIDs.remove(pred.id)
+                                            } else {
+                                                self.completedIDs.insert(pred.id)
+                                            }
+                                        }
+                                    } label: {
+                                        ZStack {
+                                            Circle()
+                                                .fill(isDone ? self.palette.emerald : tone.opacity(isHover ? 0.14 : 0.06))
+                                                .frame(width: 18, height: 18)
+                                            Circle()
+                                                .strokeBorder(isDone ? self.palette.emerald : tone.opacity(isHover ? 0.90 : 0.55), lineWidth: 1.4)
+                                                .frame(width: 18, height: 18)
+                                            if isDone {
+                                                Image(systemName: "checkmark")
+                                                    .font(.system(size: 9.5, weight: .bold))
+                                                    .foregroundStyle(Color.white)
+                                                    .transition(.scale.combined(with: .opacity))
+                                            }
+                                        }
+                                        .contentShape(Circle().inset(by: -4))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .pointerStyle(.link)
+                                    .padding(.top, 1.5)
+                                    
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(pred.action)
+                                            .font(.system(size: 12.8, weight: (idx == 0 && !isDone) ? .semibold : .medium))
+                                            .foregroundStyle(isDone ? self.palette.mutedInk : (idx == 0 ? self.palette.pine : self.palette.secondaryInk))
+                                            .strikethrough(isDone, color: self.palette.mutedInk.opacity(0.65))
+                                            .lineSpacing(3)
+                                            .textSelection(.enabled)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        
+                                        if !pred.reason.isEmpty && !isDone {
+                                            Text(pred.reason)
+                                                .font(.system(size: 11.2, weight: .regular))
+                                                .foregroundStyle(self.palette.mutedInk)
+                                                .lineSpacing(2)
+                                                .textSelection(.enabled)
+                                                .lineLimit(2)
+                                        }
+                                        
+                                        HStack(spacing: 6) {
+                                            Text(isDone ? AppLanguage.text("已搞定", en: "Done") : badgeText)
+                                                .font(.system(size: 9.5, weight: .semibold))
+                                                .foregroundStyle(isDone ? self.palette.emerald : tone)
+                                                .padding(.horizontal, 6)
+                                                .frame(height: 17)
+                                                .background(
+                                                    (isDone ? self.palette.emerald : tone).opacity(isDark ? 0.16 : 0.10),
+                                                    in: Capsule()
+                                                )
+                                            
+                                            if let linkedDoc {
+                                                Button {
+                                                    self.onOpenDocument(linkedDoc)
+                                                } label: {
+                                                    Text(linkedDoc.title)
+                                                        .font(.system(size: 10.5, weight: .medium))
+                                                        .foregroundStyle(isHover ? self.palette.accentFill : self.palette.mutedInk)
+                                                        .lineLimit(1)
+                                                        .truncationMode(.middle)
+                                                        .padding(.horizontal, 6)
+                                                        .frame(height: 17)
+                                                        .background(self.palette.card.opacity(0.82), in: Capsule())
+                                                        .contentShape(Capsule())
+                                                }
+                                                .buttonStyle(.plain)
+                                                .pointerStyle(.link)
+                                            }
+                                            
+                                            Spacer(minLength: 0)
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 11)
+                                
+                                if isHover || isCopied {
+                                    Button {
+                                        let payload = pred.reason.isEmpty ? pred.action : "\(pred.action)（\(pred.reason)）"
+                                        self.onCopy(payload, itemKey)
+                                    } label: {
+                                        Text(isCopied ? AppLanguage.text("✓ 已复制", en: "✓ Copied") : AppLanguage.text("复制", en: "Copy"))
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundStyle(isCopied ? self.palette.tokens.onAccentInk : self.palette.secondaryInk)
+                                            .padding(.horizontal, 8)
+                                            .frame(height: 20)
+                                            .background(
+                                                Capsule()
+                                                    .fill(isCopied ? self.palette.emerald : self.palette.card.opacity(0.95))
+                                                    .shadow(color: self.palette.cardShadow, radius: 4, y: 1)
+                                            )
+                                            .overlay(
+                                                Capsule()
+                                                    .strokeBorder(isCopied ? Color.clear : self.palette.hairlineStrong, lineWidth: 0.6)
+                                            )
+                                            .contentShape(Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .pointerStyle(.link)
+                                    .padding(8)
+                                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(
+                                        isDone
+                                            ? self.palette.inset.opacity(0.55)
+                                            : (isHigh
+                                               ? tone.opacity(isDark ? (isHover ? 0.16 : 0.11) : (isHover ? 0.095 : 0.055))
+                                               : (isHover ? self.palette.insetHover : self.palette.inset))
+                                    )
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .strokeBorder(
+                                        isHover
+                                            ? tone.opacity(0.45)
+                                            : (isHigh && !isDone ? tone.opacity(0.24) : self.palette.hairline),
+                                        lineWidth: isHover ? 1.0 : 0.75
+                                    )
+                            )
+                            .opacity(isDone ? 0.72 : 1.0)
+                            .scaleEffect(isHover ? 1.008 : 1.0)
+                            .animation(.spring(response: 0.24, dampingFraction: 0.80), value: isHover)
+                            .animation(.spring(response: 0.28, dampingFraction: 0.76), value: isDone)
+                            .onHover { inside in
+                                if inside { self.hoveredID = pred.id }
+                                else if self.hoveredID == pred.id { self.hoveredID = nil }
+                            }
+                            .contextMenu {
+                                Button(AppLanguage.text("复制这条建议", en: "Copy")) {
+                                    let payload = pred.reason.isEmpty ? pred.action : "\(pred.action)（\(pred.reason)）"
+                                    self.onCopy(payload, itemKey)
+                                }
+                                Button(AppLanguage.text("复制全部行动预测", en: "Copy All")) {
+                                    let text = self.predictions.enumerated().map { idx, p in
+                                        let suffix = p.reason.isEmpty ? "" : "（\(p.reason)）"
+                                        return "\(idx + 1). [\(p.urgency)] \(p.action)\(suffix)"
+                                    }.joined(separator: "\n")
+                                    self.onCopy(text, "action-all")
+                                }
+                                if let linkedDoc {
+                                    Divider()
+                                    Button(AppLanguage.text("打开关联文档：\(linkedDoc.title)", en: "Open Document")) {
+                                        self.onOpenDocument(linkedDoc)
+                                    }
+                                }
+                                Divider()
+                                Button(AppLanguage.text("重新预测下一步", en: "Refresh"), action: self.onRefresh)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 1)
+                }
+            }
+        }
+        .padding(self.compact ? 12 : 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: self.isCardHovered)
+        .animation(.easeOut(duration: 0.16), value: self.isCardHovered)
+        .onHover { inside in
+            if inside != self.isCardHovered {
+                self.isCardHovered = inside
+            }
+        }
     }
 }
 
@@ -1999,7 +2302,7 @@ private struct DashboardAchievementHeroBar: View {
         self.onBack = onBack
         
         let db = CotLocalDatabase.shared
-        let storedStyle = Int(db.string(forKey: CotLocalDatabase.ConfigKey.cotPassStyleIndex, default: "0")) ?? 0
+        let syncedStyle = CotPassTheme.themeIndex(for: StudioPaletteManager.shared.selectedID)
         var serial = db.string(forKey: CotLocalDatabase.ConfigKey.cotPassSerialCode)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if serial.isEmpty {
@@ -2012,7 +2315,7 @@ private struct DashboardAchievementHeroBar: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         
-        _passStyleIndex = State(initialValue: storedStyle)
+        _passStyleIndex = State(initialValue: syncedStyle)
         _serialCode = State(initialValue: serial)
         _hasProLicense = State(initialValue: tier != .explorer)
         _isDanmakuEnabled = State(initialValue: rawDanmaku == "true" || rawDanmaku == "1")
@@ -2093,10 +2396,11 @@ private struct DashboardAchievementHeroBar: View {
             self.perforatedSeam
             
             self.integratedPassGalleryStub(seed: cardSeed)
-                .padding(self.compact ? 8 : 11)
-                .frame(width: self.compact ? 186 : 244)
+                .padding(self.compact ? 8 : 10)
+                .frame(width: self.compact ? 172 : 216)
                 .frame(maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
     }
@@ -2124,43 +2428,21 @@ private struct DashboardAchievementHeroBar: View {
         let isDark = self.palette.tokens.isDark
         
         return ZStack(alignment: .topLeading) {
-            // Avatar-extracted immersive ambient backdrop
-            ZStack {
-                if let blurredCover {
-                    Image(nsImage: blurredCover)
-                        .resizable()
-                        .scaledToFill()
-                        .opacity(isDark ? 0.34 : 0.24)
-                        .blur(radius: 18)
-                }
-                
-                LinearGradient(
-                    colors: [
-                        accentColor.opacity(isDark ? 0.36 : 0.22),
-                        accentColor.opacity(isDark ? 0.12 : 0.06),
-                        Color.clear,
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            }
-            .allowsHitTesting(false)
-            
             // Main immersed Avatar + Display Name centerpiece
             HStack(alignment: .center, spacing: 14) {
-                self.authorPortrait(size: self.compact ? 48 : 58, accent: accentColor)
+                self.authorPortrait(size: self.compact ? 44 : 52, accent: accentColor)
                 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(self.profile.displayName)
-                        .font(.system(size: self.compact ? 17.5 : 21, weight: .bold))
+                        .font(.system(size: self.compact ? 17 : 20, weight: .bold))
                         .foregroundStyle(self.palette.pine)
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
                     
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         Circle()
                             .fill(accentColor)
-                            .frame(width: 6, height: 6)
+                            .frame(width: 5.5, height: 5.5)
                         Text(self.snapshot.mood.dominantLabel)
                             .font(.system(size: 11.5, weight: .medium))
                             .foregroundStyle(self.palette.secondaryInk)
@@ -2170,25 +2452,25 @@ private struct DashboardAchievementHeroBar: View {
                 
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, self.compact ? 16 : 22)
-            .padding(.top, self.onBack != nil ? (self.compact ? 14 : 16) : 0)
+            .padding(.horizontal, self.compact ? 16 : 20)
+            .padding(.top, self.onBack != nil ? (self.compact ? 12 : 14) : 0)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             
-            // Ultra-light unobtrusive "返回" ghost trigger tucked at top-left (zero crowding)
+            // Ultra-light unobtrusive "返回" ghost trigger tucked cleanly at top-left
             if let onBack = self.onBack {
                 Button(action: onBack) {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 2.5) {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: 9.5, weight: .semibold))
                         Text(AppLanguage.text("返回", en: "Back"))
                             .font(.system(size: 11, weight: .medium))
                     }
-                    .foregroundStyle(self.isBackHovered ? self.palette.pine : self.palette.secondaryInk.opacity(0.75))
-                    .padding(.horizontal, 8)
-                    .frame(height: 22)
+                    .foregroundStyle(self.isBackHovered ? self.palette.pine : self.palette.secondaryInk.opacity(0.72))
+                    .padding(.horizontal, 7)
+                    .frame(height: 20)
                     .background(
                         Capsule()
-                            .fill(self.isBackHovered ? self.palette.card.opacity(0.85) : self.palette.card.opacity(0.42))
+                            .fill(self.isBackHovered ? self.palette.card.opacity(0.82) : Color.clear)
                     )
                     .contentShape(Capsule())
                 }
@@ -2200,10 +2482,36 @@ private struct DashboardAchievementHeroBar: View {
                     }
                 }
                 .padding(.leading, 10)
-                .padding(.top, 8)
+                .padding(.top, 7)
             }
         }
-        .frame(minWidth: self.compact ? 226 : 284, maxWidth: self.compact ? 264 : 332, maxHeight: .infinity, alignment: .leading)
+        .frame(minWidth: self.compact ? 216 : 268, maxWidth: self.compact ? 252 : 308, maxHeight: .infinity, alignment: .leading)
+        // Strictly non-layout-affecting ambient avatar backdrop
+        .background {
+            Color.clear
+                .overlay {
+                    ZStack {
+                        if let blurredCover {
+                            Image(nsImage: blurredCover)
+                                .resizable()
+                                .scaledToFill()
+                                .opacity(isDark ? 0.28 : 0.20)
+                                .blur(radius: 22)
+                        }
+                        LinearGradient(
+                            colors: [
+                                accentColor.opacity(isDark ? 0.34 : 0.20),
+                                accentColor.opacity(isDark ? 0.10 : 0.05),
+                                Color.clear,
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    }
+                }
+                .clipped()
+                .allowsHitTesting(false)
+        }
         .clipped()
     }
     

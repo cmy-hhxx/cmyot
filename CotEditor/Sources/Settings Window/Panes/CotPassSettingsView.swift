@@ -20,6 +20,8 @@
 //
 
 import AppKit
+import Metal
+import MetalKit
 import SwiftUI
 
 // MARK: - License & Serial Model
@@ -1076,97 +1078,339 @@ nonisolated enum BlueFlutedGlassRenderer {
 }
 
 
-// MARK: - Cached LeiBox Fluted Glass Prism View (Zero-Lag Seamless Loop)
+// MARK: - 60fps Hardware-Accelerated Metal LeiBox Fluted Glass Prism (Zero Frame Drops)
+
+private struct FlutedPrismUniforms {
+    var time: Float
+    var ribCount: Float
+    var specX: Float
+    var specY: Float
+    var hoverStrength: Float
+    var pad0: Float = 0
+    var pad1: Float = 0
+    var pad2: Float = 0
+    var p0: SIMD4<Float>
+    var p1: SIMD4<Float>
+    var p2: SIMD4<Float>
+    var p3: SIMD4<Float>
+    var p4: SIMD4<Float>
+}
+
 
 @MainActor
-final class LeiBoxFlutedPrismCache {
+private final class FlutedPrismMetalPipeline {
     
-    static let shared = LeiBoxFlutedPrismCache()
+    static let shared = FlutedPrismMetalPipeline()
     
-    private struct CacheKey: Hashable {
-        let themeID: Int
-        let width: Int
-        let height: Int
-        let ribCountInt: Int
+    let device: MTLDevice?
+    let commandQueue: MTLCommandQueue?
+    let pipelineState: MTLRenderPipelineState?
+    
+    private static let shaderSource = """
+    #include <metal_stdlib>
+    using namespace metal;
+    
+    struct PrismUniforms {
+        float time;
+        float ribCount;
+        float specX;
+        float specY;
+        float hoverStrength;
+        float _pad0;
+        float _pad1;
+        float _pad2;
+        float4 p0;
+        float4 p1;
+        float4 p2;
+        float4 p3;
+        float4 p4;
+    };
+    
+    struct VertexOut {
+        float4 position [[position]];
+        float2 uv;
+    };
+    
+    vertex VertexOut flutedPrismVertex(uint vid [[vertex_id]]) {
+        const float2 pos[4] = {
+            float2(-1.0, -1.0),
+            float2( 1.0, -1.0),
+            float2(-1.0,  1.0),
+            float2( 1.0,  1.0)
+        };
+        const float2 uv[4] = {
+            float2(0.0, 1.0),
+            float2(1.0, 1.0),
+            float2(0.0, 0.0),
+            float2(1.0, 0.0)
+        };
+        VertexOut out;
+        out.position = float4(pos[vid], 0.0, 1.0);
+        out.uv = uv[vid];
+        return out;
     }
     
-    private var loops: [CacheKey: [CGImage]] = [:]
-    private var posters: [CacheKey: CGImage] = [:]
-    private var inFlight: Set<CacheKey> = []
-    
-    
-    func posterFrame(for theme: CotPassTheme, width: Int, height: Int, ribCount: Double) -> CGImage? {
-        let key = CacheKey(themeID: theme.id, width: width, height: height, ribCountInt: Int(ribCount.rounded()))
-        if let existing = self.loops[key]?.first ?? self.posters[key] {
-            return existing
-        }
-        let img = BlueFlutedGlassRenderer.renderFrame(
-            time: 4.2,
-            palette: theme.flutedPalette,
-            width: width,
-            height: height,
-            ribCount: ribCount
-        )
-        if let img {
-            self.posters[key] = img
-        }
-        return img
+    inline float prismBlob(float2 p, float2 c, float2 invR, float cosA, float sinA) {
+        float2 d = p - c;
+        float qx = (cosA * d.x - sinA * d.y) * invR.x;
+        float qy = (sinA * d.x + cosA * d.y) * invR.y;
+        return exp(-(qx * qx + qy * qy));
     }
     
-    
-    func cachedFrames(for theme: CotPassTheme, width: Int, height: Int, ribCount: Double) -> [CGImage]? {
-        let key = CacheKey(themeID: theme.id, width: width, height: height, ribCountInt: Int(ribCount.rounded()))
-        return self.loops[key]
-    }
-    
-    
-    func warmFrames(
-        for theme: CotPassTheme,
-        width: Int,
-        height: Int,
-        ribCount: Double,
-        frameCount: Int = 36,
-        onReady: @escaping @MainActor ([CGImage]) -> Void
+    inline float samplePrismDensity(
+        float rx,
+        float py,
+        float twoPhase,
+        float2 trunkC, float2 trunkInvR, float trunkCos, float trunkSin,
+        float2 crownC, float2 crownInvR, float crownCos, float crownSin,
+        float2 holeC,  float2 holeInvR,  float holeCos,  float holeSin
     ) {
-        let key = CacheKey(themeID: theme.id, width: width, height: height, ribCountInt: Int(ribCount.rounded()))
-        if let existing = self.loops[key] {
-            onReady(existing)
+        float px = rx + 0.025 * sin(py * 7.0 + twoPhase);
+        float2 p = float2(px, py);
+        float trunk = prismBlob(p, trunkC, trunkInvR, trunkCos, trunkSin);
+        float crown = prismBlob(p, crownC, crownInvR, crownCos, crownSin);
+        float baseY = 1.045 - 0.17 * px + 0.075 * sin(px * 5.0 + twoPhase);
+        float bd = (py - baseY) / 0.092;
+        float base = exp(-(bd * bd));
+        float hole = prismBlob(p, holeC, holeInvR, holeCos, holeSin);
+        return (trunk + 0.56 * crown + 0.90 * base) * (1.0 - 0.78 * hole);
+    }
+    
+    fragment float4 flutedPrismFragment(VertexOut in [[stage_in]], constant PrismUniforms& u [[buffer(0)]]) {
+        const float period = 28.0;
+        float wrapped = fmod(u.time, period);
+        if (wrapped < 0.0) { wrapped += period; }
+        float phase = wrapped * (6.28318530718 / period);
+        float s = sin(phase);
+        float c = cos(phase);
+        float s2 = sin(2.0 * phase);
+        float twoPhase = 2.0 * phase;
+        
+        float2 trunkC = float2(0.52 + 0.15 * s - 0.07 * s2, 0.76);
+        float2 trunkInvR = float2(1.0 / 0.235, 1.0 / 0.46);
+        float trunkRot = -0.12 - 0.52 * s;
+        float trunkCos = cos(trunkRot);
+        float trunkSin = sin(trunkRot);
+        
+        float2 crownC = float2(0.77 - 0.55 * s, 0.20 - 0.10 * s2);
+        float2 crownInvR = float2(1.0 / 0.235, 1.0 / 0.23);
+        float crownRot = -0.50 + 0.45 * s;
+        float crownCos = cos(crownRot);
+        float crownSin = sin(crownRot);
+        
+        float2 holeC = float2(0.85 - 0.55 * s, 0.59 - 0.13 * s);
+        float2 holeInvR = float2(1.0 / (0.19 + 0.025 * c), 1.0 / 0.32);
+        float holeRot = 0.10 + 0.50 * s;
+        float holeCos = cos(holeRot);
+        float holeSin = sin(holeRot);
+        
+        float uCoord = in.uv.x;
+        float vCoord = in.uv.y;
+        float scaled = uCoord * u.ribCount;
+        float rib = fract(scaled) - 0.5;
+        float rx = uCoord + rib * 0.018;
+        float dy = (rib * rib - 0.0833) * 0.034;
+        float edge = pow(abs(rib) * 2.0, 10.0);
+        float sheenFactor = rib * 0.65 + edge * 0.24;
+        float ry = vCoord + dy;
+        
+        float d0 = samplePrismDensity(rx, ry, twoPhase, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
+        float d1 = samplePrismDensity(rx, ry + 0.025, twoPhase, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
+        float d2 = samplePrismDensity(rx, ry - 0.025, twoPhase, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
+        float d3 = samplePrismDensity(rx, ry + 0.055, twoPhase, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
+        float d4 = samplePrismDensity(rx, ry - 0.055, twoPhase, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
+        float density = d0 * 0.40 + (d1 + d2) * 0.24 + (d3 + d4) * 0.06;
+        
+        float3 col = u.p0.rgb;
+        col = mix(col, u.p1.rgb, smoothstep(0.015, 0.20, density));
+        col = mix(col, u.p2.rgb, smoothstep(0.16,  0.49, density));
+        col = mix(col, u.p3.rgb, smoothstep(0.40,  0.73, density));
+        col = mix(col, u.p4.rgb, smoothstep(0.62,  0.93, density));
+        
+        float maxC = max(col.r, max(col.g, col.b));
+        float minC = min(col.r, min(col.g, col.b));
+        float luma = (col.r + col.g + col.b) / 3.0;
+        float chromaMask = (1.0 - luma) * smoothstep(0.025, 0.20, maxC - minC);
+        float sheen = sheenFactor * chromaMask;
+        col += (0.018 + 0.014 * u.p1.rgb) * sheen;
+        
+        // Silky cursor-reactive optical prism bloom
+        float2 sp = float2(u.specX, u.specY);
+        float dist = length((in.uv - sp) * float2(1.15, 0.85));
+        float glow = exp(-dist * dist * 5.2) * (0.06 + 0.20 * u.hoverStrength);
+        col += mix(float3(1.0), u.p1.rgb, 0.35) * glow;
+        
+        return float4(clamp(col, 0.0, 1.0), 1.0);
+    }
+    """
+    
+    private init() {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue(),
+              let library = try? device.makeLibrary(source: Self.shaderSource, options: nil),
+              let vFunc = library.makeFunction(name: "flutedPrismVertex"),
+              let fFunc = library.makeFunction(name: "flutedPrismFragment")
+        else {
+            self.device = nil
+            self.commandQueue = nil
+            self.pipelineState = nil
             return
         }
-        guard !self.inFlight.contains(key) else { return }
-        self.inFlight.insert(key)
         
-        let palette = theme.flutedPalette
-        let period = BlueFlutedGlassRenderer.periodSeconds
-        Task.detached(priority: .utility) {
-            var rendered: [CGImage] = []
-            rendered.reserveCapacity(frameCount)
-            for idx in 0..<frameCount {
-                let t = (Double(idx) / Double(frameCount)) * period
-                if let img = BlueFlutedGlassRenderer.renderFrame(
-                    time: t,
-                    palette: palette,
-                    width: width,
-                    height: height,
-                    ribCount: ribCount
-                ) {
-                    rendered.append(img)
-                }
-            }
-            await MainActor.run {
-                self.inFlight.remove(key)
-                if !rendered.isEmpty {
-                    self.loops[key] = rendered
-                    onReady(rendered)
-                }
-            }
+        let desc = MTLRenderPipelineDescriptor()
+        desc.vertexFunction = vFunc
+        desc.fragmentFunction = fFunc
+        desc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        
+        self.device = device
+        self.commandQueue = queue
+        self.pipelineState = try? device.makeRenderPipelineState(descriptor: desc)
+    }
+}
+
+
+private struct FlutedPrismMetalView: NSViewRepresentable {
+    
+    let palette: FlutedGlassPalette
+    let ribCount: Double
+    let animate: Bool
+    let specularPoint: UnitPoint
+    let isHovered: Bool
+    
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(palette: self.palette, ribCount: Float(self.ribCount))
+    }
+    
+    
+    func makeNSView(context: Context) -> MTKView {
+        let mtkView = MTKView(frame: .zero, device: FlutedPrismMetalPipeline.shared.device)
+        mtkView.colorPixelFormat = .bgra8Unorm
+        mtkView.framebufferOnly = true
+        mtkView.preferredFramesPerSecond = 60
+        mtkView.isPaused = !self.animate || AnimationConstants.isReducedMotionEnabled
+        mtkView.enableSetNeedsDisplay = mtkView.isPaused
+        mtkView.clearColor = MTLClearColor(red: 0.02, green: 0.04, blue: 0.09, alpha: 1.0)
+        mtkView.delegate = context.coordinator
+        mtkView.wantsLayer = true
+        mtkView.layer?.isOpaque = true
+        return mtkView
+    }
+    
+    
+    func updateNSView(_ mtkView: MTKView, context: Context) {
+        let coord = context.coordinator
+        coord.targetPalette = self.palette
+        coord.ribCount = Float(self.ribCount)
+        coord.targetSpecX = Float(self.specularPoint.x)
+        coord.targetSpecY = Float(self.specularPoint.y)
+        coord.targetHover = self.isHovered ? 1.0 : 0.0
+        
+        let shouldPause = !self.animate || AnimationConstants.isReducedMotionEnabled
+        if mtkView.isPaused != shouldPause {
+            mtkView.isPaused = shouldPause
+            mtkView.enableSetNeedsDisplay = shouldPause
+        }
+        if shouldPause {
+            mtkView.setNeedsDisplay(mtkView.bounds)
+        }
+    }
+    
+    
+    @MainActor
+    final class Coordinator: NSObject, MTKViewDelegate {
+        
+        var targetPalette: FlutedGlassPalette
+        var ribCount: Float
+        var targetSpecX: Float = 0.5
+        var targetSpecY: Float = 0.5
+        var targetHover: Float = 0.0
+        
+        private var currentP0: SIMD4<Float>
+        private var currentP1: SIMD4<Float>
+        private var currentP2: SIMD4<Float>
+        private var currentP3: SIMD4<Float>
+        private var currentP4: SIMD4<Float>
+        private var currentSpecX: Float = 0.5
+        private var currentSpecY: Float = 0.5
+        private var currentHover: Float = 0.0
+        private var lastTickTime: CFTimeInterval = CACurrentMediaTime()
+        private let startTime: CFTimeInterval = CACurrentMediaTime() - 4.2
+        
+        
+        init(palette: FlutedGlassPalette, ribCount: Float) {
+            self.targetPalette = palette
+            self.ribCount = ribCount
+            self.currentP0 = Self.vec(palette.base)
+            self.currentP1 = Self.vec(palette.light)
+            self.currentP2 = Self.vec(palette.mid)
+            self.currentP3 = Self.vec(palette.deep)
+            self.currentP4 = Self.vec(palette.midnight)
+        }
+        
+        
+        private static func vec(_ c: FlutedRGB) -> SIMD4<Float> {
+            SIMD4<Float>(Float(c.r), Float(c.g), Float(c.b), 1.0)
+        }
+        
+        
+        func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+        
+        
+        func draw(in view: MTKView) {
+            guard let pipeline = FlutedPrismMetalPipeline.shared.pipelineState,
+                  let queue = FlutedPrismMetalPipeline.shared.commandQueue,
+                  let drawable = view.currentDrawable,
+                  let renderPass = view.currentRenderPassDescriptor,
+                  let cmdBuf = queue.makeCommandBuffer(),
+                  let encoder = cmdBuf.makeRenderCommandEncoder(descriptor: renderPass)
+            else { return }
+            
+            let now = CACurrentMediaTime()
+            let dt = Float(min(0.05, max(0.001, now - self.lastTickTime)))
+            self.lastTickTime = now
+            
+            // Exponentially smooth color crossfade & specular pointer tracking at 60fps
+            let colorLerp = min(1.0, 1.0 - exp(-dt * 8.5))
+            let pointerLerp = min(1.0, 1.0 - exp(-dt * 14.0))
+            
+            self.currentP0 += (Self.vec(self.targetPalette.base) - self.currentP0) * colorLerp
+            self.currentP1 += (Self.vec(self.targetPalette.light) - self.currentP1) * colorLerp
+            self.currentP2 += (Self.vec(self.targetPalette.mid) - self.currentP2) * colorLerp
+            self.currentP3 += (Self.vec(self.targetPalette.deep) - self.currentP3) * colorLerp
+            self.currentP4 += (Self.vec(self.targetPalette.midnight) - self.currentP4) * colorLerp
+            
+            self.currentSpecX += (self.targetSpecX - self.currentSpecX) * pointerLerp
+            self.currentSpecY += (self.targetSpecY - self.currentSpecY) * pointerLerp
+            self.currentHover += (self.targetHover - self.currentHover) * pointerLerp
+            
+            var uniforms = FlutedPrismUniforms(
+                time: Float(now - self.startTime),
+                ribCount: self.ribCount,
+                specX: self.currentSpecX,
+                specY: self.currentSpecY,
+                hoverStrength: self.currentHover,
+                p0: self.currentP0,
+                p1: self.currentP1,
+                p2: self.currentP2,
+                p3: self.currentP3,
+                p4: self.currentP4
+            )
+            
+            encoder.setRenderPipelineState(pipeline)
+            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<FlutedPrismUniforms>.stride, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            encoder.endEncoding()
+            
+            cmdBuf.present(drawable)
+            cmdBuf.commit()
         }
     }
 }
 
 
-/// Faithful LeiBox Fluted Glass Prism view (`leibox.pantoria.cn/docs/animations/blue-fluted-glass`)
-/// supporting all 6 colorways with pre-baked O(1) GPU-friendly loop playback.
+/// Faithful 60fps Metal LeiBox Fluted Glass Prism view (`leibox.pantoria.cn/docs/animations/blue-fluted-glass`)
+/// supporting all 6 colorways with liquid GPU color crossfade and CPU fallback when Metal is unavailable.
 struct LeiBoxFlutedPrismView: View {
     
     let theme: CotPassTheme
@@ -1177,96 +1421,42 @@ struct LeiBoxFlutedPrismView: View {
     var specularPoint: UnitPoint = UnitPoint(x: 0.5, y: 0.5)
     var isHovered: Bool = false
     
-    @State private var loopFrames: [CGImage] = []
-    @State private var loadedThemeID: Int = -1
-    
     
     var body: some View {
-        let fallbackFrame = LeiBoxFlutedPrismCache.shared.posterFrame(
-            for: self.theme,
-            width: self.renderWidth,
-            height: self.renderHeight,
-            ribCount: self.ribCount
-        )
-        let shouldAnimate = self.animate && !AnimationConstants.isReducedMotionEnabled && !self.loopFrames.isEmpty
-        
-        ZStack {
-            if shouldAnimate {
-                TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
-                    let frames = self.loopFrames
-                    let period = BlueFlutedGlassRenderer.periodSeconds
-                    let raw = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period)
-                    let norm = (raw < 0 ? raw + period : raw) / period
-                    let idx = min(frames.count - 1, max(0, Int(norm * Double(frames.count))))
-                    Image(decorative: frames[idx], scale: 1.0)
+        Color.clear
+            .overlay {
+                if FlutedPrismMetalPipeline.shared.pipelineState != nil {
+                    FlutedPrismMetalView(
+                        palette: self.theme.flutedPalette,
+                        ribCount: self.ribCount,
+                        animate: self.animate,
+                        specularPoint: self.specularPoint,
+                        isHovered: self.isHovered
+                    )
+                } else if let fallback = BlueFlutedGlassRenderer.renderFrame(
+                    time: 4.2,
+                    palette: self.theme.flutedPalette,
+                    width: self.renderWidth,
+                    height: self.renderHeight,
+                    ribCount: self.ribCount
+                ) {
+                    Image(decorative: fallback, scale: 1.0)
                         .resizable()
                         .interpolation(.high)
                         .scaledToFill()
+                } else {
+                    LinearGradient(
+                        colors: [
+                            self.theme.flutedPalette.mid.swiftUIColor,
+                            self.theme.flutedPalette.deep.swiftUIColor,
+                            self.theme.flutedPalette.midnight.swiftUIColor,
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
                 }
-            } else if let fallbackFrame {
-                Image(decorative: fallbackFrame, scale: 1.0)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFill()
-            } else {
-                LinearGradient(
-                    colors: [
-                        self.theme.flutedPalette.mid.swiftUIColor,
-                        self.theme.flutedPalette.deep.swiftUIColor,
-                        self.theme.flutedPalette.midnight.swiftUIColor,
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
             }
-            
-            // Subtle optical prism specular highlight tracking pointer
-            RadialGradient(
-                colors: [
-                    Color.white.opacity(self.isHovered ? 0.28 : 0.08),
-                    self.theme.flutedPalette.light.swiftUIColor.opacity(self.isHovered ? 0.14 : 0.0),
-                    Color.clear,
-                ],
-                center: self.specularPoint,
-                startRadius: 4,
-                endRadius: 210
-            )
-            .blendMode(.screen)
-            .allowsHitTesting(false)
-        }
-        .onAppear {
-            self.loadLoopIfNeeded()
-        }
-        .onChange(of: self.theme.id) { _, _ in
-            self.loadLoopIfNeeded()
-        }
-    }
-    
-    
-    private func loadLoopIfNeeded() {
-        let targetID = self.theme.id
-        if let cached = LeiBoxFlutedPrismCache.shared.cachedFrames(
-            for: self.theme,
-            width: self.renderWidth,
-            height: self.renderHeight,
-            ribCount: self.ribCount
-        ) {
-            self.loopFrames = cached
-            self.loadedThemeID = targetID
-            return
-        }
-        self.loopFrames = []
-        self.loadedThemeID = targetID
-        LeiBoxFlutedPrismCache.shared.warmFrames(
-            for: self.theme,
-            width: self.renderWidth,
-            height: self.renderHeight,
-            ribCount: self.ribCount
-        ) { frames in
-            if self.theme.id == targetID {
-                self.loopFrames = frames
-            }
-        }
+            .clipped()
     }
 }
 

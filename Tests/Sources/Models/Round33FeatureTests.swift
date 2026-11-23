@@ -327,5 +327,136 @@ struct Round33FeatureTests {
         contentView.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         #expect(abs(contentView.bounds.width - 520) <= 2)
+        
+        // Verify orphan headings like "所属事件" are stripped while valid sections remain
+        let rawBlocks: [NewsArticleBlock] = [
+            .heading(level: 2, text: "核心结论"),
+            .paragraph("模型推理能力持续翻倍。"),
+            .heading(level: 2, text: "所属事件"),
+        ]
+        let sanitized = AIHotNewsService.sanitizedArticleBlocks(rawBlocks)
+        #expect(sanitized.count == 2)
+        if case .heading(_, let h) = sanitized.first {
+            #expect(h == "核心结论")
+        } else {
+            Issue.record("Expected first valid heading to remain")
+        }
+    }
+    
+    
+    // MARK: 8. Reasoning Effort Wire Mapping Across All Protocols & Rich Markdown Parser
+    
+    @Test func reasoningEffortMapsAccuratelyAcrossOpenAIAnthropicAndGeminiWireBodies() throws {
+        let msgs: [AIMessage] = [.system("sys"), .user("hello")]
+        
+        // 1. OpenAI Responses (gpt-5 + high)
+        let oaiRespCfg = AIConfiguration(
+            endpoint: .openAIResponses,
+            baseURL: "https://api.openai.com/v1",
+            model: "gpt-5",
+            apiKey: "sk-test",
+            reasoningEffort: NewsReasoningEffort.deep.apiValue
+        )
+        let oaiRespBody = AIClient(configuration: oaiRespCfg).debugRequestBody(for: msgs)
+        let reasoningDict = try #require(oaiRespBody["reasoning"] as? [String: String])
+        #expect(reasoningDict["effort"] == "high")
+        
+        // 2. OpenAI Chat Completions (deepseek-reasoner + medium)
+        let dsCfg = AIConfiguration(
+            endpoint: .openAIChatCompletions,
+            baseURL: "https://api.deepseek.com/v1",
+            model: "deepseek-reasoner",
+            apiKey: "sk-test",
+            reasoningEffort: NewsReasoningEffort.balanced.apiValue
+        )
+        let dsBody = AIClient(configuration: dsCfg).debugRequestBody(for: msgs)
+        #expect(dsBody["reasoning_effort"] as? String == "medium")
+        
+        // 3. Anthropic Messages (claude-sonnet-4-5 + high -> thinking enabled, temperature omitted)
+        let claudeHigh = AIConfiguration(
+            endpoint: .anthropicMessages,
+            baseURL: "https://api.anthropic.com/v1",
+            model: "claude-sonnet-4-5",
+            apiKey: "sk-ant-test",
+            temperature: 0.7,
+            reasoningEffort: NewsReasoningEffort.deep.apiValue
+        )
+        let claudeBody = AIClient(configuration: claudeHigh).debugRequestBody(for: msgs)
+        let thinking = try #require(claudeBody["thinking"] as? [String: Any])
+        #expect(thinking["type"] as? String == "enabled")
+        #expect(thinking["budget_tokens"] as? Int == 12288)
+        #expect(claudeBody["temperature"] == nil)
+        
+        // 4. Google Gemini (gemini-2.5-pro + medium -> thinkingBudget 4096)
+        let geminiCfg = AIConfiguration(
+            endpoint: .googleGemini,
+            baseURL: "https://generativelanguage.googleapis.com/v1beta",
+            model: "gemini-2.5-pro",
+            apiKey: "AIza-test",
+            reasoningEffort: NewsReasoningEffort.balanced.apiValue
+        )
+        let geminiBody = AIClient(configuration: geminiCfg).debugRequestBody(for: msgs)
+        let genCfg = try #require(geminiBody["generationConfig"] as? [String: Any])
+        let tCfg = try #require(genCfg["thinkingConfig"] as? [String: Any])
+        #expect(tCfg["thinkingBudget"] as? Int == 4096)
+    }
+    
+    
+    @Test func newsMarkdownParserHandlesHeadingsListsQuotesTablesCodeAndStreamingFences() {
+        let md = """
+        ## 核心结论
+        这是一段带 **加粗** 和 `inline` 的摘要。
+
+        - 要点一
+        - 要点二
+
+        1. 第一步
+        2. 第二步
+
+        > 一句犀利引用
+
+        | 模型 | 速度 |
+        | --- | --- |
+        | GPT-5 | 快 |
+        | Claude | 稳 |
+
+        ---
+
+        ```swift
+        let x = 42
+        ```
+        """
+        
+        let blocks = NewsMarkdownParser.parse(md)
+        #expect(blocks.count == 8)
+        #expect(blocks[0] == .heading(level: 2, text: "核心结论"))
+        if case .bulletList(let bullets) = blocks[2] {
+            #expect(bullets == ["要点一", "要点二"])
+        } else {
+            Issue.record("Expected bullet list at index 2")
+        }
+        if case .orderedList(let ordered) = blocks[3] {
+            #expect(ordered.count == 2 && ordered[0].number == "1")
+        } else {
+            Issue.record("Expected ordered list at index 3")
+        }
+        if case .blockquote(let q) = blocks[4] {
+            #expect(q == "一句犀利引用")
+        } else {
+            Issue.record("Expected blockquote at index 4")
+        }
+        if case .table(let headers, let rows) = blocks[5] {
+            #expect(headers == ["模型", "速度"])
+            #expect(rows.count == 2)
+        } else {
+            Issue.record("Expected table at index 5")
+        }
+        #expect(blocks[6] == .divider)
+        #expect(blocks[7] == .codeBlock(language: "swift", code: "let x = 42"))
+        
+        // Mid-stream unclosed code fence must still render safely without crashing
+        let partial = "```python\nprint('hi')"
+        let partialBlocks = NewsMarkdownParser.parse(partial)
+        #expect(partialBlocks == [.codeBlock(language: "python", code: "print('hi')")])
     }
 }
