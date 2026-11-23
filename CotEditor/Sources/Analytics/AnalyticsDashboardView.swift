@@ -682,13 +682,108 @@ private enum DashboardQuadMetric: String, CaseIterable, Identifiable {
 }
 
 
-/// Resolves live editorial palette tokens from `StudioPaletteManager`.
-private struct DashPalette: Sendable {
+/// Cohesive neutral-graphite & cobalt-ink design system shared across the Dashboard and NEWS reader.
+struct DashPalette: Sendable {
     
     let tokens: StudioColorTokens
+    let secondaryInk: Color
+    let mutedInk: Color
+    let statusPositive: Color
     
-    @MainActor init(_ scheme: ColorScheme, tokens: StudioColorTokens? = nil) {
-        self.tokens = tokens ?? StudioPaletteManager.shared.tokens(isDark: scheme == .dark)
+    init(_ scheme: ColorScheme) {
+        let isDark = (scheme == .dark)
+        self.tokens = Self.editorialTokens(isDark: isDark)
+        if isDark {
+            self.secondaryInk = Color(red: 0.604, green: 0.635, blue: 0.706) // #9AA2B4
+            self.mutedInk = Color(red: 0.455, green: 0.490, blue: 0.565)     // #747D90
+            self.statusPositive = Color(red: 0.298, green: 0.765, blue: 0.541) // #4CC38A
+        } else {
+            self.secondaryInk = Color(red: 0.306, green: 0.337, blue: 0.408) // #4E5668
+            self.mutedInk = Color(red: 0.451, green: 0.486, blue: 0.561)     // #737C8F
+            self.statusPositive = Color(red: 0.086, green: 0.639, blue: 0.290) // #16A34A
+        }
+    }
+    
+    static func editorialTokens(isDark: Bool) -> StudioColorTokens {
+        if isDark {
+            let canvas = Color(red: 0.071, green: 0.078, blue: 0.094)       // #121418
+            let card = Color(red: 0.098, green: 0.110, blue: 0.133)         // #191C22
+            let inset = Color(red: 0.129, green: 0.145, blue: 0.176)        // #21252D
+            let insetHover = Color(red: 0.165, green: 0.184, blue: 0.227)   // #2A2F3A
+            let primary = Color(red: 0.925, green: 0.937, blue: 0.961)      // #ECEFF5
+            let accent = Color(red: 0.294, green: 0.482, blue: 1.000)       // #4B7BFF
+            let accentText = Color(red: 0.490, green: 0.635, blue: 1.000)   // #7DA2FF
+            let secondaryAcc = Color(red: 0.220, green: 0.365, blue: 0.765) // #385DC3
+            let paleAcc = Color(red: 0.145, green: 0.216, blue: 0.396)      // #253765
+            let empty = Color(red: 0.137, green: 0.153, blue: 0.188)        // #232730
+            
+            return StudioColorTokens(
+                isDark: true,
+                canvasTop: canvas,
+                canvasBottom: canvas,
+                mistAccent: accent.opacity(0.10),
+                card: card,
+                cardShadow: .clear,
+                inset: inset,
+                insetHover: insetHover,
+                hairline: Color.white.opacity(0.075),
+                hairlineStrong: Color.white.opacity(0.15),
+                topSpecular: Color.white.opacity(0.06),
+                architecturalDot: Color.white.opacity(0.05),
+                primaryInk: primary,
+                accent: accent,
+                accentText: accentText,
+                onAccentInk: .white,
+                secondaryAccent: secondaryAcc,
+                paleAccent: paleAcc,
+                emptyDot: empty,
+                positivePillBg: accent.opacity(0.16),
+                neutralPillBg: Color.white.opacity(0.07),
+                heat1: Color(red: 0.133, green: 0.192, blue: 0.325), // #223153
+                heat2: Color(red: 0.173, green: 0.278, blue: 0.514), // #2C4783
+                heat3: Color(red: 0.231, green: 0.388, blue: 0.745), // #3B63BE
+                heat4: Color(red: 0.345, green: 0.522, blue: 1.000)  // #5885FF
+            )
+        } else {
+            let canvas = Color(red: 0.957, green: 0.961, blue: 0.973)       // #F4F5F8
+            let card = Color.white                                          // #FFFFFF
+            let inset = Color(red: 0.957, green: 0.965, blue: 0.976)        // #F4F6F9
+            let insetHover = Color(red: 0.918, green: 0.929, blue: 0.953)   // #EAEDF3
+            let primary = Color(red: 0.082, green: 0.098, blue: 0.133)      // #151922
+            let accent = Color(red: 0.169, green: 0.361, blue: 0.902)       // #2B5CE6
+            let accentText = Color(red: 0.118, green: 0.278, blue: 0.780)   // #1E47C7
+            let secondaryAcc = Color(red: 0.431, green: 0.576, blue: 0.961) // #6E93F5
+            let paleAcc = Color(red: 0.871, green: 0.906, blue: 0.992)      // #DEE7FD
+            let empty = Color(red: 0.922, green: 0.933, blue: 0.953)        // #EBEEF3
+            
+            return StudioColorTokens(
+                isDark: false,
+                canvasTop: canvas,
+                canvasBottom: canvas,
+                mistAccent: accent.opacity(0.08),
+                card: card,
+                cardShadow: Color(red: 0.06, green: 0.08, blue: 0.12).opacity(0.035),
+                inset: inset,
+                insetHover: insetHover,
+                hairline: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.08),
+                hairlineStrong: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.15),
+                topSpecular: Color.white.opacity(0.80),
+                architecturalDot: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.05),
+                primaryInk: primary,
+                accent: accent,
+                accentText: accentText,
+                onAccentInk: .white,
+                secondaryAccent: secondaryAcc,
+                paleAccent: paleAcc,
+                emptyDot: empty,
+                positivePillBg: accent.opacity(0.09),
+                neutralPillBg: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.05),
+                heat1: Color(red: 0.831, green: 0.878, blue: 0.988), // #D4E0FC
+                heat2: Color(red: 0.608, green: 0.718, blue: 0.980), // #9BB7FA
+                heat3: Color(red: 0.345, green: 0.518, blue: 0.957), // #5884F4
+                heat4: Color(red: 0.137, green: 0.314, blue: 0.851)  // #2350D9
+            )
+        }
     }
     
     var canvasTop: Color { self.tokens.canvasTop }
@@ -723,7 +818,9 @@ private struct DashPalette: Sendable {
         switch tone {
             case .calm: self.tokens.accent
             case .sharp: self.tokens.secondaryAccent
-            case .warm: Color(red: 0.88, green: 0.56, blue: 0.34)
+            case .warm: self.tokens.isDark
+                ? Color(red: 0.345, green: 0.620, blue: 0.745)
+                : Color(red: 0.212, green: 0.478, blue: 0.612)
             case .playful: self.tokens.heat2
         }
     }
@@ -838,7 +935,6 @@ struct AnalyticsDashboardView: View {
     @Environment(\.registerWorkspaceCenterEscPop) private var registerEscPop
     
     @State private var analytics = AnalyticsManager.shared
-    @State private var studioPalette = StudioPaletteManager.shared
     @State private var profileManager = UserProfileManager.shared
     
     @State private var snapshot: DashboardSnapshot?
@@ -865,20 +961,13 @@ struct AnalyticsDashboardView: View {
     
     
     private var palette: DashPalette {
-        DashPalette(
-            self.colorScheme,
-            tokens: self.studioPalette.tokens(isDark: self.colorScheme == .dark)
-        )
+        DashPalette(self.colorScheme)
     }
     
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [self.palette.canvasTop, self.palette.canvasBottom],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            self.palette.canvasTop
+                .ignoresSafeArea()
             
             if self.isNewsWorkspaceOpen {
                 DashboardNewsCenterView(
@@ -893,12 +982,12 @@ struct AnalyticsDashboardView: View {
                 )
                 .transition(.opacity.combined(with: .move(edge: .trailing)))
             } else {
-                let outerPad: CGFloat = self.isEmbeddedInSettings ? 12 : 20
-                let vSpacing: CGFloat = self.isEmbeddedInSettings ? 10 : 14
-                let hSpacing: CGFloat = self.isEmbeddedInSettings ? 10 : 14
-                let heroH: CGFloat = self.isEmbeddedInSettings ? 128 : 154
-                let row1H: CGFloat = self.isEmbeddedInSettings ? 228 : 306
-                let row2H: CGFloat = self.isEmbeddedInSettings ? 218 : 332
+                let outerPad: CGFloat = self.isEmbeddedInSettings ? 12 : 24
+                let vSpacing: CGFloat = self.isEmbeddedInSettings ? 12 : 16
+                let hSpacing: CGFloat = self.isEmbeddedInSettings ? 12 : 16
+                let heroH: CGFloat = self.isEmbeddedInSettings ? 116 : 140
+                let row1H: CGFloat = self.isEmbeddedInSettings ? 228 : 304
+                let row2H: CGFloat = self.isEmbeddedInSettings ? 220 : 308
                 
                 GeometryReader { viewportGeo in
                     ScrollView(.vertical, showsIndicators: true) {
@@ -919,7 +1008,7 @@ struct AnalyticsDashboardView: View {
                                 self.row2Section(snapshot, height: row2H, spacing: hSpacing)
                             }
                             .padding(outerPad)
-                            .frame(maxWidth: 1180, alignment: .leading)
+                            .frame(maxWidth: 1200, alignment: .leading)
                             .frame(maxWidth: .infinity, minHeight: viewportGeo.size.height, alignment: .center)
                             .opacity(self.hasAppeared ? 1 : 0)
                             .offset(y: self.hasAppeared ? 0 : 6)
@@ -1035,9 +1124,9 @@ struct AnalyticsDashboardView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .transition(.opacity.combined(with: .scale(scale: 0.97)))
             } else {
-                let vGap: CGFloat = self.isEmbeddedInSettings ? 10 : 12
-                let hGap: CGFloat = self.isEmbeddedInSettings ? 10 : 12
-                let topH = max(86, floor((height - vGap) * 0.50))
+                let vGap: CGFloat = self.isEmbeddedInSettings ? 12 : 16
+                let hGap: CGFloat = self.isEmbeddedInSettings ? 12 : 16
+                let topH = max(88, floor((height - vGap) * 0.50))
                 let botH = max(84, height - vGap - topH)
                 
                 VStack(spacing: vGap) {
@@ -1079,7 +1168,7 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    // MARK: Row 2 — Equal 3-Column Layout (干了啥 / 要干啥 / 交互 NEWS)
+    // MARK: Row 2 — Equal 3-Column Layout (干了啥 / 要干啥 / NEWS)
     
     private func row2Section(_ snapshot: DashboardSnapshot, height: CGFloat, spacing: CGFloat) -> some View {
         HStack(alignment: .top, spacing: spacing) {
@@ -1103,109 +1192,55 @@ struct AnalyticsDashboardView: View {
     
     
     private func doneTodayColumn(points: [String]) -> some View {
-        let tint = self.palette.accentFill
-        return VStack(alignment: .leading, spacing: 11) {
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 13, weight: .semibold))
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(self.palette.emerald)
+                    .frame(width: 16, alignment: .center)
                 
                 Text("干了啥")
-                    .font(.system(size: 13.5, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(self.palette.pine)
                 
                 Spacer()
+                
+                if !points.isEmpty {
+                    Text("\(points.count)")
+                        .font(.system(size: 12, weight: .regular, design: .monospaced).monospacedDigit())
+                        .foregroundStyle(self.palette.mutedInk)
+                }
             }
-            .frame(height: 22)
+            .frame(height: 24)
             
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 8) {
                     if points.isEmpty {
-                        Image(systemName: "checkmark.seal")
-                            .font(.system(size: 18, weight: .light))
-                            .foregroundStyle(self.palette.pine.opacity(0.24))
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 12)
+                        Text(AppLanguage.text("今日暂无已完成记录", en: "No completed items today"))
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(self.palette.mutedInk)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
                     } else {
                         ForEach(Array(points.enumerated()), id: \.offset) { idx, point in
-                            HStack(alignment: .top, spacing: 8) {
-                                Capsule()
-                                    .fill(idx == 0 ? self.palette.emerald : self.palette.accentFill.opacity(0.65))
+                            HStack(alignment: .center, spacing: 10) {
+                                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                                    .fill(idx == 0 ? self.palette.accentFill : self.palette.pine.opacity(0.20))
                                     .frame(width: 3, height: 14)
-                                    .padding(.top, 2.5)
                                 
                                 Text(point)
-                                    .font(.system(size: 12.5, weight: .regular))
-                                    .foregroundStyle(self.palette.pine.opacity(0.90))
-                                    .lineSpacing(2)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(tint.opacity(self.palette.tokens.isDark ? 0.11 : 0.06))
-                            )
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(self.isEmbeddedInSettings ? 12 : 16)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 18, tintAccent: tint)
-    }
-    
-    
-    private func predictedActionsColumn(predictions: [DocumentActionPrediction]) -> some View {
-        let todoAccent: Color = self.palette.tokens.isDark
-            ? Color(red: 0.96, green: 0.68, blue: 0.32)
-            : Color(red: 0.86, green: 0.48, blue: 0.14)
-        
-        return VStack(alignment: .leading, spacing: 11) {
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.forward.circle.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(todoAccent)
-                
-                Text("要干啥")
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .foregroundStyle(self.palette.pine)
-                
-                Spacer()
-            }
-            .frame(height: 22)
-            
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 7) {
-                    if predictions.isEmpty {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 18, weight: .light))
-                            .foregroundStyle(todoAccent.opacity(0.35))
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 12)
-                    } else {
-                        ForEach(Array(predictions.enumerated()), id: \.element.id) { idx, pred in
-                            HStack(alignment: .center, spacing: 8) {
-                                Capsule()
-                                    .fill(idx == 0 ? todoAccent : todoAccent.opacity(0.62))
-                                    .frame(width: 3, height: 13)
-                                
-                                Text(pred.action)
-                                    .font(.system(size: 12.5, weight: idx == 0 ? .medium : .regular))
-                                    .foregroundStyle(self.palette.pine.opacity(0.92))
+                                    .font(.system(size: 13, weight: idx == 0 ? .medium : .regular))
+                                    .foregroundStyle(idx == 0 ? self.palette.pine : self.palette.secondaryInk)
                                     .lineLimit(1)
                                     .truncationMode(.tail)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .padding(.horizontal, 10)
-                            .frame(height: 32)
+                            .padding(.horizontal, 12)
+                            .frame(height: 36)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(todoAccent.opacity(self.palette.tokens.isDark ? 0.12 : 0.065))
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(self.palette.inset)
                             )
                         }
                     }
@@ -1214,7 +1249,72 @@ struct AnalyticsDashboardView: View {
             }
         }
         .padding(self.isEmbeddedInSettings ? 12 : 16)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 18, tintAccent: todoAccent)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
+    }
+    
+    
+    private func predictedActionsColumn(predictions: [DocumentActionPrediction]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.right.circle")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(self.palette.secondaryInk)
+                    .frame(width: 16, alignment: .center)
+                
+                Text("要干啥")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(self.palette.pine)
+                
+                Spacer()
+                
+                if !predictions.isEmpty {
+                    Text("\(predictions.count)")
+                        .font(.system(size: 12, weight: .regular, design: .monospaced).monospacedDigit())
+                        .foregroundStyle(self.palette.mutedInk)
+                }
+            }
+            .frame(height: 24)
+            
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if predictions.isEmpty {
+                        Text(AppLanguage.text("暂无待推进事项", en: "No upcoming actions"))
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(self.palette.mutedInk)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
+                    } else {
+                        ForEach(Array(predictions.enumerated()), id: \.element.id) { idx, pred in
+                            HStack(alignment: .center, spacing: 10) {
+                                Circle()
+                                    .strokeBorder(
+                                        idx == 0 ? self.palette.accentFill : self.palette.pine.opacity(0.28),
+                                        lineWidth: 1.5
+                                    )
+                                    .frame(width: 7, height: 7)
+                                
+                                Text(pred.action)
+                                    .font(.system(size: 13, weight: idx == 0 ? .medium : .regular))
+                                    .foregroundStyle(idx == 0 ? self.palette.pine : self.palette.secondaryInk)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(.horizontal, 12)
+                            .frame(height: 36)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(self.palette.inset)
+                            )
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(self.isEmbeddedInSettings ? 12 : 16)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
     }
     
     
@@ -1249,7 +1349,7 @@ struct AnalyticsDashboardView: View {
 }
 
 
-/// Isolated NEWS column card so background thumbnail & excerpt downloads never invalidate the parent dashboard tree.
+/// Isolated NEWS column card rendering a calm, scannable headline list aligned with the adjacent columns.
 private struct DashboardNewsColumnCard: View {
     
     let compact: Bool
@@ -1261,20 +1361,27 @@ private struct DashboardNewsColumnCard: View {
     
     
     var body: some View {
-        let pageItems = self.newsService.currentPageItems
+        let items = self.newsService.filteredItems
+        let visibleItems = Array(items.prefix(self.compact ? 5 : 6))
         
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
                 Button {
-                    self.onOpenWorkspace(pageItems.first?.id)
+                    self.onOpenWorkspace(visibleItems.first?.id)
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "newspaper")
+                            .font(.system(size: 13.5, weight: .medium))
+                            .foregroundStyle(self.palette.secondaryInk)
+                            .frame(width: 16, alignment: .center)
+                        
                         Text("NEWS")
-                            .font(.system(size: 13.5, weight: .semibold, design: .rounded))
+                            .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(self.palette.pine)
+                        
                         Image(systemName: "chevron.right")
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(self.palette.pine.opacity(0.45))
+                            .foregroundStyle(self.palette.mutedInk)
                     }
                 }
                 .buttonStyle(.plain)
@@ -1292,17 +1399,21 @@ private struct DashboardNewsColumnCard: View {
                                 }
                             } label: {
                                 Text(cat == .xSocial ? "X" : cat.label)
-                                    .font(.system(size: 10, weight: active ? .semibold : .medium))
-                                    .foregroundStyle(active ? self.palette.tokens.onAccentInk : self.palette.pine.opacity(0.60))
-                                    .padding(.horizontal, 6)
+                                    .font(.system(size: 11, weight: active ? .medium : .regular))
+                                    .foregroundStyle(active ? self.palette.tokens.onAccentInk : self.palette.secondaryInk)
+                                    .padding(.horizontal, 7)
                                     .frame(height: 20)
-                                    .background(active ? self.palette.accentFill : Color.clear, in: Capsule())
+                                    .background(
+                                        active ? self.palette.accentFill : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    )
                             }
                             .buttonStyle(.plain)
+                            .pointerStyle(.link)
                         }
                     }
                     .padding(2)
-                    .background(self.palette.inset, in: Capsule())
+                    .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 
                 Button {
@@ -1312,163 +1423,64 @@ private struct DashboardNewsColumnCard: View {
                 } label: {
                     Image(systemName: self.newsService.isLoading ? "hourglass" : "arrow.clockwise")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(self.palette.pine.opacity(0.68))
-                        .frame(width: 22, height: 22)
-                        .background(Circle().fill(self.palette.inset.opacity(0.85)))
-                        .contentShape(Circle())
+                        .foregroundStyle(self.palette.secondaryInk)
+                        .frame(width: 24, height: 24)
+                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .pointerStyle(.link)
                 .disabled(self.newsService.isLoading)
             }
-            .frame(height: 22)
+            .frame(height: 24)
             
-            GeometryReader { geo in
-                let useTwoColumns = geo.size.width >= 260
-                let rowSpacing: CGFloat = 8
-                let canFitThreeRows = useTwoColumns && geo.size.height >= 280
-                let targetRows: Int = useTwoColumns ? (canFitThreeRows ? 3 : 2) : 3
-                let visibleItems = Array(pageItems.prefix(useTwoColumns ? targetRows * 2 : targetRows))
-                let textAndPaddingPerCard: CGFloat = 48
-                let adaptiveCoverH: CGFloat = useTwoColumns
-                    ? min(84, max(54, floor((geo.size.height - rowSpacing * CGFloat(targetRows - 1)) / CGFloat(targetRows) - textAndPaddingPerCard)))
-                    : 46
-                let columns: [GridItem] = useTwoColumns
-                    ? [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
-                    : [GridItem(.flexible(), spacing: 8)]
-                
-                ScrollView(.vertical, showsIndicators: false) {
-                    if visibleItems.isEmpty {
-                        if self.newsService.isLoading {
-                            LazyVGrid(columns: columns, alignment: .leading, spacing: rowSpacing) {
-                                ForEach(0..<(useTwoColumns ? 4 : 3), id: \.self) { _ in
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .fill(self.palette.inset)
-                                            .frame(height: adaptiveCoverH)
-                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                            .fill(self.palette.inset)
-                                            .frame(height: 10)
-                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                            .fill(self.palette.inset.opacity(0.65))
-                                            .frame(width: 90, height: 10)
-                                    }
-                                    .padding(6)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                            .fill(self.palette.inset.opacity(0.35))
-                                    )
-                                }
+            ScrollView(.vertical, showsIndicators: false) {
+                if visibleItems.isEmpty {
+                    if self.newsService.isLoading {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(0..<4, id: \.self) { _ in
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(self.palette.inset)
+                                    .frame(height: 36)
                             }
-                        } else {
-                            Button {
-                                Task {
-                                    await self.newsService.refreshIfNeeded(force: true)
-                                }
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(self.palette.emerald)
-                                    .frame(width: 34, height: 34)
-                                    .background(self.palette.accentFill.opacity(0.12), in: Circle())
-                            }
-                            .buttonStyle(.plain)
-                            .frame(maxWidth: .infinity, minHeight: 120)
                         }
                     } else {
-                        LazyVGrid(columns: columns, alignment: .leading, spacing: rowSpacing) {
-                            ForEach(visibleItems) { item in
-                                NewsFeedCoverCard(
-                                    item: item,
-                                    coverImage: self.newsService.coverImage(for: item),
-                                    isBookmarked: self.newsService.isBookmarked(item),
-                                    isRead: self.newsService.isRead(item),
-                                    compactRow: !useTwoColumns,
-                                    coverHeight: adaptiveCoverH,
-                                    palette: self.palette,
-                                    onTap: {
-                                        self.onOpenWorkspace(item.id)
-                                    },
-                                    onToggleBookmark: {
-                                        self.newsService.toggleBookmark(item)
-                                    }
-                                )
-                            }
-                        }
-                        .id("news-mixed-page-\(self.newsService.currentPage)-\(self.newsService.selectedCategory.rawValue)")
-                    }
-                }
-            }
-            
-            if !self.newsService.filteredItems.isEmpty {
-                let totalPages = self.newsService.totalPages
-                let curPage = min(max(1, self.newsService.currentPage), totalPages)
-                let maxDots = 7
-                let startPage = max(1, min(curPage - maxDots / 2, max(1, totalPages - maxDots + 1)))
-                let endPage = min(totalPages, startPage + maxDots - 1)
-                
-                HStack(spacing: 8) {
-                    Button {
-                        withAnimation(DashMotion.quick) {
-                            self.newsService.goToPreviousPage()
-                        }
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(totalPages > 1 ? self.palette.pine.opacity(0.75) : self.palette.pine.opacity(0.26))
-                            .frame(width: 26, height: 22)
-                            .background(self.palette.inset, in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    .disabled(totalPages <= 1)
-                    
-                    Spacer()
-                    
-                    HStack(spacing: 5) {
-                        ForEach(startPage...endPage, id: \.self) { page in
-                            let isActive = (page == curPage)
-                            Button {
-                                withAnimation(DashMotion.quick) {
-                                    self.newsService.goToPage(page)
-                                }
-                            } label: {
-                                Capsule()
-                                    .fill(isActive ? self.palette.accentFill : self.palette.pine.opacity(0.20))
-                                    .frame(width: isActive ? 14 : 5, height: 5)
-                                    .contentShape(Rectangle().inset(by: -3))
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                        }
-                    }
-                    
-                    Spacer()
-                    
-                    Button {
-                        if totalPages > 1 {
-                            withAnimation(DashMotion.quick) {
-                                self.newsService.goToNextPage()
-                            }
-                        } else {
+                        Button {
                             Task {
                                 await self.newsService.refreshIfNeeded(force: true)
                             }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 12, weight: .medium))
+                                Text(AppLanguage.text("刷新资讯", en: "Refresh News"))
+                                    .font(.system(size: 12.5, weight: .medium))
+                            }
+                            .foregroundStyle(self.palette.secondaryInk)
+                            .padding(.horizontal, 12)
+                            .frame(height: 32)
+                            .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
-                    } label: {
-                        Image(systemName: totalPages <= 1 ? "arrow.clockwise" : "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(self.palette.emerald)
-                            .frame(width: 26, height: 22)
-                            .background(self.palette.accentFill.opacity(0.14), in: Capsule())
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, minHeight: 120)
                     }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(visibleItems) { item in
+                            NewsHeadlineRow(
+                                item: item,
+                                isRead: self.newsService.isRead(item),
+                                palette: self.palette
+                            ) {
+                                self.onOpenWorkspace(item.id)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.top, 2)
             }
         }
         .padding(self.compact ? 12 : 16)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 18)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
     }
 }
 
@@ -1659,11 +1671,14 @@ private struct DashboardAchievementHeroBar: View {
     @State private var serialCode: String
     @State private var hasProLicense: Bool
     @State private var isDanmakuEnabled: Bool
-    @State private var pointerLocation = CGPoint(x: 0.5, y: 0.5)
-    @State private var isCardHovered = false
+    @State private var isArtHovered = false
     @State private var isBackHovered = false
     @State private var isToggleHovered = false
     @State private var brandLineEngine = BrandLinePassEngine()
+    @State private var asciiMatrix: [[CotPassArtEngine.ASCIIPixelCell]] = []
+    @State private var impastoTiles: [CotPassArtEngine.ImpastoTile] = []
+    @State private var cachedArtSize: CGSize = .zero
+    @State private var cachedArtSeed: Int = -1
     @State private var startDate = Date()
     
     private static let joinedFormatter: DateFormatter = {
@@ -1698,37 +1713,20 @@ private struct DashboardAchievementHeroBar: View {
         }
         let key = db.string(forKey: CotLocalDatabase.ConfigKey.cotPassLicenseKey)
         let tier = CotPassLicense.validate(key) ?? .explorer
-        let rawDanmaku = db.string(forKey: CotLocalDatabase.ConfigKey.dashboardDanmakuEnabled, default: "true")
+        let rawDanmaku = db.string(forKey: CotLocalDatabase.ConfigKey.dashboardDanmakuEnabled, default: "false")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         
         _passStyleIndex = State(initialValue: storedStyle)
         _serialCode = State(initialValue: serial)
         _hasProLicense = State(initialValue: tier != .explorer)
-        _isDanmakuEnabled = State(initialValue: rawDanmaku != "false" && rawDanmaku != "0")
+        _isDanmakuEnabled = State(initialValue: rawDanmaku == "true" || rawDanmaku == "1")
     }
     
     
     private var danmakuItems: [DashboardHeroDanmakuScheduler.Item] {
         var tags: [UserPersonalityTag] = []
         let todayTotal = self.snapshot.today.typedChars + self.snapshot.today.aiCompletedChars
-        if todayTotal > 0 {
-            tags.append(UserPersonalityTag(id: "today", label: "今日 \(todayTotal.formatted()) 字", explanation: "", tone: .calm))
-        }
-        if self.snapshot.currentStreak > 0 {
-            tags.append(UserPersonalityTag(id: "streak", label: "连更 \(self.snapshot.currentStreak) 天", explanation: "", tone: .sharp))
-        }
-        if self.snapshot.yearlyHeatmap.activeDays > 0 {
-            tags.append(UserPersonalityTag(id: "active", label: "年活跃 \(self.snapshot.yearlyHeatmap.activeDays) 天", explanation: "", tone: .warm))
-        }
-        let avg14 = Int(self.snapshot.trendCurve14.averageValue.rounded())
-        if avg14 > 0 {
-            tags.append(UserPersonalityTag(id: "avg14", label: "日均 \(avg14.formatted()) 字", explanation: "", tone: .playful))
-        }
-        let peak14 = self.snapshot.days14.map { $0.typed + $0.ai }.max() ?? 0
-        if peak14 > 0 {
-            tags.append(UserPersonalityTag(id: "peak", label: "峰值 \(peak14.formatted()) 字", explanation: "", tone: .calm))
-        }
         let typed14 = self.snapshot.days14.reduce(0) { $0 + $1.typed }
         let ai14 = self.snapshot.days14.reduce(0) { $0 + $1.ai }
         let sum14 = typed14 + ai14
@@ -1736,20 +1734,30 @@ private struct DashboardAchievementHeroBar: View {
             let handRatio = Double(typed14) / Double(sum14)
             tags.append(UserPersonalityTag(
                 id: "style",
-                label: handRatio >= 0.65 ? "手写心流派" : "AI 协创家",
+                label: handRatio >= 0.65 ? "手写心流派" : "AI 协创派",
                 explanation: "",
-                tone: .sharp
+                tone: .calm
             ))
         }
         tags.append(UserPersonalityTag(
             id: "pass-tier",
-            label: self.hasProLicense ? "PRO 通行证" : "典藏通行证",
+            label: self.hasProLicense ? "PRO 通行证" : "创作通行证",
             explanation: "",
-            tone: self.hasProLicense ? .warm : .calm
+            tone: .sharp
         ))
         let moodLabel = self.snapshot.mood.dominantLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         if !moodLabel.isEmpty {
             tags.append(UserPersonalityTag(id: "mood", label: moodLabel, explanation: "", tone: .playful))
+        }
+        if todayTotal > 0 {
+            tags.append(UserPersonalityTag(id: "today", label: "今日 \(todayTotal.formatted()) 字", explanation: "", tone: .calm))
+        }
+        if self.snapshot.currentStreak > 0 {
+            tags.append(UserPersonalityTag(id: "streak", label: "连更 \(self.snapshot.currentStreak) 天", explanation: "", tone: .sharp))
+        }
+        let avg14 = Int(self.snapshot.trendCurve14.averageValue.rounded())
+        if avg14 > 0 {
+            tags.append(UserPersonalityTag(id: "avg14", label: "日均 \(avg14.formatted()) 字", explanation: "", tone: .warm))
         }
         if sum14 >= 8000 {
             tags.append(UserPersonalityTag(id: "prolific", label: "高产创作者", explanation: "", tone: .warm))
@@ -1758,7 +1766,7 @@ private struct DashboardAchievementHeroBar: View {
             tags.append(UserPersonalityTag(id: "steady", label: "长期主义者", explanation: "", tone: .playful))
         }
         
-        let deduped = UserPersonalityAnalyzer.deduplicatedTags(tags, maxCount: 10)
+        let deduped = UserPersonalityAnalyzer.deduplicatedTags(tags, maxCount: 8)
         return deduped.map {
             DashboardHeroDanmakuScheduler.Item(id: $0.id, text: $0.label, tone: $0.tone)
         }
@@ -1766,236 +1774,579 @@ private struct DashboardAchievementHeroBar: View {
     
     
     var body: some View {
-        let theme = CotPassTheme.resolve(index: self.passStyleIndex)
         let joinedText = Self.joinedFormatter.string(from: self.profile.createdAt)
         let statusText = self.hasProLicense ? "PRO" : "ACTIVE"
-        let accessText = "\(max(1, self.snapshot.currentStreak))D"
+        let streakDays = max(1, self.snapshot.currentStreak)
+        let accessText = "\(streakDays)D"
+        let todayTotal = self.snapshot.today.typedChars + self.snapshot.today.aiCompletedChars
+        let avg14 = Int(self.snapshot.trendCurve14.averageValue.rounded())
+        let cardSeed = CotPassArtEngine.deterministicSeed(from: "\(self.passStyleIndex):\(self.serialCode)")
         let items = self.danmakuItems
         
-        GeometryReader { heroGeo in
-            let cardW: CGFloat = self.compact ? 268 : 304
-            let cardH: CGFloat = self.compact ? 124 : 148
-            let cardRect = CGRect(
-                x: (heroGeo.size.width - cardW) * 0.5,
-                y: (heroGeo.size.height - cardH) * 0.5,
-                width: cardW,
-                height: cardH
-            )
-            let reservedBackRect: CGRect = self.onBack != nil
-                ? CGRect(x: 0, y: 0, width: 110, height: 36)
-                : .zero
-            let reservedToggleRect = CGRect(x: max(0, heroGeo.size.width - 104), y: 0, width: 104, height: 36)
+        HStack(spacing: 0) {
+            self.identityZone(cardSeed: cardSeed, statusText: statusText, joinedText: joinedText)
             
-            ZStack(alignment: .topLeading) {
-                // Flanking achievement danmaku lanes around central PASS sanctuary (when enabled)
-                if self.isDanmakuEnabled {
-                    TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-                        let elapsed = max(0, timeline.date.timeIntervalSince(self.startDate))
-                        let placements = DashboardHeroDanmakuScheduler.placements(
-                            canvasSize: heroGeo.size,
-                            cardRect: cardRect,
-                            reservedTopLeftRect: reservedBackRect,
-                            reservedTopRightRect: reservedToggleRect,
-                            items: items,
-                            elapsed: elapsed
-                        )
-                        
-                        ZStack(alignment: .topLeading) {
-                            ForEach(placements) { placement in
-                                let toneCol = self.palette.toneColor(for: placement.tone)
-                                HStack(spacing: 5) {
-                                    Circle()
-                                        .fill(toneCol)
-                                        .frame(width: 5.5, height: 5.5)
-                                    Text(placement.text)
-                                        .font(.system(size: self.compact ? 10.5 : 11.5, weight: .semibold, design: .rounded))
-                                        .foregroundStyle(self.palette.pine.opacity(0.86))
-                                        .lineLimit(1)
-                                }
-                                .padding(.horizontal, 10)
-                                .frame(height: 24)
-                                .fixedSize(horizontal: true, vertical: false)
-                                .background(
-                                    Capsule()
-                                        .fill(self.palette.card.opacity(0.86))
-                                        .overlay(
-                                            Capsule()
-                                                .strokeBorder(toneCol.opacity(0.38), lineWidth: 0.9)
-                                        )
-                                )
-                                .shadow(color: self.palette.cardShadow.opacity(0.55), radius: 5, y: 2)
-                                .position(x: placement.frame.midX, y: placement.frame.midY)
-                                .opacity(placement.opacity)
-                            }
-                        }
-                        .frame(width: heroGeo.size.width, height: heroGeo.size.height, alignment: .topLeading)
-                        .allowsHitTesting(false)
-                    }
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                }
-                
-                // Centered native-resolution Collector PASS Card with ambient gallery glow
-                ZStack {
-                    RadialGradient(
-                        colors: [
-                            self.palette.accentFill.opacity(self.palette.tokens.isDark ? 0.20 : 0.14),
-                            self.palette.mint.opacity(0.06),
-                            .clear
-                        ],
-                        center: .center,
-                        startRadius: 20,
-                        endRadius: cardW * 0.72
-                    )
-                    .frame(width: cardW * 1.35, height: heroGeo.size.height)
-                    .allowsHitTesting(false)
-                    
-                    CotPassCardView(
-                        theme: theme,
-                        profile: self.profile,
-                        avatarImage: self.avatarImage,
-                        serialCode: self.serialCode,
-                        statusText: statusText,
-                        joinedText: joinedText,
-                        accessText: accessText,
-                        specularPoint: UnitPoint(x: self.pointerLocation.x, y: self.pointerLocation.y),
-                        pointerLocation: self.pointerLocation,
-                        isHovered: self.isCardHovered,
-                        brandLineEngine: self.brandLineEngine,
-                        cardSize: CGSize(width: cardW, height: cardH),
-                        statusLabelTitle: "STATUS"
-                    )
-                    .frame(width: cardW, height: cardH)
-                    .rotation3DEffect(
-                        .degrees(self.isCardHovered ? 6.5 : 0),
-                        axis: (
-                            x: CGFloat(0.5 - self.pointerLocation.y),
-                            y: CGFloat(self.pointerLocation.x - 0.5),
-                            z: 0
-                        ),
-                        perspective: 0.55
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-                    .onContinuousHover { phase in
-                        switch phase {
-                            case .active(let loc):
-                                let nx = min(1, max(0, loc.x / max(1, cardW)))
-                                let ny = min(1, max(0, loc.y / max(1, cardH)))
-                                self.pointerLocation = CGPoint(x: nx, y: ny)
-                                if !self.isCardHovered {
-                                    self.isCardHovered = true
-                                }
-                            case .ended:
-                                if self.isCardHovered {
-                                    self.isCardHovered = false
-                                }
-                                self.pointerLocation = CGPoint(x: 0.5, y: 0.5)
-                        }
-                    }
-                    .onTapGesture {
-                        withAnimation(DashMotion.standard) {
-                            let next = (self.passStyleIndex + 1) % CotPassTheme.allThemes.count
-                            self.passStyleIndex = next
-                            CotLocalDatabase.shared.set("\(next)", forKey: CotLocalDatabase.ConfigKey.cotPassStyleIndex)
-                        }
-                    }
-                    .pointerStyle(.link)
-                }
-                .position(x: cardRect.midX, y: cardRect.midY)
-                
-                // Top Header Controls: Left "返回编辑" & Right Danmaku Switch
-                HStack(alignment: .center) {
-                    if let onBack = self.onBack {
-                        Button(action: onBack) {
-                            HStack(spacing: 5) {
-                                Image(systemName: "chevron.left")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(self.isBackHovered ? self.palette.emerald : self.palette.pine.opacity(0.75))
-                                
-                                Text(AppLanguage.text("返回编辑", en: "Back to Editor"))
-                                    .font(.system(size: 12.5, weight: .medium))
-                                    .foregroundStyle(self.palette.pine.opacity(self.isBackHovered ? 0.96 : 0.82))
-                            }
-                            .padding(.horizontal, 10)
-                            .frame(height: 30)
-                            .background(
-                                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .fill(self.isBackHovered ? self.palette.card : self.palette.card.opacity(0.86))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .strokeBorder(self.isBackHovered ? self.palette.accentFill.opacity(0.45) : self.palette.hairline, lineWidth: 0.75)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                        .onHover { hovering in
-                            if hovering != self.isBackHovered {
-                                self.isBackHovered = hovering
-                            }
-                        }
-                    }
-                    
-                    Spacer(minLength: 8)
-                    
-                    Button {
-                        let next = !self.isDanmakuEnabled
-                        if next {
-                            self.startDate = Date()
-                        }
-                        withAnimation(DashMotion.standard) {
-                            self.isDanmakuEnabled = next
-                        }
-                        CotLocalDatabase.shared.set(
-                            next ? "true" : "false",
-                            forKey: CotLocalDatabase.ConfigKey.dashboardDanmakuEnabled
-                        )
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: self.isDanmakuEnabled ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right")
+            Rectangle()
+                .fill(self.palette.hairline)
+                .frame(width: 1)
+                .padding(.vertical, self.compact ? 12 : 16)
+            
+            self.overviewZone(
+                todayTotal: todayTotal,
+                streakDays: streakDays,
+                avg14: avg14,
+                items: items
+            )
+            
+            self.perforatedSeam
+            
+            self.integratedPassGalleryStub(seed: cardSeed, accessText: accessText)
+                .padding(self.compact ? 10 : 14)
+                .frame(width: self.compact ? 156 : 216)
+                .frame(maxHeight: .infinity)
+        }
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
+        .onAppear {
+            self.syncStubCaches(seed: cardSeed)
+        }
+        .onChange(of: self.profile.id) { _, _ in
+            self.syncStubCaches(seed: cardSeed)
+        }
+        .onChange(of: self.profile.avatarData?.count ?? 0) { _, _ in
+            self.syncStubCaches(seed: cardSeed)
+        }
+        .onChange(of: cardSeed) { _, newSeed in
+            self.syncStubCaches(seed: newSeed)
+        }
+    }
+    
+    
+    private var perforatedSeam: some View {
+        Canvas { ctx, size in
+            var line = Path()
+            line.move(to: CGPoint(x: size.width * 0.5, y: 10))
+            line.addLine(to: CGPoint(x: size.width * 0.5, y: size.height - 10))
+            ctx.stroke(
+                line,
+                with: .color(self.palette.hairlineStrong),
+                style: StrokeStyle(lineWidth: 1, dash: [3, 4])
+            )
+        }
+        .frame(width: 1)
+    }
+    
+    
+    private func identityZone(cardSeed: Int, statusText: String, joinedText: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                if let onBack = self.onBack {
+                    Button(action: onBack) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
                                 .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(self.isDanmakuEnabled ? self.palette.emerald : self.palette.pine.opacity(0.52))
-                            
-                            Text(AppLanguage.text("弹幕", en: "Danmaku"))
+                            Text(AppLanguage.text("返回编辑", en: "Back"))
                                 .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(self.palette.pine.opacity(self.isDanmakuEnabled ? 0.90 : 0.56))
-                            
-                            ZStack(alignment: self.isDanmakuEnabled ? .trailing : .leading) {
-                                Capsule()
-                                    .fill(self.isDanmakuEnabled ? self.palette.accentFill : self.palette.insetHover)
-                                    .frame(width: 26, height: 15)
-                                Circle()
-                                    .fill(Color.white)
-                                    .shadow(color: .black.opacity(0.14), radius: 1, y: 0.5)
-                                    .frame(width: 11.5, height: 11.5)
-                                    .padding(.horizontal, 1.8)
-                            }
                         }
-                        .padding(.horizontal, 9)
-                        .frame(height: 30)
+                        .foregroundStyle(self.isBackHovered ? self.palette.pine : self.palette.secondaryInk)
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
                         .background(
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(self.isToggleHovered ? self.palette.card : self.palette.card.opacity(0.86))
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(self.isBackHovered ? self.palette.insetHover : self.palette.inset)
                         )
                         .overlay(
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .strokeBorder(
-                                    self.isToggleHovered || self.isDanmakuEnabled
-                                        ? self.palette.accentFill.opacity(self.isDanmakuEnabled ? 0.36 : 0.45)
-                                        : self.palette.hairline,
-                                    lineWidth: 0.75
-                                )
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(self.palette.hairline, lineWidth: 0.75)
                         )
                     }
                     .buttonStyle(.plain)
                     .pointerStyle(.link)
                     .onHover { hovering in
-                        if hovering != self.isToggleHovered {
-                            self.isToggleHovered = hovering
+                        if hovering != self.isBackHovered {
+                            self.isBackHovered = hovering
                         }
                     }
                 }
-                .padding(.top, 2)
+                
+                HStack(spacing: 6) {
+                    self.microPixelBadge(seed: cardSeed)
+                    Text("CotEditor Pass")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(self.palette.mutedInk)
+                }
+                
+                Spacer(minLength: 0)
             }
+            
+            Spacer(minLength: 8)
+            
+            HStack(alignment: .center, spacing: 12) {
+                self.authorPortrait(size: self.compact ? 40 : 48)
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .center, spacing: 8) {
+                        Text(self.profile.displayName)
+                            .font(.system(size: self.compact ? 16 : 18, weight: .semibold))
+                            .foregroundStyle(self.palette.pine)
+                            .lineLimit(1)
+                        
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(self.palette.statusPositive)
+                                .frame(width: 5, height: 5)
+                            Text(statusText)
+                                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                .foregroundStyle(self.palette.secondaryInk)
+                        }
+                        .padding(.horizontal, 7)
+                        .frame(height: 20)
+                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    
+                    HStack(spacing: 8) {
+                        Text("NO.\(self.serialCode)")
+                            .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+                            .foregroundStyle(self.palette.mutedInk)
+                            .lineLimit(1)
+                        
+                        Text("·")
+                            .foregroundStyle(self.palette.mutedInk.opacity(0.6))
+                        
+                        Text("JOINED \(joinedText)")
+                            .font(.system(size: 11.5, weight: .regular, design: .monospaced).monospacedDigit())
+                            .foregroundStyle(self.palette.mutedInk)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, self.compact ? 14 : 20)
+        .padding(.vertical, self.compact ? 12 : 16)
+        .frame(minWidth: self.compact ? 228 : 300, maxWidth: self.compact ? 260 : 340, maxHeight: .infinity, alignment: .leading)
+    }
+    
+    
+    private func overviewZone(
+        todayTotal: Int,
+        streakDays: Int,
+        avg14: Int,
+        items: [DashboardHeroDanmakuScheduler.Item]
+    ) -> some View {
+        let visibleTags = Array(items.prefix(self.compact ? 2 : 4))
+        
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center) {
+                Text(AppLanguage.text("创作概览", en: "Writing Overview"))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(self.palette.mutedInk)
+                
+                Spacer(minLength: 8)
+                
+                self.danmakuToggleButton
+            }
+            
+            Spacer(minLength: 6)
+            
+            if self.isDanmakuEnabled {
+                GeometryReader { stageGeo in
+                    TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                        let elapsed = max(0, timeline.date.timeIntervalSince(self.startDate))
+                        self.inlineDanmakuTrack(size: stageGeo.size, items: items, elapsed: elapsed)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+            } else {
+                HStack(alignment: .lastTextBaseline, spacing: self.compact ? 16 : 28) {
+                    self.headerStatBlock(
+                        label: AppLanguage.text("今日码字", en: "Today"),
+                        value: todayTotal.formatted(),
+                        unit: AppLanguage.text("字", en: "chars"),
+                        emphasize: true
+                    )
+                    
+                    self.headerStatBlock(
+                        label: AppLanguage.text("连续创作", en: "Streak"),
+                        value: "\(streakDays)",
+                        unit: AppLanguage.text("天", en: "days"),
+                        emphasize: false
+                    )
+                    
+                    self.headerStatBlock(
+                        label: AppLanguage.text("年度活跃", en: "Active"),
+                        value: "\(self.snapshot.yearlyHeatmap.activeDays)",
+                        unit: AppLanguage.text("天", en: "days"),
+                        emphasize: false
+                    )
+                    
+                    if !self.compact && avg14 > 0 {
+                        self.headerStatBlock(
+                            label: AppLanguage.text("近14日均", en: "14d Avg"),
+                            value: avg14.formatted(),
+                            unit: AppLanguage.text("字", en: "chars"),
+                            emphasize: false
+                        )
+                    }
+                    
+                    Spacer(minLength: 0)
+                }
+                
+                Spacer(minLength: 8)
+                
+                HStack(spacing: 6) {
+                    ForEach(visibleTags) { tag in
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(self.palette.toneColor(for: tag.tone))
+                                .frame(width: 4.5, height: 4.5)
+                            Text(tag.text)
+                                .font(.system(size: 11.5, weight: .regular))
+                                .foregroundStyle(self.palette.secondaryInk)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.horizontal, self.compact ? 14 : 20)
+        .padding(.vertical, self.compact ? 12 : 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+    
+    
+    private var danmakuToggleButton: some View {
+        Button {
+            let next = !self.isDanmakuEnabled
+            if next {
+                self.startDate = Date()
+            }
+            withAnimation(DashMotion.quick) {
+                self.isDanmakuEnabled = next
+            }
+            CotLocalDatabase.shared.set(
+                next ? "true" : "false",
+                forKey: CotLocalDatabase.ConfigKey.dashboardDanmakuEnabled
+            )
+        } label: {
+            HStack(spacing: 6) {
+                Text(AppLanguage.text("弹幕", en: "Ticker"))
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(self.isDanmakuEnabled ? self.palette.pine : self.palette.mutedInk)
+                
+                ZStack(alignment: self.isDanmakuEnabled ? .trailing : .leading) {
+                    Capsule()
+                        .fill(self.isDanmakuEnabled ? self.palette.accentFill : self.palette.insetHover)
+                        .frame(width: 24, height: 14)
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 10, height: 10)
+                        .padding(.horizontal, 2)
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(self.isToggleHovered ? self.palette.insetHover : self.palette.inset)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { hovering in
+            if hovering != self.isToggleHovered {
+                self.isToggleHovered = hovering
+            }
+        }
+    }
+    
+    
+    private func authorPortrait(size: CGFloat) -> some View {
+        ZStack {
+            if let avatarImage = self.avatarImage {
+                Image(nsImage: avatarImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipped()
+            } else {
+                UserAvatarCircleView(profile: self.profile, size: size, customImage: nil)
+                    .frame(width: size, height: size)
+                    .clipped()
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(self.palette.hairlineStrong, lineWidth: 0.8)
+        )
+    }
+    
+    
+    private func microPixelBadge(seed: Int) -> some View {
+        HStack(spacing: 1.5) {
+            ForEach(0..<5, id: \.self) { col in
+                VStack(spacing: 1.5) {
+                    ForEach(0..<2, id: \.self) { row in
+                        let on = ((seed >> (col + row * 3)) & 1) == 1
+                        Rectangle()
+                            .fill(on ? self.palette.accentFill : self.palette.pine.opacity(0.18))
+                            .frame(width: 2.5, height: 2.5)
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    private func headerStatBlock(label: String, value: String, unit: String, emphasize: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(self.palette.mutedInk)
+                .lineLimit(1)
+            
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value)
+                    .font(.system(size: self.compact ? 16 : 19, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(emphasize ? self.palette.emerald : self.palette.pine)
+                    .lineLimit(1)
+                Text(unit)
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(self.palette.mutedInk)
+                    .lineLimit(1)
+            }
+        }
+    }
+    
+    
+    private func inlineDanmakuTrack(
+        size: CGSize,
+        items: [DashboardHeroDanmakuScheduler.Item],
+        elapsed: TimeInterval
+    ) -> some View {
+        let laneCount = 2
+        let lanePitch: CGFloat = max(28, size.height / CGFloat(laneCount))
+        let maxW = items.map { DashboardHeroDanmakuScheduler.estimatedPillSize(for: $0.text).width }.max() ?? 110
+        let step = maxW + 24
+        let cycle = max(size.width + maxW + 40, CGFloat(max(1, items.count)) * step * 0.5)
+        
+        return ZStack(alignment: .topLeading) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
+                let lane = idx % laneCount
+                let pillSize = DashboardHeroDanmakuScheduler.estimatedPillSize(for: item.text)
+                let speed: CGFloat = lane == 0 ? 18.0 : 14.5
+                let raw = CGFloat(elapsed) * speed + CGFloat(idx / laneCount) * step + (lane == 1 ? step * 0.5 : 0)
+                let travel = raw.truncatingRemainder(dividingBy: cycle)
+                let centerX = (size.width + maxW * 0.5) - travel
+                let centerY = (CGFloat(lane) + 0.5) * lanePitch
+                let edgeDist = min(centerX - pillSize.width * 0.5, size.width - (centerX + pillSize.width * 0.5))
+                let fade = min(1.0, max(0.0, Double(edgeDist / 24.0)))
+                if fade > 0.02 {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(self.palette.toneColor(for: item.tone))
+                            .frame(width: 4.5, height: 4.5)
+                        Text(item.text)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(self.palette.pine)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 9)
+                    .frame(height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(self.palette.inset)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .strokeBorder(self.palette.hairline, lineWidth: 0.75)
+                            )
+                    )
+                    .position(x: centerX, y: centerY)
+                    .opacity(fade)
+                }
+            }
+        }
+    }
+    
+    
+    private func integratedPassGalleryStub(seed: Int, accessText: String) -> some View {
+        let styleRatios: [(Double, Double)] = [
+            (1.0, 0.75),
+            (0.85, 0.95),
+            (0.70, 0.85),
+            (0.92, 0.65),
+        ]
+        let mod = styleRatios[abs(self.passStyleIndex) % styleRatios.count]
+        
+        return GeometryReader { geo in
+            let rect = CGRect(origin: .zero, size: geo.size)
+            ZStack(alignment: .bottomLeading) {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(self.palette.inset)
+                
+                TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: AnimationConstants.isReducedMotionEnabled)) { context in
+                    let phase = AnimationConstants.isReducedMotionEnabled
+                        ? 0.8
+                        : context.date.timeIntervalSinceReferenceDate * 0.45
+                    
+                    Canvas { canvasCtx, size in
+                        let artRect = CGRect(origin: .zero, size: size)
+                        let clipPath = RoundedRectangle(cornerRadius: 10, style: .continuous).path(in: artRect)
+                        canvasCtx.clip(to: clipPath)
+                        
+                        let orbCenter = CGPoint(
+                            x: artRect.width * CGFloat(0.56 + 0.10 * cos(phase * 0.7)),
+                            y: artRect.height * CGFloat(0.42 + 0.10 * sin(phase * 0.6))
+                        )
+                        canvasCtx.fill(
+                            Path(artRect),
+                            with: .radialGradient(
+                                Gradient(colors: [
+                                    self.palette.accentFill.opacity((self.palette.tokens.isDark ? 0.24 : 0.16) * mod.0),
+                                    self.palette.mint.opacity(0.08 * mod.1),
+                                    Color.clear,
+                                ]),
+                                center: orbCenter,
+                                startRadius: 4,
+                                endRadius: max(artRect.width, artRect.height) * 0.75
+                            )
+                        )
+                        
+                        for tile in self.impastoTiles {
+                            let density = CotPassArtEngine.morphingSculptureDensity(u: tile.u, v: tile.v, phase: phase)
+                            guard density > 0.18 else { continue }
+                            let tx = CGFloat(tile.u) * artRect.width
+                            let ty = CGFloat(tile.v) * artRect.height
+                            let scale = CGFloat(0.70 + 0.36 * density)
+                            let tw = tile.width * scale
+                            let th = tile.height * scale
+                            
+                            let tileColor: Color = switch tile.role {
+                                case .porcelainHighlight:
+                                    self.palette.card.opacity(0.65)
+                                case .pastelWash:
+                                    self.palette.paleMint.opacity(self.palette.tokens.isDark ? 0.55 : 0.85)
+                                case .mineralAccent:
+                                    self.palette.accentFill.opacity(0.28 + 0.24 * density)
+                                case .warmOchre:
+                                    self.palette.mint.opacity(0.24 + 0.22 * density)
+                            }
+                            
+                            canvasCtx.drawLayer { tileCtx in
+                                tileCtx.translateBy(x: tx, y: ty)
+                                tileCtx.rotate(by: .radians(tile.angle))
+                                let r = CGRect(x: -tw * 0.5, y: -th * 0.5, width: tw, height: th)
+                                tileCtx.fill(Capsule().path(in: r), with: .color(tileColor))
+                            }
+                        }
+                        
+                        let hatch = CotPassArtEngine.lithographHatchPath(in: artRect, seed: seed)
+                        canvasCtx.stroke(hatch, with: .color(self.palette.pine.opacity(0.10)), style: StrokeStyle(lineWidth: 0.55, lineCap: .round))
+                        
+                        let rows = self.asciiMatrix.count
+                        let cols = self.asciiMatrix.first?.count ?? 0
+                        if rows > 0, cols > 0 {
+                            let step: CGFloat = self.compact ? 4.0 : 4.8
+                            let pad: CGFloat = 4
+                            let gw = CGFloat(cols) * step
+                            let gh = CGFloat(rows) * step
+                            let pRect = CGRect(
+                                x: artRect.maxX - gw - pad * 2 - 6,
+                                y: artRect.maxY - gh - pad * 2 - 6,
+                                width: gw + pad * 2,
+                                height: gh + pad * 2
+                            )
+                            let pPath = RoundedRectangle(cornerRadius: 5, style: .continuous).path(in: pRect)
+                            canvasCtx.fill(pPath, with: .color(self.palette.card.opacity(0.90)))
+                            canvasCtx.stroke(pPath, with: .color(self.palette.hairline), lineWidth: 0.6)
+                            
+                            for r in 0..<rows {
+                                for c in 0..<cols {
+                                    let cx = pRect.minX + pad + (CGFloat(c) + 0.5) * step
+                                    let cy = pRect.minY + pad + (CGFloat(r) + 0.5) * step
+                                    switch self.asciiMatrix[r][c] {
+                                        case .empty:
+                                            let dot = CGRect(x: cx - 0.5, y: cy - 0.5, width: 1, height: 1)
+                                            canvasCtx.fill(Rectangle().path(in: dot), with: .color(self.palette.pine.opacity(0.10)))
+                                        case .pixelBlock(let s):
+                                            let side = step * 0.66
+                                            let px = CGRect(x: cx - side * 0.5, y: cy - side * 0.5, width: side, height: side)
+                                            canvasCtx.fill(Rectangle().path(in: px), with: .color(self.palette.accentFill.opacity(0.40 + s * 0.45)))
+                                        case .ascii(let ch, let s):
+                                            canvasCtx.draw(
+                                                Text(String(ch))
+                                                    .font(.system(size: max(4.5, step * 0.85), weight: .semibold, design: .monospaced))
+                                                    .foregroundStyle(self.palette.pine.opacity(0.35 + s * 0.45)),
+                                                at: CGPoint(x: cx, y: cy),
+                                                anchor: .center
+                                            )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .allowsHitTesting(false)
+                
+                Text("ACCESS · \(accessText)")
+                    .font(.system(size: 9.5, weight: .medium, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(self.palette.secondaryInk)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2.5)
+                    .background(self.palette.card.opacity(0.88), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .padding(7)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(self.isArtHovered ? self.palette.accentFill.opacity(0.45) : self.palette.hairline, lineWidth: 0.8)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .onHover { hovering in
+                if hovering != self.isArtHovered {
+                    self.isArtHovered = hovering
+                }
+            }
+            .onTapGesture {
+                withAnimation(DashMotion.standard) {
+                    let next = (self.passStyleIndex + 1) % CotPassTheme.allThemes.count
+                    self.passStyleIndex = next
+                    CotLocalDatabase.shared.set("\(next)", forKey: CotLocalDatabase.ConfigKey.cotPassStyleIndex)
+                }
+            }
+            .pointerStyle(.link)
+            .onAppear {
+                if self.cachedArtSize != rect.size && rect.width > 20 {
+                    self.cachedArtSize = rect.size
+                    self.impastoTiles = CotPassArtEngine.computeImpastoTiles(seed: seed, in: rect)
+                }
+            }
+            .onChange(of: rect.size) { _, newSize in
+                guard newSize.width > 20 else { return }
+                self.cachedArtSize = newSize
+                self.impastoTiles = CotPassArtEngine.computeImpastoTiles(seed: seed, in: CGRect(origin: .zero, size: newSize))
+            }
+        }
+    }
+    
+    
+    private func syncStubCaches(seed: Int) {
+        self.brandLineEngine.syncAvatarContour(profile: self.profile, avatarImage: self.avatarImage)
+        self.asciiMatrix = CotPassArtEngine.buildASCIIPixelMatrix(
+            from: self.brandLineEngine.contourField,
+            cols: self.compact ? 8 : 9,
+            rows: self.compact ? 5 : 6
+        )
+        if self.cachedArtSeed != seed, self.cachedArtSize.width > 20 {
+            self.cachedArtSeed = seed
+            self.impastoTiles = CotPassArtEngine.computeImpastoTiles(
+                seed: seed,
+                in: CGRect(origin: .zero, size: self.cachedArtSize)
+            )
         }
     }
 }
@@ -2054,53 +2405,30 @@ private struct DashboardHeatmapCard: View {
             // Top Live-Activity Telemetry Strip
             HStack(alignment: .center, spacing: 8) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(isInspecting ? readout.label : AppLanguage.text("今日码字", en: "Typed Today"))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(isInspecting ? self.palette.emerald : self.palette.mutedInk)
+                    
                     HStack(alignment: .firstTextBaseline, spacing: 3) {
                         Text(readout.total.formatted())
-                            .font(.system(size: self.compact ? 17 : 19, weight: .bold, design: .rounded).monospacedDigit())
+                            .font(.system(size: self.compact ? 17 : 20, weight: .semibold).monospacedDigit())
                             .foregroundStyle(isInspecting ? self.palette.emerald : self.palette.pine)
                             .contentTransition(.numericText())
                         Text("字")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(self.palette.pine.opacity(0.48))
-                    }
-                    
-                    if isInspecting {
-                        Text(readout.label)
-                            .font(.system(size: 10.5, weight: .semibold, design: .rounded))
-                            .foregroundStyle(self.palette.pine.opacity(0.72))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2.5)
-                            .background(self.palette.inset.opacity(0.90), in: Capsule())
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(self.palette.mutedInk)
                     }
                 }
                 
                 Spacer(minLength: 4)
                 
                 if self.currentStreak > 0 {
-                    let milestone: Double = self.currentStreak < 7 ? 7 : (self.currentStreak < 30 ? 30 : 100)
-                    let fillRatio = min(1.0, max(0.16, Double(self.currentStreak) / milestone))
-                    HStack(spacing: 5) {
-                        ZStack(alignment: .leading) {
-                            Capsule()
-                                .fill(self.palette.inset)
-                                .frame(width: 30, height: 4.5)
-                            Capsule()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [self.palette.mint, self.palette.accentFill, self.palette.emerald],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    )
-                                )
-                                .frame(width: max(6, 30 * CGFloat(fillRatio)), height: 4.5)
-                        }
-                        Text("\(self.currentStreak)d")
-                            .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(self.palette.emerald)
-                    }
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2.5)
-                    .background(self.palette.accentFill.opacity(0.10), in: Capsule())
+                    Text("连更 \(self.currentStreak) 天")
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(self.palette.secondaryInk)
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 
                 HStack(spacing: 2) {
@@ -2111,16 +2439,16 @@ private struct DashboardHeatmapCard: View {
                     } label: {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(self.previousYear != nil ? self.palette.pine.opacity(0.75) : self.palette.pine.opacity(0.22))
-                            .frame(width: 18, height: 18)
+                            .foregroundStyle(self.previousYear != nil ? self.palette.secondaryInk : self.palette.pine.opacity(0.20))
+                            .frame(width: 20, height: 20)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .disabled(self.previousYear == nil)
                     
                     Text("\(String(self.yearlyHeatmap.year))")
-                        .font(.system(size: 11.5, weight: .semibold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(self.palette.pine.opacity(0.86))
+                        .font(.system(size: 11.5, weight: .medium, design: .monospaced).monospacedDigit())
+                        .foregroundStyle(self.palette.pine)
                     
                     Button {
                         if let next = self.nextYear {
@@ -2129,16 +2457,16 @@ private struct DashboardHeatmapCard: View {
                     } label: {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(self.nextYear != nil ? self.palette.pine.opacity(0.75) : self.palette.pine.opacity(0.22))
-                            .frame(width: 18, height: 18)
+                            .foregroundStyle(self.nextYear != nil ? self.palette.secondaryInk : self.palette.pine.opacity(0.20))
+                            .frame(width: 20, height: 20)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .disabled(self.nextYear == nil)
                 }
                 .padding(.horizontal, 4)
-                .padding(.vertical, 2)
-                .background(self.palette.inset.opacity(0.85), in: Capsule())
+                .frame(height: 22)
+                .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
             
             // Middle: Crisp 1:1 Square Yearly Activity Heatmap
@@ -2304,19 +2632,15 @@ private struct DashboardHeatmapCard: View {
                         context.fill(
                             areaPath,
                             with: .linearGradient(
-                                Gradient(colors: [self.palette.accentFill.opacity(0.22), self.palette.accentFill.opacity(0.01)]),
+                                Gradient(colors: [self.palette.accentFill.opacity(0.14), self.palette.accentFill.opacity(0.01)]),
                                 startPoint: CGPoint(x: size.width * 0.5, y: padTop),
                                 endPoint: CGPoint(x: size.width * 0.5, y: baseY)
                             )
                         )
                         context.stroke(
                             linePath,
-                            with: .linearGradient(
-                                Gradient(colors: [self.palette.mint, self.palette.accentFill, self.palette.emerald]),
-                                startPoint: CGPoint(x: padX, y: baseY * 0.5),
-                                endPoint: CGPoint(x: size.width - padX, y: baseY * 0.5)
-                            ),
-                            style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round)
+                            with: .color(self.palette.accentFill),
+                            style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round)
                         )
                         
                         // 4. Data knot markers + cross-linked hover guide
@@ -2373,7 +2697,7 @@ private struct DashboardHeatmapCard: View {
             .padding(.top, 2)
         }
         .padding(self.compact ? 12 : 16)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 18)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
     }
     
     
@@ -2553,107 +2877,85 @@ private struct DashboardAIUsageWideCard: View {
                 }
                 .frame(width: 98, height: 98)
                 
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(AppLanguage.text("30日用量", en: "30d Tokens"))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(self.palette.mutedInk)
+                        
                         HStack(alignment: .firstTextBaseline, spacing: 3) {
                             Text(Self.compactTokens(totals.totalTokens))
-                                .font(.system(size: 18, weight: .bold, design: .rounded).monospacedDigit())
+                                .font(.system(size: 18, weight: .semibold).monospacedDigit())
                                 .foregroundStyle(self.palette.pine)
                             Text("tokens")
-                                .font(.system(size: 10, weight: .medium, design: .rounded))
-                                .foregroundStyle(self.palette.pine.opacity(0.46))
+                                .font(.system(size: 11, weight: .regular))
+                                .foregroundStyle(self.palette.mutedInk)
                         }
                         
-                        Text("\(displayReqs) req")
-                            .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(self.palette.emerald)
-                            .padding(.horizontal, 6.5)
-                            .padding(.vertical, 2)
-                            .background(self.palette.accentFill.opacity(0.12), in: Capsule())
-                        
                         Spacer(minLength: 4)
+                        
+                        Text("\(displayReqs) req")
+                            .font(.system(size: 11, weight: .regular, design: .monospaced).monospacedDigit())
+                            .foregroundStyle(self.palette.mutedInk)
                     }
                     
-                    VStack(spacing: 3.5) {
+                    VStack(spacing: 4) {
                         GeometryReader { barGeo in
                             let w = max(40, barGeo.size.width)
                             let splitX = max(14, min(w - 14, w * CGFloat(inFrac)))
-                            ZStack(alignment: .leading) {
-                                Capsule()
-                                    .fill(self.palette.inset)
+                            HStack(spacing: 2) {
+                                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                    .fill(self.palette.accentFill)
+                                    .frame(width: max(8, splitX - 1))
                                 
-                                HStack(spacing: 2) {
-                                    Capsule()
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [self.palette.accentFill.opacity(0.75), self.palette.accentFill],
-                                                startPoint: .leading,
-                                                endPoint: .trailing
-                                            )
-                                        )
-                                        .frame(width: max(8, splitX - 1))
-                                    
-                                    Capsule()
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [self.palette.mint, self.palette.emerald],
-                                                startPoint: .leading,
-                                                endPoint: .trailing
-                                            )
-                                        )
-                                        .frame(maxWidth: .infinity)
-                                }
-                                
-                                Circle()
-                                    .fill(self.palette.card)
-                                    .frame(width: 7, height: 7)
-                                    .overlay(Circle().strokeBorder(self.palette.emerald, lineWidth: 1.4))
-                                    .offset(x: splitX - 3.5)
+                                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                    .fill(self.palette.mint.opacity(0.65))
+                                    .frame(maxWidth: .infinity)
                             }
                         }
-                        .frame(height: 8.5)
+                        .frame(height: 6)
                         
                         HStack {
-                            Text("\(inPct)%")
-                                .font(.system(size: 9.5, weight: .semibold, design: .rounded).monospacedDigit())
-                                .foregroundStyle(self.palette.pine.opacity(0.62))
+                            Text("输入 \(inPct)%")
+                                .font(.system(size: 10.5, weight: .regular).monospacedDigit())
+                                .foregroundStyle(self.palette.secondaryInk)
                             Spacer()
-                            Text("\(outPct)%")
-                                .font(.system(size: 9.5, weight: .semibold, design: .rounded).monospacedDigit())
-                                .foregroundStyle(self.palette.emerald.opacity(0.86))
+                            Text("生成 \(outPct)%")
+                                .font(.system(size: 10.5, weight: .regular).monospacedDigit())
+                                .foregroundStyle(self.palette.mutedInk)
                         }
                     }
                     
                     HStack(alignment: .bottom, spacing: 8) {
-                        HStack(spacing: 5) {
+                        HStack(spacing: 6) {
                             ForEach(Array(topModels.prefix(2).enumerated()), id: \.offset) { _, m in
                                 HStack(spacing: 4) {
                                     Circle()
                                         .fill(m.color)
                                         .frame(width: 5, height: 5)
                                     Text(m.name)
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundStyle(self.palette.pine.opacity(0.78))
+                                        .font(.system(size: 11, weight: .regular))
+                                        .foregroundStyle(self.palette.secondaryInk)
                                         .lineLimit(1)
                                     Text("\(m.share)%")
-                                        .font(.system(size: 9.5, weight: .semibold, design: .rounded).monospacedDigit())
-                                        .foregroundStyle(self.palette.pine.opacity(0.46))
+                                        .font(.system(size: 10.5, weight: .regular, design: .monospaced).monospacedDigit())
+                                        .foregroundStyle(self.palette.mutedInk)
                                 }
-                                .padding(.horizontal, 6.5)
-                                .padding(.vertical, 3)
-                                .background(self.palette.inset.opacity(0.85), in: Capsule())
+                                .padding(.horizontal, 7)
+                                .frame(height: 22)
+                                .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                             }
                         }
                         
                         Spacer(minLength: 4)
                         
-                        HStack(alignment: .bottom, spacing: 2.5) {
+                        HStack(alignment: .bottom, spacing: 3) {
                             let aiMax = max(20.0, self.snapshot.days14.map { Double($0.ai) }.max() ?? 20.0)
                             ForEach(Array(self.snapshot.days14.suffix(10).enumerated()), id: \.offset) { idx, day in
                                 let frac = CGFloat(Double(day.ai) / aiMax)
                                 let h = max(4, frac * 16)
-                                Capsule()
-                                    .fill(day.ai > 0 ? (idx == 9 ? self.palette.emerald : self.palette.accentFill.opacity(0.45 + 0.45 * Double(frac))) : self.palette.emptyDot)
+                                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                                    .fill(day.ai > 0 ? (idx == 9 ? self.palette.accentFill : self.palette.accentFill.opacity(0.45)) : self.palette.emptyDot)
                                     .frame(width: 3, height: h)
                             }
                         }
@@ -2662,10 +2964,10 @@ private struct DashboardAIUsageWideCard: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .dashboardCardSurface(palette: self.palette, cornerRadius: 18, isHighlighted: self.isHovered)
-            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: self.isHovered)
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { hovering in
@@ -2700,39 +3002,36 @@ private struct DashboardCompactQuadCard: View {
         Button {
             self.onTap()
         } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 3) {
-                        Text(self.heroValueText)
-                            .font(.system(size: 16, weight: .bold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(self.palette.pine)
-                            .lineLimit(1)
-                        
-                        Text(self.heroUnitText)
-                            .font(.system(size: 10, weight: .medium, design: .rounded))
-                            .foregroundStyle(self.palette.pine.opacity(0.46))
-                            .lineLimit(1)
-                    }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(self.metric.title)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(self.palette.mutedInk)
+                        .lineLimit(1)
                     
                     Spacer(minLength: 4)
                     
-                    if let badgeText = self.secondaryBadgeText {
-                        Text(badgeText)
-                            .font(.system(size: 10, weight: .semibold, design: .rounded))
-                            .foregroundStyle(self.palette.pine.opacity(0.56))
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Text(self.heroValueText)
+                            .font(.system(size: 16, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(self.palette.pine)
                             .lineLimit(1)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(self.palette.inset.opacity(0.85), in: Capsule())
+                        
+                        if !self.heroUnitText.isEmpty {
+                            Text(self.heroUnitText)
+                                .font(.system(size: 11, weight: .regular))
+                                .foregroundStyle(self.palette.mutedInk)
+                                .lineLimit(1)
+                        }
                     }
                 }
                 
                 self.miniVisualization
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(11)
-            .dashboardCardSurface(palette: self.palette, cornerRadius: 18, isHighlighted: self.isHovered)
-            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .padding(12)
+            .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: self.isHovered)
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { hovering in
@@ -2832,7 +3131,7 @@ private struct DashboardExpandedQuadCard: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .padding(16)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 18, isHighlighted: true)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: true)
     }
     
     
@@ -3850,108 +4149,48 @@ private struct EmotionSankeyChartView: View {
 }
 
 
-// MARK: - Supporting Components (Clean Cover News Cards with Top-Right Heat Pill)
+// MARK: - Supporting Components (Clean Editorial Headline Rows & Card Surface)
 
-private struct NewsFeedCoverCard: View {
+private struct NewsHeadlineRow: View {
     
     let item: AIHotNewsItem
-    let coverImage: NSImage?
-    let isBookmarked: Bool
-    var isRead: Bool = false
-    let compactRow: Bool
-    var coverHeight: CGFloat = 70
+    let isRead: Bool
     let palette: DashPalette
     let onTap: () -> Void
-    let onToggleBookmark: () -> Void
     
     @State private var isHovered = false
     
     
     var body: some View {
+        let publisher = self.item.displayPublisherLabel
+        
         Button(action: self.onTap) {
-            if self.compactRow {
-                HStack(alignment: .top, spacing: 8) {
-                    self.thumbnailView
-                        .frame(width: 64, height: 46)
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    
-                    Text(self.item.title)
-                        .font(.system(size: 12, weight: self.isRead ? .regular : .medium))
-                        .foregroundStyle(self.palette.pine.opacity(self.isRead ? 0.72 : 0.92))
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    
-                    if let score = self.item.heatScore, score > 0 {
-                        self.heatPill(score)
-                    }
+            HStack(alignment: .center, spacing: 10) {
+                Circle()
+                    .fill(self.isRead ? self.palette.pine.opacity(0.18) : self.palette.accentFill)
+                    .frame(width: 5, height: 5)
+                
+                Text(self.item.title)
+                    .font(.system(size: 13, weight: self.isRead ? .regular : .medium))
+                    .foregroundStyle(self.isRead ? self.palette.secondaryInk : self.palette.pine)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                if !publisher.isEmpty {
+                    Text(publisher)
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(self.palette.mutedInk)
+                        .lineLimit(1)
                 }
-                .padding(6)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(self.isHovered ? self.palette.inset : self.palette.inset.opacity(0.45))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(self.palette.hairline, lineWidth: 0.6)
-                )
-            } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    ZStack(alignment: .topLeading) {
-                        self.thumbnailView
-                            .frame(maxWidth: .infinity)
-                            .frame(height: self.coverHeight)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        
-                        HStack(alignment: .top) {
-                            if self.isHovered || self.isBookmarked {
-                                Button(action: self.onToggleBookmark) {
-                                    Image(systemName: self.isBookmarked ? "bookmark.fill" : "bookmark")
-                                        .font(.system(size: 9.5, weight: .semibold))
-                                        .foregroundStyle(self.isBookmarked ? self.palette.tokens.onAccentInk : self.palette.pine.opacity(0.80))
-                                        .frame(width: 20, height: 20)
-                                        .background(
-                                            self.isBookmarked ? self.palette.accentFill : self.palette.card.opacity(0.88),
-                                            in: Circle()
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            
-                            Spacer(minLength: 4)
-                            
-                            if let score = self.item.heatScore, score > 0 {
-                                self.heatPill(score)
-                            }
-                        }
-                        .padding(4)
-                    }
-                    
-                    HStack(alignment: .top, spacing: 5) {
-                        if !self.isRead {
-                            Circle()
-                                .fill(self.palette.accentFill)
-                                .frame(width: 5, height: 5)
-                                .padding(.top, 4.5)
-                        }
-                        Text(self.item.title)
-                            .font(.system(size: 11.5, weight: self.isRead ? .regular : .medium))
-                            .foregroundStyle(self.palette.pine.opacity(self.isRead ? 0.72 : 0.94))
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(6)
-                .background(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(self.isHovered ? self.palette.inset : self.palette.inset.opacity(0.45))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .strokeBorder(self.isHovered ? self.palette.accentFill.opacity(0.38) : self.palette.hairline, lineWidth: 0.7)
-                )
             }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(self.isHovered ? self.palette.insetHover : self.palette.inset)
+            )
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)
@@ -3961,63 +4200,6 @@ private struct NewsFeedCoverCard: View {
             }
         }
     }
-    
-    
-    private func heatPill(_ score: Int) -> some View {
-        Text("\(score)°")
-            .font(.system(size: 9.5, weight: .semibold, design: .rounded).monospacedDigit())
-            .foregroundStyle(self.palette.emerald)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(self.palette.card.opacity(0.90), in: Capsule())
-            .overlay(Capsule().strokeBorder(self.palette.hairline, lineWidth: 0.5))
-    }
-    
-    
-    @ViewBuilder
-    private var thumbnailView: some View {
-        ZStack {
-            if let coverImage = self.coverImage {
-                GeometryReader { geo in
-                    Image(nsImage: coverImage)
-                        .resizable()
-                        .interpolation(.high)
-                        .antialiased(true)
-                        .scaledToFill()
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .clipped()
-                }
-            } else {
-                let tint = self.domainTintColor
-                LinearGradient(
-                    colors: [tint.opacity(0.24), tint.opacity(0.08)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                let badge = self.item.resolvedCategory.badgeLabel
-                Text(badge.isEmpty ? "AI" : badge)
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                    .foregroundStyle(tint.opacity(0.82))
-            }
-        }
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(self.palette.hairline, lineWidth: 0.5)
-        )
-    }
-    
-    
-    private var domainTintColor: Color {
-        let hash = abs(self.item.title.unicodeScalars.reduce(0) { $0 &* 31 &+ Int($1.value) })
-        let hues: [Color] = [
-            self.palette.accentFill,
-            self.palette.mint,
-            Color(red: 0.86, green: 0.48, blue: 0.34),
-            Color(red: 0.44, green: 0.56, blue: 0.88),
-            Color(red: 0.68, green: 0.44, blue: 0.84),
-        ]
-        return hues[hash % hues.count]
-    }
 }
 
 
@@ -4026,33 +4208,18 @@ private extension View {
     func dashboardCardSurface(
         palette: DashPalette,
         cornerRadius: CGFloat = 16,
-        isHighlighted: Bool = false,
-        tintAccent: Color? = nil
+        isHighlighted: Bool = false
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        let strokeColor: Color = if let tintAccent {
-            tintAccent.opacity(isHighlighted ? 0.45 : 0.24)
-        } else {
-            isHighlighted ? palette.accentFill.opacity(0.45) : palette.hairline
-        }
+        let strokeColor = isHighlighted ? palette.accentFill.opacity(0.45) : palette.hairline
         return self
             .background(
-                ZStack {
-                    shape.fill(palette.card)
-                    if let tintAccent {
-                        shape.fill(
-                            LinearGradient(
-                                colors: [tintAccent.opacity(palette.tokens.isDark ? 0.08 : 0.045), Color.clear],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    }
-                }
-                .shadow(color: palette.cardShadow, radius: 8, x: 0, y: 4)
+                shape
+                    .fill(palette.card)
+                    .shadow(color: palette.cardShadow, radius: 6, x: 0, y: 2)
             )
             .overlay(
-                shape.strokeBorder(strokeColor, lineWidth: isHighlighted ? 1.1 : 0.8)
+                shape.strokeBorder(strokeColor, lineWidth: isHighlighted ? 1.0 : 0.8)
             )
     }
 }

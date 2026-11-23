@@ -22,7 +22,7 @@
 import AppKit
 import SwiftUI
 
-// MARK: - 模型 (API 端点 & 全局人设 · 零弹窗全内联)
+// MARK: - API 网关 (服务端点 · Pi 内核桥接 · 全局人设)
 
 struct AIModelsSettingsView: View {
     
@@ -43,6 +43,8 @@ struct AIModelsSettingsView: View {
     @State private var fetchedModels: [UUID: [AIModel]] = [:]
     @State private var fetchingModelsIDs: Set<UUID> = []
     @State private var imageLoader = AIGijinkaImageLoader.shared
+    @State private var piKernel = PiKernelManager.shared
+    @State private var kernelEnabled: Bool = PiKernelManager.shared.isKernelEnabled
     
     
     private struct EndpointEditTarget: Identifiable {
@@ -90,7 +92,7 @@ struct AIModelsSettingsView: View {
                     HStack(spacing: 5) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 11, weight: .semibold))
-                        Text(AppLanguage.text("返回模型端点", en: "Back to Endpoints"))
+                        Text(AppLanguage.text("返回 API 网关", en: "Back to API Gateways"))
                             .font(.system(size: 12.5, weight: .medium))
                     }
                     .foregroundStyle(.secondary)
@@ -129,10 +131,10 @@ struct AIModelsSettingsView: View {
     
     private var mainModelsContent: some View {
         VStack(alignment: .leading, spacing: 20) {
-            // Section 1: 服务端点
+            // Section 1: API 网关
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text(AppLanguage.text("服务端点", en: "Endpoints"))
+                    Text(AppLanguage.text("网关列表", en: "API Gateways"))
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .padding(.leading, 3)
@@ -148,7 +150,7 @@ struct AIModelsSettingsView: View {
                             Image(systemName: "network.slash")
                                 .font(.title2)
                                 .foregroundStyle(.tertiary)
-                            Text(AppLanguage.text("尚未配置 AI 服务端点", en: "No Endpoints Configured"))
+                            Text(AppLanguage.text("尚未配置 API 网关", en: "No API Gateways Configured"))
                                 .font(.system(size: 13, weight: .medium))
                         }
                         .frame(maxWidth: .infinity)
@@ -168,7 +170,7 @@ struct AIModelsSettingsView: View {
                         Button {
                             self.beginAddingEndpoint()
                         } label: {
-                            Label(AppLanguage.text("添加自定义端点", en: "Add Endpoint"), systemImage: "plus")
+                            Label(AppLanguage.text("添加 API 网关", en: "Add Gateway"), systemImage: "plus")
                         }
                         .controlSize(.small)
                         
@@ -188,6 +190,53 @@ struct AIModelsSettingsView: View {
                     }
                     .padding(.horizontal, 14)
                     .frame(minHeight: 40)
+                }
+                .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
+            }
+            
+            // Section 2: Pi 内核桥接与运行底座
+            VStack(alignment: .leading, spacing: 7) {
+                Text(AppLanguage.text("Pi 内核底座", en: "Pi Kernel Runtime"))
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 3)
+                
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(self.piKernel.isAvailable && self.kernelEnabled ? Color.green : Color.orange)
+                            .frame(width: 7, height: 7)
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(self.piKernel.statusSummary)
+                                .font(.system(size: 12.5, weight: .medium))
+                            Text(AppLanguage.text("自动将所选网关与模型同步至 Pi 内核，驱动各 Bot 执行任务并联动专属形象", en: "Syncs gateways & models to Pi kernel to power working Bots"))
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        Button {
+                            Task { await self.piKernel.refreshEnvironment() }
+                        } label: {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .buttonStyle(.borderless)
+                        .help(AppLanguage.text("重新检测并同步 Pi 内核工作区", en: "Sync Pi Kernel Workspace"))
+                        
+                        Toggle("", isOn: self.$kernelEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                            .onChange(of: self.kernelEnabled) { _, enabled in
+                                self.piKernel.isKernelEnabled = enabled
+                            }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
                 }
                 .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
@@ -275,7 +324,7 @@ struct AIModelsSettingsView: View {
             Circle()
                 .fill(isUsable ? Color.green : Color.orange)
                 .frame(width: 6, height: 6)
-            Text(activeProfile?.displayName ?? AppLanguage.text("未配置端点", en: "Unconfigured"))
+            Text(activeProfile?.displayName ?? AppLanguage.text("未配置网关", en: "Unconfigured"))
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(activeProfile != nil ? Color.secondary : Color.orange)
                 .lineLimit(1)
@@ -311,21 +360,24 @@ struct AIModelsSettingsView: View {
                         
                         if let gijinka {
                             ZStack {
-                                Circle()
-                                    .fill(Color(hexString: gijinka.accentHex).opacity(0.14))
                                 if let portrait {
-                                    Image(nsImage: portrait)
-                                        .resizable()
-                                        .interpolation(.high)
-                                        .scaledToFill()
-                                        .frame(width: 24, height: 24, alignment: .top)
+                                    AIGijinkaCompleteArtworkView(
+                                        image: portrait,
+                                        accent: Color(hexString: gijinka.accentHex),
+                                        width: 26,
+                                        height: 26,
+                                        isDark: self.colorScheme == .dark,
+                                        isEnabled: true
+                                    )
                                 } else {
+                                    Circle()
+                                        .fill(Color(hexString: gijinka.accentHex).opacity(0.14))
                                     Text(String(gijinka.brand.prefix(1)))
-                                        .font(.system(size: 10, weight: .semibold))
+                                        .font(.system(size: 10.5, weight: .semibold))
                                         .foregroundStyle(Color(hexString: gijinka.accentHex))
                                 }
                             }
-                            .frame(width: 24, height: 24)
+                            .frame(width: 26, height: 26)
                             .clipShape(Circle())
                             .overlay(Circle().strokeBorder(self.cardBorder, lineWidth: 0.75))
                             .help(gijinka.name)
@@ -510,6 +562,8 @@ struct AIModelsSettingsView: View {
             AIEndpointStore.activeID = active
         }
         self.globalPersona = CotLocalDatabase.shared.aiPersona
+        self.kernelEnabled = self.piKernel.isKernelEnabled
+        _ = try? self.piKernel.syncWorkspace()
     }
     
     
@@ -517,6 +571,7 @@ struct AIModelsSettingsView: View {
         self.activeID = profile.id
         AIEndpointStore.activeID = profile.id
         CotLocalDatabase.shared.syncAIEndpointsToDatabase()
+        _ = try? self.piKernel.syncWorkspace()
     }
     
     
@@ -607,7 +662,7 @@ struct AIModelsSettingsView: View {
 }
 
 
-// MARK: - 智能体 (AI 娘化画廊 · 固定宽度零跳动 · 卡片 / 列表 / 叠放视图)
+// MARK: - Bots (Pi 内核智能体编队 · 固定宽度零跳动 · 卡片 / 列表 / 叠放视图)
 
 enum BotCollectionLayoutMode: String, CaseIterable, Identifiable {
     case card
@@ -645,6 +700,7 @@ struct AIBotsSettingsView: View {
     @State private var botStore = AIBotStore.shared
     @State private var analytics = AnalyticsManager.shared
     @State private var imageLoader = AIGijinkaImageLoader.shared
+    @State private var piKernel = PiKernelManager.shared
     @State private var layoutMode: BotCollectionLayoutMode = .card
     @State private var inspectingBot: AIBotID?
     @State private var allEndpoints: [AIEndpointProfile] = []
@@ -692,7 +748,7 @@ struct AIBotsSettingsView: View {
     }
     
     
-    /// Resolves the AI 娘化 character strictly from the model & endpoint selected for `botID`.
+    /// Resolves the Bot visual persona strictly from the model & gateway selected for `botID`.
     private func resolvedCharacter(for botID: AIBotID, config: AIBotConfig) -> AIGijinkaCharacter? {
         let endpoint = self.resolvedEndpoint(for: config)
         let overrideModel = config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -739,12 +795,12 @@ struct AIBotsSettingsView: View {
         let rowsCount = Int(ceil(Double(bots.count) / Double(cols)))
         let cardGap: CGFloat = 12
         let cardWidth = floor((Self.fixedStageWidth - cardGap * CGFloat(cols - 1)) / CGFloat(cols)) // 167pt
-        let portraitHeight: CGFloat = 192 // Balanced gallery frame fitting 1:1, 3:4 & 4:3 covers cleanly without clipping
-        let cardRowStride: CGFloat = portraitHeight + 52
+        let portraitHeight: CGFloat = 222 // True 3:4 portrait card proportion (167 x 222) tailored for vertical HD portraits
+        let cardRowStride: CGFloat = portraitHeight + 54
         let stageHeight: CGFloat = switch self.layoutMode {
             case .list: CGFloat(bots.count) * 64.0
             case .card: CGFloat(rowsCount) * cardRowStride
-            case .pack: 244.0
+            case .pack: 258.0
         }
         let enabledCount = bots.filter { self.botStore.config(for: $0).isEnabled }.count
         
@@ -813,22 +869,28 @@ struct AIBotsSettingsView: View {
                 
                 if self.layoutMode == .pack {
                     VStack(spacing: 4) {
-                        Text(AppLanguage.text("AI 娘化智能体卡组（共 \(bots.count) 位）", en: "\(bots.count) AI Gijinka Agents"))
+                        Text(AppLanguage.text("Pi Bots 编队（共 \(bots.count) 位）", en: "\(bots.count) Pi Bots"))
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(.primary)
                     }
                     .frame(maxWidth: .infinity)
-                    .offset(y: 174)
+                    .offset(y: 186)
                     .transition(.opacity)
                 }
             }
             .frame(width: Self.fixedStageWidth, height: stageHeight, alignment: .topLeading)
             
-            HStack {
-                Text("AI Gijinka Gallery · ZipZipPipe / CC BY-NC-SA 4.0")
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(self.piKernel.isAvailable && self.piKernel.isKernelEnabled ? Color.green : Color.orange)
+                    .frame(width: 6, height: 6)
+                Text(self.piKernel.statusSummary)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(AppLanguage.text("角色形象随所选网关与模型自动切换", en: "Personas follow selected gateway & model"))
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)
-                Spacer()
             }
             .padding(.top, 2)
         }
@@ -885,20 +947,21 @@ struct AIBotsSettingsView: View {
                 posY = CGFloat(row) * cardRowStride
                 rotation = 0
             case .pack:
-                artWidth = 96
-                artHeight = 128
+                artWidth = 102
+                artHeight = 136
                 artCorner = 12
                 itemWidth = artWidth
                 let spread: CGFloat = 28.0
                 let mid = Double(total - 1) * 0.5
                 let offsetIndex = Double(index) - mid
                 posX = (Self.fixedStageWidth - artWidth) * 0.5 + CGFloat(offsetIndex) * spread
-                posY = 18 + abs(CGFloat(offsetIndex)) * 4.0 - (isHovered ? 12 : 0)
+                posY = 16 + abs(CGFloat(offsetIndex)) * 4.0 - (isHovered ? 12 : 0)
                 rotation = offsetIndex * 4.6
         }
         
+        let _ = cropAlignment
         return ZStack(alignment: .topLeading) {
-            // Persistent AI Gijinka Portrait Frame (full-bleed 3:4 cover with smart crop anchor)
+            // Persistent Bot Portrait Frame (full-bleed 3:4 static cover)
             ZStack {
                 RoundedRectangle(cornerRadius: artCorner, style: .continuous)
                     .fill(
@@ -1040,7 +1103,7 @@ struct AIBotsSettingsView: View {
                 }
             }
             
-            // Card view caption under standing portrait (bot role primary + resolved AI 娘 / model subtitle)
+            // Card view caption under standing portrait (bot role primary + resolved model brand subtitle)
             if self.layoutMode == .card {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 5) {
@@ -1099,7 +1162,7 @@ struct AIBotsSettingsView: View {
                     HStack(spacing: 5) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 11, weight: .semibold))
-                        Text(AppLanguage.text("返回智能体", en: "Back to Agents"))
+                        Text(AppLanguage.text("返回 Bots", en: "Back to Bots"))
                             .font(.system(size: 12.5, weight: .medium))
                     }
                     .foregroundStyle(.secondary)
@@ -1248,20 +1311,20 @@ private struct AIBotInlineInspectorView: View {
         {
             ep.displayName
         } else {
-            AppLanguage.text("默认端点", en: "Default")
+            AppLanguage.text("默认网关", en: "Default")
         }
         
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
+            HStack(spacing: 14) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
                         .fill(accent.opacity(0.14))
                     if let portrait {
                         AIGijinkaCompleteArtworkView(
                             image: portrait,
                             accent: accent,
-                            width: 68,
-                            height: 82,
+                            width: 76,
+                            height: 102,
                             isDark: NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua,
                             isEnabled: self.config.isEnabled
                         )
@@ -1271,10 +1334,10 @@ private struct AIBotInlineInspectorView: View {
                             .foregroundStyle(accent)
                     }
                 }
-                .frame(width: 68, height: 82)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .frame(width: 76, height: 102)
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
                         .strokeBorder(accent.opacity(0.35), lineWidth: 0.75)
                 )
                 
@@ -1334,6 +1397,17 @@ private struct AIBotInlineInspectorView: View {
                 
                 Spacer()
                 
+                if PiKernelManager.shared.isAvailable {
+                    Button {
+                        _ = PiKernelManager.shared.launchBotInFrontmostTerminal(self.botID)
+                    } label: {
+                        Label(AppLanguage.text("在终端唤起 Agent", en: "Open in Terminal"), systemImage: "terminal")
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .controlSize(.small)
+                    .help(AppLanguage.text("在编辑器底部终端启动该 Bot 对应的 Pi Agent 会话", en: "Launch interactive Pi Agent session in built-in Terminal"))
+                }
+                
                 Toggle("启用", isOn: self.$config.isEnabled)
                     .toggleStyle(.switch)
                     .controlSize(.small)
@@ -1344,10 +1418,10 @@ private struct AIBotInlineInspectorView: View {
             
             Divider()
             
-            // Endpoint + Model Selector (supports ANY model under ANY configured endpoint)
+            // Gateway + Model Selector (supports ANY model under ANY configured API gateway)
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 10) {
-                    Text(AppLanguage.text("端点模型", en: "Model"))
+                    Text(AppLanguage.text("网关模型", en: "Gateway"))
                         .font(.system(size: 12.5, weight: .medium))
                         .frame(width: 66, alignment: .leading)
                     
@@ -1470,6 +1544,26 @@ private struct AIBotInlineInspectorView: View {
                         .controlSize(.small)
                     }
                 }
+            }
+            
+            HStack(spacing: 10) {
+                Text(AppLanguage.text("Pi 能力", en: "Pi Mode"))
+                    .font(.system(size: 12.5, weight: .medium))
+                    .frame(width: 66, alignment: .leading)
+                
+                Picker("", selection: Binding(
+                    get: { self.config.effectiveToolProfile(for: self.botID) },
+                    set: { selected in
+                        self.config.toolProfile = (selected == self.botID.defaultPiToolProfile) ? nil : selected
+                        self.saveBotConfig()
+                    }
+                )) {
+                    ForEach(PiBotToolProfile.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
             }
             
             HStack(spacing: 10) {
@@ -1707,10 +1801,13 @@ private struct AIBotInlineInspectorView: View {
 }
 
 
-// MARK: - Complete Uncropped AI Gijinka Cover Renderer
+// MARK: - Adaptive HD Portrait & Bust Avatar Renderer
 
-/// Displays 100% of any AI Gijinka cover (1:1, 3:4, 4:3, or 16:9) without cropping heads or edges,
-/// while filling any aspect-ratio margin with a soft color-matched blurred ambient backdrop.
+/// Renders HD standing character portraits with aspect-aware framing:
+/// - In square/circular avatar frames (`width ≈ height`), zooms cleanly onto the character's head & bust.
+/// - In `3:4` portrait cards (`Gallery`, `Pack`, `Inspector`), fills the vertical card edge-to-edge
+///   aligned from the top so there are zero blurry side bars and zero forehead/hair-ornament clipping,
+///   backed by a cohesive studio paper surface that keeps transparent cutouts crisp in both Light and Dark mode.
 private struct AIGijinkaCompleteArtworkView: View {
     
     let image: NSImage
@@ -1720,35 +1817,69 @@ private struct AIGijinkaCompleteArtworkView: View {
     let isDark: Bool
     let isEnabled: Bool
     
+    private var isCompactAvatar: Bool {
+        abs(self.width - self.height) <= 4 && self.width <= 64
+    }
+    
+    private var imageAspectRatio: CGFloat {
+        let size = self.image.size
+        guard size.width > 1, size.height > 1 else { return 0.75 }
+        return size.width / size.height
+    }
     
     var body: some View {
-        ZStack {
-            // Soft blurred color-matched ambient fill so non-matching aspect ratios never show harsh empty bars
-            Image(nsImage: self.image)
-                .resizable()
-                .interpolation(.low)
-                .scaledToFill()
-                .frame(width: self.width, height: self.height)
-                .blur(radius: 16)
-                .scaleEffect(1.12)
-                .opacity(self.isDark ? 0.42 : 0.30)
-            
-            // Gentle atmospheric wash for clean figure-ground contrast
+        ZStack(alignment: .top) {
+            // Unified pearl-tinted studio card surface so both transparent cutouts and white-studio illustrations match seamlessly
             LinearGradient(
                 colors: [
-                    self.accent.opacity(self.isDark ? 0.14 : 0.08),
-                    (self.isDark ? Color.black : Color.white).opacity(self.isDark ? 0.24 : 0.22),
+                    self.isDark
+                        ? Color(red: 0.945, green: 0.952, blue: 0.968)
+                        : Color(red: 0.985, green: 0.988, blue: 0.995),
+                    self.isDark
+                        ? Color(red: 0.905, green: 0.916, blue: 0.938)
+                        : Color(red: 0.955, green: 0.962, blue: 0.976),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
             
-            // 100% complete uncropped artwork centered neatly inside the card frame
-            Image(nsImage: self.image)
-                .resizable()
-                .interpolation(.high)
-                .scaledToFit()
-                .frame(width: self.width, height: self.height)
+            RadialGradient(
+                colors: [
+                    self.accent.opacity(self.isDark ? 0.16 : 0.11),
+                    Color.clear,
+                ],
+                center: .top,
+                startRadius: 4,
+                endRadius: max(self.width, self.height) * 0.85
+            )
+            
+            if self.isCompactAvatar {
+                // Close-up head & bust framing for 26x26 gateway badges and 48x48 list avatars
+                let zoomedWidth = self.width * (self.imageAspectRatio < 0.65 ? 1.48 : 1.32)
+                Image(nsImage: self.image)
+                    .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
+                    .scaledToFill()
+                    .frame(width: zoomedWidth, height: self.height * 1.12, alignment: .top)
+                    .offset(y: -self.height * 0.02)
+            } else if self.imageAspectRatio > 0.92 {
+                // 1:1 square illustrations fit edge-to-edge vertically and center cleanly
+                Image(nsImage: self.image)
+                    .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
+                    .scaledToFill()
+                    .frame(width: self.width, height: self.height, alignment: .center)
+            } else {
+                // 9:16, 2:3 & 3:4 vertical standing portraits fill 100% card width from top headroom down (3/4-to-full body, zero side bars)
+                Image(nsImage: self.image)
+                    .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
+                    .scaledToFill()
+                    .frame(width: self.width, height: self.height, alignment: .top)
+            }
         }
         .frame(width: self.width, height: self.height)
         .clipped()

@@ -687,7 +687,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
                 return item
             }
         
-        if let document = self.fileDocument as? Document {
+        if let document = self.documentViewController?.focusedDocument ?? (self.fileDocument as? Document) {
             self.selectSyntaxPopUpItem(with: document.syntaxName, in: popUpButton)
         }
     }
@@ -698,7 +698,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     /// - Parameters:
     ///   - syntaxName: The name of the syntax to select.
     ///   - popUpButton: The pop-up button to select the item in, or `nil` to use the one in the toolbar.
-    private func selectSyntaxPopUpItem(with syntaxName: String, in popUpButton: NSPopUpButton? = nil) {
+    func selectSyntaxPopUpItem(with syntaxName: String, in popUpButton: NSPopUpButton? = nil) {
         
         guard
             let popUpButton = popUpButton ?? self.syntaxPopUpButton,
@@ -710,17 +710,23 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         // remove deleted items
         menu.items.removeAll { $0.tag == deletedTag }
         
-        // deselect current one
+        // strictly clear every item's checkmark state so single-selection is guaranteed
         popUpButton.selectItem(at: -1)
+        for item in menu.items {
+            item.state = .off
+        }
         
         let index = popUpButton.indexOfItem(withRepresentedObject: syntaxName)
         if index >= 0 {
             popUpButton.selectItem(at: index)
+            menu.item(at: index)?.state = .on
             
         } else {
             // insert item by adding Deleted item section
-            menu.insertItem(.init(title: syntaxName, action: nil, keyEquivalent: ""), at: 1)
-            menu.item(at: 1)?.tag = deletedTag
+            let deletedItem = NSMenuItem(title: syntaxName, action: nil, keyEquivalent: "")
+            deletedItem.tag = deletedTag
+            deletedItem.state = .on
+            menu.insertItem(deletedItem, at: 1)
             popUpButton.selectItem(at: 1)
             
             let title = String(localized: "Toolbar.syntax.menu.deleted.label",
@@ -1044,7 +1050,7 @@ extension DocumentWindowController: NSToolbarDelegate {
                 let item = NSToolbarItem(itemIdentifier: itemIdentifier)
                 item.isBordered = true
                 item.label = "AI"
-                item.toolTip = AppLanguage.text("配置 AI 模型、接口与智能体", en: "Configure AI models & bots")
+                item.toolTip = AppLanguage.text("配置 API 网关与 Bots", en: "Configure API Gateways & Bots")
                 item.image = WorkspaceCenterIcons.aiSettingsIcon()
                 item.target = NSApp.delegate
                 item.action = #selector(AppDelegate.showAIPreferences(_:))
@@ -1555,6 +1561,12 @@ final class SyntaxPopUpButton: NSPopUpButton {
     override func mouseDown(with event: NSEvent) {
         
         guard let menu = self.menu else { return super.mouseDown(with: event) }
+        
+        // Enforce strict single-selection state before presenting the popup menu
+        let activeSelectedItem = self.selectedItem
+        for item in menu.items {
+            item.state = (item === activeSelectedItem) ? .on : .off
+        }
         
         let origin = NSPoint(x: 0, y: self.isFlipped ? self.bounds.maxY + 4 : self.bounds.minY - 4)
         

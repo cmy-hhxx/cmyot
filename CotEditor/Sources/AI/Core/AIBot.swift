@@ -23,27 +23,42 @@ import AppKit
 import Foundation
 import Observation
 
-/// Framing anchor used when displaying an AI Gijinka artwork inside portrait/square/pack cards.
+/// Framing anchor used when displaying a Bot persona artwork inside portrait/square/pack cards.
 nonisolated enum AIGijinkaCropAnchor: String, Sendable, Equatable, Hashable {
     case top
     case center
     case leading
 }
 
-/// One verified illustration belonging to an AI Gijinka character from https://genderswapai.com/zh-CN/ai-gijinka/gallery
+/// One high-resolution single-character portrait bundled in `Assets.xcassets/BotAvatars` (no 3-view sheets).
 nonisolated struct AIGijinkaArtwork: Identifiable, Sendable, Equatable, Hashable {
     
     let id: String
     let title: String
+    let assetName: String
     let urlString: String
     let cropAnchor: AIGijinkaCropAnchor
+    
+    init(
+        id: String,
+        title: String,
+        urlString: String = "",
+        assetName: String? = nil,
+        cropAnchor: AIGijinkaCropAnchor = .top
+    ) {
+        self.id = id
+        self.title = title
+        self.assetName = assetName ?? "BotArt_\(id)"
+        self.urlString = urlString
+        self.cropAnchor = cropAnchor
+    }
     
     var url: URL? {
         URL(string: self.urlString)
     }
 }
 
-/// Verified AI Gijinka (AI 娘化) character metadata sourced from https://genderswapai.com/zh-CN/ai-gijinka/gallery
+/// Model-linked HD visual persona suite resolved strictly from the user's selected API Gateway & Model.
 nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashable {
     
     let id: String
@@ -51,7 +66,10 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
     let brand: String
     let accentHex: String
     let artworks: [AIGijinkaArtwork]
-    let attribution: String
+    
+    var primaryAssetName: String {
+        self.artworks.first?.assetName ?? ""
+    }
     
     var portraitURLString: String {
         self.artworks.first?.urlString ?? ""
@@ -61,11 +79,12 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         self.artworks.first?.url
     }
     
-    /// Picks a deterministic artwork for `botID` so multiple agents sharing the same model display
-    /// varied portraits/wallpapers/costume variants unless the user explicitly selected `variantOverride`.
+    /// Picks a deterministic HD portrait for `botID` so multiple Bots sharing one model
+    /// (for example when using only DeepSeek) automatically display a cohesive, varied suite
+    /// unless the user explicitly selected `variantOverride`.
     func artwork(for botID: AIBotID, variantOverride: Int? = nil) -> AIGijinkaArtwork {
         guard !self.artworks.isEmpty else {
-            return AIGijinkaArtwork(id: self.id, title: "立绘", urlString: "", cropAnchor: .top)
+            return AIGijinkaArtwork(id: self.id, title: "标准立绘", urlString: "", assetName: "", cropAnchor: .top)
         }
         let count = self.artworks.count
         if let variantOverride {
@@ -76,217 +95,230 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         return self.artworks[botIndex % count]
     }
     
-    // MARK: Verified Gallery Roster (https://genderswapai.com/zh-CN/ai-gijinka/gallery)
+    // MARK: Bundled HD Single-Character Portrait Suites (Assets.xcassets/BotAvatars · Zero Turnaround Sheets)
     
     static let deepseek = AIGijinkaCharacter(
         id: "deepseek",
-        name: "DeepSeek 娘",
+        name: "DeepSeek",
         brand: "DeepSeek",
         accentHex: "#3B82F6",
         artworks: [
-            .init(id: "deepseek-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/a7f2339608c7598bfc36/images/thumbnails/fa016e468ce466b5-900.webp", cropAnchor: .top),
-            .init(id: "deepseek-v4f", title: "小肥鱼 V4F", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/2965a0cc3b4dd6563f3d/images/thumbnails/63df98cdf2532a80-893.webp", cropAnchor: .top),
-            .init(id: "deepseek-v4f-vision", title: "V4F 视觉版本", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/dfe0e6427689829ee02c/images/thumbnails/d123ee06600c9b17-893.webp", cropAnchor: .top),
-            .init(id: "deepseek-harness", title: "Harness 定稿", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/f031deb5cbc35a042584/images/thumbnails/126293fa283a366d-900.webp", cropAnchor: .top),
-            .init(id: "deepseek-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/9d732eb193ed564e98e1/images/thumbnails/df5759c12817ef85-1920.webp", cropAnchor: .center),
-            .init(id: "deepseek-maid-1", title: "女仆装三视图（一）", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/110653dc690bf5a2cebb/images/thumbnails/67695e90a9756c70-1920.webp", cropAnchor: .leading),
-            .init(id: "deepseek-court-maid", title: "宫廷侍女装三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/c24c5c0e56e8a3ae3492/images/thumbnails/dfecfe5d50e52d3e-1920.webp", cropAnchor: .leading),
-            .init(id: "deepseek-maid-2", title: "女仆装三视图（二）", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/b40ae1e58ed3f8b021b4/images/thumbnails/f80ad24d8f76ba3c-1920.webp", cropAnchor: .leading),
-        ],
-        attribution: "上善无形 原角色 · ZipZipPipe 二创"
-    )
-    static let qwen = AIGijinkaCharacter(
-        id: "qwen",
-        name: "Qwen 娘",
-        brand: "Qwen",
-        accentHex: "#7C5CFC",
-        artworks: [
-            .init(id: "qwen-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/f8c3c51016dedaab132c/images/thumbnails/a0b12bd5c8ba80f6-893.webp", cropAnchor: .top),
-            .init(id: "qwen-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/4f9e498f0d693239db03/images/thumbnails/05e731a917802e65-1920.webp", cropAnchor: .center),
-            .init(id: "qwen-3view", title: "新版配色三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/74a4c908c0db3e5e4bf8/images/thumbnails/1adb45eb369f2713-1920.webp", cropAnchor: .leading),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "deepseek-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/deepseek.webp?v=20261114"),
+            .init(id: "deepseek-v4f", title: "速记形态", urlString: "https://img.aigengtu.com/refs/gj-deepseek-v4flash.webp"),
+            .init(id: "deepseek-v4f-vision", title: "视觉巡检", urlString: "https://img.aigengtu.com/refs/gj-deepseek-v4flash-vision.webp"),
+            .init(id: "deepseek-harness", title: "Harness 定稿", urlString: "https://img.aigengtu.com/refs/gj-deepseek-harness.webp"),
+            .init(id: "deepseek-apron", title: "盛装礼裙", urlString: "https://img.aigengtu.com/meme/1964.png"),
+            .init(id: "deepseek-greet", title: "挥手致意", urlString: "https://img.aigengtu.com/meme/2713.webp"),
+            .init(id: "deepseek-reach", title: "Q版搭档", urlString: "https://img.aigengtu.com/meme/1443.jpg"),
+            .init(id: "deepseek-maid", title: "执勤侧影", urlString: "https://img.aigengtu.com/meme/057.webp"),
+        ]
     )
     static let claude = AIGijinkaCharacter(
         id: "claude",
-        name: "Claude 娘",
+        name: "Claude",
         brand: "Claude",
         accentHex: "#D97757",
         artworks: [
-            .init(id: "claude-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/2ba8b6f44f542e2a7247/images/thumbnails/55c9212015554e52-893.webp", cropAnchor: .top),
-            .init(id: "claude-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/f9ea638805f3d5811040/images/thumbnails/fd3fd6e827db2d34-1920.webp", cropAnchor: .center),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "claude-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/claude.webp?v=20261114"),
+            .init(id: "claude-tome", title: "黑金典籍", urlString: "https://img.aigengtu.com/meme/3050.png"),
+            .init(id: "claude-dress", title: "暖黄洋装", urlString: "https://img.aigengtu.com/meme/1757.png"),
+        ]
     )
     static let gpt = AIGijinkaCharacter(
         id: "gpt",
-        name: "GPT 娘",
+        name: "GPT",
         brand: "OpenAI GPT",
         accentHex: "#10A37F",
         artworks: [
-            .init(id: "gpt-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/de058742c92d4755bf95/images/thumbnails/b3603b73a0ff93c4-893.webp", cropAnchor: .top),
-            .init(id: "gpt-astra", title: "GPT-6 Astra 服装差分", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/bb995e89d7f1a8b4a7b9/images/thumbnails/2ef822f23878e6d0-900.webp", cropAnchor: .top),
-            .init(id: "gpt-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/cf615e75f10015312a2d/images/thumbnails/d10685767b9f3454-1920.webp", cropAnchor: .center),
-            .init(id: "gpt-dragon-3view", title: "龙娘三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/d782985b4f94ad1c2791/images/thumbnails/8808efdef41aa7dc-1920.webp", cropAnchor: .leading),
-            .init(id: "gpt-codex-3view", title: "Codex 龙娘三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/5890f06e744918123d9f/images/thumbnails/3fe9e1e94207e56d-1920.webp", cropAnchor: .leading),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "gpt-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/gpt.webp?v=20261114"),
+            .init(id: "gpt-astra", title: "GPT-6 Astra", urlString: "https://img.aigengtu.com/refs/gj-gpt-astra.webp"),
+            .init(id: "gpt-mint", title: "青翠制服", urlString: "https://img.aigengtu.com/meme/2180.png"),
+            .init(id: "gpt-jade", title: "薄荷长裙", urlString: "https://img.aigengtu.com/meme/2194.png"),
+            .init(id: "gpt-emerald", title: "翡翠礼装", urlString: "https://img.aigengtu.com/meme/2198.png"),
+        ]
     )
     static let gemini = AIGijinkaCharacter(
         id: "gemini",
-        name: "Gemini 娘",
+        name: "Gemini",
         brand: "Gemini",
         accentHex: "#6366F1",
         artworks: [
-            .init(id: "gemini-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/aaac639ab8832f4101cc/images/thumbnails/f2cd51da09151c5e-893.webp", cropAnchor: .top),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "gemini-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/gemini.webp?v=20261114"),
+            .init(id: "gemini-crown", title: "星冠礼装", urlString: "https://img.aigengtu.com/meme/3040.png"),
+            .init(id: "gemini-prism", title: "双子虹彩", urlString: "https://img.aigengtu.com/meme/2175.png"),
+        ]
+    )
+    static let qwen = AIGijinkaCharacter(
+        id: "qwen",
+        name: "Qwen",
+        brand: "Qwen",
+        accentHex: "#7C5CFC",
+        artworks: [
+            .init(id: "qwen-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/qwen.webp?v=20261114"),
+            .init(id: "qwen-headset", title: "轻装耳机版", urlString: "https://img.aigengtu.com/meme/2222.png"),
+        ]
     )
     static let kimi = AIGijinkaCharacter(
         id: "kimi",
-        name: "Kimi 娘",
+        name: "Kimi",
         brand: "Kimi",
         accentHex: "#2563EB",
         artworks: [
-            .init(id: "kimi-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/8c11c4f574f587de685f/images/thumbnails/c484cd8df7ca4503-900.webp", cropAnchor: .top),
-            .init(id: "kimi-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/e4aca75ac3347fc882cd/images/thumbnails/dc05b35f5abba1fc-1920.webp", cropAnchor: .center),
-            .init(id: "kimi-3view", title: "非对称服装三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/fe1ac7ee1d45c95cefbc/images/thumbnails/8d137caf33126478-1920.webp", cropAnchor: .leading),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "kimi-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/kimi.webp?v=20261114"),
+            .init(id: "kimi-lolita", title: "深蓝星夜", urlString: "https://img.aigengtu.com/meme/2933.png"),
+            .init(id: "kimi-flute", title: "月下长笛", urlString: "https://img.aigengtu.com/meme/3054.png"),
+        ]
     )
     static let glm = AIGijinkaCharacter(
         id: "glm",
-        name: "GLM 娘",
+        name: "GLM",
         brand: "GLM",
         accentHex: "#4F46E5",
         artworks: [
-            .init(id: "glm-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/ba11aade767c0931712d/images/thumbnails/519b4801c990b582-900.webp", cropAnchor: .top),
-            .init(id: "glm-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/77e8ee8d6d1e80ddf27f/images/thumbnails/a4a483e6f57a3930-1920.webp", cropAnchor: .center),
-            .init(id: "glm-3view", title: "三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/9bae5826e94e4b9a1358/images/thumbnails/fc3c855fb7bf947c-1920.webp", cropAnchor: .leading),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "glm-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/glm.webp?v=20261114"),
+            .init(id: "glm-mono", title: "黑白构成", urlString: "https://img.aigengtu.com/meme/3046.png", cropAnchor: .center),
+        ]
     )
     static let minimax = AIGijinkaCharacter(
         id: "minimax",
-        name: "MiniMax 娘",
+        name: "MiniMax",
         brand: "MiniMax",
         accentHex: "#F97316",
         artworks: [
-            .init(id: "minimax-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/dee336736d63d24b1fe9/images/thumbnails/2bfd13f9dce1375a-893.webp", cropAnchor: .top),
-            .init(id: "group-small-models", title: "小模型合照", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/caede817bc7cb3a688cf/images/thumbnails/b032141e70a44c11-1254.webp", cropAnchor: .center),
-            .init(id: "group-generative-models", title: "生成式模型合照", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/08e4404c2a3d0ad9eb72/images/thumbnails/61572a8995cccf0b-1254.webp", cropAnchor: .center),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "minimax-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/minimax.webp?v=20261114"),
+            .init(id: "minimax-conch", title: "海螺领航", urlString: "https://img.aigengtu.com/meme/1394.jpeg"),
+        ]
     )
     static let grok = AIGijinkaCharacter(
         id: "grok",
-        name: "Grok 娘",
+        name: "Grok",
         brand: "Grok",
         accentHex: "#E11D48",
         artworks: [
-            .init(id: "grok-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/84f22675b1de27a301bb/images/thumbnails/2d67a5b5e9333d2a-893.webp", cropAnchor: .top),
-            .init(id: "grok-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/088377c049f99b6efc40/images/thumbnails/bbae62006856c6d7-1920.webp", cropAnchor: .center),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "grok-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/grok.webp?v=20261114"),
+            .init(id: "grok-gothic", title: "暗夜礼装", urlString: "https://img.aigengtu.com/meme/2204.png"),
+        ]
     )
     static let seed = AIGijinkaCharacter(
         id: "seed",
-        name: "Seed 娘",
+        name: "Seed",
         brand: "Seed",
         accentHex: "#14B8A6",
         artworks: [
-            .init(id: "seed-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/4f19bfa2b672e4f0be5f/images/thumbnails/a057509e1c7a1c7b-893.webp", cropAnchor: .top),
-            .init(id: "seed-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/b0898ac625edcdc6c8a3/images/thumbnails/624aee2a317470bf-1920.webp", cropAnchor: .center),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "seed-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/doubao.webp?v=20261114"),
+        ]
+    )
+    static let stepfun = AIGijinkaCharacter(
+        id: "stepfun",
+        name: "StepFun",
+        brand: "StepFun",
+        accentHex: "#6366F1",
+        artworks: [
+            .init(id: "stepfun-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/stepfun.webp?v=20261114"),
+            .init(id: "stepfun-lantern", title: "提灯披风", urlString: "https://img.aigengtu.com/meme/2228.png"),
+        ]
+    )
+    static let mimo = AIGijinkaCharacter(
+        id: "mimo",
+        name: "MiMo",
+        brand: "Xiaomi MiMo",
+        accentHex: "#FF6900",
+        artworks: [
+            .init(id: "mimo-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/mimo.webp?v=20261114"),
+            .init(id: "mimo-bunny", title: "活力立绘", urlString: "https://img.aigengtu.com/meme/2210.png"),
+        ]
     )
     static let llama = AIGijinkaCharacter(
         id: "llama",
-        name: "Llama 娘",
+        name: "Llama",
         brand: "Llama",
         accentHex: "#0284C7",
         artworks: [
-            .init(id: "llama-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/34dfab0eb53f03784a56/images/thumbnails/b7b2b1eb2944b447-893.webp", cropAnchor: .top),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "llama-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/llama.webp?v=20261114"),
+        ]
     )
     static let mistral = AIGijinkaCharacter(
         id: "mistral",
-        name: "Mistral 娘",
+        name: "Mistral",
         brand: "Mistral",
         accentHex: "#EA580C",
         artworks: [
-            .init(id: "mistral-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/24db1a2988c079602bcd/images/thumbnails/6a3f749264072f9b-893.webp", cropAnchor: .top),
-            .init(id: "group-small-models", title: "小模型合照", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/caede817bc7cb3a688cf/images/thumbnails/b032141e70a44c11-1254.webp", cropAnchor: .center),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "mistral-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/mistral.webp?v=20261114"),
+        ]
     )
     static let perplexity = AIGijinkaCharacter(
         id: "perplexity",
-        name: "Perplexity 娘",
+        name: "Perplexity",
         brand: "Perplexity",
         accentHex: "#0EA5E9",
         artworks: [
-            .init(id: "perplexity-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/aea80738da0125d51607/images/thumbnails/2c2ec51fb37bb22c-893.webp", cropAnchor: .top),
-            .init(id: "group-small-models", title: "小模型合照", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/caede817bc7cb3a688cf/images/thumbnails/b032141e70a44c11-1254.webp", cropAnchor: .center),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "perplexity-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/perplexity.webp?v=20261114"),
+        ]
     )
     static let rwkv = AIGijinkaCharacter(
         id: "rwkv",
-        name: "RWKV 娘",
+        name: "RWKV",
         brand: "RWKV",
         accentHex: "#6D28D9",
         artworks: [
-            .init(id: "rwkv-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/cfcff0d3cde5c4467279/images/thumbnails/f26d7e21b758b0d2-900.webp", cropAnchor: .top),
-            .init(id: "rwkv-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/d1a295323a150fcbc081/images/thumbnails/848488e6d6fad5c3-1920.webp", cropAnchor: .center),
-            .init(id: "group-small-models", title: "小模型合照", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/caede817bc7cb3a688cf/images/thumbnails/b032141e70a44c11-1254.webp", cropAnchor: .center),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "rwkv-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/rwkv.webp?v=20261114"),
+        ]
     )
     static let wenxin = AIGijinkaCharacter(
         id: "wenxin",
-        name: "文心娘",
+        name: "ERNIE",
         brand: "ERNIE",
         accentHex: "#2563EB",
         artworks: [
-            .init(id: "wenxin-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/ec9ed6cc38fcc4cad67f/images/thumbnails/f2b1946a48f9eb39-893.webp", cropAnchor: .top),
-            .init(id: "wenxin-wallpaper", title: "角色壁纸", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/91929bd34e2410447367/images/thumbnails/32531736a52bbba5-1920.webp", cropAnchor: .center),
-            .init(id: "wenxin-group", title: "文心一言与 Fable 5 合照", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/9e1a7091e12c1b50e0a4/images/thumbnails/2ad096e882c4f641-1254.webp", cropAnchor: .center),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "wenxin-portrait", title: "标准立绘", urlString: "https://img.aigengtu.com/refs/gj-wenxin.webp"),
+        ]
     )
     static let hunyuan = AIGijinkaCharacter(
         id: "hunyuan",
-        name: "混元娘",
+        name: "Hunyuan",
         brand: "Hunyuan",
         accentHex: "#0EA5E9",
         artworks: [
-            .init(id: "hunyuan-portrait", title: "角色立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/cb1e522a2574e1f756d0/images/thumbnails/ecbd2e85491bb864-900.webp", cropAnchor: .top),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "hunyuan-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/hunyuan.webp?v=20261114"),
+        ]
     )
     static let image2 = AIGijinkaCharacter(
         id: "image2",
-        name: "Image 2 黑龙娘",
+        name: "Image 2",
         brand: "Image 2",
         accentHex: "#334155",
         artworks: [
-            .init(id: "image2-portrait", title: "黑龙娘立绘", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/0dec595b48b2416aabb4/images/thumbnails/6693e2746ed4eafc-893.webp", cropAnchor: .top),
-            .init(id: "image2-3view", title: "黑龙娘三视图", urlString: "https://377r5r4oygyjmbto.public.blob.vercel-storage.com/public-media/v1/f6e87f9a16662344f088/images/thumbnails/70bde0e5e5d91f48-1920.webp", cropAnchor: .leading),
-        ],
-        attribution: "ZipZipPipe"
+            .init(id: "image2-portrait", title: "标准立绘", urlString: "https://img.aigengtu.com/refs/gj-gpt-image2.webp"),
+        ]
+    )
+    static let opencode = AIGijinkaCharacter(
+        id: "opencode",
+        name: "OpenCode",
+        brand: "OpenCode",
+        accentHex: "#475569",
+        artworks: [
+            .init(id: "opencode-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/opencode.webp?v=20261114"),
+        ]
+    )
+    static let huggingface = AIGijinkaCharacter(
+        id: "huggingface",
+        name: "Hugging Face",
+        brand: "Hugging Face",
+        accentHex: "#F59E0B",
+        artworks: [
+            .init(id: "huggingface-portrait", title: "标准立绘", urlString: "https://aigengtu.com/public/assets/characters/huggingface.webp?v=20261114"),
+        ]
     )
     
     static let allCharacters: [AIGijinkaCharacter] = [
         .deepseek, .qwen, .claude, .gpt, .gemini, .kimi, .glm, .minimax,
-        .grok, .seed, .llama, .mistral, .perplexity, .rwkv, .wenxin, .hunyuan, .image2,
+        .grok, .seed, .stepfun, .mimo, .llama, .mistral, .perplexity,
+        .rwkv, .wenxin, .hunyuan, .image2, .opencode, .huggingface,
     ]
     
     
-    /// Resolves the AI Gijinka character strictly from the user-selected model ID first,
-    /// falling back to the endpoint display name / base URL only when the model ID itself is generic.
-    /// Returns `nil` when no model is selected or the model family does not match any gallery character.
+    /// Resolves the Bot visual suite strictly from the user-selected model ID first,
+    /// falling back to the gateway display name / base URL only when the model ID itself is generic.
     static func resolve(
         modelName: String?,
         endpointName: String? = nil,
@@ -321,6 +353,8 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         if lower.contains("minimax") || lower.contains("abab") || lower.contains("hailuo") { return .minimax }
         if lower.contains("grok") || lower.contains("api.x.ai") || lower.contains("xai/") { return .grok }
         if lower.contains("seed") || lower.contains("doubao") || lower.contains("豆包") || lower.contains("volces") || lower.contains("bytedance") { return .seed }
+        if lower.contains("stepfun") || lower.contains("step-") || lower.contains("阶跃") { return .stepfun }
+        if lower.contains("mimo") || lower.contains("xiaomi") || lower.contains("小米") { return .mimo }
         if lower.contains("llama") || lower.contains("meta-llama") { return .llama }
         if lower.contains("mistral") || lower.contains("mixtral") || lower.contains("codestral") || lower.contains("pixtral") { return .mistral }
         if lower.contains("perplexity") || lower.contains("sonar") { return .perplexity }
@@ -333,13 +367,15 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
         {
             return .gpt
         }
+        if lower.contains("opencode") { return .opencode }
+        if lower.contains("huggingface") || lower.contains("hf.co") { return .huggingface }
         return nil
     }
 }
 
 
-/// Lightweight async image loader with memory + disk cache (`Caches/CotEditor/AIGijinka`)
-/// keyed by `AIGijinkaCharacter.id` so shared model portraits download only once.
+/// Artwork loader resolving bundled HD static `Assets.xcassets/BotAvatars` resources first,
+/// with automatic local cache & URL fallback if ever needed.
 @MainActor @Observable
 final class AIGijinkaImageLoader {
     
@@ -354,7 +390,7 @@ final class AIGijinkaImageLoader {
             ?? URL(filePath: NSTemporaryDirectory(), directoryHint: .isDirectory)
         self.cacheDirectory = caches
             .appending(path: "CotEditor", directoryHint: .isDirectory)
-            .appending(path: "AIGijinka", directoryHint: .isDirectory)
+            .appending(path: "BotAvatars", directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: self.cacheDirectory, withIntermediateDirectories: true)
     }
     
@@ -363,6 +399,13 @@ final class AIGijinkaImageLoader {
         let key = artwork.id
         if let cached = self.images[key] {
             return cached
+        }
+        if !artwork.assetName.isEmpty,
+           let bundled = NSImage(named: NSImage.Name(artwork.assetName))
+               ?? Bundle(for: AIGijinkaImageLoader.self).image(forResource: NSImage.Name(artwork.assetName))
+        {
+            self.images[key] = bundled
+            return bundled
         }
         let diskURL = self.cacheDirectory.appending(path: "\(key).webp")
         if let diskImage = NSImage(contentsOf: diskURL) {
@@ -426,7 +469,7 @@ final class AIGijinkaImageLoader {
 }
 
 
-/// GrokBot-inspired specialized AI bot identity representing a distinct editor capability.
+/// Specialized Bot identity managed by the `Pi` kernel, representing a distinct editor capability.
 nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable {
     
     case ghost
@@ -474,6 +517,18 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
     }
     
     
+    var defaultPiToolProfile: PiBotToolProfile {
+        switch self {
+            case .ghost, .translate, .summarize, .explain, .weeklyReportItem, .persona:
+                .pureChat
+            case .weeklyReport, .interactiveChart, .ocrPolish:
+                .workspaceRead
+            case .organizeAndMerge:
+                .autonomousAgent
+        }
+    }
+    
+    
     var handle: String {
         
         switch self {
@@ -512,7 +567,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
         
         switch self {
             case .ghost: "光标后静默预测半句，按 Tab 一次落笔"
-            case .translate: "中英地道德互译，保留代码与格式骨架"
+            case .translate: "中英地道互译，保留代码与格式骨架"
             case .summarize: "剥离铺垫，提炼高信噪比纯文本要点"
             case .explain: "去掉黑话与术语堆砌，几句话讲清重点"
             case .weeklyReport: "聚合片段并参考历史文风，直接说人话"
@@ -572,13 +627,13 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
         
         switch self {
             case .ghost: "今天把设置界面重写了一遍，接下来"
-            case .translate: "The local SQLite migration now preserves all API endpoints, keys, and user avatars."
+            case .translate: "The local SQLite migration now preserves all API gateways, keys, and user avatars."
             case .summarize: "本周重构了设置窗口为侧边栏模式，补全了本地数据库迁移时对 API Key 和头像的备份，同时修复了 Vim Visual 模式下 j/k 移动留下的 1px 残影问题。"
             case .explain: "通过对 CAShapeLayer 显式绑定 shadowPath 并对 Selection 变动范围做上下 6pt 像素对齐重绘，消除亚像素残影。"
             case .weeklyReport: "1. 修复了分屏放大下的快捷键冲突\n2. 完成了个人数据看板重构\n3. 优化了本地词库续写"
             case .weeklyReportItem: "给个人设置加了 ASCII 通行证和 5 套主题配色，支持导出 PNG"
             case .interactiveChart: "周一: 1800字, 周二: 2400字, 周三: 3100字, 周四: 1500字, 周五: 2700字"
-            case .ocrPolish: "CotEditor 7.O  设 置 -> AI 助 手\n端 点 : deepseek-chat  延 迟 210 ms"
+            case .ocrPolish: "CotEditor 7.O  设 置 -> Bots\n网 关 : deepseek-chat  延 迟 210 ms"
             case .organizeAndMerge: "草稿1：周末去买咖啡豆；草稿2：下周先把设置页精简和数据库迁移写完，再测试单副本构建。"
             case .persona: "常在深夜写技术总结，喜欢用直白短句和分点，写完代码必先测试再 commit 推送。"
         }
@@ -604,8 +659,8 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
 }
 
 
-/// Per-bot persisted configuration (enabled toggle, dedicated endpoint & model override,
-/// tone/persona, temperature, and optional gallery artwork variant index).
+/// Per-bot persisted configuration (enabled toggle, dedicated gateway & model override,
+/// tone/persona, temperature, artwork variant index, and `Pi` tool profile).
 nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     
     var isEnabled: Bool = true
@@ -614,6 +669,7 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     var customPersona: String = ""
     var temperature: Double? = nil
     var artworkVariantIndex: Int? = nil
+    var toolProfile: PiBotToolProfile? = nil
     
     
     init(
@@ -622,7 +678,8 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         modelOverride: String = "",
         customPersona: String = "",
         temperature: Double? = nil,
-        artworkVariantIndex: Int? = nil
+        artworkVariantIndex: Int? = nil,
+        toolProfile: PiBotToolProfile? = nil
     ) {
         self.isEnabled = isEnabled
         self.endpointID = endpointID
@@ -630,11 +687,17 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         self.customPersona = customPersona
         self.temperature = temperature
         self.artworkVariantIndex = artworkVariantIndex
+        self.toolProfile = toolProfile
+    }
+    
+    
+    func effectiveToolProfile(for botID: AIBotID) -> PiBotToolProfile {
+        self.toolProfile ?? botID.defaultPiToolProfile
     }
     
     
     enum CodingKeys: String, CodingKey {
-        case isEnabled, endpointID, modelOverride, customPersona, temperature, artworkVariantIndex
+        case isEnabled, endpointID, modelOverride, customPersona, temperature, artworkVariantIndex, toolProfile
     }
     
     
@@ -646,11 +709,12 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         self.customPersona = try container.decodeIfPresent(String.self, forKey: .customPersona) ?? ""
         self.temperature = try container.decodeIfPresent(Double.self, forKey: .temperature)
         self.artworkVariantIndex = try container.decodeIfPresent(Int.self, forKey: .artworkVariantIndex)
+        self.toolProfile = try container.decodeIfPresent(PiBotToolProfile.self, forKey: .toolProfile)
     }
 }
 
 
-/// Manages per-bot settings, prompts, and model routing backed by `CotLocalDatabase`.
+/// Manages per-bot settings, prompts, model routing, and `PiKernelManager` synchronization backed by `CotLocalDatabase`.
 @MainActor @Observable final class AIBotStore {
     
     static let shared = AIBotStore()
@@ -741,6 +805,10 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         {
             self.database.set(json, forKey: CotLocalDatabase.ConfigKey.aiBotsConfigJSON)
         }
+        
+        if self.database === CotLocalDatabase.shared {
+            _ = try? PiKernelManager.shared.syncWorkspace()
+        }
     }
     
     
@@ -763,6 +831,9 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         } else {
             self.database.set(prompt, forKey: "ai.bot.\(botID.rawValue).prompt")
         }
+        if self.database === CotLocalDatabase.shared {
+            _ = try? PiKernelManager.shared.syncWorkspace()
+        }
     }
     
     
@@ -773,7 +844,24 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     }
     
     
-    /// Resolves the effective `AIConfiguration` for a bot, honoring any per-bot endpoint selection,
+    /// Resolves the target `AIEndpointProfile` for `botID`, falling back to the active gateway.
+    func resolvedEndpointProfile(
+        for botID: AIBotID,
+        endpoints: [AIEndpointProfile]? = nil
+    ) -> AIEndpointProfile? {
+        let profiles = endpoints ?? AIEndpointStore.profiles
+        let botConfig = self.config(for: botID)
+        if let targetID = botConfig.endpointID,
+           let matched = profiles.first(where: { $0.id == targetID })
+        {
+            return matched
+        }
+        let activeID = AIEndpointStore.activeID ?? profiles.first?.id
+        return profiles.first(where: { $0.id == activeID }) ?? profiles.first
+    }
+    
+    
+    /// Resolves the effective `AIConfiguration` for a bot, honoring any per-bot gateway selection,
     /// model override, and temperature.
     func resolvedConfiguration(
         for botID: AIBotID,

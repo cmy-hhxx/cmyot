@@ -705,6 +705,23 @@ final class ContentViewController: NSSplitViewController {
     }
     
     
+    /// Opens the built-in terminal panel if needed, focuses it, and dispatches `command` into the shell.
+    func launchCommandInTerminal(_ command: String) {
+        
+        let wasHidden = !self.isTerminalVisible
+        if wasHidden {
+            self.showTerminal()
+        }
+        let delay: TimeInterval = wasHidden ? 0.35 : 0.05
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.view.window?.makeKeyAndOrderFront(nil)
+            self.terminalViewController?.focus()
+            self.terminalViewController?.sendCommand(command)
+        }
+    }
+    
+    
     /// Removes the terminal panel and terminates its shell.
     func hideTerminal() {
         

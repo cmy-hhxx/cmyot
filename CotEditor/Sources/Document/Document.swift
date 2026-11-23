@@ -1423,11 +1423,10 @@ extension NSAttributedString.Key {
             return
         }
         
-        SyntaxManager.shared.noteRecentSetting(name: name)
-        
-        // update
+        // update syntaxName before noting recent setting so observers read the new syntax immediately
         self.syntaxController.update(syntax: syntax, name: name)
         self.syntaxName = name
+        SyntaxManager.shared.noteRecentSetting(name: name)
         self.synchronizeFileType(documentName: documentName)
         
         self.invalidateMode()

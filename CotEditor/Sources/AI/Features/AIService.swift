@@ -23,6 +23,7 @@
 //  limitations under the License.
 //
 
+import AppKit
 import Foundation
 import Observation
 
@@ -86,7 +87,7 @@ import Observation
         guard botConfig.isEnabled else {
             throw AIError.http(
                 status: 403,
-                message: "\(botID.displayName)（\(botID.handle)）已在设置中停用，请在「设置 → AI 助手」重新开启。"
+                message: "\(botID.displayName)（\(botID.handle)）已在设置中停用，请在「设置 → Bots」重新开启。"
             )
         }
         
@@ -128,14 +129,19 @@ import Observation
             effectiveContext = contextBlocks.joined(separator: "\n\n")
         }
         
+        let userPrompt = action.prompt(for: text, context: effectiveContext)
         let messages: [AIMessage] = [
             .system(fullSystemPrompt),
-            .user(action.prompt(for: text, context: effectiveContext), images: images),
+            .user(userPrompt, images: images),
         ]
         
         let resolvedConfig = botStore.resolvedConfiguration(for: botID)
-        let rawResult = try await self.send(
-            messages,
+        let rawResult = try await self.executeBot(
+            botID,
+            systemPrompt: fullSystemPrompt,
+            userPrompt: userPrompt,
+            messages: messages,
+            hasImages: !images.isEmpty,
             configuration: resolvedConfig,
             analyticsFeature: action.analyticsKey,
             onPartial: onPartial
@@ -152,7 +158,7 @@ import Observation
     }
     
     
-    /// Runs an inline GrokBot-style test turn for any bot using its current persona, prompt, and model override.
+    /// Runs an inline test turn for any bot using its current persona, prompt, and model override via `PiKernelManager` (with direct HTTP fallback).
     func testBot(_ botID: AIBotID, sampleInput: String) async throws -> String {
         
         let trimmedInput = sampleInput.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -172,10 +178,81 @@ import Observation
         let fullSystem = persona.isEmpty ? stagePrompt : "\(persona)\n\n\(stagePrompt)"
         let resolvedConfig = botStore.resolvedConfiguration(for: botID)
         
-        return try await self.send(
-            [.system(fullSystem), .user(effectiveInput)],
+        return try await self.executeBot(
+            botID,
+            systemPrompt: fullSystem,
+            userPrompt: effectiveInput,
+            messages: [.system(fullSystem), .user(effectiveInput)],
+            hasImages: false,
             configuration: resolvedConfig,
-            analyticsFeature: botID.analyticsFeatureKey
+            analyticsFeature: botID.analyticsFeatureKey,
+            onPartial: nil
+        )
+    }
+    
+    
+    /// Routes a Bot request through `PiKernelManager` when enabled and ready, falling back cleanly to `AIClient` direct HTTP.
+    private func executeBot(
+        _ botID: AIBotID,
+        systemPrompt: String,
+        userPrompt: String,
+        messages: [AIMessage],
+        hasImages: Bool,
+        configuration: AIConfiguration,
+        analyticsFeature: String,
+        onPartial: (@MainActor @Sendable (String) -> Void)?
+    ) async throws -> String {
+        
+        guard configuration.isUsable else { throw AIError.notConfigured }
+        
+        let piKernel = PiKernelManager.shared
+        if piKernel.shouldRouteThroughKernel(for: botID, hasImages: hasImages),
+           let endpointProfile = AIBotStore.shared.resolvedEndpointProfile(for: botID)
+        {
+            self.isRunning = true
+            let clock = ContinuousClock()
+            let start = clock.now
+            let workingDir = (NSDocumentController.shared.currentDocument as? NSDocument)?
+                .fileURL?
+                .deletingLastPathComponent()
+            do {
+                let output = try await piKernel.runBot(
+                    botID,
+                    systemPrompt: systemPrompt,
+                    userPrompt: userPrompt,
+                    endpointProfile: endpointProfile,
+                    configuration: configuration,
+                    workingDirectory: workingDir,
+                    onPartial: onPartial
+                )
+                self.isRunning = false
+                let elapsed = start.duration(to: clock.now)
+                let latencyMs = max(1, Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))
+                let effective = configuration.wireConfiguration
+                AnalyticsManager.shared.recordAIUsage(
+                    feature: analyticsFeature,
+                    model: effective.model,
+                    provider: "Pi · \(effective.endpoint.label)",
+                    inputTokens: AINextTokenPredictor.estimateTokens(in: systemPrompt + "\n" + userPrompt),
+                    outputTokens: AINextTokenPredictor.estimateTokens(in: output),
+                    latencyMs: latencyMs,
+                    success: true
+                )
+                return output
+            } catch {
+                self.isRunning = false
+                if error is CancellationError {
+                    throw error
+                }
+                // Fall back to direct wire client if Pi CLI fails locally
+            }
+        }
+        
+        return try await self.send(
+            messages,
+            configuration: configuration,
+            analyticsFeature: analyticsFeature,
+            onPartial: onPartial
         )
     }
     

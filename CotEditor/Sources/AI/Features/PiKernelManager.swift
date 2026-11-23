@@ -1,0 +1,722 @@
+//
+//  PiKernelManager.swift
+//
+//  CotEditor
+//  https://coteditor.com
+//
+//  ---------------------------------------------------------------------------
+//
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
+//
+//  https://www.apache.org/licenses/LICENSE-2.0
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+//
+
+import AppKit
+import Foundation
+import Observation
+
+/// Capability tier governing which `pi` kernel tools a Bot may invoke when working.
+nonisolated enum PiBotToolProfile: String, CaseIterable, Codable, Identifiable, Sendable {
+    
+    /// Pure fast LLM generation via `pi` (`--no-tools`) for low-latency text transforms.
+    case pureChat
+    
+    /// Read-only workspace inspection (`read,grep,find,ls`) for analysis and reporting agents.
+    case workspaceRead
+    
+    /// Full autonomous agent (`read,bash,edit,write,grep,find,ls`) capable of acting on files and shell tasks.
+    case autonomousAgent
+    
+    var id: String { self.rawValue }
+    
+    var label: String {
+        switch self {
+            case .pureChat: AppLanguage.text("纯对话执行", en: "Fast Chat")
+            case .workspaceRead: AppLanguage.text("只读检索 Agent", en: "Workspace Reader")
+            case .autonomousAgent: AppLanguage.text("全功能干活 Agent", en: "Autonomous Agent")
+        }
+    }
+    
+    var shortBadge: String {
+        switch self {
+            case .pureChat: "Chat"
+            case .workspaceRead: "Read"
+            case .autonomousAgent: "Agent"
+        }
+    }
+    
+    var symbolName: String {
+        switch self {
+            case .pureChat: "bolt.fill"
+            case .workspaceRead: "doc.text.magnifyingglass"
+            case .autonomousAgent: "hammer.fill"
+        }
+    }
+    
+    var cliArguments: [String] {
+        switch self {
+            case .pureChat:
+                ["--no-tools"]
+            case .workspaceRead:
+                ["--tools", "read,grep,find,ls"]
+            case .autonomousAgent:
+                ["--tools", "read,bash,edit,write,grep,find,ls"]
+        }
+    }
+}
+
+
+/// Summary returned after synchronizing API gateways and Bots into the managed `PiKernel` workspace.
+nonisolated struct PiWorkspaceSyncSummary: Sendable, Equatable {
+    
+    let agentDirectory: URL
+    let providerCount: Int
+    let modelCount: Int
+    let botCount: Int
+}
+
+
+/// Manages the embedded `pi` (`pi-coding-agent`) kernel workspace, gateway `models.json` synthesis,
+/// per-bot agent manifests/sessions, headless JSONL streaming runs, and interactive TUI agent launches.
+@MainActor @Observable
+final class PiKernelManager {
+    
+    static let shared = PiKernelManager()
+    
+    static let kernelEnabledConfigKey = "ai.pi.kernelEnabled"
+    static let customBinaryConfigKey = "ai.pi.binaryPath"
+    
+    private(set) var piBinaryPath: String?
+    private(set) var piVersion: String?
+    private(set) var activeBotRuns: Set<AIBotID> = []
+    private(set) var lastSyncedAt: Date?
+    private(set) var syncedProviderCount: Int = 0
+    private(set) var syncedBotCount: Int = 0
+    
+    let agentDirectoryURL: URL
+    private let database: CotLocalDatabase
+    
+    var isAvailable: Bool {
+        guard let path = self.piBinaryPath else { return false }
+        return FileManager.default.isExecutableFile(atPath: path)
+    }
+    
+    var isKernelEnabled: Bool {
+        get {
+            self.database.bool(forKey: Self.kernelEnabledConfigKey, default: true)
+        }
+        set {
+            self.database.set(newValue, forKey: Self.kernelEnabledConfigKey)
+        }
+    }
+    
+    var statusSummary: String {
+        if let version = self.piVersion, self.isAvailable {
+            return self.isKernelEnabled
+                ? AppLanguage.text("Pi 内核已就绪 · v\(version)", en: "Pi Kernel Ready · v\(version)")
+                : AppLanguage.text("Pi 内核已暂停 (直连模式) · v\(version)", en: "Pi Paused · v\(version)")
+        }
+        if self.isAvailable {
+            return self.isKernelEnabled
+                ? AppLanguage.text("Pi 内核已连接", en: "Pi Kernel Connected")
+                : AppLanguage.text("Pi 内核已暂停", en: "Pi Kernel Paused")
+        }
+        return AppLanguage.text("未检测到 pi CLI · 自动回退直连网关", en: "pi CLI Not Found · Direct HTTP Fallback")
+    }
+    
+    
+    init(customAgentDirectoryURL: URL? = nil, database: CotLocalDatabase = .shared) {
+        self.database = database
+        if let customAgentDirectoryURL {
+            self.agentDirectoryURL = customAgentDirectoryURL
+        } else {
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? URL(filePath: NSTemporaryDirectory(), directoryHint: .isDirectory)
+            self.agentDirectoryURL = appSupport
+                .appending(path: "Cot", directoryHint: .isDirectory)
+                .appending(path: "PiKernel", directoryHint: .isDirectory)
+        }
+        
+        self.piBinaryPath = Self.discoverPiBinary(customOverride: database.string(forKey: Self.customBinaryConfigKey))
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            Task { @MainActor [weak self] in
+                await self?.refreshEnvironment()
+            }
+        }
+    }
+    
+    
+    // MARK: Binary Discovery
+    
+    nonisolated static func discoverPiBinary(customOverride: String? = nil) -> String? {
+        let fm = FileManager.default
+        if let custom = customOverride?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !custom.isEmpty,
+           fm.isExecutableFile(atPath: custom)
+        {
+            return custom
+        }
+        
+        let home = fm.homeDirectoryForCurrentUser.path(percentEncoded: false)
+        var candidates: [String] = [
+            "\(home)/.local/share/mise/installs/npm-earendil-works-pi-coding-agent/latest/bin/pi",
+            "\(home)/.local/bin/pi",
+            "\(home)/.bun/bin/pi",
+            "\(home)/.npm-global/bin/pi",
+            "/opt/homebrew/bin/pi",
+            "/usr/local/bin/pi",
+        ]
+        
+        if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
+            for entry in pathEnv.split(separator: ":") {
+                candidates.append("\(entry)/pi")
+            }
+        }
+        
+        // Check mise installs directory if versioned path exists
+        let miseRoot = URL(filePath: "\(home)/.local/share/mise/installs", directoryHint: .isDirectory)
+        if let subdirs = try? fm.contentsOfDirectory(at: miseRoot, includingPropertiesForKeys: nil) {
+            for dir in subdirs where dir.lastPathComponent.localizedCaseInsensitiveContains("pi") {
+                candidates.append(dir.appending(path: "latest/bin/pi").path(percentEncoded: false))
+            }
+        }
+        
+        for candidate in candidates {
+            if fm.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+    
+    
+    func refreshEnvironment() async {
+        let custom = self.database.string(forKey: Self.customBinaryConfigKey)
+        let resolvedPath = Self.discoverPiBinary(customOverride: custom)
+        self.piBinaryPath = resolvedPath
+        _ = try? self.syncWorkspace()
+        
+        guard let resolvedPath else {
+            self.piVersion = nil
+            return
+        }
+        
+        let detectedVersion = await Task.detached(priority: .utility) { () -> String? in
+            let proc = Process()
+            proc.executableURL = URL(filePath: resolvedPath)
+            proc.arguments = ["--version"]
+            let outPipe = Pipe()
+            proc.standardOutput = outPipe
+            proc.standardError = Pipe()
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                guard proc.terminationStatus == 0 else { return nil }
+                let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+                return String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } catch {
+                return nil
+            }
+        }.value
+        
+        if let detectedVersion, !detectedVersion.isEmpty {
+            self.piVersion = detectedVersion
+        }
+    }
+    
+    
+    // MARK: Gateway & Bot Workspace Synchronization
+    
+    nonisolated static func providerID(for profile: AIEndpointProfile) -> String {
+        let compact = profile.id.uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        return "cot-gw-\(compact.prefix(10))"
+    }
+    
+    
+    nonisolated static func piAPIType(for endpoint: AIEndpoint) -> String {
+        switch endpoint {
+            case .openAIChatCompletions, .ollama:
+                "openai-completions"
+            case .openAIResponses:
+                "openai-responses"
+            case .anthropicMessages:
+                "anthropic-messages"
+            case .googleGemini:
+                "google-generative-ai"
+        }
+    }
+    
+    
+    nonisolated static func normalizedPiBaseURL(_ rawBaseURL: String, endpoint: AIEndpoint) -> String {
+        var url = rawBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if url.isEmpty {
+            url = endpoint.defaultBaseURL
+        }
+        while url.hasSuffix("/") {
+            url.removeLast()
+        }
+        for op in ["/chat/completions", "/responses", "/messages"] {
+            if url.hasSuffix(op) {
+                url.removeLast(op.count)
+                break
+            }
+        }
+        if endpoint == .ollama, !url.hasSuffix("/v1") {
+            url += "/v1"
+        }
+        return url
+    }
+    
+    
+    /// Synchronizes all configured API Gateways and Bots into `<agentDirectoryURL>/models.json`,
+    /// `auth.json` (`0o600`), and `agents/<botID>/` manifests + `SYSTEM.md` instructions.
+    @discardableResult
+    func syncWorkspace(
+        endpoints: [AIEndpointProfile]? = nil,
+        botStore: AIBotStore? = nil,
+        keyLookup: ((AIEndpointProfile) -> String)? = nil
+    ) throws -> PiWorkspaceSyncSummary {
+        
+        let fm = FileManager.default
+        let resolvedEndpoints = endpoints ?? AIEndpointStore.profiles
+        let resolvedBotStore = botStore ?? AIBotStore.shared
+        let activeID = AIEndpointStore.activeID ?? resolvedEndpoints.first?.id
+        let activeEndpoint = resolvedEndpoints.first(where: { $0.id == activeID }) ?? resolvedEndpoints.first
+        let globalPersona = self.database.aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        try fm.createDirectory(at: self.agentDirectoryURL, withIntermediateDirectories: true)
+        let agentsDir = self.agentDirectoryURL.appending(path: "agents", directoryHint: .isDirectory)
+        let sessionsDir = self.agentDirectoryURL.appending(path: "sessions", directoryHint: .isDirectory)
+        try fm.createDirectory(at: agentsDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        
+        // Collect extra model overrides referenced by individual Bots
+        var extraModelsByEndpoint: [UUID: Set<String>] = [:]
+        for botID in AIBotID.allCases {
+            let cfg = resolvedBotStore.config(for: botID)
+            let overrideModel = cfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !overrideModel.isEmpty else { continue }
+            if let epID = cfg.endpointID ?? activeEndpoint?.id {
+                extraModelsByEndpoint[epID, default: []].insert(overrideModel)
+            }
+        }
+        
+        var providersDict: [String: Any] = [:]
+        var authDict: [String: Any] = [:]
+        var totalModels = 0
+        
+        for profile in resolvedEndpoints {
+            let pid = Self.providerID(for: profile)
+            let wireEndpoint = profile.configuration(apiKey: "").wireConfiguration.endpoint
+            let apiType = Self.piAPIType(for: wireEndpoint)
+            let baseURL = Self.normalizedPiBaseURL(profile.baseURL, endpoint: wireEndpoint)
+            guard !baseURL.isEmpty else { continue }
+            
+            var seenModelIDs: Set<String> = []
+            var modelEntries: [[String: Any]] = []
+            let candidates = profile.availableModelIDs
+                + Array(extraModelsByEndpoint[profile.id] ?? [])
+                + (profile.provider == .custom ? [] : [profile.provider.defaultModel])
+            
+            for rawModel in candidates {
+                let mid = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !mid.isEmpty, seenModelIDs.insert(mid).inserted else { continue }
+                modelEntries.append([
+                    "id": mid,
+                    "name": mid,
+                    "input": ["text", "image"],
+                    "contextWindow": 128_000,
+                    "maxTokens": 16_384,
+                    "cost": [
+                        "input": 0,
+                        "output": 0,
+                        "cacheRead": 0,
+                        "cacheWrite": 0,
+                    ],
+                ])
+                totalModels += 1
+            }
+            
+            var providerObj: [String: Any] = [
+                "name": profile.displayName,
+                "baseUrl": baseURL,
+                "api": apiType,
+                "models": modelEntries,
+            ]
+            if wireEndpoint == .openAIChatCompletions || wireEndpoint == .openAIResponses {
+                providerObj["authHeader"] = true
+            }
+            providersDict[pid] = providerObj
+            
+            let resolvedKey = (keyLookup?(profile) ?? AIEndpointStore.apiKey(for: profile))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let effectiveKey = resolvedKey.isEmpty && wireEndpoint == .ollama ? "ollama" : resolvedKey
+            if !effectiveKey.isEmpty {
+                authDict[pid] = [
+                    "type": "api_key",
+                    "key": effectiveKey,
+                ]
+            }
+        }
+        
+        let modelsPayload: [String: Any] = [
+            "$schema": "https://pi.dev/schemas/models.schema.json",
+            "providers": providersDict,
+        ]
+        let modelsData = try JSONSerialization.data(withJSONObject: modelsPayload, options: [.prettyPrinted, .sortedKeys])
+        try modelsData.write(to: self.agentDirectoryURL.appending(path: "models.json"), options: .atomic)
+        
+        // Write auth.json with strict owner-only 0o600 permissions
+        let authURL = self.agentDirectoryURL.appending(path: "auth.json")
+        let authData = try JSONSerialization.data(withJSONObject: authDict, options: [.prettyPrinted, .sortedKeys])
+        try authData.write(to: authURL, options: .atomic)
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authURL.path(percentEncoded: false))
+        
+        // Write quiet minimal settings.json for the embedded PiKernel directory
+        let settingsPayload: [String: Any] = [
+            "quietStartup": true,
+        ]
+        if let settingsData = try? JSONSerialization.data(withJSONObject: settingsPayload, options: [.prettyPrinted, .sortedKeys]) {
+            try? settingsData.write(to: self.agentDirectoryURL.appending(path: "settings.json"), options: .atomic)
+        }
+        
+        // Write per-bot agent workspace (SYSTEM.md + bot-manifest.json + session directory)
+        for botID in AIBotID.allCases {
+            let botCfg = resolvedBotStore.config(for: botID)
+            let botDir = agentsDir.appending(path: botID.rawValue, directoryHint: .isDirectory)
+            let botSessionDir = sessionsDir.appending(path: botID.rawValue, directoryHint: .isDirectory)
+            try fm.createDirectory(at: botDir, withIntermediateDirectories: true)
+            try fm.createDirectory(at: botSessionDir, withIntermediateDirectories: true)
+            
+            let customPersona = botCfg.customPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+            let effectivePersona = customPersona.isEmpty ? globalPersona : customPersona
+            let stagePrompt = resolvedBotStore.systemPrompt(for: botID)
+            let fullPrompt = effectivePersona.isEmpty ? stagePrompt : "\(effectivePersona)\n\n\(stagePrompt)"
+            try Data(fullPrompt.utf8).write(to: botDir.appending(path: "SYSTEM.md"), options: .atomic)
+            
+            let targetEndpoint = botCfg.endpointID.flatMap { id in resolvedEndpoints.first(where: { $0.id == id }) } ?? activeEndpoint
+            let effectiveModel = botCfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? (targetEndpoint?.displayModel ?? "")
+                : botCfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+            let character = AIGijinkaCharacter.resolve(
+                modelName: effectiveModel,
+                endpointName: targetEndpoint?.displayName,
+                baseURL: targetEndpoint?.baseURL
+            )
+            let artwork = character?.artwork(for: botID, variantOverride: botCfg.artworkVariantIndex)
+            let toolProfile = botCfg.effectiveToolProfile(for: botID)
+            
+            let manifest: [String: Any] = [
+                "id": botID.rawValue,
+                "handle": botID.handle,
+                "displayName": botID.displayName,
+                "isEnabled": botCfg.isEnabled,
+                "provider": targetEndpoint.map(Self.providerID(for:)) ?? "",
+                "gatewayName": targetEndpoint?.displayName ?? "",
+                "model": effectiveModel,
+                "personaBrand": character?.brand ?? "",
+                "artworkID": artwork?.id ?? "",
+                "toolProfile": toolProfile.rawValue,
+            ]
+            let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+            try manifestData.write(to: botDir.appending(path: "bot-manifest.json"), options: .atomic)
+        }
+        
+        self.syncedProviderCount = providersDict.count
+        self.syncedBotCount = AIBotID.allCases.count
+        self.lastSyncedAt = Date()
+        
+        return PiWorkspaceSyncSummary(
+            agentDirectory: self.agentDirectoryURL,
+            providerCount: providersDict.count,
+            modelCount: totalModels,
+            botCount: AIBotID.allCases.count
+        )
+    }
+    
+    
+    // MARK: Headless Pi JSONL Streaming Execution
+    
+    /// Determines whether `AIService` should route a Bot call through the `pi` kernel subprocess.
+    func shouldRouteThroughKernel(for botID: AIBotID, hasImages: Bool) -> Bool {
+        // Inline keystroke ghost completion stays on ultra-low-latency direct SSE;
+        // multimodal image payloads fall back cleanly unless purely text/workspace driven.
+        guard self.isKernelEnabled, self.isAvailable, !hasImages, botID != .ghost else {
+            return false
+        }
+        return true
+    }
+    
+    
+    /// Executes a Bot task on the `pi` kernel in `--mode json -p` mode, streaming deltas progressively.
+    func runBot(
+        _ botID: AIBotID,
+        systemPrompt: String,
+        userPrompt: String,
+        endpointProfile: AIEndpointProfile,
+        configuration: AIConfiguration,
+        workingDirectory: URL? = nil,
+        onPartial: (@MainActor @Sendable (String) -> Void)? = nil
+    ) async throws -> String {
+        
+        guard let binaryPath = self.piBinaryPath, FileManager.default.isExecutableFile(atPath: binaryPath) else {
+            throw AIError.http(status: 503, message: AppLanguage.text("未找到 pi 可执行文件", en: "pi executable not found"))
+        }
+        
+        _ = try? self.syncWorkspace()
+        
+        let providerID = Self.providerID(for: endpointProfile)
+        let modelID = configuration.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let botConfig = AIBotStore.shared.config(for: botID)
+        let toolProfile = botConfig.effectiveToolProfile(for: botID)
+        let sessionDir = self.agentDirectoryURL
+            .appending(path: "sessions", directoryHint: .isDirectory)
+            .appending(path: botID.rawValue, directoryHint: .isDirectory)
+        let agentDirPath = self.agentDirectoryURL.path(percentEncoded: false)
+        let apiKey = configuration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        var args: [String] = [
+            "--mode", "json",
+            "-p",
+            "--offline",
+            "--no-extensions",
+            "--no-mcp",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-themes",
+            "--provider", providerID,
+            "--model", modelID,
+            "--system-prompt", systemPrompt,
+        ]
+        if toolProfile == .pureChat {
+            args.append("--no-context-files")
+            args.append("--no-session")
+        } else {
+            args.append(contentsOf: ["--session-dir", sessionDir.path(percentEncoded: false)])
+            args.append("--no-approve")
+        }
+        args.append(contentsOf: toolProfile.cliArguments)
+        if !apiKey.isEmpty {
+            args.append(contentsOf: ["--api-key", apiKey])
+        }
+        args.append("--")
+        args.append(userPrompt)
+        
+        self.activeBotRuns.insert(botID)
+        defer { self.activeBotRuns.remove(botID) }
+        
+        return try await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(filePath: binaryPath)
+            process.arguments = args
+            if let workingDirectory, FileManager.default.fileExists(atPath: workingDirectory.path(percentEncoded: false)) {
+                process.currentDirectoryURL = workingDirectory
+            }
+            
+            var env = ProcessInfo.processInfo.environment
+            env["PI_CODING_AGENT_DIR"] = agentDirPath
+            env["PI_OFFLINE"] = "1"
+            env["PI_SKIP_VERSION_CHECK"] = "1"
+            env["PI_TELEMETRY"] = "0"
+            process.environment = env
+            
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+            process.standardInput = FileHandle.nullDevice
+            
+            try process.run()
+            
+            let handle = stdoutPipe.fileHandleForReading
+            var lineBuffer = Data()
+            var streamedText = ""
+            var finalAssistantText: String?
+            var streamErrorText: String?
+            
+            while true {
+                let chunk = try handle.read(upToCount: 4096) ?? Data()
+                if chunk.isEmpty { break }
+                lineBuffer.append(chunk)
+                
+                // Strict LF framing per Pi JSONL protocol specification
+                while let newlineIndex = lineBuffer.firstIndex(of: 0x0A) {
+                    var recordBytes = lineBuffer.subdata(in: 0..<newlineIndex)
+                    lineBuffer.removeSubrange(0...newlineIndex)
+                    if recordBytes.last == 0x0D {
+                        recordBytes.removeLast()
+                    }
+                    guard !recordBytes.isEmpty,
+                          let json = try? JSONSerialization.jsonObject(with: recordBytes) as? [String: Any],
+                          let eventType = json["type"] as? String
+                    else { continue }
+                    
+                    switch eventType {
+                        case "message_update":
+                            if let assistantEvent = json["assistantMessageEvent"] as? [String: Any],
+                               let subType = assistantEvent["type"] as? String
+                            {
+                                if subType == "text_delta", let delta = assistantEvent["delta"] as? String, !delta.isEmpty {
+                                    streamedText += delta
+                                    if let onPartial {
+                                        let snapshot = streamedText
+                                        await MainActor.run { onPartial(snapshot) }
+                                    }
+                                } else if subType == "error", let errMsg = assistantEvent["error"] as? String {
+                                    streamErrorText = errMsg
+                                }
+                            }
+                            
+                        case "tool_execution_start":
+                            if let onPartial, streamedText.isEmpty, let toolName = json["toolName"] as? String {
+                                await MainActor.run {
+                                    onPartial("▸ Pi Agent 正在执行工具 `\(toolName)`…\n")
+                                }
+                            }
+                            
+                        case "message_end":
+                            if let message = json["message"] as? [String: Any],
+                               (message["role"] as? String) == "assistant"
+                            {
+                                if let errMsg = message["errorMessage"] as? String, !errMsg.isEmpty {
+                                    streamErrorText = errMsg
+                                }
+                                if let blocks = message["content"] as? [[String: Any]] {
+                                    let joined = blocks.compactMap { block -> String? in
+                                        guard (block["type"] as? String) == "text" else { return nil }
+                                        return block["text"] as? String
+                                    }.joined()
+                                    if !joined.isEmpty {
+                                        finalAssistantText = joined
+                                    }
+                                }
+                            }
+                            
+                        default:
+                            break
+                    }
+                }
+            }
+            
+            process.waitUntilExit()
+            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderrString = String(data: stderrData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            
+            let resolvedOutput = (finalAssistantText ?? streamedText).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !resolvedOutput.isEmpty {
+                return resolvedOutput
+            }
+            if let streamErrorText, !streamErrorText.isEmpty {
+                throw AIError.http(status: 502, message: streamErrorText)
+            }
+            if process.terminationStatus != 0 {
+                let detail = stderrString.isEmpty ? "exit \(process.terminationStatus)" : stderrString
+                throw AIError.http(status: 502, message: "Pi 内核执行失败：\(detail)")
+            }
+            throw AIError.emptyResponse
+        }.value
+    }
+    
+    
+    // MARK: Interactive Terminal Launch
+    
+    /// Builds a clean shell command to launch `botID` interactively inside CotEditor's built-in Terminal
+    /// using `PiKernel`'s synchronized `models.json`, `auth.json`, session directory, and `SYSTEM.md`.
+    func interactiveTerminalCommand(for botID: AIBotID, workingDirectory: URL? = nil) -> String? {
+        guard let binaryPath = self.piBinaryPath else { return nil }
+        _ = try? self.syncWorkspace()
+        
+        let endpoints = AIEndpointStore.profiles
+        let activeID = AIEndpointStore.activeID ?? endpoints.first?.id
+        let botCfg = AIBotStore.shared.config(for: botID)
+        let targetEndpoint = botCfg.endpointID.flatMap { id in endpoints.first(where: { $0.id == id }) }
+            ?? endpoints.first(where: { $0.id == activeID })
+            ?? endpoints.first
+        
+        let agentDir = self.agentDirectoryURL.path(percentEncoded: false)
+        let botPromptFile = self.agentDirectoryURL
+            .appending(path: "agents/\(botID.rawValue)/SYSTEM.md")
+            .path(percentEncoded: false)
+        let sessionDir = self.agentDirectoryURL
+            .appending(path: "sessions/\(botID.rawValue)")
+            .path(percentEncoded: false)
+        let toolProfile = botCfg.effectiveToolProfile(for: botID)
+        
+        var parts: [String] = []
+        if let workingDirectory {
+            parts.append("cd \(Self.shellQuote(workingDirectory.path(percentEncoded: false))) &&")
+        }
+        parts.append("PI_CODING_AGENT_DIR=\(Self.shellQuote(agentDir))")
+        parts.append("PI_SKIP_VERSION_CHECK=1")
+        parts.append(Self.shellQuote(binaryPath))
+        
+        if let targetEndpoint {
+            let pid = Self.providerID(for: targetEndpoint)
+            let modelID = botCfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? (targetEndpoint.displayModel ?? "")
+                : botCfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !modelID.isEmpty {
+                parts.append("--provider \(Self.shellQuote(pid))")
+                parts.append("--model \(Self.shellQuote(modelID))")
+            }
+        }
+        parts.append("--session-dir \(Self.shellQuote(sessionDir))")
+        parts.append("--append-system-prompt \(Self.shellQuote(botPromptFile))")
+        parts.append("--name \(Self.shellQuote("\(botID.displayName) (\(botID.handle))"))")
+        for arg in toolProfile.cliArguments {
+            parts.append(Self.shellQuote(arg))
+        }
+        
+        return parts.joined(separator: " ")
+    }
+    
+    
+    /// Opens the frontmost document window's built-in Terminal (creating a document window if none exists)
+    /// and starts `botID` as an interactive `pi` coding/working agent session.
+    @discardableResult
+    func launchBotInFrontmostTerminal(_ botID: AIBotID) -> Bool {
+        let docWindowController = NSApp.orderedWindows
+            .compactMap { $0.windowController as? DocumentWindowController }
+            .first
+        let workingDir = (docWindowController?.documentViewController?.focusedDocument.fileURL
+            ?? (NSDocumentController.shared.currentDocument as? NSDocument)?.fileURL)?
+            .deletingLastPathComponent()
+        
+        guard let command = self.interactiveTerminalCommand(for: botID, workingDirectory: workingDir) else {
+            return false
+        }
+        
+        if let workspaceVC = docWindowController?.workspaceContentViewController {
+            docWindowController?.window?.makeKeyAndOrderFront(nil)
+            workspaceVC.launchCommandInTerminal(command)
+            return true
+        }
+        
+        // Open a new document window first if none was open
+        NSDocumentController.shared.newDocument(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            if let freshWC = NSApp.orderedWindows.compactMap({ $0.windowController as? DocumentWindowController }).first {
+                freshWC.window?.makeKeyAndOrderFront(nil)
+                freshWC.workspaceContentViewController?.launchCommandInTerminal(command)
+            }
+        }
+        return true
+    }
+    
+    
+    private nonisolated static func shellQuote(_ value: String) -> String {
+        if value.isEmpty { return "''" }
+        let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
+        return "'\(escaped)'"
+    }
+}

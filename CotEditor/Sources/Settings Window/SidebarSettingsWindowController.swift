@@ -56,8 +56,8 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .editing: AppLanguage.text("编辑", en: "Editing")
             case .format: AppLanguage.text("格式", en: "Format")
             case .effects: AppLanguage.text("动效", en: "Motion")
-            case .models: AppLanguage.text("模型", en: "Models")
-            case .bots: AppLanguage.text("智能体", en: "Agents")
+            case .models: AppLanguage.text("API 网关", en: "API Gateway")
+            case .bots: AppLanguage.text("Bots", en: "Bots")
             case .keyBindings: AppLanguage.text("快捷键", en: "Shortcuts")
             case .pass: AppLanguage.text("通行证", en: "Pass")
         }
@@ -73,7 +73,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .editing: "square.and.pencil"
             case .format: "doc.text.fill"
             case .effects: "wand.and.stars"
-            case .models: "cpu.fill"
+            case .models: "network"
             case .bots: "sparkles"
             case .keyBindings: "keyboard.fill"
             case .pass: "lanyardcard.fill"

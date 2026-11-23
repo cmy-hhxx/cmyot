@@ -1996,110 +1996,78 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
-    /// Builds the text view's context menu.
+    /// Builds the text view's categorized, icon-rich context menu.
     ///
-    /// The system's look-up, translate, share, spelling, substitution, auto-fill and
-    /// services items are deliberately absent: the menu carries only what this editor
-    /// actually offers — copy / paste / select all and the highlight colors.
+    /// Organized into scannable functional groups (Edit, Quick Highlight Swatches,
+    /// Bots Smart Actions, Workflows & Tools, and Split/View) with consistent SF Symbols.
     func makeContextMenu() -> NSMenu {
         
         let menu = NSMenu()
-        // The menu manages its own enabled states below; AppKit's responder-chain
-        // auto-validation would otherwise leave the standard items unusable whenever the
-        // menu is opened without a focused text view.
         menu.autoenablesItems = false
         
         let hasSelection = !self.selectedRange().isEmpty
+        let canPaste = NSPasteboard.general.string(forType: .string) != nil
+            || PlainTextInlineImageStore.shared.extractImage(from: NSPasteboard.general) != nil
         
-        // AI actions on the selection. They need a selection; when the AI is not configured
-        // yet the action explains that instead of failing silently.
-        if let documentViewController = self.documentViewController {
-            let aiActions: [(action: AIAction, selector: Selector)] = [
-                (.translate, #selector(DocumentViewController.translateSelection(_:))),
-                (.summarize, #selector(DocumentViewController.summarizeSelection(_:))),
-                (.explain, #selector(DocumentViewController.explainSelection(_:))),
-                (.weeklyReport, #selector(DocumentViewController.generateWeeklyReport(_:))),
-                (.weeklyReportItem, #selector(DocumentViewController.generateWeeklyReportItem(_:))),
-            ]
-            for (action, selector) in aiActions {
-                let item = NSMenuItem(title: action.title, action: selector, keyEquivalent: "")
-                item.target = documentViewController
-                item.isEnabled = hasSelection || (action == .weeklyReport)
-                menu.addItem(item)
+        func makeItem(
+            title: String,
+            symbol: String,
+            action: Selector?,
+            target: AnyObject? = nil,
+            keyEquivalent: String = "",
+            modifiers: NSEvent.ModifierFlags = .command,
+            enabled: Bool = true
+        ) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+            if !keyEquivalent.isEmpty {
+                item.keyEquivalentModifierMask = modifiers
             }
-            
-            let alignTableItem = NSMenuItem(
-                title: String(localized: "chrome.contextMenu.alignTable", defaultValue: "Align Markdown Table", table: "Chrome"),
-                action: #selector(DocumentViewController.alignMarkdownTable(_:)),
-                keyEquivalent: ""
-            )
-            alignTableItem.target = documentViewController
-            alignTableItem.isEnabled = !self.string.isEmpty
-            menu.addItem(alignTableItem)
-            
-            let chartItem = NSMenuItem(
-                title: AIAction.interactiveChart.title,
-                action: #selector(DocumentViewController.generateInteractiveChart(_:)),
-                keyEquivalent: ""
-            )
-            chartItem.target = documentViewController
-            chartItem.isEnabled = hasSelection || MarkdownTableFormatter.containsMarkdownTable(self.string)
-            menu.addItem(chartItem)
-            
-            let ocrItem = NSMenuItem(
-                title: AIAction.ocrPolish.title,
-                action: #selector(DocumentViewController.runOCRAndAI(_:)),
-                keyEquivalent: ""
-            )
-            ocrItem.target = documentViewController
-            ocrItem.isEnabled = true
-            menu.addItem(ocrItem)
-            
-            let organizeItem = NSMenuItem(
-                title: AIAction.organizeAndMerge.title,
-                action: #selector(DocumentViewController.organizeAndMergeAllDocuments(_:)),
-                keyEquivalent: ""
-            )
-            organizeItem.target = documentViewController
-            organizeItem.isEnabled = true
-            menu.addItem(organizeItem)
-            
-            if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true {
-                let insertImageItem = NSMenuItem(
-                    title: String(localized: "chrome.contextMenu.insertInlineImage", defaultValue: "Insert Image (Plain Text)…", table: "Chrome"),
-                    action: #selector(DocumentViewController.insertPlainTextImage(_:)),
-                    keyEquivalent: ""
-                )
-                insertImageItem.target = documentViewController
-                insertImageItem.isEnabled = self.isEditable
-                menu.addItem(insertImageItem)
-            }
-            
-            menu.addItem(.separator())
+            item.target = target
+            item.isEnabled = enabled
+            item.image = Self.contextMenuSymbol(symbol)
+            return item
         }
         
-        let copyItem = NSMenuItem(title: String(localized: "chrome.contextMenu.copy",
-                                                defaultValue: "Copy", table: "Chrome"),
-                                  action: #selector(copy(_:)), keyEquivalent: "c")
-        copyItem.keyEquivalentModifierMask = .command
-        copyItem.isEnabled = hasSelection
-        menu.addItem(copyItem)
+        // MARK: 1. 编辑 (Clipboard & Selection Essentials)
+        menu.addItem(.sectionHeader(title: AppLanguage.text("编辑", en: "Edit")))
         
-        let pasteItem = NSMenuItem(title: String(localized: "chrome.contextMenu.paste",
-                                                 defaultValue: "Paste", table: "Chrome"),
-                                   action: #selector(paste(_:)), keyEquivalent: "v")
-        pasteItem.keyEquivalentModifierMask = .command
-        pasteItem.isEnabled = NSPasteboard.general.string(forType: .string) != nil
-            || PlainTextInlineImageStore.shared.extractImage(from: NSPasteboard.general) != nil
-        menu.addItem(pasteItem)
+        menu.addItem(makeItem(
+            title: AppLanguage.text("剪切", en: "Cut"),
+            symbol: "scissors",
+            action: #selector(cut(_:)),
+            target: self,
+            keyEquivalent: "x",
+            enabled: hasSelection && self.isEditable
+        ))
         
-        let selectAllItem = NSMenuItem(title: String(localized: "chrome.contextMenu.selectAll",
-                                                     defaultValue: "Select All", table: "Chrome"),
-                                       action: #selector(selectAll(_:)), keyEquivalent: "a")
-        selectAllItem.keyEquivalentModifierMask = .command
-        selectAllItem.isEnabled = !self.string.isEmpty
-        menu.addItem(selectAllItem)
+        menu.addItem(makeItem(
+            title: String(localized: "chrome.contextMenu.copy", defaultValue: "Copy", table: "Chrome"),
+            symbol: "doc.on.doc",
+            action: #selector(copy(_:)),
+            target: self,
+            keyEquivalent: "c",
+            enabled: hasSelection
+        ))
         
+        menu.addItem(makeItem(
+            title: String(localized: "chrome.contextMenu.paste", defaultValue: "Paste", table: "Chrome"),
+            symbol: "doc.on.clipboard",
+            action: #selector(paste(_:)),
+            target: self,
+            keyEquivalent: "v",
+            enabled: self.isEditable && canPaste
+        ))
+        
+        menu.addItem(makeItem(
+            title: String(localized: "chrome.contextMenu.selectAll", defaultValue: "Select All", table: "Chrome"),
+            symbol: "selection.pin.in.out",
+            action: #selector(selectAll(_:)),
+            target: self,
+            keyEquivalent: "a",
+            enabled: !self.string.isEmpty
+        ))
+        
+        // MARK: 2. 文字高亮 (1-Click Inline Swatch Bar)
         let selectedRange = self.selectedRange()
         let selectedSnippet: String = if selectedRange.length > 0,
                                          selectedRange.upperBound <= (self.string as NSString).length
@@ -2112,50 +2080,213 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         if let documentViewController = self.documentViewController, canHighlightSelection {
             menu.addItem(.separator())
+            let swatchRowItem = NSMenuItem()
+            swatchRowItem.view = ContextMenuQuickHighlightRowView(
+                target: documentViewController,
+                onSelectColorIndex: { [weak documentViewController, weak menu] index in
+                    menu?.cancelTracking()
+                    let dummy = NSMenuItem()
+                    dummy.tag = index
+                    documentViewController?.applyHighlight(dummy)
+                },
+                onOpenPalette: { [weak documentViewController, weak menu] in
+                    menu?.cancelTracking()
+                    documentViewController?.openHighlightColorPalette(nil)
+                },
+                onClearHighlight: { [weak documentViewController, weak menu] in
+                    menu?.cancelTracking()
+                    documentViewController?.removeHighlight(nil)
+                }
+            )
+            menu.addItem(swatchRowItem)
+        }
+        
+        // MARK: 3. Bots · 选区润色 & 4. 工作流与工具
+        if let documentViewController = self.documentViewController {
+            menu.addItem(.separator())
+            menu.addItem(.sectionHeader(title: AppLanguage.text("Bots · 选区润色", en: "Bots · Selection")))
             
-            let highlightSubmenu = NSMenu()
-            highlightSubmenu.autoenablesItems = false
-            
-            for (index, color) in HighlightColor.allCases.enumerated() {
-                let item = NSMenuItem(title: color.localizedName,
-                                      action: #selector(DocumentViewController.applyHighlight(_:)),
-                                      keyEquivalent: "")
-                item.tag = index
-                item.target = documentViewController
-                item.image = Self.swatchImage(for: color)
-                highlightSubmenu.addItem(item)
+            let primaryBotActions: [(action: AIAction, symbol: String, selector: Selector)] = [
+                (.translate, "character.bubble", #selector(DocumentViewController.translateSelection(_:))),
+                (.summarize, "text.alignleft", #selector(DocumentViewController.summarizeSelection(_:))),
+                (.explain, "lightbulb", #selector(DocumentViewController.explainSelection(_:))),
+            ]
+            for entry in primaryBotActions {
+                menu.addItem(makeItem(
+                    title: entry.action.title,
+                    symbol: entry.symbol,
+                    action: entry.selector,
+                    target: documentViewController,
+                    enabled: hasSelection
+                ))
             }
             
-            highlightSubmenu.addItem(.separator())
+            menu.addItem(.separator())
+            menu.addItem(.sectionHeader(title: AppLanguage.text("工作流与工具", en: "Workflows & Tools")))
             
-            let customPaletteItem = NSMenuItem(
-                title: AppLanguage.text("自定义颜色…", en: "Custom Color…"),
-                action: #selector(DocumentViewController.openHighlightColorPalette(_:)),
-                keyEquivalent: ""
+            // Submenu A: 周报助手
+            let weeklySubmenu = NSMenu()
+            weeklySubmenu.autoenablesItems = false
+            weeklySubmenu.addItem(makeItem(
+                title: AIAction.weeklyReportItem.title,
+                symbol: "text.badge.plus",
+                action: #selector(DocumentViewController.generateWeeklyReportItem(_:)),
+                target: documentViewController,
+                enabled: hasSelection
+            ))
+            weeklySubmenu.addItem(makeItem(
+                title: AIAction.weeklyReport.title,
+                symbol: "doc.text.image",
+                action: #selector(DocumentViewController.generateWeeklyReport(_:)),
+                target: documentViewController,
+                enabled: true
+            ))
+            let weeklyRootItem = makeItem(
+                title: AppLanguage.text("周报助手", en: "Weekly Report"),
+                symbol: "calendar.badge.checkmark",
+                action: nil
             )
-            customPaletteItem.target = documentViewController
-            customPaletteItem.image = NSImage(systemSymbolName: "paintpalette", accessibilityDescription: nil)
-            highlightSubmenu.addItem(customPaletteItem)
+            weeklyRootItem.submenu = weeklySubmenu
+            menu.addItem(weeklyRootItem)
             
-            let clearItem = NSMenuItem(title: String(localized: "chrome.contextMenu.clearHighlight",
-                                                     defaultValue: "Clear Highlight", table: "Chrome"),
-                                       action: #selector(DocumentViewController.removeHighlight(_:)),
-                                       keyEquivalent: "")
-            clearItem.target = documentViewController
-            clearItem.image = NSImage(systemSymbolName: "eraser", accessibilityDescription: nil)
-            highlightSubmenu.addItem(clearItem)
-            
-            let highlightRootItem = NSMenuItem(
-                title: AppLanguage.text("文字高亮", en: "Highlight"),
-                action: nil,
-                keyEquivalent: ""
+            // Submenu B: 表格与数据图表
+            let tableSubmenu = NSMenu()
+            tableSubmenu.autoenablesItems = false
+            tableSubmenu.addItem(makeItem(
+                title: String(localized: "chrome.contextMenu.alignTable", defaultValue: "Align Markdown Table", table: "Chrome"),
+                symbol: "arrow.left.and.right.text.vertical",
+                action: #selector(DocumentViewController.alignMarkdownTable(_:)),
+                target: documentViewController,
+                enabled: !self.string.isEmpty
+            ))
+            tableSubmenu.addItem(makeItem(
+                title: AIAction.interactiveChart.title,
+                symbol: "chart.xyaxis.line",
+                action: #selector(DocumentViewController.generateInteractiveChart(_:)),
+                target: documentViewController,
+                enabled: hasSelection || MarkdownTableFormatter.containsMarkdownTable(self.string)
+            ))
+            let tableRootItem = makeItem(
+                title: AppLanguage.text("表格与数据图表", en: "Tables & Charts"),
+                symbol: "tablecells",
+                action: nil
             )
-            highlightRootItem.image = NSImage(systemSymbolName: "highlighter", accessibilityDescription: nil)
-            highlightRootItem.submenu = highlightSubmenu
-            menu.addItem(highlightRootItem)
+            tableRootItem.submenu = tableSubmenu
+            menu.addItem(tableRootItem)
+            
+            // Direct Media & Workspace Tools
+            menu.addItem(makeItem(
+                title: AIAction.ocrPolish.title,
+                symbol: "doc.text.viewfinder",
+                action: #selector(DocumentViewController.runOCRAndAI(_:)),
+                target: documentViewController,
+                enabled: true
+            ))
+            
+            if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true {
+                menu.addItem(makeItem(
+                    title: String(localized: "chrome.contextMenu.insertInlineImage", defaultValue: "Insert Image (Plain Text)…", table: "Chrome"),
+                    symbol: "photo.badge.plus",
+                    action: #selector(DocumentViewController.insertPlainTextImage(_:)),
+                    target: documentViewController,
+                    enabled: self.isEditable
+                ))
+            }
+            
+            menu.addItem(makeItem(
+                title: AIAction.organizeAndMerge.title,
+                symbol: "square.stack.3d.up",
+                action: #selector(DocumentViewController.organizeAndMergeAllDocuments(_:)),
+                target: documentViewController,
+                enabled: true
+            ))
+            
+            // Submenu C: 在终端唤起 Pi Bot
+            if PiKernelManager.shared.isAvailable {
+                let piSubmenu = NSMenu()
+                piSubmenu.autoenablesItems = false
+                for botID in AIBotID.allCases where botID != .ghost && botID != .persona {
+                    guard AIBotStore.shared.config(for: botID).isEnabled else { continue }
+                    let botItem = makeItem(
+                        title: "\(botID.displayName)  \(botID.handle)",
+                        symbol: botID.symbolName,
+                        action: #selector(DocumentViewController.launchPiBotFromMenu(_:)),
+                        target: documentViewController,
+                        enabled: true
+                    )
+                    botItem.representedObject = botID.rawValue
+                    piSubmenu.addItem(botItem)
+                }
+                if !piSubmenu.items.isEmpty {
+                    let piRootItem = makeItem(
+                        title: AppLanguage.text("在终端唤起 Pi Bot", en: "Launch Pi Bot in Terminal"),
+                        symbol: "terminal",
+                        action: nil
+                    )
+                    piRootItem.submenu = piSubmenu
+                    menu.addItem(piRootItem)
+                }
+            }
+            
+            // Submenu D: 分屏与视图
+            menu.addItem(.separator())
+            let viewSubmenu = NSMenu()
+            viewSubmenu.autoenablesItems = false
+            let paneTarget: AnyObject = self.editorViewController ?? documentViewController
+            viewSubmenu.addItem(makeItem(
+                title: AppLanguage.text("向右分屏", en: "Split Right"),
+                symbol: "rectangle.split.2x1",
+                action: #selector(DocumentViewController.splitEditorVertically(_:)),
+                target: documentViewController,
+                enabled: true
+            ))
+            viewSubmenu.addItem(makeItem(
+                title: AppLanguage.text("向下分屏", en: "Split Down"),
+                symbol: "rectangle.split.1x2",
+                action: #selector(DocumentViewController.splitEditorHorizontally(_:)),
+                target: documentViewController,
+                enabled: true
+            ))
+            if documentViewController.editorViewControllers.count > 1 {
+                viewSubmenu.addItem(makeItem(
+                    title: AppLanguage.text("关闭当前分栏", en: "Close Split Pane"),
+                    symbol: "xmark.rectangle",
+                    action: #selector(DocumentViewController.closeSplitTextView(_:)),
+                    target: documentViewController,
+                    enabled: true
+                ))
+            }
+            viewSubmenu.addItem(.separator())
+            viewSubmenu.addItem(makeItem(
+                title: documentViewController.showsLineNumber
+                    ? AppLanguage.text("隐藏行号", en: "Hide Line Numbers")
+                    : AppLanguage.text("显示行号", en: "Show Line Numbers"),
+                symbol: "list.number",
+                action: #selector(DocumentViewController.toggleLineNumber(_:)),
+                target: documentViewController,
+                enabled: true
+            ))
+            _ = paneTarget
+            let viewRootItem = makeItem(
+                title: AppLanguage.text("分屏与视图", en: "Split & View"),
+                symbol: "rectangle.split.2x1",
+                action: nil
+            )
+            viewRootItem.submenu = viewSubmenu
+            menu.addItem(viewRootItem)
         }
         
         return menu
+    }
+    
+    
+    /// Returns a consistently sized template SF Symbol image for context menu items.
+    private static func contextMenuSymbol(_ name: String) -> NSImage? {
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(config)
+        image?.isTemplate = true
+        return image
     }
     
     
@@ -3313,6 +3444,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         let editable = self.isEditable
+        menu.addItem(.sectionHeader(title: AppLanguage.text("图片预览与调整", en: "Preview & Transform")))
         menu.addItem(item(
             AppLanguage.text("查看大图", en: "Zoom Preview"),
             systemImage: "arrow.up.left.and.arrow.down.right",
@@ -3326,6 +3458,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         ))
         
         menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: AppLanguage.text("几何与排版", en: "Layout")))
         
         menu.addItem(item(
             AppLanguage.text("向左旋转 90°", en: "Rotate Left 90°"),
@@ -3344,9 +3477,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         let alignMenu = NSMenu()
         alignMenu.autoenablesItems = false
-        alignMenu.addItem(item(AppLanguage.text("靠左对齐", en: "Align Left"), action: #selector(inlineImageContextAlignByTag(_:)), tag: 0, enabled: editable))
-        alignMenu.addItem(item(AppLanguage.text("水平居中", en: "Align Center"), action: #selector(inlineImageContextAlignByTag(_:)), tag: 1, enabled: editable))
-        alignMenu.addItem(item(AppLanguage.text("靠右对齐", en: "Align Right"), action: #selector(inlineImageContextAlignByTag(_:)), tag: 2, enabled: editable))
+        alignMenu.addItem(item(AppLanguage.text("靠左对齐", en: "Align Left"), systemImage: "align.horizontal.left", action: #selector(inlineImageContextAlignByTag(_:)), tag: 0, enabled: editable))
+        alignMenu.addItem(item(AppLanguage.text("水平居中", en: "Align Center"), systemImage: "align.horizontal.center", action: #selector(inlineImageContextAlignByTag(_:)), tag: 1, enabled: editable))
+        alignMenu.addItem(item(AppLanguage.text("靠右对齐", en: "Align Right"), systemImage: "align.horizontal.right", action: #selector(inlineImageContextAlignByTag(_:)), tag: 2, enabled: editable))
         let alignParent = NSMenuItem(
             title: AppLanguage.text("图片位置对齐", en: "Align Position"),
             action: nil,
@@ -5607,5 +5740,188 @@ private struct InlineImageTransformPopoverView: View {
         }
         .padding(14)
         .frame(width: 320)
+    }
+}
+
+
+// MARK: - Inline 1-Click Highlight Swatch Row for Context Menu
+
+private final class ContextMenuQuickHighlightRowView: NSView {
+    
+    private let onSelectColorIndex: (Int) -> Void
+    private let onOpenPalette: () -> Void
+    private let onClearHighlight: () -> Void
+    
+    init(
+        target: AnyObject?,
+        onSelectColorIndex: @escaping (Int) -> Void,
+        onOpenPalette: @escaping () -> Void,
+        onClearHighlight: @escaping () -> Void
+    ) {
+        self.onSelectColorIndex = onSelectColorIndex
+        self.onOpenPalette = onOpenPalette
+        self.onClearHighlight = onClearHighlight
+        super.init(frame: NSRect(x: 0, y: 0, width: 244, height: 32))
+        
+        let iconView = NSImageView()
+        let symCfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        iconView.image = NSImage(systemSymbolName: "highlighter", accessibilityDescription: nil)?
+            .withSymbolConfiguration(symCfg)
+        iconView.contentTintColor = .secondaryLabelColor
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        
+        let titleField = NSTextField(labelWithString: AppLanguage.text("高亮", en: "Highlight"))
+        titleField.font = .menuFont(ofSize: 13)
+        titleField.textColor = .labelColor
+        titleField.translatesAutoresizingMaskIntoConstraints = false
+        
+        var swatchButtons: [NSView] = []
+        for (idx, color) in HighlightColor.allCases.enumerated() {
+            let btn = QuickSwatchDotButton(color: color.swatchColor, toolTipText: color.localizedName) { [weak self] in
+                self?.onSelectColorIndex(idx)
+            }
+            swatchButtons.append(btn)
+        }
+        
+        let sep = NSBox()
+        sep.boxType = .separator
+        sep.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            sep.widthAnchor.constraint(equalToConstant: 1),
+            sep.heightAnchor.constraint(equalToConstant: 14),
+        ])
+        
+        let paletteBtn = NSButton()
+        paletteBtn.bezelStyle = .toolbar
+        paletteBtn.isBordered = false
+        paletteBtn.image = NSImage(systemSymbolName: "paintpalette", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12.5, weight: .medium))
+        paletteBtn.contentTintColor = .secondaryLabelColor
+        paletteBtn.toolTip = AppLanguage.text("自定义颜色…", en: "Custom Color…")
+        paletteBtn.target = self
+        paletteBtn.action = #selector(didTapPalette)
+        paletteBtn.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            paletteBtn.widthAnchor.constraint(equalToConstant: 22),
+            paletteBtn.heightAnchor.constraint(equalToConstant: 22),
+        ])
+        
+        let clearBtn = NSButton()
+        clearBtn.bezelStyle = .toolbar
+        clearBtn.isBordered = false
+        clearBtn.image = NSImage(systemSymbolName: "eraser", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12.5, weight: .medium))
+        clearBtn.contentTintColor = .secondaryLabelColor
+        clearBtn.toolTip = AppLanguage.text("清除高亮", en: "Clear Highlight")
+        clearBtn.target = self
+        clearBtn.action = #selector(didTapClear)
+        clearBtn.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            clearBtn.widthAnchor.constraint(equalToConstant: 22),
+            clearBtn.heightAnchor.constraint(equalToConstant: 22),
+        ])
+        
+        let trailingRow = NSStackView(views: swatchButtons + [sep, paletteBtn, clearBtn])
+        trailingRow.orientation = .horizontal
+        trailingRow.alignment = .centerY
+        trailingRow.spacing = 5
+        trailingRow.translatesAutoresizingMaskIntoConstraints = false
+        
+        self.addSubview(iconView)
+        self.addSubview(titleField)
+        self.addSubview(trailingRow)
+        
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: 14),
+            iconView.centerYAnchor.constraint(equalTo: self.centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 16),
+            
+            titleField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 6),
+            titleField.centerYAnchor.constraint(equalTo: self.centerYAnchor),
+            
+            trailingRow.leadingAnchor.constraint(greaterThanOrEqualTo: titleField.trailingAnchor, constant: 10),
+            trailingRow.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -12),
+            trailingRow.centerYAnchor.constraint(equalTo: self.centerYAnchor),
+        ])
+        _ = target
+    }
+    
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    @objc private func didTapPalette() {
+        self.onOpenPalette()
+    }
+    
+    @objc private func didTapClear() {
+        self.onClearHighlight()
+    }
+}
+
+
+private final class QuickSwatchDotButton: NSControl {
+    
+    private let swatchColor: NSColor
+    private let onClick: () -> Void
+    private var isHovered = false
+    
+    init(color: NSColor, toolTipText: String, onClick: @escaping () -> Void) {
+        self.swatchColor = color
+        self.onClick = onClick
+        super.init(frame: NSRect(x: 0, y: 0, width: 18, height: 18))
+        self.toolTip = toolTipText
+        self.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            self.widthAnchor.constraint(equalToConstant: 18),
+            self.heightAnchor.constraint(equalToConstant: 18),
+        ])
+        self.addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+    
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func mouseEntered(with event: NSEvent) {
+        self.isHovered = true
+        self.needsDisplay = true
+    }
+    
+    override func mouseExited(with event: NSEvent) {
+        self.isHovered = false
+        self.needsDisplay = true
+    }
+    
+    override func mouseUp(with event: NSEvent) {
+        let local = self.convert(event.locationInWindow, from: nil)
+        if self.bounds.contains(local) {
+            self.onClick()
+        }
+    }
+    
+    override func draw(_ dirtyRect: NSRect) {
+        if self.isHovered {
+            let ringRect = self.bounds.insetBy(dx: 0.75, dy: 0.75)
+            let ringPath = NSBezierPath(ovalIn: ringRect)
+            ringPath.lineWidth = 1.4
+            NSColor.controlAccentColor.withAlphaComponent(0.85).setStroke()
+            ringPath.stroke()
+        }
+        let dotInset: CGFloat = self.isHovered ? 3.0 : 3.5
+        let dotRect = self.bounds.insetBy(dx: dotInset, dy: dotInset)
+        let dotPath = NSBezierPath(ovalIn: dotRect)
+        self.swatchColor.setFill()
+        dotPath.fill()
+        NSColor.black.withAlphaComponent(0.18).setStroke()
+        dotPath.lineWidth = 0.6
+        dotPath.stroke()
     }
 }

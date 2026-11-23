@@ -499,9 +499,17 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         if menuItem.action == #selector(changeAppearance) {
             menuItem.state = (menuItem.tag == UserDefaults.standard[.documentAppearance].rawValue) ? .on : .off
+            return true
         }
         
-        return true
+        return self.validateUserInterfaceItem(menuItem)
+    }
+    
+    
+    /// Changes the syntax of the currently focused pane's document.
+    @IBAction func changeSyntax(_ sender: NSMenuItem) {
+        
+        self.focusedDocument.changeSyntax(sender)
     }
     
     
@@ -665,6 +673,12 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 return false
                 
             case #selector(saveDocument(_:)), #selector(saveDocumentAs(_:)):
+                return true
+                
+            case #selector(changeSyntax(_:)):
+                if let menuItem = item as? NSMenuItem {
+                    menuItem.state = (menuItem.representedObject as? String == self.focusedDocument.syntaxName) ? .on : .off
+                }
                 return true
                 
             case #selector(closeSplitTextView):
@@ -962,13 +976,33 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     // MARK: Text Highlight
     
     /// Paints the selection with the highlight color carried by the sender's tag.
-    @IBAction func applyHighlight(_ sender: NSMenuItem) {
+    @IBAction func applyHighlight(_ sender: Any?) {
         
+        let tag = (sender as? NSMenuItem)?.tag ?? (sender as? NSControl)?.tag ?? -1
         let colors = HighlightColor.allCases
-        guard colors.indices.contains(sender.tag) else { return }
+        guard colors.indices.contains(tag) else { return }
         
         self.highlightSelection { document, range in
-            document.addHighlight(range: range, color: colors[sender.tag])
+            document.addHighlight(range: range, color: colors[tag])
+        }
+    }
+    
+    
+    /// Launches the selected Pi Bot interactively inside this window's built-in Terminal.
+    @objc func launchPiBotFromMenu(_ sender: NSMenuItem) {
+        
+        guard let rawID = sender.representedObject as? String,
+              let botID = AIBotID(rawValue: rawID)
+        else { return }
+        
+        let workingDir = self.focusedDocument.fileURL?.deletingLastPathComponent()
+        guard let command = PiKernelManager.shared.interactiveTerminalCommand(for: botID, workingDirectory: workingDir) else {
+            return
+        }
+        if let workspaceVC = (self.view.window?.windowController as? DocumentWindowController)?.workspaceContentViewController {
+            workspaceVC.launchCommandInTerminal(command)
+        } else {
+            _ = PiKernelManager.shared.launchBotInFrontmostTerminal(botID)
         }
     }
     

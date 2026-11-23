@@ -173,6 +173,14 @@ final class TerminalViewController: NSViewController {
     }
     
     
+    /// Sends a shell command line into the running PTY session.
+    func sendCommand(_ command: String) {
+        
+        guard let terminalView = self.terminalView else { return }
+        terminalView.send(txt: command + "\n")
+    }
+    
+    
     /// Paints the terminal with the editor's theme, so the panel matches the text around it.
     func applyTheme() {
         

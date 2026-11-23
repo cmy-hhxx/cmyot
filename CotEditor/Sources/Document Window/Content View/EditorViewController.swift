@@ -524,6 +524,12 @@ final class EditorViewController: NSSplitViewController {
                 // this pane forwards the action to its own document
                 return true
                 
+            case #selector(changeSyntax(_:)):
+                if let menuItem = item as? NSMenuItem {
+                    menuItem.state = (menuItem.representedObject as? String == self.document.syntaxName) ? .on : .off
+                }
+                return true
+                
             case #selector(NSDocument.move(_:)):
                 return !self.tabs.isEmpty
                 

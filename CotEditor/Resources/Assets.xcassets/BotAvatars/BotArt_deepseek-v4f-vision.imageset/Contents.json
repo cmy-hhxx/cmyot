@@ -1,0 +1,12 @@
+{
+  "images": [
+    {
+      "filename": "deepseek-v4f-vision.jpg",
+      "idiom": "universal"
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  }
+}
