@@ -772,6 +772,13 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     /// The Esc key is pressed.
     override func cancelOperation(_ sender: Any?) {
         
+        if self.hasMarkedText() {
+            self.inputContext?.discardMarkedText()
+            self.unmarkText()
+            self.inputContext?.invalidateCharacterCoordinates()
+            return
+        }
+        
         if self.inlineDimensionEditor != nil {
             self.dismissInlineDimensionEditor(commit: false)
             return
@@ -3524,7 +3531,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         guard let layoutManager, let textContainer else { return nil }
         if let adaptive = self.inlineImageCaretFrame(for: location) {
-            let caretWidth = max(4, self.spaceWidth > 0 ? self.spaceWidth : 8)
+            let caretWidth: CGFloat = 4.5
             return NSRect(x: adaptive.minX, y: adaptive.minY, width: caretWidth, height: adaptive.height)
         }
         let string = self.string as NSString

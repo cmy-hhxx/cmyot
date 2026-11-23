@@ -739,7 +739,7 @@ struct AIBotsSettingsView: View {
         let rowsCount = Int(ceil(Double(bots.count) / Double(cols)))
         let cardGap: CGFloat = 12
         let cardWidth = floor((Self.fixedStageWidth - cardGap * CGFloat(cols - 1)) / CGFloat(cols)) // 167pt
-        let portraitHeight: CGFloat = 220 // Clean 3:4 portrait aspect ratio
+        let portraitHeight: CGFloat = 192 // Balanced gallery frame fitting 1:1, 3:4 & 4:3 covers cleanly without clipping
         let cardRowStride: CGFloat = portraitHeight + 52
         let stageHeight: CGFloat = switch self.layoutMode {
             case .list: CGFloat(bots.count) * 64.0
@@ -915,12 +915,14 @@ struct AIBotsSettingsView: View {
                     )
                 
                 if let portrait {
-                    Image(nsImage: portrait)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFill()
-                        .frame(width: artWidth, height: artHeight, alignment: cropAlignment)
-                        .opacity(config.isEnabled ? 1.0 : 0.45)
+                    AIGijinkaCompleteArtworkView(
+                        image: portrait,
+                        accent: accent,
+                        width: artWidth,
+                        height: artHeight,
+                        isDark: self.colorScheme == .dark,
+                        isEnabled: config.isEnabled
+                    )
                 } else {
                     VStack(spacing: 5) {
                         Image(systemName: botID.symbolName)
@@ -1255,18 +1257,21 @@ private struct AIBotInlineInspectorView: View {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(accent.opacity(0.14))
                     if let portrait {
-                        Image(nsImage: portrait)
-                            .resizable()
-                            .interpolation(.high)
-                            .scaledToFill()
-                            .frame(width: 60, height: 80, alignment: self.cropAlignment(for: artwork?.cropAnchor ?? .top))
+                        AIGijinkaCompleteArtworkView(
+                            image: portrait,
+                            accent: accent,
+                            width: 68,
+                            height: 82,
+                            isDark: NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua,
+                            isEnabled: self.config.isEnabled
+                        )
                     } else {
                         Image(systemName: self.botID.symbolName)
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(accent)
                     }
                 }
-                .frame(width: 60, height: 80)
+                .frame(width: 68, height: 82)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -1698,5 +1703,55 @@ private struct AIBotInlineInspectorView: View {
         } catch {
             self.testError = error.localizedDescription
         }
+    }
+}
+
+
+// MARK: - Complete Uncropped AI Gijinka Cover Renderer
+
+/// Displays 100% of any AI Gijinka cover (1:1, 3:4, 4:3, or 16:9) without cropping heads or edges,
+/// while filling any aspect-ratio margin with a soft color-matched blurred ambient backdrop.
+private struct AIGijinkaCompleteArtworkView: View {
+    
+    let image: NSImage
+    let accent: Color
+    let width: CGFloat
+    let height: CGFloat
+    let isDark: Bool
+    let isEnabled: Bool
+    
+    
+    var body: some View {
+        ZStack {
+            // Soft blurred color-matched ambient fill so non-matching aspect ratios never show harsh empty bars
+            Image(nsImage: self.image)
+                .resizable()
+                .interpolation(.low)
+                .scaledToFill()
+                .frame(width: self.width, height: self.height)
+                .blur(radius: 16)
+                .scaleEffect(1.12)
+                .opacity(self.isDark ? 0.42 : 0.30)
+            
+            // Gentle atmospheric wash for clean figure-ground contrast
+            LinearGradient(
+                colors: [
+                    self.accent.opacity(self.isDark ? 0.14 : 0.08),
+                    (self.isDark ? Color.black : Color.white).opacity(self.isDark ? 0.24 : 0.22),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            
+            // 100% complete uncropped artwork centered neatly inside the card frame
+            Image(nsImage: self.image)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: self.width, height: self.height)
+        }
+        .frame(width: self.width, height: self.height)
+        .clipped()
+        .opacity(self.isEnabled ? 1.0 : 0.45)
     }
 }

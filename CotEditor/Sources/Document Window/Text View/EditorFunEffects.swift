@@ -187,7 +187,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private var vimTrailLayers: [CAShapeLayer] = []
     private var trailRects: [NSRect] = []
     private var fluidCursor: FluidCursorState?
-    private var currentTargetRect: NSRect?
+    private(set) var currentTargetRect: NSRect?
     private var vimDisplayLink: CADisplayLink?
     private var displayLinkProxy: DisplayLinkProxy?
     private var lastStepTime: CFTimeInterval = 0
@@ -410,13 +410,16 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         if withYankPulse, hadBands, let root = self.vimVisualRootLayer {
             self.isPlayingVisualYankPulse = true
             let accent = self.visualSelectionColor
-            for (idx, layer) in self.vimVisualBandLayers.enumerated() where idx < self.vimVisualStates.count {
-                let targetRect = self.vimVisualStates[idx].target
-                layer.fillColor = accent.withAlphaComponent(0.32).cgColor
-                layer.strokeColor = nil
-                layer.lineWidth = 0
-                layer.path = CGPath(roundedRect: targetRect, cornerWidth: 3.5, cornerHeight: 3.5, transform: nil)
-                layer.opacity = 1.0
+            let targetRects = self.vimVisualStates.map(\.target)
+            if let primaryLayer = self.vimVisualBandLayers.first, !targetRects.isEmpty {
+                primaryLayer.fillColor = accent.withAlphaComponent(0.32).cgColor
+                primaryLayer.strokeColor = nil
+                primaryLayer.lineWidth = 0
+                primaryLayer.path = Self.buildSeamlessVisualSelectionPath(rects: targetRects)
+                primaryLayer.opacity = 1.0
+            }
+            for layer in self.vimVisualBandLayers.dropFirst() {
+                layer.opacity = 0
             }
             self.vimVisualStates.removeAll()
             self.vimVisualAnchorDotLayer?.opacity = 0
@@ -1371,7 +1374,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     }
     
     
-    private func moveVimCursor(
+    func moveVimCursor(
         to rawRect: NSRect,
         color: NSColor,
         animated: Bool,
@@ -1379,7 +1382,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         isContinuous: Bool = false
     ) {
         guard let textView = self.textView,
-              rawRect.width > 0, rawRect.height > 0, rawRect.height < 80,
+              rawRect.width > 0, rawRect.height > 0, rawRect.height < 2400,
               let hostLayer = self.ensureClippedHostLayer(for: textView)
         else { return }
         
@@ -1389,8 +1392,12 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         let mode = VimState.shared.mode
         let visualRect: NSRect
         if mode == .replace {
-            let barH = max(3, round(rawRect.height * 0.22))
+            let barH = max(3, min(10, round(rawRect.height * 0.22)))
             visualRect = NSRect(x: rawRect.minX, y: rawRect.maxY - barH, width: rawRect.width, height: barH)
+        } else if rawRect.height > 56 {
+            // Inline image line: render a crisp, unmistakable vertical accent bar beside the image card
+            let barW = max(3.5, min(5.0, rawRect.width))
+            visualRect = NSRect(x: rawRect.minX, y: rawRect.minY, width: barW, height: rawRect.height)
         } else {
             visualRect = rawRect
         }
@@ -1437,8 +1444,8 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         }
         
         if self.fluidCursor == nil, let fallbackFrom,
-           fallbackFrom.width > 0, fallbackFrom.height > 0, fallbackFrom.height < 80,
-           textView.visibleRect.insetBy(dx: -80, dy: -100).intersects(fallbackFrom)
+           fallbackFrom.width > 0, fallbackFrom.height > 0, fallbackFrom.height < 2400,
+           textView.visibleRect.insetBy(dx: -80, dy: -160).intersects(fallbackFrom)
         {
             self.fluidCursor = FluidCursorState(
                 center: CGPoint(x: fallbackFrom.midX, y: fallbackFrom.midY),
@@ -1798,23 +1805,159 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         let accent = self.visualSelectionColor
         let fill = accent.withAlphaComponent(0.20).cgColor
+        let activeRects = self.vimVisualStates.map(\.currentRect)
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for (idx, layer) in self.vimVisualBandLayers.enumerated() {
-            if idx < self.vimVisualStates.count {
-                let rect = self.vimVisualStates[idx].currentRect
-                let radius = min(3.5, max(2.0, rect.height * 0.16))
-                layer.path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
-                layer.fillColor = fill
-                layer.strokeColor = nil
-                layer.lineWidth = 0
-                layer.opacity = 1.0
-            } else {
-                layer.opacity = 0
-            }
+        if let primaryLayer = self.vimVisualBandLayers.first, !activeRects.isEmpty {
+            primaryLayer.path = Self.buildSeamlessVisualSelectionPath(rects: activeRects)
+            primaryLayer.fillColor = fill
+            primaryLayer.strokeColor = nil
+            primaryLayer.lineWidth = 0
+            primaryLayer.fillRule = .nonZero
+            primaryLayer.opacity = 1.0
+        } else {
+            self.vimVisualBandLayers.first?.opacity = 0
+        }
+        for layer in self.vimVisualBandLayers.dropFirst() {
+            layer.opacity = 0
         }
         CATransaction.commit()
+    }
+    
+    
+    /// Builds one seamless multi-line selection path with per-corner smart rounding:
+    /// adjacent lines flush along an edge share a razor-straight vertical seam (no `)(` V-notches
+    /// and no double-alpha horizontal overlaps), while outer corners stay smoothly rounded.
+    static func buildSeamlessVisualSelectionPath(rects rawRects: [NSRect]) -> CGPath {
+        let path = CGMutablePath()
+        guard !rawRects.isEmpty else { return path }
+        
+        // Sort top-to-bottom (flipped NSTextView coordinates: minY = top, maxY = bottom)
+        var rects = rawRects
+            .filter { $0.width > 0 && $0.height > 0 }
+            .sorted { $0.minY < $1.minY }
+        guard !rects.isEmpty else { return path }
+        
+        // Snap nearly-touching vertical seams cleanly so there is zero hairline gap or overlap
+        if rects.count > 1 {
+            for i in 1..<rects.count {
+                let prevMaxY = rects[i - 1].maxY
+                let delta = rects[i].minY - prevMaxY
+                if abs(delta) <= 3.0 {
+                    let bottom = max(prevMaxY + 1.0, rects[i].maxY)
+                    rects[i] = NSRect(
+                        x: rects[i].minX,
+                        y: prevMaxY,
+                        width: rects[i].width,
+                        height: bottom - prevMaxY
+                    )
+                }
+            }
+        }
+        
+        for i in 0..<rects.count {
+            let r = rects[i]
+            let prev: NSRect? = (i > 0 && abs(r.minY - rects[i - 1].maxY) <= 1.0) ? rects[i - 1] : nil
+            let next: NSRect? = (i + 1 < rects.count && abs(rects[i + 1].minY - r.maxY) <= 1.0) ? rects[i + 1] : nil
+            
+            let baseR = min(3.5, min(r.width * 0.45, r.height * 0.28))
+            
+            let rTL: CGFloat = if let prev {
+                (r.minX < prev.minX - 1.5) ? min(baseR, (prev.minX - r.minX) * 0.5) : 0
+            } else {
+                baseR
+            }
+            let rTR: CGFloat = if let prev {
+                (r.maxX > prev.maxX + 1.5) ? min(baseR, (r.maxX - prev.maxX) * 0.5) : 0
+            } else {
+                baseR
+            }
+            let rBL: CGFloat = if let next {
+                (r.minX < next.minX - 1.5) ? min(baseR, (next.minX - r.minX) * 0.5) : 0
+            } else {
+                baseR
+            }
+            let rBR: CGFloat = if let next {
+                (r.maxX > next.maxX + 1.5) ? min(baseR, (r.maxX - next.maxX) * 0.5) : 0
+            } else {
+                baseR
+            }
+            
+            // Tiny 0.5pt overlap into touching next band eliminates Retina sub-pixel hairline seams
+            // with zero double-alpha darkening because everything fills inside one unified .nonZero CGPath.
+            let drawRect = (next != nil)
+                ? NSRect(x: r.minX, y: r.minY, width: r.width, height: r.height + 0.5)
+                : r
+            
+            Self.appendSelectiveRoundedRect(
+                to: path,
+                rect: drawRect,
+                topLeft: rTL,
+                topRight: rTR,
+                bottomRight: rBR,
+                bottomLeft: rBL
+            )
+        }
+        return path
+    }
+    
+    
+    private static func appendSelectiveRoundedRect(
+        to path: CGMutablePath,
+        rect: NSRect,
+        topLeft: CGFloat,
+        topRight: CGFloat,
+        bottomRight: CGFloat,
+        bottomLeft: CGFloat
+    ) {
+        let minX = rect.minX
+        let maxX = rect.maxX
+        let minY = rect.minY
+        let maxY = rect.maxY
+        let halfW = rect.width * 0.5
+        let halfH = rect.height * 0.5
+        
+        let tl = max(0, min(topLeft, min(halfW, halfH)))
+        let tr = max(0, min(topRight, min(halfW, halfH)))
+        let br = max(0, min(bottomRight, min(halfW, halfH)))
+        let bl = max(0, min(bottomLeft, min(halfW, halfH)))
+        
+        path.move(to: CGPoint(x: minX + tl, y: minY))
+        
+        // Top-right corner
+        if tr > 0 {
+            path.addLine(to: CGPoint(x: maxX - tr, y: minY))
+            path.addArc(tangent1End: CGPoint(x: maxX, y: minY), tangent2End: CGPoint(x: maxX, y: minY + tr), radius: tr)
+        } else {
+            path.addLine(to: CGPoint(x: maxX, y: minY))
+        }
+        
+        // Bottom-right corner
+        if br > 0 {
+            path.addLine(to: CGPoint(x: maxX, y: maxY - br))
+            path.addArc(tangent1End: CGPoint(x: maxX, y: maxY), tangent2End: CGPoint(x: maxX - br, y: maxY), radius: br)
+        } else {
+            path.addLine(to: CGPoint(x: maxX, y: maxY))
+        }
+        
+        // Bottom-left corner
+        if bl > 0 {
+            path.addLine(to: CGPoint(x: minX + bl, y: maxY))
+            path.addArc(tangent1End: CGPoint(x: minX, y: maxY), tangent2End: CGPoint(x: minX, y: maxY - bl), radius: bl)
+        } else {
+            path.addLine(to: CGPoint(x: minX, y: maxY))
+        }
+        
+        // Top-left corner
+        if tl > 0 {
+            path.addLine(to: CGPoint(x: minX, y: minY + tl))
+            path.addArc(tangent1End: CGPoint(x: minX, y: minY), tangent2End: CGPoint(x: minX + tl, y: minY), radius: tl)
+        } else {
+            path.addLine(to: CGPoint(x: minX, y: minY))
+        }
+        
+        path.closeSubpath()
     }
     
     

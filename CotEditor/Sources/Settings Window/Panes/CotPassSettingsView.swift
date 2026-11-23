@@ -90,7 +90,76 @@ nonisolated enum CotPassLicense {
 }
 
 
-// MARK: - Curated Pass Finishes
+// MARK: - Curated Pass Finishes (Fluted Glass Palettes)
+
+nonisolated struct FlutedRGB: Sendable, Equatable {
+    let r: Double
+    let g: Double
+    let b: Double
+    
+    var swiftUIColor: Color {
+        Color(red: self.r, green: self.g, blue: self.b)
+    }
+}
+
+/// 5-stop optical density ramp for the animated Fluted Glass fluid shader.
+nonisolated struct FlutedGlassPalette: Sendable, Equatable {
+    let base: FlutedRGB
+    let light: FlutedRGB
+    let mid: FlutedRGB
+    let deep: FlutedRGB
+    let midnight: FlutedRGB
+    
+    /// Exact LeiBox Blue Fluted Glass palette (`#F4F4F4 -> #A8CCE3 -> #1A7ABA -> #042247 -> #020616`).
+    static let cobaltBlue = FlutedGlassPalette(
+        base: FlutedRGB(r: 0.957, g: 0.957, b: 0.957),
+        light: FlutedRGB(r: 0.660, g: 0.800, b: 0.890),
+        mid: FlutedRGB(r: 0.100, g: 0.480, b: 0.730),
+        deep: FlutedRGB(r: 0.015, g: 0.135, b: 0.280),
+        midnight: FlutedRGB(r: 0.008, g: 0.025, b: 0.087)
+    )
+    
+    static let pineEmerald = FlutedGlassPalette(
+        base: FlutedRGB(r: 0.953, g: 0.965, b: 0.957),
+        light: FlutedRGB(r: 0.624, g: 0.847, b: 0.769),
+        mid: FlutedRGB(r: 0.122, g: 0.541, b: 0.404),
+        deep: FlutedRGB(r: 0.031, g: 0.204, b: 0.153),
+        midnight: FlutedRGB(r: 0.012, g: 0.067, b: 0.051)
+    )
+    
+    static let amberGold = FlutedGlassPalette(
+        base: FlutedRGB(r: 0.969, g: 0.957, b: 0.933),
+        light: FlutedRGB(r: 0.945, g: 0.812, b: 0.627),
+        mid: FlutedRGB(r: 0.820, g: 0.490, b: 0.141),
+        deep: FlutedRGB(r: 0.290, g: 0.141, b: 0.031),
+        midnight: FlutedRGB(r: 0.086, g: 0.039, b: 0.012)
+    )
+    
+    static let nebulaViolet = FlutedGlassPalette(
+        base: FlutedRGB(r: 0.957, g: 0.949, b: 0.973),
+        light: FlutedRGB(r: 0.773, g: 0.714, b: 0.910),
+        mid: FlutedRGB(r: 0.427, g: 0.306, b: 0.761),
+        deep: FlutedRGB(r: 0.133, g: 0.071, b: 0.302),
+        midnight: FlutedRGB(r: 0.043, g: 0.020, b: 0.102)
+    )
+    
+    static let signalCrimson = FlutedGlassPalette(
+        base: FlutedRGB(r: 0.969, g: 0.949, b: 0.953),
+        light: FlutedRGB(r: 0.941, g: 0.706, b: 0.729),
+        mid: FlutedRGB(r: 0.800, g: 0.200, b: 0.267),
+        deep: FlutedRGB(r: 0.290, g: 0.051, b: 0.086),
+        midnight: FlutedRGB(r: 0.086, g: 0.016, b: 0.027)
+    )
+    
+    static let auroraTeal = FlutedGlassPalette(
+        base: FlutedRGB(r: 0.949, g: 0.965, b: 0.969),
+        light: FlutedRGB(r: 0.635, g: 0.843, b: 0.875),
+        mid: FlutedRGB(r: 0.118, g: 0.533, b: 0.600),
+        deep: FlutedRGB(r: 0.031, g: 0.200, b: 0.239),
+        midnight: FlutedRGB(r: 0.012, g: 0.063, b: 0.078)
+    )
+}
+
 
 nonisolated struct CotPassTheme: Identifiable, Sendable {
     
@@ -103,80 +172,87 @@ nonisolated struct CotPassTheme: Identifiable, Sendable {
     let backgroundBottomHex: String
     let mascotName: String
     let bitmap: [String]
+    let flutedPalette: FlutedGlassPalette
     
     
     static let allThemes: [CotPassTheme] = [
         CotPassTheme(
             id: 0,
+            title: "蔚蓝",
+            subtitle: "COBALT",
+            matrixColorHex: "#4AA8E8",
+            accentColorHex: "#E8F3FB",
+            backgroundTopHex: "#042247",
+            backgroundBottomHex: "#020616",
+            mascotName: "蔚蓝",
+            bitmap: ["........", "........", "........", "........", "........", "........"],
+            flutedPalette: .cobaltBlue
+        ),
+        CotPassTheme(
+            id: 1,
             title: "松烟",
             subtitle: "PINE",
             matrixColorHex: "#44C997",
             accentColorHex: "#E8ECE9",
-            backgroundTopHex: "#0B1512",
-            backgroundBottomHex: "#15231E",
+            backgroundTopHex: "#083427",
+            backgroundBottomHex: "#03110D",
             mascotName: "松烟",
-            bitmap: ["........", "........", "........", "........", "........", "........"]
+            bitmap: ["........", "........", "........", "........", "........", "........"],
+            flutedPalette: .pineEmerald
         ),
         CotPassTheme(
-            id: 1,
+            id: 2,
             title: "琥珀",
             subtitle: "AMBER",
             matrixColorHex: "#E5A93C",
             accentColorHex: "#FDE6B8",
-            backgroundTopHex: "#15100A",
-            backgroundBottomHex: "#241B10",
+            backgroundTopHex: "#4A2408",
+            backgroundBottomHex: "#160A03",
             mascotName: "琥珀",
-            bitmap: ["........", "........", "........", "........", "........", "........"]
-        ),
-        CotPassTheme(
-            id: 2,
-            title: "深紫",
-            subtitle: "VIOLET",
-            matrixColorHex: "#8772D6",
-            accentColorHex: "#EAE8F5",
-            backgroundTopHex: "#0E0E16",
-            backgroundBottomHex: "#1B172E",
-            mascotName: "深紫",
-            bitmap: ["........", "........", "........", "........", "........", "........"]
+            bitmap: ["........", "........", "........", "........", "........", "........"],
+            flutedPalette: .amberGold
         ),
         CotPassTheme(
             id: 3,
-            title: "绯红",
-            subtitle: "CRIMSON",
-            matrixColorHex: "#E0444D",
-            accentColorHex: "#F2EAEA",
-            backgroundTopHex: "#111011",
-            backgroundBottomHex: "#211215",
-            mascotName: "绯红",
-            bitmap: ["........", "........", "........", "........", "........", "........"]
+            title: "星紫",
+            subtitle: "VIOLET",
+            matrixColorHex: "#9A84EB",
+            accentColorHex: "#EAE8F5",
+            backgroundTopHex: "#22124D",
+            backgroundBottomHex: "#0B051A",
+            mascotName: "星紫",
+            bitmap: ["........", "........", "........", "........", "........", "........"],
+            flutedPalette: .nebulaViolet
         ),
         CotPassTheme(
             id: 4,
-            title: "抹茶",
-            subtitle: "MATCHA",
-            matrixColorHex: "#5D8718",
-            accentColorHex: "#A4CE46",
-            backgroundTopHex: "#EFE6CC",
-            backgroundBottomHex: "#E7DBB8",
-            mascotName: "抹茶",
-            bitmap: ["........", "........", "........", "........", "........", "........"]
+            title: "绯红",
+            subtitle: "CRIMSON",
+            matrixColorHex: "#E6525C",
+            accentColorHex: "#F2EAEA",
+            backgroundTopHex: "#4A0D16",
+            backgroundBottomHex: "#160407",
+            mascotName: "绯红",
+            bitmap: ["........", "........", "........", "........", "........", "........"],
+            flutedPalette: .signalCrimson
         ),
         CotPassTheme(
             id: 5,
-            title: "宣白",
-            subtitle: "PAPER",
-            matrixColorHex: "#D14236",
-            accentColorHex: "#1C1F1E",
-            backgroundTopHex: "#F6F3EC",
-            backgroundBottomHex: "#ECE5D7",
-            mascotName: "宣白",
-            bitmap: ["........", "........", "........", "........", "........", "........"]
+            title: "青黛",
+            subtitle: "TEAL",
+            matrixColorHex: "#36B5C9",
+            accentColorHex: "#E5F5F7",
+            backgroundTopHex: "#08333D",
+            backgroundBottomHex: "#031014",
+            mascotName: "青黛",
+            bitmap: ["........", "........", "........", "........", "........", "........"],
+            flutedPalette: .auroraTeal
         ),
     ]
     
     
     var isLightSurface: Bool {
-        self.id == 4 || self.id == 5
+        false
     }
     
     
@@ -613,9 +689,7 @@ struct CotPassSettingsView: View {
     @State private var tiltX: Double = 0
     @State private var tiltY: Double = 0
     @State private var hoverPoint = UnitPoint(x: 0.5, y: 0.5)
-    @State private var hoverLocation: CGPoint?
     @State private var isCardHovered = false
-    @State private var brandLineEngine = BrandLinePassEngine()
     
     
     private var theme: CotPassTheme {
@@ -645,9 +719,7 @@ struct CotPassSettingsView: View {
                 joinedText: self.joinedText,
                 accessText: self.accessTier.accessLabel,
                 specularPoint: self.hoverPoint,
-                pointerLocation: self.hoverLocation,
-                isHovered: self.isCardHovered,
-                brandLineEngine: self.brandLineEngine
+                isHovered: self.isCardHovered
             )
             .rotation3DEffect(.degrees(self.tiltX), axis: (x: 1, y: 0, z: 0), perspective: 0.55)
             .rotation3DEffect(.degrees(self.tiltY), axis: (x: 0, y: 1, z: 0), perspective: 0.55)
@@ -659,7 +731,6 @@ struct CotPassSettingsView: View {
                 switch phase {
                     case .active(let pt):
                         self.isCardHovered = true
-                        self.hoverLocation = pt
                         let ux = max(0, min(1, pt.x / 408.0))
                         let uy = max(0, min(1, pt.y / 246.0))
                         self.hoverPoint = UnitPoint(x: ux, y: uy)
@@ -669,14 +740,13 @@ struct CotPassSettingsView: View {
                         self.tiltX = max(-6.0, min(6.0, -ny * 4.6))
                     case .ended:
                         self.isCardHovered = false
-                        self.hoverLocation = nil
                         self.tiltX = 0
                         self.tiltY = 0
                         self.hoverPoint = UnitPoint(x: 0.5, y: 0.5)
                 }
             }
             
-            // Minimal Finish Swatches
+            // Minimal Fluted Glass Palette Swatches
             HStack(spacing: 12) {
                 ForEach(CotPassTheme.allThemes) { option in
                     let isSelected = (option.id == self.theme.id)
@@ -724,20 +794,9 @@ struct CotPassSettingsView: View {
         .frame(maxWidth: .infinity)
         .onAppear {
             self.loadPassState()
-            self.brandLineEngine.syncAvatarContour(profile: activeProfile, avatarImage: avatarImage)
         }
         .onChange(of: activeProfile.id) { _, _ in
             self.loadPassState()
-            self.brandLineEngine.syncAvatarContour(
-                profile: self.profileManager.activeProfile,
-                avatarImage: self.profileManager.avatarImage(for: self.profileManager.activeProfile)
-            )
-        }
-        .onChange(of: activeProfile.avatarData?.count) { _, _ in
-            self.brandLineEngine.syncAvatarContour(
-                profile: self.profileManager.activeProfile,
-                avatarImage: self.profileManager.avatarImage(for: self.profileManager.activeProfile)
-            )
         }
     }
     
@@ -798,9 +857,10 @@ nonisolated enum BlueFlutedGlassRenderer {
         return exp(-(qx * qx + qy * qy))
     }
     
-    /// Renders one frame of the Blue Fluted Glass field at `time` (seconds) into an RGBA `CGImage`.
+    /// Renders one frame of the Fluted Glass field at `time` (seconds) using `palette` into an RGBA `CGImage`.
     static func renderFrame(
         time: Double,
+        palette: FlutedGlassPalette = .cobaltBlue,
         width: Int = Self.defaultWidth,
         height: Int = Self.defaultHeight,
         ribCount: Double = Self.defaultRibCount
@@ -876,6 +936,12 @@ nonisolated enum BlueFlutedGlassRenderer {
             return (trunk + 0.56 * crown + 0.90 * base) * (1.0 - 0.78 * hole)
         }
         
+        let p0 = palette.base
+        let p1 = palette.light
+        let p2 = palette.mid
+        let p3 = palette.deep
+        let p4 = palette.midnight
+        
         let byteCount = width * height * 4
         var pixels = [UInt8](repeating: 255, count: byteCount)
         
@@ -900,37 +966,40 @@ nonisolated enum BlueFlutedGlassRenderer {
                     let d4 = sampleDensity(rx: rx, py: ry - 0.055, baseYHint: baseHint)
                     let density = d0 * 0.40 + (d1 + d2) * 0.24 + (d3 + d4) * 0.06
                     
-                    // Exact 5-stop sRGB palette ramp (#F4F4F4 -> #A8CCE3 -> #1A7ABA -> #042247 -> #020616)
-                    var r = 0.957
-                    var g = 0.957
-                    var b = 0.957
+                    // 5-stop sRGB palette ramp
+                    var r = p0.r
+                    var g = p0.g
+                    var b = p0.b
                     
                     let k1 = Self.smoothstep(0.015, 0.20, density)
-                    r += (0.660 - r) * k1
-                    g += (0.800 - g) * k1
-                    b += (0.890 - b) * k1
+                    r += (p1.r - r) * k1
+                    g += (p1.g - g) * k1
+                    b += (p1.b - b) * k1
                     
                     let k2 = Self.smoothstep(0.16, 0.49, density)
-                    r += (0.100 - r) * k2
-                    g += (0.480 - g) * k2
-                    b += (0.730 - b) * k2
+                    r += (p2.r - r) * k2
+                    g += (p2.g - g) * k2
+                    b += (p2.b - b) * k2
                     
                     let k3 = Self.smoothstep(0.40, 0.73, density)
-                    r += (0.015 - r) * k3
-                    g += (0.135 - g) * k3
-                    b += (0.280 - b) * k3
+                    r += (p3.r - r) * k3
+                    g += (p3.g - g) * k3
+                    b += (p3.b - b) * k3
                     
                     let k4 = Self.smoothstep(0.62, 0.93, density)
-                    r += (0.008 - r) * k4
-                    g += (0.025 - g) * k4
-                    b += (0.087 - b) * k4
+                    r += (p4.r - r) * k4
+                    g += (p4.g - g) * k4
+                    b += (p4.b - b) * k4
                     
-                    // Specular rib facet sheen restricted to blue regions
-                    let blueMask = (1.0 - r) * Self.smoothstep(0.02, 0.18, b - r)
-                    let sheen = colSheenFactor[x] * blueMask
-                    r = max(0.0, min(1.0, r + 0.018 * sheen))
-                    g = max(0.0, min(1.0, g + 0.025 * sheen))
-                    b = max(0.0, min(1.0, b + 0.030 * sheen))
+                    // Chroma-aware specular rib facet sheen across every fluted palette
+                    let maxC = max(r, max(g, b))
+                    let minC = min(r, min(g, b))
+                    let luma = (r + g + b) / 3.0
+                    let chromaMask = (1.0 - luma) * Self.smoothstep(0.025, 0.20, maxC - minC)
+                    let sheen = colSheenFactor[x] * chromaMask
+                    r = max(0.0, min(1.0, r + (0.018 + 0.014 * p1.r) * sheen))
+                    g = max(0.0, min(1.0, g + (0.018 + 0.014 * p1.g) * sheen))
+                    b = max(0.0, min(1.0, b + (0.018 + 0.014 * p1.b) * sheen))
                     
                     let offset = rowOffset + x * 4
                     ptr[offset]     = UInt8(r * 255.0 + 0.5)
@@ -962,10 +1031,12 @@ nonisolated enum BlueFlutedGlassRenderer {
 
 private struct BlueFlutedGlassBackdropView: View {
     
+    let palette: FlutedGlassPalette
+    
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: AnimationConstants.isReducedMotionEnabled)) { context in
             let t = AnimationConstants.isReducedMotionEnabled ? 6.5 : context.date.timeIntervalSinceReferenceDate
-            if let cgImage = BlueFlutedGlassRenderer.renderFrame(time: t) {
+            if let cgImage = BlueFlutedGlassRenderer.renderFrame(time: t, palette: self.palette) {
                 Image(decorative: cgImage, scale: 1.0)
                     .resizable()
                     .interpolation(.medium)
@@ -974,9 +1045,9 @@ private struct BlueFlutedGlassBackdropView: View {
             } else {
                 LinearGradient(
                     colors: [
-                        Color(red: 0.957, green: 0.957, blue: 0.957),
-                        Color(red: 0.10, green: 0.48, blue: 0.73),
-                        Color(red: 0.008, green: 0.025, blue: 0.087),
+                        self.palette.base.swiftUIColor,
+                        self.palette.mid.swiftUIColor,
+                        self.palette.midnight.swiftUIColor,
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
@@ -988,7 +1059,7 @@ private struct BlueFlutedGlassBackdropView: View {
 }
 
 
-// MARK: - Horizontal Collector Pass Card (Blue Fluted Glass + Avatar-Contour Scanlines)
+// MARK: - Horizontal Collector Pass Card (Pure Flowing Fluted Glass)
 
 struct CotPassCardView: View {
     
@@ -1004,104 +1075,31 @@ struct CotPassCardView: View {
     var isHovered: Bool = false
     var brandLineEngine: BrandLinePassEngine? = nil
     
-    @State private var fallbackEngine = BrandLinePassEngine()
-    
     
     var body: some View {
+        let palette = self.theme.flutedPalette
         let accent = Color(hexString: self.theme.matrixColorHex)
         let primaryText = Color.white
-        let mutedText = Color.white.opacity(0.74)
+        let mutedText = Color.white.opacity(0.76)
         let dividerStroke = Color.white.opacity(0.24)
-        let opticalShadow = Color(red: 0.0, green: 0.075, blue: 0.18, opacity: 0.42)
-        let engine = self.brandLineEngine ?? self.fallbackEngine
+        let opticalShadow = palette.midnight.swiftUIColor.opacity(0.46)
         
         ZStack {
-            // Animated Blue Fluted Glass backdrop (leibox.pantoria.cn/docs/animations/blue-fluted-glass)
-            BlueFlutedGlassBackdropView()
+            // Animated Fluted Glass backdrop using the selected theme palette
+            BlueFlutedGlassBackdropView(palette: palette)
             
             // Gentle optical scrims at top header & bottom metadata bar to guarantee crisp white typography
             // while keeping the luminous fluted-glass fluid field unobstructed across the card body
             LinearGradient(
                 stops: [
-                    .init(color: Color(red: 0.015, green: 0.10, blue: 0.24, opacity: 0.26), location: 0.0),
+                    .init(color: palette.deep.swiftUIColor.opacity(0.28), location: 0.0),
                     .init(color: Color.clear, location: 0.28),
                     .init(color: Color.clear, location: 0.56),
-                    .init(color: Color(red: 0.008, green: 0.035, blue: 0.11, opacity: 0.42), location: 1.0),
+                    .init(color: palette.midnight.swiftUIColor.opacity(0.44), location: 1.0),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .allowsHitTesting(false)
-            
-            // Avatar-contour vertical scanline reconstruction + spring pointer repulsion + reticle boxes
-            TimelineView(.animation(minimumInterval: self.isHovered ? (1.0 / 60.0) : (1.0 / 12.0), paused: AnimationConstants.isReducedMotionEnabled)) { context in
-                let t = context.date.timeIntervalSinceReferenceDate
-                Canvas { graphics, canvasSize in
-                    engine.syncAvatarContour(profile: self.profile, avatarImage: self.avatarImage)
-                    engine.step(time: t, size: canvasSize, pointer: self.pointerLocation)
-                    
-                    let cols = BrandLinePassEngine.lineColumns
-                    let rows = BrandLinePassEngine.lineSegments
-                    let colStep = canvasSize.width / CGFloat(max(1, cols - 1))
-                    let rowStep = canvasSize.height / CGFloat(rows)
-                    let widths: [CGFloat] = [0.34, 0.88, 1.70, 2.65]
-                    let alphas: [Double] = [0.02, 0.22, 0.46, 0.72]
-                    let noiseYShift = t * 0.44
-                    
-                    for c in 0..<cols {
-                        let baseX = CGFloat(c) * colStep
-                        let normX = Double(c) / Double(max(1, cols - 1))
-                        
-                        for r in 0..<rows {
-                            let idx0 = c * (rows + 1) + r
-                            let idx1 = idx0 + 1
-                            let x0 = baseX + engine.offsetX[idx0]
-                            let x1 = baseX + engine.offsetX[idx1]
-                            let y0 = CGFloat(r) * rowStep
-                            let y1 = CGFloat(r + 1) * rowStep
-                            let normY = (Double(r) + 0.5) / Double(rows)
-                            
-                            let luma = engine.sampleLuminance(normX: normX, normY: normY)
-                            let n = BrandLinePassEngine.valueNoise(x: Double(c) * 0.24, y: Double(r) * 0.16 - noiseYShift)
-                            let combined = luma + (n - 0.5) * 0.20
-                            let tier: Int
-                            if combined >= 0.66 { tier = 3 }
-                            else if combined >= 0.40 { tier = 2 }
-                            else if combined >= 0.18 { tier = 1 }
-                            else { tier = 0 }
-                            
-                            var seg = Path()
-                            seg.move(to: CGPoint(x: x0, y: y0))
-                            seg.addLine(to: CGPoint(x: x1, y: y1))
-                            graphics.stroke(seg, with: .color(accent.opacity(alphas[tier])), style: StrokeStyle(lineWidth: widths[tier], lineCap: .round))
-                        }
-                    }
-                    
-                    if let pointer = self.pointerLocation, !engine.activeDetections.isEmpty {
-                        for box in engine.activeDetections {
-                            let rect = CGRect(
-                                x: box.normRect.minX * canvasSize.width,
-                                y: box.normRect.minY * canvasSize.height,
-                                width: box.normRect.width * canvasSize.width,
-                                height: box.normRect.height * canvasSize.height
-                            )
-                            graphics.stroke(
-                                Path(roundedRect: rect, cornerRadius: 2),
-                                with: .color(Color.white.opacity(0.68)),
-                                lineWidth: 0.9
-                            )
-                            var leader = Path()
-                            leader.move(to: pointer)
-                            leader.addLine(to: CGPoint(x: rect.midX, y: rect.midY))
-                            graphics.stroke(
-                                leader,
-                                with: .color(Color.white.opacity(0.42)),
-                                style: StrokeStyle(lineWidth: 0.75, dash: [3, 2])
-                            )
-                        }
-                    }
-                }
-            }
             .allowsHitTesting(false)
             
             // Inner registration hairline
@@ -1113,7 +1111,7 @@ struct CotPassCardView: View {
             // Subtle specular sheen tracking cursor
             RadialGradient(
                 colors: [
-                    Color.white.opacity(self.isHovered ? 0.24 : 0.07),
+                    Color.white.opacity(self.isHovered ? 0.22 : 0.06),
                     .clear,
                 ],
                 center: self.specularPoint,
@@ -1146,7 +1144,7 @@ struct CotPassCardView: View {
                 
                 Spacer(minLength: 16)
                 
-                // Clean Identity Block (Left-aligned, leaving right canvas clear for avatar contour)
+                // Clean Identity Block
                 HStack(alignment: .center, spacing: 12) {
                     UserAvatarCircleView(profile: self.profile, size: 48, customImage: self.avatarImage)
                         .overlay(
@@ -1211,7 +1209,7 @@ struct CotPassCardView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.white.opacity(self.isHovered ? 0.45 : 0.26), lineWidth: 1)
         )
-        .shadow(color: Color(red: 0.01, green: 0.08, blue: 0.22, opacity: 0.26), radius: 18, y: 7)
+        .shadow(color: palette.deep.swiftUIColor.opacity(0.28), radius: 18, y: 7)
     }
     
     

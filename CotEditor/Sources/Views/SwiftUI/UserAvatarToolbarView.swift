@@ -284,8 +284,8 @@ private struct UserAvatarToolbarBadgeLabel: View {
         vfx.layer?.cornerRadius = cornerRadius
         vfx.layer?.masksToBounds = true
         vfx.layer?.backgroundColor = NSColor.clear.cgColor
-        vfx.layer?.borderWidth = 0.75
-        vfx.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.32).cgColor
+        vfx.layer?.borderWidth = 0.5
+        vfx.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
         
         let contentView = AnyView(
             rootView
@@ -323,6 +323,7 @@ private struct UserAvatarToolbarBadgeLabel: View {
             backing: .buffered,
             defer: false
         )
+        panel.appearance = hostWindow.effectiveAppearance
         panel.isFloatingPanel = true
         panel.level = .popUpMenu
         panel.backgroundColor = .clear
@@ -865,8 +866,8 @@ nonisolated enum ToolbarCapsuleTodoHelper {
         vfx.layer?.cornerRadius = cornerRadius
         vfx.layer?.masksToBounds = true
         vfx.layer?.backgroundColor = NSColor.clear.cgColor
-        vfx.layer?.borderWidth = 0.75
-        vfx.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.32).cgColor
+        vfx.layer?.borderWidth = 0.5
+        vfx.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
         
         let contentView = AnyView(
             rootView
@@ -908,6 +909,7 @@ nonisolated enum ToolbarCapsuleTodoHelper {
             backing: .buffered,
             defer: false
         )
+        panel.appearance = hostWindow.effectiveAppearance
         panel.isFloatingPanel = true
         panel.level = .popUpMenu
         panel.backgroundColor = .clear
@@ -1021,12 +1023,20 @@ private struct ToolbarCapsuleTodoTriggerView: View {
                     let urgency = ToolbarCapsuleTodoHelper.urgencyLevel(for: top, now: now)
                     let badgeColor = self.urgencyColor(urgency, fallback: tokens.accentText)
                     let timeText = ToolbarCapsuleTodoHelper.timeBadgeText(for: top, now: now)
+                    let progress = Self.countdownProgress(for: top, now: now)
                     let extraCount = prioritized.count - 1
                     
                     HStack(spacing: 6) {
-                        Circle()
-                            .fill(badgeColor)
-                            .frame(width: 6, height: 6)
+                        // Meter Remaining–inspired mini circular countdown ring
+                        ZStack {
+                            Circle()
+                                .stroke(badgeColor.opacity(0.24), lineWidth: 1.8)
+                            Circle()
+                                .trim(from: 0, to: progress)
+                                .stroke(badgeColor, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                        }
+                        .frame(width: 12, height: 12)
                         
                         Text(top.title)
                             .font(.system(size: 11.5, weight: .medium))
@@ -1036,19 +1046,19 @@ private struct ToolbarCapsuleTodoTriggerView: View {
                             .frame(maxWidth: 108, alignment: .leading)
                         
                         Text(timeText)
-                            .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                            .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
                             .foregroundStyle(badgeColor)
-                            .padding(.horizontal, 5.5)
+                            .padding(.horizontal, 6)
                             .padding(.vertical, 1.5)
                             .background(badgeColor.opacity(self.colorScheme == .dark ? 0.18 : 0.11), in: Capsule())
                         
                         if extraCount > 0 {
                             Text("+\(extraCount)")
-                                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                                .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .padding(.horizontal, 9)
+                    .padding(.horizontal, 8)
                     .frame(height: 26)
                     .background(
                         Capsule()
@@ -1057,7 +1067,7 @@ private struct ToolbarCapsuleTodoTriggerView: View {
                     .overlay(
                         Capsule()
                             .strokeBorder(
-                                urgency >= 3 ? badgeColor.opacity(0.45) : self.pillBorder,
+                                urgency >= 3 ? badgeColor.opacity(0.45) : Color.clear,
                                 lineWidth: 0.75
                             )
                     )
@@ -1071,15 +1081,11 @@ private struct ToolbarCapsuleTodoTriggerView: View {
                             .font(.system(size: 11.5, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
-                    .padding(.horizontal, 9)
+                    .padding(.horizontal, 8)
                     .frame(height: 26)
                     .background(
                         Capsule()
                             .fill(self.pillFill(isHovered: self.isHovered))
-                    )
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(self.pillBorder, lineWidth: 0.75)
                     )
                     .fixedSize()
                 }
@@ -1100,10 +1106,8 @@ private struct ToolbarCapsuleTodoTriggerView: View {
     
     
     private func pillFill(isHovered: Bool) -> Color {
-        if self.colorScheme == .dark {
-            return Color.white.opacity(isHovered ? 0.11 : 0.065)
-        }
-        return Color.black.opacity(isHovered ? 0.075 : 0.045)
+        guard isHovered else { return .clear }
+        return self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.06)
     }
     
     private var pillBorder: Color {
@@ -1117,6 +1121,16 @@ private struct ToolbarCapsuleTodoTriggerView: View {
             case 2: Color(red: 0.88, green: 0.62, blue: 0.16)
             default: fallback
         }
+    }
+    
+    
+    static func countdownProgress(for item: UserReminder, now: Date) -> CGFloat {
+        guard item.hasDeadline else { return 0.72 }
+        let total = max(60.0, item.dueDate.timeIntervalSince(item.createdAt))
+        let remaining = item.dueDate.timeIntervalSince(now)
+        if remaining <= 0 { return 1.0 }
+        let ratio = min(1.0, max(0.08, remaining / total))
+        return CGFloat(ratio)
     }
 }
 
@@ -1137,11 +1151,11 @@ private struct ToolbarCapsuleTodoDropdownView: View {
     
     
     private var cardSurface: Color {
-        self.colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.03)
+        self.colorScheme == .dark ? Color.white.opacity(0.055) : Color.black.opacity(0.03)
     }
     
     private var subtleFill: Color {
-        self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.05)
+        self.colorScheme == .dark ? Color.white.opacity(0.085) : Color.black.opacity(0.055)
     }
     
     private var hairline: Color {
@@ -1160,12 +1174,15 @@ private struct ToolbarCapsuleTodoDropdownView: View {
                 // Header
                 HStack(spacing: 8) {
                     Text(AppLanguage.text("待办", en: "Todos"))
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 13.5, weight: .semibold))
                     
                     if !prioritized.isEmpty {
-                        Text("\(prioritized.count)")
-                            .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        Text(String(format: "%02d", prioritized.count))
+                            .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
                             .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1.5)
+                            .background(self.subtleFill, in: Capsule())
                     }
                     
                     Spacer()
@@ -1196,7 +1213,7 @@ private struct ToolbarCapsuleTodoDropdownView: View {
                     .pointerStyle(.link)
                 }
                 
-                // Inline composer
+                // Inline Live-Activity Quick Composer
                 if self.isCreating || prioritized.isEmpty {
                     VStack(spacing: 8) {
                         TextField(AppLanguage.text("输入待办，回车添加", en: "New todo, press Return"), text: self.$todoTitle)
@@ -1204,8 +1221,8 @@ private struct ToolbarCapsuleTodoDropdownView: View {
                             .font(.system(size: 12.5))
                             .focused(self.$isFieldFocused)
                             .padding(.horizontal, 10)
-                            .frame(height: 30)
-                            .background(self.subtleFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .frame(height: 32)
+                            .background(self.subtleFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                             .onSubmit { self.submitTodo() }
                         
                         HStack(spacing: 4) {
@@ -1247,26 +1264,190 @@ private struct ToolbarCapsuleTodoDropdownView: View {
                         }
                     }
                     .padding(10)
-                    .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(self.hairline, lineWidth: 0.75))
+                    .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(self.hairline, lineWidth: 0.75))
                 }
                 
-                // All prioritized todos (soonest-expiring first)
-                if !prioritized.isEmpty {
+                // Live-Activity Focus Hero Card for Soonest Todo (Picking up order / ETA 5:50 + Meter Remaining 1:13 inspired)
+                if let focusItem = prioritized.first {
+                    self.liveActivityHeroTodoCard(item: focusItem, now: now, tokens: tokens)
+                }
+                
+                // Remaining Prioritized Todos
+                if prioritized.count > 1 {
                     ScrollView {
                         VStack(spacing: 6) {
-                            ForEach(prioritized) { item in
+                            ForEach(Array(prioritized.dropFirst())) { item in
                                 self.todoRow(item: item, now: now, tokens: tokens)
                             }
                         }
                     }
-                    .frame(maxHeight: 280)
+                    .frame(maxHeight: 200)
                 }
             }
             .padding(12)
-            .frame(width: 324)
+            .frame(width: 334)
             .fixedSize(horizontal: false, vertical: true)
         }
+    }
+    
+    
+    @ViewBuilder
+    private func liveActivityHeroTodoCard(item: UserReminder, now: Date, tokens: StudioColorTokens) -> some View {
+        let isCompleting = self.completingIDs.contains(item.id)
+        let urgency = ToolbarCapsuleTodoHelper.urgencyLevel(for: item, now: now)
+        let accentColor: Color = switch urgency {
+            case 4: Color(red: 0.92, green: 0.30, blue: 0.30)
+            case 3: Color(red: 0.94, green: 0.50, blue: 0.20)
+            case 2: Color(red: 0.90, green: 0.64, blue: 0.18)
+            default: tokens.accent
+        }
+        let statusLabel: String = switch urgency {
+            case 4: AppLanguage.text("已超时", en: "Overdue")
+            case 3: AppLanguage.text("即将到期", en: "Due Soon")
+            case 2: AppLanguage.text("进行中", en: "Active")
+            default: item.hasDeadline ? AppLanguage.text("待处理", en: "Upcoming") : AppLanguage.text("随时可做", en: "Anytime")
+        }
+        let timeText = ToolbarCapsuleTodoHelper.timeBadgeText(for: item, now: now)
+        let elapsedRatio: CGFloat = {
+            guard item.hasDeadline else { return 0.36 }
+            let total = max(60.0, item.dueDate.timeIntervalSince(item.createdAt))
+            let elapsed = now.timeIntervalSince(item.createdAt)
+            return CGFloat(min(1.0, max(0.08, elapsed / total)))
+        }()
+        let ringRemaining = ToolbarCapsuleTodoTriggerView.countdownProgress(for: item, now: now)
+        
+        VStack(alignment: .leading, spacing: 10) {
+            // Top telemetry bar: status + bold tabular ETA / countdown
+            HStack(alignment: .firstTextBaseline) {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(accentColor)
+                        .frame(width: 6, height: 6)
+                    Text(statusLabel)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(accentColor)
+                }
+                
+                Spacer()
+                
+                Text(timeText)
+                    .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(urgency >= 3 ? accentColor : .primary)
+            }
+            
+            // Picking-up-order inspired luminous horizontal progress track
+            GeometryReader { geo in
+                let trackW = max(40, geo.size.width)
+                let fillW = max(14, trackW * elapsedRatio)
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(accentColor.opacity(self.colorScheme == .dark ? 0.20 : 0.14))
+                    
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [accentColor.opacity(0.65), accentColor],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: fillW)
+                    
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 8, height: 8)
+                        .shadow(color: accentColor.opacity(0.55), radius: 3)
+                        .offset(x: max(2, min(trackW - 10, fillW - 9)))
+                }
+            }
+            .frame(height: 10)
+            
+            // Bottom action row: Circular countdown ring + Task Title (left), tactile round action pills (right)
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .stroke(accentColor.opacity(0.22), lineWidth: 2)
+                    Circle()
+                        .trim(from: 0, to: ringRemaining)
+                        .stroke(accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
+                .frame(width: 18, height: 18)
+                
+                Text(item.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isCompleting ? .secondary : .primary)
+                    .strikethrough(isCompleting)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                
+                Spacer(minLength: 4)
+                
+                // Tactile circular action pills (Complete / +15m / Remove)
+                Button {
+                    self.completeItem(item)
+                } label: {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundStyle(isCompleting ? .white : accentColor)
+                        .frame(width: 26, height: 24)
+                        .background(
+                            Capsule().fill(isCompleting ? Color(red: 0.20, green: 0.72, blue: 0.45) : accentColor.opacity(0.18))
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help(AppLanguage.text("标记完成", en: "Complete"))
+                
+                if !isCompleting {
+                    Button {
+                        self.analytics.snoozeReminder(id: item.id, by: 15 * 60)
+                    } label: {
+                        Text("+15m")
+                            .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6.5)
+                            .frame(height: 24)
+                            .background(self.subtleFill, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(AppLanguage.text("延后 15 分钟", en: "Snooze 15m"))
+                    
+                    Button {
+                        self.analytics.unpinReminder(id: item.id)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24, height: 24)
+                            .background(self.subtleFill, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(AppLanguage.text("移除", en: "Remove"))
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            accentColor.opacity(self.colorScheme == .dark ? 0.14 : 0.08),
+                            self.cardSurface,
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .strokeBorder(accentColor.opacity(self.colorScheme == .dark ? 0.28 : 0.20), lineWidth: 0.8)
+        )
     }
     
     
@@ -1282,20 +1463,32 @@ private struct ToolbarCapsuleTodoDropdownView: View {
             default: tokens.accentText
         }
         let timeText = ToolbarCapsuleTodoHelper.timeBadgeText(for: item, now: now)
+        let progress = ToolbarCapsuleTodoTriggerView.countdownProgress(for: item, now: now)
         
         HStack(spacing: 8) {
             Button {
                 self.completeItem(item)
             } label: {
                 ZStack {
-                    Circle()
-                        .fill(isCompleting ? Color(red: 0.20, green: 0.72, blue: 0.45) : badgeColor.opacity(0.14))
-                        .frame(width: 20, height: 20)
-                    Image(systemName: isCompleting ? "checkmark" : "circle.fill")
-                        .font(.system(size: isCompleting ? 9.5 : 4.5, weight: .bold))
-                        .foregroundStyle(isCompleting ? .white : badgeColor)
+                    if isCompleting {
+                        Circle()
+                            .fill(Color(red: 0.20, green: 0.72, blue: 0.45))
+                            .frame(width: 18, height: 18)
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundStyle(.white)
+                    } else {
+                        Circle()
+                            .stroke(badgeColor.opacity(0.24), lineWidth: 1.8)
+                            .frame(width: 16, height: 16)
+                        Circle()
+                            .trim(from: 0, to: progress)
+                            .stroke(badgeColor, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                            .frame(width: 16, height: 16)
+                    }
                 }
-                .frame(width: 24, height: 24)
+                .frame(width: 22, height: 22)
                 .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -1311,11 +1504,11 @@ private struct ToolbarCapsuleTodoDropdownView: View {
             
             Spacer(minLength: 4)
             
-            // Always show time pill
+            // Always show tabular countdown pill
             Text(timeText)
-                .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
                 .foregroundStyle(badgeColor)
-                .padding(.horizontal, 6.5)
+                .padding(.horizontal, 7)
                 .padding(.vertical, 2)
                 .background(badgeColor.opacity(self.colorScheme == .dark ? 0.18 : 0.11), in: Capsule())
                 .fixedSize()
@@ -1325,7 +1518,7 @@ private struct ToolbarCapsuleTodoDropdownView: View {
                     self.analytics.snoozeReminder(id: item.id, by: 15 * 60)
                 } label: {
                     Text("+15m")
-                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                        .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 5.5)
                         .frame(height: 22)
@@ -1349,14 +1542,14 @@ private struct ToolbarCapsuleTodoDropdownView: View {
                 .help(AppLanguage.text("移除", en: "Remove"))
             }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 36)
+        .padding(.horizontal, 9)
+        .frame(height: 38)
         .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .fill(isHovered ? self.subtleFill : self.cardSurface)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .strokeBorder(self.hairline, lineWidth: 0.65)
         )
         .onHover { hovering in
@@ -1457,8 +1650,8 @@ struct UserProfilePopoverView: View {
             maxCount: 8
         )
         
-        VStack(spacing: 10) {
-            // 1. Flagship Hero Card with Soft Aurora Clouds + 360° Surrounding Danmaku Stage (Zero Refresh Button, Zero Right Label)
+        VStack(spacing: 0) {
+            // 1. Seamless Edge-to-Edge Hero Card with Diffused Aurora + 3D Cosmic Nebula Danmaku
             VStack(spacing: 6) {
                 // Header micro-row (Greeting left, Danmaku toggle right — seamless auto-updates)
                 HStack(spacing: 6) {
@@ -1711,33 +1904,26 @@ struct UserProfilePopoverView: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .padding(.top, 11)
-            .padding(.bottom, 12)
-            .padding(.horizontal, 12)
+            .padding(.top, 14)
+            .padding(.bottom, 14)
+            .padding(.horizontal, 14)
             .background {
                 SoftAvatarAuroraBackdrop(
                     palette: ambient,
                     blurredCoverImage: blurredCover,
-                    surface: self.cardSurface,
-                    isDark: self.colorScheme == .dark
+                    surface: .clear,
+                    isDark: self.colorScheme == .dark,
+                    cornerRadius: 0
                 )
             }
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: self.colorScheme == .dark
-                                ? [Color.white.opacity(0.14), Color.white.opacity(0.03)]
-                                : [Color.white.opacity(0.85), Color.black.opacity(0.05)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 0.75
-                    )
-            )
             
-            // 2. 2-Tile Primary Command Dock (数据看板 + 个人设置 / 通行证)
-            HStack(spacing: 8) {
+            // Single quiet hairline divider separating Hero stage from Command Dock (zero nested boxes)
+            Rectangle()
+                .fill(self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.07))
+                .frame(height: 0.5)
+            
+            // 2. Seamless 2-Tile Command Dock (数据看板 | 个人设置 / 通行证)
+            HStack(spacing: 0) {
                 Button {
                     let targetWindow = self.hostWindow
                     self.closePopover()
@@ -1747,7 +1933,7 @@ struct UserProfilePopoverView: View {
                         MiniPopoverSparkMatrix(values: recent5, accent: studioTokens.accentText, emptyColor: self.surfaceFill)
                             .frame(width: 26, height: 18)
                             .padding(5)
-                            .background(studioTokens.positivePillBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .background(studioTokens.positivePillBg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                         
                         Text(AppLanguage.text("数据看板", en: "Dashboard"))
                             .font(.system(size: 12.5, weight: .semibold))
@@ -1759,24 +1945,21 @@ struct UserProfilePopoverView: View {
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(self.isDashboardHovered ? studioTokens.accentText : .secondary)
                     }
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 14)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-                    .background(
-                        self.isDashboardHovered ? self.surfaceFill : self.cardSurface,
-                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(self.softCardStroke(active: self.isDashboardHovered, accent: studioTokens.accentText), lineWidth: 0.75)
-                    )
+                    .frame(height: 48)
+                    .background(self.isDashboardHovered ? self.surfaceFill : Color.clear)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
                 .onHover { hovering in
-                    withAnimation(Self.spring) { self.isDashboardHovered = hovering }
+                    withAnimation(Self.quick) { self.isDashboardHovered = hovering }
                 }
+                
+                Rectangle()
+                    .fill(self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.07))
+                    .frame(width: 0.5, height: 28)
                 
                 HStack(spacing: 4) {
                     Button {
@@ -1791,7 +1974,7 @@ struct UserProfilePopoverView: View {
                                 .font(.system(size: 12.5, weight: .semibold))
                                 .foregroundStyle(.primary)
                         }
-                        .padding(.leading, 10)
+                        .padding(.leading, 14)
                         .padding(.trailing, 4)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .contentShape(Rectangle())
@@ -1812,36 +1995,33 @@ struct UserProfilePopoverView: View {
                     .buttonStyle(.plain)
                     .pointerStyle(.link)
                     .help(AppLanguage.text("打开手稿铭牌通行证", en: "Open Atelier Pass"))
-                    .padding(.trailing, 7)
+                    .padding(.trailing, 10)
                 }
-                .frame(height: 44)
+                .frame(height: 48)
                 .frame(maxWidth: .infinity)
-                .background(
-                    self.isSettingsHovered ? self.surfaceFill : self.cardSurface,
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(self.softCardStroke(active: self.isSettingsHovered, accent: studioTokens.accentText), lineWidth: 0.75)
-                )
+                .background(self.isSettingsHovered ? self.surfaceFill : Color.clear)
                 .onHover { hovering in
-                    withAnimation(Self.spring) { self.isSettingsHovered = hovering }
+                    withAnimation(Self.quick) { self.isSettingsHovered = hovering }
                 }
             }
             
             // 3. Compact Horizontal Account Switcher Strip (if multiple local users exist)
             if self.manager.profiles.count > 1 {
+                Rectangle()
+                    .fill(self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.07))
+                    .frame(height: 0.5)
+                
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(self.manager.profiles) { profile in
                             self.profileSwitchPill(profile, isActive: profile.id == active.id, accent: studioTokens.accentText)
                         }
                     }
-                    .padding(.horizontal, 2)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                 }
             }
         }
-        .padding(10)
         .frame(width: 348)
         .fixedSize(horizontal: false, vertical: true)
         .onAppear {
@@ -2120,10 +2300,11 @@ struct SoftAvatarAuroraBackdrop: View {
     let blurredCoverImage: NSImage?
     let surface: Color
     let isDark: Bool
+    var cornerRadius: CGFloat = 14
     
     
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
         
         shape
             .fill(self.surface)
@@ -2206,7 +2387,7 @@ struct SoftAvatarAuroraBackdrop: View {
 }
 
 
-// MARK: - 360° Q弹 Expressive Jelly Danmaku Stage
+// MARK: - 3D Cosmic Nebula Orbital Danmaku Stage (宇宙星云环绕弹幕)
 
 private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
     
@@ -2225,102 +2406,90 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
     @State private var isPaused = false
     @Environment(\.colorScheme) private var colorScheme
     
-    private let stageWidth: CGFloat = 304
-    private let stageHeight: CGFloat = 180
+    private let stageWidth: CGFloat = 320
+    private let stageHeight: CGFloat = 186
     
+    private struct OrbitPlane {
+        let rx: CGFloat
+        let ry: CGFloat
+        let tiltDeg: Double
+        let speed: Double
+        let phaseOffset: Double
+        let yBias: CGFloat
+    }
     
-    private var laneConfigs: [(yOffset: CGFloat, speed: CGFloat, dir: CGFloat, scale: CGFloat, opacity: Double, isForeground: Bool)] {
+    private static var orbitPlanes: [OrbitPlane] {
         [
-            (-64, 11.4, -1, 1.00, 1.00, true),   // Top foreground arc
-            (-19, 9.6, +1, 0.94, 0.92, false),   // Upper middle orbit behind portrait
-            (+22, 10.2, -1, 0.94, 0.92, false),  // Lower middle orbit behind portrait
-            (+64, 12.2, +1, 1.00, 1.00, true),   // Bottom foreground arc
+            OrbitPlane(rx: 124, ry: 44, tiltDeg: -16, speed: 0.34, phaseOffset: 0.2, yBias: -6),
+            OrbitPlane(rx: 132, ry: 56, tiltDeg: +14, speed: -0.28, phaseOffset: 1.8, yBias: +4),
+            OrbitPlane(rx: 112, ry: 68, tiltDeg: -24, speed: 0.24, phaseOffset: 3.4, yBias: -2),
+            OrbitPlane(rx: 136, ry: 38, tiltDeg: +9,  speed: -0.38, phaseOffset: 4.9, yBias: +6),
         ]
+    }
+    
+    private struct ProjectedStarTag: Identifiable {
+        var id: String { self.tag.id }
+        let tag: UserPersonalityTag
+        let index: Int
+        let x: CGFloat
+        let y: CGFloat
+        let depth: Double      // -1 (far behind) ... +1 (close foreground)
+        let scale: CGFloat
+        let opacity: Double
+        let tiltDeg: Double
     }
     
     
     var body: some View {
         let uniqueTags = UserPersonalityAnalyzer.deduplicatedTags(self.tags, maxCount: 8)
-        let laneBuckets = self.distributeUniqueTagsAcrossLanes(uniqueTags)
         
         TimelineView(.animation(minimumInterval: nil, paused: AnimationConstants.isReducedMotionEnabled)) { context in
             let dt = self.isPaused
                 ? self.accumulatedTime
                 : self.accumulatedTime + max(0, context.date.timeIntervalSince(self.anchorDate))
             let shockElapsed = max(0, context.date.timeIntervalSince(self.shockwaveTimestamp))
-            // Underdamped jelly shockwave: outward push + elastic squash-stretch oscillation!
-            let shockImpulse: CGFloat = (shockElapsed < 0.72)
-                ? CGFloat(sin(shockElapsed * 14.5) * exp(-4.2 * shockElapsed) * 16.0)
+            let shockExpand: CGFloat = (shockElapsed < 0.85)
+                ? CGFloat(sin(shockElapsed * 12.0) * exp(-3.6 * shockElapsed) * 18.0)
                 : 0
-            let shockJelly: CGFloat = (shockElapsed < 0.72)
-                ? CGFloat(cos(shockElapsed * 18.0) * exp(-4.8 * shockElapsed) * 0.14)
-                : 0
+            let shockRingProgress: CGFloat = (shockElapsed < 0.78) ? CGFloat(shockElapsed / 0.78) : -1
+            
+            let projected = self.projectTags(uniqueTags, elapsed: dt, shockExpand: shockExpand)
+            let backTags = projected.filter { $0.depth < 0 }.sorted { $0.depth < $1.depth }
+            let frontTags = projected.filter { $0.depth >= 0 }.sorted { $0.depth < $1.depth }
             
             ZStack {
-                self.orbitalRingsLayer(elapsed: dt, shockImpulse: shockImpulse)
+                // Layer 0: Swirling Cosmic Nebula Dust, Starfield & 3D Tilted Orbital Rings
+                self.cosmicNebulaCanvas(elapsed: dt, shockExpand: shockExpand, shockRingProgress: shockRingProgress)
                     .zIndex(0)
                 
-                ForEach([1, 2], id: \.self) { laneIdx in
-                    let cfg = self.laneConfigs[laneIdx]
-                    OrbitingUniqueLaneView(
-                        tags: laneBuckets[laneIdx],
-                        laneIndex: laneIdx,
-                        elapsed: dt,
-                        speed: cfg.speed,
-                        direction: cfg.dir,
-                        scale: cfg.scale,
-                        baseOpacity: cfg.opacity,
-                        yOffset: cfg.yOffset + (cfg.yOffset < 0 ? -shockImpulse * 0.75 : shockImpulse * 0.75),
-                        shockJelly: shockJelly,
-                        stageWidth: self.stageWidth,
-                        selectedTagID: self.selectedTagID,
-                        hoveredTagID: self.$hoveredTagID,
-                        tappedTagID: self.$tappedTagID,
-                        accent: self.accent,
-                        curvesAroundPortrait: true,
-                        onTap: self.handleTagTap
-                    )
-                    .zIndex(1)
+                // Layer 1: Far-side orbiting tags passing behind the avatar
+                ForEach(backTags) { item in
+                    self.nebulaTagView(item, elapsed: dt)
                 }
+                .zIndex(1)
                 
+                // Layer 2: Central Star (User Avatar)
                 self.avatarContent()
                     .zIndex(2)
                 
-                ForEach([0, 3], id: \.self) { laneIdx in
-                    let cfg = self.laneConfigs[laneIdx]
-                    OrbitingUniqueLaneView(
-                        tags: laneBuckets[laneIdx],
-                        laneIndex: laneIdx,
-                        elapsed: dt,
-                        speed: cfg.speed,
-                        direction: cfg.dir,
-                        scale: cfg.scale,
-                        baseOpacity: cfg.opacity,
-                        yOffset: cfg.yOffset + (cfg.yOffset < 0 ? -shockImpulse : shockImpulse),
-                        shockJelly: shockJelly,
-                        stageWidth: self.stageWidth,
-                        selectedTagID: self.selectedTagID,
-                        hoveredTagID: self.$hoveredTagID,
-                        tappedTagID: self.$tappedTagID,
-                        accent: self.accent,
-                        curvesAroundPortrait: false,
-                        onTap: self.handleTagTap
-                    )
-                    .zIndex(3)
+                // Layer 3: Foreground orbiting tags gliding in front of the avatar
+                ForEach(frontTags) { item in
+                    self.nebulaTagView(item, elapsed: dt)
                 }
+                .zIndex(3)
             }
             .frame(width: self.stageWidth, height: self.stageHeight)
             .clipped()
             .mask(
-                LinearGradient(
+                RadialGradient(
                     stops: [
-                        .init(color: .clear, location: 0.0),
-                        .init(color: .black, location: 0.04),
-                        .init(color: .black, location: 0.96),
+                        .init(color: .black, location: 0.0),
+                        .init(color: .black, location: 0.84),
                         .init(color: .clear, location: 1.0),
                     ],
-                    startPoint: .leading,
-                    endPoint: .trailing
+                    center: .center,
+                    startRadius: 20,
+                    endRadius: self.stageWidth * 0.56
                 )
             )
         }
@@ -2341,201 +2510,288 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
     }
     
     
+    private func projectTags(
+        _ uniqueTags: [UserPersonalityTag],
+        elapsed: TimeInterval,
+        shockExpand: CGFloat
+    ) -> [ProjectedStarTag] {
+        let count = max(1, uniqueTags.count)
+        return uniqueTags.enumerated().map { idx, tag in
+            let plane = Self.orbitPlanes[idx % Self.orbitPlanes.count]
+            let evenSpacing = (Double(idx) / Double(count)) * (2.0 * .pi)
+            let angle = elapsed * plane.speed + evenSpacing + plane.phaseOffset
+            
+            let cosA = cos(angle)
+            let sinA = sin(angle) // depth: -1 back, +1 front
+            let rx = plane.rx + shockExpand
+            let ry = plane.ry + shockExpand * 0.55
+            
+            let rawX = CGFloat(cosA) * rx
+            let rawY = CGFloat(sinA) * ry
+            
+            let tiltRad = plane.tiltDeg * .pi / 180.0
+            let cosT = CGFloat(cos(tiltRad))
+            let sinT = CGFloat(sin(tiltRad))
+            
+            let x = rawX * cosT - rawY * sinT
+            let y = rawX * sinT + rawY * cosT + plane.yBias
+            
+            // Perspective scale & luminosity from 3D depth `sinA` (-1 ... +1)
+            let depthNorm = (sinA + 1.0) * 0.5 // 0 (far) ... 1 (near)
+            let scale = CGFloat(0.78 + depthNorm * 0.28)
+            let opacity = 0.44 + depthNorm * 0.56
+            let driftTilt = cosA * 3.2
+            
+            return ProjectedStarTag(
+                tag: tag,
+                index: idx,
+                x: x,
+                y: y,
+                depth: sinA,
+                scale: scale,
+                opacity: opacity,
+                tiltDeg: driftTilt
+            )
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func nebulaTagView(_ item: ProjectedStarTag, elapsed: TimeInterval) -> some View {
+        let tag = item.tag
+        let isHovered = (self.hoveredTagID == tag.id)
+        let isTapped = (self.tappedTagID == tag.id)
+        let isSelected = (self.selectedTagID == tag.id)
+        let toneColor = UserProfilePopoverView.toneColor(for: tag.tone)
+        let isDark = (self.colorScheme == .dark)
+        
+        let hoverScale: CGFloat = isHovered ? 1.14 : (isTapped ? 0.92 : 1.0)
+        let finalScale = item.scale * hoverScale
+        let finalOpacity = (isHovered || isSelected) ? 1.0 : item.opacity
+        let starPulse = 0.65 + 0.35 * sin(elapsed * 3.2 + Double(item.index) * 1.4)
+        
+        Button {
+            self.handleTagTap(tag)
+        } label: {
+            HStack(spacing: 4.5) {
+                Circle()
+                    .fill(isSelected ? Color.white : toneColor)
+                    .frame(width: 4.5, height: 4.5)
+                    .shadow(color: toneColor.opacity(0.85 * starPulse), radius: 3)
+                
+                Text(tag.label)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(isDark ? 0.94 : 0.88))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 9.5)
+            .padding(.vertical, 4)
+            .background {
+                if isSelected {
+                    Capsule().fill(self.accent)
+                } else {
+                    Capsule()
+                        .fill(.ultraThinMaterial)
+                        .overlay(
+                            Capsule()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            toneColor.opacity(isDark ? 0.22 : 0.13),
+                                            self.secondaryAccent.opacity(isDark ? 0.10 : 0.05),
+                                        ],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                        )
+                }
+            }
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: isHovered || isSelected
+                                ? [Color.white.opacity(0.80), toneColor.opacity(0.70)]
+                                : (isDark
+                                    ? [Color.white.opacity(0.28), toneColor.opacity(0.20)]
+                                    : [Color.white.opacity(0.92), toneColor.opacity(0.26)]),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: isHovered || isSelected ? 1.1 : 0.75
+                    )
+            )
+            .shadow(
+                color: toneColor.opacity(isHovered ? 0.34 : (isDark ? 0.22 : 0.10)),
+                radius: isHovered ? 8 : 4,
+                y: isHovered ? 2 : 1
+            )
+            .scaleEffect(finalScale)
+            .rotationEffect(.degrees(isHovered ? 0 : item.tiltDeg))
+            .opacity(finalOpacity)
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .offset(x: item.x, y: item.y)
+        .onHover { inside in
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.62)) {
+                if inside {
+                    self.hoveredTagID = tag.id
+                } else if self.hoveredTagID == tag.id {
+                    self.hoveredTagID = nil
+                }
+            }
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func cosmicNebulaCanvas(
+        elapsed: TimeInterval,
+        shockExpand: CGFloat,
+        shockRingProgress: CGFloat
+    ) -> some View {
+        let isDark = (self.colorScheme == .dark)
+        let cosmicViolet = Color(red: 0.48, green: 0.36, blue: 0.92)
+        let cosmicCyan = Color(red: 0.22, green: 0.76, blue: 0.96)
+        
+        Canvas { context, size in
+            let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+            
+            // 1. Soft swirling nebula clouds (two counter-rotating cosmic dust arms)
+            for arm in 0..<2 {
+                let armAngle = elapsed * (arm == 0 ? 0.14 : -0.11) + Double(arm) * 2.1
+                let armCenter = CGPoint(
+                    x: center.x + CGFloat(cos(armAngle)) * 28,
+                    y: center.y + CGFloat(sin(armAngle)) * 16
+                )
+                let cloudRadius: CGFloat = arm == 0 ? 118 : 96
+                let cloudColor = arm == 0 ? self.accent : cosmicViolet
+                let cloudRect = CGRect(
+                    x: armCenter.x - cloudRadius,
+                    y: armCenter.y - cloudRadius * 0.62,
+                    width: cloudRadius * 2,
+                    height: cloudRadius * 1.24
+                )
+                context.fill(
+                    Ellipse().path(in: cloudRect),
+                    with: .radialGradient(
+                        Gradient(colors: [
+                            cloudColor.opacity(isDark ? 0.20 : 0.12),
+                            cosmicCyan.opacity(isDark ? 0.08 : 0.04),
+                            .clear,
+                        ]),
+                        center: armCenter,
+                        startRadius: 4,
+                        endRadius: cloudRadius
+                    )
+                )
+            }
+            
+            // 2. Twinkling cosmic starfield (34 deterministic micro-stars + diamond starlight glints)
+            for i in 0..<34 {
+                let seed = Double(i) * 1.61803398875
+                let baseRadius = 46.0 + (seed.truncatingRemainder(dividingBy: 1.0)) * 108.0
+                let theta = Double(i) * 2.39996 + elapsed * (0.045 + Double(i % 5) * 0.012) * (i.isMultiple(of: 2) ? 1.0 : -1.0)
+                let sx = center.x + CGFloat(cos(theta) * baseRadius)
+                let sy = center.y + CGFloat(sin(theta) * baseRadius * 0.56)
+                let twinkle = 0.25 + 0.75 * (0.5 + 0.5 * sin(elapsed * (1.8 + Double(i % 4) * 0.7) + Double(i) * 1.7))
+                let starR: CGFloat = (i % 7 == 0) ? 1.65 : (i % 3 == 0 ? 1.15 : 0.8)
+                let starColor: Color = switch i % 4 {
+                    case 0: self.accent
+                    case 1: cosmicCyan
+                    case 2: isDark ? .white : self.secondaryAccent
+                    default: cosmicViolet
+                }
+                let alpha = (isDark ? 0.75 : 0.52) * twinkle
+                let dotRect = CGRect(x: sx - starR, y: sy - starR, width: starR * 2, height: starR * 2)
+                context.fill(Circle().path(in: dotRect), with: .color(starColor.opacity(alpha)))
+                
+                // Subtle 4-point star glint on brightest stars
+                if i % 9 == 0 {
+                    var glint = Path()
+                    let arm: CGFloat = 4.2 * CGFloat(twinkle)
+                    glint.move(to: CGPoint(x: sx - arm, y: sy))
+                    glint.addLine(to: CGPoint(x: sx + arm, y: sy))
+                    glint.move(to: CGPoint(x: sx, y: sy - arm))
+                    glint.addLine(to: CGPoint(x: sx, y: sy + arm))
+                    context.stroke(glint, with: .color(starColor.opacity(alpha * 0.65)), lineWidth: 0.65)
+                }
+            }
+            
+            // 3. Tilted 3D planetary nebula orbital rings + glowing comets
+            let rings: [(rx: CGFloat, ry: CGFloat, tilt: Double, speed: Double, color: Color)] = [
+                (118 + shockExpand * 0.8, 42 + shockExpand * 0.4, -16, 0.52, self.accent),
+                (134 + shockExpand,       56 + shockExpand * 0.5, +14, -0.38, cosmicCyan),
+            ]
+            for ring in rings {
+                var ringPath = Path()
+                let tiltRad = ring.tilt * .pi / 180.0
+                let cosT = CGFloat(cos(tiltRad))
+                let sinT = CGFloat(sin(tiltRad))
+                let steps = 64
+                for s in 0...steps {
+                    let a = (Double(s) / Double(steps)) * 2.0 * .pi
+                    let lx = CGFloat(cos(a)) * ring.rx
+                    let ly = CGFloat(sin(a)) * ring.ry
+                    let px = center.x + lx * cosT - ly * sinT
+                    let py = center.y + lx * sinT + ly * cosT
+                    if s == 0 { ringPath.move(to: CGPoint(x: px, y: py)) }
+                    else { ringPath.addLine(to: CGPoint(x: px, y: py)) }
+                }
+                context.stroke(
+                    ringPath,
+                    with: .color(ring.color.opacity(isDark ? 0.22 : 0.16)),
+                    style: StrokeStyle(lineWidth: 0.85, dash: [4, 5])
+                )
+                
+                // Luminous comet + trailing dust arc moving along the ring
+                let cometA = elapsed * ring.speed
+                for tailIdx in 0..<8 {
+                    let ta = cometA - Double(tailIdx) * 0.08 * (ring.speed >= 0 ? 1.0 : -1.0)
+                    let lx = CGFloat(cos(ta)) * ring.rx
+                    let ly = CGFloat(sin(ta)) * ring.ry
+                    let px = center.x + lx * cosT - ly * sinT
+                    let py = center.y + lx * sinT + ly * cosT
+                    let frac = 1.0 - Double(tailIdx) / 8.0
+                    let r = CGFloat(2.4 * frac + 0.5)
+                    context.fill(
+                        Circle().path(in: CGRect(x: px - r, y: py - r, width: r * 2, height: r * 2)),
+                        with: .color(ring.color.opacity((isDark ? 0.85 : 0.68) * frac * frac))
+                    )
+                }
+            }
+            
+            // 4. Supernova nebula shockwave ring on avatar tap
+            if shockRingProgress >= 0, shockRingProgress <= 1 {
+                let waveR = 36 + shockRingProgress * 116
+                let waveAlpha = Double(1.0 - shockRingProgress) * (isDark ? 0.55 : 0.42)
+                let waveRect = CGRect(x: center.x - waveR, y: center.y - waveR * 0.72, width: waveR * 2, height: waveR * 1.44)
+                context.stroke(
+                    Ellipse().path(in: waveRect),
+                    with: .color(self.accent.opacity(waveAlpha)),
+                    lineWidth: max(0.6, 2.2 * (1.0 - shockRingProgress))
+                )
+            }
+        }
+        .allowsHitTesting(false)
+    }
+    
+    
     private func handleTagTap(_ tag: UserPersonalityTag) {
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-        withAnimation(.spring(response: 0.18, dampingFraction: 0.36)) {
+        withAnimation(.spring(response: 0.18, dampingFraction: 0.42)) {
             self.tappedTagID = tag.id
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.48)) {
+            withAnimation(.spring(response: 0.30, dampingFraction: 0.56)) {
                 if self.tappedTagID == tag.id {
                     self.tappedTagID = nil
                 }
             }
         }
         self.onTapTag(tag)
-    }
-    
-    
-    @ViewBuilder
-    private func orbitalRingsLayer(elapsed: TimeInterval, shockImpulse: CGFloat) -> some View {
-        let innerAngle = Angle.degrees(elapsed * 11)
-        let outerAngle = Angle.degrees(-elapsed * 7)
-        
-        ZStack {
-            Circle()
-                .stroke(
-                    self.accent.opacity(self.colorScheme == .dark ? 0.24 : 0.18),
-                    style: StrokeStyle(lineWidth: 1, dash: [3, 5])
-                )
-                .frame(width: 98 + shockImpulse * 0.8, height: 98 + shockImpulse * 0.8)
-                .rotationEffect(innerAngle)
-            
-            ZStack {
-                Ellipse()
-                    .strokeBorder(self.secondaryAccent.opacity(self.colorScheme == .dark ? 0.16 : 0.12), lineWidth: 0.85)
-                    .frame(width: 146 + shockImpulse, height: 134 + shockImpulse)
-                
-                Circle()
-                    .fill(self.accent)
-                    .frame(width: 4.5, height: 4.5)
-                    .offset(x: (146 + shockImpulse) * 0.5)
-                
-                Circle()
-                    .fill(self.secondaryAccent)
-                    .frame(width: 3.5, height: 3.5)
-                    .offset(x: -(146 + shockImpulse) * 0.5)
-            }
-            .rotationEffect(outerAngle)
-        }
-        .allowsHitTesting(false)
-    }
-    
-    
-    private func distributeUniqueTagsAcrossLanes(_ uniqueTags: [UserPersonalityTag]) -> [[UserPersonalityTag]] {
-        var buckets: [[UserPersonalityTag]] = [[], [], [], []]
-        for (idx, tag) in uniqueTags.enumerated() {
-            buckets[idx % 4].append(tag)
-        }
-        return buckets
-    }
-}
-
-
-private struct OrbitingUniqueLaneView: View {
-    
-    let tags: [UserPersonalityTag]
-    let laneIndex: Int
-    let elapsed: TimeInterval
-    let speed: CGFloat
-    let direction: CGFloat
-    let scale: CGFloat
-    let baseOpacity: Double
-    let yOffset: CGFloat
-    let shockJelly: CGFloat
-    let stageWidth: CGFloat
-    let selectedTagID: String?
-    @Binding var hoveredTagID: String?
-    @Binding var tappedTagID: String?
-    let accent: Color
-    let curvesAroundPortrait: Bool
-    let onTap: (UserPersonalityTag) -> Void
-    
-    @State private var measuredWidths: [String: CGFloat] = [:]
-    @Environment(\.colorScheme) private var colorScheme
-    
-    
-    var body: some View {
-        ZStack {
-            ForEach(Array(self.tags.enumerated()), id: \.element.id) { idx, tag in
-                let pillW = self.measuredWidths[tag.id] ?? CGFloat(max(66, tag.label.count * 13 + 28))
-                let margin: CGFloat = 24
-                let activeSpan = self.stageWidth + pillW + margin * 2
-                let period = max(activeSpan, CGFloat(max(1, self.tags.count)) * 188.0)
-                let stagger = (CGFloat(idx) / CGFloat(max(1, self.tags.count))) * period + CGFloat(self.laneIndex) * 58.0
-                let rawProgress = (CGFloat(self.elapsed) * self.speed + stagger).truncatingRemainder(dividingBy: period)
-                
-                let xPos: CGFloat = self.direction < 0
-                    ? (self.stageWidth * 0.5 + pillW * 0.5 + margin) - rawProgress
-                    : -(self.stageWidth * 0.5 + pillW * 0.5 + margin) + rawProgress
-                
-                let phase = Double(idx) * 1.9 + Double(self.laneIndex) * 1.3
-                // Buoyant multi-harmonic wave bob + gentle jelly squash-and-stretch breathing!
-                let bobY = CGFloat(sin(self.elapsed * 2.1 + phase) * 3.2 + cos(self.elapsed * 1.15 + phase) * 1.1)
-                let breathWave = CGFloat(sin(self.elapsed * 2.6 + phase)) * 0.026
-                let swayTilt = sin(self.elapsed * 1.55 + phase) * 2.4
-                
-                let orbitBend: CGFloat = self.curvesAroundPortrait
-                    ? (self.yOffset < 0 ? -1.0 : 1.0) * max(0, 1.0 - abs(xPos) / 78.0) * 11.0
-                    : 0
-                
-                // Edge pop-in / pop-out scale so pills bloom smoothly into view
-                let edgeDist = max(0, (self.stageWidth * 0.5 + pillW * 0.25) - abs(xPos))
-                let edgePop = min(1.0, 0.78 + (edgeDist / 48.0) * 0.22)
-                
-                let isThisHovered = (self.hoveredTagID == tag.id)
-                let isThisTapped = (self.tappedTagID == tag.id)
-                let isSelected = (self.selectedTagID == tag.id)
-                let toneColor = UserProfilePopoverView.toneColor(for: tag.tone)
-                let fontSize: CGFloat = (idx % 2 == 0) ? 11.5 : 10.8
-                
-                // Combine breathing + shockwave + tap squish into elastic Q弹 scaleX / scaleY
-                let baseS = (isThisHovered ? 1.14 : self.scale) * edgePop
-                let squishX: CGFloat = isThisTapped ? 1.18 : (1.0 + breathWave + self.shockJelly)
-                let squishY: CGFloat = isThisTapped ? 0.84 : (1.0 - breathWave - self.shockJelly)
-                let hoverLiftY: CGFloat = isThisHovered ? -3.0 : 0.0
-                
-                if xPos >= -(self.stageWidth * 0.5 + pillW + 8) && xPos <= (self.stageWidth * 0.5 + pillW + 8) {
-                    Button {
-                        self.onTap(tag)
-                    } label: {
-                        Text(tag.label)
-                            .font(.system(size: fontSize, weight: .semibold, design: .rounded))
-                            .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.92))
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: true)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 4.5)
-                            .fixedSize(horizontal: true, vertical: true)
-                        .background {
-                            if isSelected {
-                                Capsule().fill(self.accent)
-                            } else {
-                                Capsule()
-                                    .fill(.regularMaterial)
-                                    .overlay(
-                                        Capsule()
-                                            .fill(toneColor.opacity(self.colorScheme == .dark ? 0.16 : 0.10))
-                                    )
-                            }
-                        }
-                        .overlay(
-                            // Plump jelly top specular highlight rim
-                            Capsule()
-                                .strokeBorder(
-                                    LinearGradient(
-                                        colors: isThisHovered || isSelected
-                                            ? [Color.white.opacity(0.70), toneColor.opacity(0.65)]
-                                            : (self.colorScheme == .dark
-                                                ? [Color.white.opacity(0.28), Color.white.opacity(0.06)]
-                                                : [Color.white.opacity(0.92), toneColor.opacity(0.22)]),
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    ),
-                                    lineWidth: isThisHovered || isSelected ? 1.15 : 0.85
-                                )
-                        )
-                        .shadow(
-                            color: (isThisHovered ? toneColor.opacity(0.24) : Color.black.opacity(self.colorScheme == .dark ? 0.22 : 0.07)),
-                            radius: isThisHovered ? 6 : 3,
-                            y: isThisHovered ? 3 : 1.5
-                        )
-                        .scaleEffect(x: baseS * squishX, y: baseS * squishY)
-                        .rotationEffect(.degrees(isThisHovered ? 0 : swayTilt))
-                        .opacity(self.baseOpacity)
-                        .onGeometryChange(for: CGFloat.self) { proxy in
-                            proxy.size.width
-                        } action: { newWidth in
-                            if newWidth > 10, abs((self.measuredWidths[tag.id] ?? 0) - newWidth) > 0.5 {
-                                self.measuredWidths[tag.id] = newWidth
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    .offset(x: xPos, y: self.yOffset + bobY + orbitBend + hoverLiftY)
-                    .onHover { inside in
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.48)) {
-                            if inside {
-                                self.hoveredTagID = tag.id
-                            } else if self.hoveredTagID == tag.id {
-                                self.hoveredTagID = nil
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 

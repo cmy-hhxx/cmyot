@@ -114,40 +114,45 @@ nonisolated struct AIHotNewsItem: Identifiable, Codable, Hashable, Sendable {
 }
 
 
-/// Multi-source live news aggregator for the Analytics Dashboard's NEWS column:
-/// Finance / Markets (CNBC, Yahoo Finance, WSJ, Investing, 全球财经), X / Social Tech signals, and AI & Tech,
-/// with Xiaohongshu-style pagination, category filter, and real post cover thumbnails (`og:image` / feed covers).
+/// Unified high-signal news aggregator for the Analytics Dashboard's NEWS column:
+/// Prioritizes information-dense posts from `aihot.news`, blended seamlessly with
+/// high-signal tech, finance, and X discussions into one mixed stream (no category splitting),
+/// with Xiaohongshu-style pagination and real post cover thumbnails (`og:image` / feed covers).
 @MainActor @Observable
 final class AIHotNewsService {
     
     static let shared = AIHotNewsService()
-    /// Retained strictly as relative-URL parser fallback for backward compatibility; never shown in UI.
     nonisolated static let portalURL = URL(string: "https://aihot.news/agent")!
     static let pageSize = 6
+    
+    private enum FeedFormat: Sendable {
+        case aihotJSON
+        case aihotMarkdown
+        case aihotRSS
+        case rss
+        case hnJSON
+    }
     
     private struct FeedSource: Sendable {
         let urlString: String
         let label: String
         let category: NewsFeedCategory
-        let isHNJSON: Bool
+        let format: FeedFormat
+        let isPrimaryAIHot: Bool
     }
     
     private static let cacheTTL: TimeInterval = 5 * 60
     private static let feedSources: [FeedSource] = [
-        // Finance & Markets (金融类)
-        .init(urlString: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664", label: "CNBC 财经", category: .finance, isHNJSON: false),
-        .init(urlString: "https://finance.yahoo.com/news/rssindex", label: "Yahoo Finance", category: .finance, isHNJSON: false),
-        .init(urlString: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain", label: "WSJ Markets", category: .finance, isHNJSON: false),
-        .init(urlString: "https://www.investing.com/rss/news.rss", label: "Investing", category: .finance, isHNJSON: false),
-        .init(urlString: "https://news.google.com/rss/search?q=%E7%BE%8E%E8%82%A1+OR+%E7%BE%8E%E8%81%94%E5%82%A8+OR+A%E8%82%A1+OR+%E9%87%91%E8%9E%8D&hl=zh-CN&gl=CN&ceid=CN:zh-Hans", label: "全球财经", category: .finance, isHNJSON: false),
-        // X (Twitter) & Social Creator Signals (X 动态)
-        .init(urlString: "https://hn.algolia.com/api/v1/search_by_date?query=x.com&tags=story&hitsPerPage=14", label: "X 热议", category: .xSocial, isHNJSON: true),
-        .init(urlString: "https://news.google.com/rss/search?q=site:x.com+OR+Twitter+AI+OR+Markets&hl=zh-CN&gl=CN&ceid=CN:zh-Hans", label: "X 动态", category: .xSocial, isHNJSON: false),
-        .init(urlString: "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=14", label: "HN / X", category: .xSocial, isHNJSON: true),
-        // AI & Tech (AI 科技)
-        .init(urlString: "https://techcrunch.com/category/artificial-intelligence/feed/", label: "TechCrunch AI", category: .ai, isHNJSON: false),
-        .init(urlString: "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml", label: "The Verge AI", category: .ai, isHNJSON: false),
-        .init(urlString: "https://huggingface.co/blog/feed.xml", label: "Hugging Face", category: .ai, isHNJSON: false),
+        // Primary: AIHot high-signal posts (JSON API + Agent Markdown + RSS)
+        .init(urlString: "https://aihot.news/api/v1/items", label: "AIHot", category: .ai, format: .aihotJSON, isPrimaryAIHot: true),
+        .init(urlString: "https://aihot.news/agent", label: "AIHot", category: .ai, format: .aihotMarkdown, isPrimaryAIHot: true),
+        .init(urlString: "https://aihot.news/rss.xml", label: "AIHot", category: .ai, format: .aihotRSS, isPrimaryAIHot: true),
+        // Secondary enrichment: high-signal AI / X / Finance posts blended into the same stream
+        .init(urlString: "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=14", label: "HN", category: .xSocial, format: .hnJSON, isPrimaryAIHot: false),
+        .init(urlString: "https://huggingface.co/blog/feed.xml", label: "Hugging Face", category: .ai, format: .rss, isPrimaryAIHot: false),
+        .init(urlString: "https://techcrunch.com/category/artificial-intelligence/feed/", label: "TechCrunch", category: .ai, format: .rss, isPrimaryAIHot: false),
+        .init(urlString: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664", label: "CNBC", category: .finance, format: .rss, isPrimaryAIHot: false),
+        .init(urlString: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain", label: "WSJ", category: .finance, format: .rss, isPrimaryAIHot: false),
     ]
     
     private(set) var items: [AIHotNewsItem] = []
@@ -170,6 +175,7 @@ final class AIHotNewsService {
     
     
     var filteredItems: [AIHotNewsItem] {
+        // Default mixed stream: no forced categorization
         guard self.selectedCategory != .all else { return self.items }
         return self.items.filter { $0.resolvedCategory == self.selectedCategory }
     }
@@ -243,7 +249,7 @@ final class AIHotNewsService {
     }
     
     
-    /// Refreshes multi-category news (Finance, X / Social signals, AI & Tech) concurrently when stale or forced.
+    /// Refreshes the unified mixed news stream, prioritizing high-signal AIHot posts blended with tech & markets.
     func refreshIfNeeded(force: Bool = false) async {
         
         guard !self.isLoading else { return }
@@ -260,54 +266,65 @@ final class AIHotNewsService {
         defer { self.isLoading = false }
         
         let sources = Self.feedSources
-        var buckets: [NewsFeedCategory: [AIHotNewsItem]] = [
-            .finance: [],
-            .xSocial: [],
-            .ai: [],
-        ]
+        var primaryPool: [AIHotNewsItem] = []
+        var secondaryPool: [AIHotNewsItem] = []
         
-        await withTaskGroup(of: (NewsFeedCategory, [AIHotNewsItem]).self) { group in
+        await withTaskGroup(of: (Bool, [AIHotNewsItem]).self) { group in
             for feed in sources {
                 group.addTask {
                     let fetched = await Self.fetchSingleFeed(feed)
-                    return (feed.category, fetched)
+                    return (feed.isPrimaryAIHot, fetched)
                 }
             }
-            for await (cat, batch) in group {
-                buckets[cat, default: []].append(contentsOf: batch)
+            for await (isPrimary, batch) in group {
+                if isPrimary {
+                    primaryPool.append(contentsOf: batch)
+                } else {
+                    secondaryPool.append(contentsOf: batch)
+                }
             }
         }
         
         guard !Task.isCancelled else { return }
         
-        // Round-robin interleave across Finance -> X -> AI so every page has balanced multi-sector news
-        let order: [NewsFeedCategory] = [.finance, .xSocial, .ai]
-        var cursors: [NewsFeedCategory: Int] = [.finance: 0, .xSocial: 0, .ai: 0]
+        // Rank by information density & heat score, then blend AIHot (2x cadence) with secondary high-signal posts
+        let rankedPrimary = primaryPool
+            .filter { Self.isHighSignalPost($0) }
+            .sorted { Self.signalRankScore($0, isPrimaryAIHot: true) > Self.signalRankScore($1, isPrimaryAIHot: true) }
+        let rankedSecondary = secondaryPool
+            .filter { Self.isHighSignalPost($0) }
+            .sorted { Self.signalRankScore($0, isPrimaryAIHot: false) > Self.signalRankScore($1, isPrimaryAIHot: false) }
+        
         var seenTitles = Set<String>()
         var mergedItems: [AIHotNewsItem] = []
+        var pIdx = 0
+        var sIdx = 0
+        
+        func takeNext(from list: [AIHotNewsItem], cursor: inout Int) -> Bool {
+            while cursor < list.count {
+                let candidate = list[cursor]
+                cursor += 1
+                let key = candidate.title.lowercased()
+                if seenTitles.insert(key).inserted {
+                    mergedItems.append(candidate)
+                    return true
+                }
+            }
+            return false
+        }
         
         while mergedItems.count < 48 {
             var progressed = false
-            for cat in order {
-                let list = buckets[cat] ?? []
-                var idx = cursors[cat] ?? 0
-                while idx < list.count {
-                    let item = list[idx]
-                    idx += 1
-                    let key = item.title.lowercased()
-                    guard !Self.containsBlockedBrand(item), seenTitles.insert(key).inserted else { continue }
-                    mergedItems.append(item)
-                    progressed = true
-                    break
-                }
-                cursors[cat] = idx
-                if mergedItems.count >= 48 { break }
-            }
+            // 2 AIHot high-signal posts per 1 mixed tech/market/X post
+            if takeNext(from: rankedPrimary, cursor: &pIdx) { progressed = true }
+            if mergedItems.count < 48, takeNext(from: rankedPrimary, cursor: &pIdx) { progressed = true }
+            if mergedItems.count < 48, takeNext(from: rankedSecondary, cursor: &sIdx) { progressed = true }
             if !progressed { break }
         }
         
         if !mergedItems.isEmpty {
             self.items = mergedItems
+            self.selectedCategory = .all
             if force {
                 self.currentPage = 1
                 self.resolvedNoCoverIDs.removeAll()
@@ -324,13 +341,56 @@ final class AIHotNewsService {
     }
     
     
+    /// Filters out empty or ultra-low-signal headlines so the mixed stream stays information-dense.
+    nonisolated static func isHighSignalPost(_ item: AIHotNewsItem) -> Bool {
+        let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard title.count >= 8 else { return false }
+        let lower = title.lowercased()
+        let lowSignalPrefixes = ["subscribe", "sign up", "privacy policy", "terms of service", "sponsored:"]
+        if lowSignalPrefixes.contains(where: { lower.hasPrefix($0) }) {
+            return false
+        }
+        return true
+    }
+    
+    
+    /// Scores a post by information density, community heat, and recency.
+    nonisolated static func signalRankScore(_ item: AIHotNewsItem, isPrimaryAIHot: Bool) -> Double {
+        var score: Double = isPrimaryAIHot ? 40.0 : 12.0
+        if let heat = item.heatScore, heat > 0 {
+            score += min(120.0, Double(heat) * 0.85)
+        }
+        let len = item.title.count
+        if (14...110).contains(len) {
+            score += 18.0
+        }
+        if item.coverURLString != nil {
+            score += 8.0
+        }
+        let lower = item.title.lowercased()
+        let denseKeywords = [
+            "release", "open source", "paper", "benchmark", "agent", "llm", "model", "gpt", "claude",
+            "gemini", "deepseek", "qwen", "architecture", "inference", "training", "mcp", "swift",
+            "开源", "发布", "架构", "论文", "模型", "推理", "基准", "深度", "财报", "美联储", "芯片",
+        ]
+        if denseKeywords.contains(where: { lower.contains($0) }) {
+            score += 16.0
+        }
+        if let published = item.publishedAt {
+            let ageHours = max(0, Date().timeIntervalSince(published) / 3600.0)
+            score += max(0, 24.0 - ageHours * 0.5)
+        }
+        return score
+    }
+    
+    
     private nonisolated static func fetchSingleFeed(_ feed: FeedSource) async -> [AIHotNewsItem] {
         guard let url = URL(string: feed.urlString) else { return [] }
         var request = URLRequest(url: url)
         request.timeoutInterval = 8
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue(
-            "application/json, application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+            "application/json, text/markdown, application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
             forHTTPHeaderField: "Accept"
         )
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
@@ -343,21 +403,25 @@ final class AIHotNewsService {
                   !data.isEmpty
             else { return [] }
             
-            var parsed: [AIHotNewsItem]
-            if feed.isHNJSON {
-                parsed = Self.parseHackerNewsAlgoliaJSON(data, defaultSource: feed.label, category: feed.category)
-            } else {
-                parsed = Self.parseRSS(data)
+            let parsed: [AIHotNewsItem] = switch feed.format {
+                case .aihotJSON:
+                    Self.parseJSON(data)
+                case .aihotMarkdown:
+                    String(data: data, encoding: .utf8).map { Self.parseAgentMarkdown($0) } ?? []
+                case .aihotRSS, .rss:
+                    Self.parseRSS(data)
+                case .hnJSON:
+                    Self.parseHackerNewsAlgoliaJSON(data, defaultSource: feed.label, category: feed.category)
             }
             
-            return parsed.prefix(12).map { item in
+            let limit = feed.isPrimaryAIHot ? 28 : 10
+            return parsed.prefix(limit).map { item in
                 var tagged = item
-                tagged.category = feed.category
-                if tagged.source.isEmpty || tagged.source.lowercased().contains("google") || tagged.source.lowercased().contains("aihot") {
-                    tagged.source = feed.label
+                if tagged.category == nil {
+                    tagged.category = feed.category
                 }
-                if tagged.tag == nil || tagged.tag?.isEmpty == true {
-                    tagged.tag = feed.category.badgeLabel
+                if tagged.source.isEmpty || tagged.source.lowercased().contains("google") {
+                    tagged.source = feed.label
                 }
                 return tagged
             }
@@ -557,7 +621,7 @@ final class AIHotNewsService {
         let raw = CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.aiHotNewsCacheJSON, default: "")
         guard !raw.isEmpty, let data = raw.data(using: .utf8) else { return }
         if let decoded = try? JSONDecoder().decode([AIHotNewsItem].self, from: data) {
-            let cleaned = decoded.filter { !Self.containsBlockedBrand($0) }
+            let cleaned = decoded.filter { Self.isHighSignalPost($0) }
             if !cleaned.isEmpty {
                 self.items = cleaned
             }

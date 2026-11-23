@@ -172,9 +172,19 @@ final class VimEngine {
         switch state.mode {
             case .insert:
                 if self.isEscape(event) || self.isControlC(event) {
-                    // Commit any marked (IME) text before leaving insert mode.
                     if textView.hasMarkedText() {
-                        textView.unmarkText()
+                        // Let the OS IME (Pinyin / WeType / Sogou / Rime) cancel its own composition cleanly
+                        // before flushing any remaining marked range so IMKInputSession never freezes.
+                        self.cancelActiveIMEComposition(in: textView, event: self.isEscape(event) ? event : nil)
+                        if self.isEscape(event) {
+                            // First Esc cleanly dismisses IME candidates without wedging input;
+                            // if the IME already cleared them, stay responsive in Insert or let next Esc enter Normal.
+                            return true
+                        }
+                    } else {
+                        // Defensive flush for third-party IMEs that keep hidden state after committing text
+                        textView.inputContext?.discardMarkedText()
+                        textView.inputContext?.invalidateCharacterCoordinates()
                     }
                     self.enter(mode: .normal)
                     return true
@@ -183,19 +193,36 @@ final class VimEngine {
                 
             case .replace:
                 if self.isEscape(event) || self.isControlC(event) {
-                    if textView.hasMarkedText() {
-                        textView.unmarkText()
-                    }
+                    self.cancelActiveIMEComposition(in: textView, event: self.isEscape(event) ? event : nil)
                     self.enter(mode: .normal)
                     return true
                 }
                 return self.handleReplaceModeKey(event)
                 
             case .normal, .visual:
-                // Let the IME compose when it is active (Chinese input).
-                if textView.hasMarkedText() { return false }
+                if textView.hasMarkedText() {
+                    if self.isEscape(event) || self.isControlC(event) {
+                        self.cancelActiveIMEComposition(in: textView, event: self.isEscape(event) ? event : nil)
+                        return true
+                    }
+                    return false
+                }
                 return self.handleNormalKey(event)
         }
+    }
+    
+    
+    /// Cleanly terminates any in-progress macOS IME composition session so `IMKInputSession`
+    /// never desynchronizes or freezes when pressing `Esc` / `Ctrl+C`.
+    private func cancelActiveIMEComposition(in textView: NSTextView, event: NSEvent?) {
+        if let event, textView.hasMarkedText() {
+            _ = textView.inputContext?.handleEvent(event)
+        }
+        if textView.hasMarkedText() {
+            textView.inputContext?.discardMarkedText()
+            textView.unmarkText()
+        }
+        textView.inputContext?.invalidateCharacterCoordinates()
     }
     
     
@@ -2271,6 +2298,9 @@ final class VimEngine {
     
     private func enter(mode: VimMode) {
         
+        if mode == .normal, let tv = self.textView, tv.hasMarkedText() {
+            self.cancelActiveIMEComposition(in: tv, event: nil)
+        }
         VimState.shared.mode = mode
         if mode != .visual {
             self.visualAnchor = nil

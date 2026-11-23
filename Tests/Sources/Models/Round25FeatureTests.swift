@@ -509,4 +509,184 @@ struct Round25FeatureTests {
         #expect(AIHotNewsService.containsBlockedBrand(blocked))
         #expect(!AIHotNewsService.sanitizedDisplaySource("ai.hot").lowercased().contains("ai"))
     }
+    
+    
+    // MARK: 10. Multi-Palette Fluted Glass Pass, Tall Inline Image Vim Cursor & IME Esc Dismissal
+    
+    @Test func flutedGlassRendersDistinctPalettesAcrossPassThemes() throws {
+        let themes = CotPassTheme.allThemes
+        #expect(themes.count == 6)
+        
+        var renderedBytes: [Data] = []
+        for theme in themes {
+            let img = try #require(
+                BlueFlutedGlassRenderer.renderFrame(
+                    time: 4.2,
+                    palette: theme.flutedPalette,
+                    width: 48,
+                    height: 30
+                )
+            )
+            #expect(img.width == 48 && img.height == 30)
+            let data = try #require(img.dataProvider?.data as Data?)
+            renderedBytes.append(data)
+        }
+        
+        // Cobalt blue vs amber gold vs pine emerald must produce distinct pixel buffers
+        #expect(renderedBytes[0] != renderedBytes[1])
+        #expect(renderedBytes[0] != renderedBytes[2])
+        #expect(renderedBytes[1] != renderedBytes[4])
+    }
+    
+    
+    @Test func vimEscCancelsActiveIMECompositionCleanly() throws {
+        let storage = NSTextStorage(string: "Hello ")
+        let scanner = LineEndingScanner(textStorage: storage, lineEnding: .lf)
+        let textView = EditorTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 300), textStorage: storage, lineEndingScanner: scanner)
+        textView.setSelectedRange(NSRange(location: 6, length: 0))
+        
+        // Simulate active IME pre-edit composition ("ni")
+        textView.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(textView.hasMarkedText())
+        
+        let engine = VimEngine(textView: textView)
+        VimState.shared.mode = .insert
+        
+        let escEvent = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "\u{1B}",
+            charactersIgnoringModifiers: "\u{1B}",
+            isARepeat: false,
+            keyCode: 53
+        ))
+        
+        // First Esc cleanly cancels active IME composition without wedging IMKInputSession,
+        // leaving the user responsive in Insert mode.
+        #expect(engine.handleKeyDown(escEvent))
+        #expect(!textView.hasMarkedText())
+        #expect(VimState.shared.mode == .insert)
+        
+        // Second Esc (with no marked text) cleanly transitions to Normal mode.
+        #expect(engine.handleKeyDown(escEvent))
+        #expect(!textView.hasMarkedText())
+        #expect(VimState.shared.mode == .normal)
+    }
+    
+    
+    @Test func vimFunEffectsAcceptsTallInlineImageCursorRect() throws {
+        let storage = NSTextStorage(string: "Before\n⟦🖼 demo-tall.png⟧\nAfter")
+        let scanner = LineEndingScanner(textStorage: storage, lineEnding: .lf)
+        let textView = EditorTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400), textStorage: storage, lineEndingScanner: scanner)
+        textView.wantsLayer = true
+        let effects = EditorFunEffectsController(textView: textView)
+        
+        let prevMode = VimState.shared.mode
+        defer { VimState.shared.mode = prevMode }
+        VimState.shared.mode = .normal
+        
+        let tallImageRect = NSRect(x: 18, y: 40, width: 4.5, height: 220)
+        effects.moveVimCursor(
+            to: tallImageRect,
+            color: .systemTeal,
+            animated: false,
+            fallbackFrom: NSRect(x: 18, y: 12, width: 8, height: 18)
+        )
+        
+        let target = try #require(effects.currentTargetRect)
+        #expect(target.height >= 219)
+        #expect(target.width >= 3.5 && target.width <= 5.0)
+        #expect(abs(target.minY - 40) < 1)
+    }
+    
+    
+    // MARK: 11. Mixed High-Signal AIHot News Scoring & Live-Activity Dashboard Composition
+    
+    @Test func highSignalNewsFilterPrioritizesDenseAIHotPostsOverFluff() {
+        let denseAIHot = AIHotNewsItem(
+            id: "aihot-1",
+            title: "DeepSeek 开源新一代推理模型架构论文与 Benchmark 评测",
+            source: "AIHot",
+            urlString: "https://aihot.news/items/deepseek-paper",
+            publishedAt: Date(),
+            heatScore: 98,
+            tag: "LLM"
+        )
+        let fluff = AIHotNewsItem(
+            id: "spam-1",
+            title: "Subscribe now!",
+            source: "Promo",
+            urlString: "https://example.com/promo",
+            publishedAt: Date(),
+            heatScore: 1,
+            tag: nil
+        )
+        let shortItem = AIHotNewsItem(
+            id: "short-1",
+            title: "Hi",
+            source: "Web",
+            urlString: "https://example.com",
+            publishedAt: nil,
+            heatScore: nil,
+            tag: nil
+        )
+        
+        #expect(AIHotNewsService.isHighSignalPost(denseAIHot))
+        #expect(!AIHotNewsService.isHighSignalPost(fluff))
+        #expect(!AIHotNewsService.isHighSignalPost(shortItem))
+        
+        let primaryScore = AIHotNewsService.signalRankScore(denseAIHot, isPrimaryAIHot: true)
+        let secondaryScore = AIHotNewsService.signalRankScore(denseAIHot, isPrimaryAIHot: false)
+        #expect(primaryScore > secondaryScore)
+    }
+    
+    
+    @Test func vimVisualMultiLineSelectionHasZeroNotchAtSharedLeftEdge() {
+        let line1 = NSRect(x: 20, y: 10, width: 180, height: 20)
+        let line2 = NSRect(x: 20, y: 30, width: 140, height: 20)
+        let path = EditorFunEffectsController.buildSeamlessVisualSelectionPath(rects: [line1, line2])
+        
+        // Shared left seam at y=30 MUST be completely filled (no V-notch pinch `)(`)
+        #expect(path.contains(CGPoint(x: 20.3, y: 29.5)))
+        #expect(path.contains(CGPoint(x: 20.3, y: 30.0)))
+        #expect(path.contains(CGPoint(x: 20.3, y: 30.5)))
+        
+        // True outer top-left and bottom-left corners stay smoothly rounded
+        #expect(!path.contains(CGPoint(x: 20.1, y: 10.1)))
+        #expect(!path.contains(CGPoint(x: 20.1, y: 49.9)))
+    }
+    
+    
+    @Test func starMapLayoutSeparatesClustersAndCollapsesLeavesCleanly() {
+        let layout = StarMapLayoutEngine.compute(
+            clusterIDs: ["202609", "202608", "202607"],
+            leafCountsByCluster: ["202609": 5, "202608": 3, "202607": 2],
+            collapsedClusterIDs: ["202607"],
+            leafIDsByCluster: [
+                "202609": ["w1", "w2", "w3", "w4", "w5"],
+                "202608": ["w6", "w7", "w8"],
+                "202607": ["w9", "w10"],
+            ]
+        )
+        
+        #expect(layout.clusters.count == 3)
+        // Collapsed cluster 202607 contributes 0 visible leaves -> 5 + 3 = 8 visible leaves
+        #expect(layout.leaves.count == 8)
+        #expect(!layout.leaves.contains { $0.clusterID == "202607" })
+        
+        // Clusters must be well separated around the hub (no overlapping positions)
+        for i in 0..<layout.clusters.count {
+            for j in (i + 1)..<layout.clusters.count {
+                let p1 = layout.clusters[i].worldPoint
+                let p2 = layout.clusters[j].worldPoint
+                let dist = hypot(p1.x - p2.x, p1.y - p2.y)
+                #expect(dist > 80)
+            }
+        }
+        #expect(layout.bounds.width > 300 && layout.bounds.height > 200)
+    }
 }
