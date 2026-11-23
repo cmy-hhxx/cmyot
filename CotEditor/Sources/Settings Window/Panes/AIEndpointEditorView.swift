@@ -430,6 +430,13 @@ struct AIEndpointEditorView: View {
             self.draft.endpoint = provider.endpoint
             self.draft.baseURL = (provider.defaultBaseURL == provider.endpoint.defaultBaseURL) ? "" : provider.defaultBaseURL
             self.draft.model = provider.defaultModel
+            self.draft.rememberModels(provider.recommendedModels)
+            if !provider.defaultCustomHeaders.isEmpty && self.customHeadersText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.customHeadersText = provider.defaultCustomHeaders
+                    .keys.sorted()
+                    .compactMap { k in provider.defaultCustomHeaders[k].map { "\(k): \($0)" } }
+                    .joined(separator: "\n")
+            }
             self.models = []
             self.fetchError = nil
             self.testMessage = nil

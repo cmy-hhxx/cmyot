@@ -1043,12 +1043,18 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     private static func economySiblingModel(for config: AIConfiguration) -> String? {
         
         switch config.provider {
+            case .openCodeGo: return "kimi-k2.5"
             case .deepSeek: return "deepseek-chat"
             case .openAI: return "gpt-4o-mini"
             case .anthropic: return "claude-3-5-haiku-latest"
             case .google: return "gemini-2.5-flash"
             case .qwen: return "qwen-turbo"
             case .moonshot: return "moonshot-v1-8k"
+            case .zhipu: return "glm-4-flash"
+            case .miniMax: return "MiniMax-M2.5"
+            case .volcengine: return "doubao-1-5-pro-32k"
+            case .siliconFlow: return "deepseek-ai/DeepSeek-V3"
+            case .aiHubMix: return "gpt-4.1-mini"
             case .openRouter: return Self.openRouterEconomySibling(for: config.model)
             case .ollama: return nil
             case .custom: break

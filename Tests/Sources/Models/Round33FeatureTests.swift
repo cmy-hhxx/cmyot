@@ -170,4 +170,162 @@ struct Round33FeatureTests {
         #expect(abs(contentView.bounds.width - 1120) <= 2)
         #expect(abs(contentView.bounds.height - 720) <= 2)
     }
+    
+    
+    // MARK: 4. OpenCode Go & Mainstream cc-switch Presets
+    
+    @Test func aiProviderIncludesOpenCodeGoFlagshipAndMainstreamPresets() {
+        #expect(AIProvider.curatedPresets.first == .openCodeGo)
+        #expect(AIProvider.curatedPresets.count >= 12)
+        
+        let openAIProfile = AIProvider.openCodeGo.makeProfile()
+        #expect(openAIProfile.endpoint == .openAIChatCompletions)
+        #expect(openAIProfile.baseURL == "https://opencode.ai/zen/go/v1")
+        #expect(!openAIProfile.savedModels.isEmpty)
+        #expect(openAIProfile.customHeaders["x-opencode-session"] != nil)
+        #expect(AIProvider.detect(endpoint: openAIProfile.endpoint, baseURL: openAIProfile.baseURL) == .openCodeGo)
+        
+        let anthropicProfile = AIProvider.openCodeGo.makeProfile(useAnthropicProtocol: true)
+        #expect(anthropicProfile.endpoint == .anthropicMessages)
+        #expect(anthropicProfile.baseURL == "https://opencode.ai/zen/go")
+        #expect(AIProvider.detect(endpoint: anthropicProfile.endpoint, baseURL: anthropicProfile.baseURL) == .openCodeGo)
+        
+        #expect(AIProvider.detect(endpoint: .openAIChatCompletions, baseURL: AIProvider.zhipu.defaultBaseURL) == .zhipu)
+        #expect(AIProvider.detect(endpoint: .openAIChatCompletions, baseURL: AIProvider.siliconFlow.defaultBaseURL) == .siliconFlow)
+    }
+    
+    
+    // MARK: 5. Star Map Zero-Overlap AABB Guarantee
+    
+    @Test func starMapLayoutResolvesAllHubClusterAndLeafOverlaps() {
+        let clusterIDs = ["c1", "c2", "c3", "c4"]
+        let leafIDsByCluster: [String: [String]] = [
+            "c1": (1...6).map { "c1-l\($0)" },
+            "c2": (1...5).map { "c2-l\($0)" },
+            "c3": (1...5).map { "c3-l\($0)" },
+            "c4": (1...4).map { "c4-l\($0)" },
+        ]
+        let counts = leafIDsByCluster.mapValues(\.count)
+        let layout = StarMapLayoutEngine.compute(
+            clusterIDs: clusterIDs,
+            leafCountsByCluster: counts,
+            collapsedClusterIDs: [],
+            leafIDsByCluster: leafIDsByCluster
+        )
+        
+        var rects: [CGRect] = [
+            CGRect(
+                x: -StarMapLayoutEngine.hubFootprint.width * 0.5,
+                y: -StarMapLayoutEngine.hubFootprint.height * 0.5,
+                width: StarMapLayoutEngine.hubFootprint.width,
+                height: StarMapLayoutEngine.hubFootprint.height
+            ),
+        ]
+        for c in layout.clusters {
+            rects.append(CGRect(
+                x: c.worldPoint.x - StarMapLayoutEngine.clusterFootprint.width * 0.5,
+                y: c.worldPoint.y - StarMapLayoutEngine.clusterFootprint.height * 0.5,
+                width: StarMapLayoutEngine.clusterFootprint.width,
+                height: StarMapLayoutEngine.clusterFootprint.height
+            ))
+        }
+        for l in layout.leaves {
+            rects.append(CGRect(
+                x: l.worldPoint.x - StarMapLayoutEngine.leafFootprint.width * 0.5,
+                y: l.worldPoint.y - StarMapLayoutEngine.leafFootprint.height * 0.5,
+                width: StarMapLayoutEngine.leafFootprint.width,
+                height: StarMapLayoutEngine.leafFootprint.height
+            ))
+        }
+        
+        var overlapCount = 0
+        for i in 0..<rects.count {
+            for j in (i + 1)..<rects.count {
+                if rects[i].intersects(rects[j]) {
+                    overlapCount += 1
+                }
+            }
+        }
+        #expect(overlapCount == 0, "Expected zero overlapping star-map nodes, found \(overlapCount)")
+    }
+    
+    
+    // MARK: 6. Real-Time Mood Flow & Official API Cost Pricing
+    
+    @Test func moodFlowTimeSlotsStrictlyFollowCurrentWallClockHour() {
+        let slices = (0..<12).map { i in
+            BusynessHourSlice(index: i, label: "\(i * 2):00", intensity: 0.4, rawChars: 100, rawAIRequests: 1)
+        }
+        
+        let morning8 = EmotionSankeyChartView.timeSlotDescriptors(slices: slices, currentHour: 8)
+        #expect(morning8.map(\.label) == ["清晨"])
+        #expect(!morning8.map(\.label).contains("夜间"))
+        #expect(!morning8.map(\.label).contains("午后"))
+        
+        let morning10 = EmotionSankeyChartView.timeSlotDescriptors(slices: slices, currentHour: 10)
+        #expect(morning10.map(\.label) == ["清晨", "上午"])
+        #expect(!morning10.map(\.label).contains("夜间"))
+        
+        let afternoon14 = EmotionSankeyChartView.timeSlotDescriptors(slices: slices, currentHour: 14)
+        #expect(afternoon14.map(\.label) == ["晨间", "午后"])
+        #expect(!afternoon14.map(\.label).contains("夜间"))
+        
+        let evening21 = EmotionSankeyChartView.timeSlotDescriptors(slices: slices, currentHour: 21)
+        #expect(evening21.map(\.label) == ["晨间", "午后", "夜间"])
+    }
+    
+    
+    @Test func officialAPIPricingCatalogComputesUSDAndRMBCosts() {
+        let claude = AIModelPricingCatalog.estimateCost(model: "claude-sonnet-4-5", inputTokens: 1_000_000, outputTokens: 1_000_000)
+        #expect(abs(claude.usd - 18.0) < 0.01)
+        #expect(abs(claude.rmb - 18.0 * AIModelPricingCatalog.usdToRMBRate) < 0.1)
+        #expect(claude.formattedRMB.hasPrefix("¥"))
+        #expect(claude.formattedUSD.hasPrefix("$"))
+        
+        let deepseek = AIModelPricingCatalog.estimateCost(model: "deepseek-chat", inputTokens: 1_000_000, outputTokens: 1_000_000)
+        #expect(deepseek.usd > 1.0 && deepseek.usd < 2.0)
+        
+        let local = AIModelPricingCatalog.estimateCost(model: "qwen2.5:7b", inputTokens: 500_000, outputTokens: 500_000)
+        #expect(local.usd == 0)
+        #expect(local.rmb == 0)
+    }
+    
+    
+    // MARK: 7. Prism Pass, Bots Deck & NEWS Reasoning Effort Slider Mount Cleanly
+    
+    @Test func prismPassBotsAndNewsReasoningSliderMountCleanly() throws {
+        let profile = UserProfileManager.shared.activeProfile
+        let passView = CotPassCardView(
+            theme: CotPassTheme.resolve(index: 0),
+            profile: profile,
+            avatarImage: nil,
+            serialCode: "A1B2-C3V1",
+            statusText: "LANDED",
+            joinedText: "2026.11.23",
+            accessText: "FULL"
+        )
+        
+        let sliderHost = NSHostingController(rootView: VStack {
+            passView
+            LeiBoxReasoningEffortSlider(effort: .constant(.deep), accent: .blue, isDark: false)
+                .frame(width: 280)
+        })
+        sliderHost.sizingOptions = []
+        
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentViewController = sliderHost
+        window.setContentSize(NSSize(width: 520, height: 420))
+        
+        let contentView = try #require(window.contentView)
+        contentView.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        #expect(abs(contentView.bounds.width - 520) <= 2)
+    }
 }

@@ -26,9 +26,7 @@ import SwiftUI
 
 struct AIModelsSettingsView: View {
     
-    private static let quickProviders: [AIProvider] = [
-        .openAI, .anthropic, .deepSeek, .qwen, .moonshot, .openRouter, .google, .ollama,
-    ]
+    private static let quickProviders: [AIProvider] = AIProvider.curatedPresets
     
     @Environment(\.colorScheme) private var colorScheme
     
@@ -47,6 +45,14 @@ struct AIModelsSettingsView: View {
     @State private var kernelEnabled: Bool = PiKernelManager.shared.isKernelEnabled
     @State private var showPiInstallPrompt = false
     @State private var didCopyPiPrompt = false
+    
+    // cc-switch style quick preset connect drawer
+    @State private var showPresetGallery = false
+    @State private var quickConnectProvider: AIProvider? = nil
+    @State private var quickConnectAPIKey: String = ""
+    @State private var quickConnectModel: String = ""
+    @State private var quickConnectUseAnthropic: Bool = false
+    @State private var quickConnectNotice: String? = nil
     
     
     private struct EndpointEditTarget: Identifiable {
@@ -133,30 +139,123 @@ struct AIModelsSettingsView: View {
     
     private var mainModelsContent: some View {
         VStack(alignment: .leading, spacing: 20) {
-            // Section 1: API 网关
+            // Section 1: cc-switch 风格快速接入 (OpenCode Go 重点 + 主流预设)
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text(AppLanguage.text("网关列表", en: "API Gateways"))
+                    Text(AppLanguage.text("快速接入网关", en: "Quick Switch & Presets"))
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .padding(.leading, 3)
                     
                     Spacer()
                     
-                    self.activeEnginePill
+                    Button {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
+                            self.showPresetGallery.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(self.showPresetGallery
+                                 ? AppLanguage.text("收起主流预设", en: "Hide Presets")
+                                 : AppLanguage.text("全部主流预设 (\(Self.quickProviders.count))", en: "All Presets (\(Self.quickProviders.count))"))
+                                .font(.system(size: 11.5, weight: .medium))
+                            Image(systemName: self.showPresetGallery ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 9.5, weight: .semibold))
+                        }
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 8)
+                        .frame(height: 24)
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                }
+                
+                VStack(alignment: .leading, spacing: 0) {
+                    // Featured Flagship Row: OpenCode Go + Top Mainstream Shortcuts
+                    HStack(spacing: 8) {
+                        self.quickPresetChip(.openCodeGo, prominent: true)
+                        self.quickPresetChip(.openAI, prominent: false)
+                        self.quickPresetChip(.anthropic, prominent: false)
+                        self.quickPresetChip(.deepSeek, prominent: false)
+                        self.quickPresetChip(.google, prominent: false)
+                        
+                        Spacer(minLength: 0)
+                        
+                        Button {
+                            self.beginAddingEndpoint()
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                Text(AppLanguage.text("自定义", en: "Custom"))
+                                    .font(.system(size: 11.5, weight: .medium))
+                            }
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 9)
+                            .frame(height: 28)
+                            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    
+                    if self.showPresetGallery {
+                        self.rowDivider
+                        
+                        let columns = Array(repeating: GridItem(.flexible(), spacing: 7), count: 4)
+                        LazyVGrid(columns: columns, spacing: 7) {
+                            ForEach(Self.quickProviders, id: \.self) { provider in
+                                self.presetGridTile(provider)
+                            }
+                        }
+                        .padding(12)
+                    }
+                    
+                    if let targetProvider = self.quickConnectProvider {
+                        self.rowDivider
+                        self.quickConnectBar(for: targetProvider)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                }
+                .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
+            }
+            
+            // Section 2: 已配置网关 (cc-switch 一键切换)
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text(AppLanguage.text("已配置网关（点击一键切换）", en: "Configured Gateways"))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 3)
+                    
+                    Spacer()
+                    
+                    if let notice = self.quickConnectNotice {
+                        Text(notice)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.green)
+                    } else {
+                        self.activeEnginePill
+                    }
                 }
                 
                 VStack(spacing: 0) {
                     if self.profiles.isEmpty {
-                        VStack(spacing: 8) {
-                            Image(systemName: "network.slash")
+                        VStack(spacing: 10) {
+                            Image(systemName: "bolt.horizontal.circle")
                                 .font(.title2)
                                 .foregroundStyle(.tertiary)
-                            Text(AppLanguage.text("尚未配置 API 网关", en: "No API Gateways Configured"))
-                                .font(.system(size: 13, weight: .medium))
+                            Text(AppLanguage.text("点上方 OpenCode Go 或任意预设，粘贴 Key 即可一键启用", en: "Pick a preset above to connect in one step"))
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 26)
+                        .padding(.vertical, 24)
                     } else {
                         ForEach(Array(self.profiles.enumerated()), id: \.element.id) { idx, profile in
                             if idx > 0 {
@@ -165,33 +264,6 @@ struct AIModelsSettingsView: View {
                             self.endpointRow(profile)
                         }
                     }
-                    
-                    self.rowDivider
-                    
-                    HStack(spacing: 10) {
-                        Button {
-                            self.beginAddingEndpoint()
-                        } label: {
-                            Label(AppLanguage.text("添加 API 网关", en: "Add Gateway"), systemImage: "plus")
-                        }
-                        .controlSize(.small)
-                        
-                        Menu {
-                            ForEach(Self.quickProviders, id: \.self) { provider in
-                                Button(provider.label) {
-                                    self.beginAddingEndpoint(preset: provider)
-                                }
-                            }
-                        } label: {
-                            Text(AppLanguage.text("从预设模板新建", en: "From Preset"))
-                        }
-                        .controlSize(.small)
-                        .fixedSize()
-                        
-                        Spacer()
-                    }
-                    .padding(.horizontal, 14)
-                    .frame(minHeight: 40)
                 }
                 .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
@@ -384,12 +456,314 @@ struct AIModelsSettingsView: View {
     
     
     @ViewBuilder
+    private func quickPresetChip(_ provider: AIProvider, prominent: Bool) -> some View {
+        let isSelected = (self.quickConnectProvider == provider)
+        let accent = Color(hexString: provider.accentHex)
+        let hasConfigured = self.profiles.contains { $0.provider == provider }
+        
+        Button {
+            self.selectQuickConnect(provider)
+        } label: {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(prominent && !isSelected ? Color.white : accent)
+                    .frame(width: 6, height: 6)
+                
+                Text(provider == .google ? "Gemini" : (provider == .anthropic ? "Claude" : provider.label))
+                    .font(.system(size: 11.5, weight: (prominent || isSelected) ? .semibold : .medium))
+                    .lineLimit(1)
+                
+                if provider.isFeatured {
+                    Text(AppLanguage.text("主打", en: "GO"))
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(
+                            (prominent && !isSelected ? Color.white.opacity(0.22) : accent.opacity(0.16)),
+                            in: Capsule()
+                        )
+                } else if hasConfigured {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(isSelected ? Color.white : .green)
+                }
+            }
+            .foregroundStyle(
+                isSelected || prominent
+                    ? Color.white
+                    : Color.primary.opacity(0.86)
+            )
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(
+                        isSelected
+                            ? accent
+                            : (prominent
+                               ? accent.opacity(self.colorScheme == .dark ? 0.88 : 0.92)
+                               : Color.primary.opacity(self.colorScheme == .dark ? 0.07 : 0.05))
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(
+                        isSelected ? accent : (prominent ? accent : self.cardBorder),
+                        lineWidth: isSelected ? 1.2 : 0.75
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+    }
+    
+    
+    @ViewBuilder
+    private func presetGridTile(_ provider: AIProvider) -> some View {
+        let isSelected = (self.quickConnectProvider == provider)
+        let accent = Color(hexString: provider.accentHex)
+        let isConfigured = self.profiles.contains { $0.provider == provider }
+        
+        Button {
+            self.selectQuickConnect(provider)
+        } label: {
+            HStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(accent)
+                    .frame(width: 3, height: 18)
+                
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(provider.label)
+                        .font(.system(size: 11.5, weight: isSelected || provider.isFeatured ? .semibold : .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(provider.badgeLabel)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(provider.isFeatured ? accent : .secondary)
+                        .lineLimit(1)
+                }
+                
+                Spacer(minLength: 2)
+                
+                if isConfigured {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.green)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(
+                        isSelected
+                            ? accent.opacity(self.colorScheme == .dark ? 0.20 : 0.12)
+                            : Color.primary.opacity(self.colorScheme == .dark ? 0.045 : 0.03)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(
+                        isSelected ? accent.opacity(0.75) : (provider.isFeatured ? accent.opacity(0.35) : self.cardBorder),
+                        lineWidth: isSelected ? 1.1 : 0.75
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+    }
+    
+    
+    @ViewBuilder
+    private func quickConnectBar(for provider: AIProvider) -> some View {
+        let accent = Color(hexString: provider.accentHex)
+        let requiresKey = provider.endpoint.requiresAPIKey
+        let canConnect = !requiresKey || !self.quickConnectAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(accent)
+                    .frame(width: 8, height: 8)
+                
+                Text(provider.label)
+                    .font(.system(size: 13, weight: .semibold))
+                
+                Text(provider == .openCodeGo && self.quickConnectUseAnthropic
+                     ? "https://opencode.ai/zen/go"
+                     : provider.defaultBaseURL)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                
+                Spacer(minLength: 4)
+                
+                if provider == .openCodeGo {
+                    Picker("", selection: self.$quickConnectUseAnthropic) {
+                        Text("OpenAI 协议").tag(false)
+                        Text("Anthropic 协议").tag(true)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .controlSize(.mini)
+                    .frame(width: 158)
+                }
+                
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        self.quickConnectProvider = nil
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .background(Color.primary.opacity(0.06), in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+            }
+            
+            HStack(spacing: 8) {
+                if requiresKey {
+                    SecureField(provider.apiKeyPlaceholder, text: self.$quickConnectAPIKey)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                        .onSubmit {
+                            if canConnect { self.commitQuickConnect(provider) }
+                        }
+                } else {
+                    Text(AppLanguage.text("本地模型免 API Key，直接启用", en: "No API Key needed for local runner"))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                
+                Menu {
+                    ForEach(provider.recommendedModels, id: \.self) { m in
+                        Button(m) {
+                            self.quickConnectModel = m
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(self.quickConnectModel.isEmpty ? provider.defaultModel : self.quickConnectModel)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 9)
+                    .frame(height: 26)
+                    .frame(maxWidth: 146)
+                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                
+                Button {
+                    self.commitQuickConnect(provider)
+                } label: {
+                    Text(AppLanguage.text("接入并启用", en: "Connect"))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                        .padding(.horizontal, 12)
+                        .frame(height: 26)
+                        .background(
+                            canConnect ? accent : Color.secondary.opacity(0.35),
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canConnect)
+                .pointerStyle(canConnect ? .link : .default)
+                
+                Button {
+                    let built = provider.makeProfile(
+                        modelOverride: self.quickConnectModel,
+                        useAnthropicProtocol: self.quickConnectUseAnthropic
+                    )
+                    let key = self.quickConnectAPIKey
+                    self.quickConnectProvider = nil
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                        self.editingEndpointTarget = EndpointEditTarget(profile: built, apiKey: key, isNew: true)
+                    }
+                } label: {
+                    Text(AppLanguage.text("完整表单", en: "Advanced"))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(accent.opacity(self.colorScheme == .dark ? 0.08 : 0.045))
+    }
+    
+    
+    private func selectQuickConnect(_ provider: AIProvider) {
+        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+            if self.quickConnectProvider == provider {
+                self.quickConnectProvider = nil
+            } else {
+                self.quickConnectProvider = provider
+                self.quickConnectAPIKey = ""
+                self.quickConnectModel = provider.defaultModel
+                self.quickConnectUseAnthropic = false
+            }
+        }
+    }
+    
+    
+    private func commitQuickConnect(_ provider: AIProvider) {
+        let trimmedKey = self.quickConnectAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if provider.endpoint.requiresAPIKey && trimmedKey.isEmpty { return }
+        
+        let profile = provider.makeProfile(
+            modelOverride: self.quickConnectModel,
+            useAnthropicProtocol: self.quickConnectUseAnthropic
+        )
+        AIEndpointStore.save(profile, apiKey: trimmedKey)
+        self.activeID = profile.id
+        AIEndpointStore.activeID = profile.id
+        CotLocalDatabase.shared.syncAIEndpointsToDatabase()
+        _ = try? self.piKernel.syncWorkspace()
+        
+        withAnimation(.easeOut(duration: 0.18)) {
+            self.quickConnectProvider = nil
+            self.quickConnectAPIKey = ""
+            self.quickConnectNotice = "已接入并启用 \(profile.displayName)"
+        }
+        self.reload()
+        Task {
+            await self.testEndpoint(profile)
+            try? await Task.sleep(for: .seconds(3))
+            if self.quickConnectNotice?.contains(profile.displayName) == true {
+                self.quickConnectNotice = nil
+            }
+        }
+    }
+    
+    
+    @ViewBuilder
     private func endpointRow(_ profile: AIEndpointProfile) -> some View {
         let isActive = (profile.id == self.activeID)
         let probe = self.endpointStatus[profile.id]
         let fetched = self.fetchedModels[profile.id] ?? []
         let isFetching = self.fetchingModelsIDs.contains(profile.id)
         let isConfirmingDelete = (self.confirmDeleteID == profile.id)
+        let provider = profile.provider
+        let providerAccent = Color(hexString: provider.accentHex)
         let gijinka = AIGijinkaCharacter.resolve(
             modelName: profile.displayModel,
             endpointName: profile.displayName,
@@ -403,9 +777,13 @@ struct AIModelsSettingsView: View {
                     self.activateEndpoint(profile)
                 } label: {
                     HStack(spacing: 8) {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(isActive ? Color.green : Color.clear)
+                            .frame(width: 3, height: 22)
+                        
                         Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
                             .font(.system(size: 14.5))
-                            .foregroundStyle(isActive ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+                            .foregroundStyle(isActive ? AnyShapeStyle(Color.green) : AnyShapeStyle(.tertiary))
                             .frame(width: 18)
                         
                         if let gijinka {
@@ -421,27 +799,47 @@ struct AIModelsSettingsView: View {
                                     )
                                 } else {
                                     Circle()
-                                        .fill(Color(hexString: gijinka.accentHex).opacity(0.14))
+                                        .fill(providerAccent.opacity(0.15))
                                     Text(String(gijinka.brand.prefix(1)))
                                         .font(.system(size: 10.5, weight: .semibold))
-                                        .foregroundStyle(Color(hexString: gijinka.accentHex))
+                                        .foregroundStyle(providerAccent)
                                 }
                             }
                             .frame(width: 26, height: 26)
                             .clipShape(Circle())
-                            .overlay(Circle().strokeBorder(self.cardBorder, lineWidth: 0.75))
+                            .overlay(Circle().strokeBorder(isActive ? Color.green.opacity(0.55) : self.cardBorder, lineWidth: 0.9))
                             .help(gijinka.name)
                         }
                         
-                        Text(profile.displayName)
-                            .font(.system(size: 13, weight: isActive ? .semibold : .regular))
-                            .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 6) {
+                                Text(profile.displayName)
+                                    .font(.system(size: 13, weight: isActive ? .semibold : .medium))
+                                    .lineLimit(1)
+                                
+                                if isActive {
+                                    Text(AppLanguage.text("生效中", en: "Active"))
+                                        .font(.system(size: 9.5, weight: .semibold))
+                                        .foregroundStyle(.green)
+                                        .padding(.horizontal, 5.5)
+                                        .padding(.vertical, 1.5)
+                                        .background(Color.green.opacity(0.14), in: Capsule())
+                                }
+                            }
+                            
+                            Text(profile.baseURL.isEmpty ? profile.endpoint.defaultBaseURL : profile.baseURL)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                         
                         Spacer(minLength: 4)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .pointerStyle(.link)
                 
                 Menu {
                     if !fetched.isEmpty {
@@ -453,9 +851,9 @@ struct AIModelsSettingsView: View {
                             }
                         }
                     }
-                    let saved = profile.availableModelIDs
+                    let saved = Array(NSOrderedSet(array: profile.availableModelIDs + profile.provider.recommendedModels).compactMap { $0 as? String })
                     if !saved.isEmpty {
-                        Section(AppLanguage.text("已保存模型", en: "Saved Models")) {
+                        Section(AppLanguage.text("推荐与已保存模型", en: "Models")) {
                             ForEach(saved, id: \.self) { modelID in
                                 Button(modelID) {
                                     self.switchModel(modelID, on: profile)
@@ -639,12 +1037,7 @@ struct AIModelsSettingsView: View {
     private func beginAddingEndpoint(preset provider: AIProvider? = nil) {
         let profile: AIEndpointProfile
         if let provider, provider != .custom {
-            profile = AIEndpointProfile(
-                name: provider.label,
-                endpoint: provider.endpoint,
-                baseURL: provider.defaultBaseURL,
-                model: provider.defaultModel
-            )
+            profile = provider.makeProfile()
         } else {
             profile = AIEndpointProfile()
         }
@@ -861,9 +1254,11 @@ struct AIBotsSettingsView: View {
         let stageHeight: CGFloat = switch self.layoutMode {
             case .list: CGFloat(bots.count) * 64.0
             case .card: CGFloat(rowsCount) * cardRowStride
-            case .pack: 258.0
+            case .pack: 308.0
         }
         let enabledCount = bots.filter { self.botStore.config(for: $0).isEnabled }.count
+        let hoveredIndex = self.hoveredBotID.flatMap { id in bots.firstIndex(of: id) }
+        let focusedPackBot = self.hoveredBotID ?? bots.first
         
         VStack(alignment: .leading, spacing: 14) {
             // Segmented Layout Switcher with shared sliding capsule
@@ -912,6 +1307,21 @@ struct AIBotsSettingsView: View {
             
             // Unified Identity-Preserving Morph Stage
             ZStack(alignment: .topLeading) {
+                if self.layoutMode == .pack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(
+                            self.colorScheme == .dark
+                                ? Color.white.opacity(0.03)
+                                : Color.black.opacity(0.022)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(self.cardBorder, lineWidth: 0.75)
+                        )
+                        .frame(width: Self.fixedStageWidth, height: 224)
+                        .allowsHitTesting(false)
+                }
+                
                 ForEach(Array(bots.enumerated()), id: \.element) { index, botID in
                     let cfg = self.botStore.config(for: botID)
                     let calls = featureCounts[botID.analyticsFeatureKey] ?? 0
@@ -919,6 +1329,7 @@ struct AIBotsSettingsView: View {
                         botID: botID,
                         index: index,
                         total: bots.count,
+                        hoveredIndex: hoveredIndex,
                         config: cfg,
                         recentCalls: calls,
                         cardWidth: cardWidth,
@@ -928,14 +1339,67 @@ struct AIBotsSettingsView: View {
                     )
                 }
                 
-                if self.layoutMode == .pack {
-                    VStack(spacing: 4) {
-                        Text(AppLanguage.text("Pi Bots 编队（共 \(bots.count) 位）", en: "\(bots.count) Pi Bots"))
-                            .font(.system(size: 13, weight: .semibold))
+                if self.layoutMode == .pack, let focusedPackBot {
+                    let focusedCfg = self.botStore.config(for: focusedPackBot)
+                    let focusedEndpoint = self.resolvedEndpoint(for: focusedCfg)
+                    let focusedChar = self.resolvedCharacter(for: focusedPackBot, config: focusedCfg)
+                    let focusedAccent = Color(hexString: focusedChar?.accentHex ?? focusedPackBot.accentHex)
+                    let focusedModel = focusedCfg.modelOverride.isEmpty
+                        ? (focusedEndpoint?.displayModel ?? AppLanguage.text("跟随全局默认", en: "Default Model"))
+                        : focusedCfg.modelOverride
+                    
+                    HStack(spacing: 12) {
+                        Circle()
+                            .fill(focusedCfg.isEnabled ? focusedAccent : Color.secondary.opacity(0.35))
+                            .frame(width: 8, height: 8)
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(focusedPackBot.displayName)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(.primary)
+                                if let focusedChar {
+                                    Text(focusedChar.name)
+                                        .font(.system(size: 10.5, weight: .medium))
+                                        .foregroundStyle(focusedAccent)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 1.5)
+                                        .background(focusedAccent.opacity(0.14), in: Capsule())
+                                }
+                            }
+                            Text(focusedModel)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        
+                        Spacer(minLength: 8)
+                        
+                        Button {
+                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+                                self.inspectingBot = focusedPackBot
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(AppLanguage.text("进入配置", en: "Configure"))
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                            }
                             .foregroundStyle(.primary)
+                            .padding(.horizontal, 10)
+                            .frame(height: 28)
+                            .background(Color.primary.opacity(self.colorScheme == .dark ? 0.10 : 0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
                     }
-                    .frame(maxWidth: .infinity)
-                    .offset(y: 186)
+                    .padding(.horizontal, 14)
+                    .frame(width: Self.fixedStageWidth, height: 62)
+                    .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
+                    .offset(y: 238)
                     .transition(.opacity)
                 }
             }
@@ -962,6 +1426,7 @@ struct AIBotsSettingsView: View {
         botID: AIBotID,
         index: Int,
         total: Int,
+        hoveredIndex: Int?,
         config: AIBotConfig,
         recentCalls: Int,
         cardWidth: CGFloat,
@@ -974,19 +1439,20 @@ struct AIBotsSettingsView: View {
         let artwork = character?.artwork(for: botID, variantOverride: config.artworkVariantIndex)
         let accent = Color(hexString: character?.accentHex ?? botID.accentHex)
         let portrait = artwork.flatMap { self.imageLoader.image(for: $0) }
-        let cropAlignment = Self.swiftUIAlignment(for: artwork?.cropAnchor ?? .top)
         let effectiveModelLabel = config.modelOverride.isEmpty
             ? (endpoint?.displayModel ?? AppLanguage.text("未选择模型", en: "No Model"))
             : config.modelOverride
         let isHovered = (self.hoveredBotID == botID)
         
         let itemWidth: CGFloat
+        let itemHeight: CGFloat
         let artWidth: CGFloat
         let artHeight: CGFloat
         let artCorner: CGFloat
         let posX: CGFloat
         let posY: CGFloat
         let rotation: Double
+        let packScale: CGFloat
         
         switch self.layoutMode {
             case .list:
@@ -994,33 +1460,45 @@ struct AIBotsSettingsView: View {
                 artHeight = 48
                 artCorner = 10
                 itemWidth = Self.fixedStageWidth
+                itemHeight = artHeight
                 posX = 0
                 posY = CGFloat(index) * 64.0
                 rotation = 0
+                packScale = 1.0
             case .card:
                 artWidth = cardWidth
                 artHeight = portraitHeight
                 artCorner = 12
                 itemWidth = cardWidth
+                itemHeight = portraitHeight + 44
                 let col = index % 3
                 let row = index / 3
                 posX = CGFloat(col) * (cardWidth + cardGap)
                 posY = CGFloat(row) * cardRowStride
                 rotation = 0
+                packScale = 1.0
             case .pack:
-                artWidth = 102
-                artHeight = 136
-                artCorner = 12
+                artWidth = 112
+                artHeight = 148
+                artCorner = 13
                 itemWidth = artWidth
-                let spread: CGFloat = 28.0
+                itemHeight = artHeight
+                // Fit fanned deck cleanly inside fixedStageWidth (525pt) with zero edge clipping
+                let maxDeckSpan = Self.fixedStageWidth - artWidth - 56
+                let spread = total > 1 ? min(44.0, maxDeckSpan / CGFloat(total - 1)) : 0
                 let mid = Double(total - 1) * 0.5
                 let offsetIndex = Double(index) - mid
-                posX = (Self.fixedStageWidth - artWidth) * 0.5 + CGFloat(offsetIndex) * spread
-                posY = 16 + abs(CGFloat(offsetIndex)) * 4.0 - (isHovered ? 12 : 0)
-                rotation = offsetIndex * 4.6
+                var fanShift: CGFloat = 0
+                if let hIdx = hoveredIndex, hIdx != index {
+                    fanShift = index < hIdx ? -18.0 : 18.0
+                }
+                posX = (Self.fixedStageWidth - artWidth) * 0.5 + CGFloat(offsetIndex) * spread + fanShift
+                // Generous vertical headroom (baseY = 38) so rotated corners never clip top or bottom
+                posY = 38.0 + abs(CGFloat(offsetIndex)) * 3.2 - (isHovered ? 12.0 : 0.0)
+                rotation = isHovered ? 0.0 : offsetIndex * 3.2
+                packScale = isHovered ? 1.05 : 1.0
         }
         
-        let _ = cropAlignment
         return ZStack(alignment: .topLeading) {
             // Persistent Bot Portrait Frame (full-bleed 3:4 static cover)
             ZStack {
@@ -1052,18 +1530,43 @@ struct AIBotsSettingsView: View {
                         Image(systemName: botID.symbolName)
                             .font(.system(size: min(artWidth * 0.34, 24), weight: .medium))
                             .foregroundStyle(accent)
-                        if self.layoutMode == .card {
+                        if self.layoutMode != .list {
                             Text(character?.name ?? effectiveModelLabel)
-                                .font(.system(size: 11, weight: .medium))
+                                .font(.system(size: 10.5, weight: .medium))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
-                                .padding(.horizontal, 8)
+                                .padding(.horizontal, 6)
                         }
                     }
                 }
                 
-                if self.layoutMode == .card, portrait != nil {
-                    // Subtle lower vignette & artwork style tag for magazine-grade card finish
+                if self.layoutMode == .pack {
+                    // Bottom translucent name bar so every stacked card is immediately identifiable
+                    VStack(spacing: 0) {
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(config.isEnabled ? accent : Color.white.opacity(0.4))
+                                .frame(width: 5, height: 5)
+                            Text(botID.displayName)
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(Color.white)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(
+                            LinearGradient(
+                                colors: [Color.black.opacity(0.0), Color.black.opacity(0.72)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                    }
+                    .allowsHitTesting(false)
+                } else if self.layoutMode == .card, portrait != nil {
+                    // Subtle lower vignette for magazine-grade card finish
                     VStack {
                         Spacer()
                         LinearGradient(
@@ -1081,16 +1584,18 @@ struct AIBotsSettingsView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: artCorner, style: .continuous)
                     .strokeBorder(
-                        isHovered ? accent.opacity(0.65) : self.cardBorder,
-                        lineWidth: isHovered ? 1.2 : 0.75
+                        isHovered ? accent.opacity(0.85) : (self.layoutMode == .pack ? Color.white.opacity(self.colorScheme == .dark ? 0.16 : 0.72) : self.cardBorder),
+                        lineWidth: isHovered ? 1.5 : 0.9
                     )
             )
             .shadow(
-                color: Color.black.opacity(self.layoutMode == .pack ? 0.16 : 0.05),
-                radius: self.layoutMode == .pack ? 8 : 3,
-                y: self.layoutMode == .pack ? 4 : 1
+                color: Color.black.opacity(self.layoutMode == .pack ? (isHovered ? 0.28 : 0.16) : 0.05),
+                radius: self.layoutMode == .pack ? (isHovered ? 14 : 7) : 3,
+                y: self.layoutMode == .pack ? (isHovered ? 8 : 3) : 1
             )
+            .scaleEffect(packScale)
             .rotationEffect(.degrees(rotation))
+            .contentShape(RoundedRectangle(cornerRadius: artCorner, style: .continuous))
             .onTapGesture {
                 withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
                     self.inspectingBot = botID
@@ -1194,12 +1699,20 @@ struct AIBotsSettingsView: View {
                 }
             }
         }
-        .frame(width: itemWidth, alignment: .topLeading)
+        .frame(width: itemWidth, height: itemHeight, alignment: .topLeading)
         .offset(x: posX, y: posY)
-        .zIndex(Double(index) + (isHovered && self.layoutMode == .pack ? 20 : 0))
+        .zIndex(Double(index) + (isHovered && self.layoutMode == .pack ? 50 : 0))
         .onHover { hovering in
-            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                self.hoveredBotID = hovering ? botID : (self.hoveredBotID == botID ? nil : self.hoveredBotID)
+            if hovering {
+                if self.hoveredBotID != botID {
+                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                        self.hoveredBotID = botID
+                    }
+                }
+            } else if self.hoveredBotID == botID && self.layoutMode != .pack {
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                    self.hoveredBotID = nil
+                }
             }
         }
         .pointerStyle(.link)

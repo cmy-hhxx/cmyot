@@ -256,9 +256,34 @@ nonisolated struct CotPassTheme: Identifiable, Sendable {
     }
     
     
+    var pairedStudioPalette: StudioPaletteID {
+        switch self.id {
+            case 0: .oceanCobalt
+            case 1: .pineCeladon
+            case 2: .amberEspresso
+            case 3: .ultraViolet
+            case 4: .signalCrimson
+            case 5: .nordFrost
+            default: .oceanCobalt
+        }
+    }
+    
+    
     static func resolve(index: Int) -> CotPassTheme {
         let safe = ((index % Self.allThemes.count) + Self.allThemes.count) % Self.allThemes.count
         return Self.allThemes[safe]
+    }
+    
+    
+    static func themeIndex(for studioPalette: StudioPaletteID) -> Int {
+        switch studioPalette {
+            case .oceanCobalt: 0
+            case .pineCeladon, .matchaParchment: 1
+            case .amberEspresso, .terracottaClay: 2
+            case .ultraViolet: 3
+            case .signalCrimson, .sakuraQuartz: 4
+            case .nordFrost, .graphiteMono: 5
+        }
     }
 }
 
@@ -733,8 +758,8 @@ struct CotPassSettingsView: View {
                 switch phase {
                     case .active(let pt):
                         self.isCardHovered = true
-                        let ux = max(0, min(1, pt.x / 408.0))
-                        let uy = max(0, min(1, pt.y / 246.0))
+                        let ux = max(0, min(1, pt.x / 424.0))
+                        let uy = max(0, min(1, pt.y / 256.0))
                         self.hoverPoint = UnitPoint(x: ux, y: uy)
                         let nx = (ux - 0.5) * 2.0
                         let ny = (uy - 0.5) * 2.0
@@ -748,47 +773,67 @@ struct CotPassSettingsView: View {
                 }
             }
             
-            // Minimal Fluted Glass Palette Swatches
-            HStack(spacing: 12) {
+            // Minimal Fluted Glass Prism Colorway Swatches
+            HStack(spacing: 10) {
                 ForEach(CotPassTheme.allThemes) { option in
                     let isSelected = (option.id == self.theme.id)
-                    let swatch = Color(hexString: option.matrixColorHex)
-                    let base = Color(hexString: option.backgroundTopHex)
+                    let swatch = option.flutedPalette.mid.swiftUIColor
+                    let deep = option.flutedPalette.deep.swiftUIColor
                     
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [swatch, base],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(width: isSelected ? 22 : 16, height: isSelected ? 22 : 16)
-                        .overlay(
-                            Circle()
-                                .strokeBorder(swatch.opacity(isSelected ? 0.95 : 0.35), lineWidth: isSelected ? 2.0 : 0.8)
-                        )
-                        .padding(3)
-                        .background(
-                            Circle()
-                                .strokeBorder(isSelected ? swatch.opacity(0.42) : Color.clear, lineWidth: 1.5)
-                        )
-                        .contentShape(Circle())
-                        .onTapGesture {
-                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) {
-                                self.styleIndex = option.id
-                            }
-                            CotLocalDatabase.shared.set("\(option.id)", forKey: CotLocalDatabase.ConfigKey.cotPassStyleIndex)
+                    Button {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) {
+                            self.styleIndex = option.id
                         }
-                        .pointerStyle(.link)
-                        .help(option.title)
+                        CotLocalDatabase.shared.set("\(option.id)", forKey: CotLocalDatabase.ConfigKey.cotPassStyleIndex)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [option.flutedPalette.light.swiftUIColor, swatch, deep],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .frame(width: isSelected ? 16 : 14, height: isSelected ? 16 : 14)
+                                .overlay(
+                                    Circle()
+                                        .strokeBorder(Color.white.opacity(isSelected ? 0.90 : 0.35), lineWidth: isSelected ? 1.5 : 0.75)
+                                )
+                            
+                            if isSelected {
+                                Text(option.title)
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(.primary)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                        }
+                        .padding(.horizontal, isSelected ? 10 : 6)
+                        .frame(height: 28)
+                        .background(
+                            Capsule()
+                                .fill(isSelected ? swatch.opacity(self.colorScheme == .dark ? 0.24 : 0.14) : Color.clear)
+                        )
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(isSelected ? swatch.opacity(0.55) : Color.clear, lineWidth: 1)
+                        )
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(option.title)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
             .background(
                 Capsule()
-                    .fill(self.colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.035))
+                    .fill(self.colorScheme == .dark ? Color.white.opacity(0.055) : Color.black.opacity(0.035))
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.75)
             )
             
             Spacer(minLength: 12)
@@ -1027,6 +1072,201 @@ nonisolated enum BlueFlutedGlassRenderer {
             shouldInterpolate: true,
             intent: .defaultIntent
         )
+    }
+}
+
+
+// MARK: - Cached LeiBox Fluted Glass Prism View (Zero-Lag Seamless Loop)
+
+@MainActor
+final class LeiBoxFlutedPrismCache {
+    
+    static let shared = LeiBoxFlutedPrismCache()
+    
+    private struct CacheKey: Hashable {
+        let themeID: Int
+        let width: Int
+        let height: Int
+        let ribCountInt: Int
+    }
+    
+    private var loops: [CacheKey: [CGImage]] = [:]
+    private var posters: [CacheKey: CGImage] = [:]
+    private var inFlight: Set<CacheKey> = []
+    
+    
+    func posterFrame(for theme: CotPassTheme, width: Int, height: Int, ribCount: Double) -> CGImage? {
+        let key = CacheKey(themeID: theme.id, width: width, height: height, ribCountInt: Int(ribCount.rounded()))
+        if let existing = self.loops[key]?.first ?? self.posters[key] {
+            return existing
+        }
+        let img = BlueFlutedGlassRenderer.renderFrame(
+            time: 4.2,
+            palette: theme.flutedPalette,
+            width: width,
+            height: height,
+            ribCount: ribCount
+        )
+        if let img {
+            self.posters[key] = img
+        }
+        return img
+    }
+    
+    
+    func cachedFrames(for theme: CotPassTheme, width: Int, height: Int, ribCount: Double) -> [CGImage]? {
+        let key = CacheKey(themeID: theme.id, width: width, height: height, ribCountInt: Int(ribCount.rounded()))
+        return self.loops[key]
+    }
+    
+    
+    func warmFrames(
+        for theme: CotPassTheme,
+        width: Int,
+        height: Int,
+        ribCount: Double,
+        frameCount: Int = 36,
+        onReady: @escaping @MainActor ([CGImage]) -> Void
+    ) {
+        let key = CacheKey(themeID: theme.id, width: width, height: height, ribCountInt: Int(ribCount.rounded()))
+        if let existing = self.loops[key] {
+            onReady(existing)
+            return
+        }
+        guard !self.inFlight.contains(key) else { return }
+        self.inFlight.insert(key)
+        
+        let palette = theme.flutedPalette
+        let period = BlueFlutedGlassRenderer.periodSeconds
+        Task.detached(priority: .utility) {
+            var rendered: [CGImage] = []
+            rendered.reserveCapacity(frameCount)
+            for idx in 0..<frameCount {
+                let t = (Double(idx) / Double(frameCount)) * period
+                if let img = BlueFlutedGlassRenderer.renderFrame(
+                    time: t,
+                    palette: palette,
+                    width: width,
+                    height: height,
+                    ribCount: ribCount
+                ) {
+                    rendered.append(img)
+                }
+            }
+            await MainActor.run {
+                self.inFlight.remove(key)
+                if !rendered.isEmpty {
+                    self.loops[key] = rendered
+                    onReady(rendered)
+                }
+            }
+        }
+    }
+}
+
+
+/// Faithful LeiBox Fluted Glass Prism view (`leibox.pantoria.cn/docs/animations/blue-fluted-glass`)
+/// supporting all 6 colorways with pre-baked O(1) GPU-friendly loop playback.
+struct LeiBoxFlutedPrismView: View {
+    
+    let theme: CotPassTheme
+    var renderWidth: Int = 180
+    var renderHeight: Int = 108
+    var ribCount: Double = 44.0
+    var animate: Bool = true
+    var specularPoint: UnitPoint = UnitPoint(x: 0.5, y: 0.5)
+    var isHovered: Bool = false
+    
+    @State private var loopFrames: [CGImage] = []
+    @State private var loadedThemeID: Int = -1
+    
+    
+    var body: some View {
+        let fallbackFrame = LeiBoxFlutedPrismCache.shared.posterFrame(
+            for: self.theme,
+            width: self.renderWidth,
+            height: self.renderHeight,
+            ribCount: self.ribCount
+        )
+        let shouldAnimate = self.animate && !AnimationConstants.isReducedMotionEnabled && !self.loopFrames.isEmpty
+        
+        ZStack {
+            if shouldAnimate {
+                TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
+                    let frames = self.loopFrames
+                    let period = BlueFlutedGlassRenderer.periodSeconds
+                    let raw = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period)
+                    let norm = (raw < 0 ? raw + period : raw) / period
+                    let idx = min(frames.count - 1, max(0, Int(norm * Double(frames.count))))
+                    Image(decorative: frames[idx], scale: 1.0)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFill()
+                }
+            } else if let fallbackFrame {
+                Image(decorative: fallbackFrame, scale: 1.0)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFill()
+            } else {
+                LinearGradient(
+                    colors: [
+                        self.theme.flutedPalette.mid.swiftUIColor,
+                        self.theme.flutedPalette.deep.swiftUIColor,
+                        self.theme.flutedPalette.midnight.swiftUIColor,
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+            
+            // Subtle optical prism specular highlight tracking pointer
+            RadialGradient(
+                colors: [
+                    Color.white.opacity(self.isHovered ? 0.28 : 0.08),
+                    self.theme.flutedPalette.light.swiftUIColor.opacity(self.isHovered ? 0.14 : 0.0),
+                    Color.clear,
+                ],
+                center: self.specularPoint,
+                startRadius: 4,
+                endRadius: 210
+            )
+            .blendMode(.screen)
+            .allowsHitTesting(false)
+        }
+        .onAppear {
+            self.loadLoopIfNeeded()
+        }
+        .onChange(of: self.theme.id) { _, _ in
+            self.loadLoopIfNeeded()
+        }
+    }
+    
+    
+    private func loadLoopIfNeeded() {
+        let targetID = self.theme.id
+        if let cached = LeiBoxFlutedPrismCache.shared.cachedFrames(
+            for: self.theme,
+            width: self.renderWidth,
+            height: self.renderHeight,
+            ribCount: self.ribCount
+        ) {
+            self.loopFrames = cached
+            self.loadedThemeID = targetID
+            return
+        }
+        self.loopFrames = []
+        self.loadedThemeID = targetID
+        LeiBoxFlutedPrismCache.shared.warmFrames(
+            for: self.theme,
+            width: self.renderWidth,
+            height: self.renderHeight,
+            ribCount: self.ribCount
+        ) { frames in
+            if self.theme.id == targetID {
+                self.loopFrames = frames
+            }
+        }
     }
 }
 
@@ -1386,7 +1626,7 @@ nonisolated enum CotPassArtEngine {
 }
 
 
-// MARK: - Swiss-Gallery × Instant-Film Collector Pass Card
+// MARK: - LeiBox Fluted Glass Prism Collector Pass Card (Zero Ellipsis)
 
 struct CotPassCardView: View {
     
@@ -1401,19 +1641,8 @@ struct CotPassCardView: View {
     var pointerLocation: CGPoint? = nil
     var isHovered: Bool = false
     var brandLineEngine: BrandLinePassEngine? = nil
-    var cardSize: CGSize = CGSize(width: 408, height: 246)
+    var cardSize: CGSize = CGSize(width: 424, height: 256)
     var statusLabelTitle: String = "STATUS"
-    
-    @State private var ownedEngine = BrandLinePassEngine()
-    @State private var asciiMatrix: [[CotPassArtEngine.ASCIIPixelCell]] = []
-    @State private var impastoTiles: [CotPassArtEngine.ImpastoTile] = []
-    @State private var cachedTileSize: CGSize = .zero
-    @State private var cachedTileSeed: Int = -1
-    
-    
-    private var resolvedEngine: BrandLinePassEngine {
-        self.brandLineEngine ?? self.ownedEngine
-    }
     
     private var compact: Bool {
         self.cardSize.height < 210
@@ -1423,460 +1652,189 @@ struct CotPassCardView: View {
         self.cardSize.height < 165
     }
     
-    private var shortSerialText: String {
-        let trimmed = self.serialCode.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count > 9 else { return trimmed }
-        return String(trimmed.suffix(9))
-    }
-    
     
     var body: some View {
-        let pigment = Color(hexString: self.theme.matrixColorHex)
-        let palette = self.theme.flutedPalette
-        let accentInk = palette.mid.swiftUIColor
-        let pastelInk = palette.light.swiftUIColor
-        let primaryInk = Color(red: 0.110, green: 0.104, blue: 0.096)   // #1C1B18 Archival Espresso
-        let secondaryInk = Color(red: 0.420, green: 0.396, blue: 0.361) // #6B655C Warm Stone
-        let cardSeed = CotPassArtEngine.deterministicSeed(from: "\(self.theme.id):\(self.serialCode)")
-        let stockCG = CotPassArtEngine.cachedStockImage(theme: self.theme, serialCode: self.serialCode, size: self.cardSize)
-        let seamX = CotPassArtEngine.perforationX(in: self.cardSize)
-        let artRect = CotPassArtEngine.artWindowRect(in: self.cardSize)
-        let artCorner: CGFloat = self.ultraCompact ? 9 : 11
+        let corner: CGFloat = self.compact ? 14 : 18
+        let padH: CGFloat = self.ultraCompact ? 16 : (self.compact ? 20 : 26)
+        let padV: CGFloat = self.ultraCompact ? 12 : (self.compact ? 16 : 22)
+        let avatarSide: CGFloat = self.ultraCompact ? 34 : (self.compact ? 42 : 52)
         
         ZStack(alignment: .topLeading) {
-            // Layer 0: Archival Multi-Tone Off-White Cardstock + Perforation + Passe-Partout
-            if let stockCG {
-                Image(decorative: stockCG, scale: 2.0)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: self.cardSize.width, height: self.cardSize.height)
-            } else {
-                Color(red: 0.968, green: 0.953, blue: 0.925)
-            }
+            // Layer 0: Authentic LeiBox Fluted Glass Prism fluid refraction
+            LeiBoxFlutedPrismView(
+                theme: self.theme,
+                renderWidth: self.compact ? 160 : 216,
+                renderHeight: self.compact ? 96 : 130,
+                ribCount: 44.0,
+                animate: true,
+                specularPoint: self.specularPoint,
+                isHovered: self.isHovered
+            )
+            .frame(width: self.cardSize.width, height: self.cardSize.height)
+            .clipped()
             
-            // Layer 1: Framed Right-Hand Gallery Artwork (Morphing Volumes + Impressionist Impasto + Lithograph + ASCII Plaque)
-            TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: AnimationConstants.isReducedMotionEnabled)) { context in
-                let phase = AnimationConstants.isReducedMotionEnabled
-                    ? 0.9
-                    : context.date.timeIntervalSinceReferenceDate * 0.65
-                
-                Canvas { canvasCtx, _ in
-                    let windowShape = RoundedRectangle(cornerRadius: artCorner, style: .continuous).path(in: artRect)
-                    
-                    // Subtle printmaker's `+` crop marks at the 4 outer corners of the passe-partout
-                    var cropMarks = Path()
-                    let cm: CGFloat = 3.0
-                    let arm: CGFloat = 2.4
-                    for cx in [artRect.minX - cm, artRect.maxX + cm] {
-                        for cy in [artRect.minY - cm, artRect.maxY + cm] {
-                            cropMarks.move(to: CGPoint(x: cx - arm, y: cy))
-                            cropMarks.addLine(to: CGPoint(x: cx + arm, y: cy))
-                            cropMarks.move(to: CGPoint(x: cx, y: cy - arm))
-                            cropMarks.addLine(to: CGPoint(x: cx, y: cy + arm))
-                        }
-                    }
-                    canvasCtx.stroke(cropMarks, with: .color(primaryInk.opacity(0.20)), style: StrokeStyle(lineWidth: 0.6))
-                    
-                    // Enter clipped gallery window
-                    canvasCtx.drawLayer { layerCtx in
-                        layerCtx.clip(to: windowShape)
-                        
-                        // 1A. Soft Volumetric Morphing Sculptures (pure shaded light & color, zero wireframe lines)
-                        let orb1Center = CGPoint(
-                            x: artRect.minX + artRect.width * CGFloat(0.54 + 0.13 * cos(phase * 0.75)),
-                            y: artRect.minY + artRect.height * CGFloat(0.38 + 0.11 * sin(phase * 0.62))
-                        )
-                        let orb2Center = CGPoint(
-                            x: artRect.minX + artRect.width * CGFloat(0.44 - 0.12 * sin(phase * 0.58 + 1.1)),
-                            y: artRect.minY + artRect.height * CGFloat(0.68 + 0.09 * cos(phase * 0.82 + 0.6))
-                        )
-                        let orbRadius = max(artRect.width, artRect.height) * 0.62
-                        
-                        layerCtx.fill(
-                            Path(artRect),
-                            with: .radialGradient(
-                                Gradient(colors: [
-                                    pastelInk.opacity(0.62),
-                                    accentInk.opacity(0.24),
-                                    Color.clear,
-                                ]),
-                                center: orb1Center,
-                                startRadius: 2,
-                                endRadius: orbRadius
-                            )
-                        )
-                        layerCtx.fill(
-                            Path(artRect),
-                            with: .radialGradient(
-                                Gradient(colors: [
-                                    Color(red: 0.96, green: 0.76, blue: 0.54).opacity(0.42),
-                                    pastelInk.opacity(0.26),
-                                    Color.clear,
-                                ]),
-                                center: orb2Center,
-                                startRadius: 2,
-                                endRadius: orbRadius * 0.85
-                            )
-                        )
-                        
-                        // Soft unstroked morphing sculptural core & sunlit off-white highlight
-                        let coreR = min(artRect.width, artRect.height) * 0.30
-                        let morphCore = CotPassArtEngine.morphingObjectPath(center: orb1Center, baseRadius: coreR, phase: phase)
-                        let morphGlow = CotPassArtEngine.morphingObjectPath(
-                            center: CGPoint(x: orb1Center.x - coreR * 0.18, y: orb1Center.y - coreR * 0.18),
-                            baseRadius: coreR * 0.56,
-                            phase: -phase * 0.8 + 0.9
-                        )
-                        layerCtx.fill(morphCore, with: .color(accentInk.opacity(0.22)))
-                        layerCtx.fill(morphGlow, with: .color(Color(red: 0.995, green: 0.988, blue: 0.968).opacity(0.52)))
-                        
-                        // 1B. Generative Curl-Flow × Digital Impressionism Impasto Mosaic
-                        let porcelainCol = Color(red: 0.995, green: 0.988, blue: 0.968)
-                        let ochreCol = Color(red: 0.93, green: 0.75, blue: 0.52)
-                        for tile in self.impastoTiles {
-                            let density = CotPassArtEngine.morphingSculptureDensity(u: tile.u, v: tile.v, phase: phase)
-                            guard density > 0.16 else { continue }
-                            
-                            let tx = artRect.minX + CGFloat(tile.u) * artRect.width
-                            let ty = artRect.minY + CGFloat(tile.v) * artRect.height
-                            let scale = CGFloat(0.72 + 0.42 * density)
-                            let tw = tile.width * scale
-                            let th = tile.height * scale
-                            
-                            let color: Color
-                            let alpha: Double
-                            switch tile.role {
-                                case .porcelainHighlight:
-                                    color = porcelainCol
-                                    alpha = 0.28 + 0.36 * density
-                                case .pastelWash:
-                                    color = pastelInk
-                                    alpha = 0.22 + 0.34 * density
-                                case .mineralAccent:
-                                    color = accentInk
-                                    alpha = 0.16 + 0.32 * density
-                                case .warmOchre:
-                                    color = ochreCol
-                                    alpha = 0.18 + 0.26 * density
-                            }
-                            
-                            layerCtx.drawLayer { tileCtx in
-                                tileCtx.translateBy(x: tx, y: ty)
-                                tileCtx.rotate(by: .radians(tile.angle))
-                                let rect = CGRect(x: -tw * 0.5, y: -th * 0.5, width: tw, height: th)
-                                tileCtx.fill(
-                                    Capsule().path(in: rect),
-                                    with: .color(color.opacity(alpha))
-                                )
-                            }
-                        }
-                        
-                        // 1C. Fine 45° Graphite Lithograph Shading in lower-left corner
-                        let hatch = CotPassArtEngine.lithographHatchPath(in: artRect, seed: cardSeed)
-                        layerCtx.stroke(hatch, with: .color(primaryInk.opacity(0.14)), style: StrokeStyle(lineWidth: 0.55, lineCap: .round))
-                        
-                        // 1D. Docked Swiss ASCII + Micro-Pixel Plaque at bottom-right of Art Window
-                        let rows = self.asciiMatrix.count
-                        let cols = self.asciiMatrix.first?.count ?? 0
-                        if rows > 0, cols > 0 {
-                            let cellStep: CGFloat = self.ultraCompact ? 4.4 : 5.4
-                            let plaquePad: CGFloat = self.ultraCompact ? 3.5 : 4.5
-                            let gridW = CGFloat(cols) * cellStep
-                            let gridH = CGFloat(rows) * cellStep
-                            let plaqueRect = CGRect(
-                                x: artRect.maxX - gridW - plaquePad * 2 - (self.ultraCompact ? 5 : 7),
-                                y: artRect.maxY - gridH - plaquePad * 2 - (self.ultraCompact ? 5 : 7),
-                                width: gridW + plaquePad * 2,
-                                height: gridH + plaquePad * 2
-                            )
-                            let plaquePath = RoundedRectangle(cornerRadius: 4.5, style: .continuous).path(in: plaqueRect)
-                            layerCtx.fill(plaquePath, with: .color(Color(red: 0.992, green: 0.986, blue: 0.972).opacity(0.88)))
-                            layerCtx.stroke(plaquePath, with: .color(primaryInk.opacity(0.12)), lineWidth: 0.6)
-                            
-                            for r in 0..<rows {
-                                for c in 0..<cols {
-                                    let cell = self.asciiMatrix[r][c]
-                                    let cx = plaqueRect.minX + plaquePad + (CGFloat(c) + 0.5) * cellStep
-                                    let cy = plaqueRect.minY + plaquePad + (CGFloat(r) + 0.5) * cellStep
-                                    switch cell {
-                                        case .empty:
-                                            let dot = CGRect(x: cx - 0.5, y: cy - 0.5, width: 1.0, height: 1.0)
-                                            layerCtx.fill(Rectangle().path(in: dot), with: .color(primaryInk.opacity(0.10)))
-                                        case .pixelBlock(let strength):
-                                            let side = cellStep * 0.68
-                                            let pxRect = CGRect(x: cx - side * 0.5, y: cy - side * 0.5, width: side, height: side)
-                                            layerCtx.fill(
-                                                Rectangle().path(in: pxRect),
-                                                with: .color(accentInk.opacity(0.42 + strength * 0.48))
-                                            )
-                                        case .ascii(let ch, let strength):
-                                            layerCtx.draw(
-                                                Text(String(ch))
-                                                    .font(.system(size: max(4.5, cellStep * 0.88), weight: .bold, design: .monospaced))
-                                                    .foregroundStyle(primaryInk.opacity(0.38 + strength * 0.48)),
-                                                at: CGPoint(x: cx, y: cy),
-                                                anchor: .center
-                                            )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Crisp inner passe-partout frame stroke
-                    canvasCtx.stroke(windowShape, with: .color(primaryInk.opacity(0.10)), lineWidth: 0.75)
-                }
-            }
-            .allowsHitTesting(false)
-            
-            // Gentle archival paper specular sheen tracking cursor
-            RadialGradient(
+            // Layer 1: Subtle vertical contrast scrim so crisp white typography stays legible across every colorway
+            LinearGradient(
                 colors: [
-                    Color.white.opacity(self.isHovered ? 0.30 : 0.10),
-                    .clear,
+                    self.theme.flutedPalette.midnight.swiftUIColor.opacity(0.28),
+                    self.theme.flutedPalette.deep.swiftUIColor.opacity(0.18),
+                    self.theme.flutedPalette.midnight.swiftUIColor.opacity(0.58),
                 ],
-                center: self.specularPoint,
-                startRadius: 6,
-                endRadius: self.cardSize.width * 0.58
+                startPoint: .top,
+                endPoint: .bottom
             )
             .allowsHitTesting(false)
             
-            // Layer 2: Clean Left-Stub Editorial Identity + Lomo Instant-Film Portrait
+            // Layer 2: Full-width spacious identity layout — zero truncation, zero ellipsis
             VStack(alignment: .leading, spacing: 0) {
-                // Header strip + Binary Micro-Pixel Badge
-                HStack(alignment: .center, spacing: 6) {
-                    self.microPixelStrip(seed: cardSeed, ink: primaryInk, accent: accentInk)
-                    
+                // Header: Brand mark & colorway badge
+                HStack(alignment: .center, spacing: 10) {
                     Text("COTEDITOR PASS")
-                        .font(.system(size: self.ultraCompact ? 8.5 : (self.compact ? 9.5 : 10.5), weight: .bold, design: .monospaced))
-                        .tracking(0.4)
-                        .foregroundStyle(primaryInk)
-                        .lineLimit(1)
+                        .font(.system(size: self.ultraCompact ? 9.5 : 11, weight: .bold, design: .monospaced))
+                        .tracking(1.2)
+                        .foregroundStyle(Color.white.opacity(0.92))
+                        .fixedSize(horizontal: true, vertical: false)
                     
-                    Spacer(minLength: 0)
+                    Spacer(minLength: 8)
+                    
+                    Text("\(self.theme.title) · \(self.theme.subtitle)")
+                        .font(.system(size: self.ultraCompact ? 9 : 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.88))
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 3.5)
+                        .background(Color.white.opacity(0.14), in: Capsule())
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(Color.white.opacity(0.24), lineWidth: 0.75)
+                        )
                 }
                 
-                Spacer(minLength: self.ultraCompact ? 4 : (self.compact ? 8 : 16))
+                Spacer(minLength: self.ultraCompact ? 8 : 16)
                 
-                // Lomo Instant-Film Mini Print + Clean Uncluttered Display Name
-                HStack(alignment: .center, spacing: self.ultraCompact ? 10 : (self.compact ? 12 : 14)) {
-                    self.lomoInstantPortrait(seed: cardSeed, accentInk: accentInk, primaryInk: primaryInk)
+                // Center: Avatar + full Display Name + full Serial Code (never clipped with ...)
+                HStack(alignment: .center, spacing: self.ultraCompact ? 12 : 16) {
+                    ZStack {
+                        if let avatarImage = self.avatarImage {
+                            Image(nsImage: avatarImage)
+                                .resizable()
+                                .interpolation(.high)
+                                .scaledToFill()
+                                .frame(width: avatarSide, height: avatarSide)
+                                .clipped()
+                        } else {
+                            UserAvatarCircleView(profile: self.profile, size: avatarSide, customImage: nil)
+                                .frame(width: avatarSide, height: avatarSide)
+                                .clipped()
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: self.ultraCompact ? 9 : 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: self.ultraCompact ? 9 : 12, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.55), lineWidth: 1.2)
+                    )
+                    .shadow(color: Color.black.opacity(0.28), radius: 8, y: 3)
                     
-                    VStack(alignment: .leading, spacing: self.ultraCompact ? 2.5 : 4) {
+                    VStack(alignment: .leading, spacing: self.ultraCompact ? 3 : 5) {
                         Text(self.profile.displayName)
-                            .font(.system(size: self.ultraCompact ? 14.5 : (self.compact ? 16 : 19), weight: .semibold))
-                            .foregroundStyle(primaryInk)
-                            .lineLimit(1)
+                            .font(.system(size: self.ultraCompact ? 15 : (self.compact ? 18 : 22), weight: .bold))
+                            .foregroundStyle(Color.white)
+                            .minimumScaleFactor(0.72)
+                            .fixedSize(horizontal: false, vertical: true)
                         
-                        Text("NO.\(self.ultraCompact ? self.shortSerialText : self.serialCode)")
-                            .font(.system(size: self.ultraCompact ? 8.5 : (self.compact ? 9 : 10), weight: .medium, design: .monospaced))
-                            .foregroundStyle(secondaryInk)
-                            .lineLimit(1)
+                        Text("NO. \(self.serialCode)")
+                            .font(.system(size: self.ultraCompact ? 9.5 : 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.78))
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                     
                     Spacer(minLength: 0)
                 }
                 
-                Spacer(minLength: self.ultraCompact ? 4 : (self.compact ? 8 : 16))
+                Spacer(minLength: self.ultraCompact ? 8 : 16)
                 
                 Rectangle()
-                    .fill(primaryInk.opacity(0.11))
+                    .fill(Color.white.opacity(0.20))
                     .frame(height: 0.75)
-                    .padding(.bottom, self.ultraCompact ? 5 : (self.compact ? 7 : 12))
+                    .padding(.bottom, self.ultraCompact ? 8 : 12)
                 
-                // Clean 3-Column Swiss Metadata
-                HStack(spacing: 4) {
-                    self.passFieldCell(
+                // Footer: 3 clean full-width metadata cells (no ellipsis)
+                HStack(alignment: .bottom, spacing: 12) {
+                    self.prismFieldCell(
                         label: self.statusLabelTitle,
                         value: self.statusText,
-                        showStatusDot: true,
-                        accent: pigment,
-                        primary: primaryInk,
-                        muted: secondaryInk
+                        showStatusDot: true
                     )
                     
-                    self.passFieldCell(
+                    Spacer(minLength: 8)
+                    
+                    self.prismFieldCell(
                         label: "JOINED",
                         value: self.joinedText,
-                        showStatusDot: false,
-                        accent: pigment,
-                        primary: primaryInk,
-                        muted: secondaryInk
+                        showStatusDot: false
                     )
                     
-                    self.passFieldCell(
+                    Spacer(minLength: 8)
+                    
+                    self.prismFieldCell(
                         label: "ACCESS",
                         value: self.accessText,
-                        showStatusDot: false,
-                        accent: pigment,
-                        primary: primaryInk,
-                        muted: secondaryInk
+                        showStatusDot: false
                     )
                 }
             }
-            .padding(.leading, self.ultraCompact ? 14 : (self.compact ? 16 : 22))
-            .padding(.trailing, self.ultraCompact ? 10 : (self.compact ? 12 : 16))
-            .padding(.vertical, self.ultraCompact ? 10 : (self.compact ? 13 : 18))
-            .frame(width: seamX, height: self.cardSize.height, alignment: .leading)
+            .padding(.horizontal, padH)
+            .padding(.vertical, padV)
+            .frame(width: self.cardSize.width, height: self.cardSize.height, alignment: .topLeading)
         }
         .frame(width: self.cardSize.width, height: self.cardSize.height)
-        .clipShape(RoundedRectangle(cornerRadius: self.compact ? 14 : 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: self.compact ? 14 : 16, style: .continuous)
-                .strokeBorder(primaryInk.opacity(self.isHovered ? 0.22 : 0.12), lineWidth: 1)
+            RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(self.isHovered ? 0.56 : 0.34),
+                            Color.white.opacity(0.10),
+                            self.theme.flutedPalette.light.swiftUIColor.opacity(0.32),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1.0
+                )
         )
-        .shadow(color: primaryInk.opacity(self.isHovered ? 0.14 : 0.08), radius: self.isHovered ? 16 : 10, y: 5)
-        .onAppear {
-            self.syncArtCaches(seed: cardSeed)
-        }
-        .onChange(of: self.profile.id) { _, _ in
-            self.syncArtCaches(seed: cardSeed)
-        }
-        .onChange(of: self.profile.avatarData?.count ?? 0) { _, _ in
-            self.syncArtCaches(seed: cardSeed)
-        }
-        .onChange(of: cardSeed) { _, newSeed in
-            self.syncArtCaches(seed: newSeed)
-        }
+        .shadow(
+            color: self.theme.flutedPalette.deep.swiftUIColor.opacity(self.isHovered ? 0.36 : 0.22),
+            radius: self.isHovered ? 22 : 14,
+            y: self.isHovered ? 10 : 6
+        )
     }
     
     
-    private func lomoInstantPortrait(seed: Int, accentInk: Color, primaryInk: Color) -> some View {
-        let photoSide: CGFloat = self.ultraCompact ? 31 : (self.compact ? 36 : 46)
-        let borderPad: CGFloat = self.ultraCompact ? 2.5 : 3.5
-        let chinHeight: CGFloat = self.ultraCompact ? 7.5 : 10.5
-        
-        return VStack(spacing: 0) {
-            ZStack {
-                if let avatarImage = self.avatarImage {
-                    Image(nsImage: avatarImage)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFill()
-                        .frame(width: photoSide, height: photoSide)
-                        .clipped()
-                } else {
-                    UserAvatarCircleView(profile: self.profile, size: photoSide * 1.15, customImage: nil)
-                        .frame(width: photoSide, height: photoSide)
-                        .clipped()
-                }
-                
-                // Authentic Lomo optical vignette + warm top-right sun-kiss light leak
-                LinearGradient(
-                    colors: [
-                        Color(red: 1.0, green: 0.72, blue: 0.36).opacity(0.20),
-                        Color.clear,
-                        Color(red: 0.12, green: 0.10, blue: 0.09).opacity(0.18),
-                    ],
-                    startPoint: .topTrailing,
-                    endPoint: .bottomLeading
-                )
-                
-                RadialGradient(
-                    colors: [Color.clear, Color.black.opacity(0.22)],
-                    center: .center,
-                    startRadius: photoSide * 0.28,
-                    endRadius: photoSide * 0.72
-                )
-            }
-            .frame(width: photoSide, height: photoSide)
-            .clipShape(RoundedRectangle(cornerRadius: 2.5, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                    .strokeBorder(primaryInk.opacity(0.10), lineWidth: 0.5)
-            )
-            
-            // Classic off-white Polaroid bottom chin with delicate ink edition paraph
-            Canvas { ctx, size in
-                let paraph = CotPassArtEngine.calligraphicParaphPath(
-                    in: CGRect(origin: .zero, size: size),
-                    seed: seed
-                )
-                ctx.stroke(
-                    paraph,
-                    with: .color(accentInk.opacity(0.72)),
-                    style: StrokeStyle(lineWidth: 0.85, lineCap: .round, lineJoin: .round)
-                )
-            }
-            .frame(width: photoSide, height: chinHeight)
-        }
-        .padding(.top, borderPad)
-        .padding(.horizontal, borderPad)
-        .background(
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .fill(Color(red: 0.996, green: 0.993, blue: 0.982))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .strokeBorder(primaryInk.opacity(0.12), lineWidth: 0.6)
-        )
-        .shadow(color: primaryInk.opacity(0.12), radius: 4, y: 2)
-        .rotationEffect(.degrees(-1.6))
-    }
-    
-    
-    private func syncArtCaches(seed: Int) {
-        let engine = self.resolvedEngine
-        engine.syncAvatarContour(profile: self.profile, avatarImage: self.avatarImage)
-        let cols = self.ultraCompact ? 8 : 10
-        let rows = self.ultraCompact ? 5 : 6
-        self.asciiMatrix = CotPassArtEngine.buildASCIIPixelMatrix(
-            from: engine.contourField,
-            cols: cols,
-            rows: rows
-        )
-        if self.cachedTileSize != self.cardSize || self.cachedTileSeed != seed || self.impastoTiles.isEmpty {
-            self.cachedTileSize = self.cardSize
-            self.cachedTileSeed = seed
-            let artRect = CotPassArtEngine.artWindowRect(in: self.cardSize)
-            self.impastoTiles = CotPassArtEngine.computeImpastoTiles(seed: seed, in: artRect)
-        }
-    }
-    
-    
-    private func microPixelStrip(seed: Int, ink: Color, accent: Color) -> some View {
-        HStack(spacing: 1.5) {
-            ForEach(0..<6, id: \.self) { col in
-                VStack(spacing: 1.5) {
-                    ForEach(0..<2, id: \.self) { row in
-                        let bit = ((seed >> (col + row * 3)) & 1) == 1
-                        Rectangle()
-                            .fill(bit ? accent : ink.opacity(0.18))
-                            .frame(width: 2.5, height: 2.5)
-                    }
-                }
-            }
-        }
-    }
-    
-    
-    private func passFieldCell(
+    private func prismFieldCell(
         label: String,
         value: String,
-        showStatusDot: Bool,
-        accent: Color,
-        primary: Color,
-        muted: Color
+        showStatusDot: Bool
     ) -> some View {
-        VStack(alignment: .leading, spacing: self.ultraCompact ? 1 : (self.compact ? 1.5 : 3)) {
+        VStack(alignment: .leading, spacing: self.ultraCompact ? 2 : 3) {
             Text(label)
-                .font(.system(size: self.ultraCompact ? 7.5 : (self.compact ? 8.5 : 9.5), weight: .semibold, design: .monospaced))
-                .foregroundStyle(muted)
-                .lineLimit(1)
+                .font(.system(size: self.ultraCompact ? 8 : 9.5, weight: .semibold, design: .monospaced))
+                .tracking(0.6)
+                .foregroundStyle(Color.white.opacity(0.66))
+                .fixedSize(horizontal: true, vertical: false)
             
-            HStack(spacing: 3.5) {
+            HStack(spacing: 5) {
                 if showStatusDot {
                     Circle()
-                        .fill(accent)
-                        .frame(width: 4.5, height: 4.5)
+                        .fill(self.theme.flutedPalette.light.swiftUIColor)
+                        .frame(width: 5.5, height: 5.5)
                 }
                 Text(value)
-                    .font(.system(size: self.ultraCompact ? 9.5 : (self.compact ? 11 : 13), weight: .bold, design: .monospaced))
-                    .foregroundStyle(primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
+                    .font(.system(size: self.ultraCompact ? 10.5 : (self.compact ? 12 : 13.5), weight: .bold, design: .monospaced))
+                    .foregroundStyle(Color.white)
+                    .fixedSize(horizontal: true, vertical: false)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

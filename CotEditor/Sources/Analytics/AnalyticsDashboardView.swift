@@ -936,6 +936,7 @@ struct AnalyticsDashboardView: View {
     
     @State private var analytics = AnalyticsManager.shared
     @State private var profileManager = UserProfileManager.shared
+    @State private var studioPalette = StudioPaletteManager.shared
     
     @State private var snapshot: DashboardSnapshot?
     @State private var snapshotVersion: Int = 0
@@ -945,6 +946,7 @@ struct AnalyticsDashboardView: View {
     @State private var activeNewsID: String?
     @State private var hasAppeared = false
     @State private var pendingRebuildTask: Task<Void, Never>?
+    @State private var copiedCardKey: String?
     
     
     init(
@@ -961,7 +963,8 @@ struct AnalyticsDashboardView: View {
     
     
     private var palette: DashPalette {
-        DashPalette(self.colorScheme)
+        _ = self.studioPalette.revision
+        return DashPalette(self.colorScheme)
     }
     
     var body: some View {
@@ -1209,6 +1212,23 @@ struct AnalyticsDashboardView: View {
                 
                 Spacer()
                 
+                if !points.isEmpty {
+                    let copiedAll = (self.copiedCardKey == "done-all")
+                    Button {
+                        self.copyDashboardText(points.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n"), key: "done-all")
+                    } label: {
+                        Image(systemName: copiedAll ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(copiedAll ? self.palette.emerald : self.palette.secondaryInk)
+                            .frame(width: 24, height: 24)
+                            .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(AppLanguage.text("复制全部点评", en: "Copy All"))
+                }
+                
                 Button {
                     Task {
                         await self.analytics.refreshDoneTodayCommentary(force: true)
@@ -1219,6 +1239,7 @@ struct AnalyticsDashboardView: View {
                         .foregroundStyle(self.palette.secondaryInk)
                         .frame(width: 24, height: 24)
                         .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
@@ -1228,7 +1249,7 @@ struct AnalyticsDashboardView: View {
             .frame(height: 24)
             
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 9) {
                     if points.isEmpty {
                         Text(AppLanguage.text("今天还没开张，先敲两行？", en: "Nothing logged yet today"))
                             .font(.system(size: 12.5))
@@ -1237,26 +1258,57 @@ struct AnalyticsDashboardView: View {
                             .padding(.top, 8)
                     } else {
                         ForEach(Array(points.enumerated()), id: \.offset) { idx, point in
+                            let itemKey = "done-\(idx)"
+                            let isCopied = (self.copiedCardKey == itemKey)
+                            let tagTone: Color = switch idx {
+                                case 0: self.palette.accentFill
+                                case 1: self.palette.emerald
+                                default: self.palette.mint
+                            }
+                            
                             HStack(alignment: .top, spacing: 10) {
-                                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                                    .fill(idx == 0 ? self.palette.accentFill : self.palette.pine.opacity(0.22))
-                                    .frame(width: 3, height: 15)
-                                    .padding(.top, 2)
+                                Text(String(format: "%02d", idx + 1))
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(idx == 0 ? self.palette.tokens.onAccentInk : tagTone)
+                                    .frame(width: 22, height: 20)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(idx == 0 ? tagTone : tagTone.opacity(self.palette.tokens.isDark ? 0.18 : 0.12))
+                                    )
+                                    .padding(.top, 1)
                                 
                                 Text(point)
                                     .font(.system(size: 12.5, weight: idx == 0 ? .medium : .regular))
                                     .foregroundStyle(idx == 0 ? self.palette.pine : self.palette.secondaryInk)
-                                    .lineLimit(3)
-                                    .lineSpacing(2.5)
+                                    .lineSpacing(3)
+                                    .textSelection(.enabled)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                
+                                Button {
+                                    self.copyDashboardText(point, key: itemKey)
+                                } label: {
+                                    Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(isCopied ? self.palette.emerald : self.palette.mutedInk)
+                                        .frame(width: 22, height: 22)
+                                        .background(self.palette.card.opacity(0.75), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                                .pointerStyle(.link)
+                                .help(AppLanguage.text("复制这条点评", en: "Copy"))
                             }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 9)
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 10)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(self.palette.inset)
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(idx == 0 ? tagTone.opacity(self.palette.tokens.isDark ? 0.12 : 0.065) : self.palette.inset)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(idx == 0 ? tagTone.opacity(0.28) : self.palette.hairline, lineWidth: 0.75)
                             )
                         }
                     }
@@ -1273,9 +1325,9 @@ struct AnalyticsDashboardView: View {
     private func predictedActionsColumn(predictions: [DocumentActionPrediction]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: "arrow.right.circle.fill")
-                    .font(.system(size: 13.5, weight: .medium))
-                    .foregroundStyle(self.palette.secondaryInk)
+                Image(systemName: "scope")
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(self.palette.accentFill)
                     .frame(width: 16, alignment: .center)
                 
                 Text("要干啥")
@@ -1283,6 +1335,27 @@ struct AnalyticsDashboardView: View {
                     .foregroundStyle(self.palette.pine)
                 
                 Spacer()
+                
+                if !predictions.isEmpty {
+                    let copiedAll = (self.copiedCardKey == "action-all")
+                    Button {
+                        let text = predictions.enumerated().map { idx, p in
+                            let suffix = p.reason.isEmpty ? "" : "（\(p.reason)）"
+                            return "\(idx + 1). [\(p.urgency)] \(p.action)\(suffix)"
+                        }.joined(separator: "\n")
+                        self.copyDashboardText(text, key: "action-all")
+                    } label: {
+                        Image(systemName: copiedAll ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(copiedAll ? self.palette.emerald : self.palette.secondaryInk)
+                            .frame(width: 24, height: 24)
+                            .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(AppLanguage.text("复制全部行动预测", en: "Copy All"))
+                }
                 
                 Button {
                     Task {
@@ -1294,6 +1367,7 @@ struct AnalyticsDashboardView: View {
                         .foregroundStyle(self.palette.secondaryInk)
                         .frame(width: 24, height: 24)
                         .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
@@ -1303,7 +1377,7 @@ struct AnalyticsDashboardView: View {
             .frame(height: 24)
             
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 9) {
                     if predictions.isEmpty {
                         Text(AppLanguage.text("暂时没啥火烧眉毛的事", en: "No upcoming actions"))
                             .font(.system(size: 12.5))
@@ -1313,41 +1387,91 @@ struct AnalyticsDashboardView: View {
                     } else {
                         ForEach(Array(predictions.enumerated()), id: \.element.id) { idx, pred in
                             let linkedDoc = self.analytics.storedDocument(id: pred.sourceDocumentID, title: pred.sourceDocumentTitle)
-                            Button {
-                                if let linkedDoc {
-                                    if let onOpenDocument = self.onOpenDocument {
-                                        onOpenDocument(linkedDoc)
-                                    } else {
-                                        AnalyticsDashboardWindowController.shared.openDocument(linkedDoc)
-                                    }
-                                }
-                            } label: {
-                                HStack(alignment: .top, spacing: 10) {
-                                    Circle()
-                                        .fill(pred.urgency == "高" || idx == 0 ? self.palette.accentFill : self.palette.pine.opacity(0.28))
-                                        .frame(width: 6, height: 6)
-                                        .padding(.top, 5.5)
+                            let itemKey = "action-\(pred.id)"
+                            let isCopied = (self.copiedCardKey == itemKey)
+                            let isHigh = (pred.urgency == "高" || idx == 0)
+                            let badgeColor: Color = isHigh ? self.palette.accentFill : (pred.urgency == "中" ? self.palette.emerald : self.palette.secondaryInk)
+                            let badgeText: String = pred.urgency == "高" ? "急" : (pred.urgency == "中" ? "推进" : "顺手")
+                            
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text(badgeText)
+                                        .font(.system(size: 9.5, weight: .bold))
+                                        .foregroundStyle(isHigh ? self.palette.tokens.onAccentInk : badgeColor)
+                                        .padding(.horizontal, 6)
+                                        .frame(height: 18)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                                .fill(isHigh ? badgeColor : badgeColor.opacity(self.palette.tokens.isDark ? 0.18 : 0.12))
+                                        )
+                                        .padding(.top, 1)
                                     
                                     Text(pred.action)
-                                        .font(.system(size: 12.5, weight: idx == 0 ? .medium : .regular))
+                                        .font(.system(size: 12.5, weight: idx == 0 ? .semibold : .medium))
                                         .foregroundStyle(idx == 0 ? self.palette.pine : self.palette.secondaryInk)
-                                        .lineLimit(3)
-                                        .lineSpacing(2.5)
-                                        .multilineTextAlignment(.leading)
+                                        .lineSpacing(3)
+                                        .textSelection(.enabled)
                                         .fixedSize(horizontal: false, vertical: true)
                                         .frame(maxWidth: .infinity, alignment: .leading)
+                                    
+                                    HStack(spacing: 4) {
+                                        Button {
+                                            let payload = pred.reason.isEmpty ? pred.action : "\(pred.action)（\(pred.reason)）"
+                                            self.copyDashboardText(payload, key: itemKey)
+                                        } label: {
+                                            Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundStyle(isCopied ? self.palette.emerald : self.palette.mutedInk)
+                                                .frame(width: 22, height: 22)
+                                                .background(self.palette.card.opacity(0.75), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                                .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                        }
+                                        .buttonStyle(.plain)
+                                        .pointerStyle(.link)
+                                        .help(AppLanguage.text("复制这条建议", en: "Copy"))
+                                        
+                                        if let linkedDoc {
+                                            Button {
+                                                if let onOpenDocument = self.onOpenDocument {
+                                                    onOpenDocument(linkedDoc)
+                                                } else {
+                                                    AnalyticsDashboardWindowController.shared.openDocument(linkedDoc)
+                                                }
+                                            } label: {
+                                                Image(systemName: "arrow.up.right.square")
+                                                    .font(.system(size: 10.5, weight: .medium))
+                                                    .foregroundStyle(self.palette.accentFill)
+                                                    .frame(width: 22, height: 22)
+                                                    .background(self.palette.card.opacity(0.75), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                                    .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                            }
+                                            .buttonStyle(.plain)
+                                            .pointerStyle(.link)
+                                            .help(AppLanguage.text("打开关联文档：\(linkedDoc.title)", en: "Open Document"))
+                                        }
+                                    }
                                 }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 9)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(self.palette.inset)
-                                )
+                                
+                                if !pred.reason.isEmpty {
+                                    Text(pred.reason)
+                                        .font(.system(size: 11, weight: .regular))
+                                        .foregroundStyle(self.palette.mutedInk)
+                                        .textSelection(.enabled)
+                                        .lineLimit(2)
+                                        .padding(.leading, 32)
+                                }
                             }
-                            .buttonStyle(.plain)
-                            .disabled(linkedDoc == nil)
-                            .pointerStyle(linkedDoc != nil ? .link : .default)
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(isHigh ? badgeColor.opacity(self.palette.tokens.isDark ? 0.11 : 0.06) : self.palette.inset)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(isHigh ? badgeColor.opacity(0.28) : self.palette.hairline, lineWidth: 0.75)
+                            )
                         }
                     }
                 }
@@ -1357,6 +1481,21 @@ struct AnalyticsDashboardView: View {
         .padding(self.isEmbeddedInSettings ? 12 : 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
+    }
+    
+    
+    private func copyDashboardText(_ text: String, key: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(trimmed, forType: .string)
+        self.copiedCardKey = key
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            if self.copiedCardKey == key {
+                self.copiedCardKey = nil
+            }
+        }
     }
     
     
@@ -1942,7 +2081,7 @@ private struct DashboardAchievementHeroBar: View {
             Rectangle()
                 .fill(self.palette.hairline)
                 .frame(width: 1)
-                .padding(.vertical, self.compact ? 12 : 16)
+                .padding(.vertical, self.compact ? 10 : 14)
             
             self.overviewZone(
                 todayTotal: todayTotal,
@@ -1954,23 +2093,12 @@ private struct DashboardAchievementHeroBar: View {
             self.perforatedSeam
             
             self.integratedPassGalleryStub(seed: cardSeed)
-                .padding(self.compact ? 10 : 14)
-                .frame(width: self.compact ? 156 : 216)
+                .padding(self.compact ? 8 : 11)
+                .frame(width: self.compact ? 186 : 244)
                 .frame(maxHeight: .infinity)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
-        .onAppear {
-            self.syncStubCaches(seed: cardSeed)
-        }
-        .onChange(of: self.profile.id) { _, _ in
-            self.syncStubCaches(seed: cardSeed)
-        }
-        .onChange(of: self.profile.avatarData?.count ?? 0) { _, _ in
-            self.syncStubCaches(seed: cardSeed)
-        }
-        .onChange(of: cardSeed) { _, newSeed in
-            self.syncStubCaches(seed: newSeed)
-        }
     }
     
     
@@ -1990,26 +2118,79 @@ private struct DashboardAchievementHeroBar: View {
     
     
     private var identityZone: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let ambient = AvatarColorExtractor.extractPalette(for: self.profile, image: self.avatarImage)
+        let blurredCover = AvatarColorExtractor.blurredAmbientArtwork(for: self.profile, image: self.avatarImage)
+        let accentColor = ambient.accent
+        let isDark = self.palette.tokens.isDark
+        
+        return ZStack(alignment: .topLeading) {
+            // Avatar-extracted immersive ambient backdrop
+            ZStack {
+                if let blurredCover {
+                    Image(nsImage: blurredCover)
+                        .resizable()
+                        .scaledToFill()
+                        .opacity(isDark ? 0.34 : 0.24)
+                        .blur(radius: 18)
+                }
+                
+                LinearGradient(
+                    colors: [
+                        accentColor.opacity(isDark ? 0.36 : 0.22),
+                        accentColor.opacity(isDark ? 0.12 : 0.06),
+                        Color.clear,
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+            .allowsHitTesting(false)
+            
+            // Main immersed Avatar + Display Name centerpiece
+            HStack(alignment: .center, spacing: 14) {
+                self.authorPortrait(size: self.compact ? 48 : 58, accent: accentColor)
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(self.profile.displayName)
+                        .font(.system(size: self.compact ? 17.5 : 21, weight: .bold))
+                        .foregroundStyle(self.palette.pine)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                    
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(accentColor)
+                            .frame(width: 6, height: 6)
+                        Text(self.snapshot.mood.dominantLabel)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(self.palette.secondaryInk)
+                            .lineLimit(1)
+                    }
+                }
+                
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, self.compact ? 16 : 22)
+            .padding(.top, self.onBack != nil ? (self.compact ? 14 : 16) : 0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            
+            // Ultra-light unobtrusive "返回" ghost trigger tucked at top-left (zero crowding)
             if let onBack = self.onBack {
                 Button(action: onBack) {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 3) {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text(AppLanguage.text("返回编辑", en: "Back"))
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(AppLanguage.text("返回", en: "Back"))
+                            .font(.system(size: 11, weight: .medium))
                     }
-                    .foregroundStyle(self.isBackHovered ? self.palette.pine : self.palette.secondaryInk)
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
+                    .foregroundStyle(self.isBackHovered ? self.palette.pine : self.palette.secondaryInk.opacity(0.75))
+                    .padding(.horizontal, 8)
+                    .frame(height: 22)
                     .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(self.isBackHovered ? self.palette.insetHover : self.palette.inset)
+                        Capsule()
+                            .fill(self.isBackHovered ? self.palette.card.opacity(0.85) : self.palette.card.opacity(0.42))
                     )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(self.palette.hairline, lineWidth: 0.75)
-                    )
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
@@ -2018,24 +2199,12 @@ private struct DashboardAchievementHeroBar: View {
                         self.isBackHovered = hovering
                     }
                 }
+                .padding(.leading, 10)
+                .padding(.top, 8)
             }
-            
-            Spacer(minLength: 6)
-            
-            HStack(alignment: .center, spacing: 14) {
-                self.authorPortrait(size: self.compact ? 42 : 52)
-                
-                Text(self.profile.displayName)
-                    .font(.system(size: self.compact ? 17 : 20, weight: .semibold))
-                    .foregroundStyle(self.palette.pine)
-                    .lineLimit(1)
-            }
-            
-            Spacer(minLength: 2)
         }
-        .padding(.horizontal, self.compact ? 14 : 20)
-        .padding(.vertical, self.compact ? 12 : 16)
-        .frame(minWidth: self.compact ? 200 : 256, maxWidth: self.compact ? 236 : 296, maxHeight: .infinity, alignment: .leading)
+        .frame(minWidth: self.compact ? 226 : 284, maxWidth: self.compact ? 264 : 332, maxHeight: .infinity, alignment: .leading)
+        .clipped()
     }
     
     
@@ -2047,16 +2216,16 @@ private struct DashboardAchievementHeroBar: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center) {
-                Text(AppLanguage.text("创作概览", en: "Writing Overview"))
-                    .font(.system(size: 12, weight: .medium))
+                Text(AppLanguage.text("创作概览", en: "Overview"))
+                    .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(self.palette.mutedInk)
                 
-                Spacer(minLength: 8)
+                Spacer(minLength: 6)
                 
                 self.danmakuToggleButton
             }
             
-            Spacer(minLength: 8)
+            Spacer(minLength: 6)
             
             if self.isDanmakuEnabled {
                 GeometryReader { stageGeo in
@@ -2068,33 +2237,33 @@ private struct DashboardAchievementHeroBar: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
             } else {
-                HStack(alignment: .lastTextBaseline, spacing: self.compact ? 18 : 34) {
+                HStack(alignment: .lastTextBaseline, spacing: self.compact ? 14 : 24) {
                     self.headerStatBlock(
                         label: AppLanguage.text("今日码字", en: "Today"),
                         value: todayTotal.formatted(),
-                        unit: AppLanguage.text("字", en: "chars"),
+                        unit: AppLanguage.text("字", en: "ch"),
                         emphasize: true
                     )
                     
                     self.headerStatBlock(
-                        label: AppLanguage.text("连续创作", en: "Streak"),
+                        label: AppLanguage.text("连续", en: "Streak"),
                         value: "\(streakDays)",
-                        unit: AppLanguage.text("天", en: "days"),
+                        unit: AppLanguage.text("天", en: "d"),
                         emphasize: false
                     )
                     
                     self.headerStatBlock(
                         label: AppLanguage.text("年度活跃", en: "Active"),
                         value: "\(self.snapshot.yearlyHeatmap.activeDays)",
-                        unit: AppLanguage.text("天", en: "days"),
+                        unit: AppLanguage.text("天", en: "d"),
                         emphasize: false
                     )
                     
                     if !self.compact && avg14 > 0 {
                         self.headerStatBlock(
-                            label: AppLanguage.text("近14日均", en: "14d Avg"),
+                            label: AppLanguage.text("14日均", en: "14d"),
                             value: avg14.formatted(),
-                            unit: AppLanguage.text("字", en: "chars"),
+                            unit: AppLanguage.text("字", en: "ch"),
                             emphasize: false
                         )
                     }
@@ -2102,11 +2271,11 @@ private struct DashboardAchievementHeroBar: View {
                     Spacer(minLength: 0)
                 }
                 
-                Spacer(minLength: 4)
+                Spacer(minLength: 2)
             }
         }
-        .padding(.horizontal, self.compact ? 14 : 20)
-        .padding(.vertical, self.compact ? 12 : 16)
+        .padding(.horizontal, self.compact ? 12 : 16)
+        .padding(.vertical, self.compact ? 10 : 13)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
     
@@ -2127,7 +2296,7 @@ private struct DashboardAchievementHeroBar: View {
         } label: {
             HStack(spacing: 6) {
                 Text(AppLanguage.text("弹幕", en: "Ticker"))
-                    .font(.system(size: 11.5, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(self.isDanmakuEnabled ? self.palette.pine : self.palette.mutedInk)
                 
                 ZStack(alignment: self.isDanmakuEnabled ? .trailing : .leading) {
@@ -2141,11 +2310,12 @@ private struct DashboardAchievementHeroBar: View {
                 }
             }
             .padding(.horizontal, 8)
-            .frame(height: 26)
+            .frame(height: 24)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(self.isToggleHovered ? self.palette.insetHover : self.palette.inset)
             )
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)
@@ -2157,7 +2327,7 @@ private struct DashboardAchievementHeroBar: View {
     }
     
     
-    private func authorPortrait(size: CGFloat) -> some View {
+    private func authorPortrait(size: CGFloat, accent: Color) -> some View {
         ZStack {
             if let avatarImage = self.avatarImage {
                 Image(nsImage: avatarImage)
@@ -2172,11 +2342,19 @@ private struct DashboardAchievementHeroBar: View {
                     .clipped()
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(self.palette.hairlineStrong, lineWidth: 0.8)
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.65), accent.opacity(0.55)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1.4
+                )
         )
+        .shadow(color: accent.opacity(0.28), radius: 10, y: 4)
     }
     
     
@@ -2268,155 +2446,64 @@ private struct DashboardAchievementHeroBar: View {
     
     
     private func integratedPassGalleryStub(seed: Int) -> some View {
-        let stylePalettes: [(Color, Color)] = [
-            (self.palette.accentFill, self.palette.mint),
-            (self.palette.emerald, self.palette.accentFill),
-            (self.palette.statusPositive, self.palette.accentFill),
-            (self.palette.mint, self.palette.emerald),
-        ]
-        let pair = stylePalettes[abs(self.passStyleIndex) % stylePalettes.count]
-        let tiltX = self.isArtHovered ? Double((self.hoverNorm.y - 0.5) * -7.0) : 0
-        let tiltY = self.isArtHovered ? Double((self.hoverNorm.x - 0.5) * 9.0) : 0
+        let activeTheme = CotPassTheme.resolve(index: self.passStyleIndex)
+        let tiltX = self.isArtHovered ? Double((self.hoverNorm.y - 0.5) * -7.5) : 0
+        let tiltY = self.isArtHovered ? Double((self.hoverNorm.x - 0.5) * 9.5) : 0
         
         return GeometryReader { geo in
             let rect = CGRect(origin: .zero, size: geo.size)
             ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(self.palette.inset)
+                // Authentic LeiBox Fluted Glass Prism (leibox.pantoria.cn/docs/animations/blue-fluted-glass)
+                LeiBoxFlutedPrismView(
+                    theme: activeTheme,
+                    renderWidth: 164,
+                    renderHeight: 96,
+                    ribCount: 38.0,
+                    animate: true,
+                    specularPoint: UnitPoint(x: self.hoverNorm.x, y: self.hoverNorm.y),
+                    isHovered: self.isArtHovered
+                )
+                .frame(width: rect.width, height: rect.height)
+                .clipped()
+                .allowsHitTesting(false)
                 
-                // Static GPU-cached generative artwork — only re-renders on theme/size change (0% idle CPU)
-                Canvas { canvasCtx, size in
-                    let artRect = CGRect(origin: .zero, size: size)
-                    let clipPath = RoundedRectangle(cornerRadius: 10, style: .continuous).path(in: artRect)
-                    canvasCtx.clip(to: clipPath)
-                    
-                    let orbCenter = CGPoint(x: artRect.width * 0.58, y: artRect.height * 0.40)
-                    canvasCtx.fill(
-                        Path(artRect),
-                        with: .radialGradient(
-                            Gradient(colors: [
-                                pair.0.opacity(self.palette.tokens.isDark ? 0.30 : 0.22),
-                                pair.1.opacity(0.10),
-                                Color.clear,
-                            ]),
-                            center: orbCenter,
-                            startRadius: 4,
-                            endRadius: max(artRect.width, artRect.height) * 0.78
-                        )
-                    )
-                    
-                    let staticPhase = Double(abs(self.passStyleIndex) + 1) * 1.15
-                    for tile in self.impastoTiles {
-                        let density = CotPassArtEngine.morphingSculptureDensity(u: tile.u, v: tile.v, phase: staticPhase)
-                        guard density > 0.20 else { continue }
-                        let tx = CGFloat(tile.u) * artRect.width
-                        let ty = CGFloat(tile.v) * artRect.height
-                        let scale = CGFloat(0.72 + 0.34 * density)
-                        let tw = tile.width * scale
-                        let th = tile.height * scale
+                // Bottom minimal colorway switcher readout & dots
+                VStack {
+                    Spacer()
+                    HStack(alignment: .center, spacing: 6) {
+                        Text(activeTheme.title)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.92))
+                            .fixedSize(horizontal: true, vertical: false)
                         
-                        let tileColor: Color = switch tile.role {
-                            case .porcelainHighlight:
-                                self.palette.card.opacity(0.68)
-                            case .pastelWash:
-                                self.palette.paleMint.opacity(self.palette.tokens.isDark ? 0.55 : 0.86)
-                            case .mineralAccent:
-                                pair.0.opacity(0.28 + 0.24 * density)
-                            case .warmOchre:
-                                pair.1.opacity(0.24 + 0.22 * density)
-                        }
+                        Spacer(minLength: 4)
                         
-                        canvasCtx.drawLayer { tileCtx in
-                            tileCtx.translateBy(x: tx, y: ty)
-                            tileCtx.rotate(by: .radians(tile.angle))
-                            let r = CGRect(x: -tw * 0.5, y: -th * 0.5, width: tw, height: th)
-                            tileCtx.fill(Capsule().path(in: r), with: .color(tileColor))
-                        }
-                    }
-                    
-                    let hatch = CotPassArtEngine.lithographHatchPath(in: artRect, seed: seed)
-                    canvasCtx.stroke(hatch, with: .color(self.palette.pine.opacity(0.09)), style: StrokeStyle(lineWidth: 0.55, lineCap: .round))
-                    
-                    // Pure geometric pixel emblem (no CoreText per-frame layout overhead)
-                    let rows = self.asciiMatrix.count
-                    let cols = self.asciiMatrix.first?.count ?? 0
-                    if rows > 0, cols > 0 {
-                        let step: CGFloat = self.compact ? 4.0 : 4.8
-                        let pad: CGFloat = 4
-                        let gw = CGFloat(cols) * step
-                        let gh = CGFloat(rows) * step
-                        let pRect = CGRect(
-                            x: artRect.maxX - gw - pad * 2 - 7,
-                            y: artRect.maxY - gh - pad * 2 - 7,
-                            width: gw + pad * 2,
-                            height: gh + pad * 2
-                        )
-                        let pPath = RoundedRectangle(cornerRadius: 5, style: .continuous).path(in: pRect)
-                        canvasCtx.fill(pPath, with: .color(self.palette.card.opacity(0.90)))
-                        canvasCtx.stroke(pPath, with: .color(self.palette.hairline), lineWidth: 0.6)
-                        
-                        for r in 0..<rows {
-                            for c in 0..<cols {
-                                let cx = pRect.minX + pad + (CGFloat(c) + 0.5) * step
-                                let cy = pRect.minY + pad + (CGFloat(r) + 0.5) * step
-                                switch self.asciiMatrix[r][c] {
-                                    case .empty:
-                                        let dot = CGRect(x: cx - 0.5, y: cy - 0.5, width: 1, height: 1)
-                                        canvasCtx.fill(Rectangle().path(in: dot), with: .color(self.palette.pine.opacity(0.10)))
-                                    case .pixelBlock(let s):
-                                        let side = step * 0.66
-                                        let px = CGRect(x: cx - side * 0.5, y: cy - side * 0.5, width: side, height: side)
-                                        canvasCtx.fill(RoundedRectangle(cornerRadius: 1).path(in: px), with: .color(pair.0.opacity(0.42 + s * 0.48)))
-                                    case .ascii(_, let s):
-                                        let side = step * 0.48
-                                        let px = CGRect(x: cx - side * 0.5, y: cy - side * 0.5, width: side, height: side)
-                                        canvasCtx.fill(Circle().path(in: px), with: .color(self.palette.pine.opacity(0.32 + s * 0.45)))
-                                }
+                        HStack(spacing: 3.5) {
+                            ForEach(CotPassTheme.allThemes) { theme in
+                                let isActive = (theme.id == activeTheme.id)
+                                Capsule()
+                                    .fill(isActive ? Color.white : Color.white.opacity(0.38))
+                                    .frame(width: isActive ? 11 : 4, height: 4)
                             }
                         }
                     }
-                }
-                .drawingGroup()
-                .id("pass-art-\(self.passStyleIndex)-\(seed)")
-                .transition(.opacity)
-                .allowsHitTesting(false)
-                
-                // Silky GPU-composited pointer specular sheen (only active on hover)
-                RadialGradient(
-                    colors: [
-                        Color.white.opacity(self.palette.tokens.isDark ? 0.16 : 0.42),
-                        pair.0.opacity(0.08),
-                        Color.clear,
-                    ],
-                    center: UnitPoint(x: self.hoverNorm.x, y: self.hoverNorm.y),
-                    startRadius: 2,
-                    endRadius: max(rect.width, rect.height) * 0.72
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .opacity(self.isArtHovered ? 1 : 0)
-                .allowsHitTesting(false)
-                
-                // Subtle style switcher indicator dots on hover
-                VStack {
-                    Spacer()
-                    HStack(spacing: 4) {
-                        ForEach(0..<min(4, CotPassTheme.allThemes.count), id: \.self) { idx in
-                            let active = (abs(self.passStyleIndex) % min(4, CotPassTheme.allThemes.count)) == idx
-                            Capsule()
-                                .fill(active ? pair.0 : self.palette.pine.opacity(0.25))
-                                .frame(width: active ? 12 : 4, height: 4)
-                        }
-                        Spacer()
-                    }
-                    .padding(8)
-                    .opacity(self.isArtHovered ? 1 : 0)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.clear, Color.black.opacity(0.42)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
                 }
                 .allowsHitTesting(false)
             }
+            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
                     .strokeBorder(
-                        self.isArtHovered ? pair.0.opacity(0.55) : self.palette.hairline,
+                        Color.white.opacity(self.isArtHovered ? 0.48 : 0.22),
                         lineWidth: self.isArtHovered ? 1.1 : 0.8
                     )
             )
@@ -2425,8 +2512,8 @@ private struct DashboardAchievementHeroBar: View {
             .rotation3DEffect(.degrees(tiltY), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
             .animation(.spring(response: 0.24, dampingFraction: 0.76), value: self.isArtHovered)
             .animation(.spring(response: 0.18, dampingFraction: 0.68), value: self.isArtPressed)
-            .animation(.easeOut(duration: 0.20), value: self.passStyleIndex)
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .animation(.easeOut(duration: 0.22), value: self.passStyleIndex)
+            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             .onContinuousHover { phase in
                 switch phase {
                     case .active(let loc):
@@ -2450,24 +2537,16 @@ private struct DashboardAchievementHeroBar: View {
                         self.isArtPressed = false
                         if rect.insetBy(dx: -8, dy: -8).contains(value.location) {
                             let next = (self.passStyleIndex + 1) % CotPassTheme.allThemes.count
+                            let nextTheme = CotPassTheme.resolve(index: next)
                             self.passStyleIndex = next
                             self.tapPulseCount &+= 1
                             CotLocalDatabase.shared.set("\(next)", forKey: CotLocalDatabase.ConfigKey.cotPassStyleIndex)
+                            StudioPaletteManager.shared.selectPalette(nextTheme.pairedStudioPalette, syncEditorTheme: true)
                         }
                     }
             )
             .pointerStyle(.link)
-            .onAppear {
-                if self.cachedArtSize != rect.size && rect.width > 20 {
-                    self.cachedArtSize = rect.size
-                    self.impastoTiles = CotPassArtEngine.computeImpastoTiles(seed: seed, in: rect)
-                }
-            }
-            .onChange(of: rect.size) { _, newSize in
-                guard newSize.width > 20 else { return }
-                self.cachedArtSize = newSize
-                self.impastoTiles = CotPassArtEngine.computeImpastoTiles(seed: seed, in: CGRect(origin: .zero, size: newSize))
-            }
+            .help(AppLanguage.text("点击切换棱镜与全局配色", en: "Click to switch prism & global palette"))
         }
     }
     
@@ -2540,7 +2619,10 @@ private struct DashboardHeatmapCard: View {
         let curve = self.trendCurve14
         
         VStack(alignment: .leading, spacing: self.compact ? 6 : 8) {
-            // Top Live-Activity Telemetry Strip
+            // Top Live-Activity Telemetry Strip (enriched with week sum, peak day & hand/AI breakdown)
+            let week7Total = self.days14.suffix(7).reduce(0) { $0 + $1.typed + $1.ai }
+            let peakDayChars = self.yearlyHeatmap.weeks.flatMap { $0 }.map { $0.typedChars + $0.aiCompletedChars }.max() ?? 0
+            
             HStack(alignment: .center, spacing: 8) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(isInspecting ? readout.label : AppLanguage.text("今日码字", en: "Typed Today"))
@@ -2558,7 +2640,49 @@ private struct DashboardHeatmapCard: View {
                     }
                 }
                 
+                if !self.compact {
+                    HStack(spacing: 6) {
+                        if readout.total > 0 {
+                            let handPct = Int((Double(readout.typed) / Double(max(1, readout.total)) * 100.0).rounded())
+                            Text("手写 \(handPct)%")
+                                .font(.system(size: 10.5, weight: .medium, design: .rounded).monospacedDigit())
+                                .foregroundStyle(self.palette.emerald)
+                                .padding(.horizontal, 7)
+                                .frame(height: 20)
+                                .background(self.palette.tokens.positivePillBg, in: Capsule())
+                        }
+                        
+                        Text("近7日 \(week7Total.formatted())")
+                            .font(.system(size: 10.5, weight: .medium, design: .rounded).monospacedDigit())
+                            .foregroundStyle(self.palette.secondaryInk)
+                            .padding(.horizontal, 7)
+                            .frame(height: 20)
+                            .background(self.palette.inset, in: Capsule())
+                        
+                        if peakDayChars > 0 {
+                            Text("峰值 \(peakDayChars.formatted())")
+                                .font(.system(size: 10.5, weight: .medium, design: .rounded).monospacedDigit())
+                                .foregroundStyle(self.palette.mutedInk)
+                                .padding(.horizontal, 7)
+                                .frame(height: 20)
+                                .background(self.palette.inset, in: Capsule())
+                        }
+                    }
+                }
+                
                 Spacer(minLength: 4)
+                
+                // Compact Intensity Scale Legend
+                if !self.compact {
+                    HStack(spacing: 2.5) {
+                        ForEach(0..<5, id: \.self) { level in
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(self.palette.heat(level))
+                                .frame(width: 8, height: 8)
+                        }
+                    }
+                    .padding(.trailing, 4)
+                }
                 
                 HStack(spacing: 2) {
                     Button {
@@ -2970,6 +3094,7 @@ private struct DashboardAIUsageWideCard: View {
         let todayTotals = self.snapshot.aiTodayTotals
         let displayTokens = todayTotals.totalTokens > 0 ? todayTotals.totalTokens : totals.totalTokens
         let displayReqs = todayTotals.requests > 0 ? todayTotals.requests : totals.requests
+        let costEstimate = AIModelPricingCatalog.estimateTotalCost(models: self.snapshot.aiModels, fallbackTotals: totals)
         
         let inTok = max(0, totals.inputTokens)
         let outTok = max(0, totals.outputTokens)
@@ -2977,20 +3102,21 @@ private struct DashboardAIUsageWideCard: View {
         let inPct = Int((inFrac * 100).rounded())
         let outPct = max(0, 100 - inPct)
         
-        let topModels: [(name: String, share: Int, color: Color)] = {
+        let topModels: [(name: String, share: Int, rmb: String, color: Color)] = {
             let colors: [Color] = [self.palette.accentFill, self.palette.emerald, self.palette.mint]
             let models = Array(self.snapshot.aiModels.prefix(3))
             if !models.isEmpty {
                 let sum = max(1.0, models.reduce(0.0) { $0 + Double($1.totalTokens > 0 ? $1.totalTokens : max(1, $1.requests * 150)) })
                 return models.enumerated().map { idx, m in
                     let w = Double(m.totalTokens > 0 ? m.totalTokens : max(1, m.requests * 150))
-                    let short = m.model.count <= 12 ? m.model : String(m.model.prefix(11)) + "…"
-                    return (short, Int(((w / sum) * 100).rounded()), colors[idx % colors.count])
+                    let short = m.model.count <= 13 ? m.model : String(m.model.prefix(12)) + "…"
+                    let modelCost = AIModelPricingCatalog.estimateCost(model: m.model, inputTokens: m.inputTokens, outputTokens: m.outputTokens)
+                    return (short, Int(((w / sum) * 100).rounded()), modelCost.formattedRMB, colors[idx % colors.count])
                 }
             }
             return [
-                ("主力模型", 62, self.palette.accentFill),
-                ("轻量模型", 38, self.palette.mint),
+                ("主力模型", 62, "¥0.00", self.palette.accentFill),
+                ("轻量模型", 38, "¥0.00", self.palette.mint),
             ]
         }()
         
@@ -3000,32 +3126,50 @@ private struct DashboardAIUsageWideCard: View {
                     AIUsageSunburstChartView(snapshot: self.snapshot, palette: self.palette, detailed: false)
                         .frame(width: 96, height: 96)
                     
-                    Text(Self.compactTokens(displayTokens))
-                        .font(.system(size: 11.5, weight: .bold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(self.palette.pine)
-                        .allowsHitTesting(false)
+                    VStack(spacing: 0.5) {
+                        Text(costEstimate.formattedRMB)
+                            .font(.system(size: 11.5, weight: .bold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(self.palette.pine)
+                        Text(Self.compactTokens(displayTokens))
+                            .font(.system(size: 8.5, weight: .medium, design: .monospaced).monospacedDigit())
+                            .foregroundStyle(self.palette.mutedInk)
+                    }
+                    .allowsHitTesting(false)
                 }
                 .frame(width: 98, height: 98)
                 
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(AppLanguage.text("30日用量", en: "30d Tokens"))
+                    HStack(alignment: .center, spacing: 8) {
+                        Text(AppLanguage.text("AI 用量", en: "AI Usage"))
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(self.palette.mutedInk)
                         
                         HStack(alignment: .firstTextBaseline, spacing: 3) {
                             Text(Self.compactTokens(totals.totalTokens))
-                                .font(.system(size: 18, weight: .semibold).monospacedDigit())
+                                .font(.system(size: 17, weight: .semibold).monospacedDigit())
                                 .foregroundStyle(self.palette.pine)
-                            Text("tokens")
-                                .font(.system(size: 11, weight: .regular))
+                            Text("tok")
+                                .font(.system(size: 10.5, weight: .regular))
                                 .foregroundStyle(self.palette.mutedInk)
                         }
                         
+                        // Real official API cost estimate (RMB + USD)
+                        HStack(spacing: 4) {
+                            Text(costEstimate.formattedRMB)
+                                .font(.system(size: 11.5, weight: .bold, design: .rounded).monospacedDigit())
+                                .foregroundStyle(self.palette.emerald)
+                            Text("(\(costEstimate.formattedUSD))")
+                                .font(.system(size: 10, weight: .medium, design: .monospaced).monospacedDigit())
+                                .foregroundStyle(self.palette.secondaryInk)
+                        }
+                        .padding(.horizontal, 7)
+                        .frame(height: 21)
+                        .background(self.palette.tokens.positivePillBg, in: Capsule())
+                        
                         Spacer(minLength: 4)
                         
-                        Text("\(displayReqs) req")
-                            .font(.system(size: 11, weight: .regular, design: .monospaced).monospacedDigit())
+                        Text("\(displayReqs) 次")
+                            .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
                             .foregroundStyle(self.palette.mutedInk)
                     }
                     
@@ -3046,30 +3190,30 @@ private struct DashboardAIUsageWideCard: View {
                         .frame(height: 6)
                         
                         HStack {
-                            Text("输入 \(inPct)%")
+                            Text("输入 \(Self.compactTokens(inTok)) · \(inPct)%")
                                 .font(.system(size: 10.5, weight: .regular).monospacedDigit())
                                 .foregroundStyle(self.palette.secondaryInk)
                             Spacer()
-                            Text("生成 \(outPct)%")
+                            Text("生成 \(Self.compactTokens(outTok)) · \(outPct)%")
                                 .font(.system(size: 10.5, weight: .regular).monospacedDigit())
                                 .foregroundStyle(self.palette.mutedInk)
                         }
                     }
                     
                     HStack(alignment: .bottom, spacing: 8) {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 5) {
                             ForEach(Array(topModels.prefix(2).enumerated()), id: \.offset) { _, m in
                                 HStack(spacing: 4) {
                                     Circle()
                                         .fill(m.color)
                                         .frame(width: 5, height: 5)
                                     Text(m.name)
-                                        .font(.system(size: 11, weight: .regular))
+                                        .font(.system(size: 10.5, weight: .medium))
                                         .foregroundStyle(self.palette.secondaryInk)
                                         .lineLimit(1)
-                                    Text("\(m.share)%")
-                                        .font(.system(size: 10.5, weight: .regular, design: .monospaced).monospacedDigit())
-                                        .foregroundStyle(self.palette.mutedInk)
+                                    Text("\(m.rmb)")
+                                        .font(.system(size: 10, weight: .semibold, design: .monospaced).monospacedDigit())
+                                        .foregroundStyle(self.palette.pine)
                                 }
                                 .padding(.horizontal, 7)
                                 .frame(height: 22)
@@ -4127,7 +4271,7 @@ private struct NightingaleRoseChartView: View {
 
 // MARK: - Chart 4: 3-Column Sankey Flow Diagram (心境流向)
 
-private struct EmotionSankeyChartView: View {
+struct EmotionSankeyChartView: View {
     
     let snapshot: DashboardSnapshot
     let palette: DashPalette
@@ -4290,24 +4434,73 @@ private struct EmotionSankeyChartView: View {
     }
     
     
-    private func leftTimeSlotNodes() -> [SankeyNode] {
-        let slices = self.snapshot.busyness.slices
-        var morning: Double = 0
-        var afternoon: Double = 0
-        var night: Double = 0
-        for slice in slices {
-            let weight = max(0.05, slice.intensity)
-            switch slice.index {
-                case 3..<6: morning += weight
-                case 6..<9: afternoon += weight
-                default: night += weight
+    struct TimeSlotDescriptor: Equatable {
+        let label: String
+        let shortLabel: String
+        let weight: Double
+        let toneSlot: Int
+    }
+    
+    
+    /// Builds real-time-aware mood-flow time slots up to `currentHour` (0...23) so future periods
+    /// (such as "夜间" or "午后" in the morning) never appear before they happen.
+    static func timeSlotDescriptors(
+        slices: [BusynessHourSlice],
+        currentHour: Int
+    ) -> [TimeSlotDescriptor] {
+        let hour = min(23, max(0, currentHour))
+        
+        func sliceWeight(hourRange: Range<Int>) -> Double {
+            var sum = 0.0
+            for slice in slices {
+                let startH = slice.index * 2
+                let endH = startH + 2
+                if endH > hourRange.lowerBound && startH < hourRange.upperBound {
+                    sum += max(0.05, slice.intensity)
+                }
             }
+            return max(1.0, sum * 100.0)
         }
-        return [
-            SankeyNode(label: "晨间", shortLabel: "晨", weight: max(1, morning * 100), color: self.palette.mint),
-            SankeyNode(label: "午后", shortLabel: "午", weight: max(1, afternoon * 100), color: self.palette.accentFill),
-            SankeyNode(label: "夜间", shortLabel: "夜", weight: max(1, night * 100), color: self.palette.emerald),
-        ]
+        
+        if hour < 6 {
+            return [
+                TimeSlotDescriptor(label: "凌晨", shortLabel: "凌", weight: sliceWeight(hourRange: 0..<6), toneSlot: 2),
+            ]
+        } else if hour < 9 {
+            return [
+                TimeSlotDescriptor(label: "清晨", shortLabel: "晨", weight: sliceWeight(hourRange: 6..<9), toneSlot: 0),
+            ]
+        } else if hour < 12 {
+            return [
+                TimeSlotDescriptor(label: "清晨", shortLabel: "晨", weight: sliceWeight(hourRange: 6..<9), toneSlot: 0),
+                TimeSlotDescriptor(label: "上午", shortLabel: "上", weight: sliceWeight(hourRange: 9..<12), toneSlot: 1),
+            ]
+        } else if hour < 18 {
+            return [
+                TimeSlotDescriptor(label: "晨间", shortLabel: "晨", weight: sliceWeight(hourRange: 6..<12), toneSlot: 0),
+                TimeSlotDescriptor(label: "午后", shortLabel: "午", weight: sliceWeight(hourRange: 12..<18), toneSlot: 1),
+            ]
+        } else {
+            return [
+                TimeSlotDescriptor(label: "晨间", shortLabel: "晨", weight: sliceWeight(hourRange: 6..<12), toneSlot: 0),
+                TimeSlotDescriptor(label: "午后", shortLabel: "午", weight: sliceWeight(hourRange: 12..<18), toneSlot: 1),
+                TimeSlotDescriptor(label: "夜间", shortLabel: "夜", weight: sliceWeight(hourRange: 18..<24), toneSlot: 2),
+            ]
+        }
+    }
+    
+    
+    private func leftTimeSlotNodes(now: Date = Date()) -> [SankeyNode] {
+        let currentHour = Calendar.current.component(.hour, from: now)
+        let descriptors = Self.timeSlotDescriptors(slices: self.snapshot.busyness.slices, currentHour: currentHour)
+        return descriptors.map { d in
+            let col: Color = switch d.toneSlot {
+                case 0: self.palette.mint
+                case 1: self.palette.accentFill
+                default: self.palette.emerald
+            }
+            return SankeyNode(label: d.label, shortLabel: d.shortLabel, weight: d.weight, color: col)
+        }
     }
     
     

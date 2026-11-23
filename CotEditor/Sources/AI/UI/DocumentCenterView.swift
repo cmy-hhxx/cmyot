@@ -126,6 +126,11 @@ nonisolated enum StarMapLayoutEngine {
     }
     
     
+    static let hubFootprint = CGSize(width: 156, height: 68)
+    static let clusterFootprint = CGSize(width: 164, height: 44)
+    static let leafFootprint = CGSize(width: 196, height: 56)
+    
+    
     static func compute(
         clusterIDs: [String],
         leafCountsByCluster: [String: Int],
@@ -138,28 +143,16 @@ nonisolated enum StarMapLayoutEngine {
         
         var positionedClusters: [PositionedCluster] = []
         var positionedLeaves: [PositionedLeaf] = []
-        var minX: CGFloat = -90
-        var maxX: CGFloat = 90
-        var minY: CGFloat = -70
-        var maxY: CGFloat = 70
-        
-        func include(_ pt: CGPoint, padX: CGFloat = 88, padY: CGFloat = 34) {
-            minX = min(minX, pt.x - padX)
-            maxX = max(maxX, pt.x + padX)
-            minY = min(minY, pt.y - padY)
-            maxY = max(maxY, pt.y + padY)
-        }
         
         if clusterIDs.count == 1, let onlyID = clusterIDs.first {
             let leaves = leafIDsByCluster[onlyID] ?? []
             let isCollapsed = collapsedClusterIDs.contains(onlyID)
-            let clusterPt = CGPoint(x: 0, y: -115)
+            let clusterPt = CGPoint(x: 0, y: -120)
             positionedClusters.append(PositionedCluster(id: onlyID, worldPoint: clusterPt, angle: -.pi * 0.5))
-            include(clusterPt)
             
             if !isCollapsed {
-                let ringCapacities = [10, 18, 26, 36]
-                let ringRadii: [CGFloat] = [195, 315, 435, 555]
+                let ringCapacities = [8, 14, 22, 32]
+                let ringRadii: [CGFloat] = [235, 390, 545, 700]
                 var cursor = 0
                 for (ringIdx, cap) in ringCapacities.enumerated() where cursor < leaves.count {
                     let count = min(cap, leaves.count - cursor)
@@ -171,8 +164,8 @@ nonisolated enum StarMapLayoutEngine {
                         cursor += 1
                         let a = phaseOffset + Double(i) * step
                         let pt = CGPoint(
-                            x: CGFloat(cos(a)) * radius * 1.18,
-                            y: CGFloat(sin(a)) * radius * 0.88
+                            x: CGFloat(cos(a)) * radius * 1.28,
+                            y: CGFloat(sin(a)) * radius * 0.86
                         )
                         positionedLeaves.append(PositionedLeaf(
                             id: leafID,
@@ -181,87 +174,108 @@ nonisolated enum StarMapLayoutEngine {
                             parentPoint: .zero,
                             angle: a
                         ))
-                        include(pt)
                     }
                 }
             }
-            return LayoutResult(
-                clusters: positionedClusters,
-                leaves: positionedLeaves,
-                bounds: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-            )
-        }
-        
-        let weights: [Double] = clusterIDs.map { cid in
-            let collapsed = collapsedClusterIDs.contains(cid)
-            let visibleCount = collapsed ? 0 : (leafCountsByCluster[cid] ?? 0)
-            return max(2.4, Double(min(visibleCount, 12)) + 1.8)
-        }
-        let totalWeight = max(1.0, weights.reduce(0, +))
-        let clusterBaseR: CGFloat = min(225, max(152, 130 + CGFloat(clusterIDs.count) * 14))
-        
-        var cursorAngle = -Double.pi * 0.5
-        for (idx, cid) in clusterIDs.enumerated() {
-            let span = (weights[idx] / totalWeight) * (2.0 * .pi)
-            let midAngle = cursorAngle + span * 0.5
-            let clusterPt = CGPoint(
-                x: CGFloat(cos(midAngle)) * clusterBaseR * 1.14,
-                y: CGFloat(sin(midAngle)) * clusterBaseR * 0.86
-            )
-            positionedClusters.append(PositionedCluster(id: cid, worldPoint: clusterPt, angle: midAngle))
-            include(clusterPt)
+        } else {
+            let weights: [Double] = clusterIDs.map { cid in
+                let collapsed = collapsedClusterIDs.contains(cid)
+                let visibleCount = collapsed ? 0 : (leafCountsByCluster[cid] ?? 0)
+                return max(2.8, Double(min(visibleCount, 14)) + 2.2)
+            }
+            let totalWeight = max(1.0, weights.reduce(0, +))
+            let clusterBaseR: CGFloat = min(290, max(195, 165 + CGFloat(clusterIDs.count) * 18))
             
-            let isCollapsed = collapsedClusterIDs.contains(cid)
-            let leaves = isCollapsed ? [] : (leafIDsByCluster[cid] ?? [])
-            if !leaves.isEmpty {
-                let usableSpan = max(0.28, span * 0.84)
-                let startA = midAngle - usableSpan * 0.5
-                let innerMax = 7
-                let outerLeaves = leaves.count > innerMax ? Array(leaves.dropFirst(innerMax)) : []
-                let innerLeaves = Array(leaves.prefix(innerMax))
+            var cursorAngle = -Double.pi * 0.5
+            for (idx, cid) in clusterIDs.enumerated() {
+                let span = (weights[idx] / totalWeight) * (2.0 * .pi)
+                let midAngle = cursorAngle + span * 0.5
+                let clusterPt = CGPoint(
+                    x: CGFloat(cos(midAngle)) * clusterBaseR * 1.24,
+                    y: CGFloat(sin(midAngle)) * clusterBaseR * 0.86
+                )
+                positionedClusters.append(PositionedCluster(id: cid, worldPoint: clusterPt, angle: midAngle))
                 
-                for (lIdx, leafID) in innerLeaves.enumerated() {
-                    let frac = innerLeaves.count == 1 ? 0.5 : Double(lIdx) / Double(innerLeaves.count - 1)
-                    let a = startA + frac * usableSpan
-                    let stagger: CGFloat = lIdx.isMultiple(of: 2) ? 0 : 28
-                    let r = clusterBaseR + 136 + stagger
-                    let pt = CGPoint(
-                        x: CGFloat(cos(a)) * r * 1.18,
-                        y: CGFloat(sin(a)) * r * 0.88
+                let isCollapsed = collapsedClusterIDs.contains(cid)
+                let leaves = isCollapsed ? [] : (leafIDsByCluster[cid] ?? [])
+                if !leaves.isEmpty {
+                    let usableSpan = max(0.36, span * 0.86)
+                    let startA = midAngle - usableSpan * 0.5
+                    let innerMax = 5
+                    let midMax = 9
+                    let innerLeaves = Array(leaves.prefix(innerMax))
+                    let midLeaves = leaves.count > innerMax ? Array(leaves.dropFirst(innerMax).prefix(midMax)) : []
+                    let outerLeaves = leaves.count > (innerMax + midMax) ? Array(leaves.dropFirst(innerMax + midMax)) : []
+                    
+                    func appendRing(_ ringLeaves: [String], baseRadius: CGFloat, staggerAmt: CGFloat) {
+                        for (rIdx, leafID) in ringLeaves.enumerated() {
+                            let frac = ringLeaves.count == 1 ? 0.5 : Double(rIdx) / Double(ringLeaves.count - 1)
+                            let a = startA + frac * usableSpan
+                            let stagger: CGFloat = rIdx.isMultiple(of: 2) ? 0 : staggerAmt
+                            let r = baseRadius + stagger
+                            let pt = CGPoint(
+                                x: CGFloat(cos(a)) * r * 1.26,
+                                y: CGFloat(sin(a)) * r * 0.88
+                            )
+                            positionedLeaves.append(PositionedLeaf(
+                                id: leafID,
+                                clusterID: cid,
+                                worldPoint: pt,
+                                parentPoint: clusterPt,
+                                angle: a
+                            ))
+                        }
+                    }
+                    
+                    appendRing(innerLeaves, baseRadius: clusterBaseR + 175, staggerAmt: 34)
+                    if !midLeaves.isEmpty {
+                        appendRing(midLeaves, baseRadius: clusterBaseR + 320, staggerAmt: 34)
+                    }
+                    if !outerLeaves.isEmpty {
+                        appendRing(outerLeaves, baseRadius: clusterBaseR + 465, staggerAmt: 34)
+                    }
+                }
+                
+                cursorAngle += span
+            }
+        }
+        
+        // Deterministic AABB collision resolution across Hub, Clusters, and Leaves -> guaranteed zero overlap
+        Self.resolveOverlaps(clusters: &positionedClusters, leaves: &positionedLeaves)
+        
+        // Keep leaf parentPoint synced with resolved cluster positions
+        if positionedClusters.count > 1 {
+            let clusterPosMap = Dictionary(uniqueKeysWithValues: positionedClusters.map { ($0.id, $0.worldPoint) })
+            for i in positionedLeaves.indices {
+                if let cPt = clusterPosMap[positionedLeaves[i].clusterID] {
+                    positionedLeaves[i] = PositionedLeaf(
+                        id: positionedLeaves[i].id,
+                        clusterID: positionedLeaves[i].clusterID,
+                        worldPoint: positionedLeaves[i].worldPoint,
+                        parentPoint: cPt,
+                        angle: positionedLeaves[i].angle
                     )
-                    positionedLeaves.append(PositionedLeaf(
-                        id: leafID,
-                        clusterID: cid,
-                        worldPoint: pt,
-                        parentPoint: clusterPt,
-                        angle: a
-                    ))
-                    include(pt)
-                }
-                
-                if !outerLeaves.isEmpty {
-                    for (oIdx, leafID) in outerLeaves.enumerated() {
-                        let frac = outerLeaves.count == 1 ? 0.5 : Double(oIdx) / Double(outerLeaves.count - 1)
-                        let a = startA + frac * usableSpan
-                        let stagger: CGFloat = oIdx.isMultiple(of: 2) ? 0 : 26
-                        let r = clusterBaseR + 252 + stagger
-                        let pt = CGPoint(
-                            x: CGFloat(cos(a)) * r * 1.18,
-                            y: CGFloat(sin(a)) * r * 0.88
-                        )
-                        positionedLeaves.append(PositionedLeaf(
-                            id: leafID,
-                            clusterID: cid,
-                            worldPoint: pt,
-                            parentPoint: clusterPt,
-                            angle: a
-                        ))
-                        include(pt)
-                    }
                 }
             }
-            
-            cursorAngle += span
+        }
+        
+        var minX: CGFloat = -Self.hubFootprint.width * 0.5 - 30
+        var maxX: CGFloat = Self.hubFootprint.width * 0.5 + 30
+        var minY: CGFloat = -Self.hubFootprint.height * 0.5 - 30
+        var maxY: CGFloat = Self.hubFootprint.height * 0.5 + 30
+        
+        func include(_ pt: CGPoint, size: CGSize) {
+            minX = min(minX, pt.x - size.width * 0.5 - 24)
+            maxX = max(maxX, pt.x + size.width * 0.5 + 24)
+            minY = min(minY, pt.y - size.height * 0.5 - 24)
+            maxY = max(maxY, pt.y + size.height * 0.5 + 24)
+        }
+        
+        for c in positionedClusters {
+            include(c.worldPoint, size: Self.clusterFootprint)
+        }
+        for l in positionedLeaves {
+            include(l.worldPoint, size: Self.leafFootprint)
         }
         
         return LayoutResult(
@@ -269,6 +283,129 @@ nonisolated enum StarMapLayoutEngine {
             leaves: positionedLeaves,
             bounds: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
         )
+    }
+    
+    
+    /// Deterministically resolves all bounding-box overlaps among Hub (pinned), Cluster nodes, and Leaf cards.
+    private static func resolveOverlaps(
+        clusters: inout [PositionedCluster],
+        leaves: inout [PositionedLeaf]
+    ) {
+        struct BoxNode {
+            var center: CGPoint
+            let halfW: CGFloat
+            let halfH: CGFloat
+            let fixed: Bool
+            let isCluster: Bool
+            let sourceIndex: Int
+        }
+        
+        let pad: CGFloat = 14
+        var nodes: [BoxNode] = [
+            BoxNode(
+                center: .zero,
+                halfW: Self.hubFootprint.width * 0.5 + pad * 0.5,
+                halfH: Self.hubFootprint.height * 0.5 + pad * 0.5,
+                fixed: true,
+                isCluster: false,
+                sourceIndex: -1
+            ),
+        ]
+        
+        for (idx, c) in clusters.enumerated() {
+            nodes.append(BoxNode(
+                center: c.worldPoint,
+                halfW: Self.clusterFootprint.width * 0.5 + pad * 0.5,
+                halfH: Self.clusterFootprint.height * 0.5 + pad * 0.5,
+                fixed: false,
+                isCluster: true,
+                sourceIndex: idx
+            ))
+        }
+        
+        for (idx, l) in leaves.enumerated() {
+            nodes.append(BoxNode(
+                center: l.worldPoint,
+                halfW: Self.leafFootprint.width * 0.5 + pad * 0.5,
+                halfH: Self.leafFootprint.height * 0.5 + pad * 0.5,
+                fixed: false,
+                isCluster: false,
+                sourceIndex: idx
+            ))
+        }
+        
+        let count = nodes.count
+        guard count > 1 else { return }
+        
+        for _ in 0..<44 {
+            var movedAny = false
+            for i in 0..<count {
+                for j in (i + 1)..<count {
+                    let a = nodes[i]
+                    let b = nodes[j]
+                    let dx = b.center.x - a.center.x
+                    let dy = b.center.y - a.center.y
+                    let overlapX = (a.halfW + b.halfW) - abs(dx)
+                    let overlapY = (a.halfH + b.halfH) - abs(dy)
+                    guard overlapX > 0.5 && overlapY > 0.5 else { continue }
+                    
+                    movedAny = true
+                    // Push along the axis of minimum penetration (with deterministic radial tie-break)
+                    let pushX: CGFloat
+                    let pushY: CGFloat
+                    if overlapX < overlapY * 1.15 {
+                        let signX: CGFloat = dx >= 0 ? (dx == 0 ? (b.center.x >= 0 ? 1 : -1) : 1) : -1
+                        pushX = signX * (overlapX + 2.0)
+                        pushY = 0
+                    } else {
+                        let signY: CGFloat = dy >= 0 ? (dy == 0 ? (b.center.y >= 0 ? 1 : -1) : 1) : -1
+                        pushX = 0
+                        pushY = signY * (overlapY + 2.0)
+                    }
+                    
+                    if a.fixed {
+                        nodes[j].center.x += pushX
+                        nodes[j].center.y += pushY
+                    } else if b.fixed {
+                        nodes[i].center.x -= pushX
+                        nodes[i].center.y -= pushY
+                    } else if a.isCluster && !b.isCluster {
+                        // Prefer pushing leaf outward rather than displacing its parent cluster
+                        nodes[i].center.x -= pushX * 0.22
+                        nodes[i].center.y -= pushY * 0.22
+                        nodes[j].center.x += pushX * 0.78
+                        nodes[j].center.y += pushY * 0.78
+                    } else if !a.isCluster && b.isCluster {
+                        nodes[i].center.x -= pushX * 0.78
+                        nodes[i].center.y -= pushY * 0.78
+                        nodes[j].center.x += pushX * 0.22
+                        nodes[j].center.y += pushY * 0.22
+                    } else {
+                        nodes[i].center.x -= pushX * 0.5
+                        nodes[i].center.y -= pushY * 0.5
+                        nodes[j].center.x += pushX * 0.5
+                        nodes[j].center.y += pushY * 0.5
+                    }
+                }
+            }
+            if !movedAny { break }
+        }
+        
+        for node in nodes where !node.fixed {
+            if node.isCluster {
+                let c = clusters[node.sourceIndex]
+                clusters[node.sourceIndex] = PositionedCluster(id: c.id, worldPoint: node.center, angle: c.angle)
+            } else {
+                let l = leaves[node.sourceIndex]
+                leaves[node.sourceIndex] = PositionedLeaf(
+                    id: l.id,
+                    clusterID: l.clusterID,
+                    worldPoint: node.center,
+                    parentPoint: l.parentPoint,
+                    angle: l.angle
+                )
+            }
+        }
     }
 }
 
@@ -598,7 +735,7 @@ struct StarMapLeafNode: Identifiable {
 }
 
 
-/// Reusable, calm, structured Star-Map canvas shared by Document Center & Weekly Report Center.
+/// Reusable, GPU-accelerated, zero-overlap Star-Map canvas shared by Document Center & Weekly Report Center.
 struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     
     let hubTitle: String
@@ -621,9 +758,23 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     @State private var hoveredLeafID: String?
     @State private var hoveredClusterID: String?
     @State private var hasAutoFitted = false
+    @State private var cachedLayoutKey: String = ""
+    @State private var cachedLayout = StarMapLayoutEngine.LayoutResult(
+        clusters: [],
+        leaves: [],
+        bounds: CGRect(x: -180, y: -140, width: 360, height: 280)
+    )
     
     
-    private var computedLayout: StarMapLayoutEngine.LayoutResult {
+    private var layoutSignature: String {
+        self.clusters.map { c in
+            let ids = c.leaves.prefix(40).map(\.id).joined(separator: ",")
+            return "\(c.id):\(c.isCollapsed ? 1 : 0):\(ids)"
+        }.joined(separator: "|")
+    }
+    
+    
+    private func computeFreshLayout() -> StarMapLayoutEngine.LayoutResult {
         let clusterIDs = self.clusters.map(\.id)
         var counts: [String: Int] = [:]
         var collapsed = Set<String>()
@@ -648,7 +799,8 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     var body: some View {
         let isDark = (self.colorScheme == .dark)
         let tokens = DashPalette.editorialTokens(isDark: isDark)
-        let layout = self.computedLayout
+        let currentSig = self.layoutSignature
+        let layout = (self.cachedLayoutKey == currentSig) ? self.cachedLayout : self.computeFreshLayout()
         let clusterMap = Dictionary(uniqueKeysWithValues: self.clusters.map { ($0.id, $0) })
         let leafMap: [String: StarMapLeafNode] = {
             var map: [String: StarMapLeafNode] = [:]
@@ -664,233 +816,204 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
             ?? self.focusedClusterID
             ?? self.selectedLeafID.flatMap { leafMap[$0]?.clusterID }
         
+        let worldPad: CGFloat = 220
+        let worldW = max(900, layout.bounds.width + worldPad * 2)
+        let worldH = max(680, layout.bounds.height + worldPad * 2)
+        let originX = worldW * 0.5
+        let originY = worldH * 0.5
+        
         GeometryReader { geo in
-            let viewportCenter = CGPoint(x: geo.size.width * 0.5, y: geo.size.height * 0.5 + 16)
-            let toScreen: (CGPoint) -> CGPoint = { world in
-                CGPoint(
-                    x: viewportCenter.x + self.panOffset.width + world.x * self.zoomScale,
-                    y: viewportCenter.y + self.panOffset.height + world.y * self.zoomScale
-                )
-            }
+            let viewportCenter = CGPoint(x: geo.size.width * 0.5, y: geo.size.height * 0.5 + 14)
             
             ZStack {
-                tokens.canvasTop
-                    .ignoresSafeArea()
+                // Static GPU-cached architectural backdrop (never redraws during pan/zoom!)
+                StarMapStaticBackdropView(
+                    canvasColor: tokens.canvasTop,
+                    dotColor: tokens.architecturalDot,
+                    accentColor: tokens.accent,
+                    isDark: isDark
+                )
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
                 
-                // 1. Calm Architectural Grid + Concentric Orbital Rings + Structured Bezier Connections
-                Canvas(opaque: false, colorMode: .nonLinear, rendersAsynchronously: true) { context, size in
-                    guard size.width > 10, size.height > 10 else { return }
-                    let hubScreen = toScreen(.zero)
-                    
-                    // Subtle dot-grid backdrop for crisp spatial anchoring
-                    let gridStep: CGFloat = max(24, 34 * self.zoomScale)
-                    let originX = hubScreen.x.truncatingRemainder(dividingBy: gridStep)
-                    let originY = hubScreen.y.truncatingRemainder(dividingBy: gridStep)
-                    var dotsPath = Path()
-                    var y = originY - gridStep
-                    while y < size.height + gridStep {
-                        var x = originX - gridStep
-                        while x < size.width + gridStep {
-                            dotsPath.addRect(CGRect(x: x - 0.75, y: y - 0.75, width: 1.5, height: 1.5))
-                            x += gridStep
-                        }
-                        y += gridStep
-                    }
-                    context.fill(dotsPath, with: .color(tokens.architecturalDot))
-                    
-                    // Subtle radial ambient mist at hub
-                    let mistR = max(size.width, size.height) * 0.48
-                    let mistRect = CGRect(x: hubScreen.x - mistR, y: hubScreen.y - mistR, width: mistR * 2, height: mistR * 2)
-                    context.fill(
-                        Circle().path(in: mistRect),
-                        with: .radialGradient(
-                            Gradient(colors: [
-                                tokens.accent.opacity(isDark ? 0.09 : 0.055),
-                                .clear,
-                            ]),
-                            center: hubScreen,
-                            startRadius: 12,
-                            endRadius: mistR
-                        )
-                    )
-                    
-                    // Structural orbital rings (Cluster orbit + Leaf orbit)
-                    for (idx, rWorld) in [180.0, 340.0, 490.0].enumerated() {
-                        let rx = CGFloat(rWorld) * 1.16 * self.zoomScale
-                        let ry = CGFloat(rWorld) * 0.87 * self.zoomScale
-                        let ellipseRect = CGRect(x: hubScreen.x - rx, y: hubScreen.y - ry, width: rx * 2, height: ry * 2)
-                        context.stroke(
-                            Path(ellipseIn: ellipseRect),
-                            with: .color(tokens.hairline.opacity(idx == 0 ? 0.95 : 0.55)),
-                            style: StrokeStyle(lineWidth: 0.75, dash: idx == 0 ? [] : [3, 5])
-                        )
-                    }
-                    
-                    // Hub -> Cluster trunks
-                    if layout.clusters.count > 1 {
-                        for cPos in layout.clusters {
-                            let cPt = toScreen(cPos.worldPoint)
-                            let accent = clusterMap[cPos.id]?.accent ?? tokens.accent
-                            let isFocused = (activeFocusClusterID == cPos.id)
-                            let alpha: Double = isFocused ? 0.72 : (activeFocusClusterID == nil ? 0.34 : 0.14)
-                            
-                            let mid = CGPoint(x: (hubScreen.x + cPt.x) * 0.5, y: (hubScreen.y + cPt.y) * 0.5)
-                            let perp = CGPoint(x: -(cPt.y - hubScreen.y) * 0.10, y: (cPt.x - hubScreen.x) * 0.10)
-                            let ctrl = CGPoint(x: mid.x + perp.x, y: mid.y + perp.y)
-                            
-                            var trunk = Path()
-                            trunk.move(to: hubScreen)
-                            trunk.addQuadCurve(to: cPt, control: ctrl)
+                // Single unified GPU-transformed World Layer: scales & pans as one composited surface (locked 60-120Hz, zero node overlap at any zoom!)
+                ZStack {
+                    // 1. Orbital Rings + Structured Bezier Connections (drawn in world coordinates)
+                    Canvas(opaque: false, colorMode: .nonLinear, rendersAsynchronously: true) { context, _ in
+                        let hubPt = CGPoint(x: originX, y: originY)
+                        
+                        for (idx, rWorld) in [210.0, 410.0, 610.0].enumerated() {
+                            let rx = CGFloat(rWorld) * 1.24
+                            let ry = CGFloat(rWorld) * 0.87
+                            let ellipseRect = CGRect(x: hubPt.x - rx, y: hubPt.y - ry, width: rx * 2, height: ry * 2)
                             context.stroke(
-                                trunk,
-                                with: .color(accent.opacity(alpha)),
-                                style: StrokeStyle(lineWidth: isFocused ? 2.0 : 1.25, lineCap: .round)
+                                Path(ellipseIn: ellipseRect),
+                                with: .color(tokens.hairline.opacity(idx == 0 ? 0.85 : 0.45)),
+                                style: StrokeStyle(lineWidth: 0.9, dash: idx == 0 ? [] : [4, 6])
+                            )
+                        }
+                        
+                        if layout.clusters.count > 1 {
+                            for cPos in layout.clusters {
+                                let cPt = CGPoint(x: originX + cPos.worldPoint.x, y: originY + cPos.worldPoint.y)
+                                let accent = clusterMap[cPos.id]?.accent ?? tokens.accent
+                                let isFocused = (activeFocusClusterID == cPos.id)
+                                let alpha: Double = isFocused ? 0.72 : (activeFocusClusterID == nil ? 0.34 : 0.14)
+                                
+                                let mid = CGPoint(x: (hubPt.x + cPt.x) * 0.5, y: (hubPt.y + cPt.y) * 0.5)
+                                let ctrl = CGPoint(
+                                    x: mid.x - (cPt.y - hubPt.y) * 0.08,
+                                    y: mid.y + (cPt.x - hubPt.x) * 0.08
+                                )
+                                var trunk = Path()
+                                trunk.move(to: hubPt)
+                                trunk.addQuadCurve(to: cPt, control: ctrl)
+                                context.stroke(
+                                    trunk,
+                                    with: .color(accent.opacity(alpha)),
+                                    style: StrokeStyle(lineWidth: isFocused ? 2.2 : 1.3, lineCap: .round)
+                                )
+                            }
+                        }
+                        
+                        for lPos in layout.leaves {
+                            let parentPt = CGPoint(x: originX + lPos.parentPoint.x, y: originY + lPos.parentPoint.y)
+                            let leafPt = CGPoint(x: originX + lPos.worldPoint.x, y: originY + lPos.worldPoint.y)
+                            let leaf = leafMap[lPos.id]
+                            let isSelected = (self.selectedLeafID == lPos.id)
+                            let isHovered = (self.hoveredLeafID == lPos.id)
+                            let isClusterFocused = (activeFocusClusterID == lPos.clusterID)
+                            let branchColor = leaf?.dotColor ?? tokens.accent
+                            let alpha: Double = (isSelected || isHovered)
+                                ? 0.88
+                                : (isClusterFocused ? 0.42 : (activeFocusClusterID == nil ? 0.24 : 0.10))
+                            
+                            let mid = CGPoint(x: (parentPt.x + leafPt.x) * 0.5, y: (parentPt.y + leafPt.y) * 0.5)
+                            let ctrl = CGPoint(
+                                x: mid.x - (leafPt.y - parentPt.y) * 0.06,
+                                y: mid.y + (leafPt.x - parentPt.x) * 0.06
+                            )
+                            var curve = Path()
+                            curve.move(to: parentPt)
+                            curve.addQuadCurve(to: leafPt, control: ctrl)
+                            context.stroke(
+                                curve,
+                                with: .color(branchColor.opacity(alpha)),
+                                style: StrokeStyle(lineWidth: (isSelected || isHovered) ? 2.0 : 1.0, lineCap: .round)
                             )
                         }
                     }
+                    .frame(width: worldW, height: worldH)
+                    .allowsHitTesting(false)
                     
-                    // Cluster -> Leaf structured branches
-                    for lPos in layout.leaves {
-                        let parentPt = toScreen(lPos.parentPoint)
-                        let leafPt = toScreen(lPos.worldPoint)
-                        let leaf = leafMap[lPos.id]
-                        let isSelected = (self.selectedLeafID == lPos.id)
-                        let isHovered = (self.hoveredLeafID == lPos.id)
-                        let isClusterFocused = (activeFocusClusterID == lPos.clusterID)
-                        let branchColor = leaf?.dotColor ?? tokens.accent
-                        let alpha: Double = (isSelected || isHovered)
-                            ? 0.88
-                            : (isClusterFocused ? 0.42 : (activeFocusClusterID == nil ? 0.24 : 0.10))
-                        
-                        let mid = CGPoint(x: (parentPt.x + leafPt.x) * 0.5, y: (parentPt.y + leafPt.y) * 0.5)
-                        let bend: CGFloat = 0.08
-                        let ctrl = CGPoint(
-                            x: mid.x - (leafPt.y - parentPt.y) * bend,
-                            y: mid.y + (leafPt.x - parentPt.x) * bend
-                        )
-                        var curve = Path()
-                        curve.move(to: parentPt)
-                        curve.addQuadCurve(to: leafPt, control: ctrl)
-                        context.stroke(
-                            curve,
-                            with: .color(branchColor.opacity(alpha)),
-                            style: StrokeStyle(lineWidth: (isSelected || isHovered) ? 1.8 : 0.9, lineCap: .round)
-                        )
+                    // 2. Center Hub Core Node
+                    VStack(spacing: 3) {
+                        Text(self.hubTitle)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(tokens.primaryInk)
+                            .lineLimit(1)
+                        Text(self.hubSubtitle)
+                            .font(.system(size: 10.5, weight: .medium, design: .rounded).monospacedDigit())
+                            .foregroundStyle(tokens.primaryInk.opacity(0.55))
+                            .lineLimit(1)
                     }
-                }
-                .allowsHitTesting(false)
-                
-                // 2. Center Hub Core Node
-                let hubScreen = toScreen(.zero)
-                VStack(spacing: 3) {
-                    Text(self.hubTitle)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(tokens.primaryInk)
-                    Text(self.hubSubtitle)
-                        .font(.system(size: 10.5, weight: .medium, design: .rounded).monospacedDigit())
-                        .foregroundStyle(tokens.primaryInk.opacity(0.55))
-                }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(tokens.card)
-                        .shadow(color: tokens.cardShadow, radius: 12, y: 3)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(tokens.accent.opacity(0.50), lineWidth: 1.2)
-                )
-                .position(hubScreen)
-                
-                // 3. Tier-1 Cluster Nodes (Groups / Months)
-                if layout.clusters.count > 1 {
-                    ForEach(layout.clusters) { cPos in
-                        if let cluster = clusterMap[cPos.id] {
-                            let isFocused = (activeFocusClusterID == cluster.id)
-                            let isHovered = (self.hoveredClusterID == cluster.id)
-                            let dimmed = (activeFocusClusterID != nil && !isFocused)
-                            
-                            Button {
-                                withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
-                                    self.onToggleCluster(cluster.id)
+                    .frame(width: StarMapLayoutEngine.hubFootprint.width - 12, height: StarMapLayoutEngine.hubFootprint.height - 14)
+                    .background(tokens.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(tokens.accent.opacity(0.55), lineWidth: 1.3)
+                    )
+                    .shadow(color: tokens.cardShadow, radius: 10, y: 3)
+                    .position(x: originX, y: originY)
+                    
+                    // 3. Tier-1 Cluster Nodes (Groups / Months)
+                    if layout.clusters.count > 1 {
+                        ForEach(layout.clusters) { cPos in
+                            if let cluster = clusterMap[cPos.id] {
+                                let isFocused = (activeFocusClusterID == cluster.id)
+                                let isHovered = (self.hoveredClusterID == cluster.id)
+                                let dimmed = (activeFocusClusterID != nil && !isFocused)
+                                
+                                Button {
+                                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) {
+                                        self.onToggleCluster(cluster.id)
+                                    }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                            .fill(cluster.accent)
+                                            .frame(width: 3.5, height: 15)
+                                        
+                                        Text(cluster.title)
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundStyle(tokens.primaryInk)
+                                            .lineLimit(1)
+                                        
+                                        Spacer(minLength: 2)
+                                        
+                                        Text(cluster.countText)
+                                            .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+                                            .foregroundStyle(cluster.accent)
+                                            .padding(.horizontal, 6)
+                                            .frame(height: 18)
+                                            .background(cluster.accent.opacity(isDark ? 0.18 : 0.11), in: Capsule())
+                                        
+                                        Image(systemName: cluster.isCollapsed ? "chevron.right" : "chevron.down")
+                                            .font(.system(size: 8.5, weight: .bold))
+                                            .foregroundStyle(tokens.primaryInk.opacity(0.45))
+                                    }
+                                    .padding(.horizontal, 10)
+                                    .frame(width: StarMapLayoutEngine.clusterFootprint.width - 8, height: StarMapLayoutEngine.clusterFootprint.height - 8)
+                                    .background(tokens.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .strokeBorder(
+                                                (isFocused || isHovered) ? cluster.accent.opacity(0.75) : tokens.hairlineStrong,
+                                                lineWidth: (isFocused || isHovered) ? 1.3 : 0.85
+                                            )
+                                    )
+                                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                 }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                        .fill(cluster.accent)
-                                        .frame(width: 3.5, height: 14)
-                                    
-                                    Text(cluster.title)
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundStyle(tokens.primaryInk)
-                                        .lineLimit(1)
-                                    
-                                    Text(cluster.countText)
-                                        .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
-                                        .foregroundStyle(cluster.accent)
-                                        .padding(.horizontal, 6)
-                                        .frame(height: 18)
-                                        .background(cluster.accent.opacity(isDark ? 0.18 : 0.11), in: Capsule())
-                                    
-                                    Image(systemName: cluster.isCollapsed ? "chevron.right" : "chevron.down")
-                                        .font(.system(size: 8.5, weight: .bold))
-                                        .foregroundStyle(tokens.primaryInk.opacity(0.45))
+                                .buttonStyle(.plain)
+                                .pointerStyle(.link)
+                                .opacity(dimmed ? 0.48 : 1.0)
+                                .scaleEffect(isHovered ? 1.04 : 1.0)
+                                .position(x: originX + cPos.worldPoint.x, y: originY + cPos.worldPoint.y)
+                                .onHover { hovering in
+                                    let next = hovering ? cluster.id : (self.hoveredClusterID == cluster.id ? nil : self.hoveredClusterID)
+                                    if next != self.hoveredClusterID {
+                                        self.hoveredClusterID = next
+                                    }
                                 }
-                                .padding(.horizontal, 10)
-                                .frame(height: 30)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .fill(tokens.card)
-                                        .shadow(color: tokens.cardShadow, radius: isHovered ? 10 : 4, y: 2)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .strokeBorder(
-                                            (isFocused || isHovered) ? cluster.accent.opacity(0.70) : tokens.hairlineStrong,
-                                            lineWidth: (isFocused || isHovered) ? 1.2 : 0.8
-                                        )
-                                )
-                                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                            .opacity(dimmed ? 0.52 : 1.0)
-                            .scaleEffect(isHovered ? 1.04 : 1.0)
-                            .animation(.easeOut(duration: 0.14), value: isHovered)
-                            .position(toScreen(cPos.worldPoint))
-                            .onHover { hovering in
-                                self.hoveredClusterID = hovering ? cluster.id : (self.hoveredClusterID == cluster.id ? nil : self.hoveredClusterID)
-                            }
-                            .contextMenu {
-                                self.clusterContextMenu(cluster)
+                                .contextMenu {
+                                    self.clusterContextMenu(cluster)
+                                }
                             }
                         }
                     }
-                }
-                
-                // 4. Tier-2 Structured Leaf Cards (Documents / Weekly Reports)
-                ForEach(layout.leaves) { lPos in
-                    if let leaf = leafMap[lPos.id] {
-                        let isSelected = (self.selectedLeafID == leaf.id)
-                        let isHovered = (self.hoveredLeafID == leaf.id)
-                        let isClusterFocused = (activeFocusClusterID == leaf.clusterID)
-                        let dimmed = (activeFocusClusterID != nil && !isClusterFocused && !isSelected)
-                        
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                Circle()
-                                    .fill(leaf.dotColor)
-                                    .frame(width: isSelected ? 7.5 : 6, height: isSelected ? 7.5 : 6)
-                                
-                                Text(leaf.title)
-                                    .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
-                                    .foregroundStyle(tokens.primaryInk.opacity(isSelected ? 1.0 : 0.90))
-                                    .lineLimit(1)
-                                    .frame(maxWidth: 144, alignment: .leading)
-                            }
+                    
+                    // 4. Tier-2 Structured Leaf Cards (Fixed-footprint zero-overlap cards)
+                    ForEach(layout.leaves) { lPos in
+                        if let leaf = leafMap[lPos.id] {
+                            let isSelected = (self.selectedLeafID == leaf.id)
+                            let isHovered = (self.hoveredLeafID == leaf.id)
+                            let isClusterFocused = (activeFocusClusterID == leaf.clusterID)
+                            let dimmed = (activeFocusClusterID != nil && !isClusterFocused && !isSelected)
                             
-                            if isSelected || isHovered || self.zoomScale >= 0.78 {
+                            VStack(alignment: .leading, spacing: 3.5) {
+                                HStack(spacing: 6) {
+                                    Circle()
+                                        .fill(leaf.dotColor)
+                                        .frame(width: isSelected ? 7.5 : 6, height: isSelected ? 7.5 : 6)
+                                    
+                                    Text(leaf.title)
+                                        .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                                        .foregroundStyle(tokens.primaryInk.opacity(isSelected ? 1.0 : 0.90))
+                                        .lineLimit(1)
+                                    
+                                    Spacer(minLength: 0)
+                                }
+                                
                                 HStack(spacing: 5) {
                                     if let badge = leaf.statusBadge, !badge.isEmpty {
                                         Text(badge)
@@ -903,55 +1026,61 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                                     if !leaf.metaLine.isEmpty {
                                         Text(leaf.metaLine)
                                             .font(.system(size: 10, weight: .regular, design: .rounded).monospacedDigit())
-                                            .foregroundStyle(tokens.primaryInk.opacity(0.48))
+                                            .foregroundStyle(tokens.primaryInk.opacity(0.50))
                                             .lineLimit(1)
                                     }
+                                    Spacer(minLength: 0)
                                 }
                                 .padding(.leading, 12)
                             }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(tokens.card.opacity(isSelected || isHovered ? 1.0 : (isDark ? 0.88 : 0.96)))
-                                .shadow(
-                                    color: isSelected ? leaf.dotColor.opacity(0.22) : tokens.cardShadow,
-                                    radius: isSelected ? 10 : (isHovered ? 6 : 3),
-                                    y: isSelected ? 3 : 1
-                                )
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(
-                                    isSelected
-                                        ? leaf.dotColor.opacity(0.85)
-                                        : (isHovered ? leaf.dotColor.opacity(0.45) : tokens.hairline),
-                                    lineWidth: isSelected ? 1.4 : 0.8
-                                )
-                        )
-                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .opacity(dimmed ? 0.42 : 1.0)
-                        .scaleEffect(isSelected ? 1.04 : (isHovered ? 1.02 : 1.0))
-                        .animation(.easeOut(duration: 0.14), value: isHovered)
-                        .animation(.easeOut(duration: 0.16), value: isSelected)
-                        .position(toScreen(lPos.worldPoint))
-                        .pointerStyle(.link)
-                        .onHover { hovering in
-                            self.hoveredLeafID = hovering ? leaf.id : (self.hoveredLeafID == leaf.id ? nil : self.hoveredLeafID)
-                        }
-                        .onTapGesture(count: 2) {
-                            self.onSelectLeaf(leaf.id)
-                            self.onDoubleClickLeaf(leaf.id)
-                        }
-                        .onTapGesture(count: 1) {
-                            self.onSelectLeaf(leaf.id)
-                        }
-                        .contextMenu {
-                            self.leafContextMenu(leaf)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .frame(width: StarMapLayoutEngine.leafFootprint.width - 8, height: StarMapLayoutEngine.leafFootprint.height - 6, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(tokens.card.opacity(isSelected || isHovered ? 1.0 : (isDark ? 0.92 : 0.98)))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(
+                                        isSelected
+                                            ? leaf.dotColor.opacity(0.90)
+                                            : (isHovered ? leaf.dotColor.opacity(0.55) : tokens.hairline),
+                                        lineWidth: isSelected ? 1.5 : 0.85
+                                    )
+                            )
+                            .shadow(
+                                color: isSelected ? leaf.dotColor.opacity(0.24) : Color.clear,
+                                radius: isSelected ? 10 : 0,
+                                y: isSelected ? 3 : 0
+                            )
+                            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .opacity(dimmed ? 0.42 : 1.0)
+                            .scaleEffect(isSelected ? 1.04 : (isHovered ? 1.02 : 1.0))
+                            .position(x: originX + lPos.worldPoint.x, y: originY + lPos.worldPoint.y)
+                            .pointerStyle(.link)
+                            .onHover { hovering in
+                                let next = hovering ? leaf.id : (self.hoveredLeafID == leaf.id ? nil : self.hoveredLeafID)
+                                if next != self.hoveredLeafID {
+                                    self.hoveredLeafID = next
+                                }
+                            }
+                            .onTapGesture(count: 2) {
+                                self.onSelectLeaf(leaf.id)
+                                self.onDoubleClickLeaf(leaf.id)
+                            }
+                            .onTapGesture(count: 1) {
+                                self.onSelectLeaf(leaf.id)
+                            }
+                            .contextMenu {
+                                self.leafContextMenu(leaf)
+                            }
                         }
                     }
                 }
+                .frame(width: worldW, height: worldH)
+                .scaleEffect(self.zoomScale, anchor: .center)
+                .position(x: viewportCenter.x + self.panOffset.width, y: viewportCenter.y + self.panOffset.height)
                 
                 // 5. Minimal Zoom Controls (Bottom-Right)
                 VStack {
@@ -960,8 +1089,8 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                         Spacer()
                         HStack(spacing: 2) {
                             Button {
-                                withAnimation(.easeOut(duration: 0.18)) {
-                                    self.zoomScale = max(0.45, self.zoomScale - 0.15)
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                                    self.zoomScale = max(0.38, self.zoomScale - 0.15)
                                 }
                             } label: {
                                 Image(systemName: "minus")
@@ -985,7 +1114,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                             .help("重置视角以适配全部星图")
                             
                             Button {
-                                withAnimation(.easeOut(duration: 0.18)) {
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
                                     self.zoomScale = min(1.80, self.zoomScale + 0.15)
                                 }
                             } label: {
@@ -1010,7 +1139,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
             }
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 4)
+                DragGesture(minimumDistance: 3)
                     .onChanged { value in
                         if self.dragStartPan == nil {
                             self.dragStartPan = self.panOffset
@@ -1033,7 +1162,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                             self.pinchBaseZoom = self.zoomScale
                         }
                         if let base = self.pinchBaseZoom {
-                            self.zoomScale = min(1.85, max(0.42, base * value))
+                            self.zoomScale = min(1.85, max(0.36, base * value))
                         }
                     }
                     .onEnded { _ in
@@ -1041,10 +1170,17 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                     }
             )
             .onAppear {
+                self.cachedLayout = layout
+                self.cachedLayoutKey = currentSig
                 if !self.hasAutoFitted && geo.size.width > 100 {
                     self.hasAutoFitted = true
                     self.fitViewport(bounds: layout.bounds, size: geo.size, animated: false)
                 }
+            }
+            .onChange(of: currentSig) { _, newSig in
+                let refreshed = self.computeFreshLayout()
+                self.cachedLayout = refreshed
+                self.cachedLayoutKey = newSig
             }
             .onChange(of: geo.size) { _, newSize in
                 if !self.hasAutoFitted && newSize.width > 100 {
@@ -1053,13 +1189,17 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 }
             }
             .onChange(of: self.searchQuery) { _, _ in
-                self.fitViewport(bounds: self.computedLayout.bounds, size: geo.size, animated: true)
+                let refreshed = self.computeFreshLayout()
+                self.cachedLayout = refreshed
+                self.cachedLayoutKey = self.layoutSignature
+                self.fitViewport(bounds: refreshed.bounds, size: geo.size, animated: true)
             }
             .onChange(of: self.focusedClusterID) { _, nextCID in
                 guard geo.size.width > 100 else { return }
-                if let nextCID, let cPos = self.computedLayout.clusters.first(where: { $0.id == nextCID }) {
-                    let targetZoom: CGFloat = max(self.zoomScale, 0.92)
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                let activeLayout = (self.cachedLayoutKey == self.layoutSignature) ? self.cachedLayout : self.computeFreshLayout()
+                if let nextCID, let cPos = activeLayout.clusters.first(where: { $0.id == nextCID }) {
+                    let targetZoom: CGFloat = max(self.zoomScale, 0.88)
+                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.28)) {
                         self.zoomScale = targetZoom
                         self.panOffset = CGSize(
                             width: -cPos.worldPoint.x * targetZoom * 0.72,
@@ -1067,7 +1207,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                         )
                     }
                 } else {
-                    self.fitViewport(bounds: self.computedLayout.bounds, size: geo.size, animated: true)
+                    self.fitViewport(bounds: activeLayout.bounds, size: geo.size, animated: true)
                 }
             }
         }
@@ -1075,23 +1215,75 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     
     
     private func fitViewport(bounds: CGRect, size: CGSize, animated: Bool) {
-        let usableW = max(240, size.width - 120)
-        let usableH = max(200, size.height - 190)
+        let usableW = max(240, size.width - 110)
+        let usableH = max(200, size.height - 176)
         let fitX = usableW / max(240, bounds.width)
         let fitY = usableH / max(180, bounds.height)
-        let targetZoom = min(1.06, max(0.56, min(fitX, fitY)))
+        let targetZoom = min(1.04, max(0.42, min(fitX, fitY)))
         let targetPan = CGSize(
             width: -bounds.midX * targetZoom,
             height: -bounds.midY * targetZoom
         )
         if animated {
-            withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.28)) {
                 self.zoomScale = targetZoom
                 self.panOffset = targetPan
             }
         } else {
             self.zoomScale = targetZoom
             self.panOffset = targetPan
+        }
+    }
+}
+
+
+/// Static GPU-cached dot-grid & soft hub mist backdrop so panning never triggers dot-grid redraws.
+private struct StarMapStaticBackdropView: View, Equatable {
+    
+    let canvasColor: Color
+    let dotColor: Color
+    let accentColor: Color
+    let isDark: Bool
+    
+    static func == (lhs: StarMapStaticBackdropView, rhs: StarMapStaticBackdropView) -> Bool {
+        lhs.isDark == rhs.isDark
+    }
+    
+    var body: some View {
+        ZStack {
+            self.canvasColor
+            
+            Canvas(opaque: false, rendersAsynchronously: true) { context, size in
+                guard size.width > 10, size.height > 10 else { return }
+                let step: CGFloat = 32
+                var dots = Path()
+                var y: CGFloat = 16
+                while y < size.height {
+                    var x: CGFloat = 16
+                    while x < size.width {
+                        dots.addRect(CGRect(x: x - 0.7, y: y - 0.7, width: 1.4, height: 1.4))
+                        x += step
+                    }
+                    y += step
+                }
+                context.fill(dots, with: .color(self.dotColor))
+                
+                let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+                let mistR = max(size.width, size.height) * 0.45
+                context.fill(
+                    Circle().path(in: CGRect(x: center.x - mistR, y: center.y - mistR, width: mistR * 2, height: mistR * 2)),
+                    with: .radialGradient(
+                        Gradient(colors: [
+                            self.accentColor.opacity(self.isDark ? 0.08 : 0.045),
+                            .clear,
+                        ]),
+                        center: center,
+                        startRadius: 12,
+                        endRadius: mistR
+                    )
+                )
+            }
+            .drawingGroup()
         }
     }
 }

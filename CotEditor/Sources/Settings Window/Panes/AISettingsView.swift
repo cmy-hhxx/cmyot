@@ -34,9 +34,7 @@ struct AISettingsView: View {
     
     // MARK: Private Properties
     
-    private static let quickProviders: [AIProvider] = [
-        .openAI, .anthropic, .deepSeek, .qwen, .moonshot, .openRouter, .google, .ollama,
-    ]
+    private static let quickProviders: [AIProvider] = AIProvider.curatedPresets
     
     private static let nextTokenModelPresets: [String] = [
         "deepseek-chat",

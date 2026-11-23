@@ -3126,22 +3126,25 @@ extension AnalyticsManager {
         }
         
         var config = resolvedConfig
-        config.temperature = 0.65
-        config.reasoningEffort = "low"
+        config.temperature = 0.45
+        config.reasoningEffort = "medium"
         
         let systemPrompt = """
-        你是用户身边超懂上下文的聪明搭子。阅读用户最近真实的文档、未完思路、周报和正经待办，替他推理接下来最值得干、最有价值的 3 到 4 件事（「要干啥」）。
-        核心要求：
-        1. 必须做**有意义的推理预测**，而不是机械抄写文档里的待办原句！结合上下文想清楚"下一步真正该攻克什么、哪个坑最急着收口、哪块值得接着深挖"。
-        2. 自动无视任何测试乱码或占位文本（如 111、222、test、测试、asdf 等），绝对不要把它们当成任务！
-        3. 语气要有活人感，像朋友直接提醒你干正事（自然直白、带点催促或调侃，比如"先把那个卡住的交互收尾掉，别留到明天""趁热把方案里的落地步骤补齐""把这周干的硬活顺手塞进周报免得周五抓瞎"），禁止空泛官话。
-        4. action 字段严禁包含文档文件名、书名号《》或字数统计，长度控制在 12 到 30 个字。
-        5. 严格只输出 JSON 数组，不要任何额外文字：
-        [{"action":"有活人感的具体下一步建议","reason":"","doc_title":"内部关联文档标题","urgency":"高|中|常规"}]
+        你是用户最懂业务与上下文的资深工作搭子。你手里有他刚打开/修改的真实文档、未勾完的待办、停笔段落、开放问题和最近周报。
+        请你**精准且犀利**地推理出接下来最该立刻推进的 3 到 4 件事（「要干啥」）。
+
+        铁律：
+        1. **准**：必须死死咬住上下文里真实存在的具体问题、卡点、未完模块或决定，给出明确可执行的下一步（例如「把支付回调超时的重试上限敲定并补单测」），绝不写"梳理一下思路/回顾文档/继续加油"这种废话！
+        2. **犀利有活人感**：一针见血点破拖延点或风险，口吻像聪明直爽的同事提醒你干正事（带点催促、吐槽或调侃，但字字在点上）。
+        3. **洁癖过滤**：无视所有测试占位词（111、222、test、测试、asdf、demo），绝不把垃圾输入当任务。
+        4. `action` 控制在 14～34 字（不含书名号《》或字数统计）；`reason` 用 8～18 字点出为什么急/依据来自哪块进展（如「停笔在鉴权分支还没闭环」）。
+        5. 严格只输出 JSON 数组，不要任何多余文字：
+        [{"action":"具体犀利的下一步动作","reason":"一句话点破痛点或依据","doc_title":"关联文档标题","urgency":"高|中|常规"}]
         """
         
         let userPrompt = """
-        以下是用户近期真实且有实质内容的文档与上下文，请预测最值得推进的下一步：
+        当前时间：\(Self.currentReadableTimestamp())
+        以下是用户近期真实文档内容与提取到的未完信号（停笔处/待办/未解问题），请给出最准确犀利的下一步预测：
 
         \(corpus.promptText)
         """
@@ -3202,6 +3205,39 @@ extension AnalyticsManager {
     }
     
     
+    private static func currentReadableTimestamp() -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "yyyy年M月d日 EEEE HH:mm"
+        return f.string(from: Date())
+    }
+    
+    
+    /// Extracts high-signal open threads (unchecked TODOs, open questions, trailing unfinished paragraph) from a document.
+    private nonisolated static func extractOpenSignals(from content: String) -> [String] {
+        let lines = content.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        var signals: [String] = []
+        for line in lines {
+            let lower = line.lowercased()
+            let isTodo = line.hasPrefix("- [ ]") || line.hasPrefix("* [ ]")
+                || lower.contains("todo") || lower.contains("fixme")
+                || line.contains("待确认") || line.contains("待补") || line.contains("阻塞")
+                || line.contains("卡点") || line.contains("风险") || line.contains("下一步")
+            let isQuestion = (line.hasSuffix("？") || line.hasSuffix("?")) && line.count >= 6 && line.count <= 60
+            if (isTodo || isQuestion), Self.hasMeaningfulActionSubstance(line) {
+                signals.append(String(line.prefix(70)))
+                if signals.count >= 5 { break }
+            }
+        }
+        if let tail = lines.last, Self.hasMeaningfulActionSubstance(tail), !signals.contains(where: { $0.contains(tail.prefix(16)) }) {
+            signals.append("停笔处：\(String(tail.prefix(72)))")
+        }
+        return signals
+    }
+    
+    
     private func collectActionPredictionCorpus() -> (promptText: String, fingerprint: String) {
         var blocks: [String] = []
         var usedIDs = Set<String>()
@@ -3213,9 +3249,11 @@ extension AnalyticsManager {
                 guard text.count >= 12, Self.isMeaningfulDocumentContent(text) else { continue }
                 let title = doc.displayName ?? "未命名文档"
                 guard usedTitles.insert(title).inserted else { continue }
-                let head = String(text.prefix(600))
-                let tail = text.count > 900 ? "\n...\n" + String(text.suffix(500)) : ""
-                blocks.append("【打开中的文档：《\(title)》】\n\(head)\(tail)")
+                let signals = Self.extractOpenSignals(from: text)
+                let signalBlock = signals.isEmpty ? "" : "\n[关键未完信号]\n- " + signals.joined(separator: "\n- ")
+                let head = String(text.prefix(520))
+                let tail = text.count > 820 ? "\n...\n" + String(text.suffix(480)) : ""
+                blocks.append("【打开中的文档：《\(title)》】\(signalBlock)\n\(head)\(tail)")
                 if blocks.count >= 4 { break }
             }
         }
@@ -3229,15 +3267,17 @@ extension AnalyticsManager {
             guard !usedTitles.contains(record.title) else { continue }
             let trimmed = record.content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmed.count >= 12, Self.isMeaningfulDocumentContent(trimmed) else { continue }
-            let head = String(trimmed.prefix(550))
-            let tail = trimmed.count > 850 ? "\n...\n" + String(trimmed.suffix(450)) : ""
-            blocks.append("【近期文档：《\(record.title)》】\n\(head)\(tail)")
+            let signals = Self.extractOpenSignals(from: trimmed)
+            let signalBlock = signals.isEmpty ? "" : "\n[关键未完信号]\n- " + signals.joined(separator: "\n- ")
+            let head = String(trimmed.prefix(480))
+            let tail = trimmed.count > 780 ? "\n...\n" + String(trimmed.suffix(420)) : ""
+            blocks.append("【近期文档：《\(record.title)》】\(signalBlock)\n\(head)\(tail)")
         }
         
         if let latestReport = self.database.weeklyReports.sorted(by: { $0.updatedAt > $1.updatedAt }).first {
             let trimmed = latestReport.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if Self.isMeaningfulDocumentContent(trimmed) {
-                blocks.append("【最近周报：《\(latestReport.title)》】\n\(String(trimmed.prefix(600)))")
+                blocks.append("【最近周报：《\(latestReport.title)》】\n\(String(trimmed.prefix(650)))")
             }
         }
         
@@ -3250,7 +3290,7 @@ extension AnalyticsManager {
         }
         
         let combined = blocks.joined(separator: "\n\n")
-        let fp = UserPersonalityAnalyzer.sha256Hex("pred-v4|" + combined)
+        let fp = UserPersonalityAnalyzer.sha256Hex("pred-v5|" + combined)
         return (combined, fp)
     }
     
@@ -3299,13 +3339,22 @@ extension AnalyticsManager {
                 "中"
             }
             
+            let rawReason = (dict["reason"] as? String ?? dict["why"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanReason = Self.sanitizeDashboardActionText(
+                rawReason,
+                knownTitles: knownTitles,
+                maxLength: 24,
+                fallback: ""
+            )
+            
             let matchedDoc = documents.first(where: { $0.title == rawDocTitle })
                 ?? documents.first(where: { !rawDocTitle.isEmpty && ($0.title.localizedCaseInsensitiveContains(rawDocTitle) || rawDocTitle.localizedCaseInsensitiveContains($0.title)) })
             
             results.append(DocumentActionPrediction(
                 id: "ai-pred-\(idx)-\(action.prefix(16))",
                 action: action,
-                reason: "",
+                reason: cleanReason,
                 sourceDocumentTitle: matchedDoc?.title ?? rawDocTitle,
                 sourceDocumentID: matchedDoc?.id,
                 urgency: urgency
@@ -3480,4 +3529,162 @@ private nonisolated struct DoneTodayCommentaryBundle: Codable, Sendable, Equatab
     var isAIGenerated: Bool
     var sourceFingerprint: String
     var updatedAt: Date
+}
+
+
+// MARK: - Official API Pricing Estimator (USD & RMB)
+
+/// Estimates real API spend (USD & RMB) from per-model input/output token usage using official list prices
+/// (USD per 1M tokens) across major model families.
+nonisolated enum AIModelPricingCatalog {
+    
+    struct ModelRate: Sendable, Equatable {
+        let inputPerMillionUSD: Double
+        let outputPerMillionUSD: Double
+    }
+    
+    struct CostEstimate: Sendable, Equatable {
+        let usd: Double
+        let rmb: Double
+        
+        var formattedRMB: String {
+            if self.rmb >= 100 { return String(format: "¥%.0f", self.rmb) }
+            if self.rmb >= 10 { return String(format: "¥%.1f", self.rmb) }
+            if self.rmb >= 0.01 { return String(format: "¥%.2f", self.rmb) }
+            return self.rmb > 0 ? "¥<0.01" : "¥0.00"
+        }
+        
+        var formattedUSD: String {
+            if self.usd >= 100 { return String(format: "$%.0f", self.usd) }
+            if self.usd >= 10 { return String(format: "$%.1f", self.usd) }
+            if self.usd >= 0.01 { return String(format: "$%.2f", self.usd) }
+            return self.usd > 0 ? "$<0.01" : "$0.00"
+        }
+    }
+    
+    /// Reference USD -> CNY conversion rate used for RMB cost display.
+    static let usdToRMBRate: Double = 7.25
+    
+    
+    /// Resolves official API per-1M-token USD rates for a model identifier (case-insensitive substring match).
+    static func rate(for modelName: String) -> ModelRate {
+        let m = modelName.lowercased()
+        
+        // Local Ollama / free runners
+        if m.contains("ollama") || m.contains(":latest") || m.contains(":7b") || m.contains(":8b") || m.contains("llama3") {
+            return ModelRate(inputPerMillionUSD: 0, outputPerMillionUSD: 0)
+        }
+        
+        // Anthropic Claude
+        if m.contains("claude") {
+            if m.contains("opus") {
+                return ModelRate(inputPerMillionUSD: 15.0, outputPerMillionUSD: 75.0)
+            }
+            if m.contains("haiku") {
+                return ModelRate(inputPerMillionUSD: 0.80, outputPerMillionUSD: 4.0)
+            }
+            // Sonnet 3.5 / 3.7 / 4 / 4.5
+            return ModelRate(inputPerMillionUSD: 3.0, outputPerMillionUSD: 15.0)
+        }
+        
+        // OpenAI GPT & o-series
+        if m.contains("gpt-5") {
+            if m.contains("mini") || m.contains("nano") {
+                return ModelRate(inputPerMillionUSD: 0.40, outputPerMillionUSD: 1.60)
+            }
+            return ModelRate(inputPerMillionUSD: 2.50, outputPerMillionUSD: 10.0)
+        }
+        if m.contains("gpt-4.1") {
+            if m.contains("nano") { return ModelRate(inputPerMillionUSD: 0.10, outputPerMillionUSD: 0.40) }
+            if m.contains("mini") { return ModelRate(inputPerMillionUSD: 0.40, outputPerMillionUSD: 1.60) }
+            return ModelRate(inputPerMillionUSD: 2.00, outputPerMillionUSD: 8.00)
+        }
+        if m.contains("gpt-4o-mini") {
+            return ModelRate(inputPerMillionUSD: 0.15, outputPerMillionUSD: 0.60)
+        }
+        if m.contains("gpt-4o") || m.contains("o3") {
+            return ModelRate(inputPerMillionUSD: 2.50, outputPerMillionUSD: 10.0)
+        }
+        if m.contains("o4-mini") || m.contains("o3-mini") || m.contains("o1-mini") {
+            return ModelRate(inputPerMillionUSD: 1.10, outputPerMillionUSD: 4.40)
+        }
+        
+        // DeepSeek V3 / V4 / R1
+        if m.contains("deepseek") {
+            if m.contains("reasoner") || m.contains("r1") {
+                return ModelRate(inputPerMillionUSD: 0.55, outputPerMillionUSD: 2.19)
+            }
+            return ModelRate(inputPerMillionUSD: 0.27, outputPerMillionUSD: 1.10)
+        }
+        
+        // Google Gemini
+        if m.contains("gemini") {
+            if m.contains("pro") {
+                return ModelRate(inputPerMillionUSD: 1.25, outputPerMillionUSD: 10.0)
+            }
+            return ModelRate(inputPerMillionUSD: 0.15, outputPerMillionUSD: 0.60)
+        }
+        
+        // Moonshot Kimi
+        if m.contains("kimi") || m.contains("moonshot") {
+            return ModelRate(inputPerMillionUSD: 0.60, outputPerMillionUSD: 2.50)
+        }
+        
+        // Zhipu GLM
+        if m.contains("glm") {
+            if m.contains("flash") || m.contains("air") {
+                return ModelRate(inputPerMillionUSD: 0.14, outputPerMillionUSD: 0.56)
+            }
+            return ModelRate(inputPerMillionUSD: 0.70, outputPerMillionUSD: 2.80)
+        }
+        
+        // MiniMax
+        if m.contains("minimax") || m.contains("abab") {
+            return ModelRate(inputPerMillionUSD: 0.40, outputPerMillionUSD: 1.60)
+        }
+        
+        // Alibaba Qwen
+        if m.contains("qwen") {
+            if m.contains("turbo") || m.contains("flash") {
+                return ModelRate(inputPerMillionUSD: 0.05, outputPerMillionUSD: 0.20)
+            }
+            if m.contains("max") {
+                return ModelRate(inputPerMillionUSD: 1.60, outputPerMillionUSD: 6.40)
+            }
+            return ModelRate(inputPerMillionUSD: 0.40, outputPerMillionUSD: 1.20)
+        }
+        
+        // ByteDance Doubao
+        if m.contains("doubao") {
+            return ModelRate(inputPerMillionUSD: 0.12, outputPerMillionUSD: 0.30)
+        }
+        
+        // Reasonable blended mainstream default (e.g. generic OpenAI-compatible model)
+        return ModelRate(inputPerMillionUSD: 0.50, outputPerMillionUSD: 2.00)
+    }
+    
+    
+    static func estimateCost(model: String, inputTokens: Int, outputTokens: Int) -> CostEstimate {
+        let r = Self.rate(for: model)
+        let inCost = (Double(max(0, inputTokens)) / 1_000_000.0) * r.inputPerMillionUSD
+        let outCost = (Double(max(0, outputTokens)) / 1_000_000.0) * r.outputPerMillionUSD
+        let usd = inCost + outCost
+        return CostEstimate(usd: usd, rmb: usd * Self.usdToRMBRate)
+    }
+    
+    
+    static func estimateTotalCost(models: [ModelUsageSummary], fallbackTotals: AIUsageTotals) -> CostEstimate {
+        if !models.isEmpty {
+            var usd = 0.0
+            for item in models {
+                usd += Self.estimateCost(model: item.model, inputTokens: item.inputTokens, outputTokens: item.outputTokens).usd
+            }
+            return CostEstimate(usd: usd, rmb: usd * Self.usdToRMBRate)
+        }
+        return Self.estimateCost(
+            model: "default",
+            inputTokens: fallbackTotals.inputTokens,
+            outputTokens: fallbackTotals.outputTokens
+        )
+    }
 }

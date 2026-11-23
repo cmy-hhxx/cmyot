@@ -390,6 +390,43 @@ nonisolated struct NewsChatMessage: Identifiable, Codable, Hashable, Sendable {
 }
 
 
+/// Three-stop reasoning effort matching the LeiBox Reasoning Effort Slider (`Simple / Balanced / Deep`).
+nonisolated enum NewsReasoningEffort: Int, CaseIterable, Identifiable, Sendable {
+    case simple = 0
+    case balanced = 1
+    case deep = 2
+    
+    var id: Int { self.rawValue }
+    
+    var title: String {
+        switch self {
+            case .simple: AppLanguage.text("极速", en: "Simple")
+            case .balanced: AppLanguage.text("均衡", en: "Balanced")
+            case .deep: AppLanguage.text("深度", en: "Deep")
+        }
+    }
+    
+    var apiValue: String {
+        switch self {
+            case .simple: "low"
+            case .balanced: "medium"
+            case .deep: "high"
+        }
+    }
+    
+    var styleDirective: String {
+        switch self {
+            case .simple:
+                "回答风格：极简直接，控制在 3-5 条短要点内，一针见血不展开废话。"
+            case .balanced:
+                "回答风格：条理清晰，兼顾核心事实、犀利观点与实操启发，方便复制分享。"
+            case .deep:
+                "回答风格：深度拆解底层逻辑、隐含假设、反面视角与长期趋势，给出独到判断。"
+        }
+    }
+}
+
+
 /// A single industry news item displayed in the Analytics Dashboard NEWS feed.
 nonisolated struct AIHotNewsItem: Identifiable, Codable, Hashable, Sendable {
     
@@ -784,7 +821,7 @@ final class AIHotNewsService {
     }
     
     
-    // MARK: Simple Article AI Chat (One-Click Commentary/Summary + Follow-Up)
+        // MARK: Simple Article AI Chat (Commentary/Summary + Follow-Up)
     
     func chatMessages(for item: AIHotNewsItem) -> [NewsChatMessage] {
         if let history = self.chatHistories[item.id], !history.isEmpty {
@@ -804,12 +841,18 @@ final class AIHotNewsService {
     
     
     /// Triggers one-click sharp AI commentary & summary for `item` as the first chat turn.
-    func requestAICommentary(for item: AIHotNewsItem) async {
+    func requestAICommentary(for item: AIHotNewsItem, effort: NewsReasoningEffort = .balanced) async {
         let prompt = AppLanguage.text(
-            "帮我一键点评并总结这篇文章：先说核心事实，再给犀利点评和实际启发。",
-            en: "Summarize and give sharp commentary on this article."
+            "帮我总结这篇文章的核心事实，并给出犀利点评和可落地的启发。",
+            en: "Summarize this article's core facts with sharp commentary and takeaways."
         )
-        await self.sendChatFollowUp(prompt, for: item, displayUserText: AppLanguage.text("一键点评总结", en: "AI Summary & Commentary"), saveAsBrief: true)
+        await self.sendChatFollowUp(
+            prompt,
+            for: item,
+            displayUserText: AppLanguage.text("总结核心要点", en: "Summarize Key Points"),
+            saveAsBrief: true,
+            effort: effort
+        )
     }
     
     
@@ -818,7 +861,8 @@ final class AIHotNewsService {
         _ question: String,
         for item: AIHotNewsItem,
         displayUserText: String? = nil,
-        saveAsBrief: Bool = false
+        saveAsBrief: Bool = false,
+        effort: NewsReasoningEffort = .balanced
     ) async {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -855,6 +899,7 @@ final class AIHotNewsService {
         
         let systemContext = """
         你是一位视野敏锐、说人话的科技与资讯陪读搭子。请紧扣下面这篇资讯原文回答用户的点评、总结和追问。
+        \(effort.styleDirective)
         要求：直接给干货与犀利观点，结构清晰方便复制分享，不要废话客套。
 
         标题：\(item.title)
