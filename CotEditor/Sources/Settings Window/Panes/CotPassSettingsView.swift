@@ -1031,16 +1031,16 @@ nonisolated enum BlueFlutedGlassRenderer {
 }
 
 
-// MARK: - Archival Off-White Gallery Pass Engine (7 Visual Principles)
+// MARK: - Swiss-Gallery × Instant-Film Collector Pass Engine (7 Visual Principles)
 
-/// Synthesizes the multi-principle CotEditor Collector Pass aesthetic:
-/// 1. `shades of off-white`: layered Alabaster / Cotton / Linen / Limestone paper stock
-/// 2. `digital impressionism`: deterministic broken-color pigment brush strokes
-/// 3. `lomo imagery`: optical corner vignette, warm amber analog light-leak, and silver grain
-/// 4. `generative art`: serial-seeded curl-noise topographic streamlines
-/// 5. `morphing objects`: harmonic oscillating polar liquid seal
-/// 6. `ASCII and pixels`: avatar-contour hybrid ASCII density + crisp micro-pixel matrix
-/// 7. `sketch and scribble`: hand-drawn pencil orbit, pigment scribble flourish & corner registration ticks
+/// Synthesizes a museum-grade Collector Pass uniting all 7 visual principles with zero wireframe clutter:
+/// 1. `shades of off-white`: Porcelain Chalk ticket stub + perforated Raw Cotton tear-off + Recessed Limestone passe-partout
+/// 2. `digital impressionism`: broken-color painterly impasto tiles inside the framed gallery window
+/// 3. `lomo imagery`: instant-film Polaroid portrait mount with analog corner vignette & warm amber sun-kiss flare
+/// 4. `generative art`: harmonic curl-flow vector field orienting the painterly impasto mosaic
+/// 5. `morphing objects`: soft-shaded volumetric metaball light sculptures breathing without harsh outlines
+/// 6. `ASCII and pixels`: Swiss-grid quantized portrait plaque + binary pixel telemetry strip
+/// 7. `sketch and scribble`: fine 45° lithograph graphite hatching, corner `+` crop marks & Polaroid-chin ink paraph
 nonisolated enum CotPassArtEngine {
     
     enum ASCIIPixelCell: Equatable, Sendable {
@@ -1049,13 +1049,29 @@ nonisolated enum CotPassArtEngine {
         case ascii(Character, Double)
     }
     
+    enum ImpastoRole: Sendable {
+        case porcelainHighlight
+        case pastelWash
+        case mineralAccent
+        case warmOchre
+    }
+    
+    struct ImpastoTile: Sendable {
+        let u: Double
+        let v: Double
+        let angle: Double
+        let width: CGFloat
+        let height: CGFloat
+        let role: ImpastoRole
+    }
+    
     private final class StockCache: @unchecked Sendable {
         let cache = NSCache<NSString, CGImage>()
     }
     
     private static let stockCache = StockCache()
     private static let colorSpace = CGColorSpaceCreateDeviceRGB()
-    private static let asciiRamp: [Character] = Array(".:+*#@")
+    private static let asciiRamp: [Character] = Array("·:+*#")
     
     
     static func deterministicSeed(from text: String) -> Int {
@@ -1076,12 +1092,30 @@ nonisolated enum CotPassArtEngine {
     }
     
     
-    /// Renders & caches the static archival off-white background stock featuring digital impressionism dabs
-    /// and analog Lomo vignette + light-leak + film grain.
+    static func perforationX(in size: CGSize) -> CGFloat {
+        (size.width * 0.575).rounded()
+    }
+    
+    
+    static func artWindowRect(in size: CGSize) -> CGRect {
+        let seamX = Self.perforationX(in: size)
+        let ultra = size.height < 165
+        let padX: CGFloat = ultra ? 9 : 13
+        let padY: CGFloat = ultra ? 10 : 14
+        return CGRect(
+            x: seamX + padX,
+            y: padY,
+            width: max(32, size.width - seamX - padX * 2),
+            height: max(32, size.height - padY * 2)
+        )
+    }
+    
+    
+    /// Renders & caches the tactile archival multi-tone off-white card stock at 2x Retina scale.
     static func cachedStockImage(theme: CotPassTheme, serialCode: String, size: CGSize) -> CGImage? {
         let w = max(64, Int((size.width * 2.0).rounded()))
         let h = max(48, Int((size.height * 2.0).rounded()))
-        let cacheKey = "\(theme.id)|\(serialCode)|\(w)x\(h)" as NSString
+        let cacheKey = "v2|\(theme.id)|\(serialCode)|\(w)x\(h)" as NSString
         if let hit = Self.stockCache.cache.object(forKey: cacheKey) {
             return hit
         }
@@ -1098,118 +1132,84 @@ nonisolated enum CotPassArtEngine {
         
         let wf = CGFloat(w)
         let hf = CGFloat(h)
-        let palette = theme.flutedPalette
+        let scale: CGFloat = 2.0
+        let seamX = Self.perforationX(in: size) * scale
         let seed = Self.deterministicSeed(from: "\(theme.id):\(serialCode)")
         
-        // 1. Shades of Off-White: Alabaster (#FAF8F3) -> Warm Cotton (#F3EFE6) -> Raw Linen (#EAE3D5)
-        let offWhiteStops = [
-            CGColor(srgbRed: 0.980, green: 0.973, blue: 0.953, alpha: 1.0),
-            CGColor(srgbRed: 0.953, green: 0.937, blue: 0.902, alpha: 1.0),
-            CGColor(srgbRed: 0.918, green: 0.890, blue: 0.835, alpha: 1.0),
-        ] as CFArray
-        if let bgGrad = CGGradient(colorsSpace: Self.colorSpace, colors: offWhiteStops, locations: [0.0, 0.56, 1.0]) {
-            ctx.drawLinearGradient(
-                bgGrad,
-                start: CGPoint(x: 0, y: hf),
-                end: CGPoint(x: wf, y: 0),
-                options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
-            )
-        }
-        
-        // Secondary overlapping deckle paper pane on right-hand atelier side (#F6F3EB subtle shift)
+        // 1A. Left Identity Stub — Porcelain Chalk (#FCFBF8 -> #F6F2EA)
         ctx.saveGState()
-        let paneRect = CGRect(x: wf * 0.48, y: hf * 0.06, width: wf * 0.48, height: hf * 0.88)
-        let panePath = CGPath(roundedRect: paneRect, cornerWidth: 16, cornerHeight: 16, transform: nil)
-        ctx.addPath(panePath)
-        ctx.setFillColor(CGColor(srgbRed: 0.972, green: 0.964, blue: 0.941, alpha: 0.72))
-        ctx.fillPath()
+        ctx.clip(to: CGRect(x: 0, y: 0, width: seamX, height: hf))
+        let leftStops = [
+            CGColor(srgbRed: 0.988, green: 0.984, blue: 0.973, alpha: 1.0),
+            CGColor(srgbRed: 0.965, green: 0.949, blue: 0.918, alpha: 1.0),
+        ] as CFArray
+        if let leftGrad = CGGradient(colorsSpace: Self.colorSpace, colors: leftStops, locations: [0.0, 1.0]) {
+            ctx.drawLinearGradient(leftGrad, start: CGPoint(x: 0, y: hf), end: CGPoint(x: seamX, y: 0), options: [])
+        }
         ctx.restoreGState()
         
-        // 2. Digital Impressionism: broken-color oil/pastel dabs swept across the atelier field
-        let pigmentLight = palette.light
-        let pigmentMid = palette.mid
-        for i in 0..<84 {
-            let u = 0.42 + Self.seededUnit(seed: seed, index: i * 5 + 1) * 0.56
-            let v = 0.08 + Self.seededUnit(seed: seed, index: i * 5 + 2) * 0.84
-            let strokeW = (10.0 + Self.seededUnit(seed: seed, index: i * 5 + 3) * 24.0) * (wf / 816.0)
-            let strokeH = strokeW * (0.34 + Self.seededUnit(seed: seed, index: i * 5 + 4) * 0.24)
-            let angle = (Self.seededUnit(seed: seed, index: i * 7 + 3) - 0.5) * 0.85
-            
-            let toneRoll = Self.seededUnit(seed: seed, index: i * 11)
-            let r: CGFloat
-            let g: CGFloat
-            let b: CGFloat
-            let a: CGFloat
-            if toneRoll < 0.34 {
-                // Soft porcelain/sunlit off-white highlight dab
-                r = 0.985; g = 0.972; b = 0.938; a = 0.52
-            } else if toneRoll < 0.68 {
-                // Broken theme light wash mixed with cream
-                r = CGFloat(pigmentLight.r * 0.65 + 0.35 * 0.96)
-                g = CGFloat(pigmentLight.g * 0.65 + 0.35 * 0.94)
-                b = CGFloat(pigmentLight.b * 0.65 + 0.35 * 0.89)
-                a = 0.36
-            } else if toneRoll < 0.88 {
-                // Expressive mid-tone pigment accent dab
-                r = CGFloat(pigmentMid.r * 0.55 + 0.45 * 0.94)
-                g = CGFloat(pigmentMid.g * 0.55 + 0.45 * 0.92)
-                b = CGFloat(pigmentMid.b * 0.55 + 0.45 * 0.88)
-                a = 0.22
-            } else {
-                // Warm ochre painterly counterpoint
-                r = 0.92; g = 0.83; b = 0.68; a = 0.24
-            }
-            
-            ctx.saveGState()
-            ctx.translateBy(x: wf * CGFloat(u), y: hf * CGFloat(v))
-            ctx.rotate(by: CGFloat(angle))
-            ctx.setFillColor(CGColor(srgbRed: r, green: g, blue: b, alpha: a))
-            ctx.fillEllipse(in: CGRect(x: -strokeW * 0.5, y: -strokeH * 0.5, width: strokeW, height: strokeH))
-            ctx.restoreGState()
-        }
-        
-        // 3. Lomo Imagery: warm analog corner light-leak + optical vignette
-        let leakStops = [
-            CGColor(srgbRed: 0.95, green: 0.68, blue: 0.44, alpha: 0.14),
-            CGColor(srgbRed: 0.95, green: 0.68, blue: 0.44, alpha: 0.0),
+        // 1B. Right Gallery Stub — Raw Warm Cotton (#F5F0E6 -> #EBE4D5)
+        ctx.saveGState()
+        ctx.clip(to: CGRect(x: seamX, y: 0, width: wf - seamX, height: hf))
+        let rightStops = [
+            CGColor(srgbRed: 0.961, green: 0.941, blue: 0.902, alpha: 1.0),
+            CGColor(srgbRed: 0.922, green: 0.894, blue: 0.835, alpha: 1.0),
         ] as CFArray
-        if let leakGrad = CGGradient(colorsSpace: Self.colorSpace, colors: leakStops, locations: [0.0, 1.0]) {
-            ctx.drawRadialGradient(
-                leakGrad,
-                startCenter: CGPoint(x: wf * 0.94, y: hf * 0.92),
-                startRadius: 4,
-                endCenter: CGPoint(x: wf * 0.94, y: hf * 0.92),
-                endRadius: wf * 0.42,
-                options: []
-            )
+        if let rightGrad = CGGradient(colorsSpace: Self.colorSpace, colors: rightStops, locations: [0.0, 1.0]) {
+            ctx.drawLinearGradient(rightGrad, start: CGPoint(x: seamX, y: hf), end: CGPoint(x: wf, y: 0), options: [])
         }
+        ctx.restoreGState()
         
-        let vigStops = [
-            CGColor(srgbRed: 0.14, green: 0.12, blue: 0.10, alpha: 0.0),
-            CGColor(srgbRed: 0.14, green: 0.12, blue: 0.10, alpha: 0.11),
-        ] as CFArray
-        if let vigGrad = CGGradient(colorsSpace: Self.colorSpace, colors: vigStops, locations: [0.55, 1.0]) {
-            ctx.drawRadialGradient(
-                vigGrad,
-                startCenter: CGPoint(x: wf * 0.5, y: hf * 0.5),
-                startRadius: hf * 0.25,
-                endCenter: CGPoint(x: wf * 0.5, y: hf * 0.5),
-                endRadius: hypot(wf, hf) * 0.54,
-                options: [.drawsAfterEndLocation]
-            )
+        // 1C. Recessed Museum Passe-Partout Window (#FAF7F0 inner ground with #E2DACB bevel)
+        let swiftArtRect = Self.artWindowRect(in: size)
+        let cgArtRect = CGRect(
+            x: swiftArtRect.minX * scale,
+            y: hf - swiftArtRect.maxY * scale,
+            width: swiftArtRect.width * scale,
+            height: swiftArtRect.height * scale
+        )
+        let artCorner = (size.height < 165 ? 9.0 : 11.0) * scale
+        let outerMatPath = CGPath(
+            roundedRect: cgArtRect.insetBy(dx: -2, dy: -2),
+            cornerWidth: artCorner + 2,
+            cornerHeight: artCorner + 2,
+            transform: nil
+        )
+        ctx.addPath(outerMatPath)
+        ctx.setFillColor(CGColor(srgbRed: 0.890, green: 0.863, blue: 0.808, alpha: 0.85))
+        ctx.fillPath()
+        
+        let innerMatPath = CGPath(roundedRect: cgArtRect, cornerWidth: artCorner, cornerHeight: artCorner, transform: nil)
+        ctx.addPath(innerMatPath)
+        ctx.setFillColor(CGColor(srgbRed: 0.982, green: 0.973, blue: 0.949, alpha: 1.0))
+        ctx.fillPath()
+        
+        // 1D. Ticket Perforation Micro-Dots & Edge Notches along `seamX`
+        let dotStep: CGFloat = 11.0
+        var py: CGFloat = 14.0
+        while py < hf - 12.0 {
+            ctx.setFillColor(CGColor(srgbRed: 1.0, green: 0.996, blue: 0.985, alpha: 0.85))
+            ctx.fillEllipse(in: CGRect(x: seamX - 1.1, y: py - 1.8, width: 2.2, height: 2.2))
+            ctx.setFillColor(CGColor(srgbRed: 0.56, green: 0.52, blue: 0.46, alpha: 0.22))
+            ctx.fillEllipse(in: CGRect(x: seamX - 1.1, y: py - 1.1, width: 2.2, height: 2.2))
+            py += dotStep
         }
+        let notchR: CGFloat = size.height < 165 ? 6.5 : 8.5
+        ctx.setFillColor(CGColor(srgbRed: 0.84, green: 0.81, blue: 0.75, alpha: 0.65))
+        ctx.fillEllipse(in: CGRect(x: seamX - notchR, y: -notchR, width: notchR * 2, height: notchR * 2))
+        ctx.fillEllipse(in: CGRect(x: seamX - notchR, y: hf - notchR, width: notchR * 2, height: notchR * 2))
         
-        // Delicate silver-halide off-white cotton grain dots (sparse & non-muddy)
-        for gIdx in 0..<240 {
+        // 1E. Ultra-fine Cotton Paper Tooth (subtle luminance grain, never muddy)
+        for gIdx in 0..<180 {
             let gx = Self.seededUnit(seed: seed &+ 91, index: gIdx * 2) * Double(wf)
             let gy = Self.seededUnit(seed: seed &+ 91, index: gIdx * 2 + 1) * Double(hf)
             let bright = (gIdx % 2 == 0)
             ctx.setFillColor(
                 bright
-                    ? CGColor(srgbRed: 1.0, green: 0.99, blue: 0.96, alpha: 0.28)
-                    : CGColor(srgbRed: 0.35, green: 0.32, blue: 0.28, alpha: 0.045)
+                    ? CGColor(srgbRed: 1.0, green: 0.995, blue: 0.98, alpha: 0.30)
+                    : CGColor(srgbRed: 0.42, green: 0.39, blue: 0.34, alpha: 0.028)
             )
-            ctx.fill(CGRect(x: gx, y: gy, width: 1.4, height: 1.4))
+            ctx.fill(CGRect(x: gx, y: gy, width: 1.3, height: 1.3))
         }
         
         guard let image = ctx.makeImage() else { return nil }
@@ -1218,46 +1218,15 @@ nonisolated enum CotPassArtEngine {
     }
     
     
-    /// Generates serial-seeded multi-frequency curl/harmonic flow streamlines across the right-hand artwork zone.
-    static func generativeStreamlines(seed: Int, in size: CGSize) -> [Path] {
-        guard size.width > 20, size.height > 20 else { return [] }
-        let lineCount = 14
-        let steps = 26
-        let f1 = 1.4 + Double(seed % 7) * 0.18
-        let f2 = 2.1 + Double((seed >> 4) % 5) * 0.22
-        let p0 = Double((seed >> 8) % 360) * .pi / 180.0
-        
-        return (0..<lineCount).map { idx in
-            var path = Path()
-            let baseYFrac = 0.12 + 0.76 * (Double(idx) / Double(max(1, lineCount - 1)))
-            var x = Double(size.width) * 0.45
-            var y = Double(size.height) * baseYFrac
-            path.move(to: CGPoint(x: x, y: y))
-            
-            let stepDx = Double(size.width) * 0.51 / Double(steps)
-            for s in 1...steps {
-                let u = Double(s) / Double(steps)
-                let angle = 0.36 * sin(u * .pi * f1 + p0 + Double(idx) * 0.24)
-                    + 0.20 * cos(u * .pi * f2 - Double(idx) * 0.31)
-                x += stepDx * cos(angle)
-                y += stepDx * sin(angle) * 1.35
-                path.addLine(to: CGPoint(x: x, y: y))
-            }
-            return path
-        }
-    }
-    
-    
-    /// Evaluates a smooth continuous harmonic liquid perimeter for morphing objects.
+    /// Smooth continuous harmonic perimeter for soft-filled morphing sculptural cores (never stroked as wireframes).
     static func morphingObjectPath(center: CGPoint, baseRadius: CGFloat, phase: Double) -> Path {
-        let vertexCount = 72
+        let vertexCount = 64
         var path = Path()
         for i in 0...vertexCount {
             let theta = (Double(i % vertexCount) / Double(vertexCount)) * Double.pi * 2.0
             let mod = 1.0
-                + 0.12 * cos(3.0 * theta + phase)
-                + 0.08 * sin(5.0 * theta - 1.35 * phase)
-                + 0.045 * cos(2.0 * theta + 0.7 * phase)
+                + 0.11 * cos(2.0 * theta + phase)
+                + 0.065 * sin(3.0 * theta - 1.15 * phase)
             let r = baseRadius * CGFloat(mod)
             let pt = CGPoint(
                 x: center.x + r * CGFloat(cos(theta)),
@@ -1274,12 +1243,74 @@ nonisolated enum CotPassArtEngine {
     }
     
     
-    /// Converts `BrandLinePassEngine`'s avatar contour luminance field into an explicit ASCII + Micro-Pixel matrix
-    /// for the right-hand collector crest.
+    /// Evaluates normalized volumetric metaball light intensity in `[0, 1]` across the gallery art window.
+    static func morphingSculptureDensity(u: Double, v: Double, phase: Double) -> Double {
+        let c1x = 0.52 + 0.13 * cos(phase * 0.75)
+        let c1y = 0.40 + 0.11 * sin(phase * 0.62)
+        let c2x = 0.44 - 0.12 * sin(phase * 0.58 + 1.1)
+        let c2y = 0.67 + 0.09 * cos(phase * 0.82 + 0.6)
+        
+        let d1Sq = (u - c1x) * (u - c1x) / 0.14 + (v - c1y) * (v - c1y) / 0.16
+        let d2Sq = (u - c2x) * (u - c2x) / 0.12 + (v - c2y) * (v - c2y) / 0.13
+        let field = exp(-d1Sq) + 0.78 * exp(-d2Sq)
+        return min(1.0, max(0.0, field * 0.74))
+    }
+    
+    
+    /// Precomputes a harmonious mosaic of painterly impasto tiles oriented along a generative curl-flow field.
+    static func computeImpastoTiles(seed: Int, in artRect: CGRect) -> [ImpastoTile] {
+        guard artRect.width > 24, artRect.height > 24 else { return [] }
+        let ultra = artRect.height < 140
+        let cols = ultra ? 7 : 9
+        let rows = ultra ? 8 : 11
+        let freqU = 1.6 + Double(seed % 5) * 0.22
+        let freqV = 1.8 + Double((seed >> 3) % 5) * 0.20
+        let phase0 = Double((seed >> 7) % 360) * .pi / 180.0
+        
+        var tiles: [ImpastoTile] = []
+        tiles.reserveCapacity(cols * rows)
+        
+        for r in 0..<rows {
+            for c in 0..<cols {
+                let idx = r * cols + c
+                let jitterU = (Self.seededUnit(seed: seed, index: idx * 3 + 1) - 0.5) * 0.65 / Double(cols)
+                let jitterV = (Self.seededUnit(seed: seed, index: idx * 3 + 2) - 0.5) * 0.65 / Double(rows)
+                let u = min(0.94, max(0.06, (Double(c) + 0.5) / Double(cols) + jitterU))
+                let v = min(0.94, max(0.06, (Double(r) + 0.5) / Double(rows) + jitterV))
+                
+                // Generative curl-harmonic tangent orientation
+                let angle = 0.58 * sin(u * .pi * freqU + phase0) * cos(v * .pi * freqV)
+                    - 0.34 * cos((u + v) * .pi * 1.25 - phase0 * 0.5)
+                
+                let cellW = artRect.width / CGFloat(cols)
+                let cellH = artRect.height / CGFloat(rows)
+                let scaleVar = CGFloat(0.85 + Self.seededUnit(seed: seed, index: idx * 5 + 3) * 0.45)
+                let tileW = max(6, cellW * 1.18 * scaleVar)
+                let tileH = max(3.5, cellH * 0.56 * scaleVar)
+                
+                let roll = Self.seededUnit(seed: seed, index: idx * 7 + 4)
+                let role: ImpastoRole = if roll < 0.24 {
+                    .porcelainHighlight
+                } else if roll < 0.58 {
+                    .pastelWash
+                } else if roll < 0.84 {
+                    .mineralAccent
+                } else {
+                    .warmOchre
+                }
+                
+                tiles.append(ImpastoTile(u: u, v: v, angle: angle, width: tileW, height: tileH, role: role))
+            }
+        }
+        return tiles
+    }
+    
+    
+    /// Quantizes `BrandLinePassEngine`'s avatar contour field onto a crisp Swiss ASCII + Micro-Pixel matrix.
     static func buildASCIIPixelMatrix(
         from contourField: [Float],
-        cols: Int = 16,
-        rows: Int = 12
+        cols: Int = 10,
+        rows: Int = 6
     ) -> [[ASCIIPixelCell]] {
         let g = BrandLinePassEngine.gridSize
         guard contourField.count == g * g, cols > 0, rows > 0 else { return [] }
@@ -1290,16 +1321,15 @@ nonisolated enum CotPassArtEngine {
         for r in 0..<rows {
             var rowCells: [ASCIIPixelCell] = []
             rowCells.reserveCapacity(cols)
-            // Sample the portrait center region (`x: 0.44...0.96, y: 0.14...0.86` of contourField)
-            let gy = Int(((0.14 + 0.72 * (Double(r) + 0.5) / Double(rows)) * Double(g - 1)).rounded())
+            let gy = Int(((0.16 + 0.68 * (Double(r) + 0.5) / Double(rows)) * Double(g - 1)).rounded())
             for c in 0..<cols {
-                let gx = Int(((0.44 + 0.52 * (Double(c) + 0.5) / Double(cols)) * Double(g - 1)).rounded())
+                let gx = Int(((0.46 + 0.48 * (Double(c) + 0.5) / Double(cols)) * Double(g - 1)).rounded())
                 let idx = min(g - 1, max(0, gy)) * g + min(g - 1, max(0, gx))
                 let val = Double(contourField[idx])
                 
                 if val < 0.14 {
                     rowCells.append(.empty)
-                } else if val > 0.64 || (val > 0.42 && (r + c) % 3 == 0) {
+                } else if val > 0.62 || (val > 0.40 && (r + c).isMultiple(of: 2)) {
                     rowCells.append(.pixelBlock(min(1.0, val)))
                 } else {
                     let rampIdx = min(Self.asciiRamp.count - 1, max(0, Int((val * Double(Self.asciiRamp.count)).rounded(.down))))
@@ -1312,63 +1342,51 @@ nonisolated enum CotPassArtEngine {
     }
     
     
-    /// Hand-sketched multi-pass graphite oval enclosing the Lomo portrait frame.
-    static func sketchOrbitPath(around rect: CGRect, seed: Int) -> Path {
+    /// Clean architect's 45° parallel pencil lithograph shading in the lower-left shadow corner of the art window.
+    static func lithographHatchPath(in artRect: CGRect, seed: Int) -> Path {
         var path = Path()
-        let cx = rect.midX
-        let cy = rect.midY
-        let rxBase = rect.width * 0.5
-        let ryBase = rect.height * 0.5
-        let loops = 2
-        let steps = 40
+        let count = 8
+        let spacing: CGFloat = artRect.height < 140 ? 4.2 : 5.4
+        let maxSpan = min(artRect.width, artRect.height) * 0.36
+        let originX = artRect.minX + 5
+        let originY = artRect.maxY - 5
         
-        for loop in 0..<loops {
-            let startAng = Self.seededUnit(seed: seed, index: loop + 3) * 0.4
-            let endAng = startAng + Double.pi * 2.0 + 0.28
-            for s in 0...steps {
-                let t = Double(s) / Double(steps)
-                let a = startAng + (endAng - startAng) * t
-                let wobble = 1.0 + 0.045 * sin(3.0 * a + Double(loop) * 1.9 + Double(seed % 11))
-                let px = cx + (rxBase + CGFloat(loop) * 1.6) * CGFloat(wobble * cos(a))
-                let py = cy + (ryBase + CGFloat(loop) * 1.4) * CGFloat(wobble * sin(a))
-                let pt = CGPoint(x: px, y: py)
-                if s == 0 {
-                    path.move(to: pt)
-                } else {
-                    path.addLine(to: pt)
-                }
-            }
+        for idx in 0..<count {
+            let d = CGFloat(idx) * spacing
+            guard d < maxSpan else { break }
+            let jitter = CGFloat(Self.seededUnit(seed: seed, index: idx + 61) - 0.5) * 1.2
+            path.move(to: CGPoint(x: originX, y: originY - d + jitter))
+            path.addLine(to: CGPoint(x: originX + d - jitter, y: originY))
         }
         return path
     }
     
     
-    /// Expressive 2-stroke pigment scribble underline beneath the holder's display name.
-    static func scribbleUnderlinePath(origin: CGPoint, width: CGFloat, seed: Int) -> Path {
+    /// Minimalist single-stroke artist's ink paraph signed on the off-white Polaroid bottom chin.
+    static func calligraphicParaphPath(in chinRect: CGRect, seed: Int) -> Path {
         var path = Path()
-        let w = max(24, width)
-        let jitter1 = CGFloat(Self.seededUnit(seed: seed, index: 41) - 0.5) * 3.0
-        let jitter2 = CGFloat(Self.seededUnit(seed: seed, index: 42) - 0.5) * 2.5
+        let w = min(22, chinRect.width * 0.52)
+        let h = max(3.0, chinRect.height * 0.48)
+        let startX = chinRect.maxX - w - 3
+        let midY = chinRect.midY + 0.5
+        let tilt = CGFloat(Self.seededUnit(seed: seed, index: 88) - 0.5) * 1.4
         
-        // Primary gestural curve
-        path.move(to: CGPoint(x: origin.x - 1, y: origin.y + 1.5))
+        path.move(to: CGPoint(x: startX, y: midY + h * 0.35))
         path.addCurve(
-            to: CGPoint(x: origin.x + w + 2, y: origin.y + jitter1),
-            control1: CGPoint(x: origin.x + w * 0.30, y: origin.y - 2.2),
-            control2: CGPoint(x: origin.x + w * 0.72, y: origin.y + 3.0 + jitter1)
+            to: CGPoint(x: startX + w * 0.62, y: midY - h * 0.35 + tilt),
+            control1: CGPoint(x: startX + w * 0.18, y: midY - h * 0.65),
+            control2: CGPoint(x: startX + w * 0.42, y: midY + h * 0.55)
         )
-        // Return accent scribble tail
-        path.move(to: CGPoint(x: origin.x + w * 0.86, y: origin.y + 3.2))
         path.addQuadCurve(
-            to: CGPoint(x: origin.x + w * 0.14, y: origin.y + 4.4 + jitter2),
-            control: CGPoint(x: origin.x + w * 0.50, y: origin.y + 1.6)
+            to: CGPoint(x: startX + w, y: midY + 0.4),
+            control: CGPoint(x: startX + w * 0.82, y: midY - h * 0.45)
         )
         return path
     }
 }
 
 
-// MARK: - Horizontal Collector Pass Card (Shades of Off-White × 7 Artistic Media)
+// MARK: - Swiss-Gallery × Instant-Film Collector Pass Card
 
 struct CotPassCardView: View {
     
@@ -1388,9 +1406,9 @@ struct CotPassCardView: View {
     
     @State private var ownedEngine = BrandLinePassEngine()
     @State private var asciiMatrix: [[CotPassArtEngine.ASCIIPixelCell]] = []
-    @State private var streamlines: [Path] = []
-    @State private var cachedStreamSize: CGSize = .zero
-    @State private var cachedStreamSeed: Int = -1
+    @State private var impastoTiles: [CotPassArtEngine.ImpastoTile] = []
+    @State private var cachedTileSize: CGSize = .zero
+    @State private var cachedTileSeed: Int = -1
     
     
     private var resolvedEngine: BrandLinePassEngine {
@@ -1398,212 +1416,276 @@ struct CotPassCardView: View {
     }
     
     private var compact: Bool {
-        self.cardSize.height < 185
+        self.cardSize.height < 210
+    }
+    
+    private var ultraCompact: Bool {
+        self.cardSize.height < 165
+    }
+    
+    private var shortSerialText: String {
+        let trimmed = self.serialCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 9 else { return trimmed }
+        return String(trimmed.suffix(9))
     }
     
     
     var body: some View {
         let pigment = Color(hexString: self.theme.matrixColorHex)
-        let accentInk = self.theme.flutedPalette.mid.swiftUIColor
-        let primaryInk = Color(red: 0.102, green: 0.098, blue: 0.090)   // #1A1917 Espresso
-        let secondaryInk = Color(red: 0.396, green: 0.376, blue: 0.345) // #656058 Stone
+        let palette = self.theme.flutedPalette
+        let accentInk = palette.mid.swiftUIColor
+        let pastelInk = palette.light.swiftUIColor
+        let primaryInk = Color(red: 0.110, green: 0.104, blue: 0.096)   // #1C1B18 Archival Espresso
+        let secondaryInk = Color(red: 0.420, green: 0.396, blue: 0.361) // #6B655C Warm Stone
         let cardSeed = CotPassArtEngine.deterministicSeed(from: "\(self.theme.id):\(self.serialCode)")
         let stockCG = CotPassArtEngine.cachedStockImage(theme: self.theme, serialCode: self.serialCode, size: self.cardSize)
+        let seamX = CotPassArtEngine.perforationX(in: self.cardSize)
+        let artRect = CotPassArtEngine.artWindowRect(in: self.cardSize)
+        let artCorner: CGFloat = self.ultraCompact ? 9 : 11
         
-        ZStack {
-            // Layer 0: Shades of Off-White + Digital Impressionism + Lomo Vignette & Silver Grain
+        ZStack(alignment: .topLeading) {
+            // Layer 0: Archival Multi-Tone Off-White Cardstock + Perforation + Passe-Partout
             if let stockCG {
                 Image(decorative: stockCG, scale: 2.0)
                     .resizable()
-                    .interpolation(.medium)
+                    .interpolation(.high)
                     .frame(width: self.cardSize.width, height: self.cardSize.height)
             } else {
-                Color(red: 0.96, green: 0.945, blue: 0.915)
+                Color(red: 0.968, green: 0.953, blue: 0.925)
             }
             
-            // Layer 1: Generative Streamlines + Morphing Object Seal + ASCII & Pixel Matrix + Sketch Registration
+            // Layer 1: Framed Right-Hand Gallery Artwork (Morphing Volumes + Impressionist Impasto + Lithograph + ASCII Plaque)
             TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: AnimationConstants.isReducedMotionEnabled)) { context in
                 let phase = AnimationConstants.isReducedMotionEnabled
-                    ? 0.8
-                    : context.date.timeIntervalSinceReferenceDate * 0.95
+                    ? 0.9
+                    : context.date.timeIntervalSinceReferenceDate * 0.65
                 
-                Canvas { canvasCtx, canvasSize in
-                    // 1A. Generative Art: serial-seeded streamlines on right canvas
-                    for (idx, line) in self.streamlines.enumerated() {
-                        let alpha = 0.16 + 0.18 * (Double(idx % 4) / 3.0)
-                        canvasCtx.stroke(
-                            line,
-                            with: .color(accentInk.opacity(alpha)),
-                            style: StrokeStyle(lineWidth: 0.75, lineCap: .round)
-                        )
+                Canvas { canvasCtx, _ in
+                    let windowShape = RoundedRectangle(cornerRadius: artCorner, style: .continuous).path(in: artRect)
+                    
+                    // Subtle printmaker's `+` crop marks at the 4 outer corners of the passe-partout
+                    var cropMarks = Path()
+                    let cm: CGFloat = 3.0
+                    let arm: CGFloat = 2.4
+                    for cx in [artRect.minX - cm, artRect.maxX + cm] {
+                        for cy in [artRect.minY - cm, artRect.maxY + cm] {
+                            cropMarks.move(to: CGPoint(x: cx - arm, y: cy))
+                            cropMarks.addLine(to: CGPoint(x: cx + arm, y: cy))
+                            cropMarks.move(to: CGPoint(x: cx, y: cy - arm))
+                            cropMarks.addLine(to: CGPoint(x: cx, y: cy + arm))
+                        }
                     }
+                    canvasCtx.stroke(cropMarks, with: .color(primaryInk.opacity(0.20)), style: StrokeStyle(lineWidth: 0.6))
                     
-                    // 1B. Morphing Object: concentric organic floating seal on right side
-                    let crestCenter = CGPoint(x: canvasSize.width * 0.77, y: canvasSize.height * 0.49)
-                    let baseR = min(canvasSize.width, canvasSize.height) * (self.compact ? 0.28 : 0.25)
-                    let outerBlob = CotPassArtEngine.morphingObjectPath(center: crestCenter, baseRadius: baseR, phase: phase)
-                    let innerBlob = CotPassArtEngine.morphingObjectPath(center: crestCenter, baseRadius: baseR * 0.76, phase: -phase * 0.8 + 1.2)
-                    
-                    canvasCtx.fill(outerBlob, with: .color(Color(red: 0.985, green: 0.976, blue: 0.953).opacity(0.62)))
-                    canvasCtx.stroke(outerBlob, with: .color(accentInk.opacity(0.45)), style: StrokeStyle(lineWidth: 1.1))
-                    canvasCtx.stroke(innerBlob, with: .color(primaryInk.opacity(0.22)), style: StrokeStyle(lineWidth: 0.75, dash: [3, 3]))
-                    
-                    // 1C. ASCII and Pixels: hybrid portrait contour crest inside morphing field
-                    let matrixRows = self.asciiMatrix.count
-                    let matrixCols = self.asciiMatrix.first?.count ?? 0
-                    if matrixRows > 0 && matrixCols > 0 {
-                        let gridW = baseR * 1.48
-                        let gridH = baseR * 1.28
-                        let stepX = gridW / CGFloat(matrixCols)
-                        let stepY = gridH / CGFloat(matrixRows)
-                        let startX = crestCenter.x - gridW * 0.5
-                        let startY = crestCenter.y - gridH * 0.5
+                    // Enter clipped gallery window
+                    canvasCtx.drawLayer { layerCtx in
+                        layerCtx.clip(to: windowShape)
                         
-                        for r in 0..<matrixRows {
-                            for c in 0..<matrixCols {
-                                let cell = self.asciiMatrix[r][c]
-                                let cx = startX + (CGFloat(c) + 0.5) * stepX
-                                let cy = startY + (CGFloat(r) + 0.5) * stepY
-                                switch cell {
-                                    case .empty:
-                                        break
-                                    case .pixelBlock(let strength):
-                                        let side = min(stepX, stepY) * 0.76
-                                        let pxRect = CGRect(x: cx - side * 0.5, y: cy - side * 0.5, width: side, height: side)
-                                        canvasCtx.fill(
-                                            Rectangle().path(in: pxRect),
-                                            with: .color(accentInk.opacity(0.28 + strength * 0.52))
-                                        )
-                                    case .ascii(let ch, let strength):
-                                        canvasCtx.draw(
-                                            Text(String(ch))
-                                                .font(.system(size: max(6.5, min(stepX, stepY) * 0.92), weight: .semibold, design: .monospaced))
-                                                .foregroundStyle(primaryInk.opacity(0.24 + strength * 0.56)),
-                                            at: CGPoint(x: cx, y: cy),
-                                            anchor: .center
-                                        )
+                        // 1A. Soft Volumetric Morphing Sculptures (pure shaded light & color, zero wireframe lines)
+                        let orb1Center = CGPoint(
+                            x: artRect.minX + artRect.width * CGFloat(0.54 + 0.13 * cos(phase * 0.75)),
+                            y: artRect.minY + artRect.height * CGFloat(0.38 + 0.11 * sin(phase * 0.62))
+                        )
+                        let orb2Center = CGPoint(
+                            x: artRect.minX + artRect.width * CGFloat(0.44 - 0.12 * sin(phase * 0.58 + 1.1)),
+                            y: artRect.minY + artRect.height * CGFloat(0.68 + 0.09 * cos(phase * 0.82 + 0.6))
+                        )
+                        let orbRadius = max(artRect.width, artRect.height) * 0.62
+                        
+                        layerCtx.fill(
+                            Path(artRect),
+                            with: .radialGradient(
+                                Gradient(colors: [
+                                    pastelInk.opacity(0.62),
+                                    accentInk.opacity(0.24),
+                                    Color.clear,
+                                ]),
+                                center: orb1Center,
+                                startRadius: 2,
+                                endRadius: orbRadius
+                            )
+                        )
+                        layerCtx.fill(
+                            Path(artRect),
+                            with: .radialGradient(
+                                Gradient(colors: [
+                                    Color(red: 0.96, green: 0.76, blue: 0.54).opacity(0.42),
+                                    pastelInk.opacity(0.26),
+                                    Color.clear,
+                                ]),
+                                center: orb2Center,
+                                startRadius: 2,
+                                endRadius: orbRadius * 0.85
+                            )
+                        )
+                        
+                        // Soft unstroked morphing sculptural core & sunlit off-white highlight
+                        let coreR = min(artRect.width, artRect.height) * 0.30
+                        let morphCore = CotPassArtEngine.morphingObjectPath(center: orb1Center, baseRadius: coreR, phase: phase)
+                        let morphGlow = CotPassArtEngine.morphingObjectPath(
+                            center: CGPoint(x: orb1Center.x - coreR * 0.18, y: orb1Center.y - coreR * 0.18),
+                            baseRadius: coreR * 0.56,
+                            phase: -phase * 0.8 + 0.9
+                        )
+                        layerCtx.fill(morphCore, with: .color(accentInk.opacity(0.22)))
+                        layerCtx.fill(morphGlow, with: .color(Color(red: 0.995, green: 0.988, blue: 0.968).opacity(0.52)))
+                        
+                        // 1B. Generative Curl-Flow × Digital Impressionism Impasto Mosaic
+                        let porcelainCol = Color(red: 0.995, green: 0.988, blue: 0.968)
+                        let ochreCol = Color(red: 0.93, green: 0.75, blue: 0.52)
+                        for tile in self.impastoTiles {
+                            let density = CotPassArtEngine.morphingSculptureDensity(u: tile.u, v: tile.v, phase: phase)
+                            guard density > 0.16 else { continue }
+                            
+                            let tx = artRect.minX + CGFloat(tile.u) * artRect.width
+                            let ty = artRect.minY + CGFloat(tile.v) * artRect.height
+                            let scale = CGFloat(0.72 + 0.42 * density)
+                            let tw = tile.width * scale
+                            let th = tile.height * scale
+                            
+                            let color: Color
+                            let alpha: Double
+                            switch tile.role {
+                                case .porcelainHighlight:
+                                    color = porcelainCol
+                                    alpha = 0.28 + 0.36 * density
+                                case .pastelWash:
+                                    color = pastelInk
+                                    alpha = 0.22 + 0.34 * density
+                                case .mineralAccent:
+                                    color = accentInk
+                                    alpha = 0.16 + 0.32 * density
+                                case .warmOchre:
+                                    color = ochreCol
+                                    alpha = 0.18 + 0.26 * density
+                            }
+                            
+                            layerCtx.drawLayer { tileCtx in
+                                tileCtx.translateBy(x: tx, y: ty)
+                                tileCtx.rotate(by: .radians(tile.angle))
+                                let rect = CGRect(x: -tw * 0.5, y: -th * 0.5, width: tw, height: th)
+                                tileCtx.fill(
+                                    Capsule().path(in: rect),
+                                    with: .color(color.opacity(alpha))
+                                )
+                            }
+                        }
+                        
+                        // 1C. Fine 45° Graphite Lithograph Shading in lower-left corner
+                        let hatch = CotPassArtEngine.lithographHatchPath(in: artRect, seed: cardSeed)
+                        layerCtx.stroke(hatch, with: .color(primaryInk.opacity(0.14)), style: StrokeStyle(lineWidth: 0.55, lineCap: .round))
+                        
+                        // 1D. Docked Swiss ASCII + Micro-Pixel Plaque at bottom-right of Art Window
+                        let rows = self.asciiMatrix.count
+                        let cols = self.asciiMatrix.first?.count ?? 0
+                        if rows > 0, cols > 0 {
+                            let cellStep: CGFloat = self.ultraCompact ? 4.4 : 5.4
+                            let plaquePad: CGFloat = self.ultraCompact ? 3.5 : 4.5
+                            let gridW = CGFloat(cols) * cellStep
+                            let gridH = CGFloat(rows) * cellStep
+                            let plaqueRect = CGRect(
+                                x: artRect.maxX - gridW - plaquePad * 2 - (self.ultraCompact ? 5 : 7),
+                                y: artRect.maxY - gridH - plaquePad * 2 - (self.ultraCompact ? 5 : 7),
+                                width: gridW + plaquePad * 2,
+                                height: gridH + plaquePad * 2
+                            )
+                            let plaquePath = RoundedRectangle(cornerRadius: 4.5, style: .continuous).path(in: plaqueRect)
+                            layerCtx.fill(plaquePath, with: .color(Color(red: 0.992, green: 0.986, blue: 0.972).opacity(0.88)))
+                            layerCtx.stroke(plaquePath, with: .color(primaryInk.opacity(0.12)), lineWidth: 0.6)
+                            
+                            for r in 0..<rows {
+                                for c in 0..<cols {
+                                    let cell = self.asciiMatrix[r][c]
+                                    let cx = plaqueRect.minX + plaquePad + (CGFloat(c) + 0.5) * cellStep
+                                    let cy = plaqueRect.minY + plaquePad + (CGFloat(r) + 0.5) * cellStep
+                                    switch cell {
+                                        case .empty:
+                                            let dot = CGRect(x: cx - 0.5, y: cy - 0.5, width: 1.0, height: 1.0)
+                                            layerCtx.fill(Rectangle().path(in: dot), with: .color(primaryInk.opacity(0.10)))
+                                        case .pixelBlock(let strength):
+                                            let side = cellStep * 0.68
+                                            let pxRect = CGRect(x: cx - side * 0.5, y: cy - side * 0.5, width: side, height: side)
+                                            layerCtx.fill(
+                                                Rectangle().path(in: pxRect),
+                                                with: .color(accentInk.opacity(0.42 + strength * 0.48))
+                                            )
+                                        case .ascii(let ch, let strength):
+                                            layerCtx.draw(
+                                                Text(String(ch))
+                                                    .font(.system(size: max(4.5, cellStep * 0.88), weight: .bold, design: .monospaced))
+                                                    .foregroundStyle(primaryInk.opacity(0.38 + strength * 0.48)),
+                                                at: CGPoint(x: cx, y: cy),
+                                                anchor: .center
+                                            )
+                                    }
                                 }
                             }
                         }
                     }
                     
-                    // 1D. Sketch & Scribble: corner pencil registration ticks
-                    let m: CGFloat = 10
-                    let tick: CGFloat = 7
-                    var ticks = Path()
-                    for (cornerX, dx) in [(m, tick), (canvasSize.width - m, -tick)] {
-                        for (cornerY, dy) in [(m, tick), (canvasSize.height - m, -tick)] {
-                            ticks.move(to: CGPoint(x: cornerX, y: cornerY + dy))
-                            ticks.addLine(to: CGPoint(x: cornerX, y: cornerY))
-                            ticks.addLine(to: CGPoint(x: cornerX + dx, y: cornerY))
-                        }
-                    }
-                    canvasCtx.stroke(ticks, with: .color(primaryInk.opacity(0.22)), style: StrokeStyle(lineWidth: 0.75, lineCap: .square))
+                    // Crisp inner passe-partout frame stroke
+                    canvasCtx.stroke(windowShape, with: .color(primaryInk.opacity(0.10)), lineWidth: 0.75)
                 }
             }
             .allowsHitTesting(false)
             
-            // Gentle off-white specular sheen tracking cursor
+            // Gentle archival paper specular sheen tracking cursor
             RadialGradient(
                 colors: [
-                    Color.white.opacity(self.isHovered ? 0.34 : 0.12),
+                    Color.white.opacity(self.isHovered ? 0.30 : 0.10),
                     .clear,
                 ],
                 center: self.specularPoint,
                 startRadius: 6,
-                endRadius: self.cardSize.width * 0.6
+                endRadius: self.cardSize.width * 0.58
             )
             .allowsHitTesting(false)
             
-            // Layer 2: Structured Archival Typography & Lomo Framed Portrait
+            // Layer 2: Clean Left-Stub Editorial Identity + Lomo Instant-Film Portrait
             VStack(alignment: .leading, spacing: 0) {
-                // Header strip + 8x2 Micro-Pixel Badge
-                HStack(alignment: .center, spacing: 7) {
+                // Header strip + Binary Micro-Pixel Badge
+                HStack(alignment: .center, spacing: 6) {
                     self.microPixelStrip(seed: cardSeed, ink: primaryInk, accent: accentInk)
                     
                     Text("COTEDITOR PASS")
-                        .font(.system(size: self.compact ? 9.5 : 10.5, weight: .bold, design: .monospaced))
+                        .font(.system(size: self.ultraCompact ? 8.5 : (self.compact ? 9.5 : 10.5), weight: .bold, design: .monospaced))
+                        .tracking(0.4)
                         .foregroundStyle(primaryInk)
+                        .lineLimit(1)
                     
-                    Spacer()
-                    
-                    Text("NO.\(self.serialCode)")
-                        .font(.system(size: self.compact ? 9 : 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(secondaryInk)
+                    Spacer(minLength: 0)
                 }
                 
-                Spacer(minLength: self.compact ? 6 : 14)
+                Spacer(minLength: self.ultraCompact ? 4 : (self.compact ? 8 : 16))
                 
-                // Lomo Analog Portrait + Sketched Orbit + Scribble-Underlined Display Name
-                HStack(alignment: .center, spacing: self.compact ? 11 : 14) {
-                    let avatarSide: CGFloat = self.compact ? 38 : 48
-                    ZStack {
-                        // Lomo instant-film off-white mount + subtle analog warmth
-                        UserAvatarCircleView(profile: self.profile, size: avatarSide, customImage: self.avatarImage)
-                            .overlay(
-                                Circle()
-                                    .fill(
-                                        RadialGradient(
-                                            colors: [Color(red: 1.0, green: 0.92, blue: 0.78).opacity(0.14), Color.black.opacity(0.22)],
-                                            center: .center,
-                                            startRadius: avatarSide * 0.22,
-                                            endRadius: avatarSide * 0.55
-                                        )
-                                    )
-                            )
-                            .padding(2.5)
-                            .background(Circle().fill(Color(red: 0.99, green: 0.985, blue: 0.965)))
-                            .clipShape(Circle())
-                            .shadow(color: primaryInk.opacity(0.16), radius: 5, y: 2)
-                            .rotationEffect(.degrees(-1.8))
-                        
-                        // Sketch hand-drawn pencil loop enclosing portrait
-                        Canvas { ctx, s in
-                            let oval = CotPassArtEngine.sketchOrbitPath(
-                                around: CGRect(x: 1.5, y: 1.5, width: s.width - 3, height: s.height - 3),
-                                seed: cardSeed
-                            )
-                            ctx.stroke(oval, with: .color(primaryInk.opacity(0.45)), style: StrokeStyle(lineWidth: 0.85, lineCap: .round))
-                        }
-                        .frame(width: avatarSide + 12, height: avatarSide + 12)
-                        .allowsHitTesting(false)
-                    }
+                // Lomo Instant-Film Mini Print + Clean Uncluttered Display Name
+                HStack(alignment: .center, spacing: self.ultraCompact ? 10 : (self.compact ? 12 : 14)) {
+                    self.lomoInstantPortrait(seed: cardSeed, accentInk: accentInk, primaryInk: primaryInk)
                     
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: self.ultraCompact ? 2.5 : 4) {
                         Text(self.profile.displayName)
-                            .font(.system(size: self.compact ? 15.5 : 18.5, weight: .semibold))
+                            .font(.system(size: self.ultraCompact ? 14.5 : (self.compact ? 16 : 19), weight: .semibold))
                             .foregroundStyle(primaryInk)
                             .lineLimit(1)
                         
-                        // Scribble flourish directly beneath name
-                        Canvas { ctx, s in
-                            let flourish = CotPassArtEngine.scribbleUnderlinePath(
-                                origin: CGPoint(x: 1, y: 2),
-                                width: min(s.width - 4, self.compact ? 86 : 112),
-                                seed: cardSeed
-                            )
-                            ctx.stroke(
-                                flourish,
-                                with: .color(accentInk.opacity(0.85)),
-                                style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round)
-                            )
-                        }
-                        .frame(width: self.compact ? 94 : 120, height: 8)
-                        .allowsHitTesting(false)
+                        Text("NO.\(self.ultraCompact ? self.shortSerialText : self.serialCode)")
+                            .font(.system(size: self.ultraCompact ? 8.5 : (self.compact ? 9 : 10), weight: .medium, design: .monospaced))
+                            .foregroundStyle(secondaryInk)
+                            .lineLimit(1)
                     }
                     
                     Spacer(minLength: 0)
                 }
                 
-                Spacer(minLength: self.compact ? 6 : 16)
+                Spacer(minLength: self.ultraCompact ? 4 : (self.compact ? 8 : 16))
                 
                 Rectangle()
-                    .fill(primaryInk.opacity(0.14))
+                    .fill(primaryInk.opacity(0.11))
                     .frame(height: 0.75)
-                    .padding(.bottom, self.compact ? 7 : 12)
+                    .padding(.bottom, self.ultraCompact ? 5 : (self.compact ? 7 : 12))
                 
-                // Clean 3-Column Structured Archival Metadata
-                HStack(spacing: 0) {
+                // Clean 3-Column Swiss Metadata
+                HStack(spacing: 4) {
                     self.passFieldCell(
                         label: self.statusLabelTitle,
                         value: self.statusText,
@@ -1632,14 +1714,16 @@ struct CotPassCardView: View {
                     )
                 }
             }
-            .padding(.horizontal, self.compact ? 16 : 22)
-            .padding(.vertical, self.compact ? 12 : 18)
+            .padding(.leading, self.ultraCompact ? 14 : (self.compact ? 16 : 22))
+            .padding(.trailing, self.ultraCompact ? 10 : (self.compact ? 12 : 16))
+            .padding(.vertical, self.ultraCompact ? 10 : (self.compact ? 13 : 18))
+            .frame(width: seamX, height: self.cardSize.height, alignment: .leading)
         }
         .frame(width: self.cardSize.width, height: self.cardSize.height)
         .clipShape(RoundedRectangle(cornerRadius: self.compact ? 14 : 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: self.compact ? 14 : 16, style: .continuous)
-                .strokeBorder(primaryInk.opacity(self.isHovered ? 0.24 : 0.13), lineWidth: 1)
+                .strokeBorder(primaryInk.opacity(self.isHovered ? 0.22 : 0.12), lineWidth: 1)
         )
         .shadow(color: primaryInk.opacity(self.isHovered ? 0.14 : 0.08), radius: self.isHovered ? 16 : 10, y: 5)
         .onAppear {
@@ -1657,14 +1741,95 @@ struct CotPassCardView: View {
     }
     
     
+    private func lomoInstantPortrait(seed: Int, accentInk: Color, primaryInk: Color) -> some View {
+        let photoSide: CGFloat = self.ultraCompact ? 31 : (self.compact ? 36 : 46)
+        let borderPad: CGFloat = self.ultraCompact ? 2.5 : 3.5
+        let chinHeight: CGFloat = self.ultraCompact ? 7.5 : 10.5
+        
+        return VStack(spacing: 0) {
+            ZStack {
+                if let avatarImage = self.avatarImage {
+                    Image(nsImage: avatarImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFill()
+                        .frame(width: photoSide, height: photoSide)
+                        .clipped()
+                } else {
+                    UserAvatarCircleView(profile: self.profile, size: photoSide * 1.15, customImage: nil)
+                        .frame(width: photoSide, height: photoSide)
+                        .clipped()
+                }
+                
+                // Authentic Lomo optical vignette + warm top-right sun-kiss light leak
+                LinearGradient(
+                    colors: [
+                        Color(red: 1.0, green: 0.72, blue: 0.36).opacity(0.20),
+                        Color.clear,
+                        Color(red: 0.12, green: 0.10, blue: 0.09).opacity(0.18),
+                    ],
+                    startPoint: .topTrailing,
+                    endPoint: .bottomLeading
+                )
+                
+                RadialGradient(
+                    colors: [Color.clear, Color.black.opacity(0.22)],
+                    center: .center,
+                    startRadius: photoSide * 0.28,
+                    endRadius: photoSide * 0.72
+                )
+            }
+            .frame(width: photoSide, height: photoSide)
+            .clipShape(RoundedRectangle(cornerRadius: 2.5, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                    .strokeBorder(primaryInk.opacity(0.10), lineWidth: 0.5)
+            )
+            
+            // Classic off-white Polaroid bottom chin with delicate ink edition paraph
+            Canvas { ctx, size in
+                let paraph = CotPassArtEngine.calligraphicParaphPath(
+                    in: CGRect(origin: .zero, size: size),
+                    seed: seed
+                )
+                ctx.stroke(
+                    paraph,
+                    with: .color(accentInk.opacity(0.72)),
+                    style: StrokeStyle(lineWidth: 0.85, lineCap: .round, lineJoin: .round)
+                )
+            }
+            .frame(width: photoSide, height: chinHeight)
+        }
+        .padding(.top, borderPad)
+        .padding(.horizontal, borderPad)
+        .background(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(Color(red: 0.996, green: 0.993, blue: 0.982))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .strokeBorder(primaryInk.opacity(0.12), lineWidth: 0.6)
+        )
+        .shadow(color: primaryInk.opacity(0.12), radius: 4, y: 2)
+        .rotationEffect(.degrees(-1.6))
+    }
+    
+    
     private func syncArtCaches(seed: Int) {
         let engine = self.resolvedEngine
         engine.syncAvatarContour(profile: self.profile, avatarImage: self.avatarImage)
-        self.asciiMatrix = CotPassArtEngine.buildASCIIPixelMatrix(from: engine.contourField)
-        if self.cachedStreamSize != self.cardSize || self.cachedStreamSeed != seed || self.streamlines.isEmpty {
-            self.cachedStreamSize = self.cardSize
-            self.cachedStreamSeed = seed
-            self.streamlines = CotPassArtEngine.generativeStreamlines(seed: seed, in: self.cardSize)
+        let cols = self.ultraCompact ? 8 : 10
+        let rows = self.ultraCompact ? 5 : 6
+        self.asciiMatrix = CotPassArtEngine.buildASCIIPixelMatrix(
+            from: engine.contourField,
+            cols: cols,
+            rows: rows
+        )
+        if self.cachedTileSize != self.cardSize || self.cachedTileSeed != seed || self.impastoTiles.isEmpty {
+            self.cachedTileSize = self.cardSize
+            self.cachedTileSeed = seed
+            let artRect = CotPassArtEngine.artWindowRect(in: self.cardSize)
+            self.impastoTiles = CotPassArtEngine.computeImpastoTiles(seed: seed, in: artRect)
         }
     }
     
@@ -1693,21 +1858,23 @@ struct CotPassCardView: View {
         primary: Color,
         muted: Color
     ) -> some View {
-        VStack(alignment: .leading, spacing: self.compact ? 1.5 : 3) {
+        VStack(alignment: .leading, spacing: self.ultraCompact ? 1 : (self.compact ? 1.5 : 3)) {
             Text(label)
-                .font(.system(size: self.compact ? 8.5 : 9.5, weight: .semibold, design: .monospaced))
+                .font(.system(size: self.ultraCompact ? 7.5 : (self.compact ? 8.5 : 9.5), weight: .semibold, design: .monospaced))
                 .foregroundStyle(muted)
+                .lineLimit(1)
             
-            HStack(spacing: 4.5) {
+            HStack(spacing: 3.5) {
                 if showStatusDot {
                     Circle()
                         .fill(accent)
-                        .frame(width: 5, height: 5)
+                        .frame(width: 4.5, height: 4.5)
                 }
                 Text(value)
-                    .font(.system(size: self.compact ? 11.5 : 13, weight: .bold, design: .monospaced))
+                    .font(.system(size: self.ultraCompact ? 9.5 : (self.compact ? 11 : 13), weight: .bold, design: .monospaced))
                     .foregroundStyle(primary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

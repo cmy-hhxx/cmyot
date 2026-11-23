@@ -893,22 +893,14 @@ struct AnalyticsDashboardView: View {
                 )
                 .transition(.opacity.combined(with: .move(edge: .trailing)))
             } else {
+                let outerPad: CGFloat = self.isEmbeddedInSettings ? 12 : 20
+                let vSpacing: CGFloat = self.isEmbeddedInSettings ? 10 : 14
+                let hSpacing: CGFloat = self.isEmbeddedInSettings ? 10 : 14
+                let heroH: CGFloat = self.isEmbeddedInSettings ? 128 : 154
+                let row1H: CGFloat = self.isEmbeddedInSettings ? 228 : 306
+                let row2H: CGFloat = self.isEmbeddedInSettings ? 218 : 332
+                
                 GeometryReader { viewportGeo in
-                    let viewH = max(460, viewportGeo.size.height)
-                    let pad: CGFloat = self.isEmbeddedInSettings ? 12 : 18
-                    let vSpacing: CGFloat = self.isEmbeddedInSettings ? 10 : 12
-                    let hSpacing: CGFloat = self.isEmbeddedInSettings ? 10 : 14
-                    let heroH: CGFloat = self.isEmbeddedInSettings
-                        ? 148
-                        : min(206, max(168, (viewH - pad * 2 - vSpacing * 2) * 0.232))
-                    let remainingH = max(430, viewH - pad * 2 - vSpacing * 2 - heroH)
-                    let row1H: CGFloat = self.isEmbeddedInSettings
-                        ? 236
-                        : max(276, floor(remainingH * 0.485))
-                    let row2H: CGFloat = self.isEmbeddedInSettings
-                        ? 226
-                        : max(296, remainingH - row1H)
-                    
                     ScrollView(.vertical, showsIndicators: true) {
                         if let snapshot = self.snapshot {
                             VStack(alignment: .leading, spacing: vSpacing) {
@@ -926,8 +918,9 @@ struct AnalyticsDashboardView: View {
                                 self.row1Section(snapshot, height: row1H, spacing: hSpacing)
                                 self.row2Section(snapshot, height: row2H, spacing: hSpacing)
                             }
-                            .padding(pad)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(outerPad)
+                            .frame(maxWidth: 1180, alignment: .leading)
+                            .frame(maxWidth: .infinity, minHeight: viewportGeo.size.height, alignment: .center)
                             .opacity(self.hasAppeared ? 1 : 0)
                             .offset(y: self.hasAppeared ? 0 : 6)
                         } else {
@@ -1000,7 +993,7 @@ struct AnalyticsDashboardView: View {
     private func row1Section(_ snapshot: DashboardSnapshot, height: CGFloat, spacing: CGFloat) -> some View {
         GeometryReader { proxy in
             let usableW = max(320, proxy.size.width - spacing)
-            let leftRatio: CGFloat = self.isEmbeddedInSettings ? 0.50 : 0.555
+            let leftRatio: CGFloat = self.isEmbeddedInSettings ? 0.50 : 0.54
             let leftWidth = floor(usableW * leftRatio)
             let rightWidth = max(160, usableW - leftWidth)
             
@@ -1332,12 +1325,12 @@ private struct DashboardNewsColumnCard: View {
             GeometryReader { geo in
                 let useTwoColumns = geo.size.width >= 260
                 let rowSpacing: CGFloat = 8
-                let canFitThreeRows = useTwoColumns && (geo.size.height >= 262 || self.cardHeight >= 370)
+                let canFitThreeRows = useTwoColumns && geo.size.height >= 280
                 let targetRows: Int = useTwoColumns ? (canFitThreeRows ? 3 : 2) : 3
                 let visibleItems = Array(pageItems.prefix(useTwoColumns ? targetRows * 2 : targetRows))
                 let textAndPaddingPerCard: CGFloat = 48
                 let adaptiveCoverH: CGFloat = useTwoColumns
-                    ? min(104, max(46, floor((geo.size.height - rowSpacing * CGFloat(targetRows - 1)) / CGFloat(targetRows) - textAndPaddingPerCard)))
+                    ? min(84, max(54, floor((geo.size.height - rowSpacing * CGFloat(targetRows - 1)) / CGFloat(targetRows) - textAndPaddingPerCard)))
                     : 46
                 let columns: [GridItem] = useTwoColumns
                     ? [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
@@ -1346,31 +1339,40 @@ private struct DashboardNewsColumnCard: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     if visibleItems.isEmpty {
                         if self.newsService.isLoading {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text("正在加载资讯")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(self.palette.pine.opacity(0.60))
+                            LazyVGrid(columns: columns, alignment: .leading, spacing: rowSpacing) {
+                                ForEach(0..<(useTwoColumns ? 4 : 3), id: \.self) { _ in
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                            .fill(self.palette.inset)
+                                            .frame(height: adaptiveCoverH)
+                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                            .fill(self.palette.inset)
+                                            .frame(height: 10)
+                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                            .fill(self.palette.inset.opacity(0.65))
+                                            .frame(width: 90, height: 10)
+                                    }
+                                    .padding(6)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                            .fill(self.palette.inset.opacity(0.35))
+                                    )
+                                }
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 6)
                         } else {
                             Button {
                                 Task {
                                     await self.newsService.refreshIfNeeded(force: true)
                                 }
                             } label: {
-                                Label("重新加载", systemImage: "arrow.clockwise")
-                                    .font(.system(size: 12, weight: .medium))
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(self.palette.emerald)
-                                    .padding(.horizontal, 10)
-                                    .frame(height: 28)
-                                    .background(self.palette.accentFill.opacity(0.12), in: Capsule())
+                                    .frame(width: 34, height: 34)
+                                    .background(self.palette.accentFill.opacity(0.12), in: Circle())
                             }
                             .buttonStyle(.plain)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 6)
+                            .frame(maxWidth: .infinity, minHeight: 120)
                         }
                     } else {
                         LazyVGrid(columns: columns, alignment: .leading, spacing: rowSpacing) {
@@ -1379,6 +1381,7 @@ private struct DashboardNewsColumnCard: View {
                                     item: item,
                                     coverImage: self.newsService.coverImage(for: item),
                                     isBookmarked: self.newsService.isBookmarked(item),
+                                    isRead: self.newsService.isRead(item),
                                     compactRow: !useTwoColumns,
                                     coverHeight: adaptiveCoverH,
                                     palette: self.palette,
@@ -1397,42 +1400,52 @@ private struct DashboardNewsColumnCard: View {
             }
             
             if !self.newsService.filteredItems.isEmpty {
+                let totalPages = self.newsService.totalPages
+                let curPage = min(max(1, self.newsService.currentPage), totalPages)
+                let maxDots = 7
+                let startPage = max(1, min(curPage - maxDots / 2, max(1, totalPages - maxDots + 1)))
+                let endPage = min(totalPages, startPage + maxDots - 1)
+                
                 HStack(spacing: 8) {
                     Button {
                         withAnimation(DashMotion.quick) {
                             self.newsService.goToPreviousPage()
                         }
                     } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 9.5, weight: .semibold))
-                            Text("上一页")
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .foregroundStyle(self.newsService.totalPages > 1 ? self.palette.pine.opacity(0.75) : self.palette.pine.opacity(0.28))
-                        .padding(.horizontal, 8)
-                        .frame(height: 24)
-                        .background(self.palette.inset, in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(self.newsService.totalPages <= 1)
-                    
-                    Spacer()
-                    
-                    Button {
-                        self.onOpenWorkspace(pageItems.first?.id)
-                    } label: {
-                        Text("进入阅读器")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(self.palette.emerald)
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(totalPages > 1 ? self.palette.pine.opacity(0.75) : self.palette.pine.opacity(0.26))
+                            .frame(width: 26, height: 22)
+                            .background(self.palette.inset, in: Capsule())
                     }
                     .buttonStyle(.plain)
                     .pointerStyle(.link)
+                    .disabled(totalPages <= 1)
+                    
+                    Spacer()
+                    
+                    HStack(spacing: 5) {
+                        ForEach(startPage...endPage, id: \.self) { page in
+                            let isActive = (page == curPage)
+                            Button {
+                                withAnimation(DashMotion.quick) {
+                                    self.newsService.goToPage(page)
+                                }
+                            } label: {
+                                Capsule()
+                                    .fill(isActive ? self.palette.accentFill : self.palette.pine.opacity(0.20))
+                                    .frame(width: isActive ? 14 : 5, height: 5)
+                                    .contentShape(Rectangle().inset(by: -3))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        }
+                    }
                     
                     Spacer()
                     
                     Button {
-                        if self.newsService.totalPages > 1 {
+                        if totalPages > 1 {
                             withAnimation(DashMotion.quick) {
                                 self.newsService.goToNextPage()
                             }
@@ -1442,18 +1455,14 @@ private struct DashboardNewsColumnCard: View {
                             }
                         }
                     } label: {
-                        HStack(spacing: 3) {
-                            Text(self.newsService.currentPage >= self.newsService.totalPages ? "换一批" : "下一页")
-                                .font(.system(size: 11, weight: .medium))
-                            Image(systemName: self.newsService.currentPage >= self.newsService.totalPages ? "arrow.clockwise" : "chevron.right")
-                                .font(.system(size: 9.5, weight: .semibold))
-                        }
-                        .foregroundStyle(self.palette.emerald)
-                        .padding(.horizontal, 8)
-                        .frame(height: 24)
-                        .background(self.palette.accentFill.opacity(0.12), in: Capsule())
+                        Image(systemName: totalPages <= 1 ? "arrow.clockwise" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(self.palette.emerald)
+                            .frame(width: 26, height: 22)
+                            .background(self.palette.accentFill.opacity(0.14), in: Capsule())
                     }
                     .buttonStyle(.plain)
+                    .pointerStyle(.link)
                 }
                 .padding(.top, 2)
             }
@@ -1489,15 +1498,15 @@ nonisolated enum DashboardHeroDanmakuScheduler {
     
     
     static func estimatedPillSize(for text: String) -> CGSize {
-        var width: CGFloat = 28
+        var width: CGFloat = 38
         for ch in text {
             if ch.isASCII {
-                width += (ch == " " ? 4.0 : 7.0)
+                width += (ch == " " ? 4.5 : 8.2)
             } else {
-                width += 11.8
+                width += 13.4
             }
         }
-        return CGSize(width: min(176, max(58, width.rounded(.up))), height: 24)
+        return CGSize(width: min(196, max(64, width.rounded(.up))), height: 24)
     }
     
     
@@ -1505,19 +1514,21 @@ nonisolated enum DashboardHeroDanmakuScheduler {
         canvasSize: CGSize,
         cardRect: CGRect,
         reservedTopLeftRect: CGRect,
+        reservedTopRightRect: CGRect = .zero,
         items: [Item],
         elapsed: TimeInterval
     ) -> [Placement] {
         guard canvasSize.width > 120, canvasSize.height > 60, !items.isEmpty else { return [] }
         
-        let protectedCard = cardRect.insetBy(dx: -18, dy: -10)
+        let protectedCard = cardRect.insetBy(dx: -18, dy: -8)
         let protectedBack = reservedTopLeftRect.isEmpty ? .zero : reservedTopLeftRect.insetBy(dx: -12, dy: -8)
+        let protectedToggle = reservedTopRightRect.isEmpty ? .zero : reservedTopRightRect.insetBy(dx: -12, dy: -8)
         
-        let lanePitch: CGFloat = 31
-        let topPad: CGFloat = 8
-        let botPad: CGFloat = 8
+        let lanePitch: CGFloat = 38
+        let topPad: CGFloat = 10
+        let botPad: CGFloat = 10
         let usableH = max(lanePitch, canvasSize.height - topPad - botPad)
-        let laneCount = max(2, min(5, Int(usableH / lanePitch)))
+        let laneCount = max(2, min(3, Int(usableH / lanePitch)))
         let totalTracksH = CGFloat(laneCount) * lanePitch
         let startY = max(topPad, (canvasSize.height - totalTracksH) * 0.5) + lanePitch * 0.5
         
@@ -1534,7 +1545,11 @@ nonisolated enum DashboardHeroDanmakuScheduler {
         }
         
         var results: [Placement] = []
-        let fadeMargin: CGFloat = 26
+        let fadeMargin: CGFloat = 28
+        let maxWingWidth: CGFloat = 280
+        let leftFracs: [CGFloat] = [0.16, 0.68, 0.39]
+        let rightFracs: [CGFloat] = [0.54, 0.14, 0.81]
+        let laneSpeeds: [CGFloat] = [15.5, 20.5, 17.5]
         
         func scheduleWing(
             _ wing: Wing,
@@ -1547,17 +1562,23 @@ nonisolated enum DashboardHeroDanmakuScheduler {
                 let laneItems = buckets[lane]
                 guard !laneItems.isEmpty else { continue }
                 
-                let centerY = startY + CGFloat(lane) * lanePitch
-                let laneTop = centerY - 12
-                let laneBottom = centerY + 12
+                let baseY = startY + CGFloat(lane) * lanePitch
+                let laneTop = baseY - 14
+                let laneBottom = baseY + 14
                 
                 var laneMinX = baseMinX
-                let laneMaxX = baseMaxX
+                var laneMaxX = baseMaxX
                 
                 if wing == .left, !protectedBack.isEmpty {
                     let intersectsBackY = laneBottom > protectedBack.minY && laneTop < protectedBack.maxY
                     if intersectsBackY {
                         laneMinX = max(laneMinX, protectedBack.maxX)
+                    }
+                }
+                if wing == .right, !protectedToggle.isEmpty {
+                    let intersectsToggleY = laneBottom > protectedToggle.minY && laneTop < protectedToggle.maxY
+                    if intersectsToggleY {
+                        laneMaxX = min(laneMaxX, protectedToggle.minX)
                     }
                 }
                 
@@ -1569,12 +1590,12 @@ nonisolated enum DashboardHeroDanmakuScheduler {
                 }
                 guard !validItems.isEmpty else { continue }
                 
-                let maxW = validItems.map { Self.estimatedPillSize(for: $0.text).width }.max() ?? 100
-                let slotStep = maxW + 30
-                let cycleLen = max(spanW + maxW + 36, CGFloat(validItems.count) * slotStep)
-                let speed = 17.5 + CGFloat(lane % 3) * 4.0 + (wing == .right ? 1.5 : 0)
-                let phaseModulo = Int(max(120, spanW * 0.72))
-                let phaseOffset = CGFloat((lane * 97 + (wing == .left ? 110 : 75)) % phaseModulo)
+                let maxW = validItems.map { Self.estimatedPillSize(for: $0.text).width }.max() ?? 110
+                let slotStep = maxW + 34
+                let cycleLen = max(spanW + maxW + 44, CGFloat(validItems.count) * slotStep)
+                let speed = laneSpeeds[lane % laneSpeeds.count] + (wing == .right ? 1.0 : 0)
+                let frac = (wing == .left ? leftFracs : rightFracs)[lane % 3]
+                let phaseOffset = cycleLen * frac
                 
                 var placedInLane: [CGRect] = []
                 for (idx, item) in validItems.enumerated() {
@@ -1590,9 +1611,12 @@ nonisolated enum DashboardHeroDanmakuScheduler {
                     let maxX = centerX + size.width * 0.5
                     guard minX >= laneMinX, maxX <= laneMaxX else { continue }
                     
+                    let floatY = CGFloat(sin(elapsed * 1.35 + Double(lane) * 2.1 + Double(idx) * 0.9)) * 1.5
+                    let centerY = baseY + floatY
                     let rect = CGRect(x: minX, y: centerY - size.height * 0.5, width: size.width, height: size.height)
                     guard !rect.intersects(protectedCard) else { continue }
                     if !protectedBack.isEmpty, rect.intersects(protectedBack) { continue }
+                    if !protectedToggle.isEmpty, rect.intersects(protectedToggle) { continue }
                     if placedInLane.contains(where: { $0.insetBy(dx: -8, dy: 0).intersects(rect) }) { continue }
                     
                     let edgeClearance = min(minX - laneMinX, laneMaxX - maxX)
@@ -1612,8 +1636,10 @@ nonisolated enum DashboardHeroDanmakuScheduler {
             }
         }
         
-        scheduleWing(.left, buckets: leftBuckets, baseMinX: 6, baseMaxX: protectedCard.minX, flowRightward: false)
-        scheduleWing(.right, buckets: rightBuckets, baseMinX: protectedCard.maxX, baseMaxX: canvasSize.width - 6, flowRightward: true)
+        let leftMinX = max(8, protectedCard.minX - maxWingWidth)
+        let rightMaxX = min(canvasSize.width - 8, protectedCard.maxX + maxWingWidth)
+        scheduleWing(.left, buckets: leftBuckets, baseMinX: leftMinX, baseMaxX: protectedCard.minX, flowRightward: false)
+        scheduleWing(.right, buckets: rightBuckets, baseMinX: protectedCard.maxX, baseMaxX: rightMaxX, flowRightward: true)
         
         return results
     }
@@ -1632,9 +1658,11 @@ private struct DashboardAchievementHeroBar: View {
     @State private var passStyleIndex: Int
     @State private var serialCode: String
     @State private var hasProLicense: Bool
+    @State private var isDanmakuEnabled: Bool
     @State private var pointerLocation = CGPoint(x: 0.5, y: 0.5)
     @State private var isCardHovered = false
     @State private var isBackHovered = false
+    @State private var isToggleHovered = false
     @State private var brandLineEngine = BrandLinePassEngine()
     @State private var startDate = Date()
     
@@ -1670,10 +1698,14 @@ private struct DashboardAchievementHeroBar: View {
         }
         let key = db.string(forKey: CotLocalDatabase.ConfigKey.cotPassLicenseKey)
         let tier = CotPassLicense.validate(key) ?? .explorer
+        let rawDanmaku = db.string(forKey: CotLocalDatabase.ConfigKey.dashboardDanmakuEnabled, default: "true")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
         
         _passStyleIndex = State(initialValue: storedStyle)
         _serialCode = State(initialValue: serial)
         _hasProLicense = State(initialValue: tier != .explorer)
+        _isDanmakuEnabled = State(initialValue: rawDanmaku != "false" && rawDanmaku != "0")
     }
     
     
@@ -1711,7 +1743,7 @@ private struct DashboardAchievementHeroBar: View {
         }
         tags.append(UserPersonalityTag(
             id: "pass-tier",
-            label: self.hasProLicense ? "PRO 典藏通行" : "COLLECTOR PASS",
+            label: self.hasProLicense ? "PRO 通行证" : "典藏通行证",
             explanation: "",
             tone: self.hasProLicense ? .warm : .calm
         ))
@@ -1741,11 +1773,8 @@ private struct DashboardAchievementHeroBar: View {
         let items = self.danmakuItems
         
         GeometryReader { heroGeo in
-            let nativeW: CGFloat = 408
-            let nativeH: CGFloat = 246
-            let cardScale = min(0.86, max(0.56, (heroGeo.size.height - 6) / nativeH))
-            let cardW = nativeW * cardScale
-            let cardH = nativeH * cardScale
+            let cardW: CGFloat = self.compact ? 268 : 304
+            let cardH: CGFloat = self.compact ? 124 : 148
             let cardRect = CGRect(
                 x: (heroGeo.size.width - cardW) * 0.5,
                 y: (heroGeo.size.height - cardH) * 0.5,
@@ -1755,51 +1784,57 @@ private struct DashboardAchievementHeroBar: View {
             let reservedBackRect: CGRect = self.onBack != nil
                 ? CGRect(x: 0, y: 0, width: 110, height: 36)
                 : .zero
+            let reservedToggleRect = CGRect(x: max(0, heroGeo.size.width - 104), y: 0, width: 104, height: 36)
             
             ZStack(alignment: .topLeading) {
-                // Flanking achievement danmaku lanes around central PASS sanctuary
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-                    let elapsed = max(0, timeline.date.timeIntervalSince(self.startDate))
-                    let placements = DashboardHeroDanmakuScheduler.placements(
-                        canvasSize: heroGeo.size,
-                        cardRect: cardRect,
-                        reservedTopLeftRect: reservedBackRect,
-                        items: items,
-                        elapsed: elapsed
-                    )
-                    
-                    ZStack(alignment: .topLeading) {
-                        ForEach(placements) { placement in
-                            let toneCol = self.palette.toneColor(for: placement.tone)
-                            HStack(spacing: 5) {
-                                Circle()
-                                    .fill(toneCol)
-                                    .frame(width: 5.5, height: 5.5)
-                                Text(placement.text)
-                                    .font(.system(size: self.compact ? 10.5 : 11.5, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(self.palette.pine.opacity(0.86))
-                                    .lineLimit(1)
+                // Flanking achievement danmaku lanes around central PASS sanctuary (when enabled)
+                if self.isDanmakuEnabled {
+                    TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                        let elapsed = max(0, timeline.date.timeIntervalSince(self.startDate))
+                        let placements = DashboardHeroDanmakuScheduler.placements(
+                            canvasSize: heroGeo.size,
+                            cardRect: cardRect,
+                            reservedTopLeftRect: reservedBackRect,
+                            reservedTopRightRect: reservedToggleRect,
+                            items: items,
+                            elapsed: elapsed
+                        )
+                        
+                        ZStack(alignment: .topLeading) {
+                            ForEach(placements) { placement in
+                                let toneCol = self.palette.toneColor(for: placement.tone)
+                                HStack(spacing: 5) {
+                                    Circle()
+                                        .fill(toneCol)
+                                        .frame(width: 5.5, height: 5.5)
+                                    Text(placement.text)
+                                        .font(.system(size: self.compact ? 10.5 : 11.5, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(self.palette.pine.opacity(0.86))
+                                        .lineLimit(1)
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 24)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .background(
+                                    Capsule()
+                                        .fill(self.palette.card.opacity(0.86))
+                                        .overlay(
+                                            Capsule()
+                                                .strokeBorder(toneCol.opacity(0.38), lineWidth: 0.9)
+                                        )
+                                )
+                                .shadow(color: self.palette.cardShadow.opacity(0.55), radius: 5, y: 2)
+                                .position(x: placement.frame.midX, y: placement.frame.midY)
+                                .opacity(placement.opacity)
                             }
-                            .padding(.horizontal, 10)
-                            .frame(width: placement.frame.width, height: placement.frame.height)
-                            .background(
-                                Capsule()
-                                    .fill(self.palette.card.opacity(0.84))
-                                    .overlay(
-                                        Capsule()
-                                            .strokeBorder(toneCol.opacity(0.38), lineWidth: 0.9)
-                                    )
-                            )
-                            .shadow(color: self.palette.cardShadow.opacity(0.55), radius: 5, y: 2)
-                            .position(x: placement.frame.midX, y: placement.frame.midY)
-                            .opacity(placement.opacity)
                         }
+                        .frame(width: heroGeo.size.width, height: heroGeo.size.height, alignment: .topLeading)
+                        .allowsHitTesting(false)
                     }
-                    .frame(width: heroGeo.size.width, height: heroGeo.size.height, alignment: .topLeading)
-                    .allowsHitTesting(false)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
                 
-                // Centered interactive Collector PASS Card with ambient gallery glow
+                // Centered native-resolution Collector PASS Card with ambient gallery glow
                 ZStack {
                     RadialGradient(
                         colors: [
@@ -1826,10 +1861,9 @@ private struct DashboardAchievementHeroBar: View {
                         pointerLocation: self.pointerLocation,
                         isHovered: self.isCardHovered,
                         brandLineEngine: self.brandLineEngine,
-                        cardSize: CGSize(width: nativeW, height: nativeH),
+                        cardSize: CGSize(width: cardW, height: cardH),
                         statusLabelTitle: "STATUS"
                     )
-                    .scaleEffect(cardScale)
                     .frame(width: cardW, height: cardH)
                     .rotation3DEffect(
                         .degrees(self.isCardHovered ? 6.5 : 0),
@@ -1840,7 +1874,7 @@ private struct DashboardAchievementHeroBar: View {
                         ),
                         perspective: 0.55
                     )
-                    .contentShape(RoundedRectangle(cornerRadius: 20 * cardScale, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
                     .onContinuousHover { phase in
                         switch phase {
                             case .active(let loc):
@@ -1868,38 +1902,99 @@ private struct DashboardAchievementHeroBar: View {
                 }
                 .position(x: cardRect.midX, y: cardRect.midY)
                 
-                // Top-left Back to Editor action
-                if let onBack = self.onBack {
-                    Button(action: onBack) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(self.isBackHovered ? self.palette.emerald : self.palette.pine.opacity(0.75))
-                            
-                            Text(AppLanguage.text("返回编辑", en: "Back to Editor"))
-                                .font(.system(size: 12.5, weight: .medium))
-                                .foregroundStyle(self.palette.pine.opacity(self.isBackHovered ? 0.96 : 0.82))
+                // Top Header Controls: Left "返回编辑" & Right Danmaku Switch
+                HStack(alignment: .center) {
+                    if let onBack = self.onBack {
+                        Button(action: onBack) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "chevron.left")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(self.isBackHovered ? self.palette.emerald : self.palette.pine.opacity(0.75))
+                                
+                                Text(AppLanguage.text("返回编辑", en: "Back to Editor"))
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .foregroundStyle(self.palette.pine.opacity(self.isBackHovered ? 0.96 : 0.82))
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 30)
+                            .background(
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .fill(self.isBackHovered ? self.palette.card : self.palette.card.opacity(0.86))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .strokeBorder(self.isBackHovered ? self.palette.accentFill.opacity(0.45) : self.palette.hairline, lineWidth: 0.75)
+                            )
                         }
-                        .padding(.horizontal, 10)
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                        .onHover { hovering in
+                            if hovering != self.isBackHovered {
+                                self.isBackHovered = hovering
+                            }
+                        }
+                    }
+                    
+                    Spacer(minLength: 8)
+                    
+                    Button {
+                        let next = !self.isDanmakuEnabled
+                        if next {
+                            self.startDate = Date()
+                        }
+                        withAnimation(DashMotion.standard) {
+                            self.isDanmakuEnabled = next
+                        }
+                        CotLocalDatabase.shared.set(
+                            next ? "true" : "false",
+                            forKey: CotLocalDatabase.ConfigKey.dashboardDanmakuEnabled
+                        )
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: self.isDanmakuEnabled ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(self.isDanmakuEnabled ? self.palette.emerald : self.palette.pine.opacity(0.52))
+                            
+                            Text(AppLanguage.text("弹幕", en: "Danmaku"))
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(self.palette.pine.opacity(self.isDanmakuEnabled ? 0.90 : 0.56))
+                            
+                            ZStack(alignment: self.isDanmakuEnabled ? .trailing : .leading) {
+                                Capsule()
+                                    .fill(self.isDanmakuEnabled ? self.palette.accentFill : self.palette.insetHover)
+                                    .frame(width: 26, height: 15)
+                                Circle()
+                                    .fill(Color.white)
+                                    .shadow(color: .black.opacity(0.14), radius: 1, y: 0.5)
+                                    .frame(width: 11.5, height: 11.5)
+                                    .padding(.horizontal, 1.8)
+                            }
+                        }
+                        .padding(.horizontal, 9)
                         .frame(height: 30)
                         .background(
                             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(self.isBackHovered ? self.palette.card : self.palette.card.opacity(0.86))
+                                .fill(self.isToggleHovered ? self.palette.card : self.palette.card.opacity(0.86))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .strokeBorder(self.isBackHovered ? self.palette.accentFill.opacity(0.45) : self.palette.hairline, lineWidth: 0.75)
+                                .strokeBorder(
+                                    self.isToggleHovered || self.isDanmakuEnabled
+                                        ? self.palette.accentFill.opacity(self.isDanmakuEnabled ? 0.36 : 0.45)
+                                        : self.palette.hairline,
+                                    lineWidth: 0.75
+                                )
                         )
                     }
                     .buttonStyle(.plain)
                     .pointerStyle(.link)
                     .onHover { hovering in
-                        if hovering != self.isBackHovered {
-                            self.isBackHovered = hovering
+                        if hovering != self.isToggleHovered {
+                            self.isToggleHovered = hovering
                         }
                     }
-                    .padding(.top, 2)
                 }
+                .padding(.top, 2)
             }
         }
     }
@@ -2273,7 +2368,7 @@ private struct DashboardHeatmapCard: View {
                         }
                     }
                 }
-                .frame(minHeight: self.compact ? 48 : 68, maxHeight: self.compact ? 58 : 88)
+                .frame(height: self.compact ? 44 : 60)
             }
             .padding(.top, 2)
         }
@@ -3171,10 +3266,12 @@ private struct AIUsageSunburstChartView: View {
                                 .font(.system(size: 18, weight: .light, design: .rounded).monospacedDigit())
                                 .foregroundStyle(self.palette.pine)
                                 .lineLimit(1)
-                            Text(focus.name)
-                                .font(.system(size: 10.5, weight: .regular))
-                                .foregroundStyle(self.palette.pine.opacity(0.55))
-                                .lineLimit(1)
+                            if up != nil {
+                                Text(focus.name)
+                                    .font(.system(size: 10.5, weight: .regular))
+                                    .foregroundStyle(self.palette.pine.opacity(0.55))
+                                    .lineLimit(1)
+                            }
                         }
                         .padding(6)
                         .frame(width: holeRadius * 2, height: holeRadius * 2)
@@ -3760,6 +3857,7 @@ private struct NewsFeedCoverCard: View {
     let item: AIHotNewsItem
     let coverImage: NSImage?
     let isBookmarked: Bool
+    var isRead: Bool = false
     let compactRow: Bool
     var coverHeight: CGFloat = 70
     let palette: DashPalette
@@ -3778,8 +3876,8 @@ private struct NewsFeedCoverCard: View {
                         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     
                     Text(self.item.title)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(self.palette.pine.opacity(0.92))
+                        .font(.system(size: 12, weight: self.isRead ? .regular : .medium))
+                        .foregroundStyle(self.palette.pine.opacity(self.isRead ? 0.72 : 0.92))
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3829,12 +3927,20 @@ private struct NewsFeedCoverCard: View {
                         .padding(4)
                     }
                     
-                    Text(self.item.title)
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(self.palette.pine.opacity(0.92))
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(alignment: .top, spacing: 5) {
+                        if !self.isRead {
+                            Circle()
+                                .fill(self.palette.accentFill)
+                                .frame(width: 5, height: 5)
+                                .padding(.top, 4.5)
+                        }
+                        Text(self.item.title)
+                            .font(.system(size: 11.5, weight: self.isRead ? .regular : .medium))
+                            .foregroundStyle(self.palette.pine.opacity(self.isRead ? 0.72 : 0.94))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 .padding(6)
                 .background(
@@ -3843,11 +3949,12 @@ private struct NewsFeedCoverCard: View {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .strokeBorder(self.isHovered ? self.palette.accentFill.opacity(0.35) : self.palette.hairline, lineWidth: 0.7)
+                        .strokeBorder(self.isHovered ? self.palette.accentFill.opacity(0.38) : self.palette.hairline, lineWidth: 0.7)
                 )
             }
         }
         .buttonStyle(.plain)
+        .pointerStyle(.link)
         .onHover { hovering in
             if hovering != self.isHovered {
                 self.isHovered = hovering
@@ -3874,7 +3981,8 @@ private struct NewsFeedCoverCard: View {
                 GeometryReader { geo in
                     Image(nsImage: coverImage)
                         .resizable()
-                        .interpolation(.medium)
+                        .interpolation(.high)
+                        .antialiased(true)
                         .scaledToFill()
                         .frame(width: geo.size.width, height: geo.size.height)
                         .clipped()

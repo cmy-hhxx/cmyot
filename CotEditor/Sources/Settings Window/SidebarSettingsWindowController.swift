@@ -144,6 +144,7 @@ final class SidebarSettingsWindowController: NSWindowController {
         let rootView = SidebarSettingsRootView(state: self.state)
         let hostingController = NSHostingController(rootView: rootView)
         hostingController.sizingOptions = []
+        hostingController.safeAreaRegions = []
         
         let window = SidebarSettingsWindow(contentViewController: hostingController)
         window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
@@ -251,7 +252,7 @@ private struct SidebarSettingsRootView: View {
                     .ignoresSafeArea()
                 
                 VStack(alignment: .leading, spacing: 10) {
-                    Spacer().frame(height: 38)
+                    Spacer().frame(height: 42)
                     
                     ForEach(Array(SettingsDesignTokens.sidebarClusters.enumerated()), id: \.offset) { clusterIdx, cluster in
                         if clusterIdx > 0 {
@@ -349,11 +350,11 @@ private struct SidebarSettingsRootView: View {
             .frame(maxHeight: .infinity)
             .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20), value: self.state.selectedItem)
         }
-        .ignoresSafeArea(.container, edges: .top)
         .frame(
             width: SidebarSettingsWindowController.fixedContentSize.width,
             height: SidebarSettingsWindowController.fixedContentSize.height
         )
+        .ignoresSafeArea()
         .preferredColorScheme(self.resolvedColorScheme)
         .tint(accent)
         .environment(\.locale, AppLanguage.current.locale)

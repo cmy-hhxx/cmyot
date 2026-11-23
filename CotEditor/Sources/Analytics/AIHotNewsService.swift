@@ -55,6 +55,326 @@ nonisolated enum NewsFeedCategory: String, CaseIterable, Identifiable, Codable, 
 }
 
 
+/// Structured readable block extracted from RSS `<content:encoded>`, JSON `articleBody`, or web `<article>` HTML.
+nonisolated enum NewsArticleBlock: Codable, Hashable, Sendable {
+    
+    case heading(level: Int, text: String)
+    case paragraph(String)
+    case quote(String)
+    case code(String)
+    case list([String])
+    
+    var markdownText: String {
+        switch self {
+            case .heading(let level, let text):
+                return "\(String(repeating: "#", count: min(4, max(2, level)))) \(text)"
+            case .paragraph(let text):
+                return text
+            case .quote(let text):
+                return "> \(text.replacingOccurrences(of: "\n", with: "\n> "))"
+            case .code(let code):
+                return "```\n\(code)\n```"
+            case .list(let items):
+                return items.map { "- \($0)" }.joined(separator: "\n")
+        }
+    }
+}
+
+
+/// Cached full-article payload for distraction-free magazine reading inside `DashboardNewsCenterView`.
+nonisolated struct NewsArticleContent: Codable, Hashable, Sendable {
+    
+    var blocks: [NewsArticleBlock]
+    var leadExcerpt: String?
+    var author: String?
+    var extractedAt: Date
+    
+    var markdownBody: String {
+        self.blocks.map(\.markdownText).joined(separator: "\n\n")
+    }
+    
+    var plainTextLength: Int {
+        self.blocks.reduce(0) { acc, block in
+            switch block {
+                case .heading(_, let text), .paragraph(let text), .quote(let text), .code(let text):
+                    acc + text.count
+                case .list(let items):
+                    acc + items.reduce(0) { $0 + $1.count }
+            }
+        }
+    }
+}
+
+
+/// Deterministic, pure Readability-style HTML & Markdown article extractor for the NEWS reader.
+nonisolated enum NewsArticleExtractor {
+    
+    private static let noisePatterns: [String] = [
+        "all rights reserved", "privacy policy", "terms of service", "cookie policy",
+        "accept cookies", "sign up for our newsletter", "subscribe to our", "already a subscriber",
+        "share this article", "follow us on", "advertisement", "版权所有", "未经允许不得转载",
+    ]
+    
+    
+    static func decodeHTMLEntities(_ raw: String) -> String {
+        var text = raw
+        let named: [(String, String)] = [
+            ("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+            ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"),
+            ("&mdash;", "—"), ("&ndash;", "–"), ("&hellip;", "…"),
+            ("&ldquo;", "“"), ("&rdquo;", "”"), ("&lsquo;", "‘"), ("&rsquo;", "’"),
+            ("&bull;", "•"), ("&middot;", "·"), ("&copy;", "©"), ("&rarr;", "→"),
+        ]
+        for (entity, value) in named {
+            text = text.replacingOccurrences(of: entity, with: value)
+        }
+        if text.contains("&#"),
+           let numRegex = try? NSRegularExpression(pattern: #"&#(x?[0-9A-Fa-f]{1,6});"#)
+        {
+            let ns = text as NSString
+            let matches = numRegex.matches(in: text, range: NSRange(location: 0, length: ns.length)).reversed()
+            for m in matches where m.numberOfRanges >= 2 {
+                let token = ns.substring(with: m.range(at: 1))
+                let code: UInt32? = if token.lowercased().hasPrefix("x") {
+                    UInt32(token.dropFirst(), radix: 16)
+                } else {
+                    UInt32(token, radix: 10)
+                }
+                if let code, let scalar = UnicodeScalar(code) {
+                    text = (text as NSString).replacingCharacters(in: m.range, with: String(scalar))
+                }
+            }
+        }
+        return text
+    }
+    
+    
+    private static func isBoilerplate(_ text: String) -> Bool {
+        let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard lower.count >= 4 else { return true }
+        return Self.noisePatterns.contains { lower.contains($0) }
+    }
+    
+    
+    private static func cleanInlineHTML(_ raw: String, preserveNewlines: Bool = false) -> String {
+        var text = raw
+        text = text.replacingOccurrences(of: #"<br\s*/?>"#, with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(
+            of: #"<code\b[^>]*>([\s\S]*?)</code>"#,
+            with: "`$1`",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        text = text.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+        text = Self.decodeHTMLEntities(text)
+        if preserveNewlines {
+            let lines = text.components(separatedBy: .newlines).map {
+                $0.replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespaces)
+            }
+            return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            return text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+    
+    
+    static func extractBlocks(fromHTMLFragment raw: String, maxBlocks: Int = 40) -> [NewsArticleBlock] {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 40 else { return [] }
+        
+        // Strip comments & non-editorial containers first
+        var cleaned = trimmed.replacingOccurrences(of: #"<!--[\s\S]*?-->"#, with: " ", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(
+            of: #"<(script|style|svg|noscript|nav|header|footer|aside|form|iframe|button)\b[^>]*>[\s\S]*?</\1>"#,
+            with: " ",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        
+        let hasBlockTags = cleaned.range(
+            of: #"<(p|h[1-4]|blockquote|pre|ul|ol|article|div)\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+        
+        if !hasBlockTags {
+            return Self.extractBlocksFromPlainText(Self.decodeHTMLEntities(cleaned), maxBlocks: maxBlocks)
+        }
+        
+        var blocks: [NewsArticleBlock] = []
+        var seenNorm = Set<String>()
+        
+        guard let blockRegex = try? NSRegularExpression(
+            pattern: #"<(h[1-4]|pre|blockquote|ul|ol|p)\b[^>]*>([\s\S]*?)</\1>"#,
+            options: [.caseInsensitive]
+        ) else {
+            return []
+        }
+        
+        let ns = cleaned as NSString
+        let matches = blockRegex.matches(in: cleaned, range: NSRange(location: 0, length: ns.length))
+        for match in matches {
+            guard blocks.count < maxBlocks, match.numberOfRanges >= 3 else { break }
+            let tag = ns.substring(with: match.range(at: 1)).lowercased()
+            let inner = ns.substring(with: match.range(at: 2))
+            
+            if tag.hasPrefix("h"), let lvl = Int(tag.dropFirst()) {
+                let title = Self.cleanInlineHTML(inner)
+                guard (3...130).contains(title.count), !Self.isBoilerplate(title) else { continue }
+                let key = "h:\(title.lowercased())"
+                if seenNorm.insert(key).inserted {
+                    blocks.append(.heading(level: max(2, lvl), text: title))
+                }
+            } else if tag == "pre" {
+                var code = inner.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+                code = Self.decodeHTMLEntities(code).trimmingCharacters(in: .newlines)
+                guard code.trimmingCharacters(in: .whitespacesAndNewlines).count >= 8 else { continue }
+                blocks.append(.code(String(code.prefix(2400))))
+            } else if tag == "blockquote" {
+                let quote = Self.cleanInlineHTML(inner, preserveNewlines: true)
+                guard quote.count >= 14, !Self.isBoilerplate(quote) else { continue }
+                let key = quote.lowercased()
+                if seenNorm.insert(key).inserted {
+                    blocks.append(.quote(String(quote.prefix(900))))
+                }
+            } else if tag == "ul" || tag == "ol" {
+                if let liRegex = try? NSRegularExpression(pattern: #"<li\b[^>]*>([\s\S]*?)</li>"#, options: [.caseInsensitive]) {
+                    let nsInner = inner as NSString
+                    let liMatches = liRegex.matches(in: inner, range: NSRange(location: 0, length: nsInner.length))
+                    var items: [String] = []
+                    for li in liMatches.prefix(10) where li.numberOfRanges >= 2 {
+                        let txt = Self.cleanInlineHTML(nsInner.substring(with: li.range(at: 1)))
+                        if (4...260).contains(txt.count), !Self.isBoilerplate(txt) {
+                            items.append(txt)
+                        }
+                    }
+                    if items.count >= 2 {
+                        blocks.append(.list(items))
+                    }
+                }
+            } else if tag == "p" {
+                let para = Self.cleanInlineHTML(inner)
+                guard para.count >= 20, !Self.isBoilerplate(para) else { continue }
+                let key = para.lowercased()
+                if seenNorm.insert(key).inserted {
+                    blocks.append(.paragraph(para))
+                }
+            }
+        }
+        
+        return blocks
+    }
+    
+    
+    static func extractBlocksFromPlainText(_ raw: String, maxBlocks: Int = 40) -> [NewsArticleBlock] {
+        var blocks: [NewsArticleBlock] = []
+        var seen = Set<String>()
+        let chunks = raw
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n\n")
+        
+        for rawChunk in chunks {
+            guard blocks.count < maxBlocks else { break }
+            let chunk = rawChunk.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard chunk.count >= 12, !Self.isBoilerplate(chunk) else { continue }
+            
+            if chunk.hasPrefix("#") {
+                let hashes = chunk.prefix(while: { $0 == "#" }).count
+                let heading = chunk.dropFirst(hashes).trimmingCharacters(in: .whitespaces)
+                if !heading.isEmpty {
+                    blocks.append(.heading(level: max(2, min(4, hashes)), text: heading))
+                }
+            } else if chunk.hasPrefix(">") {
+                let q = chunk.replacingOccurrences(of: #"(?m)^>\s*"#, with: "", options: .regularExpression)
+                if q.count >= 12 {
+                    blocks.append(.quote(q))
+                }
+            } else {
+                let lines = chunk.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
+                if lines.count >= 2, lines.allSatisfy({ $0.hasPrefix("- ") || $0.hasPrefix("* ") }) {
+                    let listItems = lines.map { String($0.dropFirst(2)).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                    if !listItems.isEmpty {
+                        blocks.append(.list(listItems))
+                        continue
+                    }
+                }
+                let normalized = chunk.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                guard normalized.count >= 20, seen.insert(normalized.lowercased()).inserted else { continue }
+                blocks.append(.paragraph(normalized))
+            }
+        }
+        return blocks
+    }
+    
+    
+    static func extractFromWebPageHTML(_ html: String) -> (blocks: [NewsArticleBlock], author: String?) {
+        var ldBlocks: [NewsArticleBlock] = []
+        var ldAuthor: String?
+        
+        // 1. Inspect JSON-LD `articleBody` & `author`
+        if let ldRegex = try? NSRegularExpression(
+            pattern: #"<script[^>]+type\s*=\s*["']application/ld\+json["'][^>]*>([\s\S]*?)</script>"#,
+            options: [.caseInsensitive]
+        ) {
+            let ns = html as NSString
+            for match in ldRegex.matches(in: html, range: NSRange(location: 0, length: ns.length)) where match.numberOfRanges >= 2 {
+                let jsonStr = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let data = jsonStr.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data)
+                else { continue }
+                let candidates: [[String: Any]] = if let dict = obj as? [String: Any] {
+                    if let graph = dict["@graph"] as? [[String: Any]] { [dict] + graph } else { [dict] }
+                } else if let arr = obj as? [[String: Any]] {
+                    arr
+                } else {
+                    []
+                }
+                for item in candidates {
+                    if ldAuthor == nil {
+                        if let authStr = item["author"] as? String {
+                            ldAuthor = authStr
+                        } else if let authDict = item["author"] as? [String: Any], let name = authDict["name"] as? String {
+                            ldAuthor = name
+                        } else if let authArr = item["author"] as? [[String: Any]], let name = authArr.first?["name"] as? String {
+                            ldAuthor = name
+                        }
+                    }
+                    if let bodyStr = item["articleBody"] as? String, bodyStr.count > 120 {
+                        let extracted = Self.extractBlocks(fromHTMLFragment: bodyStr)
+                        if extracted.count > ldBlocks.count {
+                            ldBlocks = extracted
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 2. Isolate semantic `<article>` or `<main>` container
+        var targetFragment = html
+        for containerTag in ["article", "main"] {
+            if let regex = try? NSRegularExpression(
+                pattern: "<\(containerTag)\\b[^>]*>([\\s\\S]*?)</\(containerTag)>",
+                options: [.caseInsensitive]
+            ) {
+                let ns = html as NSString
+                let matches = regex.matches(in: html, range: NSRange(location: 0, length: ns.length))
+                if let longest = matches.max(by: { $0.range(at: 1).length < $1.range(at: 1).length }),
+                   longest.range(at: 1).length > 240
+                {
+                    targetFragment = ns.substring(with: longest.range(at: 1))
+                    break
+                }
+            }
+        }
+        
+        let domBlocks = Self.extractBlocks(fromHTMLFragment: targetFragment)
+        let domLen = NewsArticleContent(blocks: domBlocks, leadExcerpt: nil, author: nil, extractedAt: .now).plainTextLength
+        let ldLen = NewsArticleContent(blocks: ldBlocks, leadExcerpt: nil, author: nil, extractedAt: .now).plainTextLength
+        
+        return (domLen >= ldLen ? domBlocks : ldBlocks, ldAuthor)
+    }
+}
+
+
 /// A single industry news item displayed in the Analytics Dashboard NEWS feed.
 nonisolated struct AIHotNewsItem: Identifiable, Codable, Hashable, Sendable {
     
@@ -68,6 +388,7 @@ nonisolated struct AIHotNewsItem: Identifiable, Codable, Hashable, Sendable {
     var coverURLString: String? = nil
     var category: NewsFeedCategory? = nil
     var summary: String? = nil
+    var contentBlocks: [NewsArticleBlock]? = nil
     
     var resolvedCategory: NewsFeedCategory {
         if let category, category != .all {
@@ -159,9 +480,11 @@ final class AIHotNewsService {
         .init(urlString: "https://aihot.news/agent", label: "AIHot", category: .ai, format: .aihotMarkdown, isPrimaryAIHot: true),
         .init(urlString: "https://aihot.news/rss.xml", label: "AIHot", category: .ai, format: .aihotRSS, isPrimaryAIHot: true),
         // Secondary enrichment: high-signal AI / X / Finance posts blended into the same stream
-        .init(urlString: "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=14", label: "HN", category: .xSocial, format: .hnJSON, isPrimaryAIHot: false),
+        .init(urlString: "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=16", label: "HN", category: .xSocial, format: .hnJSON, isPrimaryAIHot: false),
+        .init(urlString: "https://openai.com/news/rss.xml", label: "OpenAI", category: .ai, format: .rss, isPrimaryAIHot: false),
         .init(urlString: "https://huggingface.co/blog/feed.xml", label: "Hugging Face", category: .ai, format: .rss, isPrimaryAIHot: false),
         .init(urlString: "https://techcrunch.com/category/artificial-intelligence/feed/", label: "TechCrunch", category: .ai, format: .rss, isPrimaryAIHot: false),
+        .init(urlString: "https://feeds.arstechnica.com/arstechnica/technology-lab", label: "Ars Technica", category: .ai, format: .rss, isPrimaryAIHot: false),
         .init(urlString: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664", label: "CNBC", category: .finance, format: .rss, isPrimaryAIHot: false),
         .init(urlString: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain", label: "WSJ", category: .finance, format: .rss, isPrimaryAIHot: false),
     ]
@@ -179,6 +502,8 @@ final class AIHotNewsService {
         }
     }
     private(set) var coverImages: [String: NSImage] = [:]
+    private(set) var articleContents: [String: NewsArticleContent] = [:]
+    private(set) var loadingArticleIDs: Set<String> = []
     private(set) var bookmarkedIDs: Set<String> = []
     private(set) var savedBookmarkedItems: [AIHotNewsItem] = []
     private(set) var readIDs: Set<String> = []
@@ -191,7 +516,9 @@ final class AIHotNewsService {
     private var resolvedNoCoverIDs: Set<String> = []
     private var fetchedDetailIDs: Set<String> = []
     private var preloadTask: Task<Void, Never>?
+    private let database: CotLocalDatabase
     private let coverCacheDirectory: URL
+    private let articleCacheDirectory: URL
     
     private static let bookmarksDefaultsKey = "cot.news.bookmarkedItemsJSON"
     private static let readIDsDefaultsKey = "cot.news.readIDs"
@@ -221,24 +548,30 @@ final class AIHotNewsService {
     }
     
     
-    private init() {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? URL(filePath: NSTemporaryDirectory(), directoryHint: .isDirectory)
-        self.coverCacheDirectory = caches
-            .appending(path: "CotEditor", directoryHint: .isDirectory)
-            .appending(path: "NewsCovers", directoryHint: .isDirectory)
+    init(database: CotLocalDatabase = .shared, cacheRootDirectory: URL? = nil) {
+        self.database = database
+        let baseRoot: URL = if let cacheRootDirectory {
+            cacheRootDirectory
+        } else {
+            (FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+                ?? URL(filePath: NSTemporaryDirectory(), directoryHint: .isDirectory))
+                .appending(path: "CotEditor", directoryHint: .isDirectory)
+        }
+        self.coverCacheDirectory = baseRoot.appending(path: "NewsCovers", directoryHint: .isDirectory)
+        self.articleCacheDirectory = baseRoot.appending(path: "NewsArticlesV1", directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: self.coverCacheDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: self.articleCacheDirectory, withIntermediateDirectories: true)
         self.loadCachedItems()
         self.loadInteractiveState()
-        if !self.items.isEmpty {
+        if !self.items.isEmpty && database === CotLocalDatabase.shared {
             Task { @MainActor [weak self] in
-                self?.preloadFeedResources(limit: 24)
+                self?.preloadFeedResources(limit: 20)
             }
         }
     }
     
     
-    // MARK: Interactive Reader State (Bookmarks, Read Status, Excerpts, AI Briefs)
+    // MARK: Interactive Reader State (Bookmarks, Read Status, Full Articles, AI Briefs)
     
     func isBookmarked(_ item: AIHotNewsItem) -> Bool {
         self.bookmarkedIDs.contains(item.id)
@@ -252,7 +585,11 @@ final class AIHotNewsService {
         } else {
             self.bookmarkedIDs.insert(item.id)
             if !self.savedBookmarkedItems.contains(where: { $0.id == item.id }) {
-                self.savedBookmarkedItems.insert(item, at: 0)
+                var enriched = item
+                if enriched.contentBlocks == nil, let cached = self.articleContents[item.id]?.blocks, !cached.isEmpty {
+                    enriched.contentBlocks = cached
+                }
+                self.savedBookmarkedItems.insert(enriched, at: 0)
             }
         }
         self.saveBookmarkedItems()
@@ -266,8 +603,10 @@ final class AIHotNewsService {
     
     func markRead(_ item: AIHotNewsItem) {
         guard self.readIDs.insert(item.id).inserted else { return }
-        let trimmed = Array(self.readIDs.prefix(400))
-        UserDefaults.standard.set(trimmed, forKey: Self.readIDsDefaultsKey)
+        let trimmed = Array(self.readIDs.prefix(500))
+        if let data = try? JSONEncoder().encode(trimmed), let str = String(data: data, encoding: .utf8) {
+            self.database.set(str, forKey: CotLocalDatabase.ConfigKey.newsReadIDsJSON)
+        }
     }
     
     
@@ -283,7 +622,45 @@ final class AIHotNewsService {
         } else {
             self.personalNotes[itemID] = trimmed
         }
-        UserDefaults.standard.set(self.personalNotes, forKey: Self.notesDefaultsKey)
+        if let data = try? JSONEncoder().encode(self.personalNotes), let str = String(data: data, encoding: .utf8) {
+            self.database.set(str, forKey: CotLocalDatabase.ConfigKey.newsPersonalNotesJSON)
+        }
+    }
+    
+    
+    func setAIBrief(_ brief: String, for itemID: String) {
+        let cleaned = brief.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty {
+            self.aiBriefs.removeValue(forKey: itemID)
+        } else {
+            self.aiBriefs[itemID] = cleaned
+        }
+        // Keep bounded most-recent 120 briefs in SQLite
+        if self.aiBriefs.count > 120, let dropKey = self.aiBriefs.keys.first {
+            self.aiBriefs.removeValue(forKey: dropKey)
+        }
+        if let data = try? JSONEncoder().encode(self.aiBriefs), let str = String(data: data, encoding: .utf8) {
+            self.database.set(str, forKey: CotLocalDatabase.ConfigKey.newsAIBriefsJSON)
+        }
+    }
+    
+    
+    func resolvedArticleBlocks(for item: AIHotNewsItem) -> [NewsArticleBlock] {
+        if let loaded = self.articleContents[item.id]?.blocks, !loaded.isEmpty {
+            return loaded
+        }
+        if let embedded = item.contentBlocks, !embedded.isEmpty {
+            return embedded
+        }
+        let diskURL = self.diskArticleURL(for: item)
+        if let data = try? Data(contentsOf: diskURL),
+           let decoded = try? JSONDecoder().decode(NewsArticleContent.self, from: data),
+           !decoded.blocks.isEmpty
+        {
+            self.articleContents[item.id] = decoded
+            return decoded.blocks
+        }
+        return []
     }
     
     
@@ -292,28 +669,48 @@ final class AIHotNewsService {
     }
     
     
+    private func diskArticleURL(for item: AIHotNewsItem) -> URL {
+        let digest = SHA256.hash(data: Data(item.urlString.utf8))
+        let hex = digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+        return self.articleCacheDirectory.appending(path: "\(hex).json")
+    }
+    
+    
     func fetchArticleExcerptIfNeeded(for item: AIHotNewsItem) async {
+        // Check embedded or disk-cached full blocks first
+        if !self.resolvedArticleBlocks(for: item).isEmpty {
+            self.fetchedDetailIDs.insert(item.id)
+            return
+        }
         guard Self.isNetworkPreloadAllowed,
+              !self.loadingArticleIDs.contains(item.id),
               !self.fetchedDetailIDs.contains(item.id),
               let pageURL = item.url
         else { return }
         
-        let existingSummary = item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard existingSummary.count < 40 else {
+        self.loadingArticleIDs.insert(item.id)
+        defer {
+            self.loadingArticleIDs.remove(item.id)
             self.fetchedDetailIDs.insert(item.id)
-            return
         }
         
-        self.fetchedDetailIDs.insert(item.id)
-        let meta = await Self.fetchOpenGraphMetadata(from: pageURL)
+        let diskURL = self.diskArticleURL(for: item)
+        let fetched = await Self.fetchFullArticleAndMeta(from: pageURL)
         guard !Task.isCancelled else { return }
         
-        if let desc = meta.description, !desc.isEmpty,
-           let idx = self.items.firstIndex(where: { $0.id == item.id })
+        if let content = fetched.content, !content.blocks.isEmpty {
+            self.articleContents[item.id] = content
+            if let encoded = try? JSONEncoder().encode(content) {
+                try? encoded.write(to: diskURL, options: .atomic)
+            }
+        }
+        if let desc = fetched.description, !desc.isEmpty,
+           let idx = self.items.firstIndex(where: { $0.id == item.id }),
+           (self.items[idx].summary ?? "").count < desc.count
         {
             self.items[idx].summary = desc
         }
-        if let img = meta.imageURLString,
+        if let img = fetched.imageURLString,
            let idx = self.items.firstIndex(where: { $0.id == item.id }),
            self.items[idx].coverURLString == nil
         {
@@ -339,17 +736,22 @@ final class AIHotNewsService {
         }
         
         let sourceNote = item.displayPublisherLabel.isEmpty ? item.resolvedCategory.badgeLabel : item.displayPublisherLabel
-        let summarySnippet = item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let blocks = self.resolvedArticleBlocks(for: item)
+        let fullBody = blocks.map(\.markdownText).joined(separator: "\n\n")
+        let bodyContext = !fullBody.isEmpty
+            ? String(fullBody.prefix(3600))
+            : (item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+        
         let payload = """
         标题：\(item.title)
         分类：\(item.resolvedCategory.label)\(sourceNote.isEmpty ? "" : " · \(sourceNote)")
         链接：\(item.urlString)
-        \(summarySnippet.isEmpty ? "" : "正文摘要：\n\(summarySnippet)")
+        \(bodyContext.isEmpty ? "" : "正文内容：\n\(bodyContext)")
 
-        请用中文输出 3 条精炼要点：
-        1. 核心事实或变化
-        2. 为什么值得关注 / 潜在影响
-        3. 可延续思考或写作切入点
+        请用中文直接输出 3 条高密度精读要点（严禁客套开场白）：
+        1. 核心突破或事实数据
+        2. 技术/产业深层逻辑与影响
+        3. 可借鉴切入点或后续跟进方向
         """
         
         let itemID = item.id
@@ -357,7 +759,7 @@ final class AIHotNewsService {
             let output = try await AIService.shared.run(.summarize, on: payload) { partial in
                 AIHotNewsService.shared.aiBriefs[itemID] = partial
             }
-            self.aiBriefs[itemID] = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.setAIBrief(output, for: itemID)
         } catch {
             self.briefErrorMessage = error.localizedDescription
         }
@@ -365,24 +767,55 @@ final class AIHotNewsService {
     
     
     private func loadInteractiveState() {
-        if let saved = UserDefaults.standard.array(forKey: Self.readIDsDefaultsKey) as? [String] {
-            self.readIDs = Set(saved)
-        }
-        if let savedNotes = UserDefaults.standard.dictionary(forKey: Self.notesDefaultsKey) as? [String: String] {
-            self.personalNotes = savedNotes
-        }
-        if let data = UserDefaults.standard.data(forKey: Self.bookmarksDefaultsKey),
-           let decoded = try? JSONDecoder().decode([AIHotNewsItem].self, from: data)
+        let rawReads = self.database.string(forKey: CotLocalDatabase.ConfigKey.newsReadIDsJSON)
+        if !rawReads.isEmpty, let data = rawReads.data(using: .utf8), let ids = try? JSONDecoder().decode([String].self, from: data) {
+            self.readIDs = Set(ids)
+        } else if self.database === CotLocalDatabase.shared,
+                  let legacy = UserDefaults.standard.array(forKey: Self.readIDsDefaultsKey) as? [String]
         {
-            self.savedBookmarkedItems = decoded
-            self.bookmarkedIDs = Set(decoded.map(\.id))
+            self.readIDs = Set(legacy)
+            if let data = try? JSONEncoder().encode(legacy), let str = String(data: data, encoding: .utf8) {
+                self.database.set(str, forKey: CotLocalDatabase.ConfigKey.newsReadIDsJSON)
+            }
+        }
+        
+        let rawNotes = self.database.string(forKey: CotLocalDatabase.ConfigKey.newsPersonalNotesJSON)
+        if !rawNotes.isEmpty, let data = rawNotes.data(using: .utf8), let dict = try? JSONDecoder().decode([String: String].self, from: data) {
+            self.personalNotes = dict
+        } else if self.database === CotLocalDatabase.shared,
+                  let legacy = UserDefaults.standard.dictionary(forKey: Self.notesDefaultsKey) as? [String: String]
+        {
+            self.personalNotes = legacy
+            if let data = try? JSONEncoder().encode(legacy), let str = String(data: data, encoding: .utf8) {
+                self.database.set(str, forKey: CotLocalDatabase.ConfigKey.newsPersonalNotesJSON)
+            }
+        }
+        
+        let rawBookmarks = self.database.string(forKey: CotLocalDatabase.ConfigKey.newsBookmarkedItemsJSON)
+        if !rawBookmarks.isEmpty, let data = rawBookmarks.data(using: .utf8), let items = try? JSONDecoder().decode([AIHotNewsItem].self, from: data) {
+            self.savedBookmarkedItems = items
+            self.bookmarkedIDs = Set(items.map(\.id))
+        } else if self.database === CotLocalDatabase.shared,
+                  let legacyData = UserDefaults.standard.data(forKey: Self.bookmarksDefaultsKey),
+                  let items = try? JSONDecoder().decode([AIHotNewsItem].self, from: legacyData)
+        {
+            self.savedBookmarkedItems = items
+            self.bookmarkedIDs = Set(items.map(\.id))
+            self.saveBookmarkedItems()
+        }
+        
+        let rawBriefs = self.database.string(forKey: CotLocalDatabase.ConfigKey.newsAIBriefsJSON)
+        if !rawBriefs.isEmpty, let data = rawBriefs.data(using: .utf8), let dict = try? JSONDecoder().decode([String: String].self, from: data) {
+            self.aiBriefs = dict
         }
     }
     
     
     private func saveBookmarkedItems() {
-        if let encoded = try? JSONEncoder().encode(self.savedBookmarkedItems) {
-            UserDefaults.standard.set(encoded, forKey: Self.bookmarksDefaultsKey)
+        if let encoded = try? JSONEncoder().encode(self.savedBookmarkedItems),
+           let str = String(data: encoded, encoding: .utf8)
+        {
+            self.database.set(str, forKey: CotLocalDatabase.ConfigKey.newsBookmarkedItemsJSON)
         }
     }
     
@@ -412,7 +845,7 @@ final class AIHotNewsService {
             return cached
         }
         let diskURL = self.diskCoverURL(for: item)
-        if let diskImage = NSImage(contentsOf: diskURL) {
+        if let diskImage = Self.retinaAwareImage(fromFileAt: diskURL) {
             self.coverImages[item.id] = diskImage
             return diskImage
         }
@@ -448,14 +881,18 @@ final class AIHotNewsService {
             
             struct PreloadWork: Sendable {
                 let item: AIHotNewsItem
+                let index: Int
                 let diskURL: URL
+                let articleDiskURL: URL
                 let needsCover: Bool
                 let needsExcerpt: Bool
+                let needsFullArticle: Bool
             }
             
             struct PreloadOutcome: Sendable {
                 let id: String
                 let coverImage: NSImage?
+                let articleContent: NewsArticleContent?
                 let resolvedCoverURL: String?
                 let resolvedSummary: String?
                 let attemptedDetail: Bool
@@ -469,19 +906,25 @@ final class AIHotNewsService {
                 let slice = Array(snapshotItems[batchStart..<min(snapshotItems.count, batchStart + batchSize)])
                 
                 var workQueue: [PreloadWork] = []
-                for item in slice {
+                for (offset, item) in slice.enumerated() {
+                    let absIdx = batchStart + offset
                     let hasMemCover = (self.coverImages[item.id] != nil)
                     let needsCover = !hasMemCover && !self.inFlightCoverIDs.contains(item.id) && !self.resolvedNoCoverIDs.contains(item.id)
                     let existingSummaryLen = item.summary?.trimmingCharacters(in: .whitespacesAndNewlines).count ?? 0
-                    let needsExcerpt = (existingSummaryLen < 40) && !self.fetchedDetailIDs.contains(item.id)
-                    if needsCover || needsExcerpt {
+                    let hasFullBlocks = (self.articleContents[item.id] != nil) || ((item.contentBlocks?.count ?? 0) >= 2)
+                    let needsFullArticle = absIdx < 12 && !hasFullBlocks && !self.fetchedDetailIDs.contains(item.id)
+                    let needsExcerpt = !needsFullArticle && (existingSummaryLen < 40) && !self.fetchedDetailIDs.contains(item.id)
+                    if needsCover || needsExcerpt || needsFullArticle {
                         if needsCover { self.inFlightCoverIDs.insert(item.id) }
-                        if needsExcerpt { self.fetchedDetailIDs.insert(item.id) }
+                        if needsExcerpt || needsFullArticle { self.fetchedDetailIDs.insert(item.id) }
                         workQueue.append(PreloadWork(
                             item: item,
+                            index: absIdx,
                             diskURL: self.diskCoverURL(for: item),
+                            articleDiskURL: self.diskArticleURL(for: item),
                             needsCover: needsCover,
-                            needsExcerpt: needsExcerpt
+                            needsExcerpt: needsExcerpt,
+                            needsFullArticle: needsFullArticle
                         ))
                     }
                 }
@@ -491,19 +934,44 @@ final class AIHotNewsService {
                     for work in workQueue {
                         group.addTask(priority: .utility) {
                             var loadedCover: NSImage?
+                            var loadedArticle: NewsArticleContent?
                             var discoveredCoverURL = work.item.coverURLString
                             var discoveredSummary: String?
                             var failedCover = false
                             
                             if work.needsCover,
                                FileManager.default.fileExists(atPath: work.diskURL.path),
-                               let diskImage = NSImage(contentsOf: work.diskURL)
+                               let diskImage = Self.retinaAwareImage(fromFileAt: work.diskURL)
                             {
                                 loadedCover = diskImage
                             }
                             
-                            let shouldFetchPageMeta = work.needsExcerpt || (work.needsCover && loadedCover == nil && work.item.coverURL == nil)
-                            if shouldFetchPageMeta, let pageURL = work.item.url {
+                            if work.needsFullArticle,
+                               let diskData = try? Data(contentsOf: work.articleDiskURL),
+                               let cachedArt = try? JSONDecoder().decode(NewsArticleContent.self, from: diskData),
+                               !cachedArt.blocks.isEmpty
+                            {
+                                loadedArticle = cachedArt
+                            }
+                            
+                            let shouldFetchFullPage = (work.needsFullArticle && loadedArticle == nil)
+                            let shouldFetchPageMeta = !shouldFetchFullPage && (work.needsExcerpt || (work.needsCover && loadedCover == nil && work.item.coverURL == nil))
+                            
+                            if shouldFetchFullPage, let pageURL = work.item.url {
+                                let full = await Self.fetchFullArticleAndMeta(from: pageURL)
+                                if let art = full.content, !art.blocks.isEmpty {
+                                    loadedArticle = art
+                                    if let encoded = try? JSONEncoder().encode(art) {
+                                        try? encoded.write(to: work.articleDiskURL, options: .atomic)
+                                    }
+                                }
+                                if let desc = full.description, !desc.isEmpty {
+                                    discoveredSummary = desc
+                                }
+                                if discoveredCoverURL == nil, let ogImg = full.imageURLString {
+                                    discoveredCoverURL = ogImg
+                                }
+                            } else if shouldFetchPageMeta, let pageURL = work.item.url {
                                 let meta = await Self.fetchOpenGraphMetadata(from: pageURL)
                                 if let desc = meta.description, !desc.isEmpty {
                                     discoveredSummary = desc
@@ -514,7 +982,7 @@ final class AIHotNewsService {
                             }
                             
                             if work.needsCover && loadedCover == nil {
-                                if let resolvedStr = Self.sanitizedHTTPURLString(discoveredCoverURL),
+                                if let resolvedStr = Self.sanitizedHTTPURLString(discoveredCoverURL).map(Self.upgradeCoverURLResolution),
                                    let imgURL = URL(string: resolvedStr)
                                 {
                                     var req = URLRequest(url: imgURL, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 8)
@@ -524,13 +992,10 @@ final class AIHotNewsService {
                                        let http = response as? HTTPURLResponse,
                                        (200..<300).contains(http.statusCode),
                                        data.count > 256,
-                                       let thumbnail = Self.downsampledThumbnail(from: data, maxPixelSize: 320)
+                                       let thumbnail = Self.downsampledThumbnail(from: data, maxPixelSize: Self.retinaCoverMaxPixelSize)
                                     {
-                                        if let tiff = thumbnail.tiffRepresentation,
-                                           let rep = NSBitmapImageRep(data: tiff),
-                                           let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.78])
-                                        {
-                                            try? jpeg.write(to: work.diskURL, options: .atomic)
+                                        if let encoded = Self.encodeCrispCoverData(thumbnail) {
+                                            try? encoded.write(to: work.diskURL, options: .atomic)
                                         }
                                         loadedCover = thumbnail
                                     } else {
@@ -544,9 +1009,10 @@ final class AIHotNewsService {
                             return PreloadOutcome(
                                 id: work.item.id,
                                 coverImage: loadedCover,
+                                articleContent: loadedArticle,
                                 resolvedCoverURL: discoveredCoverURL,
                                 resolvedSummary: discoveredSummary,
-                                attemptedDetail: shouldFetchPageMeta,
+                                attemptedDetail: shouldFetchFullPage || shouldFetchPageMeta,
                                 failedCover: failedCover
                             )
                         }
@@ -567,6 +1033,9 @@ final class AIHotNewsService {
                         self.coverImages[outcome.id] = thumb
                     } else if outcome.failedCover {
                         self.resolvedNoCoverIDs.insert(outcome.id)
+                    }
+                    if let art = outcome.articleContent {
+                        self.articleContents[outcome.id] = art
                     }
                     if let idx = self.items.firstIndex(where: { $0.id == outcome.id }) {
                         if let sum = outcome.resolvedSummary, !sum.isEmpty,
@@ -663,12 +1132,12 @@ final class AIHotNewsService {
             return false
         }
         
-        while mergedItems.count < 48 {
+        while mergedItems.count < 60 {
             var progressed = false
             // 2 AIHot high-signal posts per 1 mixed tech/market/X post
             if takeNext(from: rankedPrimary, cursor: &pIdx) { progressed = true }
-            if mergedItems.count < 48, takeNext(from: rankedPrimary, cursor: &pIdx) { progressed = true }
-            if mergedItems.count < 48, takeNext(from: rankedSecondary, cursor: &sIdx) { progressed = true }
+            if mergedItems.count < 60, takeNext(from: rankedPrimary, cursor: &pIdx) { progressed = true }
+            if mergedItems.count < 60, takeNext(from: rankedSecondary, cursor: &sIdx) { progressed = true }
             if !progressed { break }
         }
         
@@ -856,12 +1325,15 @@ final class AIHotNewsService {
     }
     
     
-    // MARK: Real Post Cover Thumbnail Loader (Feed Cover + og:image Fallback)
+    // MARK: Real Post Cover Thumbnail Loader (Retina High-DPI Cover + og:image Fallback)
+    
+    nonisolated static let retinaCoverMaxPixelSize: CGFloat = 1080
+    
     
     private func diskCoverURL(for item: AIHotNewsItem) -> URL {
         let digest = SHA256.hash(data: Data((item.coverURLString ?? item.urlString).utf8))
         let hex = digest.prefix(12).map { String(format: "%02x", $0) }.joined()
-        return self.coverCacheDirectory.appending(path: "\(hex).jpg")
+        return self.coverCacheDirectory.appending(path: "\(hex)-hd2x.png")
     }
     
     
@@ -872,7 +1344,7 @@ final class AIHotNewsService {
         else { return }
         
         let itemID = item.id
-        let directCoverURL = item.coverURL
+        let directCoverURL = item.coverURL.flatMap { URL(string: Self.upgradeCoverURLResolution($0.absoluteString)) } ?? item.coverURL
         let pageURL = item.url
         let diskURL = self.diskCoverURL(for: item)
         self.inFlightCoverIDs.insert(itemID)
@@ -899,7 +1371,7 @@ final class AIHotNewsService {
                   let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode),
                   data.count > 256,
-                  let thumbnail = Self.downsampledThumbnail(from: data, maxPixelSize: 320)
+                  let thumbnail = Self.downsampledThumbnail(from: data, maxPixelSize: Self.retinaCoverMaxPixelSize)
             else {
                 await MainActor.run {
                     _ = AIHotNewsService.shared.inFlightCoverIDs.remove(itemID)
@@ -908,11 +1380,8 @@ final class AIHotNewsService {
                 return
             }
             
-            if let tiff = thumbnail.tiffRepresentation,
-               let rep = NSBitmapImageRep(data: tiff),
-               let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.78])
-            {
-                try? jpeg.write(to: diskURL, options: .atomic)
+            if let encoded = Self.encodeCrispCoverData(thumbnail) {
+                try? encoded.write(to: diskURL, options: .atomic)
             }
             
             await MainActor.run {
@@ -925,6 +1394,35 @@ final class AIHotNewsService {
                 _ = AIHotNewsService.shared.inFlightCoverIDs.remove(itemID)
             }
         }
+    }
+    
+    
+    private nonisolated static func fetchFullArticleAndMeta(from pageURL: URL) async -> (content: NewsArticleContent?, imageURLString: String?, description: String?) {
+        var req = URLRequest(url: pageURL, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 8)
+        req.setValue("text/html,application/xhtml+xml;q=0.9", forHTTPHeaderField: "Accept")
+        req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+        
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              !data.isEmpty
+        else { return (nil, nil, nil) }
+        
+        let cappedData = data.prefix(280_000)
+        guard let html = String(data: cappedData, encoding: .utf8) ?? String(data: cappedData, encoding: .isoLatin1) else {
+            return (nil, nil, nil)
+        }
+        let headSnippet = String(html.prefix(42_000))
+        let ogImg = Self.extractOpenGraphImageURL(from: headSnippet, pageURL: pageURL)
+        let ogDesc = Self.extractOpenGraphDescription(from: headSnippet)
+        let extracted = NewsArticleExtractor.extractFromWebPageHTML(html)
+        let content: NewsArticleContent? = extracted.blocks.isEmpty ? nil : NewsArticleContent(
+            blocks: extracted.blocks,
+            leadExcerpt: ogDesc,
+            author: extracted.author,
+            extractedAt: Date()
+        )
+        return (content, ogImg, ogDesc)
     }
     
     
@@ -958,20 +1456,64 @@ final class AIHotNewsService {
     }
     
     
-    private nonisolated static func downsampledThumbnail(from data: Data, maxPixelSize: CGFloat) -> NSImage? {
+    nonisolated static func downsampledThumbnail(from data: Data, maxPixelSize: CGFloat = AIHotNewsService.retinaCoverMaxPixelSize) -> NSImage? {
         let cfData = data as CFData
         guard let source = CGImageSourceCreateWithData(cfData, nil) else {
             return NSImage(data: data)
         }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
             kCGImageSourceCreateThumbnailWithTransform: true,
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
             return NSImage(data: data)
         }
-        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        let scale: CGFloat = cg.width >= 360 ? 2.0 : 1.0
+        return NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width) / scale, height: CGFloat(cg.height) / scale))
+    }
+    
+    
+    private nonisolated static func retinaAwareImage(fromFileAt url: URL) -> NSImage? {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), !data.isEmpty else {
+            return nil
+        }
+        let cfData = data as CFData
+        guard let source = CGImageSourceCreateWithData(cfData, nil),
+              let cg = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+        else {
+            return NSImage(data: data)
+        }
+        let scale: CGFloat = cg.width >= 360 ? 2.0 : 1.0
+        return NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width) / scale, height: CGFloat(cg.height) / scale))
+    }
+    
+    
+    private nonisolated static func encodeCrispCoverData(_ image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff)
+        else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+    
+    
+    nonisolated static func upgradeCoverURLResolution(_ raw: String) -> String {
+        var result = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !result.isEmpty else { return result }
+        if result.contains("pbs.twimg.com") {
+            result = result.replacingOccurrences(
+                of: #"([?&]name=)(?:tiny|thumb|small|medium|240x240|360x360)\b"#,
+                with: "$1large",
+                options: .regularExpression
+            )
+        }
+        result = result.replacingOccurrences(
+            of: #"([?&](?:w|width)=)(?:1\d\d|2\d\d|3\d\d|4\d\d)\b"#,
+            with: "$11080",
+            options: .regularExpression
+        )
+        return result
     }
     
     
@@ -979,7 +1521,7 @@ final class AIHotNewsService {
     
     private func loadCachedItems() {
         
-        let raw = CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.aiHotNewsCacheJSON, default: "")
+        let raw = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiHotNewsCacheJSON, default: "")
         guard !raw.isEmpty, let data = raw.data(using: .utf8) else { return }
         if let decoded = try? JSONDecoder().decode([AIHotNewsItem].self, from: data) {
             let cleaned = decoded.filter { Self.isHighSignalPost($0) }
@@ -995,7 +1537,7 @@ final class AIHotNewsService {
         guard let encoded = try? JSONEncoder().encode(items),
               let string = String(data: encoded, encoding: .utf8)
         else { return }
-        CotLocalDatabase.shared.set(string, forKey: CotLocalDatabase.ConfigKey.aiHotNewsCacheJSON)
+        self.database.set(string, forKey: CotLocalDatabase.ConfigKey.aiHotNewsCacheJSON)
     }
     
     
@@ -1045,8 +1587,10 @@ final class AIHotNewsService {
             
             let rawCover = Self.extractCoverURLString(from: dict)
             let coverURLString = Self.sanitizedHTTPURLString(rawCover)
+            let rawBody = Self.firstString(in: dict, keys: ["content_html", "body_html", "html", "content", "body", "markdown"])
+            let embeddedBlocks = rawBody.map { NewsArticleExtractor.extractBlocks(fromHTMLFragment: $0) } ?? []
             let rawSummary = Self.firstString(in: dict, keys: ["summary", "description", "excerpt", "snippet", "text", "content", "abstract"])
-            let summary = rawSummary.flatMap { Self.stripHTMLToPlainText($0, maxLength: 360) }
+            let summary = rawSummary.flatMap { Self.stripHTMLToPlainText($0, maxLength: 420) }
             
             results.append(AIHotNewsItem(
                 id: itemID,
@@ -1057,7 +1601,8 @@ final class AIHotNewsService {
                 heatScore: heatScore,
                 tag: tag,
                 coverURLString: coverURLString,
-                summary: summary
+                summary: summary,
+                contentBlocks: embeddedBlocks.count >= 2 ? embeddedBlocks : nil
             ))
         }
         
@@ -1334,7 +1879,7 @@ final class AIHotNewsService {
                 if let resolved = URL(string: raw, relativeTo: pageURL)?.absoluteURL.absoluteString,
                    let sanitized = Self.sanitizedHTTPURLString(resolved)
                 {
-                    return sanitized
+                    return Self.upgradeCoverURLResolution(sanitized)
                 }
             }
         }
@@ -1344,20 +1889,21 @@ final class AIHotNewsService {
     
     private nonisolated static func extractCoverURLString(from dict: [String: Any]) -> String? {
         if let direct = Self.firstString(in: dict, keys: [
-            "cover", "cover_url", "coverUrl", "image", "image_url", "imageUrl",
-            "thumbnail", "thumbnail_url", "thumbnailUrl", "og_image", "ogImage", "banner", "pic",
+            "og_image", "ogImage", "cover", "cover_url", "coverUrl",
+            "banner", "image", "image_url", "imageUrl", "pic",
+            "thumbnail", "thumbnail_url", "thumbnailUrl",
         ]) {
-            return direct
+            return Self.upgradeCoverURLResolution(direct)
         }
-        for nestedKey in ["media", "enclosure", "meta", "og"] {
+        for nestedKey in ["og", "meta", "media", "enclosure"] {
             if let sub = dict[nestedKey] as? [String: Any],
-               let nested = Self.firstString(in: sub, keys: ["url", "image", "cover", "src", "thumbnail"])
+               let nested = Self.firstString(in: sub, keys: ["image", "cover", "url", "src", "thumbnail"])
             {
-                return nested
+                return Self.upgradeCoverURLResolution(nested)
             }
         }
         if let images = dict["images"] as? [String], let first = images.first {
-            return first
+            return Self.upgradeCoverURLResolution(first)
         }
         return nil
     }
@@ -1442,6 +1988,7 @@ private nonisolated final class RSSFeedParserDelegate: NSObject, XMLParserDelega
     private var currentID = ""
     private var currentCover = ""
     private var currentSummary = ""
+    private var currentRichBodyHTML = ""
     private var elementBuffer = ""
     private var seenTitles = Set<String>()
     private var seenIDs = Set<String>()
@@ -1468,6 +2015,7 @@ private nonisolated final class RSSFeedParserDelegate: NSObject, XMLParserDelega
             self.currentID = ""
             self.currentCover = ""
             self.currentSummary = ""
+            self.currentRichBodyHTML = ""
         } else if self.inEntry {
             if self.isDirectEntryChild,
                local == "link",
@@ -1531,11 +2079,14 @@ private nonisolated final class RSSFeedParserDelegate: NSObject, XMLParserDelega
                         if self.currentCategory.isEmpty { self.currentCategory = text }
                     case "guid", "id":
                         if self.currentID.isEmpty { self.currentID = text }
-                    case "description", "summary", "content", "content:encoded":
+                    case "description", "summary", "content", "content:encoded", "encoded":
                         if self.currentCover.isEmpty, let img = AIHotNewsService.firstHTMLImageURL(in: text) {
-                            self.currentCover = img
+                            self.currentCover = AIHotNewsService.upgradeCoverURLResolution(img)
                         }
-                        if let clean = AIHotNewsService.stripHTMLToPlainText(text, maxLength: 360),
+                        if text.count > self.currentRichBodyHTML.count {
+                            self.currentRichBodyHTML = text
+                        }
+                        if let clean = AIHotNewsService.stripHTMLToPlainText(text, maxLength: 420),
                            clean.count > self.currentSummary.count
                         {
                             self.currentSummary = clean
@@ -1569,6 +2120,10 @@ private nonisolated final class RSSFeedParserDelegate: NSObject, XMLParserDelega
                 let itemID = self.seenIDs.contains(baseID) ? "\(baseID)#\(self.items.count)" : baseID
                 self.seenIDs.insert(itemID)
                 let sanitizedCover = AIHotNewsService.sanitizedHTTPURLString(self.currentCover)
+                    .map(AIHotNewsService.upgradeCoverURLResolution)
+                let extractedBlocks = self.currentRichBodyHTML.count >= 160
+                    ? NewsArticleExtractor.extractBlocks(fromHTMLFragment: self.currentRichBodyHTML)
+                    : []
                 
                 self.items.append(AIHotNewsItem(
                     id: itemID,
@@ -1579,7 +2134,8 @@ private nonisolated final class RSSFeedParserDelegate: NSObject, XMLParserDelega
                     heatScore: nil,
                     tag: self.currentCategory.isEmpty ? nil : self.currentCategory,
                     coverURLString: sanitizedCover,
-                    summary: self.currentSummary.isEmpty ? nil : self.currentSummary
+                    summary: self.currentSummary.isEmpty ? nil : self.currentSummary,
+                    contentBlocks: extractedBlocks.count >= 2 ? extractedBlocks : nil
                 ))
             }
         }

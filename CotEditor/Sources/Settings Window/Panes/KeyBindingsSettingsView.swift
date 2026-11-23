@@ -33,6 +33,7 @@ struct KeyBindingsSettingsView: View {
     var usesFlexibleFrame: Bool = false
     
     @Environment(\.colorScheme) private var colorScheme
+    @State private var studioPalette = StudioPaletteManager.shared
     @State private var model = KeyBindingModel()
     @State private var searchText: String = ""
     @State private var onlyModified: Bool = false
@@ -40,12 +41,17 @@ struct KeyBindingsSettingsView: View {
     
     var body: some View {
         let _ = self.model.revision
+        let isDark = (self.colorScheme == .dark)
+        let palette = self.studioPalette.tokens(isDark: isDark)
+        let accent = palette.accent
+        let onAccent = palette.onAccentInk
         let isGlobalList = !self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || self.onlyModified
         let displayedRows = self.model.rows(searchText: self.searchText, onlyModified: self.onlyModified)
         let modifiedTotal = self.model.modifiedCount
+        let sidePad: CGFloat = self.usesFlexibleFrame ? 24 : 20
         
         VStack(spacing: 0) {
-            // Top Search & Filter Bar
+            // Zone 1: Top Search & Filter Bar (aligned to 24pt Settings header axis)
             HStack(spacing: 10) {
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
@@ -67,11 +73,11 @@ struct KeyBindingsSettingsView: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 9)
-                .frame(height: 28)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05))
+                        .fill(self.colorScheme == .dark ? Color.white.opacity(0.06) : Color.white)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -94,17 +100,17 @@ struct KeyBindingsSettingsView: View {
                         self.onlyModified = true
                     }
                 }
-                .padding(2)
+                .padding(3)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05))
                 )
             }
-            .padding(.horizontal, self.usesFlexibleFrame ? 16 : 20)
-            .padding(.top, self.usesFlexibleFrame ? 12 : 14)
+            .padding(.horizontal, sidePad)
+            .padding(.top, 12)
             .padding(.bottom, 10)
             
-            // Middle Two-Pane Shortcut Browser & Editor (zero clipping)
+            // Zone 2: Split Two-Pane Shortcut Browser & Recorder
             HStack(spacing: 0) {
                 if !isGlobalList {
                     ScrollView(.vertical, showsIndicators: true) {
@@ -112,27 +118,29 @@ struct KeyBindingsSettingsView: View {
                             ForEach(Array(self.model.tree.enumerated()), id: \.offset) { idx, node in
                                 let isSelected = ((self.model.rootIndex ?? 0) == idx)
                                 let hasModified = self.model.menuHasModified(at: idx)
+                                let menuTitle = KeyBindingModel.localizedMenuTitle(node.name)
+                                
                                 Button {
                                     self.model.rootIndex = idx
                                 } label: {
                                     HStack(spacing: 6) {
-                                        Text(node.name)
+                                        Text(menuTitle)
                                             .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
-                                            .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.86))
+                                            .foregroundStyle(isSelected ? onAccent : Color.primary.opacity(0.86))
                                             .lineLimit(1)
                                         Spacer(minLength: 2)
                                         if hasModified {
                                             Circle()
-                                                .fill(isSelected ? Color.white.opacity(0.88) : Color.accentColor)
+                                                .fill(isSelected ? onAccent.opacity(0.90) : accent)
                                                 .frame(width: 5.5, height: 5.5)
                                         }
                                     }
-                                    .padding(.horizontal, 9)
-                                    .frame(height: 28)
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 29)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .background(
                                         RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                            .fill(isSelected ? Color.accentColor : Color.clear)
+                                            .fill(isSelected ? accent : Color.clear)
                                     )
                                 }
                                 .buttonStyle(.plain)
@@ -141,11 +149,11 @@ struct KeyBindingsSettingsView: View {
                         }
                         .padding(6)
                     }
-                    .frame(width: 128)
+                    .frame(width: 146)
                     .background(Color.primary.opacity(self.colorScheme == .dark ? 0.035 : 0.025))
                     
                     Rectangle()
-                        .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.08))
+                        .fill(Color.primary.opacity(0.08))
                         .frame(width: 0.75)
                 }
                 
@@ -171,6 +179,7 @@ struct KeyBindingsSettingsView: View {
                                 KeyBindingCommandRowView(
                                     row: row,
                                     showMenuPrefix: isGlobalList,
+                                    accent: accent,
                                     model: self.model
                                 )
                                 Rectangle()
@@ -186,43 +195,69 @@ struct KeyBindingsSettingsView: View {
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(self.colorScheme == .dark ? Color.white.opacity(0.03) : Color.white)
+                    .fill(self.colorScheme == .dark ? Color.white.opacity(0.04) : Color.white)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(self.colorScheme == .dark ? 0.10 : 0.08), lineWidth: 0.75)
+                    .strokeBorder(Color.primary.opacity(self.colorScheme == .dark ? 0.11 : 0.08), lineWidth: 0.75)
             )
             .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .padding(.horizontal, self.usesFlexibleFrame ? 16 : 20)
-            .padding(.bottom, 10)
+            .padding(.horizontal, sidePad)
             
-            Divider()
-            
-            // Bottom Action Bar — always crisp and unclipped
+            // Zone 3: Elevated Unclipped Footer Action Bar (comfortably inset above bottom window edge)
             HStack(spacing: 10) {
-                Button(String(localized: "Action.restoreDefaults.label", defaultValue: "Restore Defaults"), action: self.model.restore)
-                    .disabled(!self.model.isRestorable)
-                    .fixedSize()
-                
-                Spacer(minLength: 6)
+                Button(action: self.model.restore) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(AppLanguage.text("恢复默认", en: "Restore Defaults"))
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundStyle(self.model.isRestorable ? Color.primary.opacity(0.88) : Color.secondary.opacity(0.55))
+                    .padding(.horizontal, 11)
+                    .frame(height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(
+                                self.model.isRestorable
+                                    ? (self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.white)
+                                    : Color.primary.opacity(0.03)
+                            )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(
+                                Color.primary.opacity(self.model.isRestorable ? 0.14 : 0.06),
+                                lineWidth: 0.75
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!self.model.isRestorable)
+                .pointerStyle(self.model.isRestorable ? .link : .default)
                 
                 if let error = self.model.error {
                     HStack(spacing: 4) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 11))
                         Text(error.localizedDescription)
-                            .font(.system(size: 11.5))
+                            .font(.system(size: 11.5, weight: .medium))
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
                     .foregroundStyle(.red)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.red.opacity(0.10), in: Capsule())
                 }
+                
+                Spacer(minLength: 6)
                 
                 HelpLink(anchor: "settings_keybindings")
             }
-            .padding(.horizontal, self.usesFlexibleFrame ? 16 : 20)
-            .frame(height: 44)
-            .background(.bar)
+            .padding(.horizontal, sidePad)
+            .padding(.top, 10)
+            .padding(.bottom, self.usesFlexibleFrame ? 14 : 12)
         }
         .onAppear {
             self.model.load()
@@ -262,6 +297,7 @@ private struct KeyBindingCommandRowView: View {
     
     let row: KeyBindingModel.FlattenedCommandRow
     let showMenuPrefix: Bool
+    let accent: Color
     @Bindable var model: KeyBindingModel
     
     @Environment(\.colorScheme) private var colorScheme
@@ -272,9 +308,11 @@ private struct KeyBindingCommandRowView: View {
         let currentShortcut = self.row.item.shortcut
         let defaultShortcut = self.row.item.defaultShortcut
         let isModified = (currentShortcut != defaultShortcut)
+        let localizedMenu = KeyBindingModel.localizedMenuTitle(self.row.menuName)
+        let localizedSubmenu = self.row.submenuPath.map { KeyBindingModel.localizedSubmenuPath($0) }
         let breadcrumb = self.showMenuPrefix
-            ? (self.row.submenuPath.map { "\(self.row.menuName) › \($0)" } ?? self.row.menuName)
-            : self.row.submenuPath
+            ? (localizedSubmenu.map { "\(localizedMenu) › \($0)" } ?? localizedMenu)
+            : localizedSubmenu
         let placeholder = defaultShortcut?.symbol ?? AppLanguage.text("点击录入", en: "Record")
         
         let shortcutBinding = Binding<Shortcut?>(
@@ -297,7 +335,7 @@ private struct KeyBindingCommandRowView: View {
                             .lineLimit(1)
                     }
                     
-                    Text(self.row.commandTitle)
+                    Text(KeyBindingModel.localizedCommandTitle(self.row.commandTitle))
                         .font(.system(size: 12.5, weight: isModified ? .semibold : .regular))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -344,7 +382,7 @@ private struct KeyBindingCommandRowView: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(
                         isModified
-                            ? Color.accentColor.opacity(self.colorScheme == .dark ? 0.16 : 0.10)
+                            ? self.accent.opacity(self.colorScheme == .dark ? 0.16 : 0.10)
                             : Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05)
                     )
             )
@@ -352,7 +390,7 @@ private struct KeyBindingCommandRowView: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .strokeBorder(
                         isModified
-                            ? Color.accentColor.opacity(0.55)
+                            ? self.accent.opacity(0.55)
                             : Color.primary.opacity(self.colorScheme == .dark ? 0.14 : 0.10),
                         lineWidth: isModified ? 1.0 : 0.6
                     )
@@ -369,7 +407,7 @@ private struct KeyBindingCommandRowView: View {
 }
 
 
-@MainActor @Observable private final class KeyBindingModel {
+@MainActor @Observable final class KeyBindingModel {
     
     typealias Item = Node<KeyBindingItem>
     
@@ -438,6 +476,302 @@ private struct KeyBindingCommandRowView: View {
     }
     
     
+    static func localizedMenuTitle(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard AppLanguage.current == .simplifiedChinese else {
+            return trimmed.replacingOccurrences(of: "CoTEditor", with: "CotEditor")
+        }
+        switch trimmed.lowercased() {
+            case "coteditor": return "CotEditor"
+            case "file": return "文件"
+            case "edit": return "编辑"
+            case "format": return "格式"
+            case "view": return "视图"
+            case "text": return "文本"
+            case "find": return "查找"
+            case "weekly report", "weekly reports": return "周报"
+            case "script", "scripts": return "脚本"
+            case "window": return "窗口"
+            case "help": return "帮助"
+            default: return trimmed.replacingOccurrences(of: "CoTEditor", with: "CotEditor")
+        }
+    }
+    
+    
+    private static let zhCommandTable: [String: String] = [
+        "about coteditor": "关于 CotEditor",
+        "about scripting": "关于脚本",
+        "add to tab bar": "添加到标签栏",
+        "advanced character count…": "高级字数统计…",
+        "ai organize & merge all documents…": "AI 一键整理合并所有文档…",
+        "align markdown table": "一键对齐表格",
+        "antialias": "抗锯齿",
+        "appearance": "外观",
+        "applescript dictionary": "AppleScript 词典",
+        "bigger": "增大字号",
+        "bigger font": "增大字号",
+        "block comment": "块注释",
+        "braces": "大括号",
+        "brackets": "方括号",
+        "bring all to front": "前置全部窗口",
+        "capitalize": "首字母大写",
+        "check document now": "立即检查文稿",
+        "check for updates…": "检查更新…",
+        "check grammar with spelling": "检查拼写和语法",
+        "check spelling while typing": "输入时检查拼写",
+        "clear highlight": "清除高亮",
+        "clear menu": "清除菜单",
+        "close": "关闭",
+        "close all": "全部关闭",
+        "close split editor": "关闭分栏",
+        "close tab": "关闭标签页",
+        "close window": "关闭窗口",
+        "comment": "注释",
+        "complete": "代码补全",
+        "console": "控制台",
+        "convert alphanumeric text to full width": "将字母数字转换为全角",
+        "convert alphanumeric text to half width": "将字母数字转换为半角",
+        "convert indentation to spaces": "将缩进转换为空格",
+        "convert indentation to tabs": "将缩进转换为制表符",
+        "convert to full width": "转换为全角",
+        "convert to half width": "转换为半角",
+        "copy": "拷贝",
+        "copy as rich text": "以多信息文本拷贝",
+        "copy file path": "拷贝文件路径",
+        "correct spelling automatically": "自动纠正拼写",
+        "coteditor help": "CotEditor 帮助",
+        "coteditor scripting guide": "CotEditor 脚本手册",
+        "coteditor web site": "CotEditor 网站",
+        "create issue report": "创建问题报告",
+        "custom…": "自定义…",
+        "customize toolbar…": "自定工具栏…",
+        "cut": "剪切",
+        "dark": "深色",
+        "delete": "删除",
+        "delete duplicates": "删除重复行",
+        "delete line": "删除行",
+        "direction": "方向",
+        "document inspector": "文稿信息",
+        "documents": "文档中心",
+        "double quotes": "双引号",
+        "duplicate": "复制文档",
+        "duplicate line": "复制行",
+        "edit": "编辑",
+        "edit color code…": "编辑颜色代码…",
+        "edit snippets…": "编辑代码片段…",
+        "enter full screen": "进入全屏",
+        "export…": "导出…",
+        "export settings…": "导出设置…",
+        "file": "文件",
+        "file browser": "文件浏览器",
+        "find": "查找",
+        "find all": "全部查找",
+        "find next": "查找下一个",
+        "find previous": "查找上一个",
+        "find…": "查找…",
+        "font": "字体",
+        "font type": "字体类型",
+        "format": "格式",
+        "generate weekly report…": "生成本周周报（说人话版）…",
+        "go to line…": "跳转到行…",
+        "help": "帮助",
+        "hide coteditor": "隐藏 CotEditor",
+        "hide others": "隐藏其他",
+        "hide toolbar": "隐藏工具栏",
+        "highlight all": "全部高亮",
+        "horizontal": "横排",
+        "import settings…": "导入设置…",
+        "import weekly reports (.zip / folder)…": "导入历史周报 (.zip / 文件夹)…",
+        "indentation": "缩进",
+        "inline comment": "行注释",
+        "insert backslash": "输入反斜杠",
+        "insert by unicode code point…": "Unicode 码位输入…",
+        "insert image (plain text)…": "嵌入图片…",
+        "insert snippet": "插入片段",
+        "insert yen mark": "输入日元符号",
+        "inspect character": "检视字符",
+        "inspector": "检查器",
+        "join lines": "合并行",
+        "jump to selection": "跳到所选内容",
+        "keep on top": "窗口置顶",
+        "left to right": "从左到右",
+        "ligatures": "连字",
+        "light": "浅色",
+        "line endings": "换行符",
+        "lines": "行",
+        "make lower case": "变为小写",
+        "make upper case": "变为大写",
+        "manage multiple replace…": "管理批量替换…",
+        "minimize": "最小化",
+        "monospaced": "等宽",
+        "move down": "下移",
+        "move focus to next editor": "焦点移至下一分栏",
+        "move focus to previous editor": "焦点移至上一分栏",
+        "move tab to new window": "移动标签页到新窗口",
+        "move up": "上移",
+        "multiple replace": "批量替换",
+        "multiple replace…": "批量替换…",
+        "new": "新建",
+        "new document": "新建文稿",
+        "new tab": "新建标签页",
+        "new window": "新建窗口",
+        "open ai settings": "打开 AI 设置",
+        "open outline menu": "打开大纲菜单",
+        "open recent": "打开最近使用",
+        "open weekly report center…": "打开周报中心（历史与生成）…",
+        "open…": "打开…",
+        "organize & merge all tabs + map…": "一键整理合并全部文档…",
+        "orientation": "排版方向",
+        "outline": "大纲",
+        "page setup…": "页面设置…",
+        "parentheses": "圆括号",
+        "paste": "粘贴",
+        "paste and match style": "粘贴并匹配样式",
+        "paste exactly": "精确粘贴",
+        "pin tab": "固定标签页",
+        "prevent editing": "锁定编辑",
+        "print…": "打印…",
+        "quit coteditor": "退出 CotEditor",
+        "redo": "重做",
+        "release notes": "发布说明",
+        "remove highlights": "移除高亮标记",
+        "rename…": "重新命名…",
+        "replace": "替换",
+        "replace all": "全部替换",
+        "replace and find": "替换并查找",
+        "replace and find next": "替换并查找下一个",
+        "replace dashes": "替换破折号",
+        "replace quotes": "替换引号",
+        "replace text": "替换文本",
+        "report issue": "报告问题",
+        "reports": "周报中心",
+        "reset font size": "重置字号",
+        "reset syntax analysis": "重置语法分析",
+        "reset text size": "重置文字大小",
+        "reverse": "逆序排列",
+        "revert to saved": "复原到已存储状态",
+        "right to left": "从右到左",
+        "save": "存储",
+        "save all": "全部存储",
+        "save as…": "存储为…",
+        "script": "脚本",
+        "select": "选择",
+        "select all": "全选",
+        "select all find matches": "选择全部查找匹配项",
+        "select column down": "向下选择列",
+        "select column up": "向上选择列",
+        "select enclosing symbols": "选择括号内内容",
+        "select line": "选择整行",
+        "select next outline item": "选择下一个大纲项",
+        "select previous outline item": "选择上一个大纲项",
+        "select word": "选择词组",
+        "services": "服务",
+        "settings…": "设置…",
+        "share…": "共享…",
+        "shift left": "左移缩进",
+        "shift right": "右移缩进",
+        "show all": "全部显示",
+        "show fonts": "显示字体",
+        "show in finder": "在访达中显示",
+        "show indent guides": "显示缩进参考线",
+        "show inspector": "切换检查器",
+        "show invisibles": "显示不可见字符",
+        "show line numbers": "显示行号",
+        "show navigation bar": "显示导航栏",
+        "show page guide": "显示页面参考线",
+        "show quick actions…": "显示快速操作…",
+        "show sidebar": "显示边栏",
+        "show spelling and grammar": "显示拼写和语法",
+        "show status bar": "显示状态栏",
+        "show substitutions": "显示替换",
+        "show tab bar": "显示标签栏",
+        "shuffle": "随机排列",
+        "sidebar": "边栏",
+        "single quotes": "单引号",
+        "smaller": "减小字号",
+        "smaller font": "减小字号",
+        "smart copy/paste": "智能拷贝/粘贴",
+        "smart dashes": "智能破折号",
+        "smart quotes": "智能引号",
+        "sort": "排序",
+        "sort by pattern…": "按规则排序…",
+        "speech": "语音",
+        "spelling": "拼写",
+        "spelling and grammar": "拼写和语法",
+        "split bottom": "向下分屏",
+        "split down": "向下分栏",
+        "split editor": "分栏编辑",
+        "split left": "向左分屏",
+        "split right": "向右分屏",
+        "split selection by lines": "按行拆分选区",
+        "split top": "向上分屏",
+        "stack editors vertically": "纵向分栏排列",
+        "standard": "标准",
+        "start speaking": "开始朗读",
+        "stop speaking": "停止朗读",
+        "straighten quotes": "直引号",
+        "substitutions": "替换",
+        "surround selection with": "包裹选中内容",
+        "syntax": "语法",
+        "system": "跟随系统",
+        "tab width": "制表符宽度",
+        "terminal": "终端",
+        "text": "文本",
+        "text encoding": "文本编码",
+        "text replacement": "文本替换",
+        "text size": "文字大小",
+        "text size (continuous)": "文字大小（无极）",
+        "theme": "主题",
+        "tile two windows": "并排两个窗口",
+        "toggle comment": "切换注释",
+        "toggle inspector": "切换检查器",
+        "toggle split orientation": "切换分栏方向",
+        "transformations": "大小写转换",
+        "trim trailing whitespace": "移除行尾空白",
+        "uncomment": "取消注释",
+        "undo": "撤销",
+        "unicode normalizations": "Unicode 标准化",
+        "unpin tab": "取消固定标签页",
+        "url decode": "URL 解码",
+        "url encode": "URL 编码",
+        "use selection for find": "查找所选内容",
+        "use selection for replace": "替换所选内容",
+        "use spaces for indentation": "使用空格缩进",
+        "vertical": "竖排",
+        "view": "视图",
+        "warnings": "警告",
+        "weekly reports": "周报",
+        "what’s new in coteditor": "CotEditor 新功能",
+        "what's new in coteditor": "CotEditor 新功能",
+        "window": "窗口",
+        "wrap lines": "自动换行",
+        "writing direction": "书写方向",
+        "zoom": "缩放",
+    ]
+    
+    
+    static func localizedCommandTitle(_ raw: String) -> String {
+        let normalized = raw
+            .replacingOccurrences(of: "CoTEditor", with: "CotEditor")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard AppLanguage.current == .simplifiedChinese else { return normalized }
+        
+        let key = normalized
+            .replacingOccurrences(of: "...", with: "…")
+            .lowercased()
+        
+        return Self.zhCommandTable[key] ?? normalized
+    }
+    
+    
+    static func localizedSubmenuPath(_ rawPath: String) -> String {
+        rawPath
+            .components(separatedBy: " › ")
+            .map { Self.localizedCommandTitle($0) }
+            .joined(separator: " › ")
+    }
+    
+    
     var modifiedCount: Int {
         self.allFlattenedRows().count { $0.item.shortcut != $0.item.defaultShortcut }
     }
@@ -465,8 +799,11 @@ private struct KeyBindingCommandRowView: View {
             if !trimmed.isEmpty {
                 let hay = [
                     row.menuName,
+                    Self.localizedMenuTitle(row.menuName),
                     row.submenuPath ?? "",
+                    row.submenuPath.map { Self.localizedSubmenuPath($0) } ?? "",
                     row.commandTitle,
+                    Self.localizedCommandTitle(row.commandTitle),
                     row.item.shortcut?.symbol ?? "",
                     row.item.defaultShortcut?.symbol ?? "",
                 ].joined(separator: " ").lowercased()

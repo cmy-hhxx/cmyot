@@ -2618,6 +2618,20 @@ extension AnalyticsManager {
     }
     
     
+    /// Returns `true` when an action item carries meaningful substance beyond generic boilerplate
+    /// such as `cot 优化todos` or `cot Editors`.
+    nonisolated static func hasMeaningfulActionSubstance(_ text: String) -> Bool {
+        let stripped = text.lowercased()
+            .replacingOccurrences(of: #"(coteditor|editors?|cot|todos?|fixme|roadmap)"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: "优化", with: "")
+            .replacingOccurrences(of: "待办", with: "")
+            .replacingOccurrences(of: "清单", with: "")
+            .replacingOccurrences(of: "事项", with: "")
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters).union(.symbols))
+        return stripped.count >= 3
+    }
+    
+    
     /// Sanitizes dashboard card items ("干了啥" / "要干啥") to strip all document names,
     /// file extensions, book-title brackets, and character/word counts, optionally clamping for single-line display.
     nonisolated static func sanitizeDashboardActionText(
@@ -2786,11 +2800,7 @@ extension AnalyticsManager {
                     fallback: ""
                 )
                 sanitized.reason = ""
-                let meaningfulBody = sanitized.action.lowercased()
-                    .replacingOccurrences(of: #"\b(coteditor|cot|todos?|fixme)\b"#, with: "", options: .regularExpression)
-                    .replacingOccurrences(of: "优化", with: "")
-                    .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
-                guard sanitized.action.count >= 3, meaningfulBody.count >= 3 else { return nil }
+                guard sanitized.action.count >= 3, Self.hasMeaningfulActionSubstance(sanitized.action) else { return nil }
                 let key = sanitized.action.lowercased().replacingOccurrences(of: " ", with: "")
                 guard seen.insert(key).inserted else { return nil }
                 return sanitized
@@ -2975,7 +2985,7 @@ extension AnalyticsManager {
         }
         
         let combined = blocks.joined(separator: "\n\n")
-        let fp = UserPersonalityAnalyzer.sha256Hex("pred-v2|" + combined)
+        let fp = UserPersonalityAnalyzer.sha256Hex("pred-v3|" + combined)
         return (combined, fp)
     }
     
@@ -3003,9 +3013,12 @@ extension AnalyticsManager {
                 rawAction,
                 knownTitles: knownTitles,
                 maxLength: 16,
-                fallback: "推进下一步内容"
+                fallback: ""
             )
-            guard action.count >= 3, seen.insert(action.lowercased()).inserted else { continue }
+            guard action.count >= 3,
+                  Self.hasMeaningfulActionSubstance(action),
+                  seen.insert(action.lowercased()).inserted
+            else { continue }
             
             let rawDocTitle = (dict["doc_title"] as? String ?? dict["document"] as? String ?? dict["source"] as? String ?? "")
                 .replacingOccurrences(of: "《", with: "")
@@ -3055,11 +3068,15 @@ extension AnalyticsManager {
                 pred.action,
                 knownTitles: knownTitles,
                 maxLength: 16,
-                fallback: "推进未完草稿内容"
+                fallback: ""
             )
             cleaned.reason = ""
             let key = cleaned.action.lowercased().replacingOccurrences(of: " ", with: "")
-            guard cleaned.action.count >= 3, results.count < 5, seen.insert(key).inserted else { return }
+            guard cleaned.action.count >= 3,
+                  Self.hasMeaningfulActionSubstance(cleaned.action),
+                  results.count < 5,
+                  seen.insert(key).inserted
+            else { return }
             results.append(cleaned)
         }
         
@@ -3082,11 +3099,7 @@ extension AnalyticsManager {
                     .replacingOccurrences(of: #"^[-*•]\s*\[\s*\]\s*"#, with: "", options: .regularExpression)
                     .replacingOccurrences(of: #"^(TODO|FIXME|todo|fixme|待办|下一步|后续)[:：]?\s*"#, with: "", options: .regularExpression)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                let meaningfulBody = clean.lowercased()
-                    .replacingOccurrences(of: #"\b(coteditor|cot|todos?|fixme)\b"#, with: "", options: .regularExpression)
-                    .replacingOccurrences(of: "优化", with: "")
-                    .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
-                guard clean.count >= 4, meaningfulBody.count >= 3 else { continue }
+                guard clean.count >= 4, Self.hasMeaningfulActionSubstance(clean) else { continue }
                 appendIfUnique(DocumentActionPrediction(
                     id: "heur-todo-\(doc.id)-\(results.count)",
                     action: clean,
@@ -3108,7 +3121,7 @@ extension AnalyticsManager {
             
             if let lastLine = lines.last, lastLine.hasPrefix("#") {
                 let heading = lastLine.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
-                if !heading.isEmpty {
+                if !heading.isEmpty, Self.hasMeaningfulActionSubstance(heading) {
                     appendIfUnique(DocumentActionPrediction(
                         id: "heur-heading-\(doc.id)",
                         action: "补全\(String(heading.prefix(10)))小节",
