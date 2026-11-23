@@ -67,6 +67,7 @@ nonisolated struct AIHotNewsItem: Identifiable, Codable, Hashable, Sendable {
     var tag: String?
     var coverURLString: String? = nil
     var category: NewsFeedCategory? = nil
+    var summary: String? = nil
     
     var resolvedCategory: NewsFeedCategory {
         if let category, category != .all {
@@ -97,10 +98,20 @@ nonisolated struct AIHotNewsItem: Identifiable, Codable, Hashable, Sendable {
     }
     
     
+    /// Publisher or domain label for the full reader workspace, suppressing generic `News` / `aihot` placeholders.
+    var displayPublisherLabel: String {
+        let clean = AIHotNewsService.sanitizedDisplaySource(self.source)
+        if clean.caseInsensitiveCompare("News") == .orderedSame {
+            return ""
+        }
+        return clean
+    }
+    
+    
     /// Short, pill-free metadata string (never displays `ai.hot` / `aihot.news`).
     var conciseMetaLabel: String {
         var parts: [String] = []
-        let cleanSource = AIHotNewsService.sanitizedDisplaySource(self.source)
+        let cleanSource = self.displayPublisherLabel
         if !cleanSource.isEmpty {
             parts.append(cleanSource)
         }
@@ -168,10 +179,22 @@ final class AIHotNewsService {
         }
     }
     private(set) var coverImages: [String: NSImage] = [:]
+    private(set) var bookmarkedIDs: Set<String> = []
+    private(set) var savedBookmarkedItems: [AIHotNewsItem] = []
+    private(set) var readIDs: Set<String> = []
+    private(set) var personalNotes: [String: String] = [:]
+    private(set) var aiBriefs: [String: String] = [:]
+    private(set) var isGeneratingBriefID: String? = nil
+    private(set) var briefErrorMessage: String? = nil
     
     private var inFlightCoverIDs: Set<String> = []
     private var resolvedNoCoverIDs: Set<String> = []
+    private var fetchedDetailIDs: Set<String> = []
     private let coverCacheDirectory: URL
+    
+    private static let bookmarksDefaultsKey = "cot.news.bookmarkedItemsJSON"
+    private static let readIDsDefaultsKey = "cot.news.readIDs"
+    private static let notesDefaultsKey = "cot.news.personalNotes"
     
     
     var filteredItems: [AIHotNewsItem] {
@@ -205,6 +228,151 @@ final class AIHotNewsService {
             .appending(path: "NewsCovers", directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: self.coverCacheDirectory, withIntermediateDirectories: true)
         self.loadCachedItems()
+        self.loadInteractiveState()
+    }
+    
+    
+    // MARK: Interactive Reader State (Bookmarks, Read Status, Excerpts, AI Briefs)
+    
+    func isBookmarked(_ item: AIHotNewsItem) -> Bool {
+        self.bookmarkedIDs.contains(item.id)
+    }
+    
+    
+    func toggleBookmark(_ item: AIHotNewsItem) {
+        if self.bookmarkedIDs.contains(item.id) {
+            self.bookmarkedIDs.remove(item.id)
+            self.savedBookmarkedItems.removeAll { $0.id == item.id }
+        } else {
+            self.bookmarkedIDs.insert(item.id)
+            if !self.savedBookmarkedItems.contains(where: { $0.id == item.id }) {
+                self.savedBookmarkedItems.insert(item, at: 0)
+            }
+        }
+        self.saveBookmarkedItems()
+    }
+    
+    
+    func isRead(_ item: AIHotNewsItem) -> Bool {
+        self.readIDs.contains(item.id)
+    }
+    
+    
+    func markRead(_ item: AIHotNewsItem) {
+        guard self.readIDs.insert(item.id).inserted else { return }
+        let trimmed = Array(self.readIDs.prefix(400))
+        UserDefaults.standard.set(trimmed, forKey: Self.readIDsDefaultsKey)
+    }
+    
+    
+    func note(for itemID: String) -> String {
+        self.personalNotes[itemID] ?? ""
+    }
+    
+    
+    func setNote(_ note: String, for itemID: String) {
+        let trimmed = note.trimmingCharacters(in: .newlines)
+        if trimmed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            self.personalNotes.removeValue(forKey: itemID)
+        } else {
+            self.personalNotes[itemID] = trimmed
+        }
+        UserDefaults.standard.set(self.personalNotes, forKey: Self.notesDefaultsKey)
+    }
+    
+    
+    func fetchArticleExcerptIfNeeded(for item: AIHotNewsItem) async {
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+              !self.fetchedDetailIDs.contains(item.id),
+              let pageURL = item.url
+        else { return }
+        
+        let existingSummary = item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard existingSummary.count < 40 else {
+            self.fetchedDetailIDs.insert(item.id)
+            return
+        }
+        
+        self.fetchedDetailIDs.insert(item.id)
+        let meta = await Self.fetchOpenGraphMetadata(from: pageURL)
+        guard !Task.isCancelled else { return }
+        
+        if let desc = meta.description, !desc.isEmpty,
+           let idx = self.items.firstIndex(where: { $0.id == item.id })
+        {
+            self.items[idx].summary = desc
+        }
+        if let img = meta.imageURLString,
+           let idx = self.items.firstIndex(where: { $0.id == item.id }),
+           self.items[idx].coverURLString == nil
+        {
+            self.items[idx].coverURLString = img
+            self.triggerCoverLoadIfNeeded(for: self.items[idx])
+        }
+    }
+    
+    
+    func generateAIBrief(for item: AIHotNewsItem) async {
+        guard self.isGeneratingBriefID == nil else { return }
+        guard AIService.shared.isConfigured else {
+            self.briefErrorMessage = AppLanguage.text("请先在设置中配置 AI 模型后再使用速读提炼。", en: "Configure an AI model in Settings to generate briefs.")
+            return
+        }
+        
+        self.briefErrorMessage = nil
+        self.isGeneratingBriefID = item.id
+        defer {
+            if self.isGeneratingBriefID == item.id {
+                self.isGeneratingBriefID = nil
+            }
+        }
+        
+        let sourceNote = item.displayPublisherLabel.isEmpty ? item.resolvedCategory.badgeLabel : item.displayPublisherLabel
+        let summarySnippet = item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let payload = """
+        标题：\(item.title)
+        分类：\(item.resolvedCategory.label)\(sourceNote.isEmpty ? "" : " · \(sourceNote)")
+        链接：\(item.urlString)
+        \(summarySnippet.isEmpty ? "" : "正文摘要：\n\(summarySnippet)")
+
+        请用中文输出 3 条精炼要点：
+        1. 核心事实或变化
+        2. 为什么值得关注 / 潜在影响
+        3. 可延续思考或写作切入点
+        """
+        
+        let itemID = item.id
+        do {
+            let output = try await AIService.shared.run(.summarize, on: payload) { partial in
+                AIHotNewsService.shared.aiBriefs[itemID] = partial
+            }
+            self.aiBriefs[itemID] = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            self.briefErrorMessage = error.localizedDescription
+        }
+    }
+    
+    
+    private func loadInteractiveState() {
+        if let saved = UserDefaults.standard.array(forKey: Self.readIDsDefaultsKey) as? [String] {
+            self.readIDs = Set(saved)
+        }
+        if let savedNotes = UserDefaults.standard.dictionary(forKey: Self.notesDefaultsKey) as? [String: String] {
+            self.personalNotes = savedNotes
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.bookmarksDefaultsKey),
+           let decoded = try? JSONDecoder().decode([AIHotNewsItem].self, from: data)
+        {
+            self.savedBookmarkedItems = decoded
+            self.bookmarkedIDs = Set(decoded.map(\.id))
+        }
+    }
+    
+    
+    private func saveBookmarkedItems() {
+        if let encoded = try? JSONEncoder().encode(self.savedBookmarkedItems) {
+            UserDefaults.standard.set(encoded, forKey: Self.bookmarksDefaultsKey)
+        }
     }
     
     
@@ -577,7 +745,7 @@ final class AIHotNewsService {
     }
     
     
-    private nonisolated static func fetchOpenGraphCoverURL(from pageURL: URL) async -> URL? {
+    private nonisolated static func fetchOpenGraphMetadata(from pageURL: URL) async -> (imageURLString: String?, description: String?) {
         var req = URLRequest(url: pageURL, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 6)
         req.setValue("text/html,application/xhtml+xml;q=0.9", forHTTPHeaderField: "Accept")
         req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
@@ -587,12 +755,22 @@ final class AIHotNewsService {
               let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode),
               !data.isEmpty
-        else { return nil }
+        else { return (nil, nil) }
         
         let snippetData = data.prefix(36_000)
-        guard let html = String(data: snippetData, encoding: .utf8) ?? String(data: snippetData, encoding: .isoLatin1),
-              let urlString = Self.extractOpenGraphImageURL(from: html, pageURL: pageURL)
-        else { return nil }
+        guard let html = String(data: snippetData, encoding: .utf8) ?? String(data: snippetData, encoding: .isoLatin1) else {
+            return (nil, nil)
+        }
+        return (
+            Self.extractOpenGraphImageURL(from: html, pageURL: pageURL),
+            Self.extractOpenGraphDescription(from: html)
+        )
+    }
+    
+    
+    private nonisolated static func fetchOpenGraphCoverURL(from pageURL: URL) async -> URL? {
+        let meta = await Self.fetchOpenGraphMetadata(from: pageURL)
+        guard let urlString = meta.imageURLString else { return nil }
         return URL(string: urlString)
     }
     
@@ -684,6 +862,8 @@ final class AIHotNewsService {
             
             let rawCover = Self.extractCoverURLString(from: dict)
             let coverURLString = Self.sanitizedHTTPURLString(rawCover)
+            let rawSummary = Self.firstString(in: dict, keys: ["summary", "description", "excerpt", "snippet", "text", "content", "abstract"])
+            let summary = rawSummary.flatMap { Self.stripHTMLToPlainText($0, maxLength: 360) }
             
             results.append(AIHotNewsItem(
                 id: itemID,
@@ -693,7 +873,8 @@ final class AIHotNewsService {
                 publishedAt: publishedAt,
                 heatScore: heatScore,
                 tag: tag,
-                coverURLString: coverURLString
+                coverURLString: coverURLString,
+                summary: summary
             ))
         }
         
@@ -1015,6 +1196,44 @@ final class AIHotNewsService {
     }
     
     
+    nonisolated static func extractOpenGraphDescription(from html: String) -> String? {
+        let patterns: [String] = [
+            #"<meta[^>]+(?:property|name)\s*=\s*["'](?:og:description|twitter:description|description)["'][^>]+content\s*=\s*["']([^"']+)["']"#,
+            #"<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+(?:property|name)\s*=\s*["'](?:og:description|twitter:description|description)["']"#,
+        ]
+        let nsHTML = html as NSString
+        let range = NSRange(location: 0, length: nsHTML.length)
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            if let match = regex.firstMatch(in: html, range: range), match.numberOfRanges >= 2 {
+                let raw = nsHTML.substring(with: match.range(at: 1))
+                if let clean = Self.stripHTMLToPlainText(raw, maxLength: 360) {
+                    return clean
+                }
+            }
+        }
+        return nil
+    }
+    
+    
+    nonisolated static func stripHTMLToPlainText(_ raw: String, maxLength: Int = 360) -> String? {
+        var text = raw.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+        for (entity, replacement) in [
+            ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+            ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"), ("&nbsp;", " "),
+        ] {
+            text = text.replacingOccurrences(of: entity, with: replacement)
+        }
+        text = text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count >= 8 else { return nil }
+        if text.count > maxLength {
+            return String(text.prefix(maxLength - 1)) + "…"
+        }
+        return text
+    }
+    
+    
     fileprivate nonisolated static func hostLabel(from urlString: String) -> String {
         
         guard let host = URL(string: urlString)?.host?.lowercased(), !host.isEmpty else {
@@ -1039,6 +1258,7 @@ private nonisolated final class RSSFeedParserDelegate: NSObject, XMLParserDelega
     private var currentCategory = ""
     private var currentID = ""
     private var currentCover = ""
+    private var currentSummary = ""
     private var elementBuffer = ""
     private var seenTitles = Set<String>()
     private var seenIDs = Set<String>()
@@ -1064,6 +1284,7 @@ private nonisolated final class RSSFeedParserDelegate: NSObject, XMLParserDelega
             self.currentCategory = ""
             self.currentID = ""
             self.currentCover = ""
+            self.currentSummary = ""
         } else if self.inEntry {
             if self.isDirectEntryChild,
                local == "link",
@@ -1131,6 +1352,11 @@ private nonisolated final class RSSFeedParserDelegate: NSObject, XMLParserDelega
                         if self.currentCover.isEmpty, let img = AIHotNewsService.firstHTMLImageURL(in: text) {
                             self.currentCover = img
                         }
+                        if let clean = AIHotNewsService.stripHTMLToPlainText(text, maxLength: 360),
+                           clean.count > self.currentSummary.count
+                        {
+                            self.currentSummary = clean
+                        }
                     default:
                         break
                 }
@@ -1169,7 +1395,8 @@ private nonisolated final class RSSFeedParserDelegate: NSObject, XMLParserDelega
                     publishedAt: publishedAt,
                     heatScore: nil,
                     tag: self.currentCategory.isEmpty ? nil : self.currentCategory,
-                    coverURLString: sanitizedCover
+                    coverURLString: sanitizedCover,
+                    summary: self.currentSummary.isEmpty ? nil : self.currentSummary
                 ))
             }
         }

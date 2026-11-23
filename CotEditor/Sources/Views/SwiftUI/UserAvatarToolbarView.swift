@@ -727,7 +727,7 @@ private enum QuickTodoDDL: String, CaseIterable, Identifiable {
 
 // MARK: - Dedicated Toolbar Capsule Todo Region (Left of Avatar)
 
-/// Sorts active todos prioritizing overdue and soonest-expiring items first, and always formats a time badge.
+/// Sorts active todos in reverse chronological order of deadline (latest DDL first, timeless last), and formats time badges.
 nonisolated enum ToolbarCapsuleTodoHelper {
     
     static func prioritizedTodos(_ todos: [UserReminder]) -> [UserReminder] {
@@ -739,7 +739,7 @@ nonisolated enum ToolbarCapsuleTodoHelper {
                     return false
                 case (true, true):
                     if lhs.dueDate != rhs.dueDate {
-                        return lhs.dueDate < rhs.dueDate
+                        return lhs.dueDate > rhs.dueDate
                     }
                     return lhs.createdAt > rhs.createdAt
                 case (false, false):
@@ -755,6 +755,17 @@ nonisolated enum ToolbarCapsuleTodoHelper {
             return PinnedTodoUrgency.compactBadgeText(item.dueDate.timeIntervalSince(now))
         }
         return item.createdAt.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+    }
+    
+    
+    /// Formats an explicit DDL timestamp (`HH:mm` today or `MM/dd HH:mm` on other days) for display alongside countdowns.
+    static func deadlineClockText(for item: UserReminder, now: Date) -> String? {
+        guard item.hasDeadline else { return nil }
+        let cal = Calendar.current
+        if cal.isDate(item.dueDate, inSameDayAs: now) {
+            return item.dueDate.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+        }
+        return item.dueDate.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
     }
     
     
@@ -1334,6 +1345,13 @@ private struct ToolbarCapsuleTodoDropdownView: View {
                 Text(timeText)
                     .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
                     .foregroundStyle(urgency >= 3 ? accentColor : .primary)
+                
+                if let ddlClock = ToolbarCapsuleTodoHelper.deadlineClockText(for: item, now: now) {
+                    Text(ddlClock)
+                        .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 4)
+                }
             }
             
             // Picking-up-order inspired luminous horizontal progress track
@@ -1504,7 +1522,14 @@ private struct ToolbarCapsuleTodoDropdownView: View {
             
             Spacer(minLength: 4)
             
-            // Always show tabular countdown pill
+            // Always show tabular DDL clock + countdown pill
+            if let ddlClock = ToolbarCapsuleTodoHelper.deadlineClockText(for: item, now: now) {
+                Text(ddlClock)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
+            
             Text(timeText)
                 .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
                 .foregroundStyle(badgeColor)
@@ -2387,7 +2412,87 @@ struct SoftAvatarAuroraBackdrop: View {
 }
 
 
-// MARK: - 3D Cosmic Nebula Orbital Danmaku Stage (宇宙星云环绕弹幕)
+// MARK: - Stratified Non-Overlapping Danmaku Stage (分层无遮挡环绕弹幕)
+
+nonisolated enum AvatarDanmakuLaneScheduler {
+    
+    struct ScheduledItem: Identifiable, Sendable {
+        var id: String { self.tag.id }
+        let tag: UserPersonalityTag
+        let index: Int
+        let laneIndex: Int
+        let x: CGFloat
+        let y: CGFloat
+        let scale: CGFloat
+        let opacity: Double
+    }
+    
+    static let stageWidth: CGFloat = 320
+    static let stageHeight: CGFloat = 186
+    static let pillEstimatedWidth: CGFloat = 116
+    static let pillEstimatedHeight: CGFloat = 22
+    static let cycleSpan: CGFloat = 480
+    
+    // 4 strictly disjoint horizontal bands:
+    // Lane 0 (outer top): y ≈ -76  [-87, -65]
+    // Lane 1 (inner top): y ≈ -48  [-59, -37] (clears central 68x68 avatar radius = 34pt)
+    // Lane 2 (inner bot): y ≈ +48  [+37, +59]
+    // Lane 3 (outer bot): y ≈ +76  [+65, +87]
+    private static let laneBaseY: [CGFloat] = [-76, -48, 48, 76]
+    private static let laneSpeeds: [Double] = [-24.0, 19.0, -21.0, 17.0]
+    private static let laneInitialPhase: [Double] = [30, 150, 90, 210]
+    
+    static func schedule(
+        tags: [UserPersonalityTag],
+        elapsed: TimeInterval,
+        shockExpand: CGFloat = 0
+    ) -> [ScheduledItem] {
+        let clampedTags = Array(tags.prefix(8))
+        guard !clampedTags.isEmpty else { return [] }
+        
+        let halfSpan = Self.cycleSpan * 0.5
+        return clampedTags.enumerated().map { idx, tag in
+            let lane = idx % 4
+            let slot = idx / 4
+            let speed = Self.laneSpeeds[lane]
+            let rawPos = Self.laneInitialPhase[lane]
+                + Double(slot) * Double(halfSpan)
+                + elapsed * speed
+            var wrapped = rawPos.truncatingRemainder(dividingBy: Double(Self.cycleSpan))
+            if wrapped < 0 { wrapped += Double(Self.cycleSpan) }
+            let x = CGFloat(wrapped) - halfSpan
+            
+            let baseY = Self.laneBaseY[lane]
+            let signY: CGFloat = baseY < 0 ? -1 : 1
+            let arch: CGFloat = (lane == 1 || lane == 2)
+                ? signY * 2.0 * CGFloat(exp(-Double((x / 52.0) * (x / 52.0))))
+                : 0
+            let shockOffset = signY * min(4.0, abs(shockExpand) * 0.22) * (shockExpand >= 0 ? 1 : -0.4)
+            let y = baseY + arch + shockOffset
+            
+            let absX = abs(x)
+            let edgeFade: Double = if absX <= 122 {
+                1.0
+            } else if absX >= 172 {
+                0.0
+            } else {
+                Double(1.0 - (absX - 122) / 50.0)
+            }
+            let laneScale: CGFloat = (lane == 1 || lane == 2) ? 0.98 : 0.95
+            
+            return ScheduledItem(
+                tag: tag,
+                index: idx,
+                laneIndex: lane,
+                x: x,
+                y: y,
+                scale: laneScale,
+                opacity: edgeFade
+            )
+        }
+    }
+}
+
 
 private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
     
@@ -2406,38 +2511,8 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
     @State private var isPaused = false
     @Environment(\.colorScheme) private var colorScheme
     
-    private let stageWidth: CGFloat = 320
-    private let stageHeight: CGFloat = 186
-    
-    private struct OrbitPlane {
-        let rx: CGFloat
-        let ry: CGFloat
-        let tiltDeg: Double
-        let speed: Double
-        let phaseOffset: Double
-        let yBias: CGFloat
-    }
-    
-    private static var orbitPlanes: [OrbitPlane] {
-        [
-            OrbitPlane(rx: 124, ry: 44, tiltDeg: -16, speed: 0.34, phaseOffset: 0.2, yBias: -6),
-            OrbitPlane(rx: 132, ry: 56, tiltDeg: +14, speed: -0.28, phaseOffset: 1.8, yBias: +4),
-            OrbitPlane(rx: 112, ry: 68, tiltDeg: -24, speed: 0.24, phaseOffset: 3.4, yBias: -2),
-            OrbitPlane(rx: 136, ry: 38, tiltDeg: +9,  speed: -0.38, phaseOffset: 4.9, yBias: +6),
-        ]
-    }
-    
-    private struct ProjectedStarTag: Identifiable {
-        var id: String { self.tag.id }
-        let tag: UserPersonalityTag
-        let index: Int
-        let x: CGFloat
-        let y: CGFloat
-        let depth: Double      // -1 (far behind) ... +1 (close foreground)
-        let scale: CGFloat
-        let opacity: Double
-        let tiltDeg: Double
-    }
+    private let stageWidth: CGFloat = AvatarDanmakuLaneScheduler.stageWidth
+    private let stageHeight: CGFloat = AvatarDanmakuLaneScheduler.stageHeight
     
     
     var body: some View {
@@ -2453,43 +2528,39 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
                 : 0
             let shockRingProgress: CGFloat = (shockElapsed < 0.78) ? CGFloat(shockElapsed / 0.78) : -1
             
-            let projected = self.projectTags(uniqueTags, elapsed: dt, shockExpand: shockExpand)
-            let backTags = projected.filter { $0.depth < 0 }.sorted { $0.depth < $1.depth }
-            let frontTags = projected.filter { $0.depth >= 0 }.sorted { $0.depth < $1.depth }
+            let scheduled = AvatarDanmakuLaneScheduler.schedule(
+                tags: uniqueTags,
+                elapsed: dt,
+                shockExpand: shockExpand
+            )
             
             ZStack {
-                // Layer 0: Swirling Cosmic Nebula Dust, Starfield & 3D Tilted Orbital Rings
+                // Layer 0: Subtle ambient starfield & sanctuary rings around the center avatar
                 self.cosmicNebulaCanvas(elapsed: dt, shockExpand: shockExpand, shockRingProgress: shockRingProgress)
                     .zIndex(0)
                 
-                // Layer 1: Far-side orbiting tags passing behind the avatar
-                ForEach(backTags) { item in
-                    self.nebulaTagView(item, elapsed: dt)
-                }
-                .zIndex(1)
-                
-                // Layer 2: Central Star (User Avatar)
+                // Layer 1: Central User Avatar in unobstructed sanctuary
                 self.avatarContent()
-                    .zIndex(2)
+                    .zIndex(1)
                 
-                // Layer 3: Foreground orbiting tags gliding in front of the avatar
-                ForEach(frontTags) { item in
+                // Layer 2: Strictly non-overlapping stratified danmaku tracks
+                ForEach(scheduled) { item in
                     self.nebulaTagView(item, elapsed: dt)
+                        .zIndex(self.hoveredTagID == item.tag.id ? 4 : 2)
                 }
-                .zIndex(3)
             }
             .frame(width: self.stageWidth, height: self.stageHeight)
             .clipped()
             .mask(
-                RadialGradient(
+                LinearGradient(
                     stops: [
-                        .init(color: .black, location: 0.0),
-                        .init(color: .black, location: 0.84),
+                        .init(color: .clear, location: 0.0),
+                        .init(color: .black, location: 0.10),
+                        .init(color: .black, location: 0.90),
                         .init(color: .clear, location: 1.0),
                     ],
-                    center: .center,
-                    startRadius: 20,
-                    endRadius: self.stageWidth * 0.56
+                    startPoint: .leading,
+                    endPoint: .trailing
                 )
             )
         }
@@ -2510,54 +2581,8 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
     }
     
     
-    private func projectTags(
-        _ uniqueTags: [UserPersonalityTag],
-        elapsed: TimeInterval,
-        shockExpand: CGFloat
-    ) -> [ProjectedStarTag] {
-        let count = max(1, uniqueTags.count)
-        return uniqueTags.enumerated().map { idx, tag in
-            let plane = Self.orbitPlanes[idx % Self.orbitPlanes.count]
-            let evenSpacing = (Double(idx) / Double(count)) * (2.0 * .pi)
-            let angle = elapsed * plane.speed + evenSpacing + plane.phaseOffset
-            
-            let cosA = cos(angle)
-            let sinA = sin(angle) // depth: -1 back, +1 front
-            let rx = plane.rx + shockExpand
-            let ry = plane.ry + shockExpand * 0.55
-            
-            let rawX = CGFloat(cosA) * rx
-            let rawY = CGFloat(sinA) * ry
-            
-            let tiltRad = plane.tiltDeg * .pi / 180.0
-            let cosT = CGFloat(cos(tiltRad))
-            let sinT = CGFloat(sin(tiltRad))
-            
-            let x = rawX * cosT - rawY * sinT
-            let y = rawX * sinT + rawY * cosT + plane.yBias
-            
-            // Perspective scale & luminosity from 3D depth `sinA` (-1 ... +1)
-            let depthNorm = (sinA + 1.0) * 0.5 // 0 (far) ... 1 (near)
-            let scale = CGFloat(0.78 + depthNorm * 0.28)
-            let opacity = 0.44 + depthNorm * 0.56
-            let driftTilt = cosA * 3.2
-            
-            return ProjectedStarTag(
-                tag: tag,
-                index: idx,
-                x: x,
-                y: y,
-                depth: sinA,
-                scale: scale,
-                opacity: opacity,
-                tiltDeg: driftTilt
-            )
-        }
-    }
-    
-    
     @ViewBuilder
-    private func nebulaTagView(_ item: ProjectedStarTag, elapsed: TimeInterval) -> some View {
+    private func nebulaTagView(_ item: AvatarDanmakuLaneScheduler.ScheduledItem, elapsed: TimeInterval) -> some View {
         let tag = item.tag
         let isHovered = (self.hoveredTagID == tag.id)
         let isTapped = (self.tappedTagID == tag.id)
@@ -2565,10 +2590,10 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
         let toneColor = UserProfilePopoverView.toneColor(for: tag.tone)
         let isDark = (self.colorScheme == .dark)
         
-        let hoverScale: CGFloat = isHovered ? 1.14 : (isTapped ? 0.92 : 1.0)
+        let hoverScale: CGFloat = isHovered ? 1.08 : (isTapped ? 0.94 : 1.0)
         let finalScale = item.scale * hoverScale
-        let finalOpacity = (isHovered || isSelected) ? 1.0 : item.opacity
-        let starPulse = 0.65 + 0.35 * sin(elapsed * 3.2 + Double(item.index) * 1.4)
+        let finalOpacity = (isHovered || isSelected) ? max(item.opacity, 0.96) : item.opacity
+        let starPulse = 0.65 + 0.35 * sin(elapsed * 3.0 + Double(item.index) * 1.4)
         
         Button {
             self.handleTagTap(tag)
@@ -2577,15 +2602,16 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
                 Circle()
                     .fill(isSelected ? Color.white : toneColor)
                     .frame(width: 4.5, height: 4.5)
-                    .shadow(color: toneColor.opacity(0.85 * starPulse), radius: 3)
+                    .shadow(color: toneColor.opacity(0.75 * starPulse), radius: 2.5)
                 
                 Text(tag.label)
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(isDark ? 0.94 : 0.88))
                     .lineLimit(1)
             }
-            .padding(.horizontal, 9.5)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3.5)
+            .frame(height: AvatarDanmakuLaneScheduler.pillEstimatedHeight)
             .background {
                 if isSelected {
                     Capsule().fill(self.accent)
@@ -2614,28 +2640,28 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
                             colors: isHovered || isSelected
                                 ? [Color.white.opacity(0.80), toneColor.opacity(0.70)]
                                 : (isDark
-                                    ? [Color.white.opacity(0.28), toneColor.opacity(0.20)]
+                                    ? [Color.white.opacity(0.26), toneColor.opacity(0.20)]
                                     : [Color.white.opacity(0.92), toneColor.opacity(0.26)]),
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
-                        lineWidth: isHovered || isSelected ? 1.1 : 0.75
+                        lineWidth: isHovered || isSelected ? 1.05 : 0.75
                     )
             )
             .shadow(
-                color: toneColor.opacity(isHovered ? 0.34 : (isDark ? 0.22 : 0.10)),
-                radius: isHovered ? 8 : 4,
+                color: toneColor.opacity(isHovered ? 0.30 : (isDark ? 0.18 : 0.08)),
+                radius: isHovered ? 6 : 3,
                 y: isHovered ? 2 : 1
             )
             .scaleEffect(finalScale)
-            .rotationEffect(.degrees(isHovered ? 0 : item.tiltDeg))
             .opacity(finalOpacity)
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)
+        .allowsHitTesting(item.opacity > 0.12)
         .offset(x: item.x, y: item.y)
         .onHover { inside in
-            withAnimation(.spring(response: 0.26, dampingFraction: 0.62)) {
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.68)) {
                 if inside {
                     self.hoveredTagID = tag.id
                 } else if self.hoveredTagID == tag.id {
@@ -2659,27 +2685,27 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
         Canvas { context, size in
             let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
             
-            // 1. Soft swirling nebula clouds (two counter-rotating cosmic dust arms)
+            // 1. Soft radial aurora around center avatar
             for arm in 0..<2 {
                 let armAngle = elapsed * (arm == 0 ? 0.14 : -0.11) + Double(arm) * 2.1
                 let armCenter = CGPoint(
-                    x: center.x + CGFloat(cos(armAngle)) * 28,
-                    y: center.y + CGFloat(sin(armAngle)) * 16
+                    x: center.x + CGFloat(cos(armAngle)) * 22,
+                    y: center.y + CGFloat(sin(armAngle)) * 10
                 )
-                let cloudRadius: CGFloat = arm == 0 ? 118 : 96
+                let cloudRadius: CGFloat = arm == 0 ? 110 : 88
                 let cloudColor = arm == 0 ? self.accent : cosmicViolet
                 let cloudRect = CGRect(
                     x: armCenter.x - cloudRadius,
-                    y: armCenter.y - cloudRadius * 0.62,
+                    y: armCenter.y - cloudRadius * 0.58,
                     width: cloudRadius * 2,
-                    height: cloudRadius * 1.24
+                    height: cloudRadius * 1.16
                 )
                 context.fill(
                     Ellipse().path(in: cloudRect),
                     with: .radialGradient(
                         Gradient(colors: [
-                            cloudColor.opacity(isDark ? 0.20 : 0.12),
-                            cosmicCyan.opacity(isDark ? 0.08 : 0.04),
+                            cloudColor.opacity(isDark ? 0.18 : 0.10),
+                            cosmicCyan.opacity(isDark ? 0.06 : 0.03),
                             .clear,
                         ]),
                         center: armCenter,
@@ -2689,89 +2715,39 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
                 )
             }
             
-            // 2. Twinkling cosmic starfield (34 deterministic micro-stars + diamond starlight glints)
-            for i in 0..<34 {
+            // 2. Subtle ambient starfield
+            for i in 0..<26 {
                 let seed = Double(i) * 1.61803398875
-                let baseRadius = 46.0 + (seed.truncatingRemainder(dividingBy: 1.0)) * 108.0
-                let theta = Double(i) * 2.39996 + elapsed * (0.045 + Double(i % 5) * 0.012) * (i.isMultiple(of: 2) ? 1.0 : -1.0)
+                let baseRadius = 46.0 + (seed.truncatingRemainder(dividingBy: 1.0)) * 102.0
+                let theta = Double(i) * 2.39996 + elapsed * (0.04 + Double(i % 4) * 0.01) * (i.isMultiple(of: 2) ? 1.0 : -1.0)
                 let sx = center.x + CGFloat(cos(theta) * baseRadius)
-                let sy = center.y + CGFloat(sin(theta) * baseRadius * 0.56)
-                let twinkle = 0.25 + 0.75 * (0.5 + 0.5 * sin(elapsed * (1.8 + Double(i % 4) * 0.7) + Double(i) * 1.7))
-                let starR: CGFloat = (i % 7 == 0) ? 1.65 : (i % 3 == 0 ? 1.15 : 0.8)
-                let starColor: Color = switch i % 4 {
-                    case 0: self.accent
-                    case 1: cosmicCyan
-                    case 2: isDark ? .white : self.secondaryAccent
-                    default: cosmicViolet
-                }
-                let alpha = (isDark ? 0.75 : 0.52) * twinkle
+                let sy = center.y + CGFloat(sin(theta) * baseRadius * 0.54)
+                let twinkle = 0.25 + 0.75 * (0.5 + 0.5 * sin(elapsed * (1.8 + Double(i % 4) * 0.6) + Double(i) * 1.7))
+                let starR: CGFloat = (i % 7 == 0) ? 1.5 : 0.9
+                let starColor: Color = i.isMultiple(of: 3) ? self.accent : (i.isMultiple(of: 2) ? cosmicCyan : cosmicViolet)
+                let alpha = (isDark ? 0.55 : 0.36) * twinkle
                 let dotRect = CGRect(x: sx - starR, y: sy - starR, width: starR * 2, height: starR * 2)
                 context.fill(Circle().path(in: dotRect), with: .color(starColor.opacity(alpha)))
-                
-                // Subtle 4-point star glint on brightest stars
-                if i % 9 == 0 {
-                    var glint = Path()
-                    let arm: CGFloat = 4.2 * CGFloat(twinkle)
-                    glint.move(to: CGPoint(x: sx - arm, y: sy))
-                    glint.addLine(to: CGPoint(x: sx + arm, y: sy))
-                    glint.move(to: CGPoint(x: sx, y: sy - arm))
-                    glint.addLine(to: CGPoint(x: sx, y: sy + arm))
-                    context.stroke(glint, with: .color(starColor.opacity(alpha * 0.65)), lineWidth: 0.65)
-                }
             }
             
-            // 3. Tilted 3D planetary nebula orbital rings + glowing comets
-            let rings: [(rx: CGFloat, ry: CGFloat, tilt: Double, speed: Double, color: Color)] = [
-                (118 + shockExpand * 0.8, 42 + shockExpand * 0.4, -16, 0.52, self.accent),
-                (134 + shockExpand,       56 + shockExpand * 0.5, +14, -0.38, cosmicCyan),
-            ]
-            for ring in rings {
-                var ringPath = Path()
-                let tiltRad = ring.tilt * .pi / 180.0
-                let cosT = CGFloat(cos(tiltRad))
-                let sinT = CGFloat(sin(tiltRad))
-                let steps = 64
-                for s in 0...steps {
-                    let a = (Double(s) / Double(steps)) * 2.0 * .pi
-                    let lx = CGFloat(cos(a)) * ring.rx
-                    let ly = CGFloat(sin(a)) * ring.ry
-                    let px = center.x + lx * cosT - ly * sinT
-                    let py = center.y + lx * sinT + ly * cosT
-                    if s == 0 { ringPath.move(to: CGPoint(x: px, y: py)) }
-                    else { ringPath.addLine(to: CGPoint(x: px, y: py)) }
-                }
-                context.stroke(
-                    ringPath,
-                    with: .color(ring.color.opacity(isDark ? 0.22 : 0.16)),
-                    style: StrokeStyle(lineWidth: 0.85, dash: [4, 5])
-                )
-                
-                // Luminous comet + trailing dust arc moving along the ring
-                let cometA = elapsed * ring.speed
-                for tailIdx in 0..<8 {
-                    let ta = cometA - Double(tailIdx) * 0.08 * (ring.speed >= 0 ? 1.0 : -1.0)
-                    let lx = CGFloat(cos(ta)) * ring.rx
-                    let ly = CGFloat(sin(ta)) * ring.ry
-                    let px = center.x + lx * cosT - ly * sinT
-                    let py = center.y + lx * sinT + ly * cosT
-                    let frac = 1.0 - Double(tailIdx) / 8.0
-                    let r = CGFloat(2.4 * frac + 0.5)
-                    context.fill(
-                        Circle().path(in: CGRect(x: px - r, y: py - r, width: r * 2, height: r * 2)),
-                        with: .color(ring.color.opacity((isDark ? 0.85 : 0.68) * frac * frac))
-                    )
-                }
-            }
+            // 3. Quiet concentric sanctuary ring around avatar
+            let sanctuaryR = 40 + shockExpand * 0.25
+            let sanctuaryRect = CGRect(x: center.x - sanctuaryR, y: center.y - sanctuaryR, width: sanctuaryR * 2, height: sanctuaryR * 2)
+            context.stroke(
+                Circle().path(in: sanctuaryRect),
+                with: .color(self.accent.opacity(isDark ? 0.22 : 0.16)),
+                style: StrokeStyle(lineWidth: 0.8, dash: [3, 4])
+            )
             
-            // 4. Supernova nebula shockwave ring on avatar tap
+            // 4. Supernova shockwave ring on avatar tap
             if shockRingProgress >= 0, shockRingProgress <= 1 {
-                let waveR = 36 + shockRingProgress * 116
-                let waveAlpha = Double(1.0 - shockRingProgress) * (isDark ? 0.55 : 0.42)
-                let waveRect = CGRect(x: center.x - waveR, y: center.y - waveR * 0.72, width: waveR * 2, height: waveR * 1.44)
+                let waveR = 36 + shockRingProgress * 110
+                let waveAlpha = Double(1.0 - shockRingProgress) * (isDark ? 0.52 : 0.38)
+                let waveRect = CGRect(x: center.x - waveR, y: center.y - waveR * 0.68, width: waveR * 2, height: waveR * 1.36)
                 context.stroke(
                     Ellipse().path(in: waveRect),
                     with: .color(self.accent.opacity(waveAlpha)),
-                    lineWidth: max(0.6, 2.2 * (1.0 - shockRingProgress))
+                    lineWidth: max(0.6, 2.0 * (1.0 - shockRingProgress))
                 )
             }
         }

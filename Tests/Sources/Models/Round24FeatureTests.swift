@@ -125,7 +125,7 @@ struct Round24FeatureTests {
         )
         
         let sorted = ToolbarCapsuleTodoHelper.prioritizedTodos([timeless, later, soon, overdue])
-        #expect(sorted.map(\.id) == ["overdue", "soon", "later", "timeless"])
+        #expect(sorted.map(\.id) == ["later", "soon", "overdue", "timeless"])
         
         // Every item, including timeless ones, produces a non-empty time badge
         for item in sorted {

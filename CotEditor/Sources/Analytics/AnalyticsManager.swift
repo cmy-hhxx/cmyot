@@ -1398,7 +1398,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
                     return lhs.hasDeadline
                 }
                 if lhs.hasDeadline && lhs.dueDate != rhs.dueDate {
-                    return lhs.dueDate < rhs.dueDate
+                    return lhs.dueDate > rhs.dueDate
                 }
                 return lhs.createdAt > rhs.createdAt
             }

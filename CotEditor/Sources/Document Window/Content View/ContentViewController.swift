@@ -491,6 +491,7 @@ final class ContentViewController: NSSplitViewController {
     func hideInWindowCenter() {
         
         self.activeCenter = nil
+        self.centerHostModel.popSubLayer = nil
         self.removeCenterEscMonitor()
         self.splitView.isHidden = false
         self.centerHostView?.isHidden = true
@@ -606,6 +607,9 @@ final class ContentViewController: NSSplitViewController {
                     event.window?.makeFirstResponder(nil)
                     return nil
                 }
+            }
+            if self.centerHostModel.popSubLayer?() == true {
+                return nil
             }
             self.hideInWindowCenter()
             return nil
@@ -803,6 +807,7 @@ private extension NSViewController {
 @MainActor @Observable
 private final class WorkspaceCenterHostModel {
     var selectedKind: WorkspaceCenterKind = .documents
+    var popSubLayer: (() -> Bool)?
 }
 
 
@@ -851,6 +856,9 @@ private struct WorkspaceCenterHostView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))
+        .environment(\.registerWorkspaceCenterEscPop) { [weak hostModel = self.hostModel] handler in
+            hostModel?.popSubLayer = handler
+        }
     }
 }
 

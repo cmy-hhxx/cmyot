@@ -22,6 +22,8 @@
 import AppKit
 import SwiftUI
 
+// MARK: - Window / Settings Entry Points
+
 /// Routes dashboard presentation requests into the active editor window (never opens a standalone window).
 @MainActor final class AnalyticsDashboardWindowController {
     
@@ -103,12 +105,427 @@ struct DashboardSettingsView: View {
 }
 
 
+// MARK: - Sub-Layer Escape Coordination
+
+private struct WorkspaceCenterEscRegisterKey: EnvironmentKey {
+    static let defaultValue: (@MainActor ((() -> Bool)?) -> Void)? = nil
+}
+
+extension EnvironmentValues {
+    var registerWorkspaceCenterEscPop: (@MainActor ((() -> Bool)?) -> Void)? {
+        get { self[WorkspaceCenterEscRegisterKey.self] }
+        set { self[WorkspaceCenterEscRegisterKey.self] = newValue }
+    }
+}
+
+
+// MARK: - Mathematical Trend Curve Engine (Fritsch–Carlson C¹ Hermite Spline + Gaussian μ ± σ Band)
+
+nonisolated enum MathematicalTrendCurveEngine {
+    
+    struct SamplePoint: Sendable, Equatable {
+        let t: Double        // Normalized x in [0, 1]
+        let value: Double    // Interpolated value >= 0
+        let mu: Double       // Gaussian kernel regression mean
+        let sigma: Double    // Local Gaussian-weighted std dev
+        
+        var upper: Double { self.mu + 0.65 * self.sigma }
+        var lower: Double { max(0, self.mu - 0.65 * self.sigma) }
+    }
+    
+    struct Result: Sendable {
+        let rawValues: [Double]
+        let samples: [SamplePoint]
+        let maxScale: Double
+        let peakIndex: Int?
+        let peakValue: Double
+        let averageValue: Double
+    }
+    
+    
+    /// Evaluates a C¹ monotone cubic Hermite spline (Fritsch–Carlson) alongside a Gaussian kernel
+    /// regression curve μ(t) and local ±0.65σ volatility corridor over `values`.
+    static func compute(values: [Double], samplesPerSegment: Int = 8, bandwidth: Double = 1.65) -> Result {
+        let clean = values.map { max(0, $0.isFinite ? $0 : 0) }
+        guard !clean.isEmpty else {
+            return Result(rawValues: [], samples: [], maxScale: 100, peakIndex: nil, peakValue: 0, averageValue: 0)
+        }
+        
+        let n = clean.count
+        let average = clean.reduce(0, +) / Double(n)
+        let peakPair = clean.enumerated().max(by: { $0.element < $1.element })
+        let peakIdx = (peakPair?.element ?? 0) > 0 ? peakPair?.offset : nil
+        let peakVal = peakPair?.element ?? 0
+        
+        if n == 1 {
+            let v = clean[0]
+            let s = SamplePoint(t: 0.5, value: v, mu: v, sigma: 0)
+            return Result(
+                rawValues: clean,
+                samples: [s],
+                maxScale: max(100, v * 1.15),
+                peakIndex: peakIdx,
+                peakValue: peakVal,
+                averageValue: average
+            )
+        }
+        
+        // 1. Fritsch–Carlson monotone cubic Hermite tangents (unit step h = 1)
+        var secants = [Double](repeating: 0, count: n - 1)
+        for k in 0..<(n - 1) {
+            secants[k] = clean[k + 1] - clean[k]
+        }
+        var tangents = [Double](repeating: 0, count: n)
+        tangents[0] = secants[0]
+        tangents[n - 1] = secants[n - 2]
+        for k in 1..<(n - 1) {
+            if secants[k - 1] * secants[k] > 0 {
+                tangents[k] = 0.5 * (secants[k - 1] + secants[k])
+            } else {
+                tangents[k] = 0
+            }
+        }
+        for k in 0..<(n - 1) {
+            let dk = secants[k]
+            if abs(dk) < 1e-9 {
+                tangents[k] = 0
+                tangents[k + 1] = 0
+            } else {
+                let alpha = tangents[k] / dk
+                let beta = tangents[k + 1] / dk
+                let sq = alpha * alpha + beta * beta
+                if sq > 9.0 {
+                    let tau = 3.0 / sqrt(sq)
+                    tangents[k] = tau * alpha * dk
+                    tangents[k + 1] = tau * beta * dk
+                }
+            }
+        }
+        
+        // 2. Dense curve evaluation + Gaussian kernel regression μ(x) and local σ(x)
+        let segSteps = max(2, samplesPerSegment)
+        let totalSteps = (n - 1) * segSteps
+        var samples: [SamplePoint] = []
+        samples.reserveCapacity(totalSteps + 1)
+        let twoB2 = max(0.2, 2.0 * bandwidth * bandwidth)
+        
+        var globalMax: Double = max(100, peakVal)
+        for step in 0...totalSteps {
+            let x = Double(step) / Double(segSteps)
+            let k = min(n - 2, Int(floor(x)))
+            let u = max(0, min(1, x - Double(k)))
+            let u2 = u * u
+            let u3 = u2 * u
+            
+            let h00 = 2 * u3 - 3 * u2 + 1
+            let h10 = u3 - 2 * u2 + u
+            let h01 = -2 * u3 + 3 * u2
+            let h11 = u3 - u2
+            
+            let splineY = max(0, h00 * clean[k] + h10 * tangents[k] + h01 * clean[k + 1] + h11 * tangents[k + 1])
+            
+            var wSum = 0.0
+            var wySum = 0.0
+            for i in 0..<n {
+                let d = x - Double(i)
+                let w = exp(-(d * d) / twoB2)
+                wSum += w
+                wySum += w * clean[i]
+            }
+            let mu = wSum > 0 ? (wySum / wSum) : splineY
+            
+            var wVarSum = 0.0
+            for i in 0..<n {
+                let d = x - Double(i)
+                let w = exp(-(d * d) / twoB2)
+                let diff = clean[i] - mu
+                wVarSum += w * diff * diff
+            }
+            let sigma = wSum > 0 ? sqrt(wVarSum / wSum) : 0
+            
+            let t = x / Double(n - 1)
+            let point = SamplePoint(t: t, value: splineY, mu: mu, sigma: sigma)
+            globalMax = max(globalMax, point.upper, point.value)
+            samples.append(point)
+        }
+        
+        return Result(
+            rawValues: clean,
+            samples: samples,
+            maxScale: max(100, globalMax * 1.10),
+            peakIndex: peakIdx,
+            peakValue: peakVal,
+            averageValue: average
+        )
+    }
+}
+
+
+// MARK: - Reference-Faithful Drill-Down Sunburst Layout Engine (from eval_data_server/sunburst.js)
+
+nonisolated enum EvalSunburstLayoutEngine {
+    
+    static let innerRatioRange: ClosedRange<CGFloat> = (64.0 / 110.0)...(84.0 / 110.0)
+    static let outerRatioRange: ClosedRange<CGFloat> = (89.0 / 110.0)...(101.0 / 110.0)
+    static let maxKeptChildren = 7
+    
+    final class Node: Identifiable {
+        let id: String
+        let name: String
+        let value: Double
+        let outputValue: Double
+        let requests: Int
+        let isOther: Bool
+        weak var parent: Node?
+        var children: [Node]
+        
+        init(
+            id: String,
+            name: String,
+            value: Double,
+            outputValue: Double = 0,
+            requests: Int = 0,
+            isOther: Bool = false,
+            children: [Node] = []
+        ) {
+            self.id = id
+            self.name = name
+            self.value = value
+            self.outputValue = outputValue
+            self.requests = requests
+            self.isOther = isOther
+            self.children = children
+        }
+    }
+    
+    enum Ring: Sendable {
+        case inner
+        case outer
+    }
+    
+    struct ArcItem: Identifiable {
+        enum ToneKind {
+            case openActive
+            case sibling
+            case otherInner
+            case outerIndexed(index: Int, count: Int)
+            case otherOuter
+            case outputMark
+        }
+        
+        let key: String
+        let node: Node
+        let ring: Ring
+        let isMark: Bool
+        let a0: Double        // Radians clockwise from 12 o'clock (-π/2 in CG)
+        let a1: Double
+        let r0Ratio: CGFloat
+        let r1Ratio: CGFloat
+        let tone: ToneKind
+        
+        var id: String { self.key }
+    }
+    
+    struct LedgerRow: Identifiable {
+        let node: Node
+        let ring: Ring
+        let isOpenHeader: Bool
+        let isSubRow: Bool
+        let fraction: Double
+        let tone: ArcItem.ToneKind
+        
+        var id: String { self.node.id }
+    }
+    
+    
+    /// Folds smallest children beyond `KEEP = 7` into one "其他" node and links parent pointers.
+    static func prepareTree(_ raw: Node, parent: Node? = nil, fold: Bool = true) -> Node {
+        var kids = raw.children.filter { $0.value > 0 }
+        if fold, kids.count > Self.maxKeptChildren + 1 {
+            let sorted = kids.sorted { $0.value > $1.value }
+            let keepSet = Set(sorted.prefix(Self.maxKeptChildren).map(\.id))
+            let kept = kids.filter { keepSet.contains($0.id) }
+            let rest = kids.filter { !keepSet.contains($0.id) }
+            let restVal = rest.reduce(0.0) { $0 + $1.value }
+            let restOut = rest.reduce(0.0) { $0 + $1.outputValue }
+            let restReq = rest.reduce(0) { $0 + $1.requests }
+            let otherNode = Node(
+                id: "\(raw.id)/~",
+                name: "其他",
+                value: restVal,
+                outputValue: restOut,
+                requests: restReq,
+                isOther: true
+            )
+            kids = kept + [otherNode]
+        }
+        let preparedChildren = kids.map { Self.prepareTree($0, parent: nil, fold: fold) }
+        let outSum = raw.outputValue > 0 ? raw.outputValue : preparedChildren.reduce(0.0) { $0 + $1.outputValue }
+        let reqSum = raw.requests > 0 ? raw.requests : preparedChildren.reduce(0) { $0 + $1.requests }
+        let copy = Node(
+            id: raw.id,
+            name: raw.name,
+            value: max(raw.value, preparedChildren.reduce(0.0) { $0 + $1.value }),
+            outputValue: outSum,
+            requests: reqSum,
+            isOther: raw.isOther,
+            children: preparedChildren
+        )
+        copy.parent = parent
+        for child in copy.children {
+            child.parent = copy
+        }
+        return copy
+    }
+    
+    
+    static func indexByID(_ root: Node) -> [String: Node] {
+        var map: [String: Node] = [:]
+        func walk(_ node: Node) {
+            map[node.id] = node
+            for c in node.children { walk(c) }
+        }
+        walk(root)
+        return map
+    }
+    
+    
+    static func biggestNonOtherChild(of node: Node) -> Node? {
+        node.children
+            .filter { !$0.isOther }
+            .max(by: { $0.value < $1.value }) ?? node.children.first
+    }
+    
+    
+    /// Produces sunburst.js layout: inner ring holds `focus.children` across 0..2π;
+    /// outer rail holds `open.children` constrained strictly inside `open`'s angular span.
+    static func layout(focus: Node, open: Node?) -> (arcs: [ArcItem], rows: [LedgerRow]) {
+        let tau = Double.pi * 2.0
+        let kids = focus.children
+        let total = max(1e-9, kids.reduce(0.0) { $0 + $1.value })
+        
+        var arcs: [ArcItem] = []
+        var innerColorMap: [String: ArcItem.ToneKind] = [:]
+        var outerColorMap: [String: ArcItem.ToneKind] = [:]
+        
+        func appendMark(for node: Node, a0: Double, a1: Double, outerRatio: CGFloat, keyPrefix: String) {
+            guard node.outputValue > 0, node.value > 0 else { return }
+            let frac = min(1.0, node.outputValue / node.value)
+            let end = a0 + (a1 - a0) * frac
+            guard end - a0 > 1e-4 else { return }
+            arcs.append(ArcItem(
+                key: "\(keyPrefix)#mark",
+                node: node,
+                ring: keyPrefix.hasPrefix("out:") ? .outer : .inner,
+                isMark: true,
+                a0: a0,
+                a1: end,
+                r0Ratio: outerRatio + (1.2 / 110.0),
+                r1Ratio: outerRatio + (3.8 / 110.0),
+                tone: .outputMark
+            ))
+        }
+        
+        var a = 0.0
+        var openSpan: (Double, Double)?
+        for child in kids {
+            let a1 = a + (tau * child.value) / total
+            let tone: ArcItem.ToneKind = if child.id == open?.id {
+                .openActive
+            } else if child.isOther {
+                .otherInner
+            } else {
+                .sibling
+            }
+            innerColorMap[child.id] = tone
+            arcs.append(ArcItem(
+                key: "in:\(child.id)",
+                node: child,
+                ring: .inner,
+                isMark: false,
+                a0: a,
+                a1: a1,
+                r0Ratio: Self.innerRatioRange.lowerBound,
+                r1Ratio: Self.innerRatioRange.upperBound,
+                tone: tone
+            ))
+            appendMark(for: child, a0: a, a1: a1, outerRatio: Self.innerRatioRange.upperBound, keyPrefix: "in:\(child.id)")
+            if child.id == open?.id {
+                openSpan = (a, a1)
+            }
+            a = a1
+        }
+        
+        if let open, !open.children.isEmpty, let span = openSpan {
+            let subTotal = max(1e-9, open.children.reduce(0.0) { $0 + $1.value })
+            var b = span.0
+            let subCount = open.children.count
+            for (idx, sub) in open.children.enumerated() {
+                let b1 = b + ((span.1 - span.0) * sub.value) / subTotal
+                let tone: ArcItem.ToneKind = sub.isOther ? .otherOuter : .outerIndexed(index: idx, count: subCount)
+                outerColorMap[sub.id] = tone
+                arcs.append(ArcItem(
+                    key: "out:\(sub.id)",
+                    node: sub,
+                    ring: .outer,
+                    isMark: false,
+                    a0: b,
+                    a1: b1,
+                    r0Ratio: Self.outerRatioRange.lowerBound,
+                    r1Ratio: Self.outerRatioRange.upperBound,
+                    tone: tone
+                ))
+                appendMark(for: sub, a0: b, a1: b1, outerRatio: Self.outerRatioRange.upperBound, keyPrefix: "out:\(sub.id)")
+                b = b1
+            }
+        }
+        
+        // Ledger rows: siblings ordered by volume (keeping 其他 last), expanding `open.children` inline under `open`
+        let orderedKids = kids.sorted { lhs, rhs in
+            if lhs.isOther != rhs.isOther { return !lhs.isOther }
+            return lhs.value > rhs.value
+        }
+        var rows: [LedgerRow] = []
+        for child in orderedKids {
+            let isOpen = (child.id == open?.id)
+            rows.append(LedgerRow(
+                node: child,
+                ring: .inner,
+                isOpenHeader: isOpen,
+                isSubRow: false,
+                fraction: child.value / total,
+                tone: innerColorMap[child.id] ?? .sibling
+            ))
+            if isOpen, !child.children.isEmpty {
+                let subOrdered = child.children.sorted { lhs, rhs in
+                    if lhs.isOther != rhs.isOther { return !lhs.isOther }
+                    return lhs.value > rhs.value
+                }
+                for sub in subOrdered {
+                    rows.append(LedgerRow(
+                        node: sub,
+                        ring: .outer,
+                        isOpenHeader: false,
+                        isSubRow: true,
+                        fraction: sub.value / max(1e-9, child.value),
+                        tone: outerColorMap[sub.id] ?? .otherOuter
+                    ))
+                }
+            }
+        }
+        
+        return (arcs, rows)
+    }
+}
+
+
 // MARK: - Design Tokens & Snapshot
 
 private enum DashMotion {
     
     static let quick = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.16)
     static let standard = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.24)
+    static let sunburst = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.58)
 }
 
 
@@ -126,7 +543,7 @@ private enum DashboardQuadMetric: String, CaseIterable, Identifiable {
             case .typed: "今日码字"
             case .aiUsage: "AI用量"
             case .busyness: "忙碌指数"
-            case .mood: "情绪指数"
+            case .mood: "心境流向"
         }
     }
 }
@@ -146,6 +563,7 @@ private struct DashPalette: Sendable {
     var card: Color { self.tokens.card }
     var cardShadow: Color { self.tokens.cardShadow }
     var inset: Color { self.tokens.inset }
+    var insetHover: Color { self.tokens.insetHover }
     var hairline: Color { self.tokens.hairline }
     var hairlineStrong: Color { self.tokens.hairlineStrong }
     
@@ -197,6 +615,7 @@ private struct DashboardSnapshot {
     var ai30Totals: AIUsageTotals
     var aiModels: [ModelUsageSummary]
     var aiFeatures: [FeatureUsageSummary]
+    var recentAIEvents: [AIUsageEvent]
     var busyness: BusynessMetrics
     var mood: MoodMetrics
     
@@ -238,6 +657,7 @@ private struct DashboardSnapshot {
             ai30Totals: ai30Totals,
             aiModels: models,
             aiFeatures: features,
+            recentAIEvents: analytics.recentAIEvents,
             busyness: analytics.busynessMetrics,
             mood: analytics.moodMetrics
         )
@@ -245,7 +665,7 @@ private struct DashboardSnapshot {
 }
 
 
-// MARK: - Two-Row Bento Dashboard
+// MARK: - Two-Row Bento Dashboard + Interactive NEWS Workspace
 
 struct AnalyticsDashboardView: View {
     
@@ -255,14 +675,18 @@ struct AnalyticsDashboardView: View {
     var onOpenWeeklyReport: ((StoredWeeklyReport) -> Void)?
     
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.registerWorkspaceCenterEscPop) private var registerEscPop
     
     @State private var analytics = AnalyticsManager.shared
     @State private var studioPalette = StudioPaletteManager.shared
     @State private var newsService = AIHotNewsService.shared
+    @State private var profileManager = UserProfileManager.shared
     
     @State private var snapshot: DashboardSnapshot?
     @State private var selectedYear: Int = Calendar.current.component(.year, from: Date())
     @State private var expandedQuad: DashboardQuadMetric?
+    @State private var isNewsWorkspaceOpen = false
+    @State private var activeNewsID: String?
     @State private var hasAppeared = false
     
     
@@ -286,9 +710,9 @@ struct AnalyticsDashboardView: View {
         )
     }
     
-    private var outerPadding: CGFloat { self.isEmbeddedInSettings ? 14 : 22 }
-    private var row1Height: CGFloat { self.isEmbeddedInSettings ? 250 : 316 }
-    private var row2Height: CGFloat { self.isEmbeddedInSettings ? 260 : 340 }
+    private var outerPadding: CGFloat { self.isEmbeddedInSettings ? 12 : 20 }
+    private var row1Height: CGFloat { self.isEmbeddedInSettings ? 228 : 306 }
+    private var row2Height: CGFloat { self.isEmbeddedInSettings ? 218 : 332 }
     
     
     var body: some View {
@@ -300,34 +724,49 @@ struct AnalyticsDashboardView: View {
             )
             .ignoresSafeArea()
             
-            ScrollView(.vertical, showsIndicators: true) {
-                if let snapshot = self.snapshot {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if !self.isEmbeddedInSettings, let onDismiss = self.onDismiss {
-                            DashboardTopNavigationBar(
-                                palette: self.palette,
-                                onBack: onDismiss
-                            )
+            if self.isNewsWorkspaceOpen {
+                DashboardNewsCenterView(
+                    newsService: self.newsService,
+                    tokens: self.palette.tokens,
+                    initialSelectedID: self.activeNewsID,
+                    onClose: {
+                        withAnimation(DashMotion.standard) {
+                            self.isNewsWorkspaceOpen = false
                         }
-                        
-                        self.row1Section(snapshot)
-                        self.row2Section()
                     }
-                    .padding(self.outerPadding)
-                    .frame(maxWidth: 1160, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .opacity(self.hasAppeared ? 1 : 0)
-                    .offset(y: self.hasAppeared ? 0 : 6)
-                } else {
-                    Color.clear.frame(height: 460)
+                )
+                .transition(.opacity.combined(with: .move(edge: .trailing)))
+            } else {
+                ScrollView(.vertical, showsIndicators: true) {
+                    if let snapshot = self.snapshot {
+                        VStack(alignment: .leading, spacing: self.isEmbeddedInSettings ? 10 : 14) {
+                            DashboardWelcomeHeaderBar(
+                                profile: self.profileManager.activeProfile,
+                                avatarImage: self.profileManager.avatarImage(for: self.profileManager.activeProfile),
+                                todayTotalChars: snapshot.today.typedChars + snapshot.today.aiCompletedChars,
+                                currentStreak: snapshot.currentStreak,
+                                compact: self.isEmbeddedInSettings,
+                                palette: self.palette,
+                                onBack: self.isEmbeddedInSettings ? nil : self.onDismiss
+                            )
+                            
+                            self.row1Section(snapshot)
+                            self.row2Section()
+                        }
+                        .padding(self.outerPadding)
+                        .frame(maxWidth: 1180, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .opacity(self.hasAppeared ? 1 : 0)
+                        .offset(y: self.hasAppeared ? 0 : 6)
+                    } else {
+                        Color.clear.frame(height: 460)
+                    }
                 }
+                .transition(.opacity)
             }
         }
         .onKeyPress(.escape) {
-            if self.expandedQuad != nil {
-                withAnimation(DashMotion.standard) {
-                    self.expandedQuad = nil
-                }
+            if self.handleEscapePop() {
                 return .handled
             }
             if let onDismiss = self.onDismiss {
@@ -335,6 +774,14 @@ struct AnalyticsDashboardView: View {
                 return .handled
             }
             return .ignored
+        }
+        .onAppear {
+            self.registerEscPop? {
+                self.handleEscapePop()
+            }
+        }
+        .onDisappear {
+            self.registerEscPop?(nil)
         }
         .task {
             self.rebuildSnapshot()
@@ -354,11 +801,28 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    // MARK: Row 1 — Unified Heatmap+Today Writing Card + Asymmetric Live-Activity Bento (Wide AI Usage + Busyness & Mood)
+    private func handleEscapePop() -> Bool {
+        if self.isNewsWorkspaceOpen {
+            withAnimation(DashMotion.standard) {
+                self.isNewsWorkspaceOpen = false
+            }
+            return true
+        }
+        if self.expandedQuad != nil {
+            withAnimation(DashMotion.standard) {
+                self.expandedQuad = nil
+            }
+            return true
+        }
+        return false
+    }
+    
+    
+    // MARK: Row 1 — Unified Heatmap + Mathematical Wave Card & AI Usage / Busyness Rose / Mood Flow
     
     private func row1Section(_ snapshot: DashboardSnapshot) -> some View {
         GeometryReader { proxy in
-            let spacing: CGFloat = 14
+            let spacing: CGFloat = self.isEmbeddedInSettings ? 10 : 14
             let usableW = max(320, proxy.size.width - spacing)
             let leftRatio: CGFloat = self.isEmbeddedInSettings ? 0.50 : 0.54
             let leftWidth = floor(usableW * leftRatio)
@@ -372,6 +836,7 @@ struct AnalyticsDashboardView: View {
                     currentStreak: snapshot.currentStreak,
                     availableYears: snapshot.availableYears,
                     selectedYear: self.$selectedYear,
+                    compact: self.isEmbeddedInSettings,
                     palette: self.palette
                 )
                 .frame(width: leftWidth, height: self.row1Height)
@@ -400,13 +865,12 @@ struct AnalyticsDashboardView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .transition(.opacity.combined(with: .scale(scale: 0.97)))
             } else {
-                let vGap: CGFloat = 12
-                let hGap: CGFloat = 12
-                let topH = max(92, floor((self.row1Height - vGap) * 0.52))
+                let vGap: CGFloat = self.isEmbeddedInSettings ? 10 : 12
+                let hGap: CGFloat = self.isEmbeddedInSettings ? 10 : 12
+                let topH = max(86, floor((self.row1Height - vGap) * 0.50))
                 let botH = max(84, self.row1Height - vGap - topH)
                 
                 VStack(spacing: vGap) {
-                    // Full-width 1x2 AI Usage Live-Activity Studio Card (click to expand Drill-Down Sunburst)
                     DashboardAIUsageWideCard(
                         snapshot: snapshot,
                         palette: self.palette
@@ -417,7 +881,6 @@ struct AnalyticsDashboardView: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: topH, maxHeight: topH)
                     
-                    // Bottom 2-column row: Busyness (Segmented Tick Meter / Rose) + Mood (External-Labeled Sankey)
                     HStack(spacing: hGap) {
                         self.quadCard(metric: .busyness, snapshot: snapshot)
                             .frame(maxWidth: .infinity, minHeight: botH, maxHeight: botH)
@@ -446,10 +909,10 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    // MARK: Row 2 — Equal 3-Column Layout (干了啥 / AI 预测要干啥 / 小红书风分页 NEWS)
+    // MARK: Row 2 — Equal 3-Column Layout (干了啥 / 要干啥 / 交互 NEWS)
     
     private func row2Section() -> some View {
-        HStack(alignment: .top, spacing: 14) {
+        HStack(alignment: .top, spacing: self.isEmbeddedInSettings ? 10 : 14) {
             self.doneTodayColumn()
                 .frame(maxWidth: .infinity, minHeight: self.row2Height, maxHeight: self.row2Height, alignment: .topLeading)
             
@@ -465,20 +928,11 @@ struct AnalyticsDashboardView: View {
     private func doneTodayColumn() -> some View {
         let points = self.analytics.doneTodayPoints
         return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(self.palette.accentFill)
-                    .frame(width: 6, height: 6)
+            HStack {
                 Text("干了啥")
                     .font(.system(size: 13.5, weight: .semibold))
                     .foregroundStyle(self.palette.pine)
                 Spacer()
-                Text(String(format: "%02d", points.count))
-                    .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(self.palette.pine.opacity(0.46))
-                    .padding(.horizontal, 6.5)
-                    .padding(.vertical, 2)
-                    .background(self.palette.inset, in: Capsule())
             }
             .frame(height: 22)
             
@@ -502,11 +956,6 @@ struct AnalyticsDashboardView: View {
                                     .lineSpacing(2)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                
-                                Text(String(format: "%02d", idx + 1))
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced).monospacedDigit())
-                                    .foregroundStyle(self.palette.pine.opacity(0.34))
-                                    .padding(.top, 2)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -515,7 +964,7 @@ struct AnalyticsDashboardView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(16)
+        .padding(self.isEmbeddedInSettings ? 12 : 16)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 18)
     }
     
@@ -524,20 +973,11 @@ struct AnalyticsDashboardView: View {
         let predictions = self.analytics.actionPredictions
         
         return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(self.palette.mint)
-                    .frame(width: 6, height: 6)
+            HStack {
                 Text("要干啥")
                     .font(.system(size: 13.5, weight: .semibold))
                     .foregroundStyle(self.palette.pine)
                 Spacer()
-                Text(String(format: "%02d", predictions.count))
-                    .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(self.palette.pine.opacity(0.46))
-                    .padding(.horizontal, 6.5)
-                    .padding(.vertical, 2)
-                    .background(self.palette.inset, in: Capsule())
             }
             .frame(height: 22)
             
@@ -571,11 +1011,6 @@ struct AnalyticsDashboardView: View {
                                     }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                
-                                Text(String(format: "%02d", idx + 1))
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced).monospacedDigit())
-                                    .foregroundStyle(self.palette.pine.opacity(0.34))
-                                    .padding(.top, 2)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -584,7 +1019,7 @@ struct AnalyticsDashboardView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(16)
+        .padding(self.isEmbeddedInSettings ? 12 : 16)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 18)
     }
     
@@ -592,24 +1027,47 @@ struct AnalyticsDashboardView: View {
     private func newsColumn() -> some View {
         let pageItems = self.newsService.currentPageItems
         
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Circle()
-                    .fill(self.palette.emerald)
-                    .frame(width: 6, height: 6)
-                Text("NEWS")
-                    .font(.system(size: 13.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(self.palette.pine)
+                Button {
+                    self.openNewsWorkspace(selecting: pageItems.first?.id)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("NEWS")
+                            .font(.system(size: 13.5, weight: .semibold, design: .rounded))
+                            .foregroundStyle(self.palette.pine)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(self.palette.pine.opacity(0.45))
+                    }
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
                 
                 Spacer(minLength: 4)
                 
-                if !self.newsService.items.isEmpty {
-                    Text("\(self.newsService.items.count)")
-                        .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(self.palette.pine.opacity(0.46))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(self.palette.inset, in: Capsule())
+                // Compact category switcher
+                if !self.isEmbeddedInSettings {
+                    HStack(spacing: 2) {
+                        ForEach(NewsFeedCategory.allCases) { cat in
+                            let active = (self.newsService.selectedCategory == cat)
+                            Button {
+                                withAnimation(DashMotion.quick) {
+                                    self.newsService.selectedCategory = cat
+                                }
+                            } label: {
+                                Text(cat == .xSocial ? "X" : cat.label)
+                                    .font(.system(size: 10, weight: active ? .semibold : .medium))
+                                    .foregroundStyle(active ? self.palette.tokens.onAccentInk : self.palette.pine.opacity(0.60))
+                                    .padding(.horizontal, 6)
+                                    .frame(height: 20)
+                                    .background(active ? self.palette.accentFill : Color.clear, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(2)
+                    .background(self.palette.inset, in: Capsule())
                 }
                 
                 Button {
@@ -626,7 +1084,6 @@ struct AnalyticsDashboardView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(self.newsService.isLoading)
-                .help("刷新精选资讯")
             }
             .frame(height: 22)
             
@@ -642,7 +1099,7 @@ struct AnalyticsDashboardView: View {
                             HStack(spacing: 8) {
                                 ProgressView()
                                     .controlSize(.small)
-                                Text("正在拉取高信息量精选帖子…")
+                                Text("正在拉取精选资讯…")
                                     .font(.system(size: 12))
                                     .foregroundStyle(self.palette.pine.opacity(0.60))
                             }
@@ -671,22 +1128,24 @@ struct AnalyticsDashboardView: View {
                                 NewsFeedCoverCard(
                                     item: item,
                                     coverImage: self.newsService.coverImage(for: item),
+                                    isBookmarked: self.newsService.isBookmarked(item),
                                     compactRow: !useTwoColumns,
-                                    palette: self.palette
-                                ) {
-                                    if let url = item.url {
-                                        NSWorkspace.shared.open(url)
+                                    palette: self.palette,
+                                    onTap: {
+                                        self.openNewsWorkspace(selecting: item.id)
+                                    },
+                                    onToggleBookmark: {
+                                        self.newsService.toggleBookmark(item)
                                     }
-                                }
+                                )
                             }
                         }
-                        .id("news-mixed-page-\(self.newsService.currentPage)")
+                        .id("news-mixed-page-\(self.newsService.currentPage)-\(self.newsService.selectedCategory.rawValue)")
                         .transition(.opacity)
                     }
                 }
             }
             
-            // Xiaohongshu-style bottom pagination bar
             if !self.newsService.filteredItems.isEmpty {
                 HStack(spacing: 8) {
                     Button {
@@ -710,9 +1169,15 @@ struct AnalyticsDashboardView: View {
                     
                     Spacer()
                     
-                    Text("\(self.newsService.currentPage) / \(self.newsService.totalPages)")
-                        .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(self.palette.pine.opacity(0.55))
+                    Button {
+                        self.openNewsWorkspace(selecting: pageItems.first?.id)
+                    } label: {
+                        Text("进入阅读器")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(self.palette.emerald)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
                     
                     Spacer()
                     
@@ -743,12 +1208,20 @@ struct AnalyticsDashboardView: View {
                 .padding(.top, 2)
             }
         }
-        .padding(16)
+        .padding(self.isEmbeddedInSettings ? 12 : 16)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 18)
     }
     
     
     // MARK: Actions
+    
+    private func openNewsWorkspace(selecting id: String?) {
+        self.activeNewsID = id
+        withAnimation(DashMotion.standard) {
+            self.isNewsWorkspaceOpen = true
+        }
+    }
+    
     
     private func rebuildSnapshot() {
         self.snapshot = DashboardSnapshot.build(analytics: self.analytics, selectedYear: self.selectedYear)
@@ -756,12 +1229,17 @@ struct AnalyticsDashboardView: View {
 }
 
 
-// MARK: - Top Navigation Bar (Title-Free · Ergonomic Top-Left Back Pill)
+// MARK: - Top Welcome Header Bar (Avatar + Username + Greeting + Clean Back Button)
 
-private struct DashboardTopNavigationBar: View {
+private struct DashboardWelcomeHeaderBar: View {
     
+    let profile: UserProfile
+    let avatarImage: NSImage?
+    let todayTotalChars: Int
+    let currentStreak: Int
+    let compact: Bool
     let palette: DashPalette
-    let onBack: () -> Void
+    let onBack: (() -> Void)?
     
     @State private var isHovered = false
     
@@ -772,57 +1250,92 @@ private struct DashboardTopNavigationBar: View {
         return f
     }()
     
+    private var welcomeLine: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        let salut: String = switch hour {
+            case 5..<12: "早安"
+            case 12..<18: "下午好"
+            case 18..<23: "晚上好"
+            default: "夜深了"
+        }
+        if self.todayTotalChars > 0 {
+            return "\(salut)，欢迎回来 · 今日已输出 \(self.todayTotalChars.formatted()) 字"
+        }
+        if self.currentStreak > 1 {
+            return "\(salut)，欢迎回来 · 已连续创作 \(self.currentStreak) 天"
+        }
+        return "\(salut)，欢迎回到你的创作控制台"
+    }
+    
+    
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
-            Button(action: self.onBack) {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(self.isHovered ? self.palette.emerald : self.palette.pine.opacity(0.75))
-                    
-                    Text(AppLanguage.text("返回编辑", en: "Back to Editor"))
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(self.palette.pine.opacity(self.isHovered ? 0.96 : 0.82))
-                    
-                    Text("ESC")
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(self.palette.pine.opacity(0.42))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1.5)
-                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            if let onBack = self.onBack {
+                Button(action: onBack) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(self.isHovered ? self.palette.emerald : self.palette.pine.opacity(0.75))
+                        
+                        Text(AppLanguage.text("返回编辑", en: "Back to Editor"))
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(self.palette.pine.opacity(self.isHovered ? 0.96 : 0.82))
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(self.isHovered ? self.palette.card : self.palette.card.opacity(0.84))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .strokeBorder(self.isHovered ? self.palette.accentFill.opacity(0.45) : self.palette.hairline, lineWidth: 0.75)
+                    )
                 }
-                .padding(.horizontal, 10)
-                .frame(height: 30)
-                .background(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(self.isHovered ? self.palette.card : self.palette.card.opacity(0.84))
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .onHover { hovering in
+                    withAnimation(DashMotion.quick) {
+                        self.isHovered = hovering
+                    }
+                }
+            }
+            
+            HStack(spacing: self.compact ? 8 : 10) {
+                UserAvatarCircleView(
+                    profile: self.profile,
+                    size: self.compact ? 28 : 34,
+                    customImage: self.avatarImage
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .strokeBorder(self.isHovered ? self.palette.accentFill.opacity(0.45) : self.palette.hairline, lineWidth: 0.75)
+                    Circle()
+                        .strokeBorder(self.palette.hairlineStrong, lineWidth: 0.8)
                 )
-            }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            .onHover { hovering in
-                withAnimation(DashMotion.quick) {
-                    self.isHovered = hovering
+                
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(self.profile.displayName)
+                        .font(.system(size: self.compact ? 12.5 : 14, weight: .semibold))
+                        .foregroundStyle(self.palette.pine)
+                        .lineLimit(1)
+                    
+                    Text(self.welcomeLine)
+                        .font(.system(size: self.compact ? 10.5 : 11.5, weight: .regular))
+                        .foregroundStyle(self.palette.pine.opacity(0.58))
+                        .lineLimit(1)
                 }
             }
-            .help(AppLanguage.text("返回编辑器 (Esc)", en: "Back to Editor (Esc)"))
             
-            Spacer()
+            Spacer(minLength: 8)
             
             Text(Self.dateFormatter.string(from: Date()))
-                .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                .font(.system(size: self.compact ? 10.5 : 11.5, weight: .medium).monospacedDigit())
                 .foregroundStyle(self.palette.pine.opacity(0.48))
         }
-        .padding(.bottom, 2)
     }
 }
 
 
-// MARK: - Unified Writing Telemetry & Yearly Heatmap Card (今日码字 × 热力图双向联动)
+// MARK: - Unified Writing Telemetry & Yearly Heatmap Card (今日码字 × 热力图 × 数学曲线双向联动)
 
 private struct DashboardHeatmapCard: View {
     
@@ -832,6 +1345,7 @@ private struct DashboardHeatmapCard: View {
     let currentStreak: Int
     let availableYears: [Int]
     @Binding var selectedYear: Int
+    let compact: Bool
     let palette: DashPalette
     
     @State private var hoveredCell: HeatmapDayCell?
@@ -847,7 +1361,6 @@ private struct DashboardHeatmapCard: View {
         self.availableYears.first { $0 > self.yearlyHeatmap.year }
     }
     
-    /// Active cross-linked day ID when hovering either the yearly heatmap OR the 14-day pill spectrum.
     private var activeLinkedDayID: String? {
         self.hoveredBarDayID ?? self.hoveredCell?.id
     }
@@ -869,14 +1382,16 @@ private struct DashboardHeatmapCard: View {
     var body: some View {
         let readout = self.activeReadout
         let isInspecting = (self.activeLinkedDayID != nil)
+        let values = self.days14.map { Double($0.typed + $0.ai) }
+        let curve = MathematicalTrendCurveEngine.compute(values: values, samplesPerSegment: 8, bandwidth: 1.65)
         
-        VStack(alignment: .leading, spacing: 8) {
-            // Top Live-Activity Telemetry Strip: Today's Writing Hero (linked with hovered day) + Year & Streak
+        VStack(alignment: .leading, spacing: self.compact ? 6 : 8) {
+            // Top Live-Activity Telemetry Strip
             HStack(alignment: .center, spacing: 8) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     HStack(alignment: .firstTextBaseline, spacing: 3) {
                         Text(readout.total.formatted())
-                            .font(.system(size: 19, weight: .bold, design: .rounded).monospacedDigit())
+                            .font(.system(size: self.compact ? 17 : 19, weight: .bold, design: .rounded).monospacedDigit())
                             .foregroundStyle(isInspecting ? self.palette.emerald : self.palette.pine)
                             .contentTransition(.numericText())
                         Text("字")
@@ -885,9 +1400,6 @@ private struct DashboardHeatmapCard: View {
                     }
                     
                     HStack(spacing: 4) {
-                        Circle()
-                            .fill(isInspecting ? self.palette.emerald : self.palette.accentFill)
-                            .frame(width: 5, height: 5)
                         Text(readout.label)
                             .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                             .foregroundStyle(self.palette.pine.opacity(0.72))
@@ -905,7 +1417,6 @@ private struct DashboardHeatmapCard: View {
                 
                 Spacer(minLength: 4)
                 
-                // Compact Streak Momentum Bar (Harajuku — Shibuya — Ebisu inspired)
                 if self.currentStreak > 0 {
                     let milestone: Double = self.currentStreak < 7 ? 7 : (self.currentStreak < 30 ? 30 : 100)
                     let fillRatio = min(1.0, max(0.16, Double(self.currentStreak) / milestone))
@@ -913,7 +1424,7 @@ private struct DashboardHeatmapCard: View {
                         ZStack(alignment: .leading) {
                             Capsule()
                                 .fill(self.palette.inset)
-                                .frame(width: 34, height: 4.5)
+                                .frame(width: 30, height: 4.5)
                             Capsule()
                                 .fill(
                                     LinearGradient(
@@ -922,7 +1433,7 @@ private struct DashboardHeatmapCard: View {
                                         endPoint: .trailing
                                     )
                                 )
-                                .frame(width: max(6, 34 * CGFloat(fillRatio)), height: 4.5)
+                                .frame(width: max(6, 30 * CGFloat(fillRatio)), height: 4.5)
                         }
                         Text("\(self.currentStreak)d")
                             .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
@@ -933,7 +1444,6 @@ private struct DashboardHeatmapCard: View {
                     .background(self.palette.accentFill.opacity(0.10), in: Capsule())
                 }
                 
-                // Year selector pill
                 HStack(spacing: 2) {
                     Button {
                         if let prev = self.previousYear {
@@ -972,7 +1482,7 @@ private struct DashboardHeatmapCard: View {
                 .background(self.palette.inset.opacity(0.85), in: Capsule())
             }
             
-            // Middle: Crisp 1:1 Square Yearly Activity Heatmap (cross-highlights with 14-day spectrum)
+            // Middle: Crisp 1:1 Square Yearly Activity Heatmap
             GeometryReader { geo in
                 let layout = HeatmapGridLayout.compute(
                     size: geo.size,
@@ -1052,88 +1562,162 @@ private struct DashboardHeatmapCard: View {
                 .defaultScrollAnchor(.trailing)
             }
             
-            // Bottom: Linked Live-Activity 14-Day Writing Pill-Bar Spectrum (7.2 mmol/L & 25:23 inspired)
-            VStack(spacing: 4) {
-                GeometryReader { specGeo in
-                    let days = self.days14
-                    let count = max(1, days.count)
-                    let maxVal = max(100.0, days.map { Double($0.typed + $0.ai) }.max() ?? 100.0)
-                    let gap: CGFloat = 5
-                    let barW = max(4, min(14, (specGeo.size.width - CGFloat(count - 1) * gap) / CGFloat(count)))
-                    let totalBarsW = CGFloat(count) * barW + CGFloat(count - 1) * gap
-                    let startX = max(0, (specGeo.size.width - totalBarsW) * 0.5)
-                    let plotH = max(20, specGeo.size.height - 6)
-                    
+            // Bottom: Mathematical C¹ Monotone Hermite Spline + Gaussian Kernel Regression μ ± σ Envelope
+            VStack(spacing: 3) {
+                GeometryReader { waveGeo in
+                    let count = self.days14.count
                     Canvas { context, size in
-                        guard size.width > 12, size.height > 12 else { return }
-                        for (idx, day) in days.enumerated() {
-                            let val = Double(day.typed + day.ai)
-                            let ratio = CGFloat(val / maxVal)
-                            let h = max(4, ratio * plotH)
-                            let x = startX + CGFloat(idx) * (barW + gap)
-                            let y = size.height - h
-                            let rect = CGRect(x: x, y: y, width: barW, height: h)
-                            let pill = Capsule().path(in: rect)
-                            
-                            let isLinked = (self.activeLinkedDayID == day.id)
-                            let isToday = (idx == count - 1)
-                            let barColor: Color = if isLinked {
-                                self.palette.emerald
-                            } else if isToday {
-                                self.palette.accentFill
-                            } else if ratio >= 0.68 {
-                                self.palette.accentFill.opacity(0.86)
-                            } else if ratio >= 0.30 {
-                                self.palette.mint.opacity(0.74)
+                        guard size.width > 16, size.height > 14, !curve.samples.isEmpty else { return }
+                        let padX: CGFloat = 6
+                        let padTop: CGFloat = 6
+                        let padBot: CGFloat = 4
+                        let plotW = max(10, size.width - padX * 2)
+                        let plotH = max(8, size.height - padTop - padBot)
+                        let maxV = max(1.0, curve.maxScale)
+                        
+                        func pt(t: Double, val: Double) -> CGPoint {
+                            let x = padX + CGFloat(t) * plotW
+                            let y = padTop + plotH * CGFloat(1.0 - min(1.0, max(0.0, val / maxV)))
+                            return CGPoint(x: x, y: y)
+                        }
+                        
+                        // Horizontal baseline & mid reference hairlines
+                        for frac in [0.5, 1.0] as [CGFloat] {
+                            let ry = padTop + plotH * frac
+                            var ref = Path()
+                            ref.move(to: CGPoint(x: padX, y: ry))
+                            ref.addLine(to: CGPoint(x: size.width - padX, y: ry))
+                            context.stroke(
+                                ref,
+                                with: .color(self.palette.hairline),
+                                style: StrokeStyle(lineWidth: 0.6, dash: frac < 1 ? [2, 3] : [])
+                            )
+                        }
+                        
+                        // 1. Gaussian ±0.65σ confidence envelope corridor
+                        var bandPath = Path()
+                        for (idx, s) in curve.samples.enumerated() {
+                            let p = pt(t: s.t, val: s.upper)
+                            if idx == 0 { bandPath.move(to: p) } else { bandPath.addLine(to: p) }
+                        }
+                        for s in curve.samples.reversed() {
+                            bandPath.addLine(to: pt(t: s.t, val: s.lower))
+                        }
+                        bandPath.closeSubpath()
+                        context.fill(bandPath, with: .color(self.palette.accentFill.opacity(0.11)))
+                        
+                        // 2. Dashed Gaussian kernel regression trend line μ(t)
+                        var muPath = Path()
+                        for (idx, s) in curve.samples.enumerated() {
+                            let p = pt(t: s.t, val: s.mu)
+                            if idx == 0 { muPath.move(to: p) } else { muPath.addLine(to: p) }
+                        }
+                        context.stroke(
+                            muPath,
+                            with: .color(self.palette.mint.opacity(0.75)),
+                            style: StrokeStyle(lineWidth: 1.0, lineCap: .round, dash: [3, 3])
+                        )
+                        
+                        // 3. Monotone Hermite spline area fill & luminous stroke
+                        var areaPath = Path()
+                        var linePath = Path()
+                        let baseY = padTop + plotH
+                        for (idx, s) in curve.samples.enumerated() {
+                            let p = pt(t: s.t, val: s.value)
+                            if idx == 0 {
+                                areaPath.move(to: CGPoint(x: p.x, y: baseY))
+                                areaPath.addLine(to: p)
+                                linePath.move(to: p)
                             } else {
-                                self.palette.emptyDot
+                                areaPath.addLine(to: p)
+                                linePath.addLine(to: p)
                             }
-                            context.fill(pill, with: .color(barColor))
+                        }
+                        if let last = curve.samples.last {
+                            areaPath.addLine(to: CGPoint(x: pt(t: last.t, val: last.value).x, y: baseY))
+                            areaPath.closeSubpath()
+                        }
+                        context.fill(
+                            areaPath,
+                            with: .linearGradient(
+                                Gradient(colors: [self.palette.accentFill.opacity(0.22), self.palette.accentFill.opacity(0.01)]),
+                                startPoint: CGPoint(x: size.width * 0.5, y: padTop),
+                                endPoint: CGPoint(x: size.width * 0.5, y: baseY)
+                            )
+                        )
+                        context.stroke(
+                            linePath,
+                            with: .linearGradient(
+                                Gradient(colors: [self.palette.mint, self.palette.accentFill, self.palette.emerald]),
+                                startPoint: CGPoint(x: padX, y: baseY * 0.5),
+                                endPoint: CGPoint(x: size.width - padX, y: baseY * 0.5)
+                            ),
+                            style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round)
+                        )
+                        
+                        // 4. Data knot markers + cross-linked hover guide
+                        let denom = Double(max(1, count - 1))
+                        for (idx, day) in self.days14.enumerated() {
+                            let t = count > 1 ? Double(idx) / denom : 0.5
+                            let val = Double(day.typed + day.ai)
+                            let p = pt(t: t, val: val)
+                            let isLinked = (self.activeLinkedDayID == day.id)
+                            let isPeak = (curve.peakIndex == idx)
                             
-                            // Precision peak dot cap (82 mmHg / 7.2 mmol/L inspired) on active/hovered bars
-                            if isLinked || (ratio >= 0.72 && val > 0) {
-                                let dotD = min(barW, 4.5)
-                                let dotRect = CGRect(x: rect.midX - dotD * 0.5, y: max(0, y - dotD - 2), width: dotD, height: dotD)
-                                context.fill(Circle().path(in: dotRect), with: .color(isLinked ? self.palette.pine : self.palette.emerald))
+                            if isLinked {
+                                var guide = Path()
+                                guide.move(to: CGPoint(x: p.x, y: padTop))
+                                guide.addLine(to: CGPoint(x: p.x, y: baseY))
+                                context.stroke(guide, with: .color(self.palette.emerald.opacity(0.55)), lineWidth: 1.0)
+                                
+                                let halo = CGRect(x: p.x - 5.5, y: p.y - 5.5, width: 11, height: 11)
+                                context.fill(Circle().path(in: halo), with: .color(self.palette.emerald.opacity(0.25)))
+                                let dot = CGRect(x: p.x - 3.2, y: p.y - 3.2, width: 6.4, height: 6.4)
+                                context.fill(Circle().path(in: dot), with: .color(self.palette.emerald))
+                            } else if isPeak {
+                                let ring = CGRect(x: p.x - 3.2, y: p.y - 3.2, width: 6.4, height: 6.4)
+                                context.fill(Circle().path(in: ring), with: .color(self.palette.card))
+                                context.stroke(Circle().path(in: ring), with: .color(self.palette.emerald), lineWidth: 1.6)
+                            } else if val > 0 {
+                                let dot = CGRect(x: p.x - 1.8, y: p.y - 1.8, width: 3.6, height: 3.6)
+                                context.fill(Circle().path(in: dot), with: .color(self.palette.accentFill.opacity(0.80)))
                             }
                         }
                     }
                     .contentShape(Rectangle())
                     .onContinuousHover { phase in
+                        guard count > 0 else { return }
+                        let padX: CGFloat = 6
+                        let plotW = max(10, waveGeo.size.width - padX * 2)
                         switch phase {
                             case .active(let loc):
-                                let rel = loc.x - startX
-                                let pitch = barW + gap
-                                let idx = Int(floor(rel / max(1, pitch)))
-                                if idx >= 0 && idx < days.count {
-                                    self.hoveredBarDayID = days[idx].id
-                                } else {
-                                    self.hoveredBarDayID = nil
-                                }
+                                let norm = max(0, min(1, (loc.x - padX) / plotW))
+                                let idx = min(count - 1, max(0, Int((norm * CGFloat(max(1, count - 1))).rounded())))
+                                self.hoveredBarDayID = self.days14[idx].id
                             case .ended:
                                 self.hoveredBarDayID = nil
                         }
                     }
                 }
-                .frame(height: 46)
+                .frame(height: self.compact ? 42 : 58)
                 
                 HStack {
-                    Text("近14日节奏")
-                        .font(.system(size: 9.5, weight: .medium))
+                    Text("Hermite C¹ · μ±σ")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
                         .foregroundStyle(self.palette.pine.opacity(0.42))
                     Spacer()
-                    Text("活跃 \(self.yearlyHeatmap.activeDays) 天 · 7D")
+                    Text("日均 \(Int(curve.averageValue.rounded()).formatted()) 字 · 活跃 \(self.yearlyHeatmap.activeDays) 天")
                         .font(.system(size: 9.5, weight: .medium, design: .rounded).monospacedDigit())
-                        .foregroundStyle(self.palette.pine.opacity(0.42))
+                        .foregroundStyle(self.palette.pine.opacity(0.44))
                     Spacer()
-                    Text("NOW")
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    Text("14D")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
                         .foregroundStyle(self.palette.emerald.opacity(0.85))
                 }
             }
             .padding(.top, 2)
         }
-        .padding(16)
+        .padding(self.compact ? 12 : 16)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 18)
     }
     
@@ -1200,7 +1784,6 @@ struct HeatmapGridLayout {
         let fitW = (availW - CGFloat(cols - 1) * gap) / CGFloat(cols)
         let fitH = (availH - CGFloat(rows - 1) * gap) / CGFloat(rows)
         
-        // Strictly 1:1 square cells bounded cleanly in [9.5pt, 15.0pt]; wider 53-week years scroll smoothly instead of distorting aspect ratio!
         let minSide: CGFloat = 9.5
         let maxSide: CGFloat = 15.0
         let idealSide = min(fitW, fitH)
@@ -1249,7 +1832,7 @@ struct HeatmapGridLayout {
 }
 
 
-// MARK: - Full-Width 1x2 AI Usage Live-Activity Studio Card (AI 用量 · 横幅仪表台)
+// MARK: - Full-Width AI Usage Card (Mini Eval Sunburst + Input/Output Split + Top Models)
 
 private struct DashboardAIUsageWideCard: View {
     
@@ -1291,15 +1874,14 @@ private struct DashboardAIUsageWideCard: View {
         }()
         
         Button(action: self.onTap) {
-            HStack(spacing: 14) {
-                // Left Zone: Interactive Mini Sunburst Dial with Live Center Readout
+            HStack(spacing: 12) {
                 ZStack {
                     AIUsageSunburstChartView(snapshot: self.snapshot, palette: self.palette, detailed: false)
-                        .frame(width: 102, height: 102)
+                        .frame(width: 96, height: 96)
                     
                     VStack(spacing: 0) {
                         Text(Self.compactTokens(displayTokens))
-                            .font(.system(size: 12, weight: .bold, design: .rounded).monospacedDigit())
+                            .font(.system(size: 11.5, weight: .bold, design: .rounded).monospacedDigit())
                             .foregroundStyle(self.palette.pine)
                         Text(scopeTag)
                             .font(.system(size: 8.5, weight: .medium))
@@ -1307,11 +1889,9 @@ private struct DashboardAIUsageWideCard: View {
                     }
                     .allowsHitTesting(false)
                 }
-                .frame(width: 104, height: 104)
+                .frame(width: 98, height: 98)
                 
-                // Right Zone: Live-Activity Telemetry Stack (Input/Output Luminous Bar + Model Mix + 14D Pulse Ticks)
-                VStack(alignment: .leading, spacing: 8) {
-                    // Header row: Hero Token Readout + Request Count + Drill-Down Hint
+                VStack(alignment: .leading, spacing: 7) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         HStack(alignment: .firstTextBaseline, spacing: 3) {
                             Text(Self.compactTokens(totals.totalTokens))
@@ -1330,18 +1910,9 @@ private struct DashboardAIUsageWideCard: View {
                             .background(self.palette.accentFill.opacity(0.12), in: Capsule())
                         
                         Spacer(minLength: 4)
-                        
-                        HStack(spacing: 3) {
-                            Text("旭日下钻")
-                                .font(.system(size: 10, weight: .medium))
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .font(.system(size: 8.5, weight: .semibold))
-                        }
-                        .foregroundStyle(self.isHovered ? self.palette.emerald : self.palette.pine.opacity(0.44))
                     }
                     
-                    // Middle: Now / Sunset / Dusk inspired Input ↔ Output Luminous Split Capsule
-                    VStack(spacing: 4) {
+                    VStack(spacing: 3.5) {
                         GeometryReader { barGeo in
                             let w = max(40, barGeo.size.width)
                             let splitX = max(14, min(w - 14, w * CGFloat(inFrac)))
@@ -1378,7 +1949,7 @@ private struct DashboardAIUsageWideCard: View {
                                     .offset(x: splitX - 3.5)
                             }
                         }
-                        .frame(height: 9)
+                        .frame(height: 8.5)
                         
                         HStack {
                             Text("输入 \(inPct)%")
@@ -1391,7 +1962,6 @@ private struct DashboardAIUsageWideCard: View {
                         }
                     }
                     
-                    // Bottom: Top Models Chips + Espresso-style 14D AI Activity Pulse Ticks
                     HStack(alignment: .bottom, spacing: 8) {
                         HStack(spacing: 5) {
                             ForEach(Array(topModels.prefix(2).enumerated()), id: \.offset) { _, m in
@@ -1415,29 +1985,28 @@ private struct DashboardAIUsageWideCard: View {
                         
                         Spacer(minLength: 4)
                         
-                        // 14-day AI pulse mini-ticks (Espresso meter inspired)
                         HStack(alignment: .bottom, spacing: 2.5) {
                             let aiMax = max(20.0, self.snapshot.days14.map { Double($0.ai) }.max() ?? 20.0)
                             ForEach(Array(self.snapshot.days14.suffix(10).enumerated()), id: \.offset) { idx, day in
                                 let frac = CGFloat(Double(day.ai) / aiMax)
-                                let h = max(4, frac * 18)
+                                let h = max(4, frac * 16)
                                 Capsule()
                                     .fill(day.ai > 0 ? (idx == 9 ? self.palette.emerald : self.palette.accentFill.opacity(0.45 + 0.45 * Double(frac))) : self.palette.emptyDot)
                                     .frame(width: 3, height: h)
                             }
                         }
-                        .frame(height: 18, alignment: .bottom)
+                        .frame(height: 16, alignment: .bottom)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.vertical, 10)
             .dashboardCardSurface(palette: self.palette, cornerRadius: 18, isHighlighted: self.isHovered)
             .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(.plain)
-        .scaleEffect(self.isHovered ? 1.01 : 1.0)
+        .scaleEffect(self.isHovered ? 1.008 : 1.0)
         .animation(DashMotion.quick, value: self.isHovered)
         .onHover { hovering in
             self.isHovered = hovering
@@ -1453,7 +2022,7 @@ private struct DashboardAIUsageWideCard: View {
 }
 
 
-// MARK: - Compact & Expanded Quad Cards (Live-Activity Micro-Instruments)
+// MARK: - Compact & Expanded Quad Cards
 
 private struct DashboardCompactQuadCard: View {
     
@@ -1469,8 +2038,7 @@ private struct DashboardCompactQuadCard: View {
         Button {
             self.onTap()
         } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                // Live-Activity telemetry header: hero tabular value + muted unit (left), crisp badge (right)
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     HStack(alignment: .firstTextBaseline, spacing: 3) {
                         Text(self.heroValueText)
@@ -1486,29 +2054,26 @@ private struct DashboardCompactQuadCard: View {
                     
                     Spacer(minLength: 4)
                     
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(self.indicatorTint)
-                            .frame(width: 5, height: 5)
-                        Text(self.secondaryBadgeText)
+                    if let badgeText = self.secondaryBadgeText {
+                        Text(badgeText)
                             .font(.system(size: 10, weight: .semibold, design: .rounded))
-                            .foregroundStyle(self.palette.pine.opacity(0.62))
+                            .foregroundStyle(self.palette.pine.opacity(0.56))
                             .lineLimit(1)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(self.palette.inset.opacity(0.85), in: Capsule())
                     }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(self.palette.inset.opacity(0.85), in: Capsule())
                 }
                 
                 self.miniVisualization
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(12)
+            .padding(11)
             .dashboardCardSurface(palette: self.palette, cornerRadius: 18, isHighlighted: self.isHovered)
             .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(.plain)
-        .scaleEffect(self.isHovered ? 1.014 : 1.0)
+        .scaleEffect(self.isHovered ? 1.012 : 1.0)
         .animation(DashMotion.quick, value: self.isHovered)
         .onHover { hovering in
             self.isHovered = hovering
@@ -1544,22 +2109,12 @@ private struct DashboardCompactQuadCard: View {
     }
     
     
-    private var secondaryBadgeText: String {
+    private var secondaryBadgeText: String? {
         switch self.metric {
             case .typed: "今日码字"
             case .aiUsage: "AI用量"
-            case .busyness: "峰值 \(self.snapshot.busyness.peakHourLabel)"
-            case .mood: "情绪指数"
-        }
-    }
-    
-    
-    private var indicatorTint: Color {
-        switch self.metric {
-            case .typed: self.palette.accentFill
-            case .aiUsage: self.palette.emerald
-            case .busyness: Color(red: 0.90, green: 0.56, blue: 0.24)
-            case .mood: self.palette.mint
+            case .busyness: "忙碌指数"
+            case .mood: nil
         }
     }
     
@@ -1603,11 +2158,6 @@ private struct DashboardExpandedQuadCard: View {
                     .font(.system(size: 14.5, weight: .semibold))
                     .foregroundStyle(self.palette.pine)
                 
-                Text(self.detailHeadline)
-                    .font(.system(size: 13.5, weight: .bold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(self.palette.emerald)
-                    .lineLimit(1)
-                
                 Spacer()
                 
                 Button(action: self.onClose) {
@@ -1629,22 +2179,6 @@ private struct DashboardExpandedQuadCard: View {
     }
     
     
-    private var detailHeadline: String {
-        switch self.metric {
-            case .typed:
-                let hand = self.snapshot.today.typedChars
-                let ai = self.snapshot.today.aiCompletedChars
-                return "\((hand + ai).formatted()) 字 (手写 \(hand.formatted()) / AI \(ai.formatted()))"
-            case .aiUsage:
-                return "\(self.snapshot.ai30Totals.totalTokens.formatted()) tokens · \(self.snapshot.ai30Totals.requests) 次请求"
-            case .busyness:
-                return "\(self.snapshot.busyness.score)% · 峰值 \(self.snapshot.busyness.peakHourLabel) · 活跃 \(self.snapshot.busyness.activeHours)h"
-            case .mood:
-                return "\(self.snapshot.mood.score) · 主导 \(self.snapshot.mood.dominantLabel)"
-        }
-    }
-    
-    
     @ViewBuilder
     private var detailedVisualization: some View {
         switch self.metric {
@@ -1661,7 +2195,7 @@ private struct DashboardExpandedQuadCard: View {
 }
 
 
-// MARK: - Chart 1: Trend Area-Line Chart (趋势图)
+// MARK: - Chart 1: Trend Area-Line Chart
 
 private struct TrendAreaChartView: View {
     
@@ -1669,167 +2203,114 @@ private struct TrendAreaChartView: View {
     let palette: DashPalette
     let detailed: Bool
     
-    @State private var hoverIndex: Int?
+    @State private var hoveredIndex: Int?
     
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let totals = self.days.map { Double($0.typed + $0.ai) }
+        let curve = MathematicalTrendCurveEngine.compute(values: totals, samplesPerSegment: 8, bandwidth: 1.65)
+        
+        VStack(spacing: 6) {
             GeometryReader { geo in
-                let padL: CGFloat = self.detailed ? 36 : 4
-                let padR: CGFloat = self.detailed ? 10 : 4
-                let padT: CGFloat = self.detailed ? 12 : 6
-                let padB: CGFloat = self.detailed ? 22 : 4
-                let plotW = max(40, geo.size.width - padL - padR)
-                let plotH = max(30, geo.size.height - padT - padB)
-                let totals = self.days.map { Double($0.typed + $0.ai) }
-                let maxVal = max(100.0, totals.max() ?? 100.0)
-                let count = max(2, self.days.count)
-                
-                let points: [CGPoint] = totals.enumerated().map { idx, val in
-                    let x = padL + (CGFloat(idx) / CGFloat(count - 1)) * plotW
-                    let y = padT + (1.0 - CGFloat(val / maxVal)) * plotH
-                    return CGPoint(x: x, y: y)
-                }
-                let typedPoints: [CGPoint] = self.days.enumerated().map { idx, item in
-                    let x = padL + (CGFloat(idx) / CGFloat(count - 1)) * plotW
-                    let y = padT + (1.0 - CGFloat(Double(item.typed) / maxVal)) * plotH
-                    return CGPoint(x: x, y: y)
-                }
-                
-                Canvas { context, canvasSize in
-                    guard canvasSize.width.isFinite, canvasSize.height.isFinite,
-                          canvasSize.width > 8, canvasSize.height > 8 else { return }
+                Canvas { context, size in
+                    guard size.width.isFinite, size.height.isFinite,
+                          size.width > 12, size.height > 12, !curve.samples.isEmpty else { return }
+                    let padTop: CGFloat = self.detailed ? 12 : 4
+                    let padBottom: CGFloat = self.detailed ? 20 : 4
+                    let padX: CGFloat = self.detailed ? 8 : 4
+                    let plotW = max(8, size.width - padX * 2)
+                    let plotH = max(8, size.height - padTop - padBottom)
+                    let maxY = max(1.0, curve.maxScale)
+                    
+                    func pointAt(t: Double, value: Double) -> CGPoint {
+                        let x = padX + CGFloat(t) * plotW
+                        let y = padTop + plotH * CGFloat(1.0 - min(1.0, max(0.0, value / maxY)))
+                        return CGPoint(x: x, y: y)
+                    }
+                    
                     if self.detailed {
                         for frac in [0.0, 0.5, 1.0] {
-                            let y = padT + CGFloat(frac) * plotH
+                            let y = padTop + plotH * CGFloat(frac)
                             var grid = Path()
-                            grid.move(to: CGPoint(x: padL, y: y))
-                            grid.addLine(to: CGPoint(x: padL + plotW, y: y))
+                            grid.move(to: CGPoint(x: padX, y: y))
+                            grid.addLine(to: CGPoint(x: size.width - padX, y: y))
                             context.stroke(grid, with: .color(self.palette.hairline), lineWidth: 0.7)
-                            
-                            let valText = Int((maxVal * (1.0 - frac)).rounded()).formatted()
-                            context.draw(
-                                Text(valText)
-                                    .font(.system(size: 9.5, design: .rounded).monospacedDigit())
-                                    .foregroundStyle(self.palette.pine.opacity(0.45)),
-                                at: CGPoint(x: padL - 6, y: y),
-                                anchor: .trailing
-                            )
                         }
                     }
                     
-                    guard points.count >= 2, let firstPt = points.first, let lastPt = points.last else { return }
-                    let linePath = Self.smoothPath(points: points)
-                    var areaPath = linePath
-                    areaPath.addLine(to: CGPoint(x: lastPt.x, y: padT + plotH))
-                    areaPath.addLine(to: CGPoint(x: firstPt.x, y: padT + plotH))
-                    areaPath.closeSubpath()
+                    var area = Path()
+                    var line = Path()
+                    let baseY = padTop + plotH
+                    for (idx, s) in curve.samples.enumerated() {
+                        let pt = pointAt(t: s.t, value: s.value)
+                        if idx == 0 {
+                            area.move(to: CGPoint(x: pt.x, y: baseY))
+                            area.addLine(to: pt)
+                            line.move(to: pt)
+                        } else {
+                            area.addLine(to: pt)
+                            line.addLine(to: pt)
+                        }
+                    }
+                    if let last = curve.samples.last {
+                        area.addLine(to: CGPoint(x: pointAt(t: last.t, value: last.value).x, y: baseY))
+                        area.closeSubpath()
+                    }
                     
                     context.fill(
-                        areaPath,
+                        area,
                         with: .linearGradient(
-                            Gradient(colors: [
-                                self.palette.accentFill.opacity(0.32),
-                                self.palette.accentFill.opacity(0.02),
-                            ]),
-                            startPoint: CGPoint(x: padL, y: padT),
-                            endPoint: CGPoint(x: padL, y: padT + plotH)
+                            Gradient(colors: [self.palette.accentFill.opacity(0.28), self.palette.accentFill.opacity(0.02)]),
+                            startPoint: CGPoint(x: size.width * 0.5, y: padTop),
+                            endPoint: CGPoint(x: size.width * 0.5, y: baseY)
                         )
                     )
+                    context.stroke(line, with: .color(self.palette.emerald), style: StrokeStyle(lineWidth: self.detailed ? 2.2 : 1.7, lineCap: .round, lineJoin: .round))
                     
                     if self.detailed {
-                        let typedCurve = Self.smoothPath(points: typedPoints)
-                        context.stroke(
-                            typedCurve,
-                            with: .color(self.palette.mint.opacity(0.75)),
-                            style: StrokeStyle(lineWidth: 1.4, lineCap: .round, dash: [4, 3])
-                        )
-                    }
-                    
-                    context.stroke(
-                        linePath,
-                        with: .color(self.palette.emerald),
-                        style: StrokeStyle(lineWidth: self.detailed ? 2.2 : 1.8, lineCap: .round, lineJoin: .round)
-                    )
-                    
-                    if let last = points.last {
-                        let dotRect = CGRect(x: last.x - 3.5, y: last.y - 3.5, width: 7, height: 7)
-                        context.fill(Circle().path(in: dotRect), with: .color(self.palette.emerald))
-                    }
-                    
-                    if self.detailed, let hover = self.hoverIndex, hover >= 0, hover < points.count {
-                        let pt = points[hover]
-                        var guide = Path()
-                        guide.move(to: CGPoint(x: pt.x, y: padT))
-                        guide.addLine(to: CGPoint(x: pt.x, y: padT + plotH))
-                        context.stroke(guide, with: .color(self.palette.pine.opacity(0.28)), lineWidth: 0.9)
-                        
-                        let dotRect = CGRect(x: pt.x - 4.5, y: pt.y - 4.5, width: 9, height: 9)
-                        context.fill(Circle().path(in: dotRect), with: .color(self.palette.card))
-                        context.stroke(Circle().path(in: dotRect), with: .color(self.palette.emerald), lineWidth: 2)
-                    }
-                    
-                    if self.detailed {
-                        let step = max(1, self.days.count / 5)
-                        for idx in stride(from: 0, to: self.days.count, by: step) {
-                            let pt = points[idx]
-                            let label = Self.dayFmt.string(from: self.days[idx].date)
-                            context.draw(
-                                Text(label)
-                                    .font(.system(size: 9.5, design: .rounded))
-                                    .foregroundStyle(self.palette.pine.opacity(0.48)),
-                                at: CGPoint(x: pt.x, y: padT + plotH + 12),
-                                anchor: .center
+                        let denom = Double(max(1, self.days.count - 1))
+                        for (idx, d) in self.days.enumerated() {
+                            let pt = pointAt(t: self.days.count > 1 ? Double(idx) / denom : 0.5, value: Double(d.typed + d.ai))
+                            let isHover = (self.hoveredIndex == idx)
+                            let r: CGFloat = isHover ? 4.5 : 2.6
+                            context.fill(
+                                Circle().path(in: CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2)),
+                                with: .color(isHover ? self.palette.pine : self.palette.emerald)
                             )
+                            if idx == 0 || idx == self.days.count / 2 || idx == self.days.count - 1 {
+                                context.draw(
+                                    Text(Self.dayFmt.string(from: d.date))
+                                        .font(.system(size: 9.5, design: .rounded).monospacedDigit())
+                                        .foregroundStyle(self.palette.pine.opacity(0.45)),
+                                    at: CGPoint(x: pt.x, y: size.height - 8),
+                                    anchor: .center
+                                )
+                            }
                         }
                     }
                 }
                 .onContinuousHover { phase in
-                    guard self.detailed else { return }
+                    guard self.detailed, !self.days.isEmpty else { return }
                     switch phase {
                         case .active(let loc):
-                            let ratio = (loc.x - padL) / max(1, plotW)
-                            let idx = Int((ratio * CGFloat(count - 1)).rounded())
-                            self.hoverIndex = min(max(0, idx), count - 1)
+                            let padX: CGFloat = 8
+                            let usable = max(1, geo.size.width - padX * 2)
+                            let frac = max(0, min(1, (loc.x - padX) / usable))
+                            self.hoveredIndex = min(self.days.count - 1, Int((frac * CGFloat(self.days.count - 1)).rounded()))
                         case .ended:
-                            self.hoverIndex = nil
+                            self.hoveredIndex = nil
                     }
                 }
             }
             
-            if self.detailed {
-                let caption: String = if let idx = self.hoverIndex, idx < self.days.count {
-                    {
-                        let d = self.days[idx]
-                        return "\(Self.dayFmt.string(from: d.date)) · 总计 \((d.typed + d.ai).formatted()) 字 (手写 \(d.typed.formatted()) / AI \(d.ai.formatted()))"
-                    }()
-                } else {
-                    " "
-                }
-                Text(caption)
+            if self.detailed, let idx = self.hoveredIndex, idx < self.days.count {
+                let d = self.days[idx]
+                Text("\(Self.dayFmt.string(from: d.date)) · \((d.typed + d.ai).formatted()) 字")
                     .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
-                    .foregroundStyle(self.palette.pine.opacity(0.75))
+                    .foregroundStyle(self.palette.pine.opacity(0.84))
                     .frame(height: 16)
             }
         }
-    }
-    
-    
-    private static func smoothPath(points: [CGPoint]) -> Path {
-        var path = Path()
-        guard let first = points.first else { return path }
-        path.move(to: first)
-        for idx in 1..<points.count {
-            let prev = points[idx - 1]
-            let curr = points[idx]
-            let midX = (prev.x + curr.x) * 0.5
-            path.addCurve(
-                to: curr,
-                control1: CGPoint(x: midX, y: prev.y),
-                control2: CGPoint(x: midX, y: curr.y)
-            )
-        }
-        return path
     }
     
     
@@ -1841,7 +2322,7 @@ private struct TrendAreaChartView: View {
 }
 
 
-// MARK: - Chart 2: AI Usage Interactive Drill-Down Sunburst Chart (AI 用量 · 可下钻旭日图)
+// MARK: - Chart 2: Reference-Faithful Eval Sunburst Chart (sunburst.js + data.css)
 
 private struct AIUsageSunburstChartView: View {
     
@@ -1849,423 +2330,385 @@ private struct AIUsageSunburstChartView: View {
     let palette: DashPalette
     let detailed: Bool
     
-    @State private var drillPath: [String] = []
+    @State private var focusID: String = "root"
+    @State private var openID: String?
     @State private var hoveredNodeID: String?
-    @State private var hoveredCaption: String?
-    
-    private struct SunburstNode: Identifiable {
-        let id: String
-        let label: String
-        let weight: Double
-        let detailText: String
-        let color: Color
-        let children: [SunburstNode]
-    }
-    
-    private struct HitArc {
-        let node: SunburstNode
-        let pathToNode: [String]
-        let innerR: CGFloat
-        let outerR: CGFloat
-        let startDeg: Double
-        let endDeg: Double
-        let caption: String
-    }
+    @State private var isCenterHovered = false
     
     
-    private func buildRootNode() -> SunburstNode {
-        let modelColors: [Color] = [
-            self.palette.accentFill,
-            self.palette.emerald,
-            self.palette.mint,
-            self.palette.heat(2),
-            self.palette.paleMint,
-        ]
+    private func buildPreparedTree() -> EvalSunburstLayoutEngine.Node {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? .distantPast
+        let events = self.snapshot.recentAIEvents.filter { $0.timestamp >= cutoff }
         
-        let totals = self.snapshot.ai30Totals
-        let totalIn = max(0, totals.inputTokens)
-        let totalOut = max(0, totals.outputTokens)
-        let inRatio: Double = (totalIn + totalOut) > 0
-            ? Double(totalIn) / Double(totalIn + totalOut)
-            : 0.62
-        let outRatio: Double = 1.0 - inRatio
-        
-        func tokenSplitLeaves(parentID: String, parentWeight: Double, baseColor: Color) -> [SunburstNode] {
-            let inW = max(1.0, parentWeight * inRatio)
-            let outW = max(1.0, parentWeight * outRatio)
-            let inPct = Int((inRatio * 100).rounded())
-            let outPct = max(0, 100 - inPct)
-            return [
-                SunburstNode(
-                    id: "\(parentID)-in",
-                    label: "输入",
-                    weight: inW,
-                    detailText: "输入 Token · \(Self.compactTokens(Int(inW.rounded()))) (\(inPct)%)",
-                    color: baseColor.opacity(0.86),
-                    children: []
-                ),
-                SunburstNode(
-                    id: "\(parentID)-out",
-                    label: "生成",
-                    weight: outW,
-                    detailText: "生成 Token · \(Self.compactTokens(Int(outW.rounded()))) (\(outPct)%)",
-                    color: baseColor.opacity(0.54),
-                    children: []
-                ),
-            ]
-        }
-        
-        func featureNodes(parentID: String, parentWeight: Double, baseColor: Color) -> [SunburstNode] {
-            let feats = Array(self.snapshot.aiFeatures.prefix(4))
-            if !feats.isEmpty {
-                let rawSum = max(1.0, feats.reduce(0.0) { $0 + Double($1.totalTokens > 0 ? $1.totalTokens : max(1, $1.requests * 120)) })
-                return feats.enumerated().map { idx, f in
-                    let name = f.displayName.isEmpty ? f.feature : f.displayName
-                    let rawW = Double(f.totalTokens > 0 ? f.totalTokens : max(1, f.requests * 120))
-                    let scaledW = max(1.0, parentWeight * (rawW / rawSum))
-                    let fid = "\(parentID)-feat-\(idx)"
-                    let tint = baseColor.opacity(idx.isMultiple(of: 2) ? 0.78 : 0.60)
-                    return SunburstNode(
+        var modelNodes: [EvalSunburstLayoutEngine.Node] = []
+        if !events.isEmpty {
+            let groupedByModel = Dictionary(grouping: events, by: { $0.model.trimmingCharacters(in: .whitespacesAndNewlines) })
+            modelNodes = groupedByModel.compactMap { rawModel, modelEvents in
+                let name = rawModel.isEmpty ? "主力模型" : Self.shortName(rawModel)
+                let featGroups = Dictionary(grouping: modelEvents, by: { $0.feature })
+                let featNodes: [EvalSunburstLayoutEngine.Node] = featGroups.map { featureKey, featEvents in
+                    let inTok = featEvents.reduce(0.0) { $0 + Double(max(0, $1.inputTokens)) }
+                    let outTok = featEvents.reduce(0.0) { $0 + Double(max(0, $1.outputTokens)) }
+                    let val = max(Double(featEvents.count * 120), inTok + outTok)
+                    let fid = "model:\(name)/feat:\(featureKey)"
+                    let ioNodes = [
+                        EvalSunburstLayoutEngine.Node(id: "\(fid)/in", name: "输入", value: max(1, inTok > 0 ? inTok : val * 0.62), outputValue: 0, requests: featEvents.count),
+                        EvalSunburstLayoutEngine.Node(id: "\(fid)/out", name: "生成", value: max(1, outTok > 0 ? outTok : val * 0.38), outputValue: outTok, requests: featEvents.count),
+                    ]
+                    return EvalSunburstLayoutEngine.Node(
                         id: fid,
-                        label: name,
-                        weight: scaledW,
-                        detailText: "\(name) · \(f.requests) 次 · \(Self.compactTokens(Int(scaledW.rounded())))",
-                        color: tint,
-                        children: tokenSplitLeaves(parentID: fid, parentWeight: scaledW, baseColor: baseColor)
+                        name: Self.featureDisplayName(featureKey),
+                        value: val,
+                        outputValue: outTok,
+                        requests: featEvents.count,
+                        children: ioNodes
+                    )
+                }.sorted { $0.value > $1.value }
+                
+                let totalIn = modelEvents.reduce(0.0) { $0 + Double(max(0, $1.inputTokens)) }
+                let totalOut = modelEvents.reduce(0.0) { $0 + Double(max(0, $1.outputTokens)) }
+                let totalVal = max(Double(modelEvents.count * 150), totalIn + totalOut)
+                return EvalSunburstLayoutEngine.Node(
+                    id: "model:\(name)",
+                    name: name,
+                    value: totalVal,
+                    outputValue: totalOut,
+                    requests: modelEvents.count,
+                    children: featNodes
+                )
+            }.sorted { $0.value > $1.value }
+        } else if !self.snapshot.aiModels.isEmpty {
+            let feats = self.snapshot.aiFeatures
+            let totals = self.snapshot.ai30Totals
+            let outShare: Double = totals.totalTokens > 0 ? Double(totals.outputTokens) / Double(totals.totalTokens) : 0.38
+            modelNodes = self.snapshot.aiModels.map { m in
+                let name = Self.shortName(m.model)
+                let val = Double(m.totalTokens > 0 ? m.totalTokens : max(1, m.requests * 150))
+                let featSum = max(1.0, feats.reduce(0.0) { $0 + Double($1.totalTokens > 0 ? $1.totalTokens : max(1, $1.requests * 120)) })
+                let featNodes: [EvalSunburstLayoutEngine.Node] = feats.map { f in
+                    let fRatio = Double(f.totalTokens > 0 ? f.totalTokens : max(1, f.requests * 120)) / featSum
+                    let fw = max(1, val * fRatio)
+                    let fid = "model:\(name)/feat:\(f.feature)"
+                    return EvalSunburstLayoutEngine.Node(
+                        id: fid,
+                        name: f.displayName.isEmpty ? Self.featureDisplayName(f.feature) : f.displayName,
+                        value: fw,
+                        outputValue: fw * outShare,
+                        requests: f.requests,
+                        children: [
+                            EvalSunburstLayoutEngine.Node(id: "\(fid)/in", name: "输入", value: max(1, fw * (1 - outShare))),
+                            EvalSunburstLayoutEngine.Node(id: "\(fid)/out", name: "生成", value: max(1, fw * outShare), outputValue: fw * outShare),
+                        ]
                     )
                 }
-            }
-            
-            let defaults: [(String, Double)] = [("续写", 0.44), ("翻译", 0.30), ("摘要", 0.26)]
-            return defaults.enumerated().map { idx, item in
-                let w = max(1.0, parentWeight * item.1)
-                let fid = "\(parentID)-def-\(idx)"
-                return SunburstNode(
-                    id: fid,
-                    label: item.0,
-                    weight: w,
-                    detailText: "\(item.0) · 占比 \(Int((item.1 * 100).rounded()))%",
-                    color: baseColor.opacity(idx.isMultiple(of: 2) ? 0.76 : 0.56),
-                    children: tokenSplitLeaves(parentID: fid, parentWeight: w, baseColor: baseColor)
-                )
-            }
-        }
-        
-        let models = Array(self.snapshot.aiModels.prefix(5))
-        let modelNodes: [SunburstNode]
-        if !models.isEmpty {
-            modelNodes = models.enumerated().map { idx, m in
-                let shortName = Self.shortName(m.model)
-                let w = Double(m.totalTokens > 0 ? m.totalTokens : max(1, m.requests * 150))
-                let color = modelColors[idx % modelColors.count]
-                let mid = "model-\(idx)-\(shortName)"
-                return SunburstNode(
-                    id: mid,
-                    label: shortName,
-                    weight: w,
-                    detailText: "\(shortName) · \(m.requests) 次 · \(Self.compactTokens(m.totalTokens)) tokens",
-                    color: color,
-                    children: featureNodes(parentID: mid, parentWeight: w, baseColor: color)
+                return EvalSunburstLayoutEngine.Node(
+                    id: "model:\(name)",
+                    name: name,
+                    value: val,
+                    outputValue: Double(m.outputTokens),
+                    requests: m.requests,
+                    children: featNodes
                 )
             }
         } else {
-            let fallbackModels: [(String, Double, Color)] = [
-                ("主力模型", 62, self.palette.accentFill),
-                ("轻量模型", 38, self.palette.mint),
-            ]
-            modelNodes = fallbackModels.enumerated().map { idx, item in
-                let mid = "fallback-\(idx)"
-                return SunburstNode(
-                    id: mid,
-                    label: item.0,
-                    weight: item.1,
-                    detailText: "\(item.0) · 占比 \(Int(item.1))%",
-                    color: item.2,
-                    children: featureNodes(parentID: mid, parentWeight: item.1, baseColor: item.2)
+            let defaults: [(String, Double)] = [("主力模型", 62), ("轻量模型", 38)]
+            modelNodes = defaults.map { name, weight in
+                let featNodes = [("续写", 0.44), ("翻译", 0.30), ("摘要", 0.26)].map { fName, frac in
+                    let fw = weight * frac
+                    return EvalSunburstLayoutEngine.Node(
+                        id: "model:\(name)/feat:\(fName)",
+                        name: fName,
+                        value: fw,
+                        outputValue: fw * 0.38,
+                        children: [
+                            EvalSunburstLayoutEngine.Node(id: "model:\(name)/feat:\(fName)/in", name: "输入", value: fw * 0.62),
+                            EvalSunburstLayoutEngine.Node(id: "model:\(name)/feat:\(fName)/out", name: "生成", value: fw * 0.38, outputValue: fw * 0.38),
+                        ]
+                    )
+                }
+                return EvalSunburstLayoutEngine.Node(
+                    id: "model:\(name)",
+                    name: name,
+                    value: weight,
+                    outputValue: weight * 0.38,
+                    children: featNodes
                 )
             }
         }
         
-        let totalWeight = max(1.0, modelNodes.reduce(0.0) { $0 + $1.weight })
-        let rootSummary = totals.totalTokens > 0
-            ? Self.compactTokens(totals.totalTokens)
-            : "\(totals.requests)次"
-        return SunburstNode(
+        let rootSum = max(1.0, modelNodes.reduce(0.0) { $0 + $1.value })
+        let rawRoot = EvalSunburstLayoutEngine.Node(
             id: "root",
-            label: "总用量",
-            weight: totalWeight,
-            detailText: rootSummary,
-            color: self.palette.accentFill,
+            name: "30日用量",
+            value: rootSum,
+            outputValue: Double(self.snapshot.ai30Totals.outputTokens),
+            requests: self.snapshot.ai30Totals.requests,
             children: modelNodes
         )
+        return EvalSunburstLayoutEngine.prepareTree(rawRoot, fold: true)
     }
     
     
-    private func resolveActiveScope(from root: SunburstNode) -> (node: SunburstNode, trail: [(path: [String], title: String)]) {
-        var current = root
-        var trail: [(path: [String], title: String)] = [([], root.label)]
-        var accumulated: [String] = []
-        for id in self.drillPath {
-            guard let next = current.children.first(where: { $0.id == id }) else { break }
-            accumulated.append(id)
-            current = next
-            trail.append((accumulated, next.label))
+    private func resolveFocusAndOpen(in root: EvalSunburstLayoutEngine.Node) -> (focus: EvalSunburstLayoutEngine.Node, open: EvalSunburstLayoutEngine.Node?) {
+        let map = EvalSunburstLayoutEngine.indexByID(root)
+        var focus = map[self.focusID] ?? root
+        var open: EvalSunburstLayoutEngine.Node?
+        if let openID = self.openID, let candidate = map[openID], candidate.parent?.id == focus.id {
+            open = candidate
+        } else {
+            open = EvalSunburstLayoutEngine.biggestNonOtherChild(of: focus)
         }
-        return (current, trail)
+        if focus.children.isEmpty, let parent = focus.parent {
+            open = focus
+            focus = parent
+        }
+        return (focus, open)
     }
     
     
-    private func layoutArcs(for scope: SunburstNode, in size: CGSize) -> (arcs: [HitArc], center: CGPoint, rCore: CGFloat) {
-        let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
-        let outerLimit = max(18, min(size.width, size.height) * 0.5 - (self.detailed ? 10 : 4))
-        let hasGrandchildren = scope.children.contains { !$0.children.isEmpty }
-        let rCore = max(14, outerLimit * (self.detailed ? 0.34 : 0.32))
-        let rMid = hasGrandchildren
-            ? max(rCore + 6, outerLimit * 0.67)
-            : outerLimit
-        let rOuter = max(rMid + 6, outerLimit)
-        
-        let totalWeight = max(1.0, scope.children.reduce(0.0) { $0 + $1.weight })
-        var cursorDeg = 0.0
-        var arcs: [HitArc] = []
-        
-        for child in scope.children {
-            let spanDeg = (child.weight / totalWeight) * 360.0
-            let pct = Int(((child.weight / totalWeight) * 100).rounded())
-            let drillHint = child.children.isEmpty ? "" : " · 点击下钻"
-            arcs.append(HitArc(
-                node: child,
-                pathToNode: [child.id],
-                innerR: rCore,
-                outerR: hasGrandchildren ? (rMid - 1.5) : rOuter,
-                startDeg: cursorDeg,
-                endDeg: cursorDeg + spanDeg,
-                caption: "\(child.detailText) (\(pct)%)\(drillHint)"
-            ))
-            
-            if hasGrandchildren && !child.children.isEmpty {
-                let grandSum = max(1.0, child.children.reduce(0.0) { $0 + $1.weight })
-                var grandCursor = cursorDeg
-                for grand in child.children {
-                    let gSpan = (grand.weight / grandSum) * spanDeg
-                    let gPct = Int(((grand.weight / grandSum) * 100).rounded())
-                    let gHint = grand.children.isEmpty ? "" : " · 点击下钻"
-                    arcs.append(HitArc(
-                        node: grand,
-                        pathToNode: [child.id, grand.id],
-                        innerR: rMid + 1.5,
-                        outerR: rOuter,
-                        startDeg: grandCursor,
-                        endDeg: grandCursor + gSpan,
-                        caption: "\(child.label) → \(grand.detailText) (\(gPct)%)\(gHint)"
-                    ))
-                    grandCursor += gSpan
-                }
-            }
-            cursorDeg += spanDeg
+    private func color(for tone: EvalSunburstLayoutEngine.ArcItem.ToneKind) -> Color {
+        switch tone {
+            case .openActive:
+                return self.palette.accentFill
+            case .sibling:
+                return self.palette.pine.opacity(0.38)
+            case .otherInner:
+                return self.palette.pine.opacity(0.22)
+            case .outerIndexed(let index, let count):
+                let share = count > 1 ? 0.92 - (Double(index) * 0.56 / Double(count - 1)) : 0.92
+                return self.palette.accentFill.opacity(share)
+            case .otherOuter:
+                return self.palette.pine.opacity(0.14)
+            case .outputMark:
+                return self.palette.emerald.opacity(0.88)
         }
-        return (arcs, center, rCore)
     }
     
     
     var body: some View {
-        let root = self.buildRootNode()
-        let resolved = self.resolveActiveScope(from: root)
-        let activeNode = resolved.node
-        let trail = resolved.trail
-        let isDrilled = !self.drillPath.isEmpty
+        let root = self.buildPreparedTree()
+        let resolved = self.resolveFocusAndOpen(in: root)
+        let focus = resolved.focus
+        let open = resolved.open
+        let layout = EvalSunburstLayoutEngine.layout(focus: focus, open: open)
         
-        VStack(spacing: 4) {
-            if self.detailed {
-                // Interactive drill-down breadcrumb trail
-                HStack(spacing: 4) {
-                    ForEach(Array(trail.enumerated()), id: \.offset) { idx, crumb in
-                        if idx > 0 {
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 8.5, weight: .semibold))
-                                .foregroundStyle(self.palette.pine.opacity(0.32))
-                        }
-                        let isCurrent = (idx == trail.count - 1)
-                        Button {
-                            withAnimation(DashMotion.standard) {
-                                self.drillPath = crumb.path
-                                self.hoveredNodeID = nil
-                                self.hoveredCaption = nil
-                            }
-                        } label: {
-                            Text(crumb.title)
-                                .font(.system(size: 10.5, weight: isCurrent ? .semibold : .medium))
-                                .foregroundStyle(isCurrent ? self.palette.emerald : self.palette.pine.opacity(0.62))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(
-                                    Capsule()
-                                        .fill(isCurrent ? self.palette.accentFill.opacity(0.14) : Color.clear)
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isCurrent)
-                    }
-                    Spacer(minLength: 4)
-                    if isDrilled {
-                        Button {
-                            withAnimation(DashMotion.standard) {
-                                self.drillPath.removeLast()
-                                self.hoveredNodeID = nil
-                                self.hoveredCaption = nil
-                            }
-                        } label: {
-                            HStack(spacing: 2) {
-                                Image(systemName: "arrow.uturn.left")
-                                    .font(.system(size: 9, weight: .semibold))
-                                Text("返回上级")
-                                    .font(.system(size: 10, weight: .medium))
-                            }
-                            .foregroundStyle(self.palette.pine.opacity(0.65))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .frame(height: 18)
-            }
-            
+        if !self.detailed {
+            self.sunburstDial(focus: focus, arcs: layout.arcs)
+        } else {
+            // Reference eval_data_server `.sb-view`: concentric sunburst left + synchronized ledger right
             GeometryReader { geo in
-                let layout = self.layoutArcs(for: activeNode, in: geo.size)
-                
-                Canvas { context, size in
-                    guard size.width.isFinite, size.height.isFinite,
-                          size.width > 8, size.height > 8 else { return }
-                    let center = layout.center
-                    let rCore = layout.rCore
+                let dialSide = min(max(148, geo.size.height - 8), max(148, geo.size.width * 0.44))
+                HStack(alignment: .center, spacing: 18) {
+                    self.sunburstDial(focus: focus, arcs: layout.arcs)
+                        .frame(width: dialSide, height: dialSide)
                     
-                    for arc in layout.arcs {
-                        let span = arc.endDeg - arc.startDeg
-                        let pad = min(1.0, span * 0.14)
-                        let sDeg = arc.startDeg - 90.0 + pad
-                        let eDeg = arc.endDeg - 90.0 - pad
-                        guard eDeg > sDeg else { continue }
-                        
-                        var sector = Path()
-                        sector.addArc(center: center, radius: arc.innerR, startAngle: .degrees(sDeg), endAngle: .degrees(eDeg), clockwise: false)
-                        sector.addArc(center: center, radius: arc.outerR, startAngle: .degrees(eDeg), endAngle: .degrees(sDeg), clockwise: true)
-                        sector.closeSubpath()
-                        
-                        let isHovered = (self.hoveredNodeID == arc.node.id)
-                        let isInner = (arc.pathToNode.count == 1)
-                        let baseAlpha: Double = isInner ? 0.90 : 0.68
-                        let alpha = isHovered ? 1.0 : (self.hoveredNodeID == nil ? baseAlpha : baseAlpha * 0.72)
-                        context.fill(sector, with: .color(arc.node.color.opacity(alpha)))
-                        
-                        if isHovered {
-                            context.stroke(sector, with: .color(self.palette.card.opacity(0.95)), lineWidth: 1.6)
-                        }
-                        
-                        if self.detailed && span > (isInner ? 28 : 22) {
-                            let midRad = (sDeg + eDeg) * 0.5 * .pi / 180.0
-                            let labelR = (arc.innerR + arc.outerR) * 0.5
-                            context.draw(
-                                Text(arc.node.label)
-                                    .font(.system(size: isInner ? 10 : 9.5, weight: isInner ? .semibold : .medium))
-                                    .foregroundStyle(isInner ? self.palette.tokens.onAccentInk : self.palette.pine.opacity(0.92)),
-                                at: CGPoint(x: center.x + CGFloat(cos(midRad)) * labelR, y: center.y + CGFloat(sin(midRad)) * labelR),
-                                anchor: .center
-                            )
-                        }
-                    }
-                    
-                    let coreRect = CGRect(x: center.x - rCore + 2, y: center.y - rCore + 2, width: (rCore - 2) * 2, height: (rCore - 2) * 2)
-                    context.fill(Circle().path(in: coreRect), with: .color(self.palette.card))
-                    if isDrilled && self.detailed {
-                        context.stroke(Circle().path(in: coreRect), with: .color(self.palette.hairlineStrong), lineWidth: 0.9)
-                    }
-                    if self.detailed {
-                        let primaryCenter = isDrilled
-                            ? activeNode.label
-                            : activeNode.detailText
-                        context.draw(
-                            Text(primaryCenter)
-                                .font(.system(size: isDrilled ? 11.5 : 13, weight: .bold, design: .rounded).monospacedDigit())
-                                .foregroundStyle(self.palette.pine),
-                            at: CGPoint(x: center.x, y: isDrilled ? center.y - 6 : center.y),
-                            anchor: .center
-                        )
-                        if isDrilled {
-                            context.draw(
-                                Text("‹ 返回")
-                                    .font(.system(size: 9.5, weight: .medium))
-                                    .foregroundStyle(self.palette.emerald),
-                                at: CGPoint(x: center.x, y: center.y + 9),
-                                anchor: .center
-                            )
-                        }
-                    }
+                    self.ledgerView(focus: focus, open: open, rows: layout.rows)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .contentShape(Rectangle())
-                .onContinuousHover { phase in
-                    guard self.detailed else { return }
-                    switch phase {
-                        case .active(let loc):
-                            if let hit = self.hitTestArc(loc, layout: layout) {
-                                self.hoveredNodeID = hit.node.id
-                                self.hoveredCaption = hit.caption
-                            } else {
-                                self.hoveredNodeID = nil
-                                let dist = hypot(loc.x - layout.center.x, loc.y - layout.center.y)
-                                if isDrilled && dist < layout.rCore {
-                                    self.hoveredCaption = "点击中心返回上一级"
-                                } else {
-                                    self.hoveredCaption = nil
-                                }
-                            }
-                        case .ended:
-                            self.hoveredNodeID = nil
-                            self.hoveredCaption = nil
-                    }
-                }
-                .onTapGesture { loc in
-                    guard self.detailed else { return }
-                    let dist = hypot(loc.x - layout.center.x, loc.y - layout.center.y)
-                    if dist < layout.rCore {
-                        if !self.drillPath.isEmpty {
-                            withAnimation(DashMotion.standard) {
-                                self.drillPath.removeLast()
-                                self.hoveredNodeID = nil
-                                self.hoveredCaption = nil
-                            }
-                        }
-                        return
-                    }
-                    if let hit = self.hitTestArc(loc, layout: layout), !hit.node.children.isEmpty {
-                        withAnimation(DashMotion.standard) {
-                            self.drillPath.append(contentsOf: hit.pathToNode)
-                            self.hoveredNodeID = nil
-                            self.hoveredCaption = nil
-                        }
-                    }
-                }
-            }
-            
-            if self.detailed {
-                Text(self.hoveredCaption ?? (isDrilled ? "点击扇区继续下钻 · 点击中心或路径返回" : "点击任意模型或功能扇区下钻查看明细"))
-                    .font(.system(size: 11, weight: .medium).monospacedDigit())
-                    .foregroundStyle(self.palette.pine.opacity(self.hoveredCaption == nil ? 0.50 : 0.84))
-                    .lineLimit(1)
-                    .frame(height: 16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
     
     
-    private func hitTestArc(
+    private func sunburstDial(focus: EvalSunburstLayoutEngine.Node, arcs: [EvalSunburstLayoutEngine.ArcItem]) -> some View {
+        GeometryReader { geo in
+            let size = geo.size
+            let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+            let radius = max(16, min(size.width, size.height) * 0.5 - (self.detailed ? 4 : 2))
+            let holeRadius = radius * (52.0 / 110.0)
+            
+            ZStack {
+                Canvas { context, canvasSize in
+                    guard canvasSize.width.isFinite, canvasSize.height.isFinite,
+                          canvasSize.width > 8, canvasSize.height > 8 else { return }
+                    
+                    for arc in arcs {
+                        guard arc.a1 - arc.a0 > 1e-4 else { continue }
+                        let sDeg = arc.a0 * 180.0 / .pi - 90.0
+                        let eDeg = arc.a1 * 180.0 / .pi - 90.0
+                        let r0 = radius * arc.r0Ratio
+                        let r1 = radius * arc.r1Ratio
+                        guard r1 - r0 > 0.2 else { continue }
+                        
+                        var path = Path()
+                        if arc.a1 - arc.a0 >= Double.pi * 1.9999 {
+                            path.addArc(center: center, radius: r1, startAngle: .degrees(0), endAngle: .degrees(359.99), clockwise: false)
+                            path.addArc(center: center, radius: r0, startAngle: .degrees(359.99), endAngle: .degrees(0), clockwise: true)
+                            path.closeSubpath()
+                        } else {
+                            path.addArc(center: center, radius: r1, startAngle: .degrees(sDeg), endAngle: .degrees(eDeg), clockwise: false)
+                            path.addArc(center: center, radius: r0, startAngle: .degrees(eDeg), endAngle: .degrees(sDeg), clockwise: true)
+                            path.closeSubpath()
+                        }
+                        
+                        let isHovered = (self.hoveredNodeID == arc.node.id)
+                        let baseColor = self.color(for: arc.tone)
+                        let opacityMod: Double = (self.hoveredNodeID == nil || isHovered) ? 1.0 : 0.42
+                        context.fill(path, with: .color(baseColor.opacity(opacityMod)))
+                        context.stroke(
+                            path,
+                            with: .color(self.palette.card),
+                            style: StrokeStyle(lineWidth: arc.isMark ? 0.75 : 1.5, lineJoin: .round)
+                        )
+                    }
+                }
+                .contentShape(Circle())
+                .onContinuousHover { phase in
+                    guard self.detailed else { return }
+                    switch phase {
+                        case .active(let pt):
+                            if let hit = self.hitTest(pt, center: center, radius: radius, arcs: arcs) {
+                                self.hoveredNodeID = hit.node.id
+                            } else {
+                                self.hoveredNodeID = nil
+                            }
+                        case .ended:
+                            self.hoveredNodeID = nil
+                    }
+                }
+                .onTapGesture { pt in
+                    guard self.detailed else { return }
+                    if let hit = self.hitTest(pt, center: center, radius: radius, arcs: arcs) {
+                        self.handleSelect(node: hit.node, ring: hit.ring)
+                    }
+                }
+                
+                if self.detailed {
+                    let up = focus.parent
+                    Button {
+                        guard let up else { return }
+                        withAnimation(DashMotion.sunburst) {
+                            self.openID = focus.id
+                            self.focusID = up.id
+                            self.hoveredNodeID = nil
+                        }
+                    } label: {
+                        VStack(spacing: 2) {
+                            if let up {
+                                Text("‹ \(up.name)")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(self.palette.emerald)
+                                    .lineLimit(1)
+                            }
+                            Text(Self.compactTokens(Int(focus.value.rounded())))
+                                .font(.system(size: 18, weight: .light, design: .rounded).monospacedDigit())
+                                .foregroundStyle(self.palette.pine)
+                                .lineLimit(1)
+                            Text(focus.name)
+                                .font(.system(size: 10.5, weight: .regular))
+                                .foregroundStyle(self.palette.pine.opacity(0.55))
+                                .lineLimit(1)
+                        }
+                        .padding(6)
+                        .frame(width: holeRadius * 2, height: holeRadius * 2)
+                        .background(
+                            Circle()
+                                .fill(self.isCenterHovered && up != nil ? self.palette.insetHover : self.palette.card)
+                        )
+                        .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(up == nil)
+                    .onHover { inside in
+                        self.isCenterHovered = inside
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    private func ledgerView(
+        focus: EvalSunburstLayoutEngine.Node,
+        open: EvalSunburstLayoutEngine.Node?,
+        rows: [EvalSunburstLayoutEngine.LedgerRow]
+    ) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(rows) { row in
+                    let isHovered = (self.hoveredNodeID == row.node.id)
+                    let pctText = Self.percentString(row.fraction)
+                    
+                    Button {
+                        self.handleSelect(node: row.node, ring: row.ring)
+                    } label: {
+                        HStack(spacing: 8) {
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(self.color(for: row.tone))
+                                .frame(width: 8, height: 8)
+                            
+                            Text(row.node.name)
+                                .font(.system(size: 12.5, weight: row.isOpenHeader ? .medium : .regular))
+                                .foregroundStyle(row.isOpenHeader ? self.palette.pine : self.palette.pine.opacity(0.84))
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            
+                            Text(Self.compactTokens(Int(row.node.value.rounded())))
+                                .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
+                                .foregroundStyle(self.palette.pine)
+                                .frame(minWidth: 50, alignment: .trailing)
+                            
+                            Text(pctText)
+                                .font(.system(size: 11.5, weight: .regular, design: .rounded).monospacedDigit())
+                                .foregroundStyle(self.palette.pine.opacity(0.46))
+                                .frame(width: 42, alignment: .trailing)
+                        }
+                        .padding(.leading, row.isSubRow ? 20 : 8)
+                        .padding(.trailing, 8)
+                        .frame(minHeight: 26)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(isHovered ? self.palette.insetHover : Color.clear)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { inside in
+                        self.hoveredNodeID = inside ? row.node.id : (self.hoveredNodeID == row.node.id ? nil : self.hoveredNodeID)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+    
+    
+    private func handleSelect(node: EvalSunburstLayoutEngine.Node, ring: EvalSunburstLayoutEngine.Ring) {
+        withAnimation(DashMotion.sunburst) {
+            if ring == .inner {
+                if node.id == self.openID, !node.children.isEmpty {
+                    self.focusID = node.id
+                    self.openID = EvalSunburstLayoutEngine.biggestNonOtherChild(of: node)?.id
+                } else {
+                    self.openID = node.id
+                }
+            } else {
+                if let parent = node.parent, !parent.children.isEmpty {
+                    self.focusID = parent.id
+                    self.openID = node.id
+                }
+            }
+            self.hoveredNodeID = nil
+        }
+    }
+    
+    
+    private func hitTest(
         _ point: CGPoint,
-        layout: (arcs: [HitArc], center: CGPoint, rCore: CGFloat)
-    ) -> HitArc? {
-        let dist = hypot(point.x - layout.center.x, point.y - layout.center.y)
-        guard dist >= layout.rCore else { return nil }
-        var deg = atan2(point.y - layout.center.y, point.x - layout.center.x) * 180.0 / .pi + 90.0
-        if deg < 0 { deg += 360.0 }
-        for arc in layout.arcs {
-            if dist >= arc.innerR && dist <= arc.outerR && deg >= arc.startDeg && deg <= arc.endDeg {
+        center: CGPoint,
+        radius: CGFloat,
+        arcs: [EvalSunburstLayoutEngine.ArcItem]
+    ) -> EvalSunburstLayoutEngine.ArcItem? {
+        let dx = point.x - center.x
+        let dy = point.y - center.y
+        let dist = hypot(dx, dy)
+        var angle = atan2(dy, dx) + Double.pi * 0.5
+        if angle < 0 { angle += Double.pi * 2.0 }
+        
+        for arc in arcs where !arc.isMark {
+            let r0 = radius * arc.r0Ratio
+            let r1 = radius * arc.r1Ratio
+            if dist >= r0 && dist <= r1 && angle >= arc.a0 && angle <= arc.a1 {
                 return arc
             }
         }
@@ -2273,9 +2716,29 @@ private struct AIUsageSunburstChartView: View {
     }
     
     
+    private static func featureDisplayName(_ key: String) -> String {
+        switch key.lowercased() {
+            case "completion", "inline", "continue": "续写"
+            case "translate": "翻译"
+            case "summarize": "摘要"
+            case "explain": "解释"
+            case "weeklyreport", "weekly_report": "周报"
+            case "ocrpolish", "ocr": "识图"
+            default: key.isEmpty ? "对话" : key
+        }
+    }
+    
+    
+    private static func percentString(_ frac: Double) -> String {
+        let pct = frac * 100.0
+        if pct > 0 && pct < 1.0 { return "<1%" }
+        return "\(Int(pct.rounded()))%"
+    }
+    
+    
     private static func shortName(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.count <= 10 ? trimmed : String(trimmed.prefix(9)) + "…"
+        return trimmed.count <= 14 ? trimmed : String(trimmed.prefix(13)) + "…"
     }
     
     
@@ -2287,7 +2750,7 @@ private struct AIUsageSunburstChartView: View {
 }
 
 
-// MARK: - Chart 3: Busyness Live-Activity Segmented Meter (Compact) & Nightingale Rose (Expanded)
+// MARK: - Chart 3: Nightingale Rose Chart (Both Compact & Expanded Busyness)
 
 private struct NightingaleRoseChartView: View {
     
@@ -2299,121 +2762,23 @@ private struct NightingaleRoseChartView: View {
     
     
     var body: some View {
-        if !self.detailed {
-            self.compactLiveActivityMeter
-        } else {
-            self.expandedRoseChart
-        }
-    }
-    
-    
-    /// Compact Live-Activity instrument: Espresso 12-slot segmented tick meter + ISS Flyover circadian peak arc.
-    private var compactLiveActivityMeter: some View {
-        let slices = self.metrics.slices
-        let peakIdx = slices.max(by: { $0.intensity < $1.intensity })?.index ?? 6
-        let peakFrac = Double(peakIdx) / Double(max(1, slices.count - 1))
-        
-        return VStack(spacing: 6) {
-            // ISS Flyover–inspired circadian peak horizon arc
-            GeometryReader { geo in
-                Canvas { context, size in
-                    guard size.width > 16, size.height > 12 else { return }
-                    let padX: CGFloat = 10
-                    let startPt = CGPoint(x: padX, y: size.height - 2)
-                    let endPt = CGPoint(x: size.width - padX, y: size.height - 2)
-                    let ctrlPt = CGPoint(x: size.width * 0.5, y: -size.height * 0.45)
-                    
-                    var arcPath = Path()
-                    arcPath.move(to: startPt)
-                    arcPath.addQuadCurve(to: endPt, control: ctrlPt)
-                    context.stroke(arcPath, with: .color(self.palette.hairlineStrong), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                    
-                    // Glowing quadratic point along the orbital arc for peak hour
-                    let t = CGFloat(peakFrac)
-                    let oneMinus = 1.0 - t
-                    let px = oneMinus * oneMinus * startPt.x + 2 * oneMinus * t * ctrlPt.x + t * t * endPt.x
-                    let py = oneMinus * oneMinus * startPt.y + 2 * oneMinus * t * ctrlPt.y + t * t * endPt.y
-                    
-                    // Subtle scan beam cone beneath orbital dot
-                    var cone = Path()
-                    cone.move(to: CGPoint(x: px, y: py))
-                    cone.addLine(to: CGPoint(x: px - 12, y: size.height))
-                    cone.addLine(to: CGPoint(x: px + 12, y: size.height))
-                    cone.closeSubpath()
-                    context.fill(
-                        cone,
-                        with: .linearGradient(
-                            Gradient(colors: [self.palette.accentFill.opacity(0.28), .clear]),
-                            startPoint: CGPoint(x: px, y: py),
-                            endPoint: CGPoint(x: px, y: size.height)
-                        )
-                    )
-                    
-                    let glowRect = CGRect(x: px - 5.5, y: py - 5.5, width: 11, height: 11)
-                    context.fill(Circle().path(in: glowRect), with: .color(self.palette.accentFill.opacity(0.28)))
-                    let dotRect = CGRect(x: px - 3.2, y: py - 3.2, width: 6.4, height: 6.4)
-                    context.fill(Circle().path(in: dotRect), with: .color(self.palette.emerald))
-                }
-            }
-            .frame(height: 22)
-            
-            // Espresso 12-slot vertical segmented intensity ticks
-            HStack(alignment: .bottom, spacing: 3.5) {
-                ForEach(slices, id: \.index) { slice in
-                    let active = slice.intensity > 0.08
-                    let tickColor: Color = if slice.index == peakIdx && active {
-                        self.palette.emerald
-                    } else if slice.intensity >= 0.55 {
-                        self.palette.accentFill
-                    } else if slice.intensity >= 0.25 {
-                        self.palette.mint.opacity(0.85)
-                    } else {
-                        self.palette.emptyDot
-                    }
-                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                        .fill(tickColor)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: active ? max(10, 26 * CGFloat(slice.intensity)) : 10)
-                }
-            }
-            .frame(height: 26, alignment: .bottom)
-            
-            HStack {
-                Text("00")
-                Spacer()
-                Text("06")
-                Spacer()
-                Text("12")
-                Spacer()
-                Text("18")
-                Spacer()
-                Text("24")
-            }
-            .font(.system(size: 8.5, weight: .medium, design: .monospaced).monospacedDigit())
-            .foregroundStyle(self.palette.pine.opacity(0.40))
-        }
-        .padding(.top, 2)
-    }
-    
-    
-    private var expandedRoseChart: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             GeometryReader { geo in
                 Canvas { context, size in
                     guard size.width.isFinite, size.height.isFinite,
                           size.width > 8, size.height > 8 else { return }
                     let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
-                    let outerLimit = max(16, min(size.width, size.height) * 0.5 - 22)
-                    let innerR = max(8, outerLimit * 0.22)
-                    let maxPetalSpan = max(8, outerLimit - innerR)
+                    let outerLimit = max(14, min(size.width, size.height) * 0.5 - (self.detailed ? 22 : 4))
+                    let innerR = max(5, outerLimit * (self.detailed ? 0.22 : 0.20))
+                    let maxPetalSpan = max(6, outerLimit - innerR)
                     
-                    for frac in [0.35, 0.70, 1.0] {
+                    for frac in (self.detailed ? [0.35, 0.70, 1.0] : [0.5, 1.0]) {
                         let r = innerR + maxPetalSpan * CGFloat(frac)
                         let ringRect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
                         context.stroke(
                             Circle().path(in: ringRect),
                             with: .color(self.palette.hairline),
-                            lineWidth: 0.7
+                            lineWidth: self.detailed ? 0.7 : 0.55
                         )
                     }
                     
@@ -2421,9 +2786,12 @@ private struct NightingaleRoseChartView: View {
                     let stepAngle = 360.0 / Double(max(1, slices.count))
                     
                     for slice in slices {
-                        let startDeg = -90.0 + Double(slice.index) * stepAngle + 1.5
-                        let endDeg = -90.0 + Double(slice.index + 1) * stepAngle - 1.5
-                        let petalOuter = innerR + maxPetalSpan * CGFloat(slice.intensity)
+                        let padDeg = self.detailed ? 1.5 : 1.8
+                        let startDeg = -90.0 + Double(slice.index) * stepAngle + padDeg
+                        let endDeg = -90.0 + Double(slice.index + 1) * stepAngle - padDeg
+                        // Nightingale area scaling (r proportional to sqrt(intensity) keeps area honest)
+                        let radiusFactor = max(0.16, sqrt(max(0.02, slice.intensity)))
+                        let petalOuter = innerR + maxPetalSpan * CGFloat(radiusFactor)
                         
                         var petal = Path()
                         petal.addArc(
@@ -2449,12 +2817,12 @@ private struct NightingaleRoseChartView: View {
                             if slice.intensity >= 0.22 { return self.palette.mint }
                             return self.palette.emptyDot
                         }()
-                        context.fill(petal, with: .color(color.opacity(isHovered ? 0.96 : 0.82)))
+                        context.fill(petal, with: .color(color.opacity(isHovered ? 0.96 : 0.84)))
                         if isHovered {
                             context.stroke(petal, with: .color(self.palette.pine), lineWidth: 1.2)
                         }
                         
-                        if slice.index.isMultiple(of: 2) {
+                        if self.detailed, slice.index.isMultiple(of: 2) {
                             let midRad = (startDeg + endDeg) * 0.5 * .pi / 180.0
                             let labelR = outerLimit + 12
                             let lx = center.x + CGFloat(cos(midRad)) * labelR
@@ -2473,6 +2841,7 @@ private struct NightingaleRoseChartView: View {
                     context.fill(Circle().path(in: coreRect), with: .color(self.palette.card))
                 }
                 .onContinuousHover { phase in
+                    guard self.detailed else { return }
                     switch phase {
                         case .active(let loc):
                             self.hoveredSliceIndex = self.hitTestPetal(loc, in: geo.size)
@@ -2482,18 +2851,13 @@ private struct NightingaleRoseChartView: View {
                 }
             }
             
-            let caption: String = if let idx = self.hoveredSliceIndex, idx < self.metrics.slices.count {
-                {
-                    let slice = self.metrics.slices[idx]
-                    return "\(slice.label) · \(slice.rawChars.formatted()) 字 · \(slice.rawAIRequests) 次 AI"
-                }()
-            } else {
-                "24 小时写作与 AI 活跃分布 · 悬停查看各时段明细"
+            if self.detailed, let idx = self.hoveredSliceIndex, idx < self.metrics.slices.count {
+                let slice = self.metrics.slices[idx]
+                Text("\(slice.label) · \(slice.rawChars.formatted()) 字 · \(slice.rawAIRequests) 次 AI")
+                    .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                    .foregroundStyle(self.palette.pine.opacity(0.84))
+                    .frame(height: 16)
             }
-            Text(caption)
-                .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
-                .foregroundStyle(self.palette.pine.opacity(self.hoveredSliceIndex == nil ? 0.50 : 0.84))
-                .frame(height: 16)
         }
     }
     
@@ -2503,8 +2867,8 @@ private struct NightingaleRoseChartView: View {
         let dx = point.x - center.x
         let dy = point.y - center.y
         let dist = hypot(dx, dy)
-        let outerLimit = max(16, min(size.width, size.height) * 0.5 - (self.detailed ? 22 : 4))
-        let innerR = max(8, outerLimit * 0.22)
+        let outerLimit = max(14, min(size.width, size.height) * 0.5 - (self.detailed ? 22 : 4))
+        let innerR = max(5, outerLimit * 0.22)
         guard dist >= innerR && dist <= outerLimit else { return nil }
         var angle = atan2(dy, dx) * 180.0 / .pi + 90.0
         if angle < 0 { angle += 360.0 }
@@ -2514,7 +2878,7 @@ private struct NightingaleRoseChartView: View {
 }
 
 
-// MARK: - Chart 4: 3-Column Emotion Sankey Flow Diagram (情绪指数 · 桑基图)
+// MARK: - Chart 4: 3-Column Sankey Flow Diagram (心境流向)
 
 private struct EmotionSankeyChartView: View {
     
@@ -2536,12 +2900,12 @@ private struct EmotionSankeyChartView: View {
         let col2Nodes = self.middleMoodNodes()
         let col3Nodes = self.rightSubMoodNodes()
         
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             GeometryReader { geo in
                 Canvas { context, size in
                     guard size.width.isFinite, size.height.isFinite,
                           size.width > 8, size.height > 8 else { return }
-                    let padX: CGFloat = self.detailed ? 74 : 30
+                    let padX: CGFloat = self.detailed ? 74 : 28
                     let topHeaderH: CGFloat = self.detailed ? 20 : 2
                     let padBottom: CGFloat = self.detailed ? 10 : 3
                     let nodeW: CGFloat = self.detailed ? 10 : 5.5
@@ -2552,13 +2916,12 @@ private struct EmotionSankeyChartView: View {
                     let col2X = padX + innerW * 0.5 - nodeW * 0.5
                     let col3X = padX + innerW - nodeW
                     
-                    // Column headers above the Sankey diagram in detailed view
                     if self.detailed {
                         let headerStyle = Font.system(size: 10, weight: .medium)
                         let headerColor = self.palette.pine.opacity(0.46)
                         context.draw(Text("写作时段").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col1X + nodeW * 0.5, y: 7), anchor: .center)
-                        context.draw(Text("情绪维度").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col2X + nodeW * 0.5, y: 7), anchor: .center)
-                        context.draw(Text("心境状态").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col3X + nodeW * 0.5, y: 7), anchor: .center)
+                        context.draw(Text("心境维度").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col2X + nodeW * 0.5, y: 7), anchor: .center)
+                        context.draw(Text("状态细分").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col3X + nodeW * 0.5, y: 7), anchor: .center)
                     }
                     
                     let rects1 = Self.layoutColumn(nodes: col1Nodes, x: col1X, yStart: topHeaderH, height: innerH, width: nodeW, gap: self.detailed ? 7 : 4)
@@ -2571,7 +2934,6 @@ private struct EmotionSankeyChartView: View {
                     let sum1 = max(1.0, col1Nodes.reduce(0.0) { $0 + $1.weight })
                     let sum3 = max(1.0, col3Nodes.reduce(0.0) { $0 + $1.weight })
                     
-                    // Left column nodes + external labels (visible in both compact & expanded views)
                     for (node, layout) in zip(col1Nodes, rects1) {
                         context.fill(RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: layout.rect), with: .color(node.color))
                         let pct = Int(((node.weight / sum1) * 100).rounded())
@@ -2585,7 +2947,6 @@ private struct EmotionSankeyChartView: View {
                         )
                     }
                     
-                    // Middle column nodes + labels
                     for (node, layout) in zip(col2Nodes, rects2) {
                         context.fill(RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: layout.rect), with: .color(node.color))
                         if self.detailed {
@@ -2599,7 +2960,6 @@ private struct EmotionSankeyChartView: View {
                         }
                     }
                     
-                    // Right column nodes + external labels (visible in both compact & expanded views)
                     for (node, layout) in zip(col3Nodes, rects3) {
                         context.fill(RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: layout.rect), with: .color(node.color))
                         let pct = Int(((node.weight / sum3) * 100).rounded())
@@ -2630,10 +2990,10 @@ private struct EmotionSankeyChartView: View {
                 }
             }
             
-            if self.detailed {
-                Text(self.hoveredCaption ?? "时段流向 → 主导情绪 → 心境细分")
+            if self.detailed, let caption = self.hoveredCaption {
+                Text(caption)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(self.palette.pine.opacity(self.hoveredCaption == nil ? 0.48 : 0.80))
+                    .foregroundStyle(self.palette.pine.opacity(0.84))
                     .frame(height: 16)
             }
         }
@@ -2648,9 +3008,9 @@ private struct EmotionSankeyChartView: View {
         for slice in slices {
             let weight = max(0.05, slice.intensity)
             switch slice.index {
-                case 3..<6: morning += weight     // 06:00 - 12:00
-                case 6..<9: afternoon += weight   // 12:00 - 18:00
-                default: night += weight          // 18:00 - 06:00
+                case 3..<6: morning += weight
+                case 6..<9: afternoon += weight
+                default: night += weight
             }
         }
         return [
@@ -2718,10 +3078,10 @@ private struct EmotionSankeyChartView: View {
             prefix = "写作时段"
         } else if point.x < third * 2 {
             nodes = col2
-            prefix = "情绪维度"
+            prefix = "心境维度"
         } else {
             nodes = col3
-            prefix = "细分状态"
+            prefix = "状态细分"
         }
         let padY: CGFloat = 14
         let innerH = max(34, size.height - padY * 2)
@@ -2730,7 +3090,7 @@ private struct EmotionSankeyChartView: View {
         for (node, layout) in zip(nodes, laid) {
             if point.y >= layout.rect.minY - 3 && point.y <= layout.rect.maxY + 3 {
                 let pct = Int(((node.weight / total) * 100).rounded())
-                return "\(prefix) · \(node.label)（占比 \(pct)%）"
+                return "\(prefix) · \(node.label) (\(pct)%)"
             }
         }
         return nil
@@ -2824,16 +3184,17 @@ private struct EmotionSankeyChartView: View {
 }
 
 
-// MARK: - Supporting Components (Xiaohongshu-Style News Cards)
-
+// MARK: - Supporting Components (Clean Cover News Cards without "News" bottom-left label)
 
 private struct NewsFeedCoverCard: View {
     
     let item: AIHotNewsItem
     let coverImage: NSImage?
+    let isBookmarked: Bool
     let compactRow: Bool
     let palette: DashPalette
     let onTap: () -> Void
+    let onToggleBookmark: () -> Void
     
     @State private var isHovered = false
     
@@ -2853,11 +3214,10 @@ private struct NewsFeedCoverCard: View {
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
                         
-                        if !self.item.conciseMetaLabel.isEmpty {
-                            Text(self.item.conciseMetaLabel)
-                                .font(.system(size: 10, weight: .regular))
-                                .foregroundStyle(self.palette.pine.opacity(0.50))
-                                .lineLimit(1)
+                        if let score = self.item.heatScore, score > 0 {
+                            Text("\(score)°")
+                                .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+                                .foregroundStyle(self.palette.emerald)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2872,12 +3232,28 @@ private struct NewsFeedCoverCard: View {
                         .strokeBorder(self.palette.hairline, lineWidth: 0.6)
                 )
             } else {
-                // Xiaohongshu-style miniature cover card
                 VStack(alignment: .leading, spacing: 5) {
-                    self.thumbnailView
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 68)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    ZStack(alignment: .topTrailing) {
+                        self.thumbnailView
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 66)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        
+                        if self.isHovered || self.isBookmarked {
+                            Button(action: self.onToggleBookmark) {
+                                Image(systemName: self.isBookmarked ? "bookmark.fill" : "bookmark")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundStyle(self.isBookmarked ? self.palette.tokens.onAccentInk : self.palette.pine.opacity(0.78))
+                                    .frame(width: 20, height: 20)
+                                    .background(
+                                        self.isBookmarked ? self.palette.accentFill : self.palette.card.opacity(0.86),
+                                        in: Circle()
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .padding(4)
+                        }
+                    }
                     
                     Text(self.item.title)
                         .font(.system(size: 11.5, weight: .medium))
@@ -2886,15 +3262,9 @@ private struct NewsFeedCoverCard: View {
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     
-                    HStack(spacing: 4) {
-                        Text(AIHotNewsService.sanitizedDisplaySource(self.item.source))
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(self.palette.pine.opacity(0.54))
-                            .lineLimit(1)
-                        
-                        Spacer(minLength: 2)
-                        
-                        if let score = self.item.heatScore, score > 0 {
+                    if let score = self.item.heatScore, score > 0 {
+                        HStack {
+                            Spacer()
                             Text("\(score)°")
                                 .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
                                 .foregroundStyle(self.palette.emerald)
@@ -2941,16 +3311,10 @@ private struct NewsFeedCoverCard: View {
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
-                VStack(spacing: 2) {
-                    Text(String(self.item.source.prefix(2)).uppercased())
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
-                        .foregroundStyle(tint.opacity(0.85))
-                    Text(self.item.source)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(self.palette.pine.opacity(0.48))
-                        .lineLimit(1)
-                        .padding(.horizontal, 6)
-                }
+                let badge = self.item.resolvedCategory.badgeLabel
+                Text(badge.isEmpty ? "AI" : badge)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(tint.opacity(0.82))
             }
         }
         .overlay(
@@ -2961,7 +3325,7 @@ private struct NewsFeedCoverCard: View {
     
     
     private var domainTintColor: Color {
-        let hash = abs(self.item.source.unicodeScalars.reduce(0) { $0 &* 31 &+ Int($1.value) })
+        let hash = abs(self.item.title.unicodeScalars.reduce(0) { $0 &* 31 &+ Int($1.value) })
         let hues: [Color] = [
             self.palette.accentFill,
             self.palette.mint,

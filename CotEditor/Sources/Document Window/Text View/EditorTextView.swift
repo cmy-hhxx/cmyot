@@ -1029,47 +1029,41 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         guard let matched else { return nil }
         
         let cardRect: NSRect
-        if let cached = self.inlineImageCardEntries.first(where: {
-            $0.identifier == matched.token.identifier && $0.tokenRange == matched.token.range
-        }) {
-            cardRect = cached.rect
-        } else {
-            let docURL = self.currentInlineImageDocURL
-            guard PlainTextInlineImageStore.shared.image(for: matched.token.identifier, documentURL: docURL) != nil else {
-                return nil
-            }
-            layoutManager.ensureLayout(forCharacterRange: matched.token.range)
-            let glyphIndex = layoutManager.glyphIndexForCharacter(at: matched.token.range.location)
-            guard layoutManager.isValidGlyphIndex(glyphIndex) else { return nil }
-            
-            let fragmentRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
-            let glyphLocation = layoutManager.location(forGlyphAt: glyphIndex)
-            let rawContainerW = textContainer.size.width
-            let finiteContainerW = (rawContainerW.isFinite && rawContainerW > 0 && rawContainerW <= 100_000)
-                ? rawContainerW
-                : (self.enclosingScrollView?.documentVisibleRect.width ?? self.bounds.width)
-            let containerWidth = max(160, finiteContainerW.isFinite ? min(16_384, finiteContainerW) : 800)
-            let maxCardWidth = PlainTextInlineImageStore.effectiveMaxImageWidth(
-                containerWidth: containerWidth,
-                glyphX: glyphLocation.x
-            )
-            guard let geom = PlainTextInlineImageStore.shared.displayGeometry(
-                for: matched.token.identifier,
-                documentURL: docURL,
-                containerWidth: containerWidth,
-                maxImageWidth: maxCardWidth
-            ) else { return nil }
-            
-            let tx = geom.transform
-            let boxW = geom.rotatedBoxSize.width + 8
-            let boxH = geom.rotatedBoxSize.height + 8
-            let baseX = fragmentRect.minX + self.textContainerOrigin.x + glyphLocation.x
-            let minX = self.textContainerOrigin.x + 8
-            let maxX = max(minX, self.textContainerOrigin.x + containerWidth - boxW - 8)
-            let clampedX = min(maxX, max(minX, baseX + tx.offsetX))
-            let cardTopY = fragmentRect.minY + self.textContainerOrigin.y + 4 + max(0, tx.offsetY)
-            cardRect = NSRect(x: clampedX, y: cardTopY, width: boxW, height: boxH)
+        let docURL = self.currentInlineImageDocURL
+        guard PlainTextInlineImageStore.shared.image(for: matched.token.identifier, documentURL: docURL) != nil else {
+            return nil
         }
+        layoutManager.ensureLayout(forCharacterRange: matched.token.range)
+        let glyphIndex = layoutManager.glyphIndexForCharacter(at: matched.token.range.location)
+        guard layoutManager.isValidGlyphIndex(glyphIndex) else { return nil }
+        
+        let fragmentRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
+        let glyphLocation = layoutManager.location(forGlyphAt: glyphIndex)
+        let rawContainerW = textContainer.size.width
+        let finiteContainerW = (rawContainerW.isFinite && rawContainerW > 0 && rawContainerW <= 100_000)
+            ? rawContainerW
+            : (self.enclosingScrollView?.documentVisibleRect.width ?? self.bounds.width)
+        let containerWidth = max(160, finiteContainerW.isFinite ? min(16_384, finiteContainerW) : 800)
+        let maxCardWidth = PlainTextInlineImageStore.effectiveMaxImageWidth(
+            containerWidth: containerWidth,
+            glyphX: glyphLocation.x
+        )
+        guard let geom = PlainTextInlineImageStore.shared.displayGeometry(
+            for: matched.token.identifier,
+            documentURL: docURL,
+            containerWidth: containerWidth,
+            maxImageWidth: maxCardWidth
+        ) else { return nil }
+        
+        let tx = geom.transform
+        let boxW = geom.rotatedBoxSize.width + 8
+        let boxH = geom.rotatedBoxSize.height + 8
+        let baseX = fragmentRect.minX + self.textContainerOrigin.x + glyphLocation.x
+        let minX = self.textContainerOrigin.x + 8
+        let maxX = max(minX, self.textContainerOrigin.x + containerWidth - boxW - 8)
+        let clampedX = min(maxX, max(minX, baseX + tx.offsetX))
+        let cardTopY = fragmentRect.minY + self.textContainerOrigin.y + 4 + max(0, tx.offsetY)
+        cardRect = NSRect(x: clampedX, y: cardTopY, width: boxW, height: boxH)
         
         return BoundingBoxResizeMath.adaptiveCaretRect(
             forImageCardRect: cardRect,
@@ -2419,7 +2413,47 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         self.selectedInlineImageIdentifier = entry.identifier
         let docURL = self.currentInlineImageDocURL
         var tx = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
-        tx.scale = max(0.15, min(4.0, tx.scale * (1.0 + event.magnification)))
+        let factor = max(0.5, min(2.0, 1.0 + event.magnification))
+        let maxCardW = max(BoundingBoxResizeMath.minWidth, self.effectiveInlineImageContainerWidth - 24)
+        
+        if tx.customWidth != nil || tx.customHeight != nil {
+            let currentW = max(BoundingBoxResizeMath.minWidth, entry.drawSize.width)
+            let targetW = max(BoundingBoxResizeMath.minWidth, min(maxCardW, round(currentW * factor)))
+            let naturalSize = PlainTextInlineImageStore.shared.naturalSize(for: entry.identifier, documentURL: docURL)
+            let aspect: CGFloat = {
+                if let naturalSize, naturalSize.height > 0 {
+                    return naturalSize.width / naturalSize.height
+                }
+                return entry.drawSize.height > 0 ? (entry.drawSize.width / entry.drawSize.height) : 1.0
+            }()
+            let candidate = NSSize(
+                width: targetW,
+                height: max(BoundingBoxResizeMath.minHeight, min(1600, round(targetW / max(0.01, aspect))))
+            )
+            if let naturalSize, naturalSize.width > 0, naturalSize.height > 0 {
+                let optimal = BoundingBoxResizeMath.optimalRestoredSize(
+                    currentSize: candidate,
+                    naturalSize: naturalSize,
+                    maxWidth: maxCardW,
+                    maxHeight: 1600
+                )
+                tx.customWidth = optimal.width
+                tx.customHeight = optimal.height
+            } else {
+                tx.customWidth = candidate.width
+                tx.customHeight = candidate.height
+            }
+            let ratio = (tx.customWidth ?? currentW) / max(1, currentW)
+            tx.scale = max(0.15, min(4.0, tx.scale * ratio))
+        } else {
+            tx.scale = max(0.15, min(4.0, tx.scale * factor))
+        }
+        
+        if factor < 1.0, tx.offsetY > 0 {
+            let nextOffsetY = tx.offsetY * factor
+            tx.offsetY = nextOffsetY < 2 ? 0 : round(nextOffsetY)
+        }
+        
         PlainTextInlineImageStore.shared.setTransform(tx, for: entry.identifier, documentURL: docURL)
         self.liveInlineImageHUDText = "\(Int((tx.scale * 100).rounded()))%"
         self.applyInlineImageLayoutUpdate()
@@ -2801,7 +2835,13 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     
     private func applyInlineImageLayoutUpdate() {
-        (self.layoutManager as? LayoutManager)?.invalidateInlineImageLayout()
+        if let lm = self.layoutManager as? LayoutManager {
+            lm.invalidateInlineImageLayout()
+            if let tc = self.textContainer {
+                lm.ensureLayout(for: tc)
+            }
+        }
+        self.sizeToFit()
         self.needsLayout = true
         self.needsDisplay = true
         self.invalidateInsertionIndicatorDisplayMode()
@@ -2980,12 +3020,23 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     maxWidth: maxCardW,
                     maxHeight: 1600
                 )
+                let prevHeight = self.inlineImageCardEntries.first(where: { $0.identifier == identifier })?.drawSize.height
                 tx.customWidth = optimal.width
                 tx.customHeight = optimal.height
+                if let prevHeight, prevHeight > 0, optimal.height < prevHeight, tx.offsetY > 0 {
+                    let scaled = tx.offsetY * (optimal.height / prevHeight)
+                    tx.offsetY = scaled < 2 ? 0 : round(scaled)
+                }
             } else if isWidth {
                 tx.customWidth = max(BoundingBoxResizeMath.minWidth, min(2400, round(parsed)))
             } else {
-                tx.customHeight = max(BoundingBoxResizeMath.minHeight, min(1600, round(parsed)))
+                let nextH = max(BoundingBoxResizeMath.minHeight, min(1600, round(parsed)))
+                let prevHeight = self.inlineImageCardEntries.first(where: { $0.identifier == identifier })?.drawSize.height
+                tx.customHeight = nextH
+                if let prevHeight, prevHeight > 0, nextH < prevHeight, tx.offsetY > 0 {
+                    let scaled = tx.offsetY * (nextH / prevHeight)
+                    tx.offsetY = scaled < 2 ? 0 : round(scaled)
+                }
             }
             PlainTextInlineImageStore.shared.setTransform(tx, for: identifier, documentURL: docURL)
             self.applyInlineImageLayoutUpdate()
@@ -3019,6 +3070,32 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    /// Resolves `offsetY` after bounding-box resize so shrinking never converts shrunk height into trapped top padding.
+    nonisolated static func resolvedOffsetYAfterResize(
+        startOffsetY: CGFloat,
+        startFrame: NSRect,
+        nextFrame: NSRect,
+        handle: BoundingBoxHandle
+    ) -> CGFloat {
+        guard startOffsetY > 0 else { return 0 }
+        let ratio = max(0, min(1, nextFrame.height / max(1, startFrame.height)))
+        var resolved = startOffsetY
+        if handle.isNorth {
+            let deltaMinY = nextFrame.minY - startFrame.minY
+            if deltaMinY < 0 {
+                // Enlarging upward via a North handle consumes existing top blank space first.
+                resolved = max(0, startOffsetY + deltaMinY)
+            } else if deltaMinY > 0 {
+                // Shrinking via a North handle releases blank space above rather than pushing the card down.
+                resolved = min(startOffsetY * ratio, max(0, startOffsetY - deltaMinY))
+            }
+        } else if nextFrame.height < startFrame.height {
+            resolved = startOffsetY * ratio
+        }
+        return resolved < 2 ? 0 : min(240, round(resolved))
+    }
+    
+    
     private func trackInlineImageResize(
         for entry: InlineImageCardEntry,
         handle: BoundingBoxHandle,
@@ -3036,7 +3113,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let containerWidth = self.effectiveInlineImageContainerWidth
         let minXBound = self.textContainerOrigin.x + 8
         let maxXBound = self.textContainerOrigin.x + max(180, containerWidth) - 8
-        let minYBound = startImageFrame.minY - max(0, startTx.offsetY)
+        let minYBound = startImageFrame.minY - 1600
         let naturalSize = PlainTextInlineImageStore.shared.naturalSize(for: entry.identifier, documentURL: docURL)
         let naturalAspectRatio: CGFloat = {
             if let naturalSize, naturalSize.height > 0 {
@@ -3098,7 +3175,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             updated.customWidth = nextFrame.width
             updated.customHeight = nextFrame.height
             updated.offsetX = startTx.offsetX + (nextFrame.minX - startImageFrame.minX)
-            updated.offsetY = max(0, min(240, startTx.offsetY + (nextFrame.minY - startImageFrame.minY)))
+            updated.offsetY = Self.resolvedOffsetYAfterResize(
+                startOffsetY: startTx.offsetY,
+                startFrame: startImageFrame,
+                nextFrame: nextFrame,
+                handle: handle
+            )
             PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL)
             
             self.stepResizeSprings()
@@ -3455,6 +3537,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 if abs(resolved.scale - prev.scale) > 0.001 {
                     resolved.customWidth = nil
                     resolved.customHeight = nil
+                    if resolved.scale < prev.scale, abs(resolved.offsetY - prev.offsetY) < 0.001, prev.offsetY > 0 {
+                        let scaled = prev.offsetY * (resolved.scale / max(0.05, prev.scale))
+                        resolved.offsetY = scaled < 2 ? 0 : round(scaled)
+                    }
                 } else {
                     resolved.customWidth = prev.customWidth
                     resolved.customHeight = prev.customHeight

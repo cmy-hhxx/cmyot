@@ -2742,7 +2742,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         SELECT id, title, notes, due_date, due_day_key, priority, is_completed, created_at, COALESCE(completed_at, 0),
                COALESCE(is_pinned, 0), COALESCE(has_deadline, 1)
         FROM user_reminders
-        ORDER BY is_completed ASC, is_pinned DESC, due_date ASC, priority DESC, created_at DESC;
+        ORDER BY is_completed ASC, is_pinned DESC, COALESCE(has_deadline, 1) DESC, due_date DESC, priority DESC, created_at DESC;
         """
         var stmt: OpaquePointer?
         var items: [UserReminder] = []

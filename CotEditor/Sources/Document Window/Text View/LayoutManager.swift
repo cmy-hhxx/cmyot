@@ -438,6 +438,14 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
         if fallback.isFinite, fallback > 0, fallback <= 100_000 {
             return fallback
         }
+        if Thread.isMainThread {
+            let viewportWidth: CGFloat? = MainActor.assumeIsolated {
+                self.firstTextView?.enclosingScrollView?.documentVisibleRect.width ?? self.firstTextView?.bounds.width
+            }
+            if let viewportWidth, viewportWidth.isFinite, viewportWidth > 0, viewportWidth <= 100_000 {
+                return max(160, viewportWidth)
+            }
+        }
         return 800
     }
     
