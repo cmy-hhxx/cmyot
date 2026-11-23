@@ -32,6 +32,15 @@ struct CenterPreviewTextView: NSViewRepresentable {
     let text: String
     var monospace: Bool = false
     
+    final class Coordinator {
+        var lastText: String?
+        var lastMonospace: Bool?
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+    
     func makeNSView(context: Context) -> NSScrollView {
         
         let scrollView = NSScrollView()
@@ -77,6 +86,13 @@ struct CenterPreviewTextView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         
         guard let textView = scrollView.documentView as? NSTextView else { return }
+        let coordinator = context.coordinator
+        
+        guard coordinator.lastText != self.text || coordinator.lastMonospace != self.monospace else {
+            return
+        }
+        coordinator.lastText = self.text
+        coordinator.lastMonospace = self.monospace
         
         let targetFont: NSFont = self.monospace
             ? .monospacedSystemFont(ofSize: 12.5, weight: .regular)
@@ -85,18 +101,16 @@ struct CenterPreviewTextView: NSViewRepresentable {
             textView.font = targetFont
         }
         
-        if textView.string != self.text {
-            let paragraphStyle = NSMutableParagraphStyle()
-            paragraphStyle.lineSpacing = 4.5
-            let attributed = NSAttributedString(string: self.text, attributes: [
-                .font: targetFont,
-                .foregroundColor: NSColor.labelColor,
-                .paragraphStyle: paragraphStyle,
-            ])
-            textView.textStorage?.setAttributedString(attributed)
-            scrollView.contentView.scroll(to: .zero)
-            scrollView.reflectScrolledClipView(scrollView.contentView)
-        }
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = 4.5
+        let attributed = NSAttributedString(string: self.text, attributes: [
+            .font: targetFont,
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraphStyle,
+        ])
+        textView.textStorage?.setAttributedString(attributed)
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 }
 
@@ -410,9 +424,199 @@ nonisolated enum StarMapLayoutEngine {
 }
 
 
+// MARK: - Agent Auto-Organize Engine (文档中心一键整理)
+
+nonisolated enum DocumentCenterAgentOrganizer {
+    
+    struct InputItem: Sendable {
+        let id: String
+        let title: String
+        let syntax: String
+        let currentGroup: String
+        let excerpt: String
+        let isUntitled: Bool
+    }
+    
+    struct Assignment: Codable, Sendable, Equatable {
+        let id: String
+        let group: String
+        let suggestedTitle: String?
+    }
+    
+    struct Plan: Codable, Sendable, Equatable {
+        let assignments: [Assignment]
+    }
+    
+    
+    /// Checks whether a document title is generic / untitled and safe for Agent title cleanup.
+    static func isGenericUntitled(_ title: String, hasFilePath: Bool) -> Bool {
+        if hasFilePath { return false }
+        let clean = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if clean.isEmpty { return true }
+        let prefixes = ["untitled", "未命名", "新建文档", "无标题", "note ", "draft "]
+        return prefixes.contains { clean == $0.trimmingCharacters(in: .whitespaces) || clean.hasPrefix($0) }
+    }
+    
+    
+    /// Parses the Agent JSON response (tolerating markdown code fences and surrounding prose).
+    static func parsePlan(from rawResponse: String, validIDs: Set<String>) -> Plan? {
+        var cleaned = rawResponse.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let start = cleaned.firstIndex(of: "{"), let end = cleaned.lastIndex(of: "}") {
+            cleaned = String(cleaned[start...end])
+        }
+        guard let data = cleaned.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(Plan.self, from: data)
+        else { return nil }
+        
+        var seen = Set<String>()
+        var sanitized: [Assignment] = []
+        for item in decoded.assignments {
+            guard validIDs.contains(item.id), seen.insert(item.id).inserted else { continue }
+            let rawGroup = item.group.trimmingCharacters(in: .whitespacesAndNewlines)
+            let group = (rawGroup == "未分组" || rawGroup.isEmpty) ? "" : String(rawGroup.prefix(14))
+            let title: String? = item.suggestedTitle.flatMap { raw in
+                let trimmed = raw
+                    .replacingOccurrences(of: "/", with: "-")
+                    .replacingOccurrences(of: ":", with: "-")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : String(trimmed.prefix(36))
+            }
+            sanitized.append(Assignment(id: item.id, group: group, suggestedTitle: title))
+        }
+        return sanitized.isEmpty ? nil : Plan(assignments: sanitized)
+    }
+    
+    
+    /// Fast deterministic local classifier used when AI is unconfigured or returns invalid JSON.
+    static func buildLocalFallbackPlan(items: [InputItem], existingGroups: [String]) -> Plan {
+        let codeSyntaxes: Set<String> = [
+            "swift", "python", "javascript", "typescript", "json", "yaml", "toml",
+            "html", "css", "sql", "shell script", "bash", "c", "c++", "rust", "go", "java", "ruby",
+        ]
+        
+        var assignments: [Assignment] = []
+        assignments.reserveCapacity(items.count)
+        
+        for item in items {
+            let titleLower = item.title.lowercased()
+            let syntaxLower = item.syntax.lowercased()
+            let sampleLower = (item.title + "\n" + item.excerpt).lowercased()
+            
+            let resolvedGroup: String
+            if !item.currentGroup.isEmpty && existingGroups.contains(item.currentGroup) {
+                resolvedGroup = item.currentGroup
+            } else if sampleLower.contains("会议") || sampleLower.contains("纪要") || sampleLower.contains("meeting") || sampleLower.contains("sync") {
+                resolvedGroup = "会议纪要"
+            } else if sampleLower.contains("方案") || sampleLower.contains("需求") || sampleLower.contains("prd") || sampleLower.contains("设计") || sampleLower.contains("规划") || sampleLower.contains("架构") {
+                resolvedGroup = "项目方案"
+            } else if sampleLower.contains("周报") || sampleLower.contains("日报") || sampleLower.contains("复盘") || sampleLower.contains("总结") || sampleLower.contains("todo") || sampleLower.contains("清单") {
+                resolvedGroup = "工作清单"
+            } else if syntaxLower == "json" || syntaxLower == "yaml" || syntaxLower == "toml" || syntaxLower == "xml" || syntaxLower == "csv" || titleLower.hasSuffix(".env") {
+                resolvedGroup = "配置数据"
+            } else if codeSyntaxes.contains(syntaxLower) || sampleLower.contains("func ") || sampleLower.contains("import ") || sampleLower.contains("class ") {
+                resolvedGroup = "代码开发"
+            } else if sampleLower.contains("api") || sampleLower.contains("bug") || sampleLower.contains("debug") || sampleLower.contains("文档") || sampleLower.contains("教程") || sampleLower.contains("笔记") {
+                resolvedGroup = "技术笔记"
+            } else {
+                resolvedGroup = "日常记录"
+            }
+            
+            let suggestedTitle: String? = item.isUntitled ? Self.deriveTitleFromExcerpt(item.excerpt) : nil
+            assignments.append(Assignment(id: item.id, group: resolvedGroup, suggestedTitle: suggestedTitle))
+        }
+        return Plan(assignments: assignments)
+    }
+    
+    
+    private static func deriveTitleFromExcerpt(_ excerpt: String) -> String? {
+        for rawLine in excerpt.components(separatedBy: .newlines) {
+            let trimmed = rawLine
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "#*-•> "))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count >= 2 else { continue }
+            let clean = trimmed
+                .replacingOccurrences(of: "/", with: "-")
+                .replacingOccurrences(of: ":", with: "-")
+            return String(clean.prefix(24))
+        }
+        return nil
+    }
+    
+    
+    @MainActor
+    static func generatePlan(items: [InputItem], existingGroups: [String]) async -> (plan: Plan, usedAI: Bool) {
+        guard !items.isEmpty else {
+            return (Plan(assignments: []), false)
+        }
+        
+        let validIDs = Set(items.map(\.id))
+        if AIService.shared.isConfigured {
+            let cappedItems = Array(items.prefix(80))
+            let manifestLines = cappedItems.enumerated().map { idx, item -> String in
+                let compactExcerpt = item.excerpt
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .prefix(180)
+                return """
+                [\(idx + 1)] id="\(item.id)" | title="\(item.title)" | syntax="\(item.syntax)" | group="\(item.currentGroup)" | untitled=\(item.isUntitled ? "true" : "false") | snippet="\(compactExcerpt)"
+                """
+            }.joined(separator: "\n")
+            
+            let existingLine = existingGroups.isEmpty ? "无" : existingGroups.joined(separator: "、")
+            let systemPrompt = """
+            你是文档中心智能整理 Agent。请将用户的全部文档归类到清晰、精炼的分组中（2-6字中文分组名，总数控制在 3-7 个，优先复用合理的已有分组）。
+            规则：
+            1. 仅返回严格合法的 JSON，不要输出任何额外解释或 Markdown 之外的文字。
+            2. JSON 格式：{"assignments":[{"id":"原id","group":"分组名","suggestedTitle":"仅当untitled=true且能从内容提炼清晰标题时填写，否则为null"}]}
+            3. 每个输入文档的 id 都必须出现在 assignments 中。
+            """
+            let userPrompt = """
+            已有分组：\(existingLine)
+            待整理文档（共 \(cappedItems.count) 篇）：
+            \(manifestLines)
+            """
+            
+            do {
+                let raw = try await AIService.shared.chat(
+                    [.system(systemPrompt), .user(userPrompt)],
+                    analyticsFeature: "documentCenterAgentOrganize"
+                )
+                if let parsed = Self.parsePlan(from: raw, validIDs: validIDs) {
+                    return (parsed, true)
+                }
+            } catch {
+                CotLogger.shared.error(category: .ai, "Document Center Agent organize fallback", error: error)
+            }
+        }
+        
+        return (Self.buildLocalFallbackPlan(items: items, existingGroups: existingGroups), false)
+    }
+}
+
+
 // MARK: - Document Center State
 
 @MainActor @Observable final class DocumentCenterState {
+    
+    enum SidebarFilter: Hashable {
+        case all
+        case openNow
+        case group(String)
+        case ungrouped
+        case trash
+    }
+    
+    struct OrganizeUndoEntry {
+        let itemID: String
+        let dbRecordID: String
+        let filePath: String?
+        let previousGroup: String
+        let previousTitle: String
+        let titleWasChanged: Bool
+        let syntax: String
+        let content: String
+    }
     
     struct ManagedDocumentItem: Identifiable, Equatable {
         let id: String
@@ -422,14 +626,19 @@ nonisolated enum StarMapLayoutEngine {
         let fileExists: Bool
         let syntax: String
         let content: String
-        let previewText: String
         let updatedAt: Date
         let isOpenNow: Bool
         let isDirty: Bool
         let characterCount: Int
+        let compactCharCount: String
+        let relativeTimeText: String
         let groupName: String
         let storedRecord: StoredDocumentRecord?
         var isTrashed: Bool = false
+        
+        var previewText: String {
+            DocumentCenterState.buildPreviewText(from: self.content)
+        }
         
         static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.id == rhs.id
@@ -439,6 +648,7 @@ nonisolated enum StarMapLayoutEngine {
                 && lhs.characterCount == rhs.characterCount
                 && lhs.groupName == rhs.groupName
                 && lhs.updatedAt == rhs.updatedAt
+                && lhs.isTrashed == rhs.isTrashed
         }
     }
     
@@ -454,15 +664,37 @@ nonisolated enum StarMapLayoutEngine {
     var displayedItems: [ManagedDocumentItem] = []
     var groupSections: [DocumentGroupSection] = []
     var collapsedGroups: Set<String> = []
+    var openCount: Int = 0
+    var ungroupedCount: Int = 0
+    var groupCounts: [String: Int] = [:]
     var selectedID: String?
+    
+    var sidebarFilter: SidebarFilter = .all {
+        didSet {
+            if oldValue != self.sidebarFilter {
+                let isTrash = (self.sidebarFilter == .trash)
+                if self.showingTrash != isTrash {
+                    self.showingTrash = isTrash
+                }
+                self.recomputeDisplayedItems()
+            }
+        }
+    }
+    
     var showingTrash = false {
         didSet {
             if oldValue != self.showingTrash {
+                if self.showingTrash && self.sidebarFilter != .trash {
+                    self.sidebarFilter = .trash
+                } else if !self.showingTrash && self.sidebarFilter == .trash {
+                    self.sidebarFilter = .all
+                }
                 self.selectedID = nil
                 self.recomputeDisplayedItems()
             }
         }
     }
+    
     var searchText: String = "" {
         didSet {
             if oldValue != self.searchText {
@@ -471,7 +703,19 @@ nonisolated enum StarMapLayoutEngine {
         }
     }
     
+    // Agent Auto-Organize state
+    var isAgentOrganizing: Bool = false
+    var agentOrganizeSummary: String?
+    var lastOrganizeUndoSnapshot: [OrganizeUndoEntry] = []
+    var lastOrganizeCreatedGroups: [String] = []
+    
     private var liveDocsByID: [String: Document] = [:]
+    
+    private static let shortDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "M/d"
+        return f
+    }()
     
     func liveDocument(for id: String) -> Document? {
         self.liveDocsByID[id]
@@ -480,6 +724,7 @@ nonisolated enum StarMapLayoutEngine {
     
     func refresh() {
         
+        let now = Date()
         let orderedOpenDocs = Self.collectOpenDocuments()
         var dbByCanonicalKey: [String: StoredDocumentRecord] = [:]
         for record in CotLocalDatabase.shared.documents {
@@ -498,6 +743,9 @@ nonisolated enum StarMapLayoutEngine {
         var liveByKey: [String: Document] = [:]
         var merged: [ManagedDocumentItem] = []
         var usedKeys = Set<String>()
+        var openTotal = 0
+        var ungroupedTotal = 0
+        var countsByGroup: [String: Int] = [:]
         
         for doc in orderedOpenDocs {
             guard !doc.databaseDocumentID.hasPrefix("weekly:") else { continue }
@@ -514,15 +762,21 @@ nonisolated enum StarMapLayoutEngine {
             guard usedKeys.insert(key).inserted else { continue }
             
             liveByKey[key] = doc
+            openTotal += 1
             let dbMatch = dbByCanonicalKey[key]
             let modifiedDate = max(
                 doc.lastManualSaveDate ?? .distantPast,
                 doc.fileModificationDate ?? .distantPast,
-                dbMatch?.updatedAt ?? Date()
+                dbMatch?.updatedAt ?? now
             )
             let fallbackID = filePath ?? (doc.databaseDocumentID.hasPrefix("doc:") ? doc.databaseDocumentID : "doc:\(doc.databaseDocumentID)")
-            let preview = Self.buildPreviewText(from: content)
             let groupName = dbMatch?.groupName ?? ""
+            if groupName.isEmpty {
+                ungroupedTotal += 1
+            } else {
+                countsByGroup[groupName, default: 0] += 1
+            }
+            let charCount = content.count
             
             merged.append(ManagedDocumentItem(
                 id: key,
@@ -532,11 +786,12 @@ nonisolated enum StarMapLayoutEngine {
                 fileExists: filePath != nil,
                 syntax: doc.syntaxName,
                 content: content,
-                previewText: preview,
                 updatedAt: modifiedDate,
                 isOpenNow: true,
                 isDirty: dirty,
-                characterCount: content.count,
+                characterCount: charCount,
+                compactCharCount: Self.compactChars(charCount),
+                relativeTimeText: Self.relativeTime(modifiedDate, now: now),
                 groupName: groupName,
                 storedRecord: dbMatch ?? StoredDocumentRecord(
                     id: fallbackID,
@@ -555,7 +810,12 @@ nonisolated enum StarMapLayoutEngine {
             let key = Self.canonicalKey(filePath: record.filePath, rawID: record.id)
             guard usedKeys.insert(key).inserted else { continue }
             
-            let preview = Self.buildPreviewText(from: record.content)
+            if record.groupName.isEmpty {
+                ungroupedTotal += 1
+            } else {
+                countsByGroup[record.groupName, default: 0] += 1
+            }
+            let charCount = record.content.count
             merged.append(ManagedDocumentItem(
                 id: key,
                 dbRecordID: record.id,
@@ -564,11 +824,12 @@ nonisolated enum StarMapLayoutEngine {
                 fileExists: record.filePath != nil,
                 syntax: record.syntax,
                 content: record.content,
-                previewText: preview,
                 updatedAt: record.updatedAt,
                 isOpenNow: false,
                 isDirty: false,
-                characterCount: record.content.count,
+                characterCount: charCount,
+                compactCharCount: Self.compactChars(charCount),
+                relativeTimeText: Self.relativeTime(record.updatedAt, now: now),
                 groupName: record.groupName,
                 storedRecord: record
             ))
@@ -576,8 +837,12 @@ nonisolated enum StarMapLayoutEngine {
         
         self.liveDocsByID = liveByKey
         self.items = merged
+        self.openCount = openTotal
+        self.ungroupedCount = ungroupedTotal
+        self.groupCounts = countsByGroup
         self.trashedItems = CotLocalDatabase.shared.trashedDocuments.map { record in
-            ManagedDocumentItem(
+            let charCount = record.content.count
+            return ManagedDocumentItem(
                 id: Self.canonicalKey(filePath: record.filePath, rawID: record.id),
                 dbRecordID: record.id,
                 title: record.title,
@@ -585,11 +850,12 @@ nonisolated enum StarMapLayoutEngine {
                 fileExists: record.filePath != nil,
                 syntax: record.syntax,
                 content: record.content,
-                previewText: Self.buildPreviewText(from: record.content),
                 updatedAt: record.updatedAt,
                 isOpenNow: false,
                 isDirty: false,
-                characterCount: record.content.count,
+                characterCount: charCount,
+                compactCharCount: Self.compactChars(charCount),
+                relativeTimeText: Self.relativeTime(record.updatedAt, now: now),
                 groupName: record.groupName,
                 storedRecord: record,
                 isTrashed: true
@@ -612,7 +878,7 @@ nonisolated enum StarMapLayoutEngine {
         
         let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         
-        if self.showingTrash {
+        if self.showingTrash || self.sidebarFilter == .trash {
             let sorted = self.trashedItems
                 .filter { self.matchesSearch($0, query: query) }
                 .sorted { $0.updatedAt > $1.updatedAt }
@@ -625,19 +891,17 @@ nonisolated enum StarMapLayoutEngine {
             return
         }
         
-        let filtered = self.items.filter { self.matchesSearch($0, query: query) }
-        
-        let sorted = filtered.sorted { lhs, rhs in
+        let filteredAll = self.items.filter { self.matchesSearch($0, query: query) }
+        let sortedAll = filteredAll.sorted { lhs, rhs in
             if lhs.isOpenNow != rhs.isOpenNow {
                 return lhs.isOpenNow && !rhs.isOpenNow
             }
             return lhs.updatedAt > rhs.updatedAt
         }
-        self.displayedItems = sorted
         
         var groupedBuckets: [String: [ManagedDocumentItem]] = [:]
         var ungrouped: [ManagedDocumentItem] = []
-        for item in sorted {
+        for item in sortedAll {
             if item.groupName.isEmpty {
                 ungrouped.append(item)
             } else {
@@ -660,21 +924,54 @@ nonisolated enum StarMapLayoutEngine {
         }
         self.groupSections = sections
         
-        if let selectedID, sorted.contains(where: { $0.id == selectedID }) {
+        let visible: [ManagedDocumentItem]
+        switch self.sidebarFilter {
+            case .all:
+                visible = sortedAll
+            case .openNow:
+                visible = sortedAll.filter(\.isOpenNow)
+            case .group(let name):
+                visible = sortedAll.filter { $0.groupName == name }
+            case .ungrouped:
+                visible = sortedAll.filter { $0.groupName.isEmpty }
+            case .trash:
+                visible = []
+        }
+        self.displayedItems = visible
+        
+        if let selectedID, visible.contains(where: { $0.id == selectedID }) {
             return
         }
-        self.selectedID = sorted.first?.id
+        self.selectedID = visible.first?.id
     }
     
     
-    private static func buildPreviewText(from content: String) -> String {
+    nonisolated static func buildPreviewText(from content: String) -> String {
         if content.isEmpty {
-            return "（空文档）"
+            return ""
         }
-        if content.count > 12_000 {
-            return String(content.prefix(12_000)) + "\n\n……（仅预览前 12,000 字，点击「在编辑器打开」查看完整内容）"
+        if content.count > 24_000 {
+            return String(content.prefix(24_000)) + "\n\n…"
         }
         return content
+    }
+    
+    
+    nonisolated static func compactChars(_ count: Int) -> String {
+        if count >= 10_000 { return String(format: "%.1f万字", Double(count) / 10_000.0) }
+        if count >= 1_000 { return String(format: "%.1fK字", Double(count) / 1_000.0) }
+        return "\(count)字"
+    }
+    
+    
+    static func relativeTime(_ date: Date, now: Date = Date()) -> String {
+        let interval = max(0, now.timeIntervalSince(date))
+        if interval < 60 { return "刚刚" }
+        if interval < 3600 { return "\(Int(interval / 60))分前" }
+        if interval < 86_400 { return "\(Int(interval / 3600))时前" }
+        let days = Int(interval / 86_400)
+        if days < 30 { return "\(days)天前" }
+        return Self.shortDateFormatter.string(from: date)
     }
     
     
@@ -1396,7 +1693,88 @@ struct StarMapQuickLookOverlay<HeaderActions: View, BodyContent: View>: View {
 }
 
 
-// MARK: - Structured Star-Map Document Center
+// MARK: - Structured 3-Column Document Center
+
+private struct DocumentCenterRowView: View, Equatable {
+    
+    let item: DocumentCenterState.ManagedDocumentItem
+    let isSelected: Bool
+    let showGroupTag: Bool
+    let tokens: StudioColorTokens
+    
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.item == rhs.item
+            && lhs.isSelected == rhs.isSelected
+            && lhs.showGroupTag == rhs.showGroupTag
+            && lhs.tokens == rhs.tokens
+    }
+    
+    var body: some View {
+        let dotColor: Color = if self.item.isTrashed {
+            Color.red.opacity(0.75)
+        } else if self.item.isDirty {
+            .orange
+        } else if self.item.isOpenNow {
+            self.tokens.accent
+        } else {
+            self.tokens.primaryInk.opacity(0.24)
+        }
+        
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 6, height: 6)
+                
+                Text(self.item.title)
+                    .font(.system(size: 13, weight: self.isSelected ? .semibold : .medium))
+                    .foregroundStyle(self.tokens.primaryInk.opacity(self.isSelected ? 1.0 : 0.90))
+                    .lineLimit(1)
+                
+                Spacer(minLength: 4)
+                
+                if self.item.isDirty {
+                    Text("未保存")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.orange)
+                }
+            }
+            
+            HStack(spacing: 6) {
+                if self.showGroupTag, !self.item.groupName.isEmpty, !self.item.isTrashed {
+                    Text(self.item.groupName)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(self.tokens.accentText)
+                        .padding(.horizontal, 6)
+                        .frame(height: 17)
+                        .background(self.tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .lineLimit(1)
+                }
+                
+                Text("\(self.item.compactCharCount) · \(self.item.relativeTimeText)")
+                    .font(.system(size: 11, weight: .regular, design: .rounded).monospacedDigit())
+                    .foregroundStyle(self.tokens.primaryInk.opacity(0.46))
+                    .lineLimit(1)
+                
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 13)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(self.isSelected ? self.tokens.accent.opacity(self.tokens.isDark ? 0.20 : 0.12) : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(self.isSelected ? self.tokens.accent.opacity(0.35) : Color.clear, lineWidth: 0.75)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+}
+
 
 struct DocumentCenterView: View {
     
@@ -1410,19 +1788,20 @@ struct DocumentCenterView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.registerWorkspaceCenterEscPop) private var registerEscPop
     @State private var db = CotLocalDatabase.shared
-    @State private var focusedClusterID: String?
-    @State private var isQuickLookOpen = false
     @State private var isRenaming = false
     @State private var renameDraft = ""
     @FocusState private var isRenameFieldFocused: Bool
     @State private var isCreatingGroup = false
     @State private var newGroupDraft = ""
+    @FocusState private var isNewGroupFieldFocused: Bool
     @State private var pendingAssignAfterGroupCreate: DocumentCenterState.ManagedDocumentItem?
     @State private var renamingGroupName: String?
     @State private var groupRenameDraft = ""
+    @FocusState private var isGroupRenameFocused: Bool
     @State private var copiedFlag = false
     @State private var toastMessage: String?
     @State private var toastTask: Task<Void, Never>?
+    @State private var organizeTask: Task<Void, Never>?
     @State private var keyMonitor: Any?
     
     
@@ -1430,243 +1809,52 @@ struct DocumentCenterView: View {
         let displayedItems = self.state.displayedItems
         let activeItem = self.selectedItem(in: displayedItems)
         let tokens = DashPalette.editorialTokens(isDark: self.colorScheme == .dark)
-        let clusters = self.buildStarClusters(displayedItems: displayedItems, tokens: tokens)
-        let itemByID = Dictionary(uniqueKeysWithValues: displayedItems.map { ($0.id, $0) })
-        let sectionByID = Dictionary(uniqueKeysWithValues: self.state.groupSections.map { ($0.id, $0) })
         
-        ZStack {
-            ConstellationStarMapView(
-                hubTitle: self.state.showingTrash ? "废纸篓" : "文档星图",
-                hubSubtitle: self.state.showingTrash
-                    ? "\(displayedItems.count) 篇已删"
-                    : "\(displayedItems.count) 篇 · \(max(1, self.state.groupSections.count)) 分组",
-                clusters: clusters,
-                selectedLeafID: activeItem?.id,
-                focusedClusterID: self.focusedClusterID,
-                searchQuery: self.state.searchText,
-                onSelectLeaf: { id in
-                    self.isRenaming = false
-                    self.state.selectedID = id
-                },
-                onDoubleClickLeaf: { id in
-                    if let item = itemByID[id] {
-                        if item.isTrashed {
-                            withAnimation(.easeOut(duration: 0.16)) { self.isQuickLookOpen = true }
-                        } else {
-                            self.open(item: item)
-                        }
-                    }
-                },
-                onToggleCluster: { cid in
-                    if self.state.collapsedGroups.contains(cid) {
-                        self.state.collapsedGroups.remove(cid)
-                    } else {
-                        self.state.collapsedGroups.insert(cid)
-                    }
-                },
-                clusterContextMenu: { cluster in
-                    if let section = sectionByID[cluster.id] {
-                        Button("展开此分组全部文档") {
-                            self.openAll(items: section.items)
-                        }
-                        .disabled(section.items.isEmpty)
-                        
-                        if !section.isUngrouped {
-                            Button("重命名分组") {
-                                self.groupRenameDraft = section.name
-                                self.renamingGroupName = section.name
-                            }
-                            Divider()
-                            Button("解散分组（保留文档）", role: .destructive) {
-                                self.db.deleteDocumentGroup(named: section.name)
-                                if self.focusedClusterID == cluster.id { self.focusedClusterID = nil }
-                                self.state.refresh()
-                                self.showToast("已解散分组「\(section.name)」")
-                            }
-                        }
-                    }
-                },
-                leafContextMenu: { leaf in
-                    if let item = itemByID[leaf.id] {
-                        if item.isTrashed {
-                            Button("预览") {
-                                self.state.selectedID = item.id
-                                withAnimation(.easeOut(duration: 0.16)) { self.isQuickLookOpen = true }
-                            }
-                            Button("恢复文档") { self.restore(item: item) }
-                            Divider()
-                            Button("彻底删除", role: .destructive) { self.permanentlyDelete(item: item) }
-                        } else {
-                            Button("在编辑器打开") { self.open(item: item) }
-                            Button("预览") {
-                                self.state.selectedID = item.id
-                                withAnimation(.easeOut(duration: 0.16)) { self.isQuickLookOpen = true }
-                            }
-                            Button("重命名") {
-                                self.state.selectedID = item.id
-                                self.renameDraft = item.title
-                                self.isRenaming = true
-                                DispatchQueue.main.async { self.isRenameFieldFocused = true }
-                            }
-                            Menu("移动到分组") {
-                                Button("未分组") { self.move(item: item, toGroup: "") }
-                                if !self.db.documentGroups.isEmpty {
-                                    Divider()
-                                    ForEach(self.db.documentGroups, id: \.self) { group in
-                                        Button(group) { self.move(item: item, toGroup: group) }
-                                    }
-                                }
-                                Divider()
-                                Button("新建分组并移入…") {
-                                    self.pendingAssignAfterGroupCreate = item
-                                    self.newGroupDraft = ""
-                                    self.isCreatingGroup = true
-                                }
-                            }
-                            Divider()
-                            Button("移入废纸篓", role: .destructive) {
-                                self.delete(item: item, in: displayedItems)
-                            }
-                        }
-                    }
-                }
-            )
-            
-            // Minimal Floating Top HUD + Group Quick-Jump Strip + Bottom Focus Dock
-            VStack(spacing: 8) {
-                self.floatingTopBar(tokens: tokens)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 14)
+        ZStack(alignment: .bottom) {
+            VStack(spacing: 0) {
+                self.topBar(tokens: tokens)
                 
-                if !self.state.showingTrash && clusters.count > 1 {
-                    self.groupQuickJumpStrip(clusters: clusters, tokens: tokens)
-                        .padding(.horizontal, 16)
-                }
+                Rectangle()
+                    .fill(tokens.hairline)
+                    .frame(height: 1)
                 
-                if self.isCreatingGroup {
-                    self.inlineGroupPromptBar(
-                        placeholder: "输入新分组名称…",
-                        text: self.$newGroupDraft,
-                        tokens: tokens,
-                        onCommit: { self.commitCreateGroup() },
-                        onCancel: {
-                            self.isCreatingGroup = false
-                            self.pendingAssignAfterGroupCreate = nil
-                        }
-                    )
-                } else if let renamingGroup = self.renamingGroupName {
-                    self.inlineGroupPromptBar(
-                        placeholder: "重命名分组「\(renamingGroup)」…",
-                        text: self.$groupRenameDraft,
-                        tokens: tokens,
-                        onCommit: { self.commitGroupRename(oldName: renamingGroup) },
-                        onCancel: { self.renamingGroupName = nil }
-                    )
-                }
-                
-                Spacer()
-                
-                if let activeItem {
-                    self.bottomFocusDock(item: activeItem, allItems: displayedItems, tokens: tokens)
-                        .padding(.bottom, 16)
-                } else {
-                    self.floatingEmptyHint(tokens: tokens)
-                        .padding(.bottom, 22)
+                HStack(spacing: 0) {
+                    self.sidebarColumn(tokens: tokens)
+                        .frame(width: 192)
+                    
+                    Rectangle()
+                        .fill(tokens.hairline)
+                        .frame(width: 1)
+                    
+                    self.listColumn(items: displayedItems, activeID: activeItem?.id, tokens: tokens)
+                        .frame(width: 280)
+                    
+                    Rectangle()
+                        .fill(tokens.hairline)
+                        .frame(width: 1)
+                    
+                    self.detailColumn(item: activeItem, allItems: displayedItems, tokens: tokens)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            
-            // Spacebar QuickLook Overlay
-            if self.isQuickLookOpen, let item = activeItem {
-                let idx = displayedItems.firstIndex(where: { $0.id == item.id }) ?? 0
-                StarMapQuickLookOverlay(
-                    title: item.title,
-                    subtitle: "\(item.groupName.isEmpty ? "未分组" : item.groupName) · \(item.characterCount.formatted()) 字 · \(Self.relativeTime(item.updatedAt))",
-                    canStepPrevious: idx > 0,
-                    canStepNext: idx + 1 < displayedItems.count,
-                    onPrevious: { self.stepSelection(by: -1, in: displayedItems) },
-                    onNext: { self.stepSelection(by: 1, in: displayedItems) },
-                    onClose: {
-                        withAnimation(.easeOut(duration: 0.14)) { self.isQuickLookOpen = false }
-                    },
-                    headerActions: {
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(item.content, forType: .string)
-                            self.copiedFlag = true
-                            self.showToast("已复制全文")
-                            Task {
-                                try? await Task.sleep(for: .seconds(1.5))
-                                self.copiedFlag = false
-                            }
-                        } label: {
-                            Text(self.copiedFlag ? "已复制" : "复制")
-                                .font(.system(size: 11.5, weight: .medium))
-                                .foregroundStyle(tokens.primaryInk.opacity(0.84))
-                                .padding(.horizontal, 10)
-                                .frame(height: 26)
-                                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                        
-                        if item.isTrashed {
-                            Button {
-                                self.isQuickLookOpen = false
-                                self.restore(item: item)
-                            } label: {
-                                Text("恢复文档")
-                                    .font(.system(size: 11.5, weight: .semibold))
-                                    .foregroundStyle(tokens.onAccentInk)
-                                    .padding(.horizontal, 11)
-                                    .frame(height: 26)
-                                    .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                        } else {
-                            Button {
-                                self.isQuickLookOpen = false
-                                self.open(item: item)
-                            } label: {
-                                Text("在编辑器打开")
-                                    .font(.system(size: 11.5, weight: .semibold))
-                                    .foregroundStyle(tokens.onAccentInk)
-                                    .padding(.horizontal, 11)
-                                    .frame(height: 26)
-                                    .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                        }
-                    },
-                    bodyContent: {
-                        CenterPreviewTextView(text: item.previewText)
-                            .id("doc-ql-\(item.id)-\(idx)")
-                    }
-                )
-            }
+            .background(tokens.canvasTop)
             
             if let toastMessage {
-                VStack {
-                    Spacer()
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(tokens.accent)
-                            .frame(width: 6, height: 6)
-                        Text(toastMessage)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(tokens.primaryInk)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .background(tokens.card, in: Capsule())
-                    .overlay(Capsule().strokeBorder(tokens.hairlineStrong, lineWidth: 0.8))
-                    .shadow(color: tokens.cardShadow, radius: 10, y: 4)
-                    .padding(.bottom, 74)
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(tokens.accent)
+                        .frame(width: 6, height: 6)
+                    Text(toastMessage)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(tokens.primaryInk)
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(tokens.card, in: Capsule())
+                .overlay(Capsule().strokeBorder(tokens.hairlineStrong, lineWidth: 0.8))
+                .padding(.bottom, 18)
                 .allowsHitTesting(false)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .transition(.opacity)
             }
         }
         .onAppear {
@@ -1676,6 +1864,7 @@ struct DocumentCenterView: View {
         }
         .onDisappear {
             self.removeKeyboardMonitor()
+            self.organizeTask?.cancel()
             self.registerEscPop?(nil)
         }
         .onChange(of: self.db.documents.count) { _, _ in
@@ -1687,472 +1876,863 @@ struct DocumentCenterView: View {
     }
     
     
-    // MARK: Floating HUDs
+    // MARK: Top Bar
     
-    private func floatingTopBar(tokens: StudioColorTokens) -> some View {
+    private func topBar(tokens: StudioColorTokens) -> some View {
         HStack(spacing: 10) {
             if let onDismiss = self.onDismiss {
                 Button(action: onDismiss) {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 4) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 10.5, weight: .semibold))
-                        Text("返回编辑")
-                            .font(.system(size: 12, weight: .medium))
+                        Text("返回")
+                            .font(.system(size: 12.5, weight: .medium))
                     }
                     .foregroundStyle(tokens.primaryInk.opacity(0.84))
-                    .padding(.horizontal, 11)
-                    .frame(height: 32)
-                    .background(tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tokens.hairlineStrong, lineWidth: 0.75))
-                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
             }
             
+            Text("文档中心")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(tokens.primaryInk)
+            
+            Spacer(minLength: 8)
+            
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.45))
-                TextField("搜索星图文档…", text: self.$state.searchText)
+                    .foregroundStyle(tokens.primaryInk.opacity(0.42))
+                TextField("搜索文档", text: self.$state.searchText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12.5))
-                    .frame(width: 175)
+                    .frame(width: 190)
                 if !self.state.searchText.isEmpty {
                     Button {
                         self.state.searchText = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 11))
-                            .foregroundStyle(tokens.primaryInk.opacity(0.42))
+                            .foregroundStyle(tokens.primaryInk.opacity(0.40))
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 10)
-            .frame(height: 32)
-            .background(tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tokens.hairlineStrong, lineWidth: 0.75))
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(tokens.hairline, lineWidth: 0.75))
             
-            Spacer(minLength: 8)
-            
-            HStack(spacing: 6) {
-                if !self.state.showingTrash {
-                    if let onCreateNewDocument = self.onCreateNewDocument {
-                        Button(action: onCreateNewDocument) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 10.5, weight: .bold))
-                                Text("新建文档")
-                                    .font(.system(size: 12, weight: .semibold))
+            if self.state.isAgentOrganizing {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Agent 整理中")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(tokens.accentText)
+                    Button("取消") {
+                        self.cancelAgentOrganize()
+                    }
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(tokens.primaryInk.opacity(0.65))
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            } else {
+                if let summary = self.state.agentOrganizeSummary {
+                    HStack(spacing: 6) {
+                        Text(summary)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(tokens.accentText)
+                        if !self.state.lastOrganizeUndoSnapshot.isEmpty {
+                            Button("撤销") {
+                                self.undoAgentOrganize()
                             }
-                            .foregroundStyle(tokens.onAccentInk)
-                            .padding(.horizontal, 12)
-                            .frame(height: 30)
-                            .background(tokens.accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(tokens.primaryInk)
+                            .padding(.horizontal, 7)
+                            .frame(height: 20)
+                            .background(tokens.card, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        }
+                        Button {
+                            self.state.agentOrganizeSummary = nil
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .foregroundStyle(tokens.primaryInk.opacity(0.48))
                         }
                         .buttonStyle(.plain)
                         .pointerStyle(.link)
                     }
-                    
-                    Button {
-                        self.newGroupDraft = ""
-                        self.pendingAssignAfterGroupCreate = nil
-                        withAnimation(.easeOut(duration: 0.16)) { self.isCreatingGroup.toggle() }
-                    } label: {
-                        Text("新分组")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(tokens.primaryInk.opacity(0.80))
-                            .padding(.horizontal, 10)
-                            .frame(height: 30)
-                            .background(tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tokens.hairlineStrong, lineWidth: 0.75))
-                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                } else if !self.state.trashedItems.isEmpty {
-                    Button {
-                        self.confirmEmptyTrash()
-                    } label: {
-                        Text("清空废纸篓")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.red)
-                            .padding(.horizontal, 10)
-                            .frame(height: 30)
-                            .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
+                    .padding(.horizontal, 9)
+                    .frame(height: 28)
+                    .background(tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 
                 Button {
-                    withAnimation(.easeOut(duration: 0.18)) {
-                        self.isQuickLookOpen = false
-                        self.focusedClusterID = nil
-                        self.state.showingTrash.toggle()
-                    }
+                    self.runAgentAutoOrganize()
                 } label: {
-                    let count = self.state.trashedItems.count
-                    Text(self.state.showingTrash ? "返回星图" : (count > 0 ? "废纸篓 \(count)" : "废纸篓"))
-                        .font(.system(size: 12, weight: .medium).monospacedDigit())
-                        .foregroundStyle(self.state.showingTrash ? tokens.accentText : tokens.primaryInk.opacity(0.72))
-                        .padding(.horizontal, 10)
-                        .frame(height: 30)
-                        .background(
-                            self.state.showingTrash ? tokens.positivePillBg : tokens.card,
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        )
-                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tokens.hairlineStrong, lineWidth: 0.75))
-                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    HStack(spacing: 5) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Agent 整理")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(tokens.accentText)
+                    .padding(.horizontal, 11)
+                    .frame(height: 28)
+                    .background(tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(tokens.accent.opacity(0.28), lineWidth: 0.75))
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .disabled(self.state.items.isEmpty)
+                .opacity(self.state.items.isEmpty ? 0.45 : 1)
+            }
+            
+            if let onCreateNewDocument = self.onCreateNewDocument {
+                Button(action: onCreateNewDocument) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10.5, weight: .bold))
+                        Text("新建文档")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(tokens.onAccentInk)
+                    .padding(.horizontal, 11)
+                    .frame(height: 28)
+                    .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
             }
-        }
-    }
-    
-    
-    private func groupQuickJumpStrip(clusters: [StarMapClusterNode], tokens: StudioColorTokens) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                let allSelected = (self.focusedClusterID == nil)
-                Button {
-                    self.focusedClusterID = nil
-                } label: {
-                    Text("全部")
-                        .font(.system(size: 11.5, weight: allSelected ? .semibold : .medium))
-                        .foregroundStyle(allSelected ? tokens.onAccentInk : tokens.primaryInk.opacity(0.76))
-                        .padding(.horizontal, 10)
-                        .frame(height: 25)
-                        .background(allSelected ? tokens.accent : tokens.card.opacity(0.92), in: Capsule())
-                        .overlay(Capsule().strokeBorder(allSelected ? Color.clear : tokens.hairline, lineWidth: 0.75))
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                
-                ForEach(clusters) { cluster in
-                    let isFocused = (self.focusedClusterID == cluster.id)
-                    Button {
-                        if self.state.collapsedGroups.contains(cluster.id) {
-                            self.state.collapsedGroups.remove(cluster.id)
-                        }
-                        self.focusedClusterID = isFocused ? nil : cluster.id
-                    } label: {
-                        HStack(spacing: 5) {
-                            Circle()
-                                .fill(isFocused ? tokens.onAccentInk : cluster.accent)
-                                .frame(width: 5.5, height: 5.5)
-                            Text(cluster.title)
-                                .font(.system(size: 11.5, weight: isFocused ? .semibold : .medium))
-                            Text(cluster.countText)
-                                .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
-                                .opacity(0.75)
-                        }
-                        .foregroundStyle(isFocused ? tokens.onAccentInk : tokens.primaryInk.opacity(0.80))
-                        .padding(.horizontal, 10)
-                        .frame(height: 25)
-                        .background(isFocused ? tokens.accent : tokens.card.opacity(0.92), in: Capsule())
-                        .overlay(Capsule().strokeBorder(isFocused ? Color.clear : tokens.hairline, lineWidth: 0.75))
-                        .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                }
-            }
-        }
-    }
-    
-    
-    private func inlineGroupPromptBar(
-        placeholder: String,
-        text: Binding<String>,
-        tokens: StudioColorTokens,
-        onCommit: @escaping () -> Void,
-        onCancel: @escaping () -> Void
-    ) -> some View {
-        HStack(spacing: 8) {
-            TextField(placeholder, text: text)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12.5))
-                .frame(width: 210)
-                .onSubmit(onCommit)
-            
-            Button("确定", action: onCommit)
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(tokens.onAccentInk)
-                .padding(.horizontal, 10)
-                .frame(height: 24)
-                .background(tokens.accent, in: Capsule())
-                .buttonStyle(.plain)
-            
-            Button("取消", action: onCancel)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(tokens.primaryInk.opacity(0.62))
-                .buttonStyle(.plain)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(tokens.card, in: Capsule())
-        .overlay(Capsule().strokeBorder(tokens.hairlineStrong, lineWidth: 0.85))
-        .shadow(color: tokens.cardShadow, radius: 10, y: 4)
+        .frame(height: 46)
+        .background(tokens.canvasTop)
     }
     
     
-    private func bottomFocusDock(
+    // MARK: Column 1 - Structured Sidebar
+    
+    private func sidebarColumn(tokens: StudioColorTokens) -> some View {
+        let groupNames: [String] = {
+            var ordered = self.db.documentGroups
+            for key in self.state.groupCounts.keys.sorted() where !ordered.contains(key) {
+                ordered.append(key)
+            }
+            return ordered
+        }()
+        
+        return VStack(spacing: 0) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 2) {
+                    self.sidebarRow(
+                        title: "全部文档",
+                        icon: "doc.on.doc",
+                        count: self.state.items.count,
+                        isSelected: self.state.sidebarFilter == .all,
+                        tokens: tokens
+                    ) {
+                        self.state.sidebarFilter = .all
+                    }
+                    
+                    self.sidebarRow(
+                        title: "打开中",
+                        icon: "circle.inset.filled",
+                        count: self.state.openCount,
+                        isSelected: self.state.sidebarFilter == .openNow,
+                        tokens: tokens
+                    ) {
+                        self.state.sidebarFilter = .openNow
+                    }
+                    
+                    Rectangle()
+                        .fill(tokens.hairline)
+                        .frame(height: 1)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 6)
+                    
+                    HStack {
+                        Text("分组")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(tokens.primaryInk.opacity(0.45))
+                        Spacer()
+                        Button {
+                            self.newGroupDraft = ""
+                            self.pendingAssignAfterGroupCreate = nil
+                            self.isCreatingGroup = true
+                            DispatchQueue.main.async { self.isNewGroupFieldFocused = true }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(tokens.primaryInk.opacity(0.55))
+                                .frame(width: 20, height: 20)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
+                    
+                    if self.isCreatingGroup {
+                        HStack(spacing: 4) {
+                            TextField("分组名", text: self.$newGroupDraft)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 12))
+                                .focused(self.$isNewGroupFieldFocused)
+                                .onSubmit { self.commitCreateGroup() }
+                                .onExitCommand {
+                                    self.isCreatingGroup = false
+                                    self.pendingAssignAfterGroupCreate = nil
+                                }
+                            Button {
+                                self.commitCreateGroup()
+                            } label: {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(tokens.accentText)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(height: 28)
+                        .background(tokens.card, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(tokens.accent.opacity(0.45), lineWidth: 1))
+                        .padding(.bottom, 4)
+                    }
+                    
+                    ForEach(groupNames, id: \.self) { groupName in
+                        if self.renamingGroupName == groupName {
+                            HStack(spacing: 4) {
+                                TextField("分组名", text: self.$groupRenameDraft)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 12))
+                                    .focused(self.$isGroupRenameFocused)
+                                    .onSubmit { self.commitGroupRename(oldName: groupName) }
+                                    .onExitCommand { self.renamingGroupName = nil }
+                                Button {
+                                    self.commitGroupRename(oldName: groupName)
+                                } label: {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(tokens.accentText)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 8)
+                            .frame(height: 28)
+                            .background(tokens.card, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(tokens.accent.opacity(0.45), lineWidth: 1))
+                        } else {
+                            let count = self.state.groupCounts[groupName] ?? 0
+                            self.sidebarRow(
+                                title: groupName,
+                                icon: "folder",
+                                count: count,
+                                isSelected: self.state.sidebarFilter == .group(groupName),
+                                tokens: tokens
+                            ) {
+                                self.state.sidebarFilter = .group(groupName)
+                            }
+                            .contextMenu {
+                                Button("打开全部分组文档") {
+                                    let groupItems = self.state.items.filter { $0.groupName == groupName }
+                                    self.openAll(items: groupItems)
+                                }
+                                .disabled(count == 0)
+                                Button("重命名") {
+                                    self.groupRenameDraft = groupName
+                                    self.renamingGroupName = groupName
+                                    DispatchQueue.main.async { self.isGroupRenameFocused = true }
+                                }
+                                Divider()
+                                Button("解散分组", role: .destructive) {
+                                    self.db.deleteDocumentGroup(named: groupName)
+                                    if self.state.sidebarFilter == .group(groupName) {
+                                        self.state.sidebarFilter = .all
+                                    }
+                                    self.state.refresh()
+                                    self.showToast("已解散「\(groupName)」")
+                                }
+                            }
+                        }
+                    }
+                    
+                    if self.state.ungroupedCount > 0 {
+                        self.sidebarRow(
+                            title: "未分组",
+                            icon: "tray",
+                            count: self.state.ungroupedCount,
+                            isSelected: self.state.sidebarFilter == .ungrouped,
+                            tokens: tokens
+                        ) {
+                            self.state.sidebarFilter = .ungrouped
+                        }
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 10)
+            }
+            
+            Rectangle()
+                .fill(tokens.hairline)
+                .frame(height: 1)
+            
+            self.sidebarRow(
+                title: "废纸篓",
+                icon: "trash",
+                count: self.state.trashedItems.count,
+                isSelected: self.state.sidebarFilter == .trash,
+                tokens: tokens
+            ) {
+                self.state.sidebarFilter = .trash
+            }
+            .padding(8)
+        }
+        .background(tokens.canvasBottom)
+    }
+    
+    
+    private func sidebarRow(
+        title: String,
+        icon: String,
+        count: Int,
+        isSelected: Bool,
+        tokens: StudioColorTokens,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(isSelected ? tokens.accentText : tokens.primaryInk.opacity(0.50))
+                    .frame(width: 15)
+                
+                Text(title)
+                    .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? tokens.primaryInk : tokens.primaryInk.opacity(0.82))
+                    .lineLimit(1)
+                
+                Spacer(minLength: 4)
+                
+                Text("\(count)")
+                    .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                    .foregroundStyle(isSelected ? tokens.accentText : tokens.primaryInk.opacity(0.42))
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isSelected ? tokens.accent.opacity(tokens.isDark ? 0.20 : 0.12) : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+    }
+    
+    
+    // MARK: Column 2 - Fast Lazy Document List
+    
+    private func listColumn(
+        items: [DocumentCenterState.ManagedDocumentItem],
+        activeID: String?,
+        tokens: StudioColorTokens
+    ) -> some View {
+        let showGroupTag = (self.state.sidebarFilter == .all || self.state.sidebarFilter == .openNow)
+        
+        return VStack(spacing: 0) {
+            if self.state.sidebarFilter == .trash && !items.isEmpty {
+                HStack {
+                    Text("\(items.count) 篇")
+                        .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                        .foregroundStyle(tokens.primaryInk.opacity(0.55))
+                    Spacer()
+                    Button("清空废纸篓") {
+                        self.confirmEmptyTrash()
+                    }
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.red)
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                
+                Rectangle().fill(tokens.hairline).frame(height: 1)
+            }
+            
+            if items.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: self.state.sidebarFilter == .trash ? "trash" : "doc.text")
+                        .font(.system(size: 22, weight: .light))
+                        .foregroundStyle(tokens.primaryInk.opacity(0.24))
+                    Text(self.emptyListTitle)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(tokens.primaryInk.opacity(0.45))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView(.vertical, showsIndicators: true) {
+                    LazyVStack(spacing: 2) {
+                        ForEach(items) { item in
+                            DocumentCenterRowView(
+                                item: item,
+                                isSelected: activeID == item.id,
+                                showGroupTag: showGroupTag,
+                                tokens: tokens
+                            )
+                            .equatable()
+                            .onTapGesture(count: 2) {
+                                self.state.selectedID = item.id
+                                if !item.isTrashed {
+                                    self.open(item: item)
+                                }
+                            }
+                            .onTapGesture(count: 1) {
+                                self.isRenaming = false
+                                self.state.selectedID = item.id
+                            }
+                            .contextMenu {
+                                self.itemContextMenu(item: item, allItems: items)
+                            }
+                        }
+                    }
+                    .padding(6)
+                }
+            }
+        }
+        .background(tokens.canvasTop)
+    }
+    
+    
+    private var emptyListTitle: String {
+        if !self.state.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "无匹配结果"
+        }
+        return self.state.sidebarFilter == .trash ? "废纸篓为空" : "暂无文档"
+    }
+    
+    
+    @ViewBuilder
+    private func itemContextMenu(
         item: DocumentCenterState.ManagedDocumentItem,
+        allItems: [DocumentCenterState.ManagedDocumentItem]
+    ) -> some View {
+        if item.isTrashed {
+            Button("恢复") { self.restore(item: item) }
+            Divider()
+            Button("彻底删除", role: .destructive) { self.permanentlyDelete(item: item) }
+        } else {
+            Button("在编辑器打开") { self.open(item: item) }
+            Button("重命名") {
+                self.state.selectedID = item.id
+                self.renameDraft = item.title
+                self.isRenaming = true
+                DispatchQueue.main.async { self.isRenameFieldFocused = true }
+            }
+            Menu("移动到分组") {
+                Button("未分组") { self.move(item: item, toGroup: "") }
+                if !self.db.documentGroups.isEmpty {
+                    Divider()
+                    ForEach(self.db.documentGroups, id: \.self) { group in
+                        Button(group) { self.move(item: item, toGroup: group) }
+                    }
+                }
+                Divider()
+                Button("新建分组…") {
+                    self.pendingAssignAfterGroupCreate = item
+                    self.newGroupDraft = ""
+                    self.isCreatingGroup = true
+                    DispatchQueue.main.async { self.isNewGroupFieldFocused = true }
+                }
+            }
+            Divider()
+            Button("移入废纸篓", role: .destructive) {
+                self.delete(item: item, in: allItems)
+            }
+        }
+    }
+    
+    
+    // MARK: Column 3 - Instant Preview & Direct Actions
+    
+    @ViewBuilder
+    private func detailColumn(
+        item: DocumentCenterState.ManagedDocumentItem?,
         allItems: [DocumentCenterState.ManagedDocumentItem],
         tokens: StudioColorTokens
     ) -> some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(item.isOpenNow ? tokens.accent : tokens.primaryInk.opacity(0.35))
-                .frame(width: 7, height: 7)
-            
-            if self.isRenaming {
-                TextField("文档标题", text: self.$renameDraft)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .focused(self.$isRenameFieldFocused)
-                    .frame(width: 185)
-                    .onSubmit { self.commitRename(for: item) }
-                    .onExitCommand { self.isRenaming = false }
-                
-                Button("保存") { self.commitRename(for: item) }
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(tokens.onAccentInk)
-                    .padding(.horizontal, 9)
-                    .frame(height: 24)
-                    .background(tokens.accent, in: Capsule())
-                    .buttonStyle(.plain)
-                
-                Button("取消") { self.isRenaming = false }
-                    .font(.system(size: 11))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.62))
-                    .buttonStyle(.plain)
-            } else {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(item.title)
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(tokens.primaryInk)
-                        .lineLimit(1)
-                        .frame(maxWidth: 200, alignment: .leading)
+        if let item {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    if self.isRenaming {
+                        TextField("文档标题", text: self.$renameDraft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 14, weight: .semibold))
+                            .focused(self.$isRenameFieldFocused)
+                            .padding(.horizontal, 8)
+                            .frame(height: 28)
+                            .background(tokens.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .frame(maxWidth: 280)
+                            .onSubmit { self.commitRename(for: item) }
+                            .onExitCommand { self.isRenaming = false }
+                        
+                        Button("保存") { self.commitRename(for: item) }
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(tokens.onAccentInk)
+                            .padding(.horizontal, 10)
+                            .frame(height: 26)
+                            .background(tokens.accent, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        
+                        Button("取消") { self.isRenaming = false }
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(tokens.primaryInk.opacity(0.65))
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                    } else {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.title)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(tokens.primaryInk)
+                                .lineLimit(1)
+                            
+                            Text("\(item.groupName.isEmpty ? "未分组" : item.groupName) · \(item.compactCharCount) · \(item.relativeTimeText)")
+                                .font(.system(size: 11, weight: .regular, design: .rounded).monospacedDigit())
+                                .foregroundStyle(tokens.primaryInk.opacity(0.46))
+                                .lineLimit(1)
+                        }
+                    }
                     
-                    Text("\(item.groupName.isEmpty ? "未分组" : item.groupName) · \(item.characterCount.formatted()) 字 · \(Self.relativeTime(item.updatedAt))")
-                        .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
-                        .foregroundStyle(tokens.primaryInk.opacity(0.50))
-                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    
+                    if item.isTrashed {
+                        Button {
+                            self.restore(item: item)
+                        } label: {
+                            Text("恢复")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(tokens.onAccentInk)
+                                .padding(.horizontal, 12)
+                                .frame(height: 28)
+                                .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                        
+                        Button {
+                            self.permanentlyDelete(item: item)
+                        } label: {
+                            Text("彻底删除")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.red)
+                                .padding(.horizontal, 10)
+                                .frame(height: 28)
+                                .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                    } else {
+                        Button {
+                            self.open(item: item)
+                        } label: {
+                            Text("打开")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(tokens.onAccentInk)
+                                .padding(.horizontal, 12)
+                                .frame(height: 28)
+                                .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                        
+                        Menu {
+                            Button("未分组") { self.move(item: item, toGroup: "") }
+                            if !self.db.documentGroups.isEmpty {
+                                Divider()
+                                ForEach(self.db.documentGroups, id: \.self) { group in
+                                    Button(group) { self.move(item: item, toGroup: group) }
+                                }
+                            }
+                            Divider()
+                            Button("新建分组…") {
+                                self.pendingAssignAfterGroupCreate = item
+                                self.newGroupDraft = ""
+                                self.isCreatingGroup = true
+                                DispatchQueue.main.async { self.isNewGroupFieldFocused = true }
+                            }
+                        } label: {
+                            Text("分组")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(tokens.primaryInk.opacity(0.84))
+                                .padding(.horizontal, 10)
+                                .frame(height: 28)
+                                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .pointerStyle(.link)
+                        
+                        Button {
+                            self.renameDraft = item.title
+                            self.isRenaming = true
+                            DispatchQueue.main.async { self.isRenameFieldFocused = true }
+                        } label: {
+                            Text("重命名")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(tokens.primaryInk.opacity(0.84))
+                                .padding(.horizontal, 10)
+                                .frame(height: 28)
+                                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                        
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(item.content, forType: .string)
+                            self.copiedFlag = true
+                            self.showToast("已复制")
+                            Task {
+                                try? await Task.sleep(for: .seconds(1.5))
+                                self.copiedFlag = false
+                            }
+                        } label: {
+                            Text(self.copiedFlag ? "已复制" : "复制")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(tokens.primaryInk.opacity(0.84))
+                                .padding(.horizontal, 10)
+                                .frame(height: 28)
+                                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                        
+                        Button {
+                            self.delete(item: item, in: allItems)
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(tokens.primaryInk.opacity(0.62))
+                                .frame(width: 28, height: 28)
+                                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                    }
                 }
+                .padding(.horizontal, 18)
+                .frame(height: 52)
+                .background(tokens.canvasTop)
                 
                 Rectangle()
-                    .fill(tokens.hairlineStrong)
-                    .frame(width: 1, height: 20)
+                    .fill(tokens.hairline)
+                    .frame(height: 1)
                 
-                Button {
-                    withAnimation(.easeOut(duration: 0.16)) { self.isQuickLookOpen = true }
-                } label: {
-                    Text("预览")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(tokens.primaryInk.opacity(0.86))
-                        .padding(.horizontal, 10)
-                        .frame(height: 26)
-                        .background(tokens.inset, in: Capsule())
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
+                CenterPreviewTextView(text: item.previewText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .background(Color(nsColor: .textBackgroundColor))
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 26, weight: .light))
+                    .foregroundStyle(tokens.primaryInk.opacity(0.20))
+                Text("未选择文档")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(tokens.primaryInk.opacity(0.42))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .textBackgroundColor))
+        }
+    }
+    
+    
+    // MARK: Agent One-Click Auto-Organize
+    
+    private func runAgentAutoOrganize() {
+        let snapshotItems = self.state.items
+        guard !snapshotItems.isEmpty, !self.state.isAgentOrganizing else { return }
+        
+        self.organizeTask?.cancel()
+        self.state.isAgentOrganizing = true
+        self.state.agentOrganizeSummary = nil
+        
+        let existingGroups = self.db.documentGroups
+        let inputs: [DocumentCenterAgentOrganizer.InputItem] = snapshotItems.map { item in
+            DocumentCenterAgentOrganizer.InputItem(
+                id: item.id,
+                title: item.title,
+                syntax: item.syntax,
+                currentGroup: item.groupName,
+                excerpt: String(item.content.prefix(320)),
+                isUntitled: DocumentCenterAgentOrganizer.isGenericUntitled(item.title, hasFilePath: item.filePath != nil)
+            )
+        }
+        let itemsByID = Dictionary(uniqueKeysWithValues: snapshotItems.map { ($0.id, $0) })
+        
+        self.organizeTask = Task {
+            let (plan, usedAI) = await DocumentCenterAgentOrganizer.generatePlan(
+                items: inputs,
+                existingGroups: existingGroups
+            )
+            guard !Task.isCancelled else {
+                self.state.isAgentOrganizing = false
+                return
+            }
+            
+            var undoEntries: [DocumentCenterState.OrganizeUndoEntry] = []
+            var existingGroupSet = Set(self.db.documentGroups)
+            var createdGroups: [String] = []
+            var touchedGroups = Set<String>()
+            var changedCount = 0
+            
+            for assignment in plan.assignments {
+                guard let item = itemsByID[assignment.id] else { continue }
+                let targetGroup = assignment.group
+                let wantsRename: String? = {
+                    guard let suggested = assignment.suggestedTitle,
+                          !suggested.isEmpty,
+                          suggested != item.title,
+                          DocumentCenterAgentOrganizer.isGenericUntitled(item.title, hasFilePath: item.filePath != nil)
+                    else { return nil }
+                    return suggested
+                }()
                 
-                if item.isTrashed {
-                    Button {
-                        self.restore(item: item)
-                    } label: {
-                        Text("恢复")
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(tokens.onAccentInk)
-                            .padding(.horizontal, 11)
-                            .frame(height: 26)
-                            .background(tokens.accent, in: Capsule())
+                let groupChanged = (targetGroup != item.groupName)
+                guard groupChanged || wantsRename != nil else { continue }
+                
+                let recordID = item.dbRecordID ?? item.id
+                undoEntries.append(DocumentCenterState.OrganizeUndoEntry(
+                    itemID: item.id,
+                    dbRecordID: recordID,
+                    filePath: item.filePath,
+                    previousGroup: item.groupName,
+                    previousTitle: item.title,
+                    titleWasChanged: wantsRename != nil,
+                    syntax: item.syntax,
+                    content: item.content
+                ))
+                
+                if groupChanged {
+                    if !targetGroup.isEmpty, existingGroupSet.insert(targetGroup).inserted {
+                        createdGroups.append(targetGroup)
                     }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    
-                    Button {
-                        self.permanentlyDelete(item: item)
-                    } label: {
-                        Text("彻底删除")
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(.red)
-                            .padding(.horizontal, 9)
-                            .frame(height: 26)
-                            .background(Color.red.opacity(0.12), in: Capsule())
+                    self.db.assignDocumentGroup(
+                        id: recordID,
+                        filePath: item.filePath,
+                        groupName: targetGroup,
+                        fallbackTitle: wantsRename ?? item.title,
+                        fallbackSyntax: item.syntax,
+                        fallbackContent: item.content
+                    )
+                    if !targetGroup.isEmpty {
+                        touchedGroups.insert(targetGroup)
                     }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                } else {
-                    Button {
-                        self.open(item: item)
-                    } label: {
-                        Text("打开")
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(tokens.onAccentInk)
-                            .padding(.horizontal, 12)
-                            .frame(height: 26)
-                            .background(tokens.accent, in: Capsule())
+                }
+                
+                if let newTitle = wantsRename {
+                    if let liveDoc = self.state.liveDocument(for: item.id) {
+                        _ = try? WorkspaceOrganizer.renameDocument(liveDoc, to: newTitle)
+                    } else if item.filePath == nil {
+                        self.db.renameDocument(
+                            oldID: recordID,
+                            oldFilePath: nil,
+                            newID: recordID,
+                            newTitle: newTitle,
+                            newFilePath: nil
+                        )
                     }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    
-                    Menu {
-                        Button("未分组") { self.move(item: item, toGroup: "") }
-                        if !self.db.documentGroups.isEmpty {
-                            Divider()
-                            ForEach(self.db.documentGroups, id: \.self) { group in
-                                Button(group) { self.move(item: item, toGroup: group) }
-                            }
-                        }
-                        Divider()
-                        Button("新建分组并移入…") {
-                            self.pendingAssignAfterGroupCreate = item
-                            self.newGroupDraft = ""
-                            self.isCreatingGroup = true
-                        }
-                    } label: {
-                        Text("分组")
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(tokens.primaryInk.opacity(0.78))
-                            .padding(.horizontal, 9)
-                            .frame(height: 26)
-                            .background(tokens.inset, in: Capsule())
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .pointerStyle(.link)
-                    
-                    Button {
-                        self.renameDraft = item.title
-                        self.isRenaming = true
-                        DispatchQueue.main.async { self.isRenameFieldFocused = true }
-                    } label: {
-                        Text("重命名")
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(tokens.primaryInk.opacity(0.78))
-                            .padding(.horizontal, 9)
-                            .frame(height: 26)
-                            .background(tokens.inset, in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    
-                    Button {
-                        self.delete(item: item, in: allItems)
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(tokens.primaryInk.opacity(0.62))
-                            .frame(width: 26, height: 26)
-                            .background(tokens.inset, in: Circle())
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    .help("移到废纸篓")
+                }
+                changedCount += 1
+            }
+            
+            self.state.lastOrganizeUndoSnapshot = undoEntries
+            self.state.lastOrganizeCreatedGroups = createdGroups
+            self.state.isAgentOrganizing = false
+            self.state.refresh()
+            
+            if changedCount > 0 {
+                let prefix = usedAI ? "Agent 已整理" : "已整理"
+                self.state.agentOrganizeSummary = "\(prefix) \(changedCount) 篇 · \(max(1, touchedGroups.count)) 分组"
+            } else {
+                self.showToast("当前文档已整理完成")
+            }
+        }
+    }
+    
+    
+    private func cancelAgentOrganize() {
+        self.organizeTask?.cancel()
+        self.organizeTask = nil
+        self.state.isAgentOrganizing = false
+    }
+    
+    
+    private func undoAgentOrganize() {
+        let entries = self.state.lastOrganizeUndoSnapshot
+        let createdGroups = self.state.lastOrganizeCreatedGroups
+        guard !entries.isEmpty else { return }
+        
+        for entry in entries {
+            self.db.assignDocumentGroup(
+                id: entry.dbRecordID,
+                filePath: entry.filePath,
+                groupName: entry.previousGroup,
+                fallbackTitle: entry.previousTitle,
+                fallbackSyntax: entry.syntax,
+                fallbackContent: entry.content
+            )
+            if entry.titleWasChanged {
+                if let liveDoc = self.state.liveDocument(for: entry.itemID) {
+                    _ = try? WorkspaceOrganizer.renameDocument(liveDoc, to: entry.previousTitle)
+                } else if entry.filePath == nil {
+                    self.db.renameDocument(
+                        oldID: entry.dbRecordID,
+                        oldFilePath: nil,
+                        newID: entry.dbRecordID,
+                        newTitle: entry.previousTitle,
+                        newFilePath: nil
+                    )
                 }
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(tokens.card, in: Capsule())
-        .overlay(Capsule().strokeBorder(tokens.hairlineStrong, lineWidth: 0.85))
-        .shadow(color: tokens.cardShadow, radius: 14, y: 4)
-    }
-    
-    
-    private func floatingEmptyHint(tokens: StudioColorTokens) -> some View {
-        Text(self.state.showingTrash ? "废纸篓是空的" : (self.state.searchText.isEmpty ? "暂无文档 · 点击右上角新建" : "没有匹配的文档"))
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(tokens.primaryInk.opacity(0.55))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(tokens.card, in: Capsule())
-            .overlay(Capsule().strokeBorder(tokens.hairline, lineWidth: 0.75))
-    }
-    
-    
-    // MARK: Constellation Data Mapping
-    
-    private func buildStarClusters(
-        displayedItems: [DocumentCenterState.ManagedDocumentItem],
-        tokens: StudioColorTokens
-    ) -> [StarMapClusterNode] {
-        let clusterAccents: [Color] = [
-            tokens.accent,
-            tokens.secondaryAccent,
-            Color(red: 0.212, green: 0.478, blue: 0.612),
-            tokens.heat3,
-        ]
         
-        if self.state.showingTrash {
-            let leaves = displayedItems.map { item in
-                StarMapLeafNode(
-                    id: item.id,
-                    clusterID: "trash",
-                    title: item.title,
-                    metaLine: "\(Self.compactChars(item.characterCount)) · \(Self.relativeTime(item.updatedAt))",
-                    statusBadge: "已删",
-                    dotColor: Color.red.opacity(0.75),
-                    weight: 0.4,
-                    isHighlighted: false
-                )
+        for group in createdGroups {
+            let remaining = self.db.documents.contains { $0.groupName == group }
+            if !remaining {
+                self.db.deleteDocumentGroup(named: group)
             }
-            return [
-                StarMapClusterNode(
-                    id: "trash",
-                    title: "废纸篓",
-                    countText: "\(leaves.count)",
-                    accent: Color.red.opacity(0.75),
-                    isCollapsed: false,
-                    leaves: leaves
-                ),
-            ]
         }
         
-        let maxChars = max(1.0, Double(displayedItems.map(\.characterCount).max() ?? 1))
-        var result: [StarMapClusterNode] = []
-        for (idx, section) in self.state.groupSections.enumerated() {
-            let accent = section.isUngrouped
-                ? tokens.primaryInk.opacity(0.45)
-                : clusterAccents[idx % clusterAccents.count]
-            let leaves = section.items.map { item -> StarMapLeafNode in
-                let w = min(1.0, max(0.15, log10(Double(max(10, item.characterCount))) / log10(max(100.0, maxChars))))
-                let status: String? = item.isDirty ? "未保存" : (item.isOpenNow ? "打开中" : nil)
-                let dot: Color = item.isDirty ? .orange : (item.isOpenNow ? tokens.accent : accent.opacity(0.85))
-                return StarMapLeafNode(
-                    id: item.id,
-                    clusterID: section.id,
-                    title: item.title,
-                    metaLine: "\(Self.compactChars(item.characterCount)) · \(Self.relativeTime(item.updatedAt))",
-                    statusBadge: status,
-                    dotColor: dot,
-                    weight: w,
-                    isHighlighted: item.isOpenNow
-                )
-            }
-            result.append(StarMapClusterNode(
-                id: section.id,
-                title: section.name,
-                countText: "\(leaves.count)",
-                accent: accent,
-                isCollapsed: self.state.collapsedGroups.contains(section.id),
-                leaves: leaves
-            ))
-        }
-        return result
+        self.state.lastOrganizeUndoSnapshot = []
+        self.state.lastOrganizeCreatedGroups = []
+        self.state.agentOrganizeSummary = nil
+        self.state.sidebarFilter = .all
+        self.state.refresh()
+        self.showToast("已撤销整理")
     }
     
+    
+    // MARK: Selection & Keyboard Navigation
     
     private func selectedItem(in items: [DocumentCenterState.ManagedDocumentItem]) -> DocumentCenterState.ManagedDocumentItem? {
         if let id = self.state.selectedID, let match = items.first(where: { $0.id == id }) {
@@ -2162,33 +2742,7 @@ struct DocumentCenterView: View {
     }
     
     
-    private static func compactChars(_ count: Int) -> String {
-        if count >= 10_000 { return String(format: "%.1f万字", Double(count) / 10_000.0) }
-        if count >= 1_000 { return String(format: "%.1fK字", Double(count) / 1_000.0) }
-        return "\(count)字"
-    }
-    
-    
-    private static func relativeTime(_ date: Date) -> String {
-        let interval = max(0, Date().timeIntervalSince(date))
-        if interval < 60 { return "刚刚" }
-        if interval < 3600 { return "\(Int(interval / 60))分前" }
-        if interval < 86_400 { return "\(Int(interval / 3600))时前" }
-        let days = Int(interval / 86_400)
-        if days < 30 { return "\(days)天前" }
-        let f = DateFormatter()
-        f.dateFormat = "M/d"
-        return f.string(from: date)
-    }
-    
-    
-    // MARK: Keyboard Navigation
-    
     private func handleEscapePop() -> Bool {
-        if self.isQuickLookOpen {
-            withAnimation(.easeOut(duration: 0.14)) { self.isQuickLookOpen = false }
-            return true
-        }
         if self.isRenaming {
             self.isRenaming = false
             return true
@@ -2202,8 +2756,8 @@ struct DocumentCenterView: View {
             self.renamingGroupName = nil
             return true
         }
-        if self.focusedClusterID != nil {
-            self.focusedClusterID = nil
+        if !self.state.searchText.isEmpty {
+            self.state.searchText = ""
             return true
         }
         return false
@@ -2220,22 +2774,14 @@ struct DocumentCenterView: View {
             guard !items.isEmpty else { return event }
             
             switch event.keyCode {
-                case 49: // Spacebar QuickLook toggle
-                    if self.selectedItem(in: items) != nil {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            self.isQuickLookOpen.toggle()
-                        }
-                        return nil
-                    }
-                case 123, 126: // Left / Up
+                case 126: // Up
                     self.stepSelection(by: -1, in: items)
                     return nil
-                case 124, 125: // Right / Down
+                case 125: // Down
                     self.stepSelection(by: 1, in: items)
                     return nil
                 case 36: // Return -> open
                     if let active = self.selectedItem(in: items), !active.isTrashed {
-                        self.isQuickLookOpen = false
                         self.open(item: active)
                         return nil
                     }
@@ -2307,45 +2853,38 @@ struct DocumentCenterView: View {
             self.db.trashDocument(id: recordID, filePath: item.filePath)
             self.state.refresh()
         }
-        self.showToast("已移入废纸篓「\(item.title)」")
+        self.showToast("已移入废纸篓")
     }
     
     
     private func restore(item: DocumentCenterState.ManagedDocumentItem) {
         self.db.restoreDocument(id: item.dbRecordID ?? item.id, filePath: item.filePath)
         self.state.refresh()
-        self.showToast("已恢复「\(item.title)」")
+        self.showToast("已恢复")
     }
     
     
     private func permanentlyDelete(item: DocumentCenterState.ManagedDocumentItem) {
-        self.confirmDestructive(
-            title: "彻底删除「\(item.title)」？",
-            message: "这条文档快照会从本地数据库永久删除，无法恢复。磁盘上的原文件不会被删除。"
-        ) {
+        self.confirmDestructive(title: "彻底删除「\(item.title)」？") {
             self.db.permanentlyDeleteDocument(id: item.dbRecordID ?? item.id, filePath: item.filePath)
             self.state.refresh()
-            self.showToast("已彻底删除「\(item.title)」")
+            self.showToast("已彻底删除")
         }
     }
     
     
     private func confirmEmptyTrash() {
-        self.confirmDestructive(
-            title: "清空废纸篓？",
-            message: "废纸篓中的 \(self.state.trashedItems.count) 份文档快照会被永久删除，无法恢复。磁盘上的原文件不会被删除。"
-        ) {
+        self.confirmDestructive(title: "清空废纸篓（\(self.state.trashedItems.count) 篇）？") {
             self.db.emptyDocumentTrash()
             self.state.refresh()
-            self.showToast("废纸篓已清空")
+            self.showToast("已清空废纸篓")
         }
     }
     
     
-    private func confirmDestructive(title: String, message: String, action: @escaping () -> Void) {
+    private func confirmDestructive(title: String, action: @escaping () -> Void) {
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = message
         alert.alertStyle = .warning
         alert.addButton(withTitle: "彻底删除")
         alert.addButton(withTitle: "取消")
@@ -2366,6 +2905,7 @@ struct DocumentCenterView: View {
             self.move(item: pending, toGroup: created)
         } else {
             self.state.refresh()
+            self.state.sidebarFilter = .group(created)
             self.showToast("已新建分组「\(created)」")
         }
     }
@@ -2376,10 +2916,13 @@ struct DocumentCenterView: View {
         self.renamingGroupName = nil
         guard !trimmed.isEmpty, trimmed != oldName else { return }
         if self.db.renameDocumentGroup(from: oldName, to: trimmed) {
+            if self.state.sidebarFilter == .group(oldName) {
+                self.state.sidebarFilter = .group(trimmed)
+            }
             self.state.refresh()
-            self.showToast("分组已重命名为「\(trimmed)」")
+            self.showToast("已重命名为「\(trimmed)」")
         } else {
-            self.showToast("分组名称已存在或无效")
+            self.showToast("分组名称无效")
         }
     }
     
@@ -2395,7 +2938,7 @@ struct DocumentCenterView: View {
             fallbackContent: item.content
         )
         self.state.refresh()
-        self.showToast(groupName.isEmpty ? "已移至「未分组」" : "已移动到分组「\(groupName)」")
+        self.showToast(groupName.isEmpty ? "已移至未分组" : "已移至「\(groupName)」")
     }
     
     
@@ -2417,7 +2960,7 @@ struct DocumentCenterView: View {
                 self.showToast("已重命名为「\(newName)」")
             } catch {
                 CotLogger.shared.error(category: .document, "Document Center live rename failed", error: error)
-                self.showToast("重命名失败：\(error.localizedDescription)")
+                self.showToast("重命名失败")
             }
         } else if let recordID = item.dbRecordID, item.filePath == nil {
             self.db.renameDocument(oldID: recordID, oldFilePath: nil, newID: recordID, newTitle: trimmed, newFilePath: nil)
@@ -2441,7 +2984,7 @@ struct DocumentCenterView: View {
                 self.showToast("已重命名为「\(newURL.lastPathComponent)」")
             } catch {
                 CotLogger.shared.error(category: .document, "Document Center file rename failed", error: error)
-                self.showToast("重命名失败：\(error.localizedDescription)")
+                self.showToast("重命名失败")
             }
         }
         self.isRenaming = false
@@ -2452,13 +2995,13 @@ struct DocumentCenterView: View {
     
     private func showToast(_ message: String) {
         self.toastTask?.cancel()
-        withAnimation(.easeOut(duration: 0.15)) {
+        withAnimation(.easeOut(duration: 0.14)) {
             self.toastMessage = message
         }
         self.toastTask = Task {
             try? await Task.sleep(for: .milliseconds(1600))
             guard !Task.isCancelled else { return }
-            withAnimation(.easeIn(duration: 0.18)) {
+            withAnimation(.easeIn(duration: 0.16)) {
                 self.toastMessage = nil
             }
         }

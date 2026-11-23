@@ -1340,7 +1340,10 @@ struct AnalyticsDashboardView: View {
             predictions: predictions,
             isRefreshing: self.analytics.isPredictingActions,
             compact: self.isEmbeddedInSettings,
-            palette: self.palette
+            palette: self.palette,
+            onRefresh: {
+                Task { await self.analytics.refreshActionPredictions(force: true) }
+            }
         )
     }
     
@@ -1411,6 +1414,17 @@ private struct DoneTodayEditorialCard: View {
                     .foregroundStyle(self.palette.pine)
                 
                 Spacer(minLength: 4)
+                
+                Button(action: self.onRefresh) {
+                    Image(systemName: self.isRefreshing ? "hourglass" : "arrow.clockwise")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(self.palette.secondaryInk)
+                        .frame(width: 24, height: 24)
+                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .disabled(self.isRefreshing)
             }
             .frame(height: 24)
             
@@ -1456,6 +1470,7 @@ private struct NextActionsEditorialCard: View {
     let isRefreshing: Bool
     let compact: Bool
     let palette: DashPalette
+    let onRefresh: () -> Void
     
     
     var body: some View {
@@ -1466,6 +1481,17 @@ private struct NextActionsEditorialCard: View {
                     .foregroundStyle(self.palette.pine)
                 
                 Spacer(minLength: 4)
+                
+                Button(action: self.onRefresh) {
+                    Image(systemName: self.isRefreshing ? "hourglass" : "arrow.clockwise")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(self.palette.secondaryInk)
+                        .frame(width: 24, height: 24)
+                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .disabled(self.isRefreshing)
             }
             .frame(height: 24)
             
@@ -1598,8 +1624,8 @@ private struct DashboardNewsColumnCard: View {
                     ? [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
                     : [GridItem(.flexible(), spacing: 8)]
                 let visibleItems = Array(items.prefix(useTwoColumns ? 4 : 2))
-                let slotH = max(90, floor((geo.size.height - 8) * 0.5))
-                let coverH = max(44, min(68, slotH - 52))
+                let slotH = max(84, floor((geo.size.height - 8) * 0.5))
+                let coverH = max(36, min(62, slotH - 64))
                 
                 if visibleItems.isEmpty {
                     if self.newsService.isLoading {
@@ -1646,8 +1672,10 @@ private struct DashboardNewsColumnCard: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .clipped()
                 }
             }
+            .clipped()
         }
         .padding(self.compact ? 12 : 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1673,7 +1701,7 @@ private struct NewsMiniVisualCard: View {
         let publisher = self.item.displayPublisherLabel
         
         Button(action: self.onTap) {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 4) {
                 ZStack(alignment: .topLeading) {
                     if let cover = self.cover {
                         Color.clear
@@ -1704,9 +1732,10 @@ private struct NewsMiniVisualCard: View {
                     .font(.system(size: 11.5, weight: self.isRead ? .regular : .medium))
                     .foregroundStyle(self.isRead ? self.palette.secondaryInk : self.palette.pine)
                     .lineLimit(2)
-                    .lineSpacing(1.5)
+                    .lineSpacing(1)
                     .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .layoutPriority(1)
                 
                 Spacer(minLength: 0)
                 
@@ -1714,6 +1743,7 @@ private struct NewsMiniVisualCard: View {
                     .font(.system(size: 10, weight: .regular))
                     .foregroundStyle(self.palette.mutedInk)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .padding(6)
             .frame(maxWidth: .infinity)
@@ -1722,6 +1752,7 @@ private struct NewsMiniVisualCard: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(self.isHovered ? self.palette.insetHover : self.palette.inset)
             )
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(self.isHovered ? self.palette.accentFill.opacity(0.35) : self.palette.hairline, lineWidth: 0.7)
@@ -2673,17 +2704,18 @@ private struct HeroFlutedPrismBackdrop: View {
                     isHovered: self.isHovered
                 )
                 .frame(width: bgGeo.size.width, height: bgGeo.size.height)
-                .opacity(self.isDark ? 0.64 : 0.54)
+                .opacity(self.isDark ? 0.68 : 0.62)
             }
             
+            // Uniform translucent veil across the full width so the fluted prism reads consistently left-to-right
             LinearGradient(
                 stops: [
-                    .init(color: self.baseCardColor.opacity(self.isDark ? 0.80 : 0.84), location: 0.0),
-                    .init(color: self.baseCardColor.opacity(self.isDark ? 0.52 : 0.58), location: 0.56),
-                    .init(color: self.baseCardColor.opacity(self.isDark ? 0.08 : 0.10), location: 1.0),
+                    .init(color: self.baseCardColor.opacity(self.isDark ? 0.34 : 0.40), location: 0.0),
+                    .init(color: self.baseCardColor.opacity(self.isDark ? 0.28 : 0.34), location: 0.5),
+                    .init(color: self.baseCardColor.opacity(self.isDark ? 0.34 : 0.40), location: 1.0),
                 ],
-                startPoint: .leading,
-                endPoint: .trailing
+                startPoint: .top,
+                endPoint: .bottom
             )
         }
         .allowsHitTesting(false)

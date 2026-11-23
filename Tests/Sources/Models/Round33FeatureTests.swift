@@ -459,4 +459,63 @@ struct Round33FeatureTests {
         let partialBlocks = NewsMarkdownParser.parse(partial)
         #expect(partialBlocks == [.codeBlock(language: "python", code: "print('hi')")])
     }
+    
+    
+    // MARK: 10. Document Center Agent Auto-Organize Plan Parsing & Local Fallback
+    
+    @Test func documentCenterAgentOrganizerParsesJSONAndClassifiesFallback() throws {
+        let fencedJSON = """
+        ```json
+        {
+          "assignments": [
+            {"id": "doc:1", "group": "项目方案", "suggestedTitle": "Q4 架构设计"},
+            {"id": "doc:2", "group": "会议纪要", "suggestedTitle": null},
+            {"id": "doc:ignored", "group": "无效", "suggestedTitle": null}
+          ]
+        }
+        ```
+        """
+        let plan = try #require(
+            DocumentCenterAgentOrganizer.parsePlan(from: fencedJSON, validIDs: ["doc:1", "doc:2"])
+        )
+        #expect(plan.assignments.count == 2)
+        #expect(plan.assignments[0].group == "项目方案")
+        #expect(plan.assignments[0].suggestedTitle == "Q4 架构设计")
+        #expect(plan.assignments[1].group == "会议纪要")
+        #expect(plan.assignments[1].suggestedTitle == nil)
+        
+        #expect(DocumentCenterAgentOrganizer.isGenericUntitled("未命名 2", hasFilePath: false))
+        #expect(DocumentCenterAgentOrganizer.isGenericUntitled("Untitled", hasFilePath: false))
+        #expect(!DocumentCenterAgentOrganizer.isGenericUntitled("Untitled.md", hasFilePath: true))
+        
+        let fallback = DocumentCenterAgentOrganizer.buildLocalFallbackPlan(
+            items: [
+                .init(id: "a", title: "未命名", syntax: "Markdown", currentGroup: "", excerpt: "# 产品需求方案\n核心目标", isUntitled: true),
+                .init(id: "b", title: "sync.md", syntax: "Markdown", currentGroup: "", excerpt: "周三会议纪要：确认上线时间", isUntitled: false),
+                .init(id: "c", title: "main.swift", syntax: "Swift", currentGroup: "", excerpt: "import Foundation\nfunc run() {}", isUntitled: false),
+            ],
+            existingGroups: []
+        )
+        #expect(fallback.assignments.count == 3)
+        #expect(fallback.assignments[0].group == "项目方案")
+        #expect(fallback.assignments[0].suggestedTitle == "产品需求方案")
+        #expect(fallback.assignments[1].group == "会议纪要")
+        #expect(fallback.assignments[2].group == "代码开发")
+    }
+    
+    
+    // MARK: 11. Dashboard Action Text Sanitizer Strips Replacement Chars & Preserves Full Sentences
+    
+    @Test func dashboardActionSanitizerStripsBrokenUnicodeAndAvoidsMidSentenceTruncation() {
+        let broken = "停用 UNIT_CONCURRENCY \u{FFFD}\u{FFFD}复制 runner，改成每个任务独立进程执行并补齐回归验证"
+        let cleaned = AnalyticsManager.sanitizeDashboardActionText(
+            broken,
+            knownTitles: [],
+            maxLength: nil,
+            fallback: ""
+        )
+        #expect(!cleaned.contains("\u{FFFD}"))
+        #expect(cleaned.contains("停用 UNIT_CONCURRENCY"))
+        #expect(cleaned.hasSuffix("补齐回归验证"))
+    }
 }

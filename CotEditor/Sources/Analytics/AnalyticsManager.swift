@@ -2693,7 +2693,11 @@ extension AnalyticsManager {
         maxLength: Int? = nil,
         fallback: String = ""
     ) -> String {
-        var result = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var result = raw
+            .replacingOccurrences(of: "\u{FFFD}", with: "")
+            .replacingOccurrences(of: "\u{FEFF}", with: "")
+            .replacingOccurrences(of: #"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else { return fallback }
         
         // 1. Strip parenthesized word/char counts like "(1,200 字)" / "（约300字）"
@@ -2858,7 +2862,11 @@ extension AnalyticsManager {
             self.doneTodayFromAI = false
             return
         }
-        self.doneTodayCommentary = bundle.items
+        let knownTitles = self.database.documents.map(\.title) + self.database.weeklyReports.map(\.title)
+        self.doneTodayCommentary = bundle.items.compactMap { item in
+            let cleaned = Self.sanitizeDashboardActionText(item, knownTitles: knownTitles, maxLength: nil, fallback: "")
+            return cleaned.count >= 4 ? cleaned : nil
+        }
         self.doneTodayFromAI = bundle.isAIGenerated
         self.doneTodayFingerprint = bundle.sourceFingerprint
         self.doneTodayUpdatedAt = bundle.updatedAt
@@ -2870,22 +2878,21 @@ extension AnalyticsManager {
         guard !self.isRefreshingDoneToday else { return }
         
         let todayKey = Self.dateKey()
-        let corpus = self.collectDoneTodayCorpus()
         if !force,
            !self.doneTodayCommentary.isEmpty,
-           self.doneTodayFromAI,
-           self.doneTodayFingerprint == corpus.fingerprint,
            let updatedAt = self.doneTodayUpdatedAt,
-           Date().timeIntervalSince(updatedAt) < 2 * 3600
+           Calendar.current.isDateInToday(updatedAt),
+           Date().timeIntervalSince(updatedAt) < 3 * 3600
         {
             return
         }
         
+        let corpus = self.collectDoneTodayCorpus()
         let baseConfig = AIConfiguration.current
         let resolvedConfig = AIBotStore.shared.resolvedConfiguration(for: .weeklyReport, baseConfig: baseConfig)
         guard resolvedConfig.isUsable else {
-            self.doneTodayCommentary = self.buildLivelyLocalDoneTodayCommentary()
-            self.doneTodayFromAI = false
+            let local = self.buildLivelyLocalDoneTodayCommentary()
+            self.persistDoneTodayCommentary(local, isAI: false, dateKey: todayKey, fingerprint: corpus.fingerprint)
             return
         }
         
@@ -2938,8 +2945,10 @@ extension AnalyticsManager {
         }
         
         if self.doneTodayCommentary.isEmpty {
-            self.doneTodayCommentary = self.buildLivelyLocalDoneTodayCommentary()
-            self.doneTodayFromAI = false
+            let local = self.buildLivelyLocalDoneTodayCommentary()
+            self.persistDoneTodayCommentary(local, isAI: false, dateKey: todayKey, fingerprint: corpus.fingerprint)
+        } else {
+            self.doneTodayUpdatedAt = Date()
         }
     }
     
@@ -3017,7 +3026,7 @@ extension AnalyticsManager {
         var seen = Set<String>()
         var results: [String] = []
         for item in array {
-            let line = Self.sanitizeDashboardActionText(item, knownTitles: knownTitles, maxLength: 44, fallback: "")
+            let line = Self.sanitizeDashboardActionText(item, knownTitles: knownTitles, maxLength: nil, fallback: "")
             guard line.count >= 6, Self.hasMeaningfulActionSubstance(line), seen.insert(line).inserted else { continue }
             results.append(line)
             if results.count >= 4 { break }
@@ -3054,7 +3063,7 @@ extension AnalyticsManager {
                 sanitized.action = Self.sanitizeDashboardActionText(
                     rawTrim,
                     knownTitles: knownTitles,
-                    maxLength: 36,
+                    maxLength: nil,
                     fallback: ""
                 )
                 sanitized.reason = ""
@@ -3093,8 +3102,6 @@ extension AnalyticsManager {
         
         if !force,
            !self.actionPredictions.isEmpty,
-           self.actionPredictionsFromAI,
-           self.actionPredictionFingerprint == corpus.fingerprint,
            let updatedAt = self.actionPredictionUpdatedAt,
            Date().timeIntervalSince(updatedAt) < 4 * 3600
         {
@@ -3320,7 +3327,7 @@ extension AnalyticsManager {
             let action = Self.sanitizeDashboardActionText(
                 rawAction,
                 knownTitles: knownTitles,
-                maxLength: 36,
+                maxLength: nil,
                 fallback: ""
             )
             guard action.count >= 4,
@@ -3384,7 +3391,7 @@ extension AnalyticsManager {
             cleaned.action = Self.sanitizeDashboardActionText(
                 pred.action,
                 knownTitles: knownTitles,
-                maxLength: 36,
+                maxLength: nil,
                 fallback: ""
             )
             cleaned.reason = ""
