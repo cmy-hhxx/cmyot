@@ -167,6 +167,18 @@ nonisolated struct AppIconSpec: Codable, Equatable, Sendable {
     var cornerBadge: AppIconBadge = .none
     
     static let `default` = AppIconSpec()
+    
+    
+    func clamped() -> AppIconSpec {
+        var copy = self
+        copy.borderWidth = max(0.0, min(10.0, self.borderWidth))
+        copy.imageZoom = max(0.80, min(1.35, self.imageZoom))
+        copy.imageOffsetX = max(-0.25, min(0.25, self.imageOffsetX))
+        copy.imageOffsetY = max(-0.25, min(0.25, self.imageOffsetY))
+        copy.cornerRoundness = max(0.16, min(0.50, self.cornerRoundness))
+        copy.glossIntensity = max(0.0, min(1.0, self.glossIntensity))
+        return copy
+    }
 }
 
 
@@ -185,11 +197,13 @@ final class AppIconManager {
     }
     
     private(set) var customImageVersion: Int = 0
+    private(set) var previewRevision: Int = 0
     private(set) var previewImage: NSImage = NSImage()
     
     private let database: CotLocalDatabase
     private let storageDirectory: URL
     private var applyTask: Task<Void, Never>?
+    private var dockApplyTask: Task<Void, Never>?
     
     
     init(
@@ -277,6 +291,20 @@ final class AppIconManager {
     }
     
     
+    /// Updates icon customization immediately at 120fps in the live preview and debounces heavy 1024px Dock/Finder icon application.
+    func updateSpecLive(_ mutate: (inout AppIconSpec) -> Void) {
+        var next = self.spec
+        mutate(&next)
+        let clamped = next.clamped()
+        if clamped != self.spec {
+            self.spec = clamped
+        } else {
+            self.refreshPreview()
+        }
+        self.scheduleDebouncedDockApply()
+    }
+    
+    
     /// Applies the user's saved icon customization on app launch without rewriting default disk icon unnecessarily.
     func applySavedAppIconOnLaunch() {
         let image = self.renderIcon(size: 1024)
@@ -290,6 +318,7 @@ final class AppIconManager {
     
     /// Applies the current spec immediately to the macOS Dock tile and updates the `.app` Finder icon asynchronously.
     func applyIconToSystemAndDock() {
+        self.dockApplyTask?.cancel()
         self.refreshPreview()
         let fullIcon = self.renderIcon(size: 1024)
         NSApp.applicationIconImage = fullIcon
@@ -388,9 +417,6 @@ final class AppIconManager {
         // Ornamental frame / gold inlay trim
         Self.drawBorder(for: activeSpec, bodyRect: bodyRect, cornerRadius: cornerRadius, canvasSide: s)
         
-        // Optional corner emblem
-        Self.drawCornerBadge(activeSpec.cornerBadge, bodyRect: bodyRect, accentStyle: activeSpec.borderStyle, customHex: activeSpec.customBorderHex)
-        
         NSGraphicsContext.restoreGraphicsState()
         
         let out = NSImage(size: NSSize(width: s, height: s))
@@ -428,14 +454,15 @@ final class AppIconManager {
         
         if style == .obsidianGold {
             // Two-tier obsidian gallery bezel + fine champagne gold inner fillet
-            let obsidianCG = CGPath(roundedRect: ringRect, cornerWidth: ringRadius, cornerHeight: ringRadius, transform: nil)
+            let safeObsidianRadius = min(ringRect.width * 0.5, ringRadius)
+            let obsidianCG = CGPath(roundedRect: ringRect, cornerWidth: safeObsidianRadius, cornerHeight: safeObsidianRadius, transform: nil)
             cg.addPath(obsidianCG)
             cg.setLineWidth(borderThickness * 1.15)
             cg.setStrokeColor(NSColor(srgbRed: 0.06, green: 0.06, blue: 0.09, alpha: 1.0).cgColor)
             cg.strokePath()
             
             let goldInset = ringRect.insetBy(dx: borderThickness * 0.65, dy: borderThickness * 0.65)
-            let goldRadius = max(2, ringRadius - borderThickness * 0.65)
+            let goldRadius = min(goldInset.width * 0.5, max(2, ringRadius - borderThickness * 0.65))
             let goldThickness = max(1.0, borderThickness * 0.36)
             Self.strokeGradientRing(
                 in: cg,
@@ -451,7 +478,7 @@ final class AppIconManager {
         Self.strokeGradientRing(
             in: cg,
             rect: ringRect,
-            radius: ringRadius,
+            radius: min(ringRect.width * 0.5, ringRadius),
             lineWidth: borderThickness,
             gradient: Self.gradient(for: style, customHex: spec.customBorderHex)
         )
@@ -475,7 +502,8 @@ final class AppIconManager {
         gradient: NSGradient
     ) {
         cg.saveGState()
-        let path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        let safeRadius = min(min(rect.width, rect.height) * 0.5, max(0, radius))
+        let path = CGPath(roundedRect: rect, cornerWidth: safeRadius, cornerHeight: safeRadius, transform: nil)
         cg.addPath(path)
         cg.setLineWidth(lineWidth)
         cg.replacePathWithStrokedPath()
@@ -531,73 +559,9 @@ final class AppIconManager {
     }
     
     
-    private static func drawCornerBadge(
-        _ badge: AppIconBadge,
-        bodyRect: NSRect,
-        accentStyle: AppIconBorderStyle,
-        customHex: String
-    ) {
-        guard let symbolName = badge.symbolName,
-              let symbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
-        else { return }
-        
-        let medallionSide = bodyRect.width * 0.25
-        let medallionRect = NSRect(
-            x: bodyRect.maxX - medallionSide * 0.88,
-            y: bodyRect.minY - medallionSide * 0.08,
-            width: medallionSide,
-            height: medallionSide
-        )
-        
-        NSGraphicsContext.saveGraphicsState()
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.32)
-        shadow.shadowBlurRadius = medallionSide * 0.16
-        shadow.shadowOffset = NSSize(width: 0, height: -medallionSide * 0.06)
-        shadow.set()
-        
-        let badgeBg = NSColor(srgbRed: 0.08, green: 0.08, blue: 0.12, alpha: 0.94)
-        badgeBg.setFill()
-        NSBezierPath(ovalIn: medallionRect).fill()
-        NSGraphicsContext.restoreGraphicsState()
-        
-        let ringColor: NSColor = switch accentStyle {
-            case .ultraViolet: StudioPaletteManager.nsColor(hex: "#9E8CE6")
-            case .signalCrimson: StudioPaletteManager.nsColor(hex: "#D53740")
-            case .matchaGold: StudioPaletteManager.nsColor(hex: "#A4CE46")
-            case .platinumSilver: NSColor(srgbRed: 0.85, green: 0.88, blue: 0.92, alpha: 1)
-            case .customColor: StudioPaletteManager.nsColor(hex: customHex)
-            default: NSColor(srgbRed: 0.92, green: 0.76, blue: 0.28, alpha: 1.0)
-        }
-        ringColor.setStroke()
-        let ringPath = NSBezierPath(ovalIn: medallionRect.insetBy(dx: 1.5, dy: 1.5))
-        ringPath.lineWidth = max(1.2, medallionSide * 0.075)
-        ringPath.stroke()
-        
-        let tinted = symbol.withSymbolConfiguration(
-            .init(pointSize: medallionSide * 0.50, weight: .bold)
-                .applying(.init(paletteColors: [ringColor]))
-        ) ?? symbol
-        let symSize = tinted.size
-        let aspect = symSize.height > 0 ? symSize.width / symSize.height : 1.0
-        let drawH = medallionSide * 0.52
-        let drawW = drawH * aspect
-        tinted.draw(
-            in: NSRect(
-                x: medallionRect.midX - drawW * 0.5,
-                y: medallionRect.midY - drawH * 0.5,
-                width: drawW,
-                height: drawH
-            ),
-            from: .zero,
-            operation: .sourceOver,
-            fraction: 1.0
-        )
-    }
-    
-    
     private static func continuousPath(rect: NSRect, cornerRadius: CGFloat) -> NSBezierPath {
-        NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
+        let clampedRadius = min(min(rect.width, rect.height) * 0.5, max(0, cornerRadius))
+        return NSBezierPath(roundedRect: rect, xRadius: clampedRadius, yRadius: clampedRadius)
     }
     
     
@@ -612,6 +576,20 @@ final class AppIconManager {
     
     private func refreshPreview() {
         self.previewImage = self.renderIcon(size: 256)
+        self.previewRevision &+= 1
+    }
+    
+    
+    private func scheduleDebouncedDockApply() {
+        self.dockApplyTask?.cancel()
+        self.dockApplyTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(160))
+            guard !Task.isCancelled, let self else { return }
+            let fullIcon = self.renderIcon(size: 1024)
+            NSApp.applicationIconImage = fullIcon
+            guard !Self.isRunningUnitTests else { return }
+            self.scheduleBundleIconSync(image: fullIcon)
+        }
     }
     
     

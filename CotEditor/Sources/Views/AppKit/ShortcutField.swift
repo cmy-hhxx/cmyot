@@ -34,6 +34,8 @@ struct ShortcutField: NSViewRepresentable {
     
     @Binding var value: Shortcut?
     @Binding var error: (any Error)?
+    var placeholder: String? = nil
+    var alignment: NSTextAlignment = .right
     
     
     func makeNSView(context: Context) -> NSTextField {
@@ -45,9 +47,12 @@ struct ShortcutField: NSViewRepresentable {
         nsView.isEditable = true
         nsView.isBordered = false
         nsView.drawsBackground = false
+        nsView.preferredAlignment = self.alignment
+        nsView.placeholderString = self.placeholder
+        nsView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
         
-        // fix the alignment to right regardless the UI layout direction
-        nsView.alignment = .right
+        // apply requested alignment regardless of UI layout direction
+        nsView.alignment = self.alignment
         nsView.baseWritingDirection = .leftToRight
         
         return nsView
@@ -57,6 +62,11 @@ struct ShortcutField: NSViewRepresentable {
     func updateNSView(_ nsView: NSTextField, context: Context) {
         
         context.coordinator.updateBinding(shortcut: $value)
+        if let shortcutField = nsView as? ShortcutTextField {
+            shortcutField.preferredAlignment = self.alignment
+        }
+        nsView.alignment = self.alignment
+        nsView.placeholderString = self.placeholder
         nsView.objectValue = self.value
     }
     
@@ -131,6 +141,10 @@ struct ShortcutField: NSViewRepresentable {
 
 final class ShortcutTextField: NSTextField, NSTextViewDelegate {
     
+    // MARK: Properties
+    
+    var preferredAlignment: NSTextAlignment = .right
+    
     // MARK: Private Properties
     
     private var keyDownMonitor: Any?
@@ -153,8 +167,7 @@ final class ShortcutTextField: NSTextField, NSTextViewDelegate {
         super.viewWillMove(toSuperview: newSuperview)
         
         if newSuperview != nil {
-            // fix the alignment to right regardless the UI layout direction
-            self.alignment = .right
+            self.alignment = self.preferredAlignment
             self.baseWritingDirection = .leftToRight
         }
     }

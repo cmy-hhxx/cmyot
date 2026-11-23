@@ -190,6 +190,7 @@ final class AIHotNewsService {
     private var inFlightCoverIDs: Set<String> = []
     private var resolvedNoCoverIDs: Set<String> = []
     private var fetchedDetailIDs: Set<String> = []
+    private var preloadTask: Task<Void, Never>?
     private let coverCacheDirectory: URL
     
     private static let bookmarksDefaultsKey = "cot.news.bookmarkedItemsJSON"
@@ -229,6 +230,11 @@ final class AIHotNewsService {
         try? FileManager.default.createDirectory(at: self.coverCacheDirectory, withIntermediateDirectories: true)
         self.loadCachedItems()
         self.loadInteractiveState()
+        if !self.items.isEmpty {
+            Task { @MainActor [weak self] in
+                self?.preloadFeedResources(limit: 24)
+            }
+        }
     }
     
     
@@ -281,8 +287,13 @@ final class AIHotNewsService {
     }
     
     
+    func hasFinishedDetailFetch(for itemID: String) -> Bool {
+        self.fetchedDetailIDs.contains(itemID)
+    }
+    
+    
     func fetchArticleExcerptIfNeeded(for item: AIHotNewsItem) async {
-        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+        guard Self.isNetworkPreloadAllowed,
               !self.fetchedDetailIDs.contains(item.id),
               let pageURL = item.url
         else { return }
@@ -315,7 +326,7 @@ final class AIHotNewsService {
     func generateAIBrief(for item: AIHotNewsItem) async {
         guard self.isGeneratingBriefID == nil else { return }
         guard AIService.shared.isConfigured else {
-            self.briefErrorMessage = AppLanguage.text("请先在设置中配置 AI 模型后再使用速读提炼。", en: "Configure an AI model in Settings to generate briefs.")
+            self.briefErrorMessage = AppLanguage.text("未配置 AI 模型", en: "AI unconfigured")
             return
         }
         
@@ -411,9 +422,179 @@ final class AIHotNewsService {
     
     
     func prefetchCoversForCurrentPage() {
-        for item in self.currentPageItems {
-            _ = self.coverImage(for: item)
+        let pool = self.filteredItems
+        guard !pool.isEmpty else { return }
+        let safePage = min(max(1, self.currentPage), self.totalPages)
+        let start = (safePage - 1) * Self.pageSize
+        let end = min(pool.count, start + Self.pageSize * 2) // Preload current + next page
+        if start < end {
+            for item in pool[start..<end] {
+                _ = self.coverImage(for: item)
+            }
         }
+    }
+    
+    
+    /// Proactively preloads cover thumbnails and OpenGraph article excerpts in bounded background batches
+    /// so hovering pages and opening the NEWS reader renders instantaneously.
+    func preloadFeedResources(limit: Int = 24) {
+        guard Self.isNetworkPreloadAllowed else { return }
+        let snapshotItems = Array(self.items.prefix(limit))
+        guard !snapshotItems.isEmpty else { return }
+        
+        self.preloadTask?.cancel()
+        self.preloadTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            
+            struct PreloadWork: Sendable {
+                let item: AIHotNewsItem
+                let diskURL: URL
+                let needsCover: Bool
+                let needsExcerpt: Bool
+            }
+            
+            struct PreloadOutcome: Sendable {
+                let id: String
+                let coverImage: NSImage?
+                let resolvedCoverURL: String?
+                let resolvedSummary: String?
+                let attemptedDetail: Bool
+                let failedCover: Bool
+            }
+            
+            var didEnrichItems = false
+            let batchSize = 4
+            for batchStart in stride(from: 0, to: snapshotItems.count, by: batchSize) {
+                if Task.isCancelled { return }
+                let slice = Array(snapshotItems[batchStart..<min(snapshotItems.count, batchStart + batchSize)])
+                
+                var workQueue: [PreloadWork] = []
+                for item in slice {
+                    let hasMemCover = (self.coverImages[item.id] != nil)
+                    let needsCover = !hasMemCover && !self.inFlightCoverIDs.contains(item.id) && !self.resolvedNoCoverIDs.contains(item.id)
+                    let existingSummaryLen = item.summary?.trimmingCharacters(in: .whitespacesAndNewlines).count ?? 0
+                    let needsExcerpt = (existingSummaryLen < 40) && !self.fetchedDetailIDs.contains(item.id)
+                    if needsCover || needsExcerpt {
+                        if needsCover { self.inFlightCoverIDs.insert(item.id) }
+                        if needsExcerpt { self.fetchedDetailIDs.insert(item.id) }
+                        workQueue.append(PreloadWork(
+                            item: item,
+                            diskURL: self.diskCoverURL(for: item),
+                            needsCover: needsCover,
+                            needsExcerpt: needsExcerpt
+                        ))
+                    }
+                }
+                if workQueue.isEmpty { continue }
+                
+                let outcomes = await withTaskGroup(of: PreloadOutcome.self, returning: [PreloadOutcome].self) { group in
+                    for work in workQueue {
+                        group.addTask(priority: .utility) {
+                            var loadedCover: NSImage?
+                            var discoveredCoverURL = work.item.coverURLString
+                            var discoveredSummary: String?
+                            var failedCover = false
+                            
+                            if work.needsCover,
+                               FileManager.default.fileExists(atPath: work.diskURL.path),
+                               let diskImage = NSImage(contentsOf: work.diskURL)
+                            {
+                                loadedCover = diskImage
+                            }
+                            
+                            let shouldFetchPageMeta = work.needsExcerpt || (work.needsCover && loadedCover == nil && work.item.coverURL == nil)
+                            if shouldFetchPageMeta, let pageURL = work.item.url {
+                                let meta = await Self.fetchOpenGraphMetadata(from: pageURL)
+                                if let desc = meta.description, !desc.isEmpty {
+                                    discoveredSummary = desc
+                                }
+                                if discoveredCoverURL == nil, let ogImg = meta.imageURLString {
+                                    discoveredCoverURL = ogImg
+                                }
+                            }
+                            
+                            if work.needsCover && loadedCover == nil {
+                                if let resolvedStr = Self.sanitizedHTTPURLString(discoveredCoverURL),
+                                   let imgURL = URL(string: resolvedStr)
+                                {
+                                    var req = URLRequest(url: imgURL, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 8)
+                                    req.setValue("image/webp,image/jpeg,image/png,image/*;q=0.8", forHTTPHeaderField: "Accept")
+                                    req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+                                    if let (data, response) = try? await URLSession.shared.data(for: req),
+                                       let http = response as? HTTPURLResponse,
+                                       (200..<300).contains(http.statusCode),
+                                       data.count > 256,
+                                       let thumbnail = Self.downsampledThumbnail(from: data, maxPixelSize: 320)
+                                    {
+                                        if let tiff = thumbnail.tiffRepresentation,
+                                           let rep = NSBitmapImageRep(data: tiff),
+                                           let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.78])
+                                        {
+                                            try? jpeg.write(to: work.diskURL, options: .atomic)
+                                        }
+                                        loadedCover = thumbnail
+                                    } else {
+                                        failedCover = true
+                                    }
+                                } else {
+                                    failedCover = true
+                                }
+                            }
+                            
+                            return PreloadOutcome(
+                                id: work.item.id,
+                                coverImage: loadedCover,
+                                resolvedCoverURL: discoveredCoverURL,
+                                resolvedSummary: discoveredSummary,
+                                attemptedDetail: shouldFetchPageMeta,
+                                failedCover: failedCover
+                            )
+                        }
+                    }
+                    
+                    var collected: [PreloadOutcome] = []
+                    for await result in group {
+                        collected.append(result)
+                    }
+                    return collected
+                }
+                
+                if Task.isCancelled { return }
+                
+                for outcome in outcomes {
+                    self.inFlightCoverIDs.remove(outcome.id)
+                    if let thumb = outcome.coverImage {
+                        self.coverImages[outcome.id] = thumb
+                    } else if outcome.failedCover {
+                        self.resolvedNoCoverIDs.insert(outcome.id)
+                    }
+                    if let idx = self.items.firstIndex(where: { $0.id == outcome.id }) {
+                        if let sum = outcome.resolvedSummary, !sum.isEmpty,
+                           (self.items[idx].summary ?? "").count < 40
+                        {
+                            self.items[idx].summary = sum
+                            didEnrichItems = true
+                        }
+                        if let coverStr = outcome.resolvedCoverURL, self.items[idx].coverURLString == nil {
+                            self.items[idx].coverURLString = coverStr
+                            didEnrichItems = true
+                        }
+                    }
+                }
+            }
+            
+            if didEnrichItems && !self.items.isEmpty {
+                self.saveCachedItems(self.items)
+            }
+        }
+    }
+    
+    
+    private nonisolated static var isNetworkPreloadAllowed: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return NSClassFromString("XCTestCase") == nil
+            && env["XCTestConfigurationFilePath"] == nil
+            && env["XCTestBundlePath"] == nil
     }
     
     
@@ -427,6 +608,7 @@ final class AIHotNewsService {
            !self.items.isEmpty
         {
             self.prefetchCoversForCurrentPage()
+            self.preloadFeedResources(limit: 24)
             return
         }
         
@@ -503,6 +685,7 @@ final class AIHotNewsService {
             self.loadFailed = false
             self.saveCachedItems(mergedItems)
             self.prefetchCoversForCurrentPage()
+            self.preloadFeedResources(limit: 24)
         } else {
             self.loadFailed = self.items.isEmpty
         }
@@ -683,7 +866,7 @@ final class AIHotNewsService {
     
     
     private func triggerCoverLoadIfNeeded(for item: AIHotNewsItem) {
-        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+        guard Self.isNetworkPreloadAllowed,
               !self.inFlightCoverIDs.contains(item.id),
               !self.resolvedNoCoverIDs.contains(item.id)
         else { return }

@@ -390,6 +390,13 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     private var flushTask: Task<Void, Never>?
     private var backgroundDigestTask: Task<Void, Never>?
     
+    @ObservationIgnored private var cachedYearlyHeatmapKey: String = ""
+    @ObservationIgnored private var cachedYearlyHeatmapValue: YearlyHeatmapData?
+    @ObservationIgnored private var cachedBusynessKey: String = ""
+    @ObservationIgnored private var cachedBusynessValue: BusynessMetrics?
+    @ObservationIgnored private var cachedMoodKey: String = ""
+    @ObservationIgnored private var cachedMoodValue: MoodMetrics?
+    
     
     private static var isRunningUnitTests: Bool {
         
@@ -989,6 +996,12 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         trimFutureWeeks: Bool = false
     ) -> YearlyHeatmapData {
         
+        let refDayKey = Self.dateKey(for: referenceDate)
+        let cacheKey = "\(year)|\(trimFutureWeeks ? 1 : 0)|\(refDayKey)|\(self.revision)|\(self.database.documents.count)|\(self.database.weeklyReports.count)"
+        if cacheKey == self.cachedYearlyHeatmapKey, let cached = self.cachedYearlyHeatmapValue {
+            return cached
+        }
+        
         let calendar = Calendar.current
         let todayStart = calendar.startOfDay(for: referenceDate)
         let currentYear = calendar.component(.year, from: todayStart)
@@ -1037,13 +1050,16 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         let activeDays = inYearDays.filter { $0.level > 0 }.count
         let totalTypedChars = inYearDays.reduce(0) { $0 + $1.typedChars }
         
-        return YearlyHeatmapData(
+        let result = YearlyHeatmapData(
             year: year,
             weeks: weeks,
             monthLabels: monthLabels,
             activeDays: activeDays,
             totalTypedChars: totalTypedChars
         )
+        self.cachedYearlyHeatmapKey = cacheKey
+        self.cachedYearlyHeatmapValue = result
+        return result
     }
     
     
@@ -2445,8 +2461,12 @@ extension AnalyticsManager {
     
     /// Computes today's 12 two-hour busyness slices and composite index (0...100) from typing pulse & AI requests.
     var busynessMetrics: BusynessMetrics {
-        let _ = self.revision
+        let rev = self.revision
         let todayKey = Self.dateKey()
+        let cacheKey = "\(todayKey)|\(rev)"
+        if cacheKey == self.cachedBusynessKey, let cached = self.cachedBusynessValue {
+            return cached
+        }
         let rawHourly = (self.todayStats.dateKey == todayKey && self.todayStats.hourlyTypedChars.count == 24)
             ? self.todayStats.hourlyTypedChars
             : Array(repeating: 0, count: 24)
@@ -2519,20 +2539,28 @@ extension AnalyticsManager {
             ? String(format: "%02d:00", bestHour)
             : String(format: "%02d:00", calendar.component(.hour, from: Date()))
         
-        return BusynessMetrics(
+        let result = BusynessMetrics(
             score: min(100, max(0, totalScore)),
             activeHours: activeHours,
             peakHourLabel: peakLabel,
             slices: slices
         )
+        self.cachedBusynessKey = cacheKey
+        self.cachedBusynessValue = result
+        return result
     }
     
     
     /// Computes today's hierarchical 2-ring Sunburst emotion distribution from activity rhythm & personality profile.
     var moodMetrics: MoodMetrics {
-        let _ = self.revision
+        let rev = self.revision
         let stats = self.todayStats
         let todayKey = Self.dateKey()
+        let tagsCount = self.personalityProfile?.tags.count ?? 0
+        let cacheKey = "\(todayKey)|\(rev)|\(tagsCount)"
+        if cacheKey == self.cachedMoodKey, let cached = self.cachedMoodValue {
+            return cached
+        }
         let hourly = self.hourlyWritingPulse(for: todayKey)
         let bestHourEntry = hourly.enumerated().max(by: { $0.element < $1.element })
         let peakHour = (bestHourEntry.map { $0.element > 0 ? $0.offset : nil } ?? nil) ?? 10
@@ -2583,66 +2611,143 @@ extension AnalyticsManager {
             rawScore = 72
         }
         
-        return MoodMetrics(score: rawScore, dominantLabel: dominant, segments: segments)
+        let result = MoodMetrics(score: rawScore, dominantLabel: dominant, segments: segments)
+        self.cachedMoodKey = cacheKey
+        self.cachedMoodValue = result
+        return result
     }
     
     
-    /// Clean, capsule-free bullet points summarizing what the user worked on today ("干了啥").
+    /// Sanitizes dashboard card items ("干了啥" / "要干啥") to strip all document names,
+    /// file extensions, book-title brackets, and character/word counts, optionally clamping for single-line display.
+    nonisolated static func sanitizeDashboardActionText(
+        _ raw: String,
+        knownTitles: [String],
+        maxLength: Int? = nil,
+        fallback: String = ""
+    ) -> String {
+        var result = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !result.isEmpty else { return fallback }
+        
+        // 1. Strip parenthesized word/char counts like "(1,200 字)" / "（约300字）"
+        result = result.replacingOccurrences(
+            of: #"[\(（\[【][^\)）\]】]*?\d[\d,.\s]*[kKwW万千]?\s*(?:个?字(?:数|符)?|words?|chars?)[^\)）\]】]*?[\)）\]】]"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        
+        // 2. Strip inline word/char count clauses like "手写输入 1,280 字，" / "仅 120 字"
+        result = result.replacingOccurrences(
+            of: #"(?:共计|累计|合计|约有|手写输入|手写了|输入了|输入|输出了|输出|新增了|新增|完成了|完成|撰写了|写了|码了|当前仅|约|共|仅)?\s*\d[\d,.\s]*[kKwW万千]?\s*余?(?:个)?字(?:数|符)?[，,、；;。]?\s*"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        
+        // 3. Strip book-title brackets 《…》 / 〈…〉 and standalone filenames with extensions
+        result = result.replacingOccurrences(of: #"[《〈][^》〉]{1,80}[》〉]"#, with: "", options: .regularExpression)
+        result = result.replacingOccurrences(
+            of: #"["“「`]?[A-Za-z0-9_\-\.\u4e00-\u9fa5]{1,60}\.(?:md|markdown|txt|swift|json|yaml|yml|py|js|ts|tsx|jsx|html|css)["”」`]?"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        
+        // 4. Strip known document titles and filename stems (longest first)
+        var candidates: [String] = []
+        for title in knownTitles {
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count >= 2 else { continue }
+            candidates.append(trimmed)
+            let stem = (trimmed as NSString).deletingPathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+            if stem.count >= 2 && stem != trimmed {
+                candidates.append(stem)
+            }
+        }
+        for candidate in Array(Set(candidates)).sorted(by: { $0.count > $1.count }) {
+            result = result.replacingOccurrences(of: candidate, with: "", options: [.caseInsensitive])
+        }
+        
+        // 5. Strip leading list numbering ("2. ", "1)", "① ") and trailing colons
+        result = result.replacingOccurrences(
+            of: #"^\s*(?:\d+[.、)\]]|\(\d+\)|[①②③④⑤⑥⑦⑧⑨⑩])\s*"#,
+            with: "",
+            options: .regularExpression
+        )
+        result = result.replacingOccurrences(of: #"[:：]+\s*$"#, with: "", options: .regularExpression)
+        
+        // 6. Collapse orphaned brackets/punctuation left after title/count removal
+        result = result.replacingOccurrences(of: #"[「『\[【\(\（]\s*[」』\]】\)\）]"#, with: "", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"[，,、；;]{2,}"#, with: "，", options: .regularExpression)
+        result = result.trimmingCharacters(in: CharacterSet(charactersIn: " ，,、。；;：:·-—\n\t"))
+        
+        if result.isEmpty || (result.count < 4 && !fallback.isEmpty) {
+            result = fallback
+        }
+        
+        if let maxLength, result.count > maxLength {
+            let prefix = String(result.prefix(maxLength))
+            if let breakIdx = prefix.lastIndex(where: { "，,、。；; ".contains($0) }),
+               prefix.distance(from: prefix.startIndex, to: breakIdx) >= max(5, maxLength / 2)
+            {
+                result = String(prefix[..<breakIdx]).trimmingCharacters(in: CharacterSet(charactersIn: " ，,、。；;：:·-—"))
+            } else {
+                result = prefix.trimmingCharacters(in: CharacterSet(charactersIn: " ，,、。；;：:·-—"))
+            }
+        }
+        
+        return result.isEmpty ? fallback : result
+    }
+    
+    
+    /// Clean, capsule-free bullet points summarizing what the user worked on today ("干了啥"),
+    /// strictly excluding document titles and word/character counts.
     var doneTodayPoints: [String] {
         let _ = self.revision
         let todayKey = Self.dateKey()
+        let knownTitles = self.database.documents.map(\.title) + self.database.weeklyReports.map(\.title)
         var points: [String] = []
+        
+        func appendCleaned(_ raw: String, fallback: String = "") {
+            guard points.count < 5 else { return }
+            let cleaned = Self.sanitizeDashboardActionText(raw, knownTitles: knownTitles, fallback: fallback)
+            guard !cleaned.isEmpty, !points.contains(cleaned) else { return }
+            points.append(cleaned)
+        }
         
         if let digest = self.todayDigest,
            digest.dateKey == todayKey,
            digest.modelUsed != "本地摘要"
         {
             let parsed = Self.structuredSummaryPoints(from: digest.summary, maxPoints: 5)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            points.append(contentsOf: parsed)
+            for item in parsed {
+                appendCleaned(item)
+            }
         }
         
         let calendar = Calendar.current
         let todayDocs = self.recentTouchedManuscripts(referenceDate: Date(), limit: 5)
             .filter { calendar.isDateInToday($0.updatedAt) }
-        for item in todayDocs where points.count < 5 {
-            let line = "推进《\(item.title)》(\(item.charCount.formatted()) 字)"
-            if !points.contains(where: { $0.contains(item.title) }) {
-                points.append(line)
-            }
+        if !todayDocs.isEmpty, points.count < 5 {
+            appendCleaned("推进近期文稿内容撰写与结构迭代")
         }
         
         let stats = self.todayStats
-        if stats.typedChars > 0, points.count < 5 {
-            points.append("手写输入 \(stats.typedChars.formatted()) 字，保存文档 \(stats.documentsSaved) 次")
+        if stats.typedChars > 0 || stats.documentsSaved > 0, points.count < 5 {
+            if stats.documentsSaved > 0 {
+                appendCleaned("保持专注手写输入并完成 \(stats.documentsSaved) 次文稿存档")
+            } else {
+                appendCleaned("保持沉浸创作节奏，持续打磨正文段落")
+            }
         }
         if stats.aiRequests > 0, points.count < 5 {
-            points.append("完成 \(stats.aiRequests) 次 AI 协助，消耗 \((stats.inputTokens + stats.outputTokens).formatted()) tokens")
+            appendCleaned("协同调用 AI 协助润色与拓展思路")
+        }
+        if stats.filesCreated > 0, points.count < 5 {
+            appendCleaned("新建文稿草稿并搭建核心内容脉络")
         }
         
         if points.isEmpty {
-            let todayKey = Self.dateKey()
-            let todayCell = HeatmapDayCell(
-                dateKey: todayKey,
-                date: Date(),
-                typedChars: stats.typedChars,
-                aiCompletedChars: stats.aiCompletedChars,
-                aiCompletionAccepts: stats.aiCompletionAccepts,
-                filesCreated: stats.filesCreated,
-                documentsSaved: stats.documentsSaved,
-                aiRequests: stats.aiRequests,
-                inputTokens: stats.inputTokens,
-                outputTokens: stats.outputTokens,
-                localHits: stats.localHits,
-                level: 0,
-                isFuture: false
-            )
-            let fallback = self.candidDailyTakePoints(for: todayCell, referenceDate: Date(), baselineDailyChars: 0)
-                .prefix(3)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            points.append(contentsOf: fallback)
+            appendCleaned("整理创作节奏，专注推进核心内容迭代")
         }
         
         return Array(points.prefix(5))
@@ -2662,17 +2767,41 @@ extension AnalyticsManager {
     
     /// Loads cached AI document action predictions or immediately builds smart local predictions from recent documents.
     func loadActionPredictionsFromDatabase() {
+        let knownTitles = self.database.documents.map(\.title) + self.database.weeklyReports.map(\.title)
         let raw = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiActionPredictionsJSON)
         if !raw.isEmpty,
            let data = raw.data(using: .utf8),
            let bundle = try? JSONDecoder().decode(DocumentActionPredictionBundle.self, from: data),
            !bundle.predictions.isEmpty
         {
-            self.actionPredictions = bundle.predictions
-            self.actionPredictionsFromAI = bundle.isAIGenerated
-            self.actionPredictionUpdatedAt = bundle.updatedAt
-            self.actionPredictionFingerprint = bundle.sourceFingerprint
-            return
+            var seen = Set<String>()
+            let cleanedPredictions: [DocumentActionPrediction] = bundle.predictions.compactMap { pred in
+                let rawTrim = pred.action.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !rawTrim.hasSuffix(":"), !rawTrim.hasSuffix("：") else { return nil }
+                var sanitized = pred
+                sanitized.action = Self.sanitizeDashboardActionText(
+                    rawTrim,
+                    knownTitles: knownTitles,
+                    maxLength: 16,
+                    fallback: ""
+                )
+                sanitized.reason = ""
+                let meaningfulBody = sanitized.action.lowercased()
+                    .replacingOccurrences(of: #"\b(coteditor|cot|todos?|fixme)\b"#, with: "", options: .regularExpression)
+                    .replacingOccurrences(of: "优化", with: "")
+                    .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
+                guard sanitized.action.count >= 3, meaningfulBody.count >= 3 else { return nil }
+                let key = sanitized.action.lowercased().replacingOccurrences(of: " ", with: "")
+                guard seen.insert(key).inserted else { return nil }
+                return sanitized
+            }
+            if !cleanedPredictions.isEmpty {
+                self.actionPredictions = cleanedPredictions
+                self.actionPredictionsFromAI = bundle.isAIGenerated
+                self.actionPredictionUpdatedAt = bundle.updatedAt
+                self.actionPredictionFingerprint = bundle.sourceFingerprint
+                return
+            }
         }
         
         let local = Self.buildHeuristicActionPredictions(
@@ -2738,9 +2867,10 @@ extension AnalyticsManager {
         let systemPrompt = """
         你是用户的个人文档洞察与行动预测助手。请仔细阅读用户最近编辑的真实文档片段（草稿、技术方案、笔记、周报、未完小节、问号/待定项），预测用户接下来最应该推进的 3 到 5 项具体行动。
         要求：
-        1. 必须紧扣文档里的具体内容、未完段落、开放问题或逻辑下一步，禁止空泛鸡汤（如"保持专注""整理思路"）。
-        2. 严格只输出 JSON 数组，不要 Markdown 代码块外的任何说明：
-        [{"action":"24字以内具体下一步行动","reason":"26字以内文档依据","doc_title":"来源文档标题","urgency":"高|中|常规"}]
+        1. 必须紧扣未完段落、开放问题或逻辑下一步，禁止空泛鸡汤（如"保持专注""整理思路"）。
+        2. action 字段严禁包含任何文档名称、书名号《》或字数统计，必须精炼为不超过 15 个字的单个短句（单行可完整显示）。
+        3. 严格只输出 JSON 数组，不要 Markdown 代码块外的任何说明：
+        [{"action":"15字以内单行行动","reason":"","doc_title":"内部关联文档标题","urgency":"高|中|常规"}]
         """
         
         let userPrompt = """
@@ -2845,7 +2975,7 @@ extension AnalyticsManager {
         }
         
         let combined = blocks.joined(separator: "\n\n")
-        let fp = UserPersonalityAnalyzer.sha256Hex("pred-v1|" + combined)
+        let fp = UserPersonalityAnalyzer.sha256Hex("pred-v2|" + combined)
         return (combined, fp)
     }
     
@@ -2863,15 +2993,20 @@ extension AnalyticsManager {
               let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         else { return [] }
         
+        let knownTitles = documents.map(\.title)
         var seen = Set<String>()
         var results: [DocumentActionPrediction] = []
         for (idx, dict) in array.enumerated() {
-            let action = (dict["action"] as? String ?? dict["task"] as? String ?? dict["title"] as? String ?? "")
+            let rawAction = (dict["action"] as? String ?? dict["task"] as? String ?? dict["title"] as? String ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            let action = Self.sanitizeDashboardActionText(
+                rawAction,
+                knownTitles: knownTitles,
+                maxLength: 16,
+                fallback: "推进下一步内容"
+            )
             guard action.count >= 3, seen.insert(action.lowercased()).inserted else { continue }
             
-            let reason = (dict["reason"] as? String ?? dict["why"] as? String ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
             let rawDocTitle = (dict["doc_title"] as? String ?? dict["document"] as? String ?? dict["source"] as? String ?? "")
                 .replacingOccurrences(of: "《", with: "")
                 .replacingOccurrences(of: "》", with: "")
@@ -2892,7 +3027,7 @@ extension AnalyticsManager {
             results.append(DocumentActionPrediction(
                 id: "ai-pred-\(idx)-\(action.prefix(16))",
                 action: action,
-                reason: reason.isEmpty ? "基于近期文档上下文推演" : reason,
+                reason: "",
                 sourceDocumentTitle: matchedDoc?.title ?? rawDocTitle,
                 sourceDocumentID: matchedDoc?.id,
                 urgency: urgency
@@ -2904,7 +3039,7 @@ extension AnalyticsManager {
     
     
     /// Deterministic document-structure analyzer used offline or before AI responds: extracts unfinished checklist items,
-    /// empty trailing headings, open questions, and active drafts directly from the user's real documents.
+    /// empty trailing headings, and open questions concisely with zero document names or word counts.
     nonisolated static func buildHeuristicActionPredictions(
         documents: [StoredDocumentRecord],
         weeklyReports: [StoredWeeklyReport],
@@ -2912,21 +3047,32 @@ extension AnalyticsManager {
     ) -> [DocumentActionPrediction] {
         var results: [DocumentActionPrediction] = []
         var seen = Set<String>()
+        let knownTitles = documents.map(\.title) + weeklyReports.map(\.title)
         
         func appendIfUnique(_ pred: DocumentActionPrediction) {
-            let key = pred.action.lowercased()
-            guard results.count < 5, seen.insert(key).inserted else { return }
-            results.append(pred)
+            var cleaned = pred
+            cleaned.action = Self.sanitizeDashboardActionText(
+                pred.action,
+                knownTitles: knownTitles,
+                maxLength: 16,
+                fallback: "推进未完草稿内容"
+            )
+            cleaned.reason = ""
+            let key = cleaned.action.lowercased().replacingOccurrences(of: " ", with: "")
+            guard cleaned.action.count >= 3, results.count < 5, seen.insert(key).inserted else { return }
+            results.append(cleaned)
         }
         
         let sortedDocs = documents.sorted { $0.updatedAt > $1.updatedAt }
         
-        // 1. Scan recent docs for explicit unchecked todos / TODO / FIXME / 待确认
+        // 1. Scan recent docs for explicit unchecked todos / TODO / FIXME / 待确认 (never section headers ending in `:`)
         for doc in sortedDocs.prefix(8) {
             let lines = doc.content.components(separatedBy: .newlines)
             for rawLine in lines {
                 let line = rawLine.trimmingCharacters(in: .whitespaces)
-                guard line.count >= 4, line.count <= 90 else { continue }
+                guard line.count >= 4, line.count <= 90,
+                      !line.hasSuffix(":"), !line.hasSuffix("：")
+                else { continue }
                 let lower = line.lowercased()
                 let isExplicitAction = line.hasPrefix("- [ ]") || line.hasPrefix("* [ ]")
                     || lower.contains("todo") || lower.contains("fixme")
@@ -2936,11 +3082,15 @@ extension AnalyticsManager {
                     .replacingOccurrences(of: #"^[-*•]\s*\[\s*\]\s*"#, with: "", options: .regularExpression)
                     .replacingOccurrences(of: #"^(TODO|FIXME|todo|fixme|待办|下一步|后续)[:：]?\s*"#, with: "", options: .regularExpression)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard clean.count >= 4 else { continue }
+                let meaningfulBody = clean.lowercased()
+                    .replacingOccurrences(of: #"\b(coteditor|cot|todos?|fixme)\b"#, with: "", options: .regularExpression)
+                    .replacingOccurrences(of: "优化", with: "")
+                    .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
+                guard clean.count >= 4, meaningfulBody.count >= 3 else { continue }
                 appendIfUnique(DocumentActionPrediction(
                     id: "heur-todo-\(doc.id)-\(results.count)",
-                    action: String(clean.prefix(34)),
-                    reason: "文档中存在未勾选或待补全事项",
+                    action: clean,
+                    reason: "",
                     sourceDocumentTitle: doc.title,
                     sourceDocumentID: doc.id,
                     urgency: (lower.contains("fixme") || line.contains("紧急")) ? "高" : "中"
@@ -2961,8 +3111,8 @@ extension AnalyticsManager {
                 if !heading.isEmpty {
                     appendIfUnique(DocumentActionPrediction(
                         id: "heur-heading-\(doc.id)",
-                        action: "补全「\(String(heading.prefix(18)))」小节正文",
-                        reason: "草稿末尾仅拟好标题，尚未展开内容",
+                        action: "补全\(String(heading.prefix(10)))小节",
+                        reason: "",
                         sourceDocumentTitle: doc.title,
                         sourceDocumentID: doc.id,
                         urgency: "高"
@@ -2974,8 +3124,8 @@ extension AnalyticsManager {
             if let openQuestion = lines.reversed().first(where: { ($0.hasSuffix("？") || $0.hasSuffix("?")) && $0.count >= 6 && $0.count <= 48 }) {
                 appendIfUnique(DocumentActionPrediction(
                     id: "heur-q-\(doc.id)",
-                    action: "收敛并确认：\(String(openQuestion.prefix(26)))",
-                    reason: "文稿中留有尚未闭环的疑问",
+                    action: "确认：\(String(openQuestion.prefix(12)))",
+                    reason: "",
                     sourceDocumentTitle: doc.title,
                     sourceDocumentID: doc.id,
                     urgency: "中"
@@ -2983,11 +3133,11 @@ extension AnalyticsManager {
                 continue
             }
             
-            if doc.content.count < 400 {
+            if doc.content.utf16.count < 400 {
                 appendIfUnique(DocumentActionPrediction(
                     id: "heur-draft-\(doc.id)",
-                    action: "继续扩充《\(String(doc.title.prefix(16)))》草稿内容",
-                    reason: "当前仅 \(doc.content.count) 字，处于起草阶段",
+                    action: "继续扩充未完草稿段落",
+                    reason: "",
                     sourceDocumentTitle: doc.title,
                     sourceDocumentID: doc.id,
                     urgency: "常规"
@@ -3000,7 +3150,7 @@ extension AnalyticsManager {
             appendIfUnique(DocumentActionPrediction(
                 id: "heur-rem-\(item.id)",
                 action: item.title,
-                reason: "临近截止时间，建议优先收尾",
+                reason: "",
                 sourceDocumentTitle: "",
                 sourceDocumentID: nil,
                 urgency: "高"
@@ -3010,8 +3160,8 @@ extension AnalyticsManager {
         if results.isEmpty, let latestDoc = sortedDocs.first {
             appendIfUnique(DocumentActionPrediction(
                 id: "heur-review-\(latestDoc.id)",
-                action: "复盘并定稿《\(String(latestDoc.title.prefix(18)))》",
-                reason: "最近更新的主要文档，适合梳理下一步结论",
+                action: "复盘并定稿核心内容",
+                reason: "",
                 sourceDocumentTitle: latestDoc.title,
                 sourceDocumentID: latestDoc.id,
                 urgency: "常规"

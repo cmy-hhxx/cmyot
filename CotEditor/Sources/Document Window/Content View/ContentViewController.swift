@@ -929,20 +929,18 @@ private final class EditorWallpaperBackdropView: NSView {
         else { return }
         
         let imgSize = artwork.size
-        guard imgSize.width > 0, imgSize.height > 0, self.bounds.width > 0, self.bounds.height > 0 else { return }
-        
-        // Aspect-fill crop so the wallpaper seamlessly covers any split aspect ratio
-        let scale = max(self.bounds.width / imgSize.width, self.bounds.height / imgSize.height)
-        let drawW = imgSize.width * scale
-        let drawH = imgSize.height * scale
-        let drawRect = NSRect(
-            x: (self.bounds.width - drawW) * 0.5,
-            y: (self.bounds.height - drawH) * 0.5,
-            width: drawW,
-            height: drawH
+        let drawRect = WallpaperManager.framedDrawRect(
+            imageSize: imgSize,
+            viewportSize: self.bounds.size,
+            scale: spec.scale,
+            panX: spec.panX,
+            panY: spec.panY,
+            isFlippedY: self.isFlipped
         )
+        guard !drawRect.isEmpty else { return }
         
         NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: self.bounds).addClip()
         NSGraphicsContext.current?.imageInterpolation = .high
         artwork.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: CGFloat(spec.opacity))
         NSGraphicsContext.restoreGraphicsState()

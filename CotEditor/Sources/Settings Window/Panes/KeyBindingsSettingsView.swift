@@ -32,36 +32,196 @@ struct KeyBindingsSettingsView: View {
     
     var usesFlexibleFrame: Bool = false
     
+    @Environment(\.colorScheme) private var colorScheme
     @State private var model = KeyBindingModel()
+    @State private var searchText: String = ""
+    @State private var onlyModified: Bool = false
     
     
     var body: some View {
+        let _ = self.model.revision
+        let isGlobalList = !self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || self.onlyModified
+        let displayedRows = self.model.rows(searchText: self.searchText, onlyModified: self.onlyModified)
+        let modifiedTotal = self.model.modifiedCount
         
         VStack(spacing: 0) {
-            KeyBindingTreeView(model: $model)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(self.usesFlexibleFrame ? 12 : 20)
+            // Top Search & Filter Bar
+            HStack(spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    
+                    TextField(AppLanguage.text("搜索命令或快捷键…", en: "Search commands or shortcuts…"), text: self.$searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
+                    
+                    if !self.searchText.isEmpty {
+                        Button {
+                            self.searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 9)
+                .frame(height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(self.colorScheme == .dark ? 0.12 : 0.08), lineWidth: 0.75)
+                )
+                
+                HStack(spacing: 2) {
+                    self.filterChip(
+                        title: AppLanguage.text("全部", en: "All"),
+                        isActive: !self.onlyModified
+                    ) {
+                        self.onlyModified = false
+                    }
+                    self.filterChip(
+                        title: modifiedTotal > 0
+                            ? AppLanguage.text("已修改 \(modifiedTotal)", en: "Modified \(modifiedTotal)")
+                            : AppLanguage.text("已修改", en: "Modified"),
+                        isActive: self.onlyModified
+                    ) {
+                        self.onlyModified = true
+                    }
+                }
+                .padding(2)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05))
+                )
+            }
+            .padding(.horizontal, self.usesFlexibleFrame ? 16 : 20)
+            .padding(.top, self.usesFlexibleFrame ? 12 : 14)
+            .padding(.bottom, 10)
+            
+            // Middle Two-Pane Shortcut Browser & Editor (zero clipping)
+            HStack(spacing: 0) {
+                if !isGlobalList {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(self.model.tree.enumerated()), id: \.offset) { idx, node in
+                                let isSelected = ((self.model.rootIndex ?? 0) == idx)
+                                let hasModified = self.model.menuHasModified(at: idx)
+                                Button {
+                                    self.model.rootIndex = idx
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Text(node.name)
+                                            .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
+                                            .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.86))
+                                            .lineLimit(1)
+                                        Spacer(minLength: 2)
+                                        if hasModified {
+                                            Circle()
+                                                .fill(isSelected ? Color.white.opacity(0.88) : Color.accentColor)
+                                                .frame(width: 5.5, height: 5.5)
+                                        }
+                                    }
+                                    .padding(.horizontal, 9)
+                                    .frame(height: 28)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                            .fill(isSelected ? Color.accentColor : Color.clear)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .pointerStyle(.link)
+                            }
+                        }
+                        .padding(6)
+                    }
+                    .frame(width: 128)
+                    .background(Color.primary.opacity(self.colorScheme == .dark ? 0.035 : 0.025))
+                    
+                    Rectangle()
+                        .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.08))
+                        .frame(width: 0.75)
+                }
+                
+                // Command List
+                if displayedRows.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: self.onlyModified ? "keyboard" : "magnifyingglass")
+                            .font(.system(size: 22, weight: .light))
+                            .foregroundStyle(.secondary)
+                        Text(
+                            self.onlyModified
+                                ? AppLanguage.text("暂无自定义快捷键", en: "No Customized Shortcuts")
+                                : AppLanguage.text("没有匹配的命令", en: "No Matching Commands")
+                        )
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        LazyVStack(spacing: 0) {
+                            ForEach(displayedRows) { row in
+                                KeyBindingCommandRowView(
+                                    row: row,
+                                    showMenuPrefix: isGlobalList,
+                                    model: self.model
+                                )
+                                Rectangle()
+                                    .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.06 : 0.05))
+                                    .frame(height: 0.5)
+                                    .padding(.leading, 12)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(self.colorScheme == .dark ? Color.white.opacity(0.03) : Color.white)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(self.colorScheme == .dark ? 0.10 : 0.08), lineWidth: 0.75)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .padding(.horizontal, self.usesFlexibleFrame ? 16 : 20)
+            .padding(.bottom, 10)
             
             Divider()
             
-            HStack(alignment: .center) {
+            // Bottom Action Bar — always crisp and unclipped
+            HStack(spacing: 10) {
                 Button(String(localized: "Action.restoreDefaults.label", defaultValue: "Restore Defaults"), action: self.model.restore)
                     .disabled(!self.model.isRestorable)
                     .fixedSize()
                 
-                Spacer()
+                Spacer(minLength: 6)
                 
                 if let error = self.model.error {
-                    Text(error.localizedDescription)
-                        .foregroundStyle(.red)
-                        .controlSize(.small)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11))
+                        Text(error.localizedDescription)
+                            .font(.system(size: 11.5))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .foregroundStyle(.red)
                 }
+                
                 HelpLink(anchor: "settings_keybindings")
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 10)
+            .padding(.horizontal, self.usesFlexibleFrame ? 16 : 20)
+            .frame(height: 44)
             .background(.bar)
         }
         .onAppear {
@@ -77,6 +237,135 @@ struct KeyBindingsSettingsView: View {
         )
         .environment(\.locale, AppLanguage.current.locale)
     }
+    
+    
+    private func filterChip(title: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11.5, weight: isActive ? .semibold : .medium))
+                .foregroundStyle(isActive ? Color.primary : Color.secondary)
+                .padding(.horizontal, 10)
+                .frame(height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isActive ? (self.colorScheme == .dark ? Color.white.opacity(0.14) : Color.white) : Color.clear)
+                        .shadow(color: isActive ? .black.opacity(0.08) : .clear, radius: 1.5, y: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+    }
+}
+
+
+private struct KeyBindingCommandRowView: View {
+    
+    let row: KeyBindingModel.FlattenedCommandRow
+    let showMenuPrefix: Bool
+    @Bindable var model: KeyBindingModel
+    
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isHovered = false
+    
+    
+    var body: some View {
+        let currentShortcut = self.row.item.shortcut
+        let defaultShortcut = self.row.item.defaultShortcut
+        let isModified = (currentShortcut != defaultShortcut)
+        let breadcrumb = self.showMenuPrefix
+            ? (self.row.submenuPath.map { "\(self.row.menuName) › \($0)" } ?? self.row.menuName)
+            : self.row.submenuPath
+        let placeholder = defaultShortcut?.symbol ?? AppLanguage.text("点击录入", en: "Record")
+        
+        let shortcutBinding = Binding<Shortcut?>(
+            get: { self.row.item.shortcut },
+            set: { newValue in
+                self.model.updateShortcut(newValue, for: self.row.item)
+            }
+        )
+        
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    if let breadcrumb, !breadcrumb.isEmpty {
+                        Text(breadcrumb)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            .lineLimit(1)
+                    }
+                    
+                    Text(self.row.commandTitle)
+                        .font(.system(size: 12.5, weight: isModified ? .semibold : .regular))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+            }
+            
+            Spacer(minLength: 6)
+            
+            if isModified {
+                Button {
+                    self.model.updateShortcut(defaultShortcut, for: self.row.item)
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .background(Color.primary.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help(AppLanguage.text("恢复此项默认", en: "Reset Shortcut"))
+            }
+            
+            if currentShortcut != nil && (self.isHovered || isModified) {
+                Button {
+                    self.model.updateShortcut(nil, for: self.row.item)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary.opacity(0.85))
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .help(AppLanguage.text("清除快捷键", en: "Clear Shortcut"))
+            }
+            
+            ShortcutField(
+                value: shortcutBinding,
+                error: self.$model.error,
+                placeholder: placeholder,
+                alignment: .center
+            )
+            .frame(width: 106, height: 22)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(
+                        isModified
+                            ? Color.accentColor.opacity(self.colorScheme == .dark ? 0.16 : 0.10)
+                            : Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(
+                        isModified
+                            ? Color.accentColor.opacity(0.55)
+                            : Color.primary.opacity(self.colorScheme == .dark ? 0.14 : 0.10),
+                        lineWidth: isModified ? 1.0 : 0.6
+                    )
+            )
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 34)
+        .background(self.isHovered ? Color.primary.opacity(self.colorScheme == .dark ? 0.05 : 0.03) : Color.clear)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            self.isHovered = inside
+        }
+    }
 }
 
 
@@ -84,8 +373,18 @@ struct KeyBindingsSettingsView: View {
     
     typealias Item = Node<KeyBindingItem>
     
+    struct FlattenedCommandRow: Identifiable {
+        let id: String
+        let menuIndex: Int
+        let menuName: String
+        let submenuPath: String?
+        let commandTitle: String
+        let item: KeyBindingItem
+    }
+    
     private(set) var tree: [Item] = []
     private(set) var isRestorable: Bool = false
+    private(set) var revision: Int = 0
     var error: (any Error)?
     
     var rootIndex: Int?
@@ -97,7 +396,11 @@ struct KeyBindingsSettingsView: View {
     func load() {
         
         self.tree = self.manager.menuTree
+        if self.rootIndex == nil && !self.tree.isEmpty {
+            self.rootIndex = 0
+        }
         self.isRestorable = self.manager.isCustomized
+        self.revision &+= 1
     }
     
     
@@ -109,6 +412,16 @@ struct KeyBindingsSettingsView: View {
         self.tree = self.manager.menuTree
         self.isRestorable = false
         self.error = nil
+        self.revision &+= 1
+    }
+    
+    
+    func updateShortcut(_ shortcut: Shortcut?, for item: KeyBindingItem) {
+        self.error = nil
+        guard item.shortcut != shortcut else { return }
+        item.shortcut = shortcut
+        self.save()
+        self.revision &+= 1
     }
     
     
@@ -122,6 +435,85 @@ struct KeyBindingsSettingsView: View {
         }
         
         self.isRestorable = self.manager.isCustomized
+    }
+    
+    
+    var modifiedCount: Int {
+        self.allFlattenedRows().count { $0.item.shortcut != $0.item.defaultShortcut }
+    }
+    
+    
+    func menuHasModified(at index: Int) -> Bool {
+        guard self.tree.indices.contains(index) else { return false }
+        return self.tree[index].flatValues.contains { $0.shortcut != $0.defaultShortcut }
+    }
+    
+    
+    func rows(searchText: String, onlyModified: Bool) -> [FlattenedCommandRow] {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let isGlobal = !trimmed.isEmpty || onlyModified
+        let sourceRows: [FlattenedCommandRow] = if isGlobal {
+            self.allFlattenedRows()
+        } else {
+            self.flattenedRows(forMenuAt: self.rootIndex ?? 0)
+        }
+        
+        return sourceRows.filter { row in
+            if onlyModified && row.item.shortcut == row.item.defaultShortcut {
+                return false
+            }
+            if !trimmed.isEmpty {
+                let hay = [
+                    row.menuName,
+                    row.submenuPath ?? "",
+                    row.commandTitle,
+                    row.item.shortcut?.symbol ?? "",
+                    row.item.defaultShortcut?.symbol ?? "",
+                ].joined(separator: " ").lowercased()
+                return hay.contains(trimmed)
+            }
+            return true
+        }
+    }
+    
+    
+    private func allFlattenedRows() -> [FlattenedCommandRow] {
+        self.tree.indices.flatMap { self.flattenedRows(forMenuAt: $0) }
+    }
+    
+    
+    private func flattenedRows(forMenuAt menuIndex: Int) -> [FlattenedCommandRow] {
+        guard self.tree.indices.contains(menuIndex) else { return [] }
+        let rootNode = self.tree[menuIndex]
+        var result: [FlattenedCommandRow] = []
+        
+        func walk(_ node: Item, trail: [String]) {
+            switch node.item {
+                case .value(let item):
+                    let path = trail.isEmpty ? nil : trail.joined(separator: " › ")
+                    let rowID = "\(menuIndex):\(path ?? ""):\(node.name):\(item.action.description):\(item.tag):\(result.count)"
+                    result.append(FlattenedCommandRow(
+                        id: rowID,
+                        menuIndex: menuIndex,
+                        menuName: rootNode.name,
+                        submenuPath: path,
+                        commandTitle: node.name,
+                        item: item
+                    ))
+                case .children(let children):
+                    let nextTrail = trail + [node.name]
+                    for child in children {
+                        walk(child, trail: nextTrail)
+                    }
+            }
+        }
+        
+        if let topChildren = rootNode.children {
+            for child in topChildren {
+                walk(child, trail: [])
+            }
+        }
+        return result
     }
 }
 

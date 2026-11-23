@@ -22,7 +22,7 @@
 import AppKit
 import SwiftUI
 
-/// Interactive Readwise/Perplexity-inspired full NEWS workspace embedded inside the Analytics Dashboard.
+/// Interactive Readwise/Substack-inspired editorial NEWS workspace embedded inside the Analytics Dashboard.
 struct DashboardNewsCenterView: View {
     
     enum FeedFilter: Hashable, Identifiable {
@@ -53,9 +53,9 @@ struct DashboardNewsCenterView: View {
         
         var label: String {
             switch self {
-                case .signal: AppLanguage.text("精选信号", en: "Top Signal")
-                case .latest: AppLanguage.text("最新发布", en: "Latest")
-                case .heat: AppLanguage.text("热度优先", en: "Hottest")
+                case .signal: AppLanguage.text("精选", en: "Top")
+                case .latest: AppLanguage.text("最新", en: "Latest")
+                case .heat: AppLanguage.text("热度", en: "Hot")
             }
         }
     }
@@ -149,7 +149,7 @@ struct DashboardNewsCenterView: View {
                 if compactWidth {
                     VStack(spacing: 0) {
                         self.feedPane(isCompact: true)
-                            .frame(height: max(200, geo.size.height * 0.46))
+                            .frame(height: max(200, geo.size.height * 0.44))
                         Rectangle()
                             .fill(self.tokens.hairline)
                             .frame(height: 0.75)
@@ -157,7 +157,7 @@ struct DashboardNewsCenterView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
-                    let feedW = max(310, min(460, geo.size.width * 0.44))
+                    let feedW = max(320, min(440, geo.size.width * 0.42))
                     HStack(spacing: 0) {
                         self.feedPane(isCompact: false)
                             .frame(width: feedW)
@@ -184,6 +184,7 @@ struct DashboardNewsCenterView: View {
                 self.selectedItemID = self.displayedItems.first?.id
             }
             self.syncSelectionSideEffects()
+            self.newsService.preloadFeedResources(limit: 24)
         }
         .onChange(of: self.selectedItemID) { _, _ in
             self.syncSelectionSideEffects()
@@ -205,7 +206,7 @@ struct DashboardNewsCenterView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 11, weight: .semibold))
-                    Text(AppLanguage.text("返回看板", en: "Back to Dashboard"))
+                    Text(AppLanguage.text("返回看板", en: "Back"))
                         .font(.system(size: 12.5, weight: .medium))
                 }
                 .foregroundStyle(self.tokens.primaryInk.opacity(0.84))
@@ -220,7 +221,6 @@ struct DashboardNewsCenterView: View {
             .buttonStyle(.plain)
             .pointerStyle(.link)
             
-            // Category pills
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(NewsFeedCategory.allCases) { category in
@@ -233,16 +233,15 @@ struct DashboardNewsCenterView: View {
             
             Spacer(minLength: 8)
             
-            // Search box
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(self.tokens.primaryInk.opacity(0.45))
-                TextField(AppLanguage.text("搜索标题、来源或关键词", en: "Search"), text: self.$searchText)
+                TextField(AppLanguage.text("搜索", en: "Search"), text: self.$searchText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
                     .foregroundStyle(self.tokens.primaryInk)
-                    .frame(minWidth: 120, maxWidth: 190)
+                    .frame(minWidth: 110, maxWidth: 180)
                 if !self.searchText.isEmpty {
                     Button {
                         self.searchText = ""
@@ -262,7 +261,6 @@ struct DashboardNewsCenterView: View {
                     .strokeBorder(self.tokens.hairline, lineWidth: 0.75)
             )
             
-            // Sort picker
             Menu {
                 ForEach(SortOrder.allCases) { order in
                     Button {
@@ -295,7 +293,6 @@ struct DashboardNewsCenterView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             
-            // Layout switcher
             HStack(spacing: 2) {
                 ForEach(FeedLayoutMode.allCases) { mode in
                     let active = (self.layoutMode == mode)
@@ -338,7 +335,7 @@ struct DashboardNewsCenterView: View {
             }
             .buttonStyle(.plain)
             .disabled(self.newsService.isLoading)
-            .help(AppLanguage.text("刷新资讯", en: "Refresh"))
+            .help(AppLanguage.text("刷新", en: "Refresh"))
         }
         .padding(.horizontal, 16)
         .frame(height: 50)
@@ -375,7 +372,7 @@ struct DashboardNewsCenterView: View {
     }
     
     
-    // MARK: Feed Pane
+    // MARK: Feed Pane (Top-Right 77° Badges, Clean Compact Cards)
     
     private func feedPane(isCompact: Bool) -> some View {
         let items = self.displayedItems
@@ -383,15 +380,8 @@ struct DashboardNewsCenterView: View {
             if items.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: self.activeFilter == .saved ? "bookmark" : "newspaper")
-                        .font(.system(size: 26, weight: .light))
-                        .foregroundStyle(self.tokens.primaryInk.opacity(0.32))
-                    Text(
-                        self.activeFilter == .saved
-                            ? AppLanguage.text("暂无收藏的资讯", en: "No saved stories yet")
-                            : AppLanguage.text("没有匹配的资讯内容", en: "No matching stories")
-                    )
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(self.tokens.primaryInk.opacity(0.62))
+                        .font(.system(size: 28, weight: .light))
+                        .foregroundStyle(self.tokens.primaryInk.opacity(0.30))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -431,7 +421,7 @@ struct DashboardNewsCenterView: View {
             self.selectedItemID = item.id
         } label: {
             VStack(alignment: .leading, spacing: 6) {
-                ZStack(alignment: .topTrailing) {
+                ZStack(alignment: .topLeading) {
                     if let cover {
                         GeometryReader { geo in
                             Image(nsImage: cover)
@@ -441,41 +431,42 @@ struct DashboardNewsCenterView: View {
                                 .frame(width: geo.size.width, height: geo.size.height)
                                 .clipped()
                         }
-                        .frame(height: 82)
+                        .frame(height: 84)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     } else {
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .fill(self.tokens.inset)
-                            .frame(height: 82)
+                            .frame(height: 84)
                             .overlay(
-                                VStack(spacing: 3) {
-                                    Text(item.resolvedCategory.badgeLabel.isEmpty ? "AI" : item.resolvedCategory.badgeLabel)
-                                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                                        .foregroundStyle(self.tokens.accentText)
-                                    if !publisher.isEmpty {
-                                        Text(publisher)
-                                            .font(.system(size: 10, weight: .medium))
-                                            .foregroundStyle(self.tokens.primaryInk.opacity(0.45))
-                                            .lineLimit(1)
-                                            .padding(.horizontal, 8)
-                                    }
-                                }
+                                Text(item.resolvedCategory.badgeLabel.isEmpty ? "AI" : item.resolvedCategory.badgeLabel)
+                                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                                    .foregroundStyle(self.tokens.accentText)
                             )
                     }
                     
-                    Button {
-                        self.newsService.toggleBookmark(item)
-                    } label: {
-                        Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(isSaved ? self.tokens.onAccentInk : self.tokens.primaryInk.opacity(0.75))
-                            .frame(width: 22, height: 22)
-                            .background(
-                                (isSaved ? self.tokens.accent : self.tokens.card.opacity(0.88)),
-                                in: Circle()
-                            )
+                    HStack(alignment: .top) {
+                        if isSaved || isSelected {
+                            Button {
+                                self.newsService.toggleBookmark(item)
+                            } label: {
+                                Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundStyle(isSaved ? self.tokens.onAccentInk : self.tokens.primaryInk.opacity(0.78))
+                                    .frame(width: 21, height: 21)
+                                    .background(
+                                        (isSaved ? self.tokens.accent : self.tokens.card.opacity(0.90)),
+                                        in: Circle()
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        
+                        Spacer(minLength: 4)
+                        
+                        if let heat = item.heatScore, heat > 0 {
+                            self.heatCapsule(heat)
+                        }
                     }
-                    .buttonStyle(.plain)
                     .padding(5)
                 }
                 
@@ -495,21 +486,15 @@ struct DashboardNewsCenterView: View {
                 }
                 
                 HStack(spacing: 6) {
-                    if !publisher.isEmpty {
-                        Text(publisher)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(self.tokens.primaryInk.opacity(0.48))
-                            .lineLimit(1)
-                    } else {
-                        Text(item.resolvedCategory.label)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(self.tokens.primaryInk.opacity(0.48))
-                    }
-                    Spacer(minLength: 2)
-                    if let heat = item.heatScore, heat > 0 {
-                        Text("\(heat)°")
-                            .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(self.tokens.accentText)
+                    Text(publisher.isEmpty ? item.resolvedCategory.label : publisher)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(self.tokens.primaryInk.opacity(0.46))
+                        .lineLimit(1)
+                    Spacer()
+                    if let date = item.publishedAt {
+                        Text(Self.relativeTimeString(from: date))
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundStyle(self.tokens.primaryInk.opacity(0.38))
                     }
                 }
             }
@@ -541,51 +526,51 @@ struct DashboardNewsCenterView: View {
                 Circle()
                     .fill(isRead ? Color.clear : self.tokens.accent)
                     .frame(width: 6, height: 6)
-                    .padding(.top, 5)
+                    .padding(.top, 6)
                 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(item.title)
-                        .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
-                        .foregroundStyle(self.tokens.primaryInk.opacity(isRead && !isSelected ? 0.72 : 0.94))
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(item.title)
+                            .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
+                            .foregroundStyle(self.tokens.primaryInk.opacity(isRead && !isSelected ? 0.72 : 0.94))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        
+                        if let heat = item.heatScore, heat > 0 {
+                            self.heatCapsule(heat)
+                        }
+                    }
                     
                     HStack(spacing: 8) {
                         Text(item.resolvedCategory.label)
-                            .font(.system(size: 10, weight: .medium))
+                            .font(.system(size: 10.5, weight: .medium))
                             .foregroundStyle(self.tokens.accentText)
                         if !publisher.isEmpty {
                             Text(publisher)
-                                .font(.system(size: 10))
+                                .font(.system(size: 10.5))
                                 .foregroundStyle(self.tokens.primaryInk.opacity(0.48))
                                 .lineLimit(1)
                         }
                         if let date = item.publishedAt {
                             Text(Self.relativeTimeString(from: date))
                                 .font(.system(size: 10).monospacedDigit())
-                                .foregroundStyle(self.tokens.primaryInk.opacity(0.42))
+                                .foregroundStyle(self.tokens.primaryInk.opacity(0.40))
                         }
                         Spacer()
-                        if let heat = item.heatScore, heat > 0 {
-                            Text("\(heat)°")
-                                .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
-                                .foregroundStyle(self.tokens.accentText)
+                        Button {
+                            self.newsService.toggleBookmark(item)
+                        } label: {
+                            Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(isSaved ? self.tokens.accent : self.tokens.primaryInk.opacity(0.35))
                         }
+                        .buttonStyle(.plain)
                     }
                 }
-                
-                Button {
-                    self.newsService.toggleBookmark(item)
-                } label: {
-                    Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(isSaved ? self.tokens.accent : self.tokens.primaryInk.opacity(0.35))
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.vertical, 9)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(isSelected ? self.tokens.insetHover : self.tokens.card)
@@ -600,7 +585,18 @@ struct DashboardNewsCenterView: View {
     }
     
     
-    // MARK: Reader & Capture Pane
+    private func heatCapsule(_ heat: Int) -> some View {
+        Text("\(heat)°")
+            .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+            .foregroundStyle(self.tokens.accentText)
+            .padding(.horizontal, 6.5)
+            .padding(.vertical, 2)
+            .background(self.tokens.card.opacity(0.92), in: Capsule())
+            .overlay(Capsule().strokeBorder(self.tokens.hairline, lineWidth: 0.5))
+    }
+    
+    
+    // MARK: Editorial Reader Sheet (Zero Small Explanatory Text)
     
     @ViewBuilder
     private var readerPane: some View {
@@ -610,79 +606,67 @@ struct DashboardNewsCenterView: View {
             let isGenerating = (self.newsService.isGeneratingBriefID == item.id)
             let aiBrief = self.newsService.aiBriefs[item.id]
             let publisher = item.displayPublisherLabel
+            let summaryText = item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let isLoadingSummary = summaryText.isEmpty && !self.newsService.hasFinishedDetailFetch(for: item.id)
             
             ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 14) {
-                    if let cover {
-                        Image(nsImage: cover)
-                            .resizable()
-                            .interpolation(.high)
-                            .aspectRatio(contentMode: .fit)
-                            .frame(maxWidth: .infinity, maxHeight: 210)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(self.tokens.hairline, lineWidth: 0.7)
-                            )
-                    }
-                    
-                    // Metadata strip
-                    HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 18) {
+                    // Header Metadata Bar
+                    HStack(alignment: .center, spacing: 8) {
                         Text(item.resolvedCategory.label)
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(self.tokens.accentText)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 3.5)
                             .background(self.tokens.positivePillBg, in: Capsule())
                         
                         if !publisher.isEmpty {
                             Text(publisher)
-                                .font(.system(size: 11.5, weight: .medium))
-                                .foregroundStyle(self.tokens.primaryInk.opacity(0.62))
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(self.tokens.primaryInk.opacity(0.68))
                         }
                         
                         if let date = item.publishedAt {
                             Text(Self.relativeTimeString(from: date))
                                 .font(.system(size: 11.5).monospacedDigit())
-                                .foregroundStyle(self.tokens.primaryInk.opacity(0.46))
+                                .foregroundStyle(self.tokens.primaryInk.opacity(0.44))
                         }
                         
-                        if let heat = item.heatScore, heat > 0 {
-                            Text("\(heat)°")
-                                .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
-                                .foregroundStyle(self.tokens.accentText)
-                        }
-                        
-                        Spacer()
+                        Spacer(minLength: 8)
                         
                         if let statusToast = self.statusToast {
                             Text(statusToast)
-                                .font(.system(size: 11, weight: .medium))
+                                .font(.system(size: 11.5, weight: .medium))
                                 .foregroundStyle(self.tokens.accentText)
-                                .padding(.horizontal, 8)
+                                .padding(.horizontal, 9)
                                 .padding(.vertical, 3)
                                 .background(self.tokens.positivePillBg, in: Capsule())
                                 .transition(.opacity)
                         }
+                        
+                        if let heat = item.heatScore, heat > 0 {
+                            self.heatCapsule(heat)
+                        }
                     }
                     
-                    // Headline
+                    // Commanding Headline
                     Text(item.title)
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 20, weight: .bold))
                         .foregroundStyle(self.tokens.primaryInk)
-                        .lineSpacing(3)
+                        .lineSpacing(4)
                         .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     
-                    // Workflow Action Bar
+                    // Action Toolbar Strip
                     HStack(spacing: 8) {
                         Button {
                             self.extractToNewDocument(item)
                         } label: {
-                            Label(AppLanguage.text("摘录为新文档", en: "Extract to Doc"), systemImage: "doc.badge.plus")
-                                .font(.system(size: 11.5, weight: .semibold))
+                            Label(AppLanguage.text("摘录成稿", en: "Extract"), systemImage: "doc.badge.plus")
+                                .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(self.tokens.onAccentInk)
-                                .padding(.horizontal, 11)
-                                .frame(height: 30)
+                                .padding(.horizontal, 12)
+                                .frame(height: 31)
                                 .background(self.tokens.accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
                         .buttonStyle(.plain)
@@ -691,27 +675,45 @@ struct DashboardNewsCenterView: View {
                         Button {
                             self.appendToWeeklyReportFragments(item)
                         } label: {
-                            Label(AppLanguage.text("加入周报素材", en: "Add to Weekly"), systemImage: "text.badge.plus")
-                                .font(.system(size: 11.5, weight: .medium))
+                            Label(AppLanguage.text("入周报", en: "Weekly"), systemImage: "text.badge.plus")
+                                .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(self.tokens.primaryInk.opacity(0.86))
-                                .padding(.horizontal, 10)
-                                .frame(height: 30)
+                                .padding(.horizontal, 11)
+                                .frame(height: 31)
                                 .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .strokeBorder(self.tokens.hairline, lineWidth: 0.7)
-                                )
                         }
                         .buttonStyle(.plain)
                         .pointerStyle(.link)
                         
                         Button {
+                            Task {
+                                await self.newsService.generateAIBrief(for: item)
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: isGenerating ? "hourglass" : "sparkles")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(aiBrief == nil ? AppLanguage.text("AI 提炼", en: "AI Brief") : AppLanguage.text("重新提炼", en: "Regenerate"))
+                                    .font(.system(size: 12, weight: .medium))
+                            }
+                            .foregroundStyle(self.tokens.accentText)
+                            .padding(.horizontal, 11)
+                            .frame(height: 31)
+                            .background(self.tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isGenerating)
+                        .pointerStyle(.link)
+                        
+                        Spacer(minLength: 4)
+                        
+                        Button {
                             self.newsService.toggleBookmark(item)
                         } label: {
                             Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.system(size: 12.5, weight: .medium))
                                 .foregroundStyle(isSaved ? self.tokens.accent : self.tokens.primaryInk.opacity(0.72))
-                                .frame(width: 30, height: 30)
+                                .frame(width: 31, height: 31)
                                 .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
                         .buttonStyle(.plain)
@@ -720,24 +722,24 @@ struct DashboardNewsCenterView: View {
                         Button {
                             self.copyMarkdownCitation(item)
                         } label: {
-                            Image(systemName: "doc.on.doc")
-                                .font(.system(size: 11.5, weight: .medium))
+                            Image(systemName: "link")
+                                .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(self.tokens.primaryInk.opacity(0.72))
-                                .frame(width: 30, height: 30)
+                                .frame(width: 31, height: 31)
                                 .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
                         .buttonStyle(.plain)
-                        .help(AppLanguage.text("复制引用链接", en: "Copy Citation"))
+                        .help(AppLanguage.text("复制链接", en: "Copy Link"))
                         
                         if let url = item.url {
                             Button {
                                 NSWorkspace.shared.open(url)
                             } label: {
                                 Label(AppLanguage.text("原文", en: "Open"), systemImage: "arrow.up.right")
-                                    .font(.system(size: 11.5, weight: .medium))
-                                    .foregroundStyle(self.tokens.primaryInk.opacity(0.78))
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(self.tokens.primaryInk.opacity(0.84))
                                     .padding(.horizontal, 10)
-                                    .frame(height: 30)
+                                    .frame(height: 31)
                                     .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             }
                             .buttonStyle(.plain)
@@ -745,148 +747,126 @@ struct DashboardNewsCenterView: View {
                         }
                     }
                     
-                    // Extracted Excerpt / Summary
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(AppLanguage.text("摘要导读", en: "Summary"))
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(self.tokens.primaryInk.opacity(0.55))
-                        
-                        if let summary = item.summary, !summary.isEmpty {
-                            Text(summary)
-                                .font(.system(size: 13, weight: .regular))
-                                .foregroundStyle(self.tokens.primaryInk.opacity(0.88))
-                                .lineSpacing(4)
-                                .textSelection(.enabled)
-                        } else {
-                            Text(AppLanguage.text("正在提取原文摘要，或点击下方「AI 速读提炼」生成结构化要点。", en: "Loading excerpt, or use AI Brief below."))
-                                .font(.system(size: 12.5))
-                                .foregroundStyle(self.tokens.primaryInk.opacity(0.46))
-                        }
+                    // Hero Cover Banner
+                    if let cover {
+                        Image(nsImage: cover)
+                            .resizable()
+                            .interpolation(.high)
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxWidth: .infinity, maxHeight: 240)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .strokeBorder(self.tokens.hairline, lineWidth: 0.7)
+                            )
                     }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(self.tokens.hairline, lineWidth: 0.7)
-                    )
                     
-                    // AI Brief Panel
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Label(AppLanguage.text("AI 速读提炼", en: "AI Brief"), systemImage: "sparkles")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(self.tokens.accentText)
-                            Spacer()
-                            Button {
-                                Task {
-                                    await self.newsService.generateAIBrief(for: item)
-                                }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    if isGenerating {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                            .scaleEffect(0.7)
-                                    } else {
-                                        Image(systemName: aiBrief == nil ? "wand.and.stars" : "arrow.clockwise")
-                                            .font(.system(size: 10.5, weight: .medium))
-                                    }
-                                    Text(
-                                        isGenerating
-                                            ? AppLanguage.text("提炼中", en: "Summarizing")
-                                            : (aiBrief == nil
-                                                ? AppLanguage.text("一键提炼", en: "Generate Brief")
-                                                : AppLanguage.text("重新提炼", en: "Regenerate"))
-                                    )
-                                    .font(.system(size: 11, weight: .medium))
-                                }
-                                .foregroundStyle(self.tokens.accentText)
-                                .padding(.horizontal, 9)
-                                .frame(height: 24)
-                                .background(self.tokens.positivePillBg, in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(isGenerating)
-                        }
-                        
-                        if let aiBrief, !aiBrief.isEmpty {
-                            Text(aiBrief)
-                                .font(.system(size: 12.5))
+                    // Article Body Excerpt (with silent skeleton while preloading — zero explanatory text)
+                    if !summaryText.isEmpty {
+                        HStack(alignment: .top, spacing: 12) {
+                            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                                .fill(self.tokens.accent.opacity(0.45))
+                                .frame(width: 3)
+                            
+                            Text(summaryText)
+                                .font(.system(size: 14.5, weight: .regular))
                                 .foregroundStyle(self.tokens.primaryInk.opacity(0.90))
-                                .lineSpacing(4)
+                                .lineSpacing(6)
                                 .textSelection(.enabled)
-                        } else if let err = self.newsService.briefErrorMessage, !err.isEmpty {
-                            HStack(spacing: 8) {
-                                Text(err)
-                                    .font(.system(size: 11.5))
-                                    .foregroundStyle(self.tokens.primaryInk.opacity(0.64))
-                                Spacer()
-                                if !AIService.shared.isConfigured {
-                                    Button(AppLanguage.text("打开 AI 设置", en: "AI Settings")) {
-                                        (NSApp.delegate as? AppDelegate)?.showAIPreferences(nil)
-                                    }
-                                    .font(.system(size: 11, weight: .medium))
-                                    .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(14)
+                        .background(self.tokens.inset.opacity(0.65), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    } else if isLoadingSummary {
+                        NewsSkeletonShimmerBlock(tokens: self.tokens)
+                    }
+                    
+                    // AI Brief Sheet (rendered ONLY when actively generating, generated, or displaying settings error)
+                    if isGenerating || (aiBrief?.isEmpty == false) || (self.newsService.briefErrorMessage?.isEmpty == false) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 12, weight: .semibold))
                                     .foregroundStyle(self.tokens.accentText)
+                                Text(AppLanguage.text("AI 提炼", en: "AI Brief"))
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .foregroundStyle(self.tokens.accentText)
+                                Spacer()
+                            }
+                            
+                            if isGenerating && (aiBrief?.isEmpty ?? true) {
+                                NewsSkeletonShimmerBlock(tokens: self.tokens)
+                            } else if let aiBrief, !aiBrief.isEmpty {
+                                Text(aiBrief)
+                                    .font(.system(size: 13.5, weight: .regular))
+                                    .foregroundStyle(self.tokens.primaryInk.opacity(0.92))
+                                    .lineSpacing(5)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else if let err = self.newsService.briefErrorMessage, !err.isEmpty {
+                                HStack {
+                                    Text(err)
+                                        .font(.system(size: 12.5, weight: .medium))
+                                        .foregroundStyle(self.tokens.primaryInk.opacity(0.70))
+                                    Spacer()
+                                    if !AIService.shared.isConfigured {
+                                        Button(AppLanguage.text("配置模型", en: "AI Settings")) {
+                                            (NSApp.delegate as? AppDelegate)?.showAIPreferences(nil)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                    }
                                 }
                             }
-                        } else {
-                            Text(AppLanguage.text("提炼核心变化、行业影响及可用于写作的思考角度。", en: "Synthesize key takeaways and writing angles."))
-                                .font(.system(size: 12))
-                                .foregroundStyle(self.tokens.primaryInk.opacity(0.46))
                         }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(self.tokens.positivePillBg.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(self.tokens.accent.opacity(0.24), lineWidth: 0.75)
+                        )
                     }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(self.tokens.hairline, lineWidth: 0.7)
-                    )
                     
-                    // Quick Annotation / Note
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text(AppLanguage.text("随手批注", en: "Quick Note"))
-                                .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(self.tokens.primaryInk.opacity(0.55))
-                            Spacer()
-                            if !self.noteDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                Text(AppLanguage.text("已自动保存", en: "Saved"))
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(self.tokens.primaryInk.opacity(0.42))
-                            }
-                        }
+                    // Minimal Inline Note Field (no explanatory labels or saved-status captions)
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "pencil.line")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(self.tokens.primaryInk.opacity(0.45))
+                            .padding(.top, 3)
                         
-                        TextEditor(text: self.$noteDraft)
-                            .font(.system(size: 12.5))
-                            .scrollContentBackground(.hidden)
-                            .frame(minHeight: 72, maxHeight: 120)
-                            .padding(8)
-                            .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        TextField(AppLanguage.text("批注…", en: "Note…"), text: self.$noteDraft, axis: .vertical)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13))
+                            .foregroundStyle(self.tokens.primaryInk)
+                            .lineLimit(2...6)
                             .onChange(of: self.noteDraft) { _, newValue in
                                 self.newsService.setNote(newValue, for: item.id)
                             }
                     }
                     .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
                             .strokeBorder(self.tokens.hairline, lineWidth: 0.7)
                     )
                 }
-                .padding(18)
+                .padding(24)
+                .frame(maxWidth: 700, alignment: .leading)
+                .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(self.tokens.hairline, lineWidth: 0.75)
+                )
+                .shadow(color: self.tokens.cardShadow, radius: 10, y: 4)
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "text.book.closed")
-                    .font(.system(size: 28, weight: .light))
-                    .foregroundStyle(self.tokens.primaryInk.opacity(0.28))
-                Text(AppLanguage.text("选择左侧任意资讯查看详情", en: "Select a story to read"))
-                    .font(.system(size: 13))
-                    .foregroundStyle(self.tokens.primaryInk.opacity(0.52))
+                    .font(.system(size: 30, weight: .light))
+                    .foregroundStyle(self.tokens.primaryInk.opacity(0.26))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -932,11 +912,11 @@ struct DashboardNewsCenterView: View {
             sections.append("\n## 原文摘要\n\n\(summary)")
         }
         if let brief = self.newsService.aiBriefs[item.id], !brief.isEmpty {
-            sections.append("\n## AI 速读要点\n\n\(brief)")
+            sections.append("\n## AI 提炼\n\n\(brief)")
         }
         let note = self.noteDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         if !note.isEmpty {
-            sections.append("\n## 个人批注\n\n\(note)")
+            sections.append("\n## 批注\n\n\(note)")
         }
         let markdown = sections.joined(separator: "\n") + "\n"
         
@@ -979,7 +959,7 @@ struct DashboardNewsCenterView: View {
         let entry = lines.joined(separator: "\n")
         let next = existing.isEmpty ? entry : "\(existing)\n\(entry)"
         db.set(next, forKey: CotLocalDatabase.ConfigKey.weeklyReportFragments)
-        self.showToast(AppLanguage.text("已加入周报素材", en: "Added to weekly fragments"))
+        self.showToast(AppLanguage.text("已加入周报", en: "Added"))
     }
     
     
@@ -987,7 +967,7 @@ struct DashboardNewsCenterView: View {
         let citation = "[\(item.title)](\(item.urlString))"
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(citation, forType: .string)
-        self.showToast(AppLanguage.text("已复制引用", en: "Citation copied"))
+        self.showToast(AppLanguage.text("已复制", en: "Copied"))
     }
     
     
@@ -1009,13 +989,44 @@ struct DashboardNewsCenterView: View {
         let interval = max(0, Date().timeIntervalSince(date))
         if interval < 3600 {
             let mins = max(1, Int(interval / 60))
-            return "\(mins)分钟前"
+            return "\(mins)m"
         }
         if interval < 86_400 {
             let hours = Int(interval / 3600)
-            return "\(hours)小时前"
+            return "\(hours)h"
         }
         let days = Int(interval / 86_400)
-        return "\(days)天前"
+        return "\(days)d"
+    }
+}
+
+
+private struct NewsSkeletonShimmerBlock: View {
+    
+    let tokens: StudioColorTokens
+    @State private var pulse = false
+    
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(self.tokens.primaryInk.opacity(self.pulse ? 0.11 : 0.05))
+                .frame(maxWidth: .infinity)
+                .frame(height: 11)
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(self.tokens.primaryInk.opacity(self.pulse ? 0.11 : 0.05))
+                .frame(maxWidth: .infinity)
+                .frame(height: 11)
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(self.tokens.primaryInk.opacity(self.pulse ? 0.11 : 0.05))
+                .frame(width: 220, height: 11)
+        }
+        .padding(14)
+        .background(self.tokens.inset.opacity(0.60), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
+                self.pulse = true
+            }
+        }
     }
 }

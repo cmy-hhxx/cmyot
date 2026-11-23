@@ -251,7 +251,7 @@ private struct SidebarSettingsRootView: View {
                     .ignoresSafeArea()
                 
                 VStack(alignment: .leading, spacing: 10) {
-                    Spacer().frame(height: 32)
+                    Spacer().frame(height: 38)
                     
                     ForEach(Array(SettingsDesignTokens.sidebarClusters.enumerated()), id: \.offset) { clusterIdx, cluster in
                         if clusterIdx > 0 {
@@ -314,19 +314,28 @@ private struct SidebarSettingsRootView: View {
                         .frame(height: 0.5)
                     
                     Group {
-                        if self.state.selectedItem == .keyBindings {
-                            KeyBindingsSettingsView(usesFlexibleFrame: true)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else {
-                            ScrollView {
-                                self.detailContent
-                                    .padding(.horizontal, SettingsDesignTokens.contentPadding)
-                                    .padding(.top, 20)
-                                    .padding(.bottom, 28)
-                                    .frame(width: SettingsDesignTokens.detailWidth, alignment: .topLeading)
-                            }
-                            .frame(width: SettingsDesignTokens.detailWidth)
-                            .frame(maxHeight: .infinity)
+                        switch self.state.selectedItem {
+                            case .keyBindings:
+                                KeyBindingsSettingsView(usesFlexibleFrame: true)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            case .appIcon:
+                                SidebarAppIconSettingsPane()
+                                    .frame(width: SettingsDesignTokens.detailWidth)
+                                    .frame(maxHeight: .infinity)
+                            case .wallpaper:
+                                SidebarWallpaperSettingsPane()
+                                    .frame(width: SettingsDesignTokens.detailWidth)
+                                    .frame(maxHeight: .infinity)
+                            default:
+                                ScrollView {
+                                    self.detailContent
+                                        .padding(.horizontal, SettingsDesignTokens.contentPadding)
+                                        .padding(.top, 20)
+                                        .padding(.bottom, 28)
+                                        .frame(width: SettingsDesignTokens.detailWidth, alignment: .topLeading)
+                                }
+                                .frame(width: SettingsDesignTokens.detailWidth)
+                                .frame(maxHeight: .infinity)
                         }
                     }
                     .id(self.state.selectedItem)
@@ -340,6 +349,7 @@ private struct SidebarSettingsRootView: View {
             .frame(maxHeight: .infinity)
             .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20), value: self.state.selectedItem)
         }
+        .ignoresSafeArea(.container, edges: .top)
         .frame(
             width: SidebarSettingsWindowController.fixedContentSize.width,
             height: SidebarSettingsWindowController.fixedContentSize.height
@@ -1025,20 +1035,22 @@ private struct SidebarGeneralSettingsPane: View {
 }
 
 
-// MARK: - 1B. 应用图标自定义工坊 (App Icon Studio)
+// MARK: - 1B. 应用图标自定义工坊 (Pinned Live Dock Preview + Scrollable Studio Controls)
 
 private struct SidebarAppIconSettingsPane: View {
     
     @Environment(\.colorScheme) private var colorScheme
     @State private var iconManager = AppIconManager.shared
     @State private var isDropTargeted = false
+    @State private var dragStartOffset: CGSize?
     
     private var customRimBinding: Binding<Color> {
         Binding(
             get: { StudioPaletteManager.swiftUIColor(hex: self.iconManager.spec.customBorderHex) },
             set: { newColor in
-                self.iconManager.spec.customBorderHex = StudioPaletteManager.hexString(from: NSColor(newColor))
-                self.iconManager.applyIconToSystemAndDock()
+                self.iconManager.updateSpecLive { spec in
+                    spec.customBorderHex = StudioPaletteManager.hexString(from: NSColor(newColor))
+                }
             }
         )
     }
@@ -1047,8 +1059,9 @@ private struct SidebarAppIconSettingsPane: View {
         Binding(
             get: { StudioPaletteManager.swiftUIColor(hex: self.iconManager.spec.backgroundMatHex) },
             set: { newColor in
-                self.iconManager.spec.backgroundMatHex = StudioPaletteManager.hexString(from: NSColor(newColor))
-                self.iconManager.applyIconToSystemAndDock()
+                self.iconManager.updateSpecLive { spec in
+                    spec.backgroundMatHex = StudioPaletteManager.hexString(from: NSColor(newColor))
+                }
             }
         )
     }
@@ -1056,270 +1069,349 @@ private struct SidebarAppIconSettingsPane: View {
     
     var body: some View {
         let _ = self.iconManager.customImageVersion
+        let _ = self.iconManager.previewRevision
         
-        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
-            // 1. Dock Showcase (no small-font explanatory captions)
-            SettingsGroupCard(title: nil) {
-                VStack(spacing: 12) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: self.colorScheme == .dark
-                                        ? [Color(red: 0.12, green: 0.13, blue: 0.18), Color(red: 0.08, green: 0.09, blue: 0.13)]
-                                        : [Color(red: 0.90, green: 0.91, blue: 0.95), Color(red: 0.84, green: 0.86, blue: 0.91)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
+        VStack(spacing: 0) {
+            // Pinned Live Dock Showcase (always stays visible when adjusting controls below)
+            VStack(spacing: 10) {
+                SettingsGroupCard(title: nil) {
+                    VStack(spacing: 10) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: self.colorScheme == .dark
+                                            ? [Color(red: 0.12, green: 0.13, blue: 0.18), Color(red: 0.08, green: 0.09, blue: 0.13)]
+                                            : [Color(red: 0.90, green: 0.91, blue: 0.95), Color(red: 0.84, green: 0.86, blue: 0.91)],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
                                 )
-                            )
-                            .frame(height: 144)
-                        
-                        // Frosted mini Dock shelf beneath icon
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(.ultraThinMaterial)
-                            .frame(width: 170, height: 32)
-                            .offset(y: 44)
-                            .shadow(color: .black.opacity(self.colorScheme == .dark ? 0.35 : 0.10), radius: 10, y: 4)
-                        
-                        Image(nsImage: self.iconManager.previewImage)
-                            .resizable()
-                            .interpolation(.high)
-                            .frame(width: 112, height: 112)
-                            .scaleEffect(self.isDropTargeted ? 1.07 : 1.0)
-                            .animation(.spring(response: 0.28, dampingFraction: 0.72), value: self.isDropTargeted)
-                    }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(
-                                self.isDropTargeted ? Color.accentColor : Color.clear,
-                                style: StrokeStyle(lineWidth: 2, dash: [6, 4])
-                            )
-                    )
-                    .onDrop(of: [.image, .fileURL], isTargeted: self.$isDropTargeted) { providers in
-                        self.handleDrop(providers: providers)
-                    }
-                    
-                    HStack(spacing: 8) {
-                        Spacer()
-                        
-                        Button(AppLanguage.text("恢复默认", en: "Reset")) {
-                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
-                                self.iconManager.resetToDefault()
-                            }
-                        }
-                        .controlSize(.small)
-                        
-                        Button(AppLanguage.text("上传图片", en: "Upload")) {
-                            self.pickCustomArtwork()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                    }
-                }
-                .padding(14)
-            }
-            
-            // 2. Built-in Chiikawa Artwork & Custom Source
-            SettingsGroupCard(title: AppLanguage.text("图标", en: "Icon")) {
-                HStack(spacing: 10) {
-                    ForEach(AppIconSource.allCases) { source in
-                        let isSelected = (self.iconManager.spec.source == source)
-                        let thumb = self.iconManager.sourceImage(for: source)
-                        
-                        Button {
-                            if source == .customImage && !self.iconManager.hasCustomImage {
-                                self.pickCustomArtwork()
-                                return
-                            }
-                            withAnimation(.spring(response: 0.26, dampingFraction: 0.78)) {
-                                self.iconManager.spec.source = source
-                                self.iconManager.applyIconToSystemAndDock()
-                            }
-                        } label: {
-                            VStack(spacing: 6) {
-                                ZStack {
-                                    if let thumb {
-                                        Image(nsImage: thumb)
-                                            .resizable()
-                                            .interpolation(.high)
-                                            .scaledToFill()
-                                    } else {
-                                        Image(systemName: "photo.badge.plus")
-                                            .font(.system(size: 20))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .frame(width: 58, height: 58)
-                                .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+                            
+                            // Frosted mini Dock shelf + neighbor squircles for scale reference
+                            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                                .fill(.ultraThinMaterial)
+                                .frame(width: 246, height: 34)
+                                .offset(y: 38)
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                        .strokeBorder(
-                                            isSelected ? Color.accentColor : Color.primary.opacity(0.10),
-                                            lineWidth: isSelected ? 2.0 : 0.5
-                                        )
+                                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                                        .strokeBorder(Color.white.opacity(self.colorScheme == .dark ? 0.14 : 0.45), lineWidth: 0.6)
+                                        .frame(width: 246, height: 34)
+                                        .offset(y: 38)
                                 )
+                                .shadow(color: .black.opacity(self.colorScheme == .dark ? 0.35 : 0.10), radius: 10, y: 4)
+                            
+                            HStack(alignment: .bottom, spacing: 14) {
+                                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                    .fill(Color.primary.opacity(0.08))
+                                    .frame(width: 44, height: 44)
+                                    .offset(y: -4)
                                 
-                                Text(source.displayName)
-                                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                                    .foregroundStyle(isSelected ? .primary : .secondary)
-                                    .lineLimit(1)
+                                Image(nsImage: self.iconManager.previewImage)
+                                    .resizable()
+                                    .interpolation(.high)
+                                    .id(self.iconManager.previewRevision)
+                                    .frame(width: 96, height: 96)
+                                    .scaleEffect(self.isDropTargeted ? 1.06 : 1.0)
+                                    .animation(.spring(response: 0.24, dampingFraction: 0.76), value: self.isDropTargeted)
+                                    .gesture(
+                                        DragGesture(minimumDistance: 2)
+                                            .onChanged { value in
+                                                if self.dragStartOffset == nil {
+                                                    self.dragStartOffset = CGSize(
+                                                        width: self.iconManager.spec.imageOffsetX,
+                                                        height: self.iconManager.spec.imageOffsetY
+                                                    )
+                                                }
+                                                let base = self.dragStartOffset ?? .zero
+                                                self.iconManager.updateSpecLive { spec in
+                                                    spec.imageOffsetX = base.width + Double(value.translation.width) / 140.0
+                                                    spec.imageOffsetY = base.height - Double(value.translation.height) / 140.0
+                                                }
+                                            }
+                                            .onEnded { _ in
+                                                self.dragStartOffset = nil
+                                            }
+                                    )
+                                
+                                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                    .fill(Color.primary.opacity(0.08))
+                                    .frame(width: 44, height: 44)
+                                    .offset(y: -4)
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(isSelected ? Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.045) : Color.clear)
-                            )
+                            .offset(y: 4)
                         }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                    }
-                }
-                .padding(10)
-            }
-            
-            // 3. Rim / Gold Inlay Style Presets
-            SettingsGroupCard(title: AppLanguage.text("边框", en: "Frame")) {
-                VStack(alignment: .leading, spacing: 10) {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
-                        ForEach(AppIconBorderStyle.allCases) { style in
-                            let isSelected = (self.iconManager.spec.borderStyle == style)
-                            Button {
-                                withAnimation(.spring(response: 0.24, dampingFraction: 0.78)) {
-                                    self.iconManager.spec.borderStyle = style
-                                    if style != .clean && self.iconManager.spec.borderWidth < 1.5 {
-                                        self.iconManager.spec.borderWidth = 4.6
-                                    }
-                                    self.iconManager.applyIconToSystemAndDock()
-                                }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Circle()
-                                        .fill(
-                                            LinearGradient(
-                                                colors: style.previewColors,
-                                                startPoint: .topLeading,
-                                                endPoint: .bottomTrailing
-                                            )
-                                        )
-                                        .frame(width: 12, height: 12)
-                                        .overlay(
-                                            Circle().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5)
-                                        )
-                                    
-                                    Text(style.displayName)
-                                        .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                                        .foregroundStyle(isSelected ? .primary : .secondary)
-                                        .fixedSize()
-                                }
-                                .padding(.horizontal, 9)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 32)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(isSelected ? Color.primary.opacity(self.colorScheme == .dark ? 0.12 : 0.07) : Color.primary.opacity(0.03))
+                        .frame(height: 124)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(
+                                    self.isDropTargeted ? Color.accentColor : Color.clear,
+                                    style: StrokeStyle(lineWidth: 2, dash: [6, 4])
                                 )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .strokeBorder(isSelected ? Color.accentColor.opacity(0.70) : Color.clear, lineWidth: 1.2)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
+                        )
+                        .onDrop(of: [.image, .fileURL], isTargeted: self.$isDropTargeted) { providers in
+                            self.handleDrop(providers: providers)
                         }
-                    }
-                    
-                    if self.iconManager.spec.borderStyle == .customColor {
-                        HStack {
-                            Text(AppLanguage.text("自定义镶边颜色", en: "Custom Rim Color"))
-                                .font(.system(size: 13))
-                                .foregroundStyle(.primary)
+                        
+                        HStack(spacing: 8) {
+                            Text(self.iconManager.spec.borderStyle.displayName)
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05), in: Capsule())
+                            
+                            Text("\(Int((self.iconManager.spec.imageZoom * 100).rounded()))%")
+                                .font(.system(size: 11.5, design: .rounded).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05), in: Capsule())
+                            
                             Spacer()
-                            ColorPicker("", selection: self.customRimBinding, supportsOpacity: false)
-                                .labelsHidden()
+                            
+                            if abs(self.iconManager.spec.imageOffsetX) > 0.01 || abs(self.iconManager.spec.imageOffsetY) > 0.01 {
+                                Button(AppLanguage.text("画面居中", en: "Center")) {
+                                    self.iconManager.updateSpecLive { spec in
+                                        spec.imageOffsetX = 0
+                                        spec.imageOffsetY = 0
+                                    }
+                                }
+                                .controlSize(.small)
+                            }
+                            
+                            Button(AppLanguage.text("恢复默认", en: "Reset")) {
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
+                                    self.iconManager.resetToDefault()
+                                }
+                            }
+                            .controlSize(.small)
+                            
+                            Button(AppLanguage.text("上传图片", en: "Upload")) {
+                                self.pickCustomArtwork()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
                         }
-                        .padding(.top, 2)
                     }
+                    .padding(12)
                 }
-                .padding(12)
             }
+            .padding(.horizontal, SettingsDesignTokens.contentPadding)
+            .padding(.top, 14)
+            .padding(.bottom, 12)
             
-            // 4. Stepless Fine-Tuning Controls (strictly aligned to SettingsDesignTokens.controlWidth)
-            SettingsGroupCard(title: AppLanguage.text("样式", en: "Style")) {
-                SettingsItemRow(label: AppLanguage.text("镶边粗细", en: "Border Width")) {
-                    HStack(spacing: 8) {
-                        Slider(value: self.specBinding(\.borderWidth), in: 0...10)
-                            .frame(width: SettingsDesignTokens.sliderWidth)
-                        Text(String(format: "%.1f", self.iconManager.spec.borderWidth))
-                            .font(.system(size: 12).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+            Divider()
+            
+            // Scrollable Studio Controls below the pinned preview
+            ScrollView {
+                VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+                    // Built-in Chiikawa Artwork & Custom Source
+                    SettingsGroupCard(title: AppLanguage.text("图标", en: "Icon")) {
+                        HStack(spacing: 10) {
+                            ForEach(AppIconSource.allCases) { source in
+                                let isSelected = (self.iconManager.spec.source == source)
+                                let thumb = self.iconManager.sourceImage(for: source)
+                                
+                                Button {
+                                    if source == .customImage && !self.iconManager.hasCustomImage {
+                                        self.pickCustomArtwork()
+                                        return
+                                    }
+                                    withAnimation(.spring(response: 0.24, dampingFraction: 0.78)) {
+                                        self.iconManager.updateSpecLive { $0.source = source }
+                                    }
+                                } label: {
+                                    VStack(spacing: 6) {
+                                        ZStack {
+                                            if let thumb {
+                                                Image(nsImage: thumb)
+                                                    .resizable()
+                                                    .interpolation(.high)
+                                                    .scaledToFill()
+                                            } else {
+                                                Image(systemName: "photo.badge.plus")
+                                                    .font(.system(size: 20))
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        .frame(width: 54, height: 54)
+                                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                                .strokeBorder(
+                                                    isSelected ? Color.accentColor : Color.primary.opacity(0.10),
+                                                    lineWidth: isSelected ? 2.0 : 0.5
+                                                )
+                                        )
+                                        
+                                        Text(source.displayName)
+                                            .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                                            .foregroundStyle(isSelected ? .primary : .secondary)
+                                            .lineLimit(1)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 7)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .fill(isSelected ? Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.045) : Color.clear)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .pointerStyle(.link)
+                            }
+                        }
+                        .padding(10)
                     }
-                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
-                }
-                
-                SettingsRowDivider()
-                
-                SettingsItemRow(label: AppLanguage.text("画面缩放", en: "Artwork Zoom")) {
-                    HStack(spacing: 8) {
-                        Slider(value: self.specBinding(\.imageZoom), in: 0.80...1.35)
-                            .frame(width: SettingsDesignTokens.sliderWidth)
-                        Text("\(Int((self.iconManager.spec.imageZoom * 100).rounded()))%")
-                            .font(.system(size: 12).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+                    
+                    // Rim / Gold Inlay Style Presets
+                    SettingsGroupCard(title: AppLanguage.text("边框", en: "Frame")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
+                                ForEach(AppIconBorderStyle.allCases) { style in
+                                    let isSelected = (self.iconManager.spec.borderStyle == style)
+                                    Button {
+                                        withAnimation(.spring(response: 0.24, dampingFraction: 0.78)) {
+                                            self.iconManager.updateSpecLive { spec in
+                                                spec.borderStyle = style
+                                                if style != .clean && spec.borderWidth < 1.5 {
+                                                    spec.borderWidth = 4.6
+                                                }
+                                            }
+                                        }
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Circle()
+                                                .fill(
+                                                    LinearGradient(
+                                                        colors: style.previewColors,
+                                                        startPoint: .topLeading,
+                                                        endPoint: .bottomTrailing
+                                                    )
+                                                )
+                                                .frame(width: 12, height: 12)
+                                                .overlay(
+                                                    Circle().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5)
+                                                )
+                                            
+                                            Text(style.displayName)
+                                                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                                                .foregroundStyle(isSelected ? .primary : .secondary)
+                                                .fixedSize()
+                                        }
+                                        .padding(.horizontal, 9)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 30)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                                .fill(isSelected ? Color.primary.opacity(self.colorScheme == .dark ? 0.12 : 0.07) : Color.primary.opacity(0.03))
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                                .strokeBorder(isSelected ? Color.accentColor.opacity(0.70) : Color.clear, lineWidth: 1.2)
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .pointerStyle(.link)
+                                }
+                            }
+                            
+                            if self.iconManager.spec.borderStyle == .customColor {
+                                HStack {
+                                    Text(AppLanguage.text("自定义镶边颜色", en: "Custom Rim Color"))
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    ColorPicker("", selection: self.customRimBinding, supportsOpacity: false)
+                                        .labelsHidden()
+                                }
+                                .padding(.top, 2)
+                            }
+                        }
+                        .padding(12)
                     }
-                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
-                }
-                
-                SettingsRowDivider()
-                
-                SettingsItemRow(label: AppLanguage.text("圆角曲率", en: "Corner Curvature")) {
-                    HStack(spacing: 8) {
-                        Slider(value: self.specBinding(\.cornerRoundness), in: 0.16...0.50)
-                            .frame(width: SettingsDesignTokens.sliderWidth)
-                        Text("\(Int((self.iconManager.spec.cornerRoundness * 100).rounded()))%")
-                            .font(.system(size: 12).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
-                    }
-                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
-                }
-                
-                SettingsRowDivider()
-                
-                SettingsItemRow(label: AppLanguage.text("表面水晶流光", en: "Crystal Gloss")) {
-                    HStack(spacing: 8) {
-                        Slider(value: self.specBinding(\.glossIntensity), in: 0.0...1.0)
-                            .frame(width: SettingsDesignTokens.sliderWidth)
-                        Text("\(Int((self.iconManager.spec.glossIntensity * 100).rounded()))%")
-                            .font(.system(size: 12).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
-                    }
-                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
-                }
-                
-                SettingsRowDivider()
-                
-                SettingsItemRow(label: AppLanguage.text("装饰角标", en: "Corner Badge")) {
-                    Picker("", selection: self.specBinding(\.cornerBadge)) {
-                        ForEach(AppIconBadge.allCases) { badge in
-                            Text(badge.displayName).tag(badge)
+                    
+                    // Stepless Fine-Tuning Controls (zero corner badge!)
+                    SettingsGroupCard(title: AppLanguage.text("样式", en: "Style")) {
+                        SettingsItemRow(label: AppLanguage.text("镶边粗细", en: "Border Width")) {
+                            HStack(spacing: 8) {
+                                Slider(
+                                    value: Binding(
+                                        get: { self.iconManager.spec.borderWidth },
+                                        set: { newValue in
+                                            self.iconManager.updateSpecLive { spec in
+                                                spec.borderWidth = newValue
+                                                if newValue > 0.25 && spec.borderStyle == .clean {
+                                                    spec.borderStyle = .goldInlay
+                                                }
+                                            }
+                                        }
+                                    ),
+                                    in: 0...10
+                                )
+                                .frame(width: SettingsDesignTokens.sliderWidth)
+                                Text(String(format: "%.1f", self.iconManager.spec.borderWidth))
+                                    .font(.system(size: 12).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+                            }
+                            .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
+                        }
+                        
+                        SettingsRowDivider()
+                        
+                        SettingsItemRow(label: AppLanguage.text("画面缩放", en: "Artwork Zoom")) {
+                            HStack(spacing: 8) {
+                                Slider(value: self.specBinding(\.imageZoom), in: 0.80...1.35)
+                                    .frame(width: SettingsDesignTokens.sliderWidth)
+                                Text("\(Int((self.iconManager.spec.imageZoom * 100).rounded()))%")
+                                    .font(.system(size: 12).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+                            }
+                            .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
+                        }
+                        
+                        SettingsRowDivider()
+                        
+                        SettingsItemRow(label: AppLanguage.text("圆角曲率", en: "Corner Curvature")) {
+                            HStack(spacing: 8) {
+                                Slider(value: self.specBinding(\.cornerRoundness), in: 0.16...0.50)
+                                    .frame(width: SettingsDesignTokens.sliderWidth)
+                                Text("\(Int((self.iconManager.spec.cornerRoundness * 100).rounded()))%")
+                                    .font(.system(size: 12).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+                            }
+                            .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
+                        }
+                        
+                        SettingsRowDivider()
+                        
+                        SettingsItemRow(label: AppLanguage.text("表面水晶流光", en: "Crystal Gloss")) {
+                            HStack(spacing: 8) {
+                                Slider(value: self.specBinding(\.glossIntensity), in: 0.0...1.0)
+                                    .frame(width: SettingsDesignTokens.sliderWidth)
+                                Text("\(Int((self.iconManager.spec.glossIntensity * 100).rounded()))%")
+                                    .font(.system(size: 12).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+                            }
+                            .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
+                        }
+                        
+                        if self.iconManager.spec.imageZoom < 0.99 {
+                            SettingsRowDivider()
+                            
+                            SettingsItemRow(label: AppLanguage.text("画布衬底色", en: "Background Mat")) {
+                                ColorPicker("", selection: self.matColorBinding, supportsOpacity: false)
+                                    .labelsHidden()
+                            }
                         }
                     }
-                    .labelsHidden()
-                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
-                
-                if self.iconManager.spec.imageZoom < 0.99 {
-                    SettingsRowDivider()
-                    
-                    SettingsItemRow(label: AppLanguage.text("画布衬底色", en: "Background Mat")) {
-                        ColorPicker("", selection: self.matColorBinding, supportsOpacity: false)
-                            .labelsHidden()
-                    }
-                }
+                .padding(.horizontal, SettingsDesignTokens.contentPadding)
+                .padding(.vertical, 16)
             }
         }
     }
@@ -1329,8 +1421,9 @@ private struct SidebarAppIconSettingsPane: View {
         Binding(
             get: { self.iconManager.spec[keyPath: keyPath] },
             set: { newValue in
-                self.iconManager.spec[keyPath: keyPath] = newValue
-                self.iconManager.applyIconToSystemAndDock()
+                self.iconManager.updateSpecLive { spec in
+                    spec[keyPath: keyPath] = newValue
+                }
             }
         )
     }
@@ -1387,7 +1480,7 @@ private struct SidebarAppIconSettingsPane: View {
 }
 
 
-// MARK: - 1C. 壁纸 (Silky 120fps Live Editor Preview + Cached Gallery Grid)
+// MARK: - 1C. 壁纸 (Pinned Interactive Crop/Pan Studio + Cached Gallery Grid)
 
 private struct SidebarWallpaperSettingsPane: View {
     
@@ -1395,139 +1488,204 @@ private struct SidebarWallpaperSettingsPane: View {
     @State private var manager = WallpaperManager.shared
     @State private var hoveredID: String?
     @State private var isDropTargeted = false
+    @State private var dragStartFraming: WallpaperFraming?
+    @State private var magnifyStartScale: Double?
+    @State private var isFramingActive = false
+    @State private var showViewfinderGrid = false
     
     
     var body: some View {
         let _ = self.manager.catalogVersion
         let items = self.manager.allItems
         let selectedItem = items.first { $0.id == self.manager.spec.selectedID } ?? items.first
+        let framing = self.manager.spec.currentFraming
         
-        VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
-            // 1. Miniature Editor Stage
-            SettingsGroupCard(title: nil) {
-                VStack(spacing: 12) {
-                    self.liveEditorPreviewStage(selectedItem: selectedItem)
-                        .frame(height: 184)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(
-                                    self.isDropTargeted
-                                        ? StudioPaletteManager.shared.activeAccentColor
-                                        : (self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.08)),
-                                    style: self.isDropTargeted ? StrokeStyle(lineWidth: 2, dash: [6, 4]) : StrokeStyle(lineWidth: 0.75)
-                                )
-                        )
-                        .onDrop(of: [.image, .fileURL], isTargeted: self.$isDropTargeted) { providers in
-                            self.handleDrop(providers: providers)
-                        }
-                    
-                    HStack(spacing: 8) {
-                        if let selectedItem {
-                            Circle()
-                                .fill(Color(hexString: selectedItem.accentHex))
-                                .frame(width: 8, height: 8)
-                            Text(selectedItem.title)
-                                .font(.system(size: 13, weight: .medium))
-                                .lineLimit(1)
-                        }
+        VStack(spacing: 0) {
+            // Pinned Interactive Crop & Preview Stage
+            VStack(spacing: 0) {
+                SettingsGroupCard(title: nil) {
+                    VStack(spacing: 10) {
+                        self.liveEditorPreviewStage(selectedItem: selectedItem)
+                            .frame(height: 158)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(
+                                        self.isDropTargeted
+                                            ? StudioPaletteManager.shared.activeAccentColor
+                                            : ((self.isFramingActive || self.showViewfinderGrid)
+                                                ? StudioPaletteManager.shared.activeAccentColor.opacity(0.65)
+                                                : (self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.08))),
+                                        style: self.isDropTargeted ? StrokeStyle(lineWidth: 2, dash: [6, 4]) : StrokeStyle(lineWidth: (self.isFramingActive || self.showViewfinderGrid) ? 1.3 : 0.75)
+                                    )
+                            )
+                            .onDrop(of: [.image, .fileURL], isTargeted: self.$isDropTargeted) { providers in
+                                self.handleDrop(providers: providers)
+                            }
                         
-                        Spacer()
-                        
-                        if let selectedItem, selectedItem.isCustom {
-                            Button(role: .destructive) {
-                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
-                                    self.manager.deleteCustomWallpaper(id: selectedItem.id)
+                        HStack(spacing: 8) {
+                            if let selectedItem {
+                                Circle()
+                                    .fill(Color(hexString: selectedItem.accentHex))
+                                    .frame(width: 8, height: 8)
+                                Text(selectedItem.title)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .lineLimit(1)
+                            }
+                            
+                            Spacer()
+                            
+                            Button {
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                                    self.showViewfinderGrid.toggle()
                                 }
                             } label: {
-                                Label(AppLanguage.text("删除", en: "Delete"), systemImage: "trash")
+                                Label(
+                                    AppLanguage.text("构图网格", en: "Grid"),
+                                    systemImage: self.showViewfinderGrid ? "viewfinder.circle.fill" : "viewfinder"
+                                )
                             }
+                            .controlSize(.small)
+                            .tint(self.showViewfinderGrid ? StudioPaletteManager.shared.activeAccentColor : nil)
+                            
+                            if !framing.isDefault {
+                                Button(AppLanguage.text("居中重置", en: "Reset Crop")) {
+                                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
+                                        self.manager.resetFraming()
+                                    }
+                                }
+                                .controlSize(.small)
+                            }
+                            
+                            if let selectedItem, selectedItem.isCustom {
+                                Button(role: .destructive) {
+                                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+                                        self.manager.deleteCustomWallpaper(id: selectedItem.id)
+                                    }
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .controlSize(.small)
+                                .help(AppLanguage.text("删除壁纸", en: "Delete"))
+                            }
+                            
+                            Button {
+                                self.pickCustomWallpaperImage()
+                            } label: {
+                                Label(AppLanguage.text("上传图片", en: "Upload"), systemImage: "photo.badge.plus")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
+                    }
+                    .padding(12)
+                }
+            }
+            .padding(.horizontal, SettingsDesignTokens.contentPadding)
+            .padding(.top, 14)
+            .padding(.bottom, 12)
+            
+            Divider()
+            
+            // Scrollable Gallery & Backdrop Sliders
+            ScrollView {
+                VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+                    SettingsGroupCard(title: AppLanguage.text("精选壁纸", en: "Gallery")) {
+                        LazyVGrid(
+                            columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
+                            spacing: 8
+                        ) {
+                            ForEach(items) { item in
+                                self.wallpaperTile(item)
+                            }
+                        }
+                        .padding(12)
+                    }
+                    
+                    SettingsGroupCard(title: AppLanguage.text("编辑器背景显示", en: "Editor Backdrop")) {
+                        SettingsItemRow(label: AppLanguage.text("启用编辑器壁纸", en: "Enable Wallpaper")) {
+                            Toggle("", isOn: Binding(
+                                get: { self.manager.spec.isEnabled },
+                                set: { val in
+                                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                                        self.manager.spec.isEnabled = val
+                                    }
+                                }
+                            ))
+                            .labelsHidden()
+                            .toggleStyle(.switch)
                             .controlSize(.small)
                         }
                         
-                        Button {
-                            self.pickCustomWallpaperImage()
-                        } label: {
-                            Label(AppLanguage.text("上传图片", en: "Upload"), systemImage: "photo.badge.plus")
-                        }
-                        .controlSize(.small)
-                    }
-                }
-                .padding(12)
-            }
-            
-            // 2. Clean 4-Column Cached Wallpaper Gallery Grid
-            SettingsGroupCard(title: AppLanguage.text("精选壁纸", en: "Gallery")) {
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
-                    spacing: 8
-                ) {
-                    ForEach(items) { item in
-                        self.wallpaperTile(item)
-                    }
-                }
-                .padding(12)
-            }
-            
-            // 3. Editor Backdrop Controls
-            SettingsGroupCard(title: AppLanguage.text("编辑器背景显示", en: "Editor Backdrop")) {
-                SettingsItemRow(label: AppLanguage.text("启用编辑器壁纸", en: "Enable Wallpaper")) {
-                    Toggle("", isOn: Binding(
-                        get: { self.manager.spec.isEnabled },
-                        set: { val in
-                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                                self.manager.spec.isEnabled = val
+                        SettingsRowDivider()
+                        
+                        SettingsItemRow(label: AppLanguage.text("取景缩放", en: "Crop Zoom")) {
+                            HStack(spacing: 8) {
+                                Slider(
+                                    value: Binding(
+                                        get: { self.manager.spec.scale },
+                                        set: { self.manager.updateFraming(scale: $0) }
+                                    ),
+                                    in: 1.0...2.6
+                                )
+                                .frame(width: SettingsDesignTokens.sliderWidth)
+                                .disabled(!self.manager.spec.isEnabled)
+                                
+                                Text("\(Int((self.manager.spec.scale * 100).rounded()))%")
+                                    .font(.system(size: 12).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
                             }
+                            .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                         }
-                    ))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                }
-                
-                SettingsRowDivider()
-                
-                SettingsItemRow(label: AppLanguage.text("画面浓度", en: "Opacity")) {
-                    HStack(spacing: 8) {
-                        Slider(
-                            value: Binding(
-                                get: { self.manager.spec.opacity },
-                                set: { self.manager.spec.opacity = $0 }
-                            ),
-                            in: 0.04...0.48
-                        )
-                        .frame(width: SettingsDesignTokens.sliderWidth)
-                        .disabled(!self.manager.spec.isEnabled)
                         
-                        Text("\(Int((self.manager.spec.opacity * 100).rounded()))%")
-                            .font(.system(size: 12).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
-                    }
-                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
-                }
-                
-                SettingsRowDivider()
-                
-                SettingsItemRow(label: AppLanguage.text("柔焦模糊", en: "Soft Blur")) {
-                    HStack(spacing: 8) {
-                        Slider(
-                            value: Binding(
-                                get: { self.manager.spec.blurRadius },
-                                set: { self.manager.spec.blurRadius = $0 }
-                            ),
-                            in: 0...32
-                        )
-                        .frame(width: SettingsDesignTokens.sliderWidth)
-                        .disabled(!self.manager.spec.isEnabled)
+                        SettingsRowDivider()
                         
-                        Text("\(Int(self.manager.spec.blurRadius.rounded())) px")
-                            .font(.system(size: 12).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+                        SettingsItemRow(label: AppLanguage.text("画面浓度", en: "Opacity")) {
+                            HStack(spacing: 8) {
+                                Slider(
+                                    value: Binding(
+                                        get: { self.manager.spec.opacity },
+                                        set: { self.manager.spec.opacity = $0 }
+                                    ),
+                                    in: 0.04...0.48
+                                )
+                                .frame(width: SettingsDesignTokens.sliderWidth)
+                                .disabled(!self.manager.spec.isEnabled)
+                                
+                                Text("\(Int((self.manager.spec.opacity * 100).rounded()))%")
+                                    .font(.system(size: 12).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+                            }
+                            .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
+                        }
+                        
+                        SettingsRowDivider()
+                        
+                        SettingsItemRow(label: AppLanguage.text("柔焦模糊", en: "Soft Blur")) {
+                            HStack(spacing: 8) {
+                                Slider(
+                                    value: Binding(
+                                        get: { self.manager.spec.blurRadius },
+                                        set: { self.manager.spec.blurRadius = $0 }
+                                    ),
+                                    in: 0...32
+                                )
+                                .frame(width: SettingsDesignTokens.sliderWidth)
+                                .disabled(!self.manager.spec.isEnabled)
+                                
+                                Text("\(Int(self.manager.spec.blurRadius.rounded())) px")
+                                    .font(.system(size: 12).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+                            }
+                            .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
+                        }
                     }
-                    .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
                 }
+                .padding(.horizontal, SettingsDesignTokens.contentPadding)
+                .padding(.vertical, 16)
             }
         }
     }
@@ -1539,63 +1697,177 @@ private struct SidebarWallpaperSettingsPane: View {
         let editorBase = isDark ? Color(red: 0.09, green: 0.095, blue: 0.11) : Color(red: 0.985, green: 0.985, blue: 0.99)
         let artwork = selectedItem.map { self.manager.artworkImage(for: $0.id) }
         let accent = selectedItem.map { Color(hexString: $0.accentHex) } ?? StudioPaletteManager.shared.activeAccentColor
-        let previewAlpha = self.manager.spec.isEnabled ? min(0.82, max(0.18, self.manager.spec.opacity * 1.65)) : 0.12
-        let previewBlur = self.manager.spec.isEnabled ? min(14, self.manager.spec.blurRadius * 0.45) : 0
+        let framingMode = (self.isFramingActive || self.showViewfinderGrid)
+        let previewAlpha = framingMode
+            ? 0.92
+            : (self.manager.spec.isEnabled ? min(0.84, max(0.20, self.manager.spec.opacity * 1.65)) : 0.16)
+        let previewBlur = framingMode
+            ? 0.0
+            : (self.manager.spec.isEnabled ? min(14, self.manager.spec.blurRadius * 0.45) : 0.0)
         
-        ZStack(alignment: .topLeading) {
-            editorBase
-            
-            if let artwork {
-                Image(nsImage: artwork)
-                    .resizable()
-                    .interpolation(.medium)
-                    .scaledToFill()
-                    .blur(radius: previewBlur)
-                    .opacity(previewAlpha)
-                    .scaleEffect(1.06)
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                editorBase
+                    .overlay(alignment: .topLeading) {
+                        if let artwork {
+                            let drawRect = WallpaperManager.framedDrawRect(
+                                imageSize: artwork.size,
+                                viewportSize: geo.size,
+                                scale: self.manager.spec.scale,
+                                panX: self.manager.spec.panX,
+                                panY: self.manager.spec.panY,
+                                isFlippedY: true
+                            )
+                            Image(nsImage: artwork)
+                                .resizable()
+                                .interpolation(.high)
+                                .frame(width: max(1, drawRect.width), height: max(1, drawRect.height))
+                                .position(x: drawRect.midX, y: drawRect.midY)
+                                .blur(radius: previewBlur)
+                                .opacity(previewAlpha)
+                                .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20), value: selectedItem?.id)
+                        }
+                    }
+                    .frame(width: geo.size.width, height: geo.size.height)
                     .clipped()
-                    .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24), value: selectedItem?.id)
-            }
-            
-            // Miniature authentic CotEditor window chrome & code skeleton (real product material)
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 6) {
-                    Circle().fill(Color(red: 0.95, green: 0.37, blue: 0.35)).frame(width: 7, height: 7)
-                    Circle().fill(Color(red: 0.96, green: 0.74, blue: 0.26)).frame(width: 7, height: 7)
-                    Circle().fill(Color(red: 0.30, green: 0.78, blue: 0.38)).frame(width: 7, height: 7)
+                
+                // Miniature authentic CotEditor window chrome & code skeleton (dims while framing image)
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 6) {
+                        Circle().fill(Color(red: 0.95, green: 0.37, blue: 0.35)).frame(width: 7, height: 7)
+                        Circle().fill(Color(red: 0.96, green: 0.74, blue: 0.26)).frame(width: 7, height: 7)
+                        Circle().fill(Color(red: 0.30, green: 0.78, blue: 0.38)).frame(width: 7, height: 7)
+                        
+                        Spacer()
+                        
+                        Text(AppLanguage.text("拖拽框选区域", en: "Drag to Frame"))
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .opacity(framingMode ? 0.95 : 0.72)
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 26)
+                    .background(isDark ? Color.black.opacity(0.28) : Color.white.opacity(0.62))
                     
-                    Spacer()
+                    Divider().opacity(0.25)
+                    
+                    VStack(alignment: .leading, spacing: 7) {
+                        self.sampleCodeRow(line: "1", segments: [(accent, 42), (.primary.opacity(0.75), 96), (.secondary.opacity(0.45), 64)])
+                        self.sampleCodeRow(line: "2", segments: [(.clear, 16), (.primary.opacity(0.65), 118), (accent.opacity(0.75), 54)])
+                        self.sampleCodeRow(line: "3", segments: [(.clear, 16), (.secondary.opacity(0.50), 146)])
+                        self.sampleCodeRow(line: "4", segments: [(.clear, 32), (accent.opacity(0.85), 62), (.primary.opacity(0.70), 82)])
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 12)
+                    .opacity(framingMode ? 0.18 : 1.0)
+                    .animation(.timingCurve(0.2, 0, 0, 1, duration: 0.16), value: framingMode)
+                    
+                    Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 12)
-                .frame(height: 28)
-                .background(isDark ? Color.black.opacity(0.26) : Color.white.opacity(0.55))
                 
-                Divider().opacity(0.25)
-                
-                VStack(alignment: .leading, spacing: 7) {
-                    self.sampleCodeRow(line: "1", segments: [(accent, 42), (.primary.opacity(0.75), 96), (.secondary.opacity(0.45), 64)])
-                    self.sampleCodeRow(line: "2", segments: [(.clear, 16), (.primary.opacity(0.65), 118), (accent.opacity(0.75), 54)])
-                    self.sampleCodeRow(line: "3", segments: [(.clear, 16), (.secondary.opacity(0.50), 146)])
-                    self.sampleCodeRow(line: "4", segments: [(.clear, 32), (accent.opacity(0.85), 62), (.primary.opacity(0.70), 82)])
-                    self.sampleCodeRow(line: "5", segments: [(.primary.opacity(0.55), 36)])
+                // Viewfinder 3x3 framing grid + corner brackets
+                if framingMode {
+                    self.viewfinderOverlay(size: geo.size, accent: accent)
+                        .allowsHitTesting(false)
                 }
-                .padding(.horizontal, 14)
-                .padding(.top, 14)
                 
-                Spacer(minLength: 0)
+                if self.isDropTargeted {
+                    ZStack {
+                        Color.black.opacity(0.35)
+                        Text(AppLanguage.text("松手设为自定义壁纸", en: "Drop Image to Use as Wallpaper"))
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(accent, in: Capsule())
+                    }
+                }
             }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        guard let artwork else { return }
+                        if self.dragStartFraming == nil {
+                            self.dragStartFraming = self.manager.spec.currentFraming
+                            self.isFramingActive = true
+                        }
+                        let start = self.dragStartFraming ?? self.manager.spec.currentFraming
+                        let imgSize = artwork.size
+                        let baseScale = max(geo.size.width / max(1, imgSize.width), geo.size.height / max(1, imgSize.height))
+                        let baseW = imgSize.width * baseScale * CGFloat(start.scale)
+                        let baseH = imgSize.height * baseScale * CGFloat(start.scale)
+                        let baseSlackX = max(0, (baseW - geo.size.width) * 0.5)
+                        let baseSlackY = max(0, (baseH - geo.size.height) * 0.5)
+                        
+                        // If aspect ratio nearly matches the viewport at 1.0x, smoothly nudge zoom so dragging always frames freely
+                        let effectiveScale = (baseSlackX < 3 && baseSlackY < 3) ? max(start.scale, 1.22) : start.scale
+                        let effW = imgSize.width * baseScale * CGFloat(effectiveScale)
+                        let effH = imgSize.height * baseScale * CGFloat(effectiveScale)
+                        let slackX = max(0, (effW - geo.size.width) * 0.5)
+                        let slackY = max(0, (effH - geo.size.height) * 0.5)
+                        
+                        let nextPanX = slackX > 1 ? start.panX - Double(value.translation.width / slackX) : start.panX
+                        let nextPanY = slackY > 1 ? start.panY - Double(value.translation.height / slackY) : start.panY
+                        self.manager.updateFraming(scale: effectiveScale, panX: nextPanX, panY: nextPanY)
+                    }
+                    .onEnded { _ in
+                        self.dragStartFraming = nil
+                        withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.22)) {
+                            self.isFramingActive = false
+                        }
+                    }
+            )
+            .simultaneousGesture(
+                MagnifyGesture()
+                    .onChanged { value in
+                        if self.magnifyStartScale == nil {
+                            self.magnifyStartScale = self.manager.spec.scale
+                            self.isFramingActive = true
+                        }
+                        let base = self.magnifyStartScale ?? 1.0
+                        self.manager.updateFraming(scale: base * value.magnification)
+                    }
+                    .onEnded { _ in
+                        self.magnifyStartScale = nil
+                        withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.22)) {
+                            self.isFramingActive = false
+                        }
+                    }
+            )
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func viewfinderOverlay(size: CGSize, accent: Color) -> some View {
+        let inset: CGFloat = 10
+        let w = max(20, size.width - inset * 2)
+        let h = max(20, size.height - inset * 2)
+        ZStack(alignment: .bottomTrailing) {
+            Path { path in
+                for i in 1...2 {
+                    let x = inset + w * CGFloat(i) / 3.0
+                    path.move(to: CGPoint(x: x, y: inset))
+                    path.addLine(to: CGPoint(x: x, y: inset + h))
+                    let y = inset + h * CGFloat(i) / 3.0
+                    path.move(to: CGPoint(x: inset, y: y))
+                    path.addLine(to: CGPoint(x: inset + w, y: y))
+                }
+            }
+            .stroke(Color.white.opacity(0.32), style: StrokeStyle(lineWidth: 0.75, dash: [4, 4]))
             
-            if self.isDropTargeted {
-                ZStack {
-                    Color.black.opacity(0.35)
-                    Text(AppLanguage.text("松手设为自定义壁纸", en: "Drop Image to Use as Wallpaper"))
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(accent, in: Capsule())
-                }
-            }
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(accent.opacity(0.85), lineWidth: 1.4)
+                .padding(inset)
+            
+            Text("\(Int((self.manager.spec.scale * 100).rounded()))%")
+                .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Color.black.opacity(0.55), in: Capsule())
+                .padding(14)
         }
     }
     

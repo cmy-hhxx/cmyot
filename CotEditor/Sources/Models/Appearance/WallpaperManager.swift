@@ -24,19 +24,88 @@ import CoreImage
 import Observation
 import SwiftUI
 
+nonisolated struct WallpaperFraming: Codable, Equatable, Sendable {
+    
+    var scale: Double = 1.0   // 1.0 ... 2.6
+    var panX: Double = 0.0    // -1.0 ... 1.0
+    var panY: Double = 0.0    // -1.0 ... 1.0
+    
+    var isDefault: Bool {
+        abs(self.scale - 1.0) < 0.005 && abs(self.panX) < 0.005 && abs(self.panY) < 0.005
+    }
+    
+    func clamped() -> WallpaperFraming {
+        WallpaperFraming(
+            scale: max(1.0, min(2.6, self.scale)),
+            panX: max(-1.0, min(1.0, self.panX)),
+            panY: max(-1.0, min(1.0, self.panY))
+        )
+    }
+}
+
+
 nonisolated struct WallpaperSpec: Codable, Equatable, Sendable {
     
     var isEnabled: Bool = false
     var selectedID: String = "ink-aurora"
     var opacity: Double = 0.16      // 0.04 ... 0.55
     var blurRadius: Double = 10.0   // 0.0 ... 32.0
+    var scale: Double = 1.0         // 1.0 ... 2.6
+    var panX: Double = 0.0          // -1.0 ... 1.0
+    var panY: Double = 0.0          // -1.0 ... 1.0
+    var perItemFraming: [String: WallpaperFraming] = [:]
     
     static let `default` = WallpaperSpec()
+    
+    enum CodingKeys: String, CodingKey {
+        case isEnabled, selectedID, opacity, blurRadius, scale, panX, panY, perItemFraming
+    }
+    
+    init(
+        isEnabled: Bool = false,
+        selectedID: String = "ink-aurora",
+        opacity: Double = 0.16,
+        blurRadius: Double = 10.0,
+        scale: Double = 1.0,
+        panX: Double = 0.0,
+        panY: Double = 0.0,
+        perItemFraming: [String: WallpaperFraming] = [:]
+    ) {
+        self.isEnabled = isEnabled
+        self.selectedID = selectedID
+        self.opacity = opacity
+        self.blurRadius = blurRadius
+        self.scale = scale
+        self.panX = panX
+        self.panY = panY
+        self.perItemFraming = perItemFraming
+    }
+    
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+        self.selectedID = try c.decodeIfPresent(String.self, forKey: .selectedID) ?? "ink-aurora"
+        self.opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 0.16
+        self.blurRadius = try c.decodeIfPresent(Double.self, forKey: .blurRadius) ?? 10.0
+        self.scale = try c.decodeIfPresent(Double.self, forKey: .scale) ?? 1.0
+        self.panX = try c.decodeIfPresent(Double.self, forKey: .panX) ?? 0.0
+        self.panY = try c.decodeIfPresent(Double.self, forKey: .panY) ?? 0.0
+        self.perItemFraming = try c.decodeIfPresent([String: WallpaperFraming].self, forKey: .perItemFraming) ?? [:]
+    }
+    
+    var currentFraming: WallpaperFraming {
+        WallpaperFraming(scale: self.scale, panX: self.panX, panY: self.panY).clamped()
+    }
     
     func clamped() -> WallpaperSpec {
         var copy = self
         copy.opacity = max(0.04, min(0.55, self.opacity))
         copy.blurRadius = max(0.0, min(32.0, self.blurRadius))
+        let framing = WallpaperFraming(scale: self.scale, panX: self.panX, panY: self.panY).clamped()
+        copy.scale = framing.scale
+        copy.panX = framing.panX
+        copy.panY = framing.panY
+        copy.perItemFraming = self.perItemFraming.mapValues { $0.clamped() }
         if copy.selectedID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             copy.selectedID = "ink-aurora"
         }
@@ -85,7 +154,13 @@ final class WallpaperManager {
     
     var spec: WallpaperSpec {
         didSet {
-            let normalized = self.spec.clamped()
+            var normalized = self.spec.clamped()
+            let currentFraming = normalized.currentFraming
+            if currentFraming.isDefault {
+                normalized.perItemFraming.removeValue(forKey: normalized.selectedID)
+            } else {
+                normalized.perItemFraming[normalized.selectedID] = currentFraming
+            }
             if normalized != self.spec {
                 self.spec = normalized
                 return
@@ -177,14 +252,75 @@ final class WallpaperManager {
     }
     
     
-    /// Selects a wallpaper by ID and automatically enables wallpaper backdrop.
+    /// Selects a wallpaper by ID, saving the previous item's crop framing and restoring the target item's framing.
     func selectWallpaper(id: String, enableIfDisabled: Bool = true) {
         var next = self.spec
+        let previousID = next.selectedID
+        let previousFraming = next.currentFraming
+        if previousFraming.isDefault {
+            next.perItemFraming.removeValue(forKey: previousID)
+        } else {
+            next.perItemFraming[previousID] = previousFraming
+        }
+        
+        let restored = next.perItemFraming[id]?.clamped() ?? WallpaperFraming()
         next.selectedID = id
+        next.scale = restored.scale
+        next.panX = restored.panX
+        next.panY = restored.panY
         if enableIfDisabled {
             next.isEnabled = true
         }
         self.spec = next
+    }
+    
+    
+    /// Updates interactive crop/pan/zoom framing for the active wallpaper.
+    func updateFraming(scale: Double? = nil, panX: Double? = nil, panY: Double? = nil) {
+        var next = self.spec
+        if let scale { next.scale = scale }
+        if let panX { next.panX = panX }
+        if let panY { next.panY = panY }
+        self.spec = next
+    }
+    
+    
+    /// Resets crop/pan/zoom framing for the active wallpaper back to centered aspect-fill.
+    func resetFraming() {
+        var next = self.spec
+        next.scale = 1.0
+        next.panX = 0.0
+        next.panY = 0.0
+        next.perItemFraming.removeValue(forKey: next.selectedID)
+        self.spec = next
+    }
+    
+    
+    /// Computes the exact aspect-fill + zoom/pan draw rect for both flipped SwiftUI previews and unflipped AppKit backdrops.
+    nonisolated static func framedDrawRect(
+        imageSize: CGSize,
+        viewportSize: CGSize,
+        scale: Double,
+        panX: Double,
+        panY: Double,
+        isFlippedY: Bool
+    ) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0,
+              viewportSize.width > 0, viewportSize.height > 0
+        else { return .zero }
+        
+        let clamped = WallpaperFraming(scale: scale, panX: panX, panY: panY).clamped()
+        let baseScale = max(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height)
+        let drawW = imageSize.width * baseScale * CGFloat(clamped.scale)
+        let drawH = imageSize.height * baseScale * CGFloat(clamped.scale)
+        let slackX = max(0, (drawW - viewportSize.width) * 0.5)
+        let slackY = max(0, (drawH - viewportSize.height) * 0.5)
+        
+        let originX = (viewportSize.width - drawW) * 0.5 - CGFloat(clamped.panX) * slackX
+        let ySign: CGFloat = isFlippedY ? -1.0 : 1.0
+        let originY = (viewportSize.height - drawH) * 0.5 + ySign * CGFloat(clamped.panY) * slackY
+        
+        return CGRect(x: originX, y: originY, width: drawW, height: drawH)
     }
     
     
@@ -262,9 +398,16 @@ final class WallpaperManager {
         
         if self.spec.selectedID == id {
             var next = self.spec
-            next.selectedID = Self.builtInItems.first?.id ?? "ink-aurora"
+            next.perItemFraming.removeValue(forKey: id)
+            let fallbackID = Self.builtInItems.first?.id ?? "ink-aurora"
+            let restored = next.perItemFraming[fallbackID]?.clamped() ?? WallpaperFraming()
+            next.selectedID = fallbackID
+            next.scale = restored.scale
+            next.panX = restored.panX
+            next.panY = restored.panY
             self.spec = next
         } else {
+            self.spec.perItemFraming.removeValue(forKey: id)
             NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
         }
     }
