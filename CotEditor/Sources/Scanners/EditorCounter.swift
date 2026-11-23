@@ -115,29 +115,31 @@ import StringUtils
         guard !self.types.isDisjoint(with: .count) else { return }
         
         self.contentTask = Task {
-            try await Task.sleep(for: .milliseconds(10), tolerance: .milliseconds(5))  // debounce
+            try await Task.sleep(for: .milliseconds(85), tolerance: .milliseconds(20))  // debounce
             
             guard let source = self.source() else { return }
             
             let string = source.string.immutable
+            let types = self.types
+            let hasLineCalc = (self.lineRangeCalculator != nil)
             
-            if self.types.contains(.characters) {
-                try Task.checkCancellation()
-                self.result.characters.entire = await Task.detached { string.count }.value
+            let computed = await Task.detached(priority: .utility) { () -> (chars: Int?, lines: Int?, words: Int?) in
+                let chars = types.contains(.characters) ? string.count : nil
+                let lines = (types.contains(.lines) && !hasLineCalc) ? string.numberOfLines : nil
+                let words = types.contains(.words) ? string.numberOfWords : nil
+                return (chars, lines, words)
+            }.value
+            
+            try Task.checkCancellation()
+            
+            if let chars = computed.chars {
+                self.result.characters.entire = chars
             }
-            
-            if self.types.contains(.lines) {
-                try Task.checkCancellation()
-                self.result.lines.entire = if let lineRangeCalculator {
-                    lineRangeCalculator.numberOfLines
-                } else {
-                    await Task.detached { string.numberOfLines }.value
-                }
+            if types.contains(.lines) {
+                self.result.lines.entire = self.lineRangeCalculator?.numberOfLines ?? computed.lines
             }
-            
-            if self.types.contains(.words) {
-                try Task.checkCancellation()
-                self.result.words.entire = await Task.detached { string.numberOfWords }.value
+            if let words = computed.words {
+                self.result.words.entire = words
             }
         }
     }
@@ -204,48 +206,52 @@ import StringUtils
         guard !self.types.isEmpty else { return }
         
         self.selectionTask = Task {
-            try await Task.sleep(for: .milliseconds(180), tolerance: .milliseconds(20))  // debounce
+            try await Task.sleep(for: .milliseconds(180), tolerance: .milliseconds(30))  // debounce
             
             guard let source = self.source() else { return }
             
             let string = source.string.immutable
             let selectedNSRanges = source.selectedRanges.map(\.rangeValue)
-            let selectedRanges = selectedNSRanges.compactMap { Range($0, in: string) }
-            let selectedStrings = selectedRanges.map { string[$0] }
-            let location = selectedRanges.first?.lowerBound ?? string.startIndex
-            
-            if self.types.contains(.characters) {
-                try Task.checkCancellation()
-                self.result.characters.selected = await Task.detached { selectedStrings.map(\.count).reduce(0, +) }.value
+            let types = self.types
+            let calcLineNumber: Int? = if types.contains(.line), let lineRangeCalculator, let nsLocation = selectedNSRanges.first?.location {
+                lineRangeCalculator.lineNumber(at: nsLocation)
+            } else {
+                nil
             }
             
-            if self.types.contains(.lines) {
-                try Task.checkCancellation()
-                self.result.lines.selected = await Task.detached { string.numberOfLines(in: selectedRanges) }.value
-            }
+            let computed = await Task.detached(priority: .utility) { () -> (chars: Int?, lines: Int?, words: Int?, loc: Int?, line: Int?, col: Int?) in
+                let selectedRanges = selectedNSRanges.compactMap { Range($0, in: string) }
+                let selectedStrings = selectedRanges.map { string[$0] }
+                let location = selectedRanges.first?.lowerBound ?? string.startIndex
+                
+                let chars = types.contains(.characters) ? selectedStrings.map(\.count).reduce(0, +) : nil
+                let lines = types.contains(.lines) ? string.numberOfLines(in: selectedRanges) : nil
+                let words = types.contains(.words) ? selectedStrings.map(\.numberOfWords).reduce(0, +) : nil
+                let loc = types.contains(.location) ? string.distance(from: string.startIndex, to: location) : nil
+                let line = (types.contains(.line) && calcLineNumber == nil) ? string.lineNumber(at: location) : nil
+                let col = types.contains(.column) ? string.columnNumber(at: location) : nil
+                return (chars, lines, words, loc, line, col)
+            }.value
             
-            if self.types.contains(.words) {
-                try Task.checkCancellation()
-                self.result.words.selected = await Task.detached { selectedStrings.map(\.numberOfWords).reduce(0, +) }.value
-            }
+            try Task.checkCancellation()
             
-            if self.types.contains(.location) {
-                try Task.checkCancellation()
-                self.result.location = await Task.detached { string.distance(from: string.startIndex, to: location) }.value
+            if let chars = computed.chars {
+                self.result.characters.selected = chars
             }
-            
-            if self.types.contains(.line) {
-                try Task.checkCancellation()
-                self.result.line = if let lineRangeCalculator, let nsLocation = selectedNSRanges.first?.location {
-                    lineRangeCalculator.lineNumber(at: nsLocation)
-                } else {
-                    await Task.detached { string.lineNumber(at: location) }.value
-                }
+            if let lines = computed.lines {
+                self.result.lines.selected = lines
             }
-            
-            if self.types.contains(.column) {
-                try Task.checkCancellation()
-                self.result.column = await Task.detached { string.columnNumber(at: location) }.value
+            if let words = computed.words {
+                self.result.words.selected = words
+            }
+            if let loc = computed.loc {
+                self.result.location = loc
+            }
+            if types.contains(.line) {
+                self.result.line = calcLineNumber ?? computed.line
+            }
+            if let col = computed.col {
+                self.result.column = col
             }
         }
     }

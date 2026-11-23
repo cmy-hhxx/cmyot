@@ -491,6 +491,7 @@ final class ContentViewController: NSSplitViewController {
     func hideInWindowCenter() {
         
         self.activeCenter = nil
+        self.centerHostModel.selectedKind = nil
         self.centerHostModel.popSubLayer = nil
         self.removeCenterEscMonitor()
         self.splitView.isHidden = false
@@ -823,7 +824,7 @@ private extension NSViewController {
 
 @MainActor @Observable
 private final class WorkspaceCenterHostModel {
-    var selectedKind: WorkspaceCenterKind = .documents
+    var selectedKind: WorkspaceCenterKind?
     var popSubLayer: (() -> Bool)?
 }
 
@@ -869,6 +870,8 @@ private struct WorkspaceCenterHostView: View {
                         },
                         onOpenWeeklyReport: self.onOpenWeeklyReport
                     )
+                case nil:
+                    Color.clear
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

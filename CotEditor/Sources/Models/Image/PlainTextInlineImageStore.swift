@@ -226,7 +226,11 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     func findTokens(in string: NSString, range: NSRange) -> [(range: NSRange, identifier: String)] {
         
         let safeRange = NSIntersectionRange(range, NSRange(location: 0, length: string.length))
-        guard safeRange.length > 0 else { return [] }
+        guard safeRange.length >= 4 else { return [] }
+        // Fast literal scan avoids NSString -> String bridging & regex work on normal text lines.
+        guard string.range(of: "⟦🖼", options: .literal, range: safeRange).location != NSNotFound else {
+            return []
+        }
         
         return Self.tokenRegex.matches(in: string as String, range: safeRange).compactMap { match in
             guard match.numberOfRanges >= 2 else { return nil }

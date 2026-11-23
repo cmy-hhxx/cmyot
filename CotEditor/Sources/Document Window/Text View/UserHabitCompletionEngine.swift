@@ -147,8 +147,19 @@ import Foundation
     /// Personal vocabulary / phrase frequency table learned from user documents and accepted completions.
     private(set) var vocabularyFrequencies: [String: Int] = [:]
     
+    private static let identifierRegex: NSRegularExpression = try! NSRegularExpression(pattern: "[A-Za-z_][A-Za-z0-9_]{3,28}")
+    private static let listPrefixRegex: NSRegularExpression = try! NSRegularExpression(
+        pattern: #"^\s*(?:\d{1,2}\s*[\.、\)）](?!\d)\s*|[(（]\d{1,2}[)）]\s*|[-*•·▪︎‣]\s+)"#
+    )
+    private static let clauseSeparatorSet = CharacterSet.whitespaces.union(CharacterSet(charactersIn: "，,：:、"))
+    private static let continuationTrimSet = CharacterSet(charactersIn: " ，,：:、")
+    private static let continuationStopSet = CharacterSet.newlines.union(CharacterSet(charactersIn: "。！？；!?;，,：:（）()[]\"'"))
+    
     private var persistenceKey: String?
     private var saveTask: Task<Void, Never>?
+    private var warmUpTask: Task<Void, Never>?
+    private var learnTask: Task<Void, Never>?
+    private var pendingLearnLines: [String] = []
     private var didWarmUpFromDatabase = false
     
     
@@ -170,6 +181,11 @@ import Foundation
         
         self.saveTask?.cancel()
         self.saveTask = nil
+        self.warmUpTask?.cancel()
+        self.warmUpTask = nil
+        self.learnTask?.cancel()
+        self.learnTask = nil
+        self.pendingLearnLines.removeAll()
         self.transitions.removeAll()
         self.compoundTransitions.removeAll()
         self.vocabularyFrequencies.removeAll()
@@ -177,9 +193,38 @@ import Foundation
         if let persistenceKey = self.persistenceKey {
             self.didWarmUpFromDatabase = false
             self.loadPersistedTransitions(forKey: persistenceKey)
-            self.warmUpFromDatabaseIfNeeded()
+            self.scheduleWarmUpFromDatabaseIfNeeded()
         } else {
             self.didWarmUpFromDatabase = true
+        }
+    }
+    
+    
+    /// Warms up habit transitions asynchronously in tiny slices so the first keystroke never blocks the main thread.
+    func scheduleWarmUpFromDatabaseIfNeeded() {
+        
+        guard !self.didWarmUpFromDatabase, self.warmUpTask == nil else { return }
+        self.didWarmUpFromDatabase = true
+        
+        let docContents = CotLocalDatabase.shared.documents.prefix(40).map(\.content)
+        let reportContents = CotLocalDatabase.shared.weeklyReports.prefix(20).map(\.content)
+        guard !docContents.isEmpty || !reportContents.isEmpty else { return }
+        
+        self.warmUpTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            for content in docContents {
+                guard let self, !Task.isCancelled else { return }
+                self.learn(from: content, persist: false)
+                await Task.yield()
+            }
+            for content in reportContents {
+                guard let self, !Task.isCancelled else { return }
+                self.learn(from: content, persist: false)
+                await Task.yield()
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.warmUpTask = nil
+            self.scheduleSave()
         }
     }
     
@@ -197,6 +242,27 @@ import Foundation
             self.learn(from: report.content, persist: false)
         }
         self.scheduleSave()
+    }
+    
+    
+    /// Coalesces single-line learning off the Enter/typing hot path so pressing Return is always instant.
+    func scheduleLearn(line: String) {
+        
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 6, trimmed.count <= 320 else { return }
+        self.pendingLearnLines.append(trimmed)
+        if self.pendingLearnLines.count > 24 {
+            self.pendingLearnLines.removeFirst(self.pendingLearnLines.count - 24)
+        }
+        self.learnTask?.cancel()
+        self.learnTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(900))
+            guard let self, !Task.isCancelled else { return }
+            let batch = self.pendingLearnLines
+            self.pendingLearnLines.removeAll()
+            guard !batch.isEmpty else { return }
+            self.learn(from: batch.joined(separator: "\n"), persist: true)
+        }
     }
     
     
@@ -264,7 +330,7 @@ import Foundation
         siblingTexts: [String] = []
     ) -> String? {
         
-        self.warmUpFromDatabaseIfNeeded()
+        self.scheduleWarmUpFromDatabaseIfNeeded()
         
         let nsText = text as NSString
         guard caretLocation > 0, caretLocation <= nsText.length else { return nil }
@@ -568,23 +634,25 @@ import Foundation
     
     private func matchLearnedTransition(linePrefix: String) -> String? {
         
+        guard !self.transitions.isEmpty || !self.compoundTransitions.isEmpty else { return nil }
+        
         let cleanPrefix = self.trimTrailingClausePunctuation(linePrefix)
         guard cleanPrefix.count >= 2 else { return nil }
         
         // 1. Direct lookup using longest matching trailing key (prefer longer, more specific context)
-        let candidateKeys = self.candidateContextKeys(from: cleanPrefix)
+        let candidateKeys = self.candidateContextKeys(from: cleanPrefix, includeTokenized: true)
         for key in candidateKeys {
             if let suggestion = self.highConfidenceCandidate(for: key) {
                 return suggestion
             }
         }
         
-        // 2. Partial continuation against learned high-confidence candidates
+        // 2. Partial continuation against learned high-confidence candidates (suffix-only keys avoid repeated CFStringTokenizer calls)
         for overlapLen in stride(from: min(6, cleanPrefix.count - 2), through: 1, by: -1) {
             let partial = String(cleanPrefix.suffix(overlapLen))
             let beforePartial = self.trimTrailingClausePunctuation(String(cleanPrefix.dropLast(overlapLen)))
             guard beforePartial.count >= 2 else { continue }
-            for key in self.candidateContextKeys(from: beforePartial) {
+            for key in self.candidateContextKeys(from: beforePartial, includeTokenized: false) {
                 if let candidate = self.highConfidenceCandidate(for: key),
                    candidate.hasPrefix(partial),
                    candidate.count > overlapLen
@@ -693,24 +761,21 @@ import Foundation
         let caretInSlice = caretLocation - scanStart
         
         let nsSlice = docSlice as NSString
-        let pattern = "[A-Za-z_][A-Za-z0-9_]{3,28}"
-        if let regex = try? NSRegularExpression(pattern: pattern) {
-            let matches = regex.matches(in: docSlice, range: NSRange(location: 0, length: nsSlice.length))
-            for match in matches {
-                // Skip the token currently being typed at the caret
-                if match.range.location <= caretInSlice && NSMaxRange(match.range) >= caretInSlice {
-                    continue
-                }
-                let word = nsSlice.substring(with: match.range)
-                guard word.count > partial.count else { continue }
-                
-                if word.hasPrefix(partial) {
-                    let distance = abs(match.range.location - caretInSlice)
-                    let recencyBoost = distance < 600 ? 3.2 : (distance < 2500 ? 2.0 : 1.2)
-                    scores[word, default: 0] += recencyBoost
-                } else if word.lowercased().hasPrefix(lowerPartial) {
-                    scores[word, default: 0] += 0.9
-                }
+        let matches = Self.identifierRegex.matches(in: docSlice, range: NSRange(location: 0, length: nsSlice.length))
+        for match in matches {
+            // Skip the token currently being typed at the caret
+            if match.range.location <= caretInSlice && NSMaxRange(match.range) >= caretInSlice {
+                continue
+            }
+            let word = nsSlice.substring(with: match.range)
+            guard word.count > partial.count else { continue }
+            
+            if word.hasPrefix(partial) {
+                let distance = abs(match.range.location - caretInSlice)
+                let recencyBoost = distance < 600 ? 3.2 : (distance < 2500 ? 2.0 : 1.2)
+                scores[word, default: 0] += recencyBoost
+            } else if word.lowercased().hasPrefix(lowerPartial) {
+                scores[word, default: 0] += 0.9
             }
         }
         
@@ -750,22 +815,20 @@ import Foundation
         
         var trimmed = rawFollow
         while let first = trimmed.unicodeScalars.first,
-              CharacterSet(charactersIn: " ，,：:、").contains(first)
+              Self.continuationTrimSet.contains(first)
         {
             trimmed.removeFirst()
         }
-        let stopSet = CharacterSet.newlines.union(CharacterSet(charactersIn: "。！？；!?;，,：:（）()[]\"'"))
-        if let stopRange = trimmed.rangeOfCharacter(from: stopSet) {
+        if let stopRange = trimmed.rangeOfCharacter(from: Self.continuationStopSet) {
             trimmed = String(trimmed[..<stopRange.lowerBound])
         }
         trimmed = trimmed.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.range(
-            of: #"^\s*(?:\d{1,2}\s*[\.、\)）](?!\d)\s*|[(（]\d{1,2}[)）]\s*|[-*•·▪︎‣]\s+)"#,
-            options: .regularExpression
-        ) != nil {
+        guard !trimmed.isEmpty else { return nil }
+        let nsTrimmed = trimmed as NSString
+        if Self.listPrefixRegex.firstMatch(in: trimmed, range: NSRange(location: 0, length: nsTrimmed.length)) != nil {
             return nil
         }
-        return trimmed.isEmpty ? nil : trimmed
+        return trimmed
     }
     
     
@@ -824,18 +887,20 @@ import Foundation
     }
     
     
-    private func candidateContextKeys(from cleanPrefix: String) -> [String] {
+    private func candidateContextKeys(from cleanPrefix: String, includeTokenized: Bool = true) -> [String] {
         
         var keys: [String] = []
-        let tokens = self.tokenizeClause(cleanPrefix)
-        if tokens.count >= 2 {
-            let lastTwo = tokens[tokens.count - 2] + tokens[tokens.count - 1]
-            if lastTwo.count >= 2, lastTwo.count <= 12 {
-                keys.append(lastTwo)
+        if includeTokenized {
+            let tokens = self.tokenizeClause(cleanPrefix)
+            if tokens.count >= 2 {
+                let lastTwo = tokens[tokens.count - 2] + tokens[tokens.count - 1]
+                if lastTwo.count >= 2, lastTwo.count <= 12 {
+                    keys.append(lastTwo)
+                }
             }
-        }
-        if let lastToken = tokens.last, lastToken.count >= 2 {
-            keys.append(lastToken)
+            if let lastToken = tokens.last, lastToken.count >= 2 {
+                keys.append(lastToken)
+            }
         }
         for length in stride(from: min(10, cleanPrefix.count), through: 2, by: -1) {
             let suffix = String(cleanPrefix.suffix(length))
@@ -864,8 +929,7 @@ import Foundation
     private func trimTrailingClausePunctuation(_ string: String) -> String {
         
         var s = string
-        let separators = CharacterSet.whitespaces.union(CharacterSet(charactersIn: "，,：:、"))
-        while let last = s.unicodeScalars.last, separators.contains(last) {
+        while let last = s.unicodeScalars.last, Self.clauseSeparatorSet.contains(last) {
             s.removeLast()
         }
         return s

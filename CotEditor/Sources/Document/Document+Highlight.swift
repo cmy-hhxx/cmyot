@@ -59,6 +59,9 @@ extension Document {
             let clamped = NSIntersectionRange(mark.range, wholeRange)
             return clamped.length > 0 ? TextHighlight(range: clamped, color: mark.color) : nil
         }
+        if !self.textHighlights.isEmpty {
+            self.hasEverPaintedHighlights = true
+        }
         self.syncHighlightAttributesToTextStorage()
         self.applyHighlightRendering()
     }
@@ -71,6 +74,9 @@ extension Document {
         self.textHighlights = highlights.compactMap { mark in
             let clamped = NSIntersectionRange(mark.range, wholeRange)
             return clamped.length > 0 ? TextHighlight(range: clamped, color: mark.color) : nil
+        }
+        if !self.textHighlights.isEmpty {
+            self.hasEverPaintedHighlights = true
         }
         self.syncHighlightAttributesToTextStorage()
         self.applyHighlightRendering()
@@ -85,6 +91,7 @@ extension Document {
             NSMaxRange(range) <= self.textStorage.length
         else { return }
         
+        self.hasEverPaintedHighlights = true
         self.textHighlights.removeAll { NSIntersectionRange($0.range, range).length > 0 }
         self.textHighlights.append(TextHighlight(range: range, color: color))
         self.textHighlights.sort { $0.location < $1.location }
@@ -122,7 +129,7 @@ extension Document {
     ///   - changeInLength: The length delta the edit introduced.
     func adjustHighlights(forEditIn editedRange: NSRange, changeInLength delta: Int) {
         
-        guard !self.textHighlights.isEmpty || self.hasHighlightAttributeInTextStorage else { return }
+        guard !self.textHighlights.isEmpty || (self.hasEverPaintedHighlights && self.hasHighlightAttributeInTextStorage) else { return }
         
         let wholeRange = NSRange(location: 0, length: self.textStorage.length)
         
@@ -278,7 +285,7 @@ extension Document {
         
         self.databaseSyncTask?.cancel()
         self.databaseSyncTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(1200))
+            try? await Task.sleep(for: .milliseconds(3000))
             guard !Task.isCancelled else { return }
             
             self?.syncToLocalDatabase()

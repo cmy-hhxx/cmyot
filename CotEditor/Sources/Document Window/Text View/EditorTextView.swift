@@ -111,7 +111,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     var appendsCommentSpacer: Bool = false
     var quoteDelimiters: [Syntax.PairDelimiter] = []  { didSet { self.invalidateQuotePairs() } }
     var indentTokens: [IndentToken] = []
-    var syntaxCompletionWords: [Syntax.CompletionWord] = []
+    var syntaxCompletionWords: [Syntax.CompletionWord] = []  { didSet { self.cachedSyntaxCompletionTexts = self.syntaxCompletionWords.map(\.text) } }
     var completionWordTypes: CompletionWordTypes = []
     
     var showsPageGuide = false  { didSet { self.setNeedsDisplay(self.frame, avoidAdditionalLayout: true) } }
@@ -126,17 +126,13 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     var needsUpdateLineHighlight = true {
         
         didSet {
-            guard self.needsUpdateLineHighlight, self.highlightsCurrentLines else { return }
+            guard self.needsUpdateLineHighlight, !oldValue, self.highlightsCurrentLines else { return }
             // Expand invalidation bounds slightly to cover centerScanRect / rounded corner anti-aliasing
             // so moving between lines never leaves a 1px horizontal hairline residue.
             self.lineHighlightRects.forEach {
                 self.setNeedsDisplay($0.insetBy(dx: -4, dy: -4), avoidAdditionalLayout: true)
             }
-            if let caretRect = self.boundingRect(for: self.selectedRange) {
-                let band = NSRect(x: self.visibleRect.minX,
-                                  y: caretRect.minY - 4,
-                                  width: self.visibleRect.width,
-                                  height: caretRect.height + 8)
+            if let band = self.currentCaretHighlightBandWithoutAdditionalLayout() {
                 self.setNeedsDisplay(band, avoidAdditionalLayout: true)
             } else {
                 self.setNeedsDisplay(self.visibleRect, avoidAdditionalLayout: true)
@@ -186,7 +182,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     private var isShowingCompletion = false
     private var partialCompletionWord: String?
+    private var cachedSyntaxCompletionTexts: [String] = []
     private lazy var completionDebouncer = Debouncer { [weak self] in self?.performCompletion() }
+    private var ghostRefreshTask: Task<Void, Never>?
+    private static let formattingListPrefixRegex = try! NSRegularExpression(
+        pattern: #"^\s*(?:[-*+•‣▪︎>]|\d+[\.、\)）]|#{1,6})\s*$"#
+    )
     private(set) var activeGhostSuggestion: String?
     private(set) var ghostTextVersion: UInt64 = 0
     private var isUpdatingGhostSuggestion = false
@@ -292,6 +293,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     
     isolated deinit {
+        self.ghostRefreshTask?.cancel()
+        self.ghostRefreshTask = nil
         self.resizeSpringTimer?.invalidate()
         self.resizeSpringTimer = nil
         self.dimensionPillHideWorkItem?.cancel()
@@ -1381,7 +1384,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 self.selectedRange.location += 1
                 self.isUpdatingGhostSuggestion = false
                 AnalyticsManager.shared.recordTypedCharacters(1)
-                self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: true)
+                self.scheduleHabitGhostRefresh(animateEntrance: true, allowAIRefresh: true)
                 return
             }
             
@@ -1411,7 +1414,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     self.textStorage?.addAttribute(.autoBalancedClosingBracket, value: true,
                                                    range: NSRange(location: self.selectedRange.location, length: 1))
                     AnalyticsManager.shared.recordTypedCharacters(1)
-                    self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: true)
+                    self.scheduleHabitGhostRefresh(animateEntrance: true, allowAIRefresh: true)
                     return
                 }
             }
@@ -1447,7 +1450,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             AnalyticsManager.shared.recordTypedCharacters(typedCount)
         }
         
-        if !self.hasMarkedText(),
+        if self.funEffects.isTypewriterEffectEnabled,
+           !self.hasMarkedText(),
            !plainString.isEmpty,
            plainString.count <= 24,
            !plainString.contains("\n"),
@@ -1468,7 +1472,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             if previousGhost != nil, wasFromAI, !plainString.isEmpty {
                 AINextTokenPredictor.shared.recordSuggestionIgnored()
             }
-            self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: true)
+            self.scheduleHabitGhostRefresh(animateEntrance: true, allowAIRefresh: true)
         }
         
         // Cancel any popup completion list — inline ghost completion shows only the single highest-probability candidate
@@ -1532,6 +1536,18 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         self.clearGhostSuggestion(animated: false)
         
+        // Capture only the just-completed single line (O(1)) before inserting the newline.
+        let nsBefore = self.string as NSString
+        let preLoc = min(self.rangeForUserTextChange.location, nsBefore.length)
+        let completedLine: String? = if preLoc > 0, nsBefore.length > 0 {
+            {
+                let lr = nsBefore.lineRange(for: NSRange(location: max(0, preLoc - 1), length: 0))
+                return (lr.length >= 6 && lr.length <= 320) ? nsBefore.substring(with: lr) : nil
+            }()
+        } else {
+            nil
+        }
+        
         // insert newline
         self.insertText(self.lineEnding.string, replacementRange: self.rangeForUserTextChange)
         
@@ -1540,16 +1556,17 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.smartIndent()
         }
         
-        if !self.hasMarkedText(),
+        if self.funEffects.isTypewriterEffectEnabled,
+           !self.hasMarkedText(),
            var caretRect = self.boundingRect(for: self.selectedRange)
         {
             caretRect.size.height = min(caretRect.height, self.singleLineHeight)
             self.funEffects.triggerTypewriterBurst(at: caretRect, color: self.effectiveCursorColor, intensityScale: 0.9)
         }
         
-        // Learn completed phrases lazily from the document
-        if self.string.count <= 40_000 {
-            UserHabitPredictor.shared.learn(from: self.string, persist: true)
+        // Learn only the just-completed line lazily & asynchronously so pressing Enter never stalls typing.
+        if let completedLine {
+            UserHabitPredictor.shared.scheduleLearn(line: completedLine)
         }
     }
     
@@ -1597,13 +1614,14 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         super.deleteBackward(sender)
         self.isUpdatingGhostSuggestion = false
         
-        if !self.hasMarkedText(),
+        if self.funEffects.isTypewriterEffectEnabled,
+           !self.hasMarkedText(),
            var caretRect = self.boundingRect(for: self.selectedRange)
         {
             caretRect.size.height = min(caretRect.height, self.singleLineHeight)
             self.funEffects.triggerTypewriterBurst(at: caretRect, color: self.effectiveCursorColor, intensityScale: 0.65)
         }
-        self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: true)
+        self.scheduleHabitGhostRefresh(animateEntrance: true, allowAIRefresh: true)
     }
     
     
@@ -4472,7 +4490,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return true
         }
         // Bare outline / bullet / numbered-list / quote / heading marker with no body text yet
-        if linePrefix.range(of: #"^\s*(?:[-*+•‣▪︎>]|\d+[\.、\)）]|#{1,6})\s*$"#, options: .regularExpression) != nil {
+        let nsPrefix = linePrefix as NSString
+        if Self.formattingListPrefixRegex.firstMatch(in: linePrefix, range: NSRange(location: 0, length: nsPrefix.length)) != nil {
             return true
         }
         // Cursor positioned before existing text after whitespace (pushing text right to align)
@@ -4530,8 +4549,45 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    /// Debounces inline ghost prediction slightly during rapid keystrokes so typing stays at zero latency,
+    /// while preserving instant 0ms type-through on any already visible suggestion.
+    func scheduleHabitGhostRefresh(animateEntrance: Bool = true, allowAIRefresh: Bool = true) {
+        
+        self.ghostRefreshTask?.cancel()
+        self.ghostRefreshTask = nil
+        
+        guard
+            AINextTokenPredictor.isInlineCompletionEnabled,
+            self.isEditable,
+            self.window?.isKeyWindow == true,
+            !self.hasMarkedText(),
+            !self.hasMultipleInsertions,
+            self.selectedRange.isEmpty,
+            (!UserDefaults.standard[.vimMode] || VimState.shared.mode == .insert)
+        else {
+            self.clearGhostSuggestion(animated: false)
+            return
+        }
+        
+        let expectedVersion = self.ghostTextVersion
+        let expectedRange = self.selectedRange
+        self.ghostRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(85))
+            guard let self, !Task.isCancelled else { return }
+            self.ghostRefreshTask = nil
+            guard self.ghostTextVersion == expectedVersion,
+                  self.selectedRange == expectedRange
+            else { return }
+            self.refreshHabitGhostSuggestion(animateEntrance: animateEntrance, allowAIRefresh: allowAIRefresh)
+        }
+    }
+    
+    
     /// Recomputes and displays or hides the hybrid Tier-1 (local habit) + Tier-2 (AI FIM) ghost candidate.
     func refreshHabitGhostSuggestion(animateEntrance: Bool = true, allowAIRefresh: Bool = true) {
+        
+        self.ghostRefreshTask?.cancel()
+        self.ghostRefreshTask = nil
         
         guard
             AINextTokenPredictor.isInlineCompletionEnabled,
@@ -4570,7 +4626,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             .prefix(5)
             .map { String($0.textStorage.string.prefix(3_000)) }
         
-        let syntaxWords = self.syntaxCompletionWords.map(\.text)
+        let syntaxWords = self.cachedSyntaxCompletionTexts
         if let localCandidate = UserHabitPredictor.shared.predictNextPhrase(
             in: self.string,
             caretLocation: caretLocation,
@@ -4672,6 +4728,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     /// Clears any visible inline ghost suggestion.
     func clearGhostSuggestion(animated: Bool = false, cancelAI: Bool = true) {
         
+        self.ghostRefreshTask?.cancel()
+        self.ghostRefreshTask = nil
         self.activeGhostSuggestion = nil
         self.isCurrentGhostFromAI = false
         (self.layoutManager as? LayoutManager)?.inlineGhostShift = nil
@@ -4723,6 +4781,40 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     
     // MARK: Private Methods
+    
+    /// Computes the horizontal band around the current caret without forcing additional TextKit layout.
+    private func currentCaretHighlightBandWithoutAdditionalLayout() -> NSRect? {
+        
+        guard let layoutManager = self.layoutManager else { return nil }
+        let length = self.textStorage?.length ?? (self.string as NSString).length
+        let loc = self.selectedRange.location
+        let fragmentRect: NSRect
+        if length == 0 || loc >= length {
+            let extra = layoutManager.extraLineFragmentRect
+            if !extra.isEmpty {
+                fragmentRect = extra
+            } else if length > 0 {
+                let glyphIdx = layoutManager.glyphIndexForCharacter(at: length - 1)
+                guard layoutManager.isValidGlyphIndex(glyphIdx) else { return nil }
+                fragmentRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil, withoutAdditionalLayout: true)
+            } else {
+                return nil
+            }
+        } else {
+            let glyphIdx = layoutManager.glyphIndexForCharacter(at: loc)
+            guard layoutManager.isValidGlyphIndex(glyphIdx) else { return nil }
+            fragmentRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil, withoutAdditionalLayout: true)
+        }
+        guard fragmentRect.height > 0 else { return nil }
+        let origin = self.textContainerOrigin
+        return NSRect(
+            x: self.visibleRect.minX,
+            y: fragmentRect.minY + origin.y - 4,
+            width: self.visibleRect.width,
+            height: fragmentRect.height + 8
+        )
+    }
+    
     
     /// Updates single-character quote pairs from syntax delimiters.
     private func invalidateQuotePairs() {
@@ -5364,8 +5456,9 @@ extension EditorTextView {
         guard location > 0, location < nsString.length else { return nil }
         
         let lineRange = nsString.lineRange(for: NSRange(location: location, length: 0))
-        let lineSlice = nsString.substring(with: lineRange)
-        guard lineSlice.contains("⟦🖼"), lineSlice.contains("⟧") else { return nil }
+        guard nsString.range(of: "⟦🖼", options: .literal, range: lineRange).location != NSNotFound,
+              nsString.range(of: "⟧", options: .literal, range: lineRange).location != NSNotFound
+        else { return nil }
         
         let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
         for token in PlainTextInlineImageStore.shared.findTokens(in: nsString, range: lineRange) {
@@ -5389,8 +5482,9 @@ extension EditorTextView {
         let probe = backward ? max(0, loc - 1) : min(loc, max(0, nsString.length - 1))
         guard nsString.length > 0 else { return nil }
         let lineRange = nsString.lineRange(for: NSRange(location: probe, length: 0))
-        let lineSlice = nsString.substring(with: lineRange)
-        guard lineSlice.contains("⟦🖼"), lineSlice.contains("⟧") else { return nil }
+        guard nsString.range(of: "⟦🖼", options: .literal, range: lineRange).location != NSNotFound,
+              nsString.range(of: "⟧", options: .literal, range: lineRange).location != NSNotFound
+        else { return nil }
         
         let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
         for token in PlainTextInlineImageStore.shared.findTokens(in: nsString, range: lineRange) {

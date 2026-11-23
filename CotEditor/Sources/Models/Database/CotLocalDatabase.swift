@@ -251,6 +251,8 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     private var userDefaultsSyncObserver: (any NSObjectProtocol)?
     private var userDefaultsSyncTask: Task<Void, Never>?
     private var isApplyingSyncedDefaults = false
+    @ObservationIgnored private var configMap: [String: String] = [:]
+    @ObservationIgnored private var hasLoadedConfigMap = false
     
     
     static var isRunningUnitTests: Bool {
@@ -311,8 +313,8 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     /// Reads a string configuration value from the database, falling back to `defaultValue`.
     func string(forKey key: String, default defaultValue: String = "") -> String {
         
-        if let entry = self.configEntries.first(where: { $0.key == key }) {
-            return entry.value
+        if self.hasLoadedConfigMap {
+            return self.configMap[key] ?? defaultValue
         }
         return self.queryConfigValue(forKey: key) ?? defaultValue
     }
@@ -338,6 +340,10 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     /// Writes a string configuration value to the database and refreshes observers.
     func set(_ value: String, forKey key: String) {
         
+        if self.hasLoadedConfigMap, self.configMap[key] == value {
+            return
+        }
+        
         let now = Date().timeIntervalSince1970
         let sql = """
         INSERT INTO configs (key, value, updated_at)
@@ -357,7 +363,18 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         }
         sqlite3_finalize(stmt)
         
-        self.reloadConfigs()
+        if self.hasLoadedConfigMap {
+            self.configMap[key] = value
+            let entry = DatabaseConfigEntry(key: key, value: value, updatedAt: Date(timeIntervalSince1970: now))
+            if let idx = self.configEntries.firstIndex(where: { $0.key == key }) {
+                self.configEntries[idx] = entry
+            } else {
+                let insertIdx = self.configEntries.firstIndex(where: { $0.key > key }) ?? self.configEntries.endIndex
+                self.configEntries.insert(entry, at: insertIdx)
+            }
+        } else {
+            self.reloadConfigs()
+        }
     }
     
     
@@ -382,7 +399,12 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         }
         sqlite3_finalize(stmt)
         
-        self.reloadConfigs()
+        if self.hasLoadedConfigMap {
+            self.configMap.removeValue(forKey: key)
+            self.configEntries.removeAll { $0.key == key }
+        } else {
+            self.reloadConfigs()
+        }
     }
     
     
@@ -489,7 +511,53 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         if let normalizedGroup, !normalizedGroup.isEmpty {
             self.registerDocumentGroupIfNeeded(normalizedGroup)
         }
-        self.reloadDocuments()
+        
+        let nowDate = Date(timeIntervalSince1970: now)
+        if let trashIdx = self.trashedDocuments.firstIndex(where: { $0.id == resolvedID }) {
+            let existing = self.trashedDocuments.remove(at: trashIdx)
+            let resolvedGroup = normalizedGroup ?? existing.groupName
+            let updated = StoredDocumentRecord(
+                id: resolvedID,
+                title: title,
+                filePath: filePath,
+                syntax: syntax,
+                content: content,
+                highlightsJSON: highlightsJSON,
+                updatedAt: nowDate,
+                groupName: resolvedGroup,
+                deletedAt: existing.deletedAt,
+                createdAt: existing.createdAt ?? nowDate
+            )
+            self.trashedDocuments.insert(updated, at: 0)
+            self.documentsRevision &+= 1
+        } else {
+            let existing: StoredDocumentRecord? = if let idx = self.documents.firstIndex(where: { $0.id == resolvedID }) {
+                self.documents.remove(at: idx)
+            } else {
+                nil
+            }
+            let resolvedGroup = normalizedGroup ?? existing?.groupName ?? ""
+            let updated = StoredDocumentRecord(
+                id: resolvedID,
+                title: title,
+                filePath: filePath,
+                syntax: syntax,
+                content: content,
+                highlightsJSON: highlightsJSON,
+                updatedAt: nowDate,
+                groupName: resolvedGroup,
+                deletedAt: nil,
+                createdAt: existing?.createdAt ?? nowDate
+            )
+            self.documents.insert(updated, at: 0)
+            if self.documents.count > 200 {
+                self.documents.removeLast(self.documents.count - 200)
+            }
+            if !resolvedGroup.isEmpty && resolvedGroup != "未分组" && !self.documentGroups.contains(resolvedGroup) {
+                self.documentGroups.append(resolvedGroup)
+            }
+            self.documentsRevision &+= 1
+        }
     }
     
     
@@ -1773,6 +1841,8 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
             sqlite3_close(db)
             self.db = nil
         }
+        self.configMap.removeAll()
+        self.hasLoadedConfigMap = false
     }
     
     
@@ -2083,7 +2153,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
                 guard let self, !self.isApplyingSyncedDefaults else { return }
                 self.userDefaultsSyncTask?.cancel()
                 self.userDefaultsSyncTask = Task { [weak self] in
-                    try? await Task.sleep(for: .milliseconds(800))
+                    try? await Task.sleep(for: .milliseconds(2000))
                     guard !Task.isCancelled else { return }
                     self?.syncUserPreferencesToDatabase()
                 }
@@ -2130,6 +2200,8 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         }
         sqlite3_finalize(stmt)
         self.configEntries = items
+        self.configMap = Dictionary(uniqueKeysWithValues: items.map { ($0.key, $0.value) })
+        self.hasLoadedConfigMap = true
     }
     
     

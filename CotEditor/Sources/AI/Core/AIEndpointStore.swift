@@ -34,19 +34,47 @@ import Foundation
 /// ``migrateLegacyConfigurationIfNeeded()``, so upgrading keeps what was already set up.
 nonisolated enum AIEndpointStore {
     
+    // MARK: Private Cache
+    
+    private static let cacheLock = NSLock()
+    private nonisolated(unsafe) static var cachedProfilesData: Data?
+    private nonisolated(unsafe) static var cachedProfiles: [AIEndpointProfile]?
+    
     // MARK: Public Computed Properties
     
     /// Every configured service, in the order the settings pane shows them.
     static var profiles: [AIEndpointProfile] {
         
         get {
-            guard let data = UserDefaults.standard[.aiProfiles] else { return [] }
+            guard let data = UserDefaults.standard[.aiProfiles] else {
+                self.cacheLock.lock()
+                self.cachedProfilesData = nil
+                self.cachedProfiles = nil
+                self.cacheLock.unlock()
+                return []
+            }
+            self.cacheLock.lock()
+            if self.cachedProfilesData == data, let cached = self.cachedProfiles {
+                self.cacheLock.unlock()
+                return cached
+            }
+            self.cacheLock.unlock()
             
-            return (try? JSONDecoder().decode([AIEndpointProfile].self, from: data)) ?? []
+            let decoded = (try? JSONDecoder().decode([AIEndpointProfile].self, from: data)) ?? []
+            self.cacheLock.lock()
+            self.cachedProfilesData = data
+            self.cachedProfiles = decoded
+            self.cacheLock.unlock()
+            return decoded
         }
         
         set {
-            UserDefaults.standard[.aiProfiles] = try? JSONEncoder().encode(newValue)
+            let encoded = try? JSONEncoder().encode(newValue)
+            UserDefaults.standard[.aiProfiles] = encoded
+            self.cacheLock.lock()
+            self.cachedProfilesData = encoded
+            self.cachedProfiles = newValue
+            self.cacheLock.unlock()
         }
     }
     

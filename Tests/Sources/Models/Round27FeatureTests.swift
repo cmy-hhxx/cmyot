@@ -147,7 +147,7 @@ struct Round27FeatureTests {
         #expect(!heuristic.isEmpty)
         #expect(heuristic.contains { $0.sourceDocumentID == "doc-plan" })
         for pred in heuristic {
-            #expect(pred.action.count <= 16)
+            #expect(AnalyticsManager.isCompleteDashboardSentence(pred.action))
             #expect(!pred.action.contains("季度产品规划书"))
             #expect(!pred.action.contains("《"))
             #expect(!pred.action.contains("字"))

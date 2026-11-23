@@ -719,9 +719,6 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             guard self.focusedTextView?.hasMarkedText() != true else { return }
             
             document.counter.invalidateContent()
-            if document.textStorage.length <= 100_000 {
-                document.counter.refreshNow()
-            }
             document.syntaxController.parseIfNeeded()
         }
     }
@@ -733,11 +730,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         let textView = notification.object as? NSTextView
         let document = textView.flatMap { self.document(for: $0) } ?? self.document
         
-        if document.textStorage.length <= 100_000 {
-            document.counter.refreshNow()
-        } else {
-            document.counter.invalidateSelection()
-        }
+        document.counter.invalidateSelection()
     }
     
     
@@ -3055,12 +3048,12 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Debounces session snapshots during continuous typing so SQLite JSON encoding never stalls Vim keystrokes.
+    /// Debounces session snapshots during continuous typing so SQLite JSON encoding never stalls keystrokes.
     private func schedulePaneTabsSessionSave() {
         
         self.sessionSaveTask?.cancel()
         self.sessionSaveTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(1.5))
+            try? await Task.sleep(for: .seconds(4.0))
             guard let self, !Task.isCancelled else { return }
             self.savePaneTabsSessionToDatabase()
         }

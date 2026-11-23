@@ -518,4 +518,152 @@ struct Round33FeatureTests {
         #expect(cleaned.contains("停用 UNIT_CONCURRENCY"))
         #expect(cleaned.hasSuffix("补齐回归验证"))
     }
+    
+    
+    // MARK: 12. Dashboard Complete-Sentence Guard (No Unfinished Sentences in 干了啥 / 要干啥)
+    
+    @Test func dashboardCompleteSentenceGuardRejectsTruncatedAndUnfinishedPhrases() {
+        #expect(AnalyticsManager.isCompleteDashboardSentence("补全灰度发布与异常回滚演练的验证流程清单"))
+        #expect(AnalyticsManager.isCompleteDashboardSentence("推进后端接口联调并补齐回归验证。"))
+        #expect(AnalyticsManager.isCompleteDashboardSentence("核对是否需要补充跨区域灾备演练？"))
+        #expect(AnalyticsManager.isCompleteDashboardSentence("Finalize rollout verification checklist"))
+        
+        // Unfinished / truncated / dangling-connector phrases must be rejected
+        #expect(!AnalyticsManager.isCompleteDashboardSentence("补全灰度发布与异常回滚演练的"))
+        #expect(!AnalyticsManager.isCompleteDashboardSentence("梳理登录鉴权和"))
+        #expect(!AnalyticsManager.isCompleteDashboardSentence("排查性能瓶颈，以及"))
+        #expect(!AnalyticsManager.isCompleteDashboardSentence("今天推进了核心模块重构..."))
+        #expect(!AnalyticsManager.isCompleteDashboardSentence("继续完善（灰度回滚"))
+        #expect(!AnalyticsManager.isCompleteDashboardSentence("Finish API migration and"))
+        
+        let doc = StoredDocumentRecord(
+            id: "doc-complete",
+            title: "规划.md",
+            filePath: nil,
+            syntax: "Markdown",
+            content: """
+            # 一段超过十八个字并且不应该被硬截断的超级长标题内容梳理
+            - [ ] 排查登录鉴权流程以及
+            - [ ] 补全灰度发布与异常回滚演练的验证流程清单
+            是否需要补充跨区域灾备演练？
+            """,
+            highlightsJSON: "[]",
+            updatedAt: Date(),
+            createdAt: Date()
+        )
+        let heuristic = AnalyticsManager.buildHeuristicActionPredictions(
+            documents: [doc],
+            weeklyReports: [],
+            reminders: []
+        )
+        #expect(!heuristic.isEmpty)
+        for pred in heuristic {
+            #expect(AnalyticsManager.isCompleteDashboardSentence(pred.action))
+            #expect(!pred.action.contains("以及"))
+            #expect(!pred.action.hasSuffix("…"))
+        }
+        
+        let aiPredJSON = """
+        {"predictions":[
+          {"action":"推进核心接口联调的","documentTitle":"规划.md"},
+          {"action":"完成灰度发布与回滚验证清单。","documentTitle":"规划.md"}
+        ]}
+        """
+        let parsedPreds = AnalyticsManager.parseActionPredictions(from: aiPredJSON, documents: [doc])
+        #expect(parsedPreds.count == 1)
+        #expect(parsedPreds[0].action == "完成灰度发布与回滚验证清单。")
+        
+        let aiDoneJSON = """
+        {"points":[
+          "完成了数据看板性能排查，但是",
+          "完成了输入链路去抖和主线程卡顿优化。"
+        ]}
+        """
+        let parsedDone = AnalyticsManager.parseDoneTodayCommentary(from: aiDoneJSON, knownTitles: ["规划.md"])
+        #expect(parsedDone.count == 1)
+        #expect(parsedDone[0] == "完成了输入链路去抖和主线程卡顿优化。")
+    }
+    
+    
+    // MARK: 13. Hero Banner Fluted Prism Uniform Luminance (No Glaring Pure-White Voids)
+    
+    @Test func uniformBannerFlutedPrismEliminatesPureWhitePatchesAcrossFullWidth() throws {
+        let width = 180
+        let height = 48
+        let palettes: [FlutedGlassPalette] = [.cobaltBlue, .pineEmerald, .amberGold, .nebulaViolet]
+        
+        for palette in palettes {
+            let image = try #require(BlueFlutedGlassRenderer.renderFrame(
+                time: 4.5,
+                palette: palette,
+                width: width,
+                height: height,
+                ribCount: 66.0,
+                uniformBannerMode: true
+            ))
+            let rep = NSBitmapImageRep(cgImage: image)
+            
+            var blownOutWhitePixels = 0
+            var thirdLumaSums = [0.0, 0.0, 0.0]
+            var thirdCounts = [0, 0, 0]
+            
+            for y in 0..<height {
+                for x in 0..<width {
+                    let color = try #require(rep.colorAt(x: x, y: y)?.usingColorSpace(NSColorSpace.sRGB))
+                    let r = Double(color.redComponent)
+                    let g = Double(color.greenComponent)
+                    let b = Double(color.blueComponent)
+                    if r > 0.92 && g > 0.92 && b > 0.92 {
+                        blownOutWhitePixels += 1
+                    }
+                    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                    let third = min(2, (x * 3) / width)
+                    thirdLumaSums[third] += luma
+                    thirdCounts[third] += 1
+                }
+            }
+            
+            #expect(blownOutWhitePixels == 0)
+            let means = zip(thirdLumaSums, thirdCounts).map { $0 / Double(max(1, $1)) }
+            let spread = (means.max() ?? 0) - (means.min() ?? 0)
+            #expect(spread < 0.16)
+        }
+    }
+    
+    
+    // MARK: 14. Typing Hot-Path Telemetry Buffers Without Per-Keystroke Revision Churn
+    
+    @Test func typingHotPathBuffersStatsWithoutImmediateRevisionOrDBReload() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "CotTypingPerf-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "perf.sqlite3"))
+        db.set("v1", forKey: "typing.perf.test")
+        #expect(db.string(forKey: "typing.perf.test") == "v1")
+        // Idempotent re-write should keep cached value intact
+        db.set("v1", forKey: "typing.perf.test")
+        #expect(db.string(forKey: "typing.perf.test") == "v1")
+        
+        let analytics = AnalyticsManager(database: db)
+        let baselineRev = analytics.revision
+        let baselineTyped = analytics.todayStats.typedChars
+        let baselineHits = analytics.todayStats.localHits
+        
+        for _ in 0..<25 {
+            analytics.recordTypedCharacters(1)
+        }
+        analytics.recordLocalCompletionHit()
+        
+        // Live computed todayStats reflects buffered deltas immediately, while revision stays untouched until flush
+        #expect(analytics.todayStats.typedChars == baselineTyped + 25)
+        #expect(analytics.todayStats.localHits == baselineHits + 1)
+        #expect(analytics.revision == baselineRev)
+        
+        analytics.flushPendingStats()
+        #expect(analytics.revision == baselineRev + 1)
+        #expect(analytics.todayStats.typedChars == baselineTyped + 25)
+        #expect(analytics.todayStats.localHits == baselineHits + 1)
+    }
 }

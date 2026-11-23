@@ -165,8 +165,8 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
         let lineRange = nsString.lineRange(for: probeRange)
         guard lineRange.length > 0, NSMaxRange(lineRange) <= nsString.length else { return }
         
-        let lineSlice = nsString.substring(with: lineRange)
-        let touchesTokenMarker = lineSlice.contains("⟦") || lineSlice.contains("⟧")
+        let touchesTokenMarker = nsString.range(of: "⟦", options: .literal, range: lineRange).location != NSNotFound
+            || nsString.range(of: "⟧", options: .literal, range: lineRange).location != NSNotFound
         guard touchesTokenMarker || self.hasResolvedInlineImageGlyphs else { return }
         
         // Expand glyph and layout invalidation to the full enclosing line so partial edits
@@ -313,8 +313,9 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
                 if minChar <= maxChar {
                     let span = NSRange(location: minChar, length: maxChar - minChar + 1)
                     let lineRange = nsString.lineRange(for: span)
-                    let lineSlice = nsString.substring(with: lineRange)
-                    if lineSlice.contains("⟦🖼"), lineSlice.contains("⟧") {
+                    if nsString.range(of: "⟦🖼", options: .literal, range: lineRange).location != NSNotFound,
+                       nsString.range(of: "⟧", options: .literal, range: lineRange).location != NSNotFound
+                    {
                         let resolvedTokens = PlainTextInlineImageStore.shared.findTokens(in: nsString, range: lineRange)
                             .filter { PlainTextInlineImageStore.shared.image(for: $0.identifier, documentURL: self.inlineImageDocumentURL) != nil }
                         if !resolvedTokens.isEmpty {
@@ -483,21 +484,21 @@ extension LayoutManager: NSLayoutManagerDelegate {
             let string = self.attributedString().string as NSString
             if charRange.location != NSNotFound, string.length > 0 {
                 let safeRange = NSIntersectionRange(charRange, NSRange(location: 0, length: string.length))
-                if safeRange.length > 0 {
-                    let lineSubstring = string.substring(with: safeRange)
-                    if lineSubstring.contains("⟦🖼"), lineSubstring.contains("⟧") {
-                        let tokens = PlainTextInlineImageStore.shared.findTokens(in: string, range: safeRange)
-                        let containerW = self.finiteContainerWidth(for: textContainer, fallback: lineFragmentRect.pointee.width)
-                        let maxCardWidth = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: containerW, glyphX: 0)
-                        for token in tokens {
-                            if let size = PlainTextInlineImageStore.shared.cardSize(
-                                for: token.identifier,
-                                documentURL: self.inlineImageDocumentURL,
-                                maxImageWidth: maxCardWidth,
-                                containerWidth: containerW
-                            ) {
-                                tallestCard = max(tallestCard, size.height)
-                            }
+                if safeRange.length >= 4,
+                   string.range(of: "⟦🖼", options: .literal, range: safeRange).location != NSNotFound,
+                   string.range(of: "⟧", options: .literal, range: safeRange).location != NSNotFound
+                {
+                    let tokens = PlainTextInlineImageStore.shared.findTokens(in: string, range: safeRange)
+                    let containerW = self.finiteContainerWidth(for: textContainer, fallback: lineFragmentRect.pointee.width)
+                    let maxCardWidth = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: containerW, glyphX: 0)
+                    for token in tokens {
+                        if let size = PlainTextInlineImageStore.shared.cardSize(
+                            for: token.identifier,
+                            documentURL: self.inlineImageDocumentURL,
+                            maxImageWidth: maxCardWidth,
+                            containerWidth: containerW
+                        ) {
+                            tallestCard = max(tallestCard, size.height)
                         }
                     }
                 }

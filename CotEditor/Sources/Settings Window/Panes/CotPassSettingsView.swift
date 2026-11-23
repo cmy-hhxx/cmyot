@@ -912,7 +912,8 @@ nonisolated enum BlueFlutedGlassRenderer {
         palette: FlutedGlassPalette = .cobaltBlue,
         width: Int = Self.defaultWidth,
         height: Int = Self.defaultHeight,
-        ribCount: Double = Self.defaultRibCount
+        ribCount: Double = Self.defaultRibCount,
+        uniformBannerMode: Bool = false
     ) -> CGImage? {
         guard width > 0, height > 0 else { return nil }
         
@@ -962,18 +963,27 @@ nonisolated enum BlueFlutedGlassRenderer {
             let u = (Double(x) + 0.5) * invW
             let scaled = u * ribCount
             let rib = (scaled - floor(scaled)) - 0.5
-            let rx = u + rib * 0.018
-            let dy = (rib * rib - 0.0833) * 0.034
+            let rx = u + rib * (uniformBannerMode ? 0.014 : 0.018)
+            let dy = (rib * rib - 0.0833) * (uniformBannerMode ? 0.026 : 0.034)
             let edge = pow(abs(rib) * 2.0, 10.0)
             colRib[x] = rib
             colRefrX[x] = rx
             colRefrDy[x] = dy
-            colSheenFactor[x] = rib * 0.65 + edge * 0.24
+            colSheenFactor[x] = uniformBannerMode ? (rib * 0.54 + edge * 0.19) : (rib * 0.65 + edge * 0.24)
             colBaseY[x] = 1.045 - 0.17 * rx + 0.075 * sin(rx * 5.0 + twoPhase)
         }
         
         @inline(__always)
         func sampleDensity(rx: Double, py: Double, baseYHint: Double) -> Double {
+            if uniformBannerMode {
+                let px = rx + 0.018 * sin(py * 5.2 + twoPhase * 0.6)
+                let w1 = 0.5 + 0.5 * sin(px * 4.6 + phase + 0.42 * sin(py * 3.1 - phase * 0.7))
+                let w2 = 0.5 + 0.5 * cos(px * 7.4 - phase * 1.15 + py * 2.15)
+                let w3 = 0.5 + 0.5 * sin((px * 2.8 - py * 1.35) + phase * 0.65)
+                let vBias = 0.05 * (py - 0.45)
+                let raw = 0.42 * w1 + 0.30 * w2 + 0.28 * w3 + vBias
+                return min(0.58, max(0.24, 0.24 + raw * 0.34))
+            }
             let px = rx + 0.025 * sin(py * 7.0 + twoPhase)
             let trunk = Self.blob(px: px, py: py, cx: trunkCx, cy: trunkCy, invRx: trunkInvRx, invRy: trunkInvRy, cosA: trunkCos, sinA: trunkSin)
             let crown = Self.blob(px: px, py: py, cx: crownCx, cy: crownCy, invRx: crownInvRx, invRy: crownInvRy, cosA: crownCos, sinA: crownSin)
@@ -1086,7 +1096,7 @@ private struct FlutedPrismUniforms {
     var specX: Float
     var specY: Float
     var hoverStrength: Float
-    var pad0: Float = 0
+    var uniformMode: Float = 0
     var pad1: Float = 0
     var pad2: Float = 0
     var p0: SIMD4<Float>
@@ -1116,7 +1126,7 @@ private final class FlutedPrismMetalPipeline {
         float specX;
         float specY;
         float hoverStrength;
-        float _pad0;
+        float uniformMode;
         float _pad1;
         float _pad2;
         float4 p0;
@@ -1160,11 +1170,24 @@ private final class FlutedPrismMetalPipeline {
     inline float samplePrismDensity(
         float rx,
         float py,
+        float phase,
         float twoPhase,
+        float uniformMode,
         float2 trunkC, float2 trunkInvR, float trunkCos, float trunkSin,
         float2 crownC, float2 crownInvR, float crownCos, float crownSin,
         float2 holeC,  float2 holeInvR,  float holeCos,  float holeSin
     ) {
+        if (uniformMode > 0.5) {
+            // Balanced multi-lobe harmonic ribbon distribution across full horizontal width
+            // (eliminates blown-out pure-white voids on wide hero banners).
+            float px = rx + 0.018 * sin(py * 5.2 + twoPhase * 0.6);
+            float w1 = 0.5 + 0.5 * sin(px * 4.6 + phase + 0.42 * sin(py * 3.1 - phase * 0.7));
+            float w2 = 0.5 + 0.5 * cos(px * 7.4 - phase * 1.15 + py * 2.15);
+            float w3 = 0.5 + 0.5 * sin((px * 2.8 - py * 1.35) + phase * 0.65);
+            float vBias = 0.05 * (py - 0.45);
+            float raw = 0.42 * w1 + 0.30 * w2 + 0.28 * w3 + vBias;
+            return clamp(0.24 + raw * 0.34, 0.24, 0.58);
+        }
         float px = rx + 0.025 * sin(py * 7.0 + twoPhase);
         float2 p = float2(px, py);
         float trunk = prismBlob(p, trunkC, trunkInvR, trunkCos, trunkSin);
@@ -1185,6 +1208,7 @@ private final class FlutedPrismMetalPipeline {
         float c = cos(phase);
         float s2 = sin(2.0 * phase);
         float twoPhase = 2.0 * phase;
+        bool isBanner = (u.uniformMode > 0.5);
         
         float2 trunkC = float2(0.52 + 0.15 * s - 0.07 * s2, 0.76);
         float2 trunkInvR = float2(1.0 / 0.235, 1.0 / 0.46);
@@ -1208,17 +1232,17 @@ private final class FlutedPrismMetalPipeline {
         float vCoord = in.uv.y;
         float scaled = uCoord * u.ribCount;
         float rib = fract(scaled) - 0.5;
-        float rx = uCoord + rib * 0.018;
-        float dy = (rib * rib - 0.0833) * 0.034;
+        float rx = uCoord + rib * (isBanner ? 0.014 : 0.018);
+        float dy = (rib * rib - 0.0833) * (isBanner ? 0.026 : 0.034);
         float edge = pow(abs(rib) * 2.0, 10.0);
-        float sheenFactor = rib * 0.65 + edge * 0.24;
+        float sheenFactor = isBanner ? (rib * 0.54 + edge * 0.19) : (rib * 0.65 + edge * 0.24);
         float ry = vCoord + dy;
         
-        float d0 = samplePrismDensity(rx, ry, twoPhase, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
-        float d1 = samplePrismDensity(rx, ry + 0.025, twoPhase, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
-        float d2 = samplePrismDensity(rx, ry - 0.025, twoPhase, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
-        float d3 = samplePrismDensity(rx, ry + 0.055, twoPhase, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
-        float d4 = samplePrismDensity(rx, ry - 0.055, twoPhase, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
+        float d0 = samplePrismDensity(rx, ry, phase, twoPhase, u.uniformMode, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
+        float d1 = samplePrismDensity(rx, ry + 0.025, phase, twoPhase, u.uniformMode, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
+        float d2 = samplePrismDensity(rx, ry - 0.025, phase, twoPhase, u.uniformMode, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
+        float d3 = samplePrismDensity(rx, ry + 0.055, phase, twoPhase, u.uniformMode, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
+        float d4 = samplePrismDensity(rx, ry - 0.055, phase, twoPhase, u.uniformMode, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
         float density = d0 * 0.40 + (d1 + d2) * 0.24 + (d3 + d4) * 0.06;
         
         float3 col = u.p0.rgb;
@@ -1231,14 +1255,17 @@ private final class FlutedPrismMetalPipeline {
         float minC = min(col.r, min(col.g, col.b));
         float luma = (col.r + col.g + col.b) / 3.0;
         float chromaMask = (1.0 - luma) * smoothstep(0.025, 0.20, maxC - minC);
-        float sheen = sheenFactor * chromaMask;
-        col += (0.018 + 0.014 * u.p1.rgb) * sheen;
+        float ribMask = isBanner ? (0.45 + 0.55 * chromaMask) : chromaMask;
+        float sheen = sheenFactor * ribMask;
+        col += (0.018 + 0.016 * u.p1.rgb) * sheen;
         
-        // Silky cursor-reactive optical prism bloom
+        // Silky cursor-reactive optical prism bloom (restrained in banner mode to avoid white washout)
         float2 sp = float2(u.specX, u.specY);
-        float dist = length((in.uv - sp) * float2(1.15, 0.85));
-        float glow = exp(-dist * dist * 5.2) * (0.06 + 0.20 * u.hoverStrength);
-        col += mix(float3(1.0), u.p1.rgb, 0.35) * glow;
+        float dist = length((in.uv - sp) * (isBanner ? float2(1.35, 0.90) : float2(1.15, 0.85)));
+        float glow = exp(-dist * dist * (isBanner ? 4.4 : 5.2))
+            * (isBanner ? (0.022 + 0.085 * u.hoverStrength) : (0.06 + 0.20 * u.hoverStrength));
+        float3 glowTint = isBanner ? mix(u.p1.rgb, float3(1.0), 0.24) : mix(float3(1.0), u.p1.rgb, 0.35);
+        col += glowTint * glow;
         
         return float4(clamp(col, 0.0, 1.0), 1.0);
     }
@@ -1276,10 +1303,11 @@ private struct FlutedPrismMetalView: NSViewRepresentable {
     let animate: Bool
     let specularPoint: UnitPoint
     let isHovered: Bool
+    let uniformBannerMode: Bool
     
     
     func makeCoordinator() -> Coordinator {
-        Coordinator(palette: self.palette, ribCount: Float(self.ribCount))
+        Coordinator(palette: self.palette, ribCount: Float(self.ribCount), uniformMode: self.uniformBannerMode ? 1.0 : 0.0)
     }
     
     
@@ -1305,6 +1333,7 @@ private struct FlutedPrismMetalView: NSViewRepresentable {
         coord.targetSpecX = Float(self.specularPoint.x)
         coord.targetSpecY = Float(self.specularPoint.y)
         coord.targetHover = self.isHovered ? 1.0 : 0.0
+        coord.uniformMode = self.uniformBannerMode ? 1.0 : 0.0
         
         let shouldPause = !self.animate || AnimationConstants.isReducedMotionEnabled
         if mtkView.isPaused != shouldPause {
@@ -1317,6 +1346,12 @@ private struct FlutedPrismMetalView: NSViewRepresentable {
     }
     
     
+    static func dismantleNSView(_ mtkView: MTKView, coordinator: Coordinator) {
+        mtkView.isPaused = true
+        mtkView.delegate = nil
+    }
+    
+    
     @MainActor
     final class Coordinator: NSObject, MTKViewDelegate {
         
@@ -1325,6 +1360,7 @@ private struct FlutedPrismMetalView: NSViewRepresentable {
         var targetSpecX: Float = 0.5
         var targetSpecY: Float = 0.5
         var targetHover: Float = 0.0
+        var uniformMode: Float = 0.0
         
         private var currentP0: SIMD4<Float>
         private var currentP1: SIMD4<Float>
@@ -1338,9 +1374,10 @@ private struct FlutedPrismMetalView: NSViewRepresentable {
         private let startTime: CFTimeInterval = CACurrentMediaTime() - 4.2
         
         
-        init(palette: FlutedGlassPalette, ribCount: Float) {
+        init(palette: FlutedGlassPalette, ribCount: Float, uniformMode: Float) {
             self.targetPalette = palette
             self.ribCount = ribCount
+            self.uniformMode = uniformMode
             self.currentP0 = Self.vec(palette.base)
             self.currentP1 = Self.vec(palette.light)
             self.currentP2 = Self.vec(palette.mid)
@@ -1390,6 +1427,7 @@ private struct FlutedPrismMetalView: NSViewRepresentable {
                 specX: self.currentSpecX,
                 specY: self.currentSpecY,
                 hoverStrength: self.currentHover,
+                uniformMode: self.uniformMode,
                 p0: self.currentP0,
                 p1: self.currentP1,
                 p2: self.currentP2,
@@ -1420,6 +1458,7 @@ struct LeiBoxFlutedPrismView: View {
     var animate: Bool = true
     var specularPoint: UnitPoint = UnitPoint(x: 0.5, y: 0.5)
     var isHovered: Bool = false
+    var uniformBannerMode: Bool = false
     
     
     var body: some View {
@@ -1431,14 +1470,16 @@ struct LeiBoxFlutedPrismView: View {
                         ribCount: self.ribCount,
                         animate: self.animate,
                         specularPoint: self.specularPoint,
-                        isHovered: self.isHovered
+                        isHovered: self.isHovered,
+                        uniformBannerMode: self.uniformBannerMode
                     )
                 } else if let fallback = BlueFlutedGlassRenderer.renderFrame(
                     time: 4.2,
                     palette: self.theme.flutedPalette,
                     width: self.renderWidth,
                     height: self.renderHeight,
-                    ribCount: self.ribCount
+                    ribCount: self.ribCount,
+                    uniformBannerMode: self.uniformBannerMode
                 ) {
                     Image(decorative: fallback, scale: 1.0)
                         .resizable()

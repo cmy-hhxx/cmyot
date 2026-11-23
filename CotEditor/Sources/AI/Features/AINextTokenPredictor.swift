@@ -90,8 +90,13 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
         let createdAt: Date
     }
     
+    private static let listPrefixRegex = try! NSRegularExpression(
+        pattern: #"^\s*(?:[-*+•‣▪︎>]|\d+[\.、\)）]|#{1,6})\s*$"#
+    )
+    
     private var cache: [CacheEntry] = []
     private var pendingTask: Task<Void, Never>?
+    private var statsSaveTask: Task<Void, Never>?
     private var errorCooldownUntil: Date?
     private var unavailableAutoRoutedModels: Set<String> = []
     private var cachedTodayStats: AINextTokenDailyStats?
@@ -400,7 +405,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     
     func resetTodayStats() {
         
-        self.persistStats(AINextTokenDailyStats(dateKey: Self.currentDateKey()))
+        self.persistStats(AINextTokenDailyStats(dateKey: Self.currentDateKey()), immediate: true)
     }
     
     
@@ -447,6 +452,8 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     func reloadForActiveUser() {
         
         self.cancel()
+        self.statsSaveTask?.cancel()
+        self.statsSaveTask = nil
         self.cache.removeAll()
         self.errorCooldownUntil = nil
         self.consecutiveIgnores = 0
@@ -522,7 +529,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
         if linePrefix.hasSuffix("\t") || linePrefix.hasSuffix("  ") {
             return .skip(reason: "tabFormatting")
         }
-        if linePrefix.range(of: #"^\s*(?:[-*+•‣▪︎>]|\d+[\.、\)）]|#{1,6})\s*$"#, options: .regularExpression) != nil {
+        if Self.listPrefixRegex.firstMatch(in: linePrefix, range: NSRange(location: 0, length: (linePrefix as NSString).length)) != nil {
             return .skip(reason: "listPrefix")
         }
         if !lineSuffix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -645,16 +652,6 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
             return
         }
         
-        let baseConfig = AIBotStore.shared.resolvedConfiguration(for: .ghost)
-        let routing = self.resolveModelRouting(baseConfig: baseConfig)
-        guard !routing.effectiveModel.isEmpty, !routing.isReasoningBlocked else { return }
-        
-        var effectiveConfig = baseConfig
-        effectiveConfig.model = routing.effectiveModel
-        effectiveConfig.temperature = 0.10
-        effectiveConfig.reasoningEffort = "low"
-        guard effectiveConfig.isUsable else { return }
-        
         let nsText = textView.string as NSString
         let expectedRange = textView.selectedRange
         let expectedTextVersion = textView.ghostTextVersion
@@ -697,16 +694,6 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
         }
         
         let delayMs = max(120, Int(Double(Self.debounceMilliseconds) * delayMultiplier * self.effectiveBackoffMultiplier))
-        
-        let context = Self.extractCompactContext(from: nsText, caret: caret, isCode: isCode, strategy: strategy)
-        let messages = Self.buildMessages(
-            prefix: context.prefix,
-            suffix: context.suffix,
-            syntaxName: syntaxName,
-            documentTitle: documentTitle,
-            isCode: isCode
-        )
-        let inputTextForAccounting = messages.map(\.text).joined(separator: "\n")
         // Thinking is disabled via `disablesThinking` on non-reasoning models so actual output stays ~10-20 tokens,
         // while keeping a 200-token ceiling avoids empty responses on hybrid gateways that still emit brief thoughts.
         let maxOut = 200
@@ -725,6 +712,29 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
                   textView.ghostTextVersion == expectedTextVersion,
                   textView.selectedRange == expectedRange
             else { return }
+            
+            // Resolve bot/endpoint routing and build the FIM prompt only after the typing debounce settles.
+            let baseConfig = AIBotStore.shared.resolvedConfiguration(for: .ghost)
+            let routing = self.resolveModelRouting(baseConfig: baseConfig)
+            guard !routing.effectiveModel.isEmpty, !routing.isReasoningBlocked else { return }
+            
+            var effectiveConfig = baseConfig
+            effectiveConfig.model = routing.effectiveModel
+            effectiveConfig.temperature = 0.10
+            effectiveConfig.reasoningEffort = "low"
+            guard effectiveConfig.isUsable else { return }
+            
+            let latestText = textView.string as NSString
+            guard caret <= latestText.length else { return }
+            let context = Self.extractCompactContext(from: latestText, caret: caret, isCode: isCode, strategy: strategy)
+            let messages = Self.buildMessages(
+                prefix: context.prefix,
+                suffix: context.suffix,
+                syntaxName: syntaxName,
+                documentTitle: documentTitle,
+                isCode: isCode
+            )
+            let inputTextForAccounting = messages.map(\.text).joined(separator: "\n")
             
             if lineSuffix.isEmpty, textView.activeGhostSuggestion == nil {
                 textView.showAIGhostLoadingIndicator()
@@ -1090,15 +1100,31 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     }
     
     
-    private func persistStats(_ stats: AINextTokenDailyStats) {
+    private func persistStats(_ stats: AINextTokenDailyStats, immediate: Bool = false) {
         
         self.cachedTodayStats = stats
-        if let data = try? JSONEncoder().encode(stats),
-           let json = String(data: data, encoding: .utf8)
-        {
-            UserDefaults.standard.set(json, forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON)
-            CotLocalDatabase.shared.set(json, forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON)
-        }
         NotificationCenter.default.post(name: Self.statsDidChangeNotification, object: nil)
+        
+        let writeNow: @MainActor (AINextTokenDailyStats) -> Void = { latest in
+            if let data = try? JSONEncoder().encode(latest),
+               let json = String(data: data, encoding: .utf8)
+            {
+                CotLocalDatabase.shared.set(json, forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON)
+                UserDefaults.standard.set(json, forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON)
+            }
+        }
+        
+        self.statsSaveTask?.cancel()
+        if immediate {
+            self.statsSaveTask = nil
+            writeNow(stats)
+        } else {
+            self.statsSaveTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(2.0))
+                guard let self, !Task.isCancelled, let latest = self.cachedTodayStats else { return }
+                self.statsSaveTask = nil
+                writeNow(latest)
+            }
+        }
     }
 }

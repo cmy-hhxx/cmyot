@@ -147,6 +147,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     
     // Tactile typing combo streak state
     private var lastKeystrokeTime: CFTimeInterval = 0
+    private var lastBurstEmissionTime: CFTimeInterval = 0
     private var comboCount: Int = 0
     private var comboResetTask: Task<Void, Never>?
     
@@ -163,8 +164,12 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private weak var hostedScrollLayer: CALayer?
     private var comboHudContainer: CALayer?
     private var comboHudBadgeLayer: CALayer?
+    private var comboHudTierTextLayer: CATextLayer?
+    private var comboHudCountTextLayer: CATextLayer?
     private var comboHudBarTrackLayer: CALayer?
     private var comboHudBarFillLayer: CALayer?
+    private var comboHudLastTier: Int = -1
+    private var comboHudLastWidth: CGFloat = 0
     
     // Inline ghost completion layers & acceptance sweep
     private var ghostRootLayer: CALayer?
@@ -463,17 +468,22 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     }
     
     
+    /// Fast check for whether typing visual bursts are currently enabled, allowing callers to skip caret layout queries when off.
+    var isTypewriterEffectEnabled: Bool {
+        
+        guard !AnimationConstants.isReducedMotionEnabled else { return false }
+        return UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
+    }
+    
+    
     /// Triggers tactile, balanced typing visual feedback at `rect`.
     func triggerTypewriterBurst(at rect: NSRect, color: NSColor? = nil, intensityScale: CGFloat = 1.0) {
         
-        let isEnabled = UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: CotLocalDatabase.ConfigKey.typewriterEffectEnabled)
-        guard isEnabled else { return }
+        guard self.isTypewriterEffectEnabled else { return }
         guard let textView = self.textView, textView.window?.isKeyWindow == true else { return }
         guard let hostLayer = self.ensureClippedHostLayer(for: textView) else { return }
-        
-        self.ensureTypewriterLayers(in: hostLayer)
         
         let now = CACurrentMediaTime()
         if now - self.lastKeystrokeTime < 1.6 {
@@ -482,6 +492,12 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             self.comboCount = 1
         }
         self.lastKeystrokeTime = now
+        
+        // Coalesce ultra-rapid key-repeat storms (>40Hz) so CoreAnimation transactions never queue up behind typing.
+        guard now - self.lastBurstEmissionTime >= 0.024 else { return }
+        self.lastBurstEmissionTime = now
+        
+        self.ensureTypewriterLayers(in: hostLayer)
         
         let preset = TypingEffectPreset.current
         let center = CGPoint(x: rect.midX, y: rect.midY)
@@ -842,75 +858,58 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         guard
             let container = self.comboHudContainer,
             let badgeLayer = self.comboHudBadgeLayer,
+            let tierLayer = self.comboHudTierTextLayer,
+            let countLayer = self.comboHudCountTextLayer,
             let trackLayer = self.comboHudBarTrackLayer,
             let fillLayer = self.comboHudBarFillLayer
         else { return }
         
+        let tierIndex: Int
         let tierTitle: String
         let accentColor: NSColor
         switch combo {
             case ..<18:
+                tierIndex = 0
                 tierTitle = "FLOW"
                 accentColor = NSColor(srgbRed: 0.18, green: 0.68, blue: 0.96, alpha: 1.0)
             case 18..<40:
+                tierIndex = 1
                 tierTitle = "RHYTHM"
                 accentColor = NSColor(srgbRed: 0.08, green: 0.82, blue: 0.72, alpha: 1.0)
             case 40..<80:
+                tierIndex = 2
                 tierTitle = "SURGE"
                 accentColor = NSColor(srgbRed: 0.62, green: 0.44, blue: 0.96, alpha: 1.0)
             default:
+                tierIndex = 3
                 tierTitle = "MASTER"
                 accentColor = NSColor(srgbRed: 0.96, green: 0.48, blue: 0.32, alpha: 1.0)
         }
         
         let scale = textView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         let countText = "×\(combo)"
-        let tierFont = NSFont.systemFont(ofSize: 8.5, weight: .bold)
-        let countFont = NSFont.monospacedDigitSystemFont(ofSize: 15, weight: .bold)
-        
-        let tierAttr = NSAttributedString(string: tierTitle, attributes: [
-            .font: tierFont,
-            .foregroundColor: accentColor.withAlphaComponent(0.85),
-            .kern: 0.8,
-        ])
-        let countAttr = NSAttributedString(string: countText, attributes: [
-            .font: countFont,
-            .foregroundColor: accentColor,
-        ])
-        
-        let tierSize = tierAttr.size()
-        let countSize = countAttr.size()
-        let hudWidth = max(62, ceil(tierSize.width + countSize.width) + 20)
+        let tierW: CGFloat = switch tierIndex {
+            case 0: 30
+            case 1: 42
+            case 2: 36
+            default: 44
+        }
+        let digitCount = countText.count
+        let countW = CGFloat(digitCount) * 9.5 + 4
+        let hudWidth = max(68, ceil(tierW + 4 + countW) + 16)
         let badgeHeight: CGFloat = 24
         let totalHeight: CGFloat = 28
-        
-        let rendered = NSImage(size: NSSize(width: hudWidth, height: badgeHeight), flipped: true) { _ in
-            let pillRect = NSRect(x: 0.5, y: 0.5, width: hudWidth - 1, height: badgeHeight - 1)
-            let pillPath = NSBezierPath(roundedRect: pillRect, xRadius: 6, yRadius: 6)
-            accentColor.withAlphaComponent(0.10).setFill()
-            pillPath.fill()
-            accentColor.withAlphaComponent(0.24).setStroke()
-            pillPath.lineWidth = 0.75
-            pillPath.stroke()
-            
-            let totalTextW = tierSize.width + 5 + countSize.width
-            let startX = max(6, (hudWidth - totalTextW) / 2)
-            let tierY = (badgeHeight - tierSize.height) / 2 + 0.5
-            let countY = (badgeHeight - countSize.height) / 2
-            tierAttr.draw(at: NSPoint(x: startX, y: tierY))
-            countAttr.draw(at: NSPoint(x: startX + tierSize.width + 5, y: countY))
-            return true
-        }
-        var proposedRect = NSRect(origin: .zero, size: NSSize(width: hudWidth, height: badgeHeight))
-        let scaleTransform = NSAffineTransform()
-        scaleTransform.scale(by: scale)
-        let cgImage = rendered.cgImage(forProposedRect: &proposedRect, context: nil, hints: [.ctm: scaleTransform])
         
         let viewBounds = scrollView.bounds
         let marginRight: CGFloat = 16
         let marginTop: CGFloat = 12
         let originX = max(12, viewBounds.width - hudWidth - marginRight)
         let originY = scrollView.isFlipped ? marginTop : max(12, viewBounds.height - totalHeight - marginTop)
+        
+        let tierChanged = (self.comboHudLastTier != tierIndex)
+        let widthChanged = abs(self.comboHudLastWidth - hudWidth) > 0.5
+        self.comboHudLastTier = tierIndex
+        self.comboHudLastWidth = hudWidth
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -919,23 +918,38 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         container.position = CGPoint(x: originX + hudWidth / 2, y: originY + totalHeight / 2)
         container.opacity = 0.92
         
-        badgeLayer.frame = CGRect(x: 0, y: 0, width: hudWidth, height: badgeHeight)
-        badgeLayer.contents = cgImage
-        badgeLayer.contentsScale = scale
-        badgeLayer.contentsGravity = .resize
+        if tierChanged || widthChanged {
+            badgeLayer.frame = CGRect(x: 0, y: 0, width: hudWidth, height: badgeHeight)
+            badgeLayer.backgroundColor = accentColor.withAlphaComponent(0.11).cgColor
+            badgeLayer.borderColor = accentColor.withAlphaComponent(0.26).cgColor
+            badgeLayer.borderWidth = 0.75
+            badgeLayer.cornerRadius = 6
+            
+            let startX = max(6, (hudWidth - (tierW + 4 + countW)) / 2)
+            tierLayer.contentsScale = scale
+            tierLayer.string = tierTitle
+            tierLayer.foregroundColor = accentColor.withAlphaComponent(0.85).cgColor
+            tierLayer.frame = CGRect(x: startX, y: 6.5, width: tierW, height: 12)
+            
+            countLayer.contentsScale = scale
+            countLayer.foregroundColor = accentColor.cgColor
+            countLayer.frame = CGRect(x: startX + tierW + 4, y: 2.5, width: countW, height: 19)
+            
+            let trackWidth = hudWidth - 10
+            let trackY = badgeHeight + 2
+            trackLayer.frame = CGRect(x: 5, y: trackY, width: trackWidth, height: 2)
+            trackLayer.backgroundColor = accentColor.withAlphaComponent(0.15).cgColor
+            trackLayer.cornerRadius = 1.0
+            
+            fillLayer.anchorPoint = CGPoint(x: 1.0, y: 0.5)
+            fillLayer.bounds = CGRect(x: 0, y: 0, width: trackWidth, height: 2)
+            fillLayer.position = CGPoint(x: trackWidth, y: 1.0)
+            fillLayer.backgroundColor = accentColor.withAlphaComponent(0.80).cgColor
+            fillLayer.cornerRadius = 1.0
+        }
         
-        let trackWidth = hudWidth - 10
-        let trackY = badgeHeight + 2
-        trackLayer.frame = CGRect(x: 5, y: trackY, width: trackWidth, height: 2)
-        trackLayer.backgroundColor = accentColor.withAlphaComponent(0.15).cgColor
-        trackLayer.cornerRadius = 1.0
-        
+        countLayer.string = countText
         fillLayer.removeAllAnimations()
-        fillLayer.anchorPoint = CGPoint(x: 1.0, y: 0.5)
-        fillLayer.bounds = CGRect(x: 0, y: 0, width: trackWidth, height: 2)
-        fillLayer.position = CGPoint(x: trackWidth, y: 1.0)
-        fillLayer.backgroundColor = accentColor.withAlphaComponent(0.80).cgColor
-        fillLayer.cornerRadius = 1.0
         CATransaction.commit()
         
         // Gentle spring pop on container
@@ -2145,8 +2159,12 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             self.comboHudContainer?.removeFromSuperlayer()
             self.comboHudContainer = nil
             self.comboHudBadgeLayer = nil
+            self.comboHudTierTextLayer = nil
+            self.comboHudCountTextLayer = nil
             self.comboHudBarTrackLayer = nil
             self.comboHudBarFillLayer = nil
+            self.comboHudLastTier = -1
+            self.comboHudLastWidth = 0
             self.hostedScrollLayer = scrollLayer
         }
         guard self.comboHudContainer == nil else { return }
@@ -2160,6 +2178,22 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         let badge = CALayer()
         container.addSublayer(badge)
         self.comboHudBadgeLayer = badge
+        
+        let tierText = CATextLayer()
+        tierText.font = NSFont.systemFont(ofSize: 8.5, weight: .bold)
+        tierText.fontSize = 8.5
+        tierText.alignmentMode = .left
+        tierText.isWrapped = false
+        badge.addSublayer(tierText)
+        self.comboHudTierTextLayer = tierText
+        
+        let countText = CATextLayer()
+        countText.font = NSFont.monospacedDigitSystemFont(ofSize: 15, weight: .bold)
+        countText.fontSize = 15
+        countText.alignmentMode = .left
+        countText.isWrapped = false
+        badge.addSublayer(countText)
+        self.comboHudCountTextLayer = countText
         
         let track = CALayer()
         track.masksToBounds = true
