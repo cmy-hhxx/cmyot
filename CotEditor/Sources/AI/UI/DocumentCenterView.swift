@@ -573,54 +573,640 @@ nonisolated enum StarMapLayoutEngine {
 }
 
 
-// MARK: - Editorial 3-Pane Document Center (Craft / Apple Notes / Linear Inspired)
+
+// MARK: - Shared Structured Constellation Star-Map Engine (文档星图 / 周报星图)
+
+struct StarMapClusterNode: Identifiable {
+    let id: String
+    let title: String
+    let countText: String
+    let accent: Color
+    let isCollapsed: Bool
+    let leaves: [StarMapLeafNode]
+}
+
+
+struct StarMapLeafNode: Identifiable {
+    let id: String
+    let clusterID: String
+    let title: String
+    let metaLine: String
+    let statusBadge: String?
+    let dotColor: Color
+    let weight: Double
+    let isHighlighted: Bool
+}
+
+
+/// Reusable, calm, structured Star-Map canvas shared by Document Center & Weekly Report Center.
+struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
+    
+    let hubTitle: String
+    let hubSubtitle: String
+    let clusters: [StarMapClusterNode]
+    let selectedLeafID: String?
+    let focusedClusterID: String?
+    let searchQuery: String
+    let onSelectLeaf: (String) -> Void
+    let onDoubleClickLeaf: (String) -> Void
+    let onToggleCluster: (String) -> Void
+    @ViewBuilder let clusterContextMenu: (StarMapClusterNode) -> ClusterMenu
+    @ViewBuilder let leafContextMenu: (StarMapLeafNode) -> LeafMenu
+    
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var panOffset: CGSize = .zero
+    @State private var dragStartPan: CGSize?
+    @State private var zoomScale: CGFloat = 1.0
+    @State private var pinchBaseZoom: CGFloat?
+    @State private var hoveredLeafID: String?
+    @State private var hoveredClusterID: String?
+    @State private var hasAutoFitted = false
+    
+    
+    private var computedLayout: StarMapLayoutEngine.LayoutResult {
+        let clusterIDs = self.clusters.map(\.id)
+        var counts: [String: Int] = [:]
+        var collapsed = Set<String>()
+        var leafIDsByCluster: [String: [String]] = [:]
+        for cluster in self.clusters {
+            let cappedLeaves = Array(cluster.leaves.prefix(40))
+            counts[cluster.id] = cappedLeaves.count
+            leafIDsByCluster[cluster.id] = cappedLeaves.map(\.id)
+            if cluster.isCollapsed {
+                collapsed.insert(cluster.id)
+            }
+        }
+        return StarMapLayoutEngine.compute(
+            clusterIDs: clusterIDs,
+            leafCountsByCluster: counts,
+            collapsedClusterIDs: collapsed,
+            leafIDsByCluster: leafIDsByCluster
+        )
+    }
+    
+    
+    var body: some View {
+        let isDark = (self.colorScheme == .dark)
+        let tokens = DashPalette.editorialTokens(isDark: isDark)
+        let layout = self.computedLayout
+        let clusterMap = Dictionary(uniqueKeysWithValues: self.clusters.map { ($0.id, $0) })
+        let leafMap: [String: StarMapLeafNode] = {
+            var map: [String: StarMapLeafNode] = [:]
+            for c in self.clusters {
+                for l in c.leaves.prefix(40) {
+                    map[l.id] = l
+                }
+            }
+            return map
+        }()
+        let activeFocusClusterID: String? = self.hoveredClusterID
+            ?? self.hoveredLeafID.flatMap { leafMap[$0]?.clusterID }
+            ?? self.focusedClusterID
+            ?? self.selectedLeafID.flatMap { leafMap[$0]?.clusterID }
+        
+        GeometryReader { geo in
+            let viewportCenter = CGPoint(x: geo.size.width * 0.5, y: geo.size.height * 0.5 + 16)
+            let toScreen: (CGPoint) -> CGPoint = { world in
+                CGPoint(
+                    x: viewportCenter.x + self.panOffset.width + world.x * self.zoomScale,
+                    y: viewportCenter.y + self.panOffset.height + world.y * self.zoomScale
+                )
+            }
+            
+            ZStack {
+                tokens.canvasTop
+                    .ignoresSafeArea()
+                
+                // 1. Calm Architectural Grid + Concentric Orbital Rings + Structured Bezier Connections
+                Canvas(opaque: false, colorMode: .nonLinear, rendersAsynchronously: true) { context, size in
+                    guard size.width > 10, size.height > 10 else { return }
+                    let hubScreen = toScreen(.zero)
+                    
+                    // Subtle dot-grid backdrop for crisp spatial anchoring
+                    let gridStep: CGFloat = max(24, 34 * self.zoomScale)
+                    let originX = hubScreen.x.truncatingRemainder(dividingBy: gridStep)
+                    let originY = hubScreen.y.truncatingRemainder(dividingBy: gridStep)
+                    var dotsPath = Path()
+                    var y = originY - gridStep
+                    while y < size.height + gridStep {
+                        var x = originX - gridStep
+                        while x < size.width + gridStep {
+                            dotsPath.addRect(CGRect(x: x - 0.75, y: y - 0.75, width: 1.5, height: 1.5))
+                            x += gridStep
+                        }
+                        y += gridStep
+                    }
+                    context.fill(dotsPath, with: .color(tokens.architecturalDot))
+                    
+                    // Subtle radial ambient mist at hub
+                    let mistR = max(size.width, size.height) * 0.48
+                    let mistRect = CGRect(x: hubScreen.x - mistR, y: hubScreen.y - mistR, width: mistR * 2, height: mistR * 2)
+                    context.fill(
+                        Circle().path(in: mistRect),
+                        with: .radialGradient(
+                            Gradient(colors: [
+                                tokens.accent.opacity(isDark ? 0.09 : 0.055),
+                                .clear,
+                            ]),
+                            center: hubScreen,
+                            startRadius: 12,
+                            endRadius: mistR
+                        )
+                    )
+                    
+                    // Structural orbital rings (Cluster orbit + Leaf orbit)
+                    for (idx, rWorld) in [180.0, 340.0, 490.0].enumerated() {
+                        let rx = CGFloat(rWorld) * 1.16 * self.zoomScale
+                        let ry = CGFloat(rWorld) * 0.87 * self.zoomScale
+                        let ellipseRect = CGRect(x: hubScreen.x - rx, y: hubScreen.y - ry, width: rx * 2, height: ry * 2)
+                        context.stroke(
+                            Path(ellipseIn: ellipseRect),
+                            with: .color(tokens.hairline.opacity(idx == 0 ? 0.95 : 0.55)),
+                            style: StrokeStyle(lineWidth: 0.75, dash: idx == 0 ? [] : [3, 5])
+                        )
+                    }
+                    
+                    // Hub -> Cluster trunks
+                    if layout.clusters.count > 1 {
+                        for cPos in layout.clusters {
+                            let cPt = toScreen(cPos.worldPoint)
+                            let accent = clusterMap[cPos.id]?.accent ?? tokens.accent
+                            let isFocused = (activeFocusClusterID == cPos.id)
+                            let alpha: Double = isFocused ? 0.72 : (activeFocusClusterID == nil ? 0.34 : 0.14)
+                            
+                            let mid = CGPoint(x: (hubScreen.x + cPt.x) * 0.5, y: (hubScreen.y + cPt.y) * 0.5)
+                            let perp = CGPoint(x: -(cPt.y - hubScreen.y) * 0.10, y: (cPt.x - hubScreen.x) * 0.10)
+                            let ctrl = CGPoint(x: mid.x + perp.x, y: mid.y + perp.y)
+                            
+                            var trunk = Path()
+                            trunk.move(to: hubScreen)
+                            trunk.addQuadCurve(to: cPt, control: ctrl)
+                            context.stroke(
+                                trunk,
+                                with: .color(accent.opacity(alpha)),
+                                style: StrokeStyle(lineWidth: isFocused ? 2.0 : 1.25, lineCap: .round)
+                            )
+                        }
+                    }
+                    
+                    // Cluster -> Leaf structured branches
+                    for lPos in layout.leaves {
+                        let parentPt = toScreen(lPos.parentPoint)
+                        let leafPt = toScreen(lPos.worldPoint)
+                        let leaf = leafMap[lPos.id]
+                        let isSelected = (self.selectedLeafID == lPos.id)
+                        let isHovered = (self.hoveredLeafID == lPos.id)
+                        let isClusterFocused = (activeFocusClusterID == lPos.clusterID)
+                        let branchColor = leaf?.dotColor ?? tokens.accent
+                        let alpha: Double = (isSelected || isHovered)
+                            ? 0.88
+                            : (isClusterFocused ? 0.42 : (activeFocusClusterID == nil ? 0.24 : 0.10))
+                        
+                        let mid = CGPoint(x: (parentPt.x + leafPt.x) * 0.5, y: (parentPt.y + leafPt.y) * 0.5)
+                        let bend: CGFloat = 0.08
+                        let ctrl = CGPoint(
+                            x: mid.x - (leafPt.y - parentPt.y) * bend,
+                            y: mid.y + (leafPt.x - parentPt.x) * bend
+                        )
+                        var curve = Path()
+                        curve.move(to: parentPt)
+                        curve.addQuadCurve(to: leafPt, control: ctrl)
+                        context.stroke(
+                            curve,
+                            with: .color(branchColor.opacity(alpha)),
+                            style: StrokeStyle(lineWidth: (isSelected || isHovered) ? 1.8 : 0.9, lineCap: .round)
+                        )
+                    }
+                }
+                .allowsHitTesting(false)
+                
+                // 2. Center Hub Core Node
+                let hubScreen = toScreen(.zero)
+                VStack(spacing: 3) {
+                    Text(self.hubTitle)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(tokens.primaryInk)
+                    Text(self.hubSubtitle)
+                        .font(.system(size: 10.5, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(tokens.primaryInk.opacity(0.55))
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(tokens.card)
+                        .shadow(color: tokens.cardShadow, radius: 12, y: 3)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(tokens.accent.opacity(0.50), lineWidth: 1.2)
+                )
+                .position(hubScreen)
+                
+                // 3. Tier-1 Cluster Nodes (Groups / Months)
+                if layout.clusters.count > 1 {
+                    ForEach(layout.clusters) { cPos in
+                        if let cluster = clusterMap[cPos.id] {
+                            let isFocused = (activeFocusClusterID == cluster.id)
+                            let isHovered = (self.hoveredClusterID == cluster.id)
+                            let dimmed = (activeFocusClusterID != nil && !isFocused)
+                            
+                            Button {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                                    self.onToggleCluster(cluster.id)
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                        .fill(cluster.accent)
+                                        .frame(width: 3.5, height: 14)
+                                    
+                                    Text(cluster.title)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(tokens.primaryInk)
+                                        .lineLimit(1)
+                                    
+                                    Text(cluster.countText)
+                                        .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+                                        .foregroundStyle(cluster.accent)
+                                        .padding(.horizontal, 6)
+                                        .frame(height: 18)
+                                        .background(cluster.accent.opacity(isDark ? 0.18 : 0.11), in: Capsule())
+                                    
+                                    Image(systemName: cluster.isCollapsed ? "chevron.right" : "chevron.down")
+                                        .font(.system(size: 8.5, weight: .bold))
+                                        .foregroundStyle(tokens.primaryInk.opacity(0.45))
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 30)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .fill(tokens.card)
+                                        .shadow(color: tokens.cardShadow, radius: isHovered ? 10 : 4, y: 2)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .strokeBorder(
+                                            (isFocused || isHovered) ? cluster.accent.opacity(0.70) : tokens.hairlineStrong,
+                                            lineWidth: (isFocused || isHovered) ? 1.2 : 0.8
+                                        )
+                                )
+                                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                            .opacity(dimmed ? 0.52 : 1.0)
+                            .scaleEffect(isHovered ? 1.04 : 1.0)
+                            .animation(.easeOut(duration: 0.14), value: isHovered)
+                            .position(toScreen(cPos.worldPoint))
+                            .onHover { hovering in
+                                self.hoveredClusterID = hovering ? cluster.id : (self.hoveredClusterID == cluster.id ? nil : self.hoveredClusterID)
+                            }
+                            .contextMenu {
+                                self.clusterContextMenu(cluster)
+                            }
+                        }
+                    }
+                }
+                
+                // 4. Tier-2 Structured Leaf Cards (Documents / Weekly Reports)
+                ForEach(layout.leaves) { lPos in
+                    if let leaf = leafMap[lPos.id] {
+                        let isSelected = (self.selectedLeafID == leaf.id)
+                        let isHovered = (self.hoveredLeafID == leaf.id)
+                        let isClusterFocused = (activeFocusClusterID == leaf.clusterID)
+                        let dimmed = (activeFocusClusterID != nil && !isClusterFocused && !isSelected)
+                        
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(leaf.dotColor)
+                                    .frame(width: isSelected ? 7.5 : 6, height: isSelected ? 7.5 : 6)
+                                
+                                Text(leaf.title)
+                                    .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                                    .foregroundStyle(tokens.primaryInk.opacity(isSelected ? 1.0 : 0.90))
+                                    .lineLimit(1)
+                                    .frame(maxWidth: 144, alignment: .leading)
+                            }
+                            
+                            if isSelected || isHovered || self.zoomScale >= 0.78 {
+                                HStack(spacing: 5) {
+                                    if let badge = leaf.statusBadge, !badge.isEmpty {
+                                        Text(badge)
+                                            .font(.system(size: 9, weight: .semibold))
+                                            .foregroundStyle(tokens.accentText)
+                                            .padding(.horizontal, 4.5)
+                                            .frame(height: 15)
+                                            .background(tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                    }
+                                    if !leaf.metaLine.isEmpty {
+                                        Text(leaf.metaLine)
+                                            .font(.system(size: 10, weight: .regular, design: .rounded).monospacedDigit())
+                                            .foregroundStyle(tokens.primaryInk.opacity(0.48))
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .padding(.leading, 12)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(tokens.card.opacity(isSelected || isHovered ? 1.0 : (isDark ? 0.88 : 0.96)))
+                                .shadow(
+                                    color: isSelected ? leaf.dotColor.opacity(0.22) : tokens.cardShadow,
+                                    radius: isSelected ? 10 : (isHovered ? 6 : 3),
+                                    y: isSelected ? 3 : 1
+                                )
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(
+                                    isSelected
+                                        ? leaf.dotColor.opacity(0.85)
+                                        : (isHovered ? leaf.dotColor.opacity(0.45) : tokens.hairline),
+                                    lineWidth: isSelected ? 1.4 : 0.8
+                                )
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .opacity(dimmed ? 0.42 : 1.0)
+                        .scaleEffect(isSelected ? 1.04 : (isHovered ? 1.02 : 1.0))
+                        .animation(.easeOut(duration: 0.14), value: isHovered)
+                        .animation(.easeOut(duration: 0.16), value: isSelected)
+                        .position(toScreen(lPos.worldPoint))
+                        .pointerStyle(.link)
+                        .onHover { hovering in
+                            self.hoveredLeafID = hovering ? leaf.id : (self.hoveredLeafID == leaf.id ? nil : self.hoveredLeafID)
+                        }
+                        .onTapGesture(count: 2) {
+                            self.onSelectLeaf(leaf.id)
+                            self.onDoubleClickLeaf(leaf.id)
+                        }
+                        .onTapGesture(count: 1) {
+                            self.onSelectLeaf(leaf.id)
+                        }
+                        .contextMenu {
+                            self.leafContextMenu(leaf)
+                        }
+                    }
+                }
+                
+                // 5. Minimal Zoom Controls (Bottom-Right)
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        HStack(spacing: 2) {
+                            Button {
+                                withAnimation(.easeOut(duration: 0.18)) {
+                                    self.zoomScale = max(0.45, self.zoomScale - 0.15)
+                                }
+                            } label: {
+                                Image(systemName: "minus")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .frame(width: 26, height: 26)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                            
+                            Button {
+                                self.fitViewport(bounds: layout.bounds, size: geo.size, animated: true)
+                            } label: {
+                                Text("\(Int((self.zoomScale * 100).rounded()))%")
+                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
+                                    .frame(minWidth: 42, minHeight: 26)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                            .help("重置视角以适配全部星图")
+                            
+                            Button {
+                                withAnimation(.easeOut(duration: 0.18)) {
+                                    self.zoomScale = min(1.80, self.zoomScale + 0.15)
+                                }
+                            } label: {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .frame(width: 26, height: 26)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        }
+                        .foregroundStyle(tokens.primaryInk.opacity(0.76))
+                        .padding(.horizontal, 4)
+                        .background(tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(tokens.hairlineStrong, lineWidth: 0.75)
+                        )
+                        .padding(16)
+                    }
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 4)
+                    .onChanged { value in
+                        if self.dragStartPan == nil {
+                            self.dragStartPan = self.panOffset
+                        }
+                        if let base = self.dragStartPan {
+                            self.panOffset = CGSize(
+                                width: base.width + value.translation.width,
+                                height: base.height + value.translation.height
+                            )
+                        }
+                    }
+                    .onEnded { _ in
+                        self.dragStartPan = nil
+                    }
+            )
+            .simultaneousGesture(
+                MagnificationGesture()
+                    .onChanged { value in
+                        if self.pinchBaseZoom == nil {
+                            self.pinchBaseZoom = self.zoomScale
+                        }
+                        if let base = self.pinchBaseZoom {
+                            self.zoomScale = min(1.85, max(0.42, base * value))
+                        }
+                    }
+                    .onEnded { _ in
+                        self.pinchBaseZoom = nil
+                    }
+            )
+            .onAppear {
+                if !self.hasAutoFitted && geo.size.width > 100 {
+                    self.hasAutoFitted = true
+                    self.fitViewport(bounds: layout.bounds, size: geo.size, animated: false)
+                }
+            }
+            .onChange(of: geo.size) { _, newSize in
+                if !self.hasAutoFitted && newSize.width > 100 {
+                    self.hasAutoFitted = true
+                    self.fitViewport(bounds: layout.bounds, size: newSize, animated: false)
+                }
+            }
+            .onChange(of: self.searchQuery) { _, _ in
+                self.fitViewport(bounds: self.computedLayout.bounds, size: geo.size, animated: true)
+            }
+            .onChange(of: self.focusedClusterID) { _, nextCID in
+                guard geo.size.width > 100 else { return }
+                if let nextCID, let cPos = self.computedLayout.clusters.first(where: { $0.id == nextCID }) {
+                    let targetZoom: CGFloat = max(self.zoomScale, 0.92)
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                        self.zoomScale = targetZoom
+                        self.panOffset = CGSize(
+                            width: -cPos.worldPoint.x * targetZoom * 0.72,
+                            height: -cPos.worldPoint.y * targetZoom * 0.72
+                        )
+                    }
+                } else {
+                    self.fitViewport(bounds: self.computedLayout.bounds, size: geo.size, animated: true)
+                }
+            }
+        }
+    }
+    
+    
+    private func fitViewport(bounds: CGRect, size: CGSize, animated: Bool) {
+        let usableW = max(240, size.width - 120)
+        let usableH = max(200, size.height - 190)
+        let fitX = usableW / max(240, bounds.width)
+        let fitY = usableH / max(180, bounds.height)
+        let targetZoom = min(1.06, max(0.56, min(fitX, fitY)))
+        let targetPan = CGSize(
+            width: -bounds.midX * targetZoom,
+            height: -bounds.midY * targetZoom
+        )
+        if animated {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                self.zoomScale = targetZoom
+                self.panOffset = targetPan
+            }
+        } else {
+            self.zoomScale = targetZoom
+            self.panOffset = targetPan
+        }
+    }
+}
+
+
+/// Clean macOS QuickLook-style Spacebar preview overlay floating over the Star-Map.
+struct StarMapQuickLookOverlay<HeaderActions: View, BodyContent: View>: View {
+    
+    let title: String
+    let subtitle: String
+    let canStepPrevious: Bool
+    let canStepNext: Bool
+    let onPrevious: () -> Void
+    let onNext: () -> Void
+    let onClose: () -> Void
+    @ViewBuilder let headerActions: () -> HeaderActions
+    @ViewBuilder let bodyContent: () -> BodyContent
+    
+    @Environment(\.colorScheme) private var colorScheme
+    
+    
+    var body: some View {
+        let tokens = DashPalette.editorialTokens(isDark: self.colorScheme == .dark)
+        
+        ZStack {
+            Color.black.opacity(self.colorScheme == .dark ? 0.50 : 0.24)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    self.onClose()
+                }
+            
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    HStack(spacing: 4) {
+                        Button(action: self.onPrevious) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .frame(width: 26, height: 26)
+                                .background(tokens.inset, in: Circle())
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(self.canStepPrevious ? .link : .default)
+                        .disabled(!self.canStepPrevious)
+                        .opacity(self.canStepPrevious ? 1 : 0.35)
+                        
+                        Button(action: self.onNext) {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .frame(width: 26, height: 26)
+                                .background(tokens.inset, in: Circle())
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(self.canStepNext ? .link : .default)
+                        .disabled(!self.canStepNext)
+                        .opacity(self.canStepNext ? 1 : 0.35)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(self.title)
+                            .font(.system(size: 14.5, weight: .semibold))
+                            .foregroundStyle(tokens.primaryInk)
+                            .lineLimit(1)
+                        if !self.subtitle.isEmpty {
+                            Text(self.subtitle)
+                                .font(.system(size: 11, weight: .regular, design: .rounded).monospacedDigit())
+                                .foregroundStyle(tokens.primaryInk.opacity(0.52))
+                                .lineLimit(1)
+                        }
+                    }
+                    
+                    Spacer(minLength: 8)
+                    
+                    self.headerActions()
+                    
+                    Button(action: self.onClose) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(tokens.primaryInk.opacity(0.72))
+                            .frame(width: 28, height: 28)
+                            .background(tokens.inset, in: Circle())
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help("按空格或 Esc 关闭预览")
+                }
+                .padding(.horizontal, 18)
+                .frame(height: 54)
+                
+                Rectangle()
+                    .fill(tokens.hairline)
+                    .frame(height: 1)
+                
+                self.bodyContent()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: 760, maxHeight: 580)
+            .background(tokens.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(tokens.hairlineStrong, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(self.colorScheme == .dark ? 0.55 : 0.20), radius: 28, y: 12)
+            .padding(28)
+        }
+        .transition(.opacity.combined(with: .scale(scale: 0.97)))
+    }
+}
+
+
+// MARK: - Structured Star-Map Document Center
 
 struct DocumentCenterView: View {
-    
-    private enum LibraryScope: Hashable {
-        case all
-        case openNow
-        case ungrouped
-        case group(String)
-        case trash
-    }
-    
-    private enum CollectionLayoutMode: String, CaseIterable, Identifiable {
-        case list
-        case gallery
-        
-        var id: String { self.rawValue }
-        
-        var icon: String {
-            switch self {
-                case .list: "list.bullet"
-                case .gallery: "square.grid.2x2"
-            }
-        }
-        
-        var label: String {
-            switch self {
-                case .list: "列表"
-                case .gallery: "画廊"
-            }
-        }
-    }
-    
-    private enum SortOrder: String, CaseIterable, Identifiable {
-        case updatedDesc
-        case titleAsc
-        case lengthDesc
-        
-        var id: String { self.rawValue }
-        
-        var label: String {
-            switch self {
-                case .updatedDesc: "最近更新"
-                case .titleAsc: "标题排序"
-                case .lengthDesc: "字数最多"
-            }
-        }
-    }
     
     @Bindable var state: DocumentCenterState
     var onOpenDocument: ((Document?, StoredDocumentRecord?) -> Void)?
@@ -632,241 +1218,314 @@ struct DocumentCenterView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.registerWorkspaceCenterEscPop) private var registerEscPop
     @State private var db = CotLocalDatabase.shared
-    @State private var studioPalette = StudioPaletteManager.shared
-    
-    @State private var scope: LibraryScope = .all
-    @State private var layoutMode: CollectionLayoutMode = .list
-    @State private var sortOrder: SortOrder = .updatedDesc
-    @State private var isSidebarHidden = false
-    
+    @State private var focusedClusterID: String?
+    @State private var isQuickLookOpen = false
     @State private var isRenaming = false
     @State private var renameDraft = ""
     @FocusState private var isRenameFieldFocused: Bool
-    
     @State private var isCreatingGroup = false
     @State private var newGroupDraft = ""
-    @FocusState private var isNewGroupFocused: Bool
     @State private var pendingAssignAfterGroupCreate: DocumentCenterState.ManagedDocumentItem?
-    
     @State private var renamingGroupName: String?
     @State private var groupRenameDraft = ""
-    @FocusState private var isGroupRenameFocused: Bool
-    
     @State private var copiedFlag = false
     @State private var toastMessage: String?
     @State private var toastTask: Task<Void, Never>?
     @State private var keyMonitor: Any?
     
     
-    private var scopedItems: [DocumentCenterState.ManagedDocumentItem] {
-        let base: [DocumentCenterState.ManagedDocumentItem] = switch self.scope {
-            case .trash:
-                self.state.displayedItems
-            case .all:
-                self.state.displayedItems
-            case .openNow:
-                self.state.displayedItems.filter(\.isOpenNow)
-            case .ungrouped:
-                self.state.displayedItems.filter { $0.groupName.isEmpty }
-            case .group(let name):
-                self.state.displayedItems.filter { $0.groupName == name }
-        }
-        
-        switch self.sortOrder {
-            case .updatedDesc:
-                return base
-            case .titleAsc:
-                return base.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-            case .lengthDesc:
-                return base.sorted { $0.characterCount > $1.characterCount }
-        }
-    }
-    
-    private var scopeTitle: String {
-        switch self.scope {
-            case .all: "全部文档"
-            case .openNow: "正在编辑"
-            case .ungrouped: "未分组"
-            case .group(let name): name
-            case .trash: "废纸篓"
-        }
-    }
-    
-    
     var body: some View {
-        let tokens = self.studioPalette.tokens(isDark: self.colorScheme == .dark)
-        let items = self.scopedItems
-        let activeItem = self.selectedItem(in: items)
+        let displayedItems = self.state.displayedItems
+        let activeItem = self.selectedItem(in: displayedItems)
+        let tokens = DashPalette.editorialTokens(isDark: self.colorScheme == .dark)
+        let clusters = self.buildStarClusters(displayedItems: displayedItems, tokens: tokens)
+        let itemByID = Dictionary(uniqueKeysWithValues: displayedItems.map { ($0.id, $0) })
+        let sectionByID = Dictionary(uniqueKeysWithValues: self.state.groupSections.map { ($0.id, $0) })
         
-        ZStack(alignment: .bottom) {
-            LinearGradient(
-                colors: [tokens.canvasTop, tokens.canvasBottom],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-            
-            VStack(spacing: 0) {
-                self.topToolbar(totalCount: items.count, tokens: tokens)
-                
-                Rectangle()
-                    .fill(tokens.hairline)
-                    .frame(height: 0.75)
-                
-                GeometryReader { geo in
-                    let showSidebar = !self.isSidebarHidden && geo.size.width >= 780
-                    let collectionW: CGFloat = self.layoutMode == .gallery
-                        ? min(340, max(256, geo.size.width * 0.34))
-                        : min(296, max(230, geo.size.width * 0.28))
-                    
-                    HStack(spacing: 0) {
-                        if showSidebar {
-                            self.sidebarPane(tokens: tokens)
-                                .frame(width: 192)
-                            
-                            Rectangle()
-                                .fill(tokens.hairline)
-                                .frame(width: 0.75)
+        ZStack {
+            ConstellationStarMapView(
+                hubTitle: self.state.showingTrash ? "废纸篓" : "文档星图",
+                hubSubtitle: self.state.showingTrash
+                    ? "\(displayedItems.count) 篇已删"
+                    : "\(displayedItems.count) 篇 · \(max(1, self.state.groupSections.count)) 分组",
+                clusters: clusters,
+                selectedLeafID: activeItem?.id,
+                focusedClusterID: self.focusedClusterID,
+                searchQuery: self.state.searchText,
+                onSelectLeaf: { id in
+                    self.isRenaming = false
+                    self.state.selectedID = id
+                },
+                onDoubleClickLeaf: { id in
+                    if let item = itemByID[id] {
+                        if item.isTrashed {
+                            withAnimation(.easeOut(duration: 0.16)) { self.isQuickLookOpen = true }
+                        } else {
+                            self.open(item: item)
                         }
-                        
-                        self.collectionPane(items: items, activeItem: activeItem, tokens: tokens)
-                            .frame(width: collectionW)
-                        
-                        Rectangle()
-                            .fill(tokens.hairline)
-                            .frame(width: 0.75)
-                        
-                        self.readerPane(activeItem: activeItem, tokens: tokens)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                },
+                onToggleCluster: { cid in
+                    if self.state.collapsedGroups.contains(cid) {
+                        self.state.collapsedGroups.remove(cid)
+                    } else {
+                        self.state.collapsedGroups.insert(cid)
+                    }
+                },
+                clusterContextMenu: { cluster in
+                    if let section = sectionByID[cluster.id] {
+                        Button("展开此分组全部文档") {
+                            self.openAll(items: section.items)
+                        }
+                        .disabled(section.items.isEmpty)
+                        
+                        if !section.isUngrouped {
+                            Button("重命名分组") {
+                                self.groupRenameDraft = section.name
+                                self.renamingGroupName = section.name
+                            }
+                            Divider()
+                            Button("解散分组（保留文档）", role: .destructive) {
+                                self.db.deleteDocumentGroup(named: section.name)
+                                if self.focusedClusterID == cluster.id { self.focusedClusterID = nil }
+                                self.state.refresh()
+                                self.showToast("已解散分组「\(section.name)」")
+                            }
+                        }
+                    }
+                },
+                leafContextMenu: { leaf in
+                    if let item = itemByID[leaf.id] {
+                        if item.isTrashed {
+                            Button("预览") {
+                                self.state.selectedID = item.id
+                                withAnimation(.easeOut(duration: 0.16)) { self.isQuickLookOpen = true }
+                            }
+                            Button("恢复文档") { self.restore(item: item) }
+                            Divider()
+                            Button("彻底删除", role: .destructive) { self.permanentlyDelete(item: item) }
+                        } else {
+                            Button("在编辑器打开") { self.open(item: item) }
+                            Button("预览") {
+                                self.state.selectedID = item.id
+                                withAnimation(.easeOut(duration: 0.16)) { self.isQuickLookOpen = true }
+                            }
+                            Button("重命名") {
+                                self.state.selectedID = item.id
+                                self.renameDraft = item.title
+                                self.isRenaming = true
+                                DispatchQueue.main.async { self.isRenameFieldFocused = true }
+                            }
+                            Menu("移动到分组") {
+                                Button("未分组") { self.move(item: item, toGroup: "") }
+                                if !self.db.documentGroups.isEmpty {
+                                    Divider()
+                                    ForEach(self.db.documentGroups, id: \.self) { group in
+                                        Button(group) { self.move(item: item, toGroup: group) }
+                                    }
+                                }
+                                Divider()
+                                Button("新建分组并移入…") {
+                                    self.pendingAssignAfterGroupCreate = item
+                                    self.newGroupDraft = ""
+                                    self.isCreatingGroup = true
+                                }
+                            }
+                            Divider()
+                            Button("移入废纸篓", role: .destructive) {
+                                self.delete(item: item, in: displayedItems)
+                            }
+                        }
+                    }
+                }
+            )
+            
+            // Minimal Floating Top HUD + Group Quick-Jump Strip + Bottom Focus Dock
+            VStack(spacing: 8) {
+                self.floatingTopBar(tokens: tokens)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+                
+                if !self.state.showingTrash && clusters.count > 1 {
+                    self.groupQuickJumpStrip(clusters: clusters, tokens: tokens)
+                        .padding(.horizontal, 16)
+                }
+                
+                if self.isCreatingGroup {
+                    self.inlineGroupPromptBar(
+                        placeholder: "输入新分组名称…",
+                        text: self.$newGroupDraft,
+                        tokens: tokens,
+                        onCommit: { self.commitCreateGroup() },
+                        onCancel: {
+                            self.isCreatingGroup = false
+                            self.pendingAssignAfterGroupCreate = nil
+                        }
+                    )
+                } else if let renamingGroup = self.renamingGroupName {
+                    self.inlineGroupPromptBar(
+                        placeholder: "重命名分组「\(renamingGroup)」…",
+                        text: self.$groupRenameDraft,
+                        tokens: tokens,
+                        onCommit: { self.commitGroupRename(oldName: renamingGroup) },
+                        onCancel: { self.renamingGroupName = nil }
+                    )
+                }
+                
+                Spacer()
+                
+                if let activeItem {
+                    self.bottomFocusDock(item: activeItem, allItems: displayedItems, tokens: tokens)
+                        .padding(.bottom, 16)
+                } else {
+                    self.floatingEmptyHint(tokens: tokens)
+                        .padding(.bottom, 22)
                 }
             }
             
-            if let toastMessage = self.toastMessage {
-                Text(toastMessage)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(tokens.primaryInk)
+            // Spacebar QuickLook Overlay
+            if self.isQuickLookOpen, let item = activeItem {
+                let idx = displayedItems.firstIndex(where: { $0.id == item.id }) ?? 0
+                StarMapQuickLookOverlay(
+                    title: item.title,
+                    subtitle: "\(item.groupName.isEmpty ? "未分组" : item.groupName) · \(item.characterCount.formatted()) 字 · \(Self.relativeTime(item.updatedAt))",
+                    canStepPrevious: idx > 0,
+                    canStepNext: idx + 1 < displayedItems.count,
+                    onPrevious: { self.stepSelection(by: -1, in: displayedItems) },
+                    onNext: { self.stepSelection(by: 1, in: displayedItems) },
+                    onClose: {
+                        withAnimation(.easeOut(duration: 0.14)) { self.isQuickLookOpen = false }
+                    },
+                    headerActions: {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(item.content, forType: .string)
+                            self.copiedFlag = true
+                            self.showToast("已复制全文")
+                            Task {
+                                try? await Task.sleep(for: .seconds(1.5))
+                                self.copiedFlag = false
+                            }
+                        } label: {
+                            Text(self.copiedFlag ? "已复制" : "复制")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(tokens.primaryInk.opacity(0.84))
+                                .padding(.horizontal, 10)
+                                .frame(height: 26)
+                                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                        
+                        if item.isTrashed {
+                            Button {
+                                self.isQuickLookOpen = false
+                                self.restore(item: item)
+                            } label: {
+                                Text("恢复文档")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(tokens.onAccentInk)
+                                    .padding(.horizontal, 11)
+                                    .frame(height: 26)
+                                    .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        } else {
+                            Button {
+                                self.isQuickLookOpen = false
+                                self.open(item: item)
+                            } label: {
+                                Text("在编辑器打开")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(tokens.onAccentInk)
+                                    .padding(.horizontal, 11)
+                                    .frame(height: 26)
+                                    .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        }
+                    },
+                    bodyContent: {
+                        CenterPreviewTextView(text: item.previewText)
+                            .id("doc-ql-\(item.id)-\(idx)")
+                    }
+                )
+            }
+            
+            if let toastMessage {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(tokens.accent)
+                            .frame(width: 6, height: 6)
+                        Text(toastMessage)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(tokens.primaryInk)
+                    }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 7)
                     .background(tokens.card, in: Capsule())
-                    .overlay(Capsule().strokeBorder(tokens.hairlineStrong, lineWidth: 0.75))
-                    .shadow(color: tokens.cardShadow, radius: 10, y: 3)
-                    .padding(.bottom, 16)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .overlay(Capsule().strokeBorder(tokens.hairlineStrong, lineWidth: 0.8))
+                    .shadow(color: tokens.cardShadow, radius: 10, y: 4)
+                    .padding(.bottom, 74)
+                }
+                .allowsHitTesting(false)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
         .onAppear {
-            self.state.showingTrash = (self.scope == .trash)
             self.state.refresh()
             self.installKeyboardMonitor()
-            self.registerEscPop? {
-                self.handleEscapePop()
-            }
+            self.registerEscPop? { self.handleEscapePop() }
         }
         .onDisappear {
             self.removeKeyboardMonitor()
             self.registerEscPop?(nil)
         }
-        .onChange(of: self.scope) { _, newScope in
-            let nextTrash = (newScope == .trash)
-            if self.state.showingTrash != nextTrash {
-                self.state.showingTrash = nextTrash
-            }
-            if let first = self.scopedItems.first, !self.scopedItems.contains(where: { $0.id == self.state.selectedID }) {
-                self.state.selectedID = first.id
-            }
-        }
-        .onChange(of: self.db.documentsRevision) { _, _ in
+        .onChange(of: self.db.documents.count) { _, _ in
             self.state.refresh()
         }
-        .onChange(of: self.db.documentGroups) { _, _ in
-            self.state.refresh()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSDocument.DidChangeFileURLMessage.name)) { _ in
+        .onChange(of: self.db.trashedDocuments.count) { _, _ in
             self.state.refresh()
         }
     }
     
     
-    private func handleEscapePop() -> Bool {
-        if self.isRenaming {
-            self.isRenaming = false
-            return true
-        }
-        if self.isCreatingGroup || self.renamingGroupName != nil {
-            self.isCreatingGroup = false
-            self.renamingGroupName = nil
-            self.pendingAssignAfterGroupCreate = nil
-            return true
-        }
-        if self.scope == .trash {
-            self.scope = .all
-            return true
-        }
-        return false
-    }
+    // MARK: Floating HUDs
     
-    
-    // MARK: 1. Unified Top Toolbar
-    
-    private func topToolbar(totalCount: Int, tokens: StudioColorTokens) -> some View {
+    private func floatingTopBar(tokens: StudioColorTokens) -> some View {
         HStack(spacing: 10) {
             if let onDismiss = self.onDismiss {
                 Button(action: onDismiss) {
                     HStack(spacing: 5) {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: 10.5, weight: .semibold))
                         Text("返回编辑")
-                            .font(.system(size: 12.5, weight: .medium))
+                            .font(.system(size: 12, weight: .medium))
                     }
                     .foregroundStyle(tokens.primaryInk.opacity(0.84))
-                    .padding(.horizontal, 10)
-                    .frame(height: 30)
+                    .padding(.horizontal, 11)
+                    .frame(height: 32)
                     .background(tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(tokens.hairline, lineWidth: 0.75)
-                    )
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tokens.hairlineStrong, lineWidth: 0.75))
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
             }
             
-            Button {
-                withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.18)) {
-                    self.isSidebarHidden.toggle()
-                }
-            } label: {
-                Image(systemName: "sidebar.leading")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.72))
-                    .frame(width: 28, height: 28)
-                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .help("显示或隐藏分组边栏")
-            
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("文档中心")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(tokens.primaryInk)
-                Text("\(totalCount)")
-                    .font(.system(size: 11.5, weight: .medium, design: .rounded).monospacedDigit())
-                    .foregroundStyle(tokens.primaryInk.opacity(0.45))
-            }
-            
-            Spacer(minLength: 8)
-            
-            // Search input
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(tokens.primaryInk.opacity(0.45))
-                TextField("搜索标题、分组或正文", text: self.$state.searchText)
+                TextField("搜索星图文档…", text: self.$state.searchText)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .foregroundStyle(tokens.primaryInk)
-                    .frame(minWidth: 130, maxWidth: 210)
+                    .font(.system(size: 12.5))
+                    .frame(width: 175)
                 if !self.state.searchText.isEmpty {
                     Button {
                         self.state.searchText = ""
@@ -878,861 +1537,520 @@ struct DocumentCenterView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 9)
-            .frame(height: 30)
+            .padding(.horizontal, 10)
+            .frame(height: 32)
             .background(tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(tokens.hairline, lineWidth: 0.75)
-            )
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tokens.hairlineStrong, lineWidth: 0.75))
             
-            // List / Gallery layout switcher
-            HStack(spacing: 2) {
-                ForEach(CollectionLayoutMode.allCases) { mode in
-                    let active = (self.layoutMode == mode)
-                    Button {
-                        withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.16)) {
-                            self.layoutMode = mode
+            Spacer(minLength: 8)
+            
+            HStack(spacing: 6) {
+                if !self.state.showingTrash {
+                    if let onCreateNewDocument = self.onCreateNewDocument {
+                        Button(action: onCreateNewDocument) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 10.5, weight: .bold))
+                                Text("新建文档")
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                            .foregroundStyle(tokens.onAccentInk)
+                            .padding(.horizontal, 12)
+                            .frame(height: 30)
+                            .background(tokens.accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                    }
+                    
+                    Button {
+                        self.newGroupDraft = ""
+                        self.pendingAssignAfterGroupCreate = nil
+                        withAnimation(.easeOut(duration: 0.16)) { self.isCreatingGroup.toggle() }
                     } label: {
-                        Image(systemName: mode.icon)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(active ? tokens.onAccentInk : tokens.primaryInk.opacity(0.62))
-                            .frame(width: 26, height: 24)
-                            .background(active ? tokens.accent : Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        Text("新分组")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(tokens.primaryInk.opacity(0.80))
+                            .padding(.horizontal, 10)
+                            .frame(height: 30)
+                            .background(tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tokens.hairlineStrong, lineWidth: 0.75))
+                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
                     .buttonStyle(.plain)
-                    .help(mode.label)
+                    .pointerStyle(.link)
+                } else if !self.state.trashedItems.isEmpty {
+                    Button {
+                        self.confirmEmptyTrash()
+                    } label: {
+                        Text("清空废纸篓")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 10)
+                            .frame(height: 30)
+                            .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
                 }
-            }
-            .padding(3)
-            .background(tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(tokens.hairline, lineWidth: 0.75)
-            )
-            
-            Button {
-                self.pendingAssignAfterGroupCreate = nil
-                self.newGroupDraft = ""
-                self.isSidebarHidden = false
-                self.isCreatingGroup = true
-            } label: {
-                Label("新分组", systemImage: "folder.badge.plus")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.84))
-                    .padding(.horizontal, 9)
-                    .frame(height: 30)
-                    .background(tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(tokens.hairline, lineWidth: 0.75)
-                    )
-            }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            
-            if let onCreateNewDocument = self.onCreateNewDocument {
-                Button(action: onCreateNewDocument) {
-                    Label("新建文档", systemImage: "plus")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(tokens.onAccentInk)
-                        .padding(.horizontal, 11)
+                
+                Button {
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        self.isQuickLookOpen = false
+                        self.focusedClusterID = nil
+                        self.state.showingTrash.toggle()
+                    }
+                } label: {
+                    let count = self.state.trashedItems.count
+                    Text(self.state.showingTrash ? "返回星图" : (count > 0 ? "废纸篓 \(count)" : "废纸篓"))
+                        .font(.system(size: 12, weight: .medium).monospacedDigit())
+                        .foregroundStyle(self.state.showingTrash ? tokens.accentText : tokens.primaryInk.opacity(0.72))
+                        .padding(.horizontal, 10)
                         .frame(height: 30)
-                        .background(tokens.accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .background(
+                            self.state.showingTrash ? tokens.positivePillBg : tokens.card,
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tokens.hairlineStrong, lineWidth: 0.75))
+                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
             }
         }
-        .padding(.horizontal, 16)
-        .frame(height: 48)
     }
     
     
-    // MARK: 2. Left Spaces Sidebar
-    
-    private func sidebarPane(tokens: StudioColorTokens) -> some View {
-        let openCount = self.state.items.filter(\.isOpenNow).count
-        let ungroupedCount = self.state.items.filter { $0.groupName.isEmpty }.count
-        
-        return VStack(alignment: .leading, spacing: 0) {
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 2) {
-                    self.sidebarRow(
-                        title: "全部文档",
-                        icon: "doc.on.doc",
-                        count: self.state.items.count,
-                        targetScope: .all,
-                        tokens: tokens
-                    )
-                    self.sidebarRow(
-                        title: "正在编辑",
-                        icon: "pencil.line",
-                        count: openCount,
-                        targetScope: .openNow,
-                        tokens: tokens
-                    )
-                    self.sidebarRow(
-                        title: "未分组",
-                        icon: "tray",
-                        count: ungroupedCount,
-                        targetScope: .ungrouped,
-                        tokens: tokens
-                    )
-                    
-                    HStack {
-                        Text("分组")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(tokens.primaryInk.opacity(0.45))
-                        Spacer()
-                        Button {
-                            self.pendingAssignAfterGroupCreate = nil
-                            self.newGroupDraft = ""
-                            self.isCreatingGroup = true
-                        } label: {
-                            Image(systemName: "plus")
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .foregroundStyle(tokens.primaryInk.opacity(0.55))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.top, 16)
-                    .padding(.bottom, 4)
-                    
-                    if self.isCreatingGroup {
-                        HStack(spacing: 4) {
-                            TextField("输入分组名称", text: self.$newGroupDraft)
-                                .textFieldStyle(.plain)
-                                .font(.system(size: 12))
-                                .focused(self.$isNewGroupFocused)
-                                .onSubmit { self.commitCreateGroup() }
-                            Button {
-                                self.commitCreateGroup()
-                            } label: {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundStyle(tokens.accentText)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 8)
-                        .frame(height: 30)
-                        .background(tokens.card, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .strokeBorder(tokens.accent.opacity(0.45), lineWidth: 0.9)
-                        )
-                        .padding(.horizontal, 4)
-                        .padding(.bottom, 4)
-                        .onAppear { self.isNewGroupFocused = true }
-                    }
-                    
-                    ForEach(self.db.documentGroups, id: \.self) { groupName in
-                        let groupCount = self.state.items.filter { $0.groupName == groupName }.count
-                        if self.renamingGroupName == groupName {
-                            HStack(spacing: 4) {
-                                TextField("分组名", text: self.$groupRenameDraft)
-                                    .textFieldStyle(.plain)
-                                    .font(.system(size: 12))
-                                    .focused(self.$isGroupRenameFocused)
-                                    .onSubmit { self.commitGroupRename(oldName: groupName) }
-                            }
-                            .padding(.horizontal, 8)
-                            .frame(height: 30)
-                            .background(tokens.card, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .strokeBorder(tokens.accent.opacity(0.45), lineWidth: 0.9)
-                            )
-                            .padding(.horizontal, 4)
-                            .onAppear { self.isGroupRenameFocused = true }
-                        } else {
-                            self.sidebarRow(
-                                title: groupName,
-                                icon: "folder",
-                                count: groupCount,
-                                targetScope: .group(groupName),
-                                tokens: tokens
-                            )
-                            .contextMenu {
-                                Button("打开整组文档") {
-                                    let groupItems = self.state.items.filter { $0.groupName == groupName }
-                                    self.openAll(items: groupItems)
-                                }
-                                Button("重命名分组") {
-                                    self.groupRenameDraft = groupName
-                                    self.renamingGroupName = groupName
-                                }
-                                Divider()
-                                Button("解散分组", role: .destructive) {
-                                    self.db.deleteDocumentGroup(named: groupName)
-                                    if self.scope == .group(groupName) {
-                                        self.scope = .all
-                                    }
-                                    self.state.refresh()
-                                    self.showToast("已解散分组「\(groupName)」")
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 10)
-            }
-            
-            Rectangle()
-                .fill(tokens.hairline)
-                .frame(height: 0.75)
-            
-            self.sidebarRow(
-                title: "废纸篓",
-                icon: "trash",
-                count: self.state.trashedItems.count,
-                targetScope: .trash,
-                tokens: tokens
-            )
-            .padding(8)
-        }
-        .background(tokens.inset.opacity(0.45))
-    }
-    
-    
-    private func sidebarRow(
-        title: String,
-        icon: String,
-        count: Int,
-        targetScope: LibraryScope,
-        tokens: StudioColorTokens
-    ) -> some View {
-        let active = (self.scope == targetScope)
-        return Button {
-            withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.14)) {
-                self.scope = targetScope
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(active ? tokens.accentText : tokens.primaryInk.opacity(0.56))
-                    .frame(width: 18, alignment: .center)
-                
-                Text(title)
-                    .font(.system(size: 12.5, weight: active ? .semibold : .regular))
-                    .foregroundStyle(active ? tokens.primaryInk : tokens.primaryInk.opacity(0.82))
-                    .lineLimit(1)
-                
-                Spacer(minLength: 4)
-                
-                if count > 0 {
-                    Text("\(count)")
-                        .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
-                        .foregroundStyle(active ? tokens.accentText : tokens.primaryInk.opacity(0.42))
-                }
-            }
-            .padding(.horizontal, 9)
-            .frame(height: 32)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(active ? tokens.insetHover : Color.clear)
-            )
-        }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-    }
-    
-    
-    // MARK: 3. Middle Collection Pane
-    
-    private func collectionPane(
-        items: [DocumentCenterState.ManagedDocumentItem],
-        activeItem: DocumentCenterState.ManagedDocumentItem?,
-        tokens: StudioColorTokens
-    ) -> some View {
-        VStack(spacing: 0) {
-            // Subheader
-            HStack(spacing: 8) {
-                Text(self.scopeTitle)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.88))
-                    .lineLimit(1)
-                
-                Spacer(minLength: 4)
-                
-                if case .group = self.scope, !items.isEmpty {
-                    Button("全部打开") {
-                        self.openAll(items: items)
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(tokens.accentText)
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                } else if self.scope == .trash, !self.state.trashedItems.isEmpty {
-                    Button("清空废纸篓") {
-                        self.confirmEmptyTrash()
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.red.opacity(0.85))
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                }
-                
-                Menu {
-                    ForEach(SortOrder.allCases) { order in
-                        Button {
-                            self.sortOrder = order
-                        } label: {
-                            HStack {
-                                Text(order.label)
-                                if self.sortOrder == order {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
+    private func groupQuickJumpStrip(clusters: [StarMapClusterNode], tokens: StudioColorTokens) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                let allSelected = (self.focusedClusterID == nil)
+                Button {
+                    self.focusedClusterID = nil
                 } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "arrow.up.arrow.down")
-                            .font(.system(size: 10))
-                        Text(self.sortOrder.label)
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .foregroundStyle(tokens.primaryInk.opacity(0.58))
+                    Text("全部")
+                        .font(.system(size: 11.5, weight: allSelected ? .semibold : .medium))
+                        .foregroundStyle(allSelected ? tokens.onAccentInk : tokens.primaryInk.opacity(0.76))
+                        .padding(.horizontal, 10)
+                        .frame(height: 25)
+                        .background(allSelected ? tokens.accent : tokens.card.opacity(0.92), in: Capsule())
+                        .overlay(Capsule().strokeBorder(allSelected ? Color.clear : tokens.hairline, lineWidth: 0.75))
+                        .contentShape(Capsule())
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 38)
-            
-            Rectangle()
-                .fill(tokens.hairline)
-                .frame(height: 0.75)
-            
-            if items.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: self.scope == .trash ? "trash" : "doc.text")
-                        .font(.system(size: 24, weight: .light))
-                        .foregroundStyle(tokens.primaryInk.opacity(0.28))
-                    Text(self.scope == .trash ? "废纸篓为空" : (self.state.searchText.isEmpty ? "暂无文档" : "没有匹配的文档"))
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(tokens.primaryInk.opacity(0.50))
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView(.vertical, showsIndicators: true) {
-                    if self.layoutMode == .gallery {
-                        LazyVGrid(
-                            columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
-                            spacing: 10
-                        ) {
-                            ForEach(items) { item in
-                                self.galleryCard(item, isSelected: activeItem?.id == item.id, tokens: tokens)
-                            }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                
+                ForEach(clusters) { cluster in
+                    let isFocused = (self.focusedClusterID == cluster.id)
+                    Button {
+                        if self.state.collapsedGroups.contains(cluster.id) {
+                            self.state.collapsedGroups.remove(cluster.id)
                         }
-                        .padding(12)
-                    } else {
-                        LazyVStack(spacing: 4) {
-                            ForEach(items) { item in
-                                self.listRow(item, isSelected: activeItem?.id == item.id, tokens: tokens)
-                            }
+                        self.focusedClusterID = isFocused ? nil : cluster.id
+                    } label: {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(isFocused ? tokens.onAccentInk : cluster.accent)
+                                .frame(width: 5.5, height: 5.5)
+                            Text(cluster.title)
+                                .font(.system(size: 11.5, weight: isFocused ? .semibold : .medium))
+                            Text(cluster.countText)
+                                .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
+                                .opacity(0.75)
                         }
-                        .padding(8)
+                        .foregroundStyle(isFocused ? tokens.onAccentInk : tokens.primaryInk.opacity(0.80))
+                        .padding(.horizontal, 10)
+                        .frame(height: 25)
+                        .background(isFocused ? tokens.accent : tokens.card.opacity(0.92), in: Capsule())
+                        .overlay(Capsule().strokeBorder(isFocused ? Color.clear : tokens.hairline, lineWidth: 0.75))
+                        .contentShape(Capsule())
                     }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
                 }
             }
         }
     }
     
     
-    private func listRow(
-        _ item: DocumentCenterState.ManagedDocumentItem,
-        isSelected: Bool,
-        tokens: StudioColorTokens
+    private func inlineGroupPromptBar(
+        placeholder: String,
+        text: Binding<String>,
+        tokens: StudioColorTokens,
+        onCommit: @escaping () -> Void,
+        onCancel: @escaping () -> Void
     ) -> some View {
-        let excerpt = Self.cleanExcerpt(item.content)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(self.statusColor(for: item, tokens: tokens))
-                    .frame(width: 6, height: 6)
-                
-                Text(item.title)
-                    .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(tokens.primaryInk)
-                    .lineLimit(1)
-                
-                Spacer(minLength: 4)
-                
-                Text(Self.shortDate(item.updatedAt))
-                    .font(.system(size: 10.5).monospacedDigit())
-                    .foregroundStyle(tokens.primaryInk.opacity(0.42))
-            }
+        HStack(spacing: 8) {
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12.5))
+                .frame(width: 210)
+                .onSubmit(onCommit)
             
-            if !excerpt.isEmpty {
-                Text(excerpt)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.56))
-                    .lineLimit(1)
-            }
+            Button("确定", action: onCommit)
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(tokens.onAccentInk)
+                .padding(.horizontal, 10)
+                .frame(height: 24)
+                .background(tokens.accent, in: Capsule())
+                .buttonStyle(.plain)
             
-            HStack(spacing: 6) {
-                if !item.groupName.isEmpty {
-                    Text(item.groupName)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(tokens.accentText)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1.5)
-                        .background(tokens.positivePillBg, in: Capsule())
-                }
-                if item.isOpenNow {
-                    Text(item.isDirty ? "未保存" : "打开中")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(item.isDirty ? Color.orange : tokens.primaryInk.opacity(0.55))
-                }
-                Spacer()
-                Text("\(item.characterCount.formatted()) 字")
-                    .font(.system(size: 10.5, design: .rounded).monospacedDigit())
-                    .foregroundStyle(tokens.primaryInk.opacity(0.40))
-            }
+            Button("取消", action: onCancel)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(tokens.primaryInk.opacity(0.62))
+                .buttonStyle(.plain)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(isSelected ? tokens.insetHover : Color.clear)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(isSelected ? tokens.accent.opacity(0.48) : Color.clear, lineWidth: 1)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            self.isRenaming = false
-            self.state.selectedID = item.id
-        }
-        .simultaneousGesture(
-            TapGesture(count: 2).onEnded {
-                if !item.isTrashed {
-                    self.open(item: item)
-                }
-            }
-        )
-        .contextMenu {
-            self.itemContextMenu(item: item, list: self.scopedItems)
-        }
+        .background(tokens.card, in: Capsule())
+        .overlay(Capsule().strokeBorder(tokens.hairlineStrong, lineWidth: 0.85))
+        .shadow(color: tokens.cardShadow, radius: 10, y: 4)
     }
     
     
-    private func galleryCard(
-        _ item: DocumentCenterState.ManagedDocumentItem,
-        isSelected: Bool,
+    private func bottomFocusDock(
+        item: DocumentCenterState.ManagedDocumentItem,
+        allItems: [DocumentCenterState.ManagedDocumentItem],
         tokens: StudioColorTokens
     ) -> some View {
-        let excerpt = Self.cleanExcerpt(item.content, limit: 120)
-        return VStack(alignment: .leading, spacing: 6) {
-            // Miniature paper sheet preview (Craft-style)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(excerpt.isEmpty ? "（空白文档）" : excerpt)
-                    .font(.system(size: 10))
+        HStack(spacing: 10) {
+            Circle()
+                .fill(item.isOpenNow ? tokens.accent : tokens.primaryInk.opacity(0.35))
+                .frame(width: 7, height: 7)
+            
+            if self.isRenaming {
+                TextField("文档标题", text: self.$renameDraft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .focused(self.$isRenameFieldFocused)
+                    .frame(width: 185)
+                    .onSubmit { self.commitRename(for: item) }
+                    .onExitCommand { self.isRenaming = false }
+                
+                Button("保存") { self.commitRename(for: item) }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(tokens.onAccentInk)
+                    .padding(.horizontal, 9)
+                    .frame(height: 24)
+                    .background(tokens.accent, in: Capsule())
+                    .buttonStyle(.plain)
+                
+                Button("取消") { self.isRenaming = false }
+                    .font(.system(size: 11))
                     .foregroundStyle(tokens.primaryInk.opacity(0.62))
-                    .lineSpacing(2)
-                    .lineLimit(5)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
-            .padding(8)
-            .frame(height: 82)
-            .background(tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(tokens.hairline, lineWidth: 0.6)
-            )
-            
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(self.statusColor(for: item, tokens: tokens))
-                    .frame(width: 5.5, height: 5.5)
-                Text(item.title)
-                    .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(tokens.primaryInk)
-                    .lineLimit(1)
-            }
-            
-            HStack {
-                Text(item.groupName.isEmpty ? item.syntax : item.groupName)
-                    .font(.system(size: 10))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.48))
-                    .lineLimit(1)
-                Spacer()
-                Text("\(item.characterCount.formatted()) 字")
-                    .font(.system(size: 10, design: .rounded).monospacedDigit())
-                    .foregroundStyle(tokens.primaryInk.opacity(0.42))
-            }
-        }
-        .padding(8)
-        .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(isSelected ? tokens.insetHover : tokens.inset.opacity(0.55))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(isSelected ? tokens.accent.opacity(0.55) : tokens.hairline, lineWidth: isSelected ? 1.2 : 0.7)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            self.isRenaming = false
-            self.state.selectedID = item.id
-        }
-        .simultaneousGesture(
-            TapGesture(count: 2).onEnded {
-                if !item.isTrashed {
-                    self.open(item: item)
-                }
-            }
-        )
-        .contextMenu {
-            self.itemContextMenu(item: item, list: self.scopedItems)
-        }
-    }
-    
-    
-    // MARK: 4. Right Editorial Reader & Inspector Pane
-    
-    @ViewBuilder
-    private func readerPane(activeItem: DocumentCenterState.ManagedDocumentItem?, tokens: StudioColorTokens) -> some View {
-        if let item = activeItem {
-            VStack(spacing: 0) {
-                // Header & Action Bar
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .center, spacing: 10) {
-                        if self.isRenaming {
-                            TextField("输入文档名称", text: self.$renameDraft)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 15, weight: .semibold))
-                                .focused(self.$isRenameFieldFocused)
-                                .onSubmit { self.commitRename(for: item) }
-                            
-                            Button("保存") {
-                                self.commitRename(for: item)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            
-                            Button("取消") {
-                                self.isRenaming = false
-                            }
-                            .controlSize(.small)
-                        } else {
-                            Text(item.title)
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(tokens.primaryInk)
-                                .lineLimit(1)
-                            
-                            if !item.isTrashed {
-                                Button {
-                                    self.renameDraft = item.title
-                                    self.isRenaming = true
-                                    self.isRenameFieldFocused = true
-                                } label: {
-                                    Image(systemName: "pencil")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundStyle(tokens.primaryInk.opacity(0.50))
-                                        .frame(width: 24, height: 24)
-                                        .background(tokens.inset, in: Circle())
-                                }
-                                .buttonStyle(.plain)
-                                .help("重命名")
-                            }
-                        }
-                        
-                        Spacer(minLength: 8)
-                        
-                        if !item.isTrashed {
-                            Menu {
-                                Button("未分组") { self.move(item: item, toGroup: "") }
-                                if !self.db.documentGroups.isEmpty {
-                                    Divider()
-                                    ForEach(self.db.documentGroups, id: \.self) { g in
-                                        Button {
-                                            self.move(item: item, toGroup: g)
-                                        } label: {
-                                            HStack {
-                                                Text(g)
-                                                if item.groupName == g { Image(systemName: "checkmark") }
-                                            }
-                                        }
-                                    }
-                                }
-                                Divider()
-                                Button("新建分组并移入…") {
-                                    self.pendingAssignAfterGroupCreate = item
-                                    self.newGroupDraft = ""
-                                    self.isSidebarHidden = false
-                                    self.isCreatingGroup = true
-                                }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "folder")
-                                        .font(.system(size: 10.5))
-                                    Text(item.groupName.isEmpty ? "未分组" : item.groupName)
-                                        .font(.system(size: 11.5, weight: .medium))
-                                }
-                                .foregroundStyle(tokens.primaryInk.opacity(0.78))
-                                .padding(.horizontal, 9)
-                                .frame(height: 26)
-                                .background(tokens.inset, in: Capsule())
-                            }
-                            .menuStyle(.borderlessButton)
-                            .fixedSize()
-                        }
-                    }
+                    .buttonStyle(.plain)
+            } else {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.title)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(tokens.primaryInk)
+                        .lineLimit(1)
+                        .frame(maxWidth: 200, alignment: .leading)
                     
-                    // Metadata + Primary Actions Row
-                    HStack(spacing: 8) {
-                        Text(item.syntax)
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(tokens.primaryInk.opacity(0.65))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2.5)
-                            .background(tokens.inset, in: Capsule())
-                        
-                        Text("\(item.characterCount.formatted()) 字")
-                            .font(.system(size: 11, design: .rounded).monospacedDigit())
-                            .foregroundStyle(tokens.primaryInk.opacity(0.55))
-                        
-                        if let path = item.filePath {
-                            Button {
-                                NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path)])
-                            } label: {
-                                Label(URL(filePath: path).lastPathComponent, systemImage: "folder")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(tokens.primaryInk.opacity(0.52))
-                                    .lineLimit(1)
-                            }
-                            .buttonStyle(.plain)
-                            .help(path)
-                        }
-                        
-                        Spacer(minLength: 8)
-                        
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(item.content, forType: .string)
-                            self.copiedFlag = true
-                            self.showToast("已复制全文")
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
-                                self.copiedFlag = false
-                            }
-                        } label: {
-                            Label(self.copiedFlag ? "已复制" : "复制全文", systemImage: self.copiedFlag ? "checkmark" : "doc.on.doc")
-                                .font(.system(size: 11.5, weight: .medium))
-                                .foregroundStyle(tokens.primaryInk.opacity(0.82))
-                                .padding(.horizontal, 10)
-                                .frame(height: 28)
-                                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                        
-                        if item.isTrashed {
-                            Button {
-                                self.restore(item: item)
-                            } label: {
-                                Text("还原")
-                                    .font(.system(size: 11.5, weight: .semibold))
-                                    .foregroundStyle(tokens.onAccentInk)
-                                    .padding(.horizontal, 11)
-                                    .frame(height: 28)
-                                    .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                            
-                            Button {
-                                self.permanentlyDelete(item: item)
-                            } label: {
-                                Text("彻底删除")
-                                    .font(.system(size: 11.5, weight: .medium))
-                                    .foregroundStyle(Color.red)
-                                    .padding(.horizontal, 10)
-                                    .frame(height: 28)
-                                    .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                        } else {
-                            Button {
-                                self.delete(item: item, in: self.scopedItems)
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.system(size: 11.5, weight: .medium))
-                                    .foregroundStyle(Color.red.opacity(0.80))
-                                    .frame(width: 28, height: 28)
-                                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                            .help("移到废纸篓")
-                            
-                            Button {
-                                self.open(item: item)
-                            } label: {
-                                Text("在编辑器打开")
-                                    .font(.system(size: 11.5, weight: .semibold))
-                                    .foregroundStyle(tokens.onAccentInk)
-                                    .padding(.horizontal, 12)
-                                    .frame(height: 28)
-                                    .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                        }
-                    }
+                    Text("\(item.groupName.isEmpty ? "未分组" : item.groupName) · \(item.characterCount.formatted()) 字 · \(Self.relativeTime(item.updatedAt))")
+                        .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(tokens.primaryInk.opacity(0.50))
+                        .lineLimit(1)
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
-                .background(tokens.card.opacity(0.65))
                 
                 Rectangle()
-                    .fill(tokens.hairline)
-                    .frame(height: 0.75)
+                    .fill(tokens.hairlineStrong)
+                    .frame(width: 1, height: 20)
                 
-                CenterPreviewTextView(text: item.previewText, monospace: false)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        } else {
-            VStack(spacing: 10) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 28, weight: .light))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.26))
-                Text("选择左侧文档以预览或编辑")
-                    .font(.system(size: 13))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.50))
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-    
-    
-    @ViewBuilder
-    private func itemContextMenu(
-        item: DocumentCenterState.ManagedDocumentItem,
-        list: [DocumentCenterState.ManagedDocumentItem]
-    ) -> some View {
-        if item.isTrashed {
-            Button("还原到文档库") { self.restore(item: item) }
-            Button("彻底删除", role: .destructive) { self.permanentlyDelete(item: item) }
-        } else {
-            Button("在编辑器打开") { self.open(item: item) }
-            Button("重命名") {
-                self.state.selectedID = item.id
-                self.renameDraft = item.title
-                self.isRenaming = true
-                self.isRenameFieldFocused = true
-            }
-            Menu("移动至分组") {
-                Button("未分组") { self.move(item: item, toGroup: "") }
-                if !self.db.documentGroups.isEmpty {
-                    Divider()
-                    ForEach(self.db.documentGroups, id: \.self) { groupName in
-                        Button(groupName) { self.move(item: item, toGroup: groupName) }
+                Button {
+                    withAnimation(.easeOut(duration: 0.16)) { self.isQuickLookOpen = true }
+                } label: {
+                    Text("预览")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(tokens.primaryInk.opacity(0.86))
+                        .padding(.horizontal, 10)
+                        .frame(height: 26)
+                        .background(tokens.inset, in: Capsule())
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                
+                if item.isTrashed {
+                    Button {
+                        self.restore(item: item)
+                    } label: {
+                        Text("恢复")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(tokens.onAccentInk)
+                            .padding(.horizontal, 11)
+                            .frame(height: 26)
+                            .background(tokens.accent, in: Capsule())
                     }
-                }
-                Divider()
-                Button("新建分组并移入…") {
-                    self.pendingAssignAfterGroupCreate = item
-                    self.newGroupDraft = ""
-                    self.isSidebarHidden = false
-                    self.isCreatingGroup = true
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    
+                    Button {
+                        self.permanentlyDelete(item: item)
+                    } label: {
+                        Text("彻底删除")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 9)
+                            .frame(height: 26)
+                            .background(Color.red.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                } else {
+                    Button {
+                        self.open(item: item)
+                    } label: {
+                        Text("打开")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(tokens.onAccentInk)
+                            .padding(.horizontal, 12)
+                            .frame(height: 26)
+                            .background(tokens.accent, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    
+                    Menu {
+                        Button("未分组") { self.move(item: item, toGroup: "") }
+                        if !self.db.documentGroups.isEmpty {
+                            Divider()
+                            ForEach(self.db.documentGroups, id: \.self) { group in
+                                Button(group) { self.move(item: item, toGroup: group) }
+                            }
+                        }
+                        Divider()
+                        Button("新建分组并移入…") {
+                            self.pendingAssignAfterGroupCreate = item
+                            self.newGroupDraft = ""
+                            self.isCreatingGroup = true
+                        }
+                    } label: {
+                        Text("分组")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(tokens.primaryInk.opacity(0.78))
+                            .padding(.horizontal, 9)
+                            .frame(height: 26)
+                            .background(tokens.inset, in: Capsule())
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .pointerStyle(.link)
+                    
+                    Button {
+                        self.renameDraft = item.title
+                        self.isRenaming = true
+                        DispatchQueue.main.async { self.isRenameFieldFocused = true }
+                    } label: {
+                        Text("重命名")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(tokens.primaryInk.opacity(0.78))
+                            .padding(.horizontal, 9)
+                            .frame(height: 26)
+                            .background(tokens.inset, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    
+                    Button {
+                        self.delete(item: item, in: allItems)
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(tokens.primaryInk.opacity(0.62))
+                            .frame(width: 26, height: 26)
+                            .background(tokens.inset, in: Circle())
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help("移到废纸篓")
                 }
             }
-            Divider()
-            Button("移到废纸篓", role: .destructive) { self.delete(item: item, in: list) }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(tokens.card, in: Capsule())
+        .overlay(Capsule().strokeBorder(tokens.hairlineStrong, lineWidth: 0.85))
+        .shadow(color: tokens.cardShadow, radius: 14, y: 4)
     }
     
     
-    // MARK: Helpers & Keyboard Navigation
+    private func floatingEmptyHint(tokens: StudioColorTokens) -> some View {
+        Text(self.state.showingTrash ? "废纸篓是空的" : (self.state.searchText.isEmpty ? "暂无文档 · 点击右上角新建" : "没有匹配的文档"))
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(tokens.primaryInk.opacity(0.55))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(tokens.card, in: Capsule())
+            .overlay(Capsule().strokeBorder(tokens.hairline, lineWidth: 0.75))
+    }
     
-    private func statusColor(for item: DocumentCenterState.ManagedDocumentItem, tokens: StudioColorTokens) -> Color {
-        if item.isTrashed { return .red.opacity(0.75) }
-        if item.isDirty { return Color(red: 0.94, green: 0.56, blue: 0.20) }
-        if item.isOpenNow { return tokens.accent }
-        return tokens.secondaryAccent.opacity(0.55)
+    
+    // MARK: Constellation Data Mapping
+    
+    private func buildStarClusters(
+        displayedItems: [DocumentCenterState.ManagedDocumentItem],
+        tokens: StudioColorTokens
+    ) -> [StarMapClusterNode] {
+        let clusterAccents: [Color] = [
+            tokens.accent,
+            tokens.secondaryAccent,
+            Color(red: 0.212, green: 0.478, blue: 0.612),
+            tokens.heat3,
+        ]
+        
+        if self.state.showingTrash {
+            let leaves = displayedItems.map { item in
+                StarMapLeafNode(
+                    id: item.id,
+                    clusterID: "trash",
+                    title: item.title,
+                    metaLine: "\(Self.compactChars(item.characterCount)) · \(Self.relativeTime(item.updatedAt))",
+                    statusBadge: "已删",
+                    dotColor: Color.red.opacity(0.75),
+                    weight: 0.4,
+                    isHighlighted: false
+                )
+            }
+            return [
+                StarMapClusterNode(
+                    id: "trash",
+                    title: "废纸篓",
+                    countText: "\(leaves.count)",
+                    accent: Color.red.opacity(0.75),
+                    isCollapsed: false,
+                    leaves: leaves
+                ),
+            ]
+        }
+        
+        let maxChars = max(1.0, Double(displayedItems.map(\.characterCount).max() ?? 1))
+        var result: [StarMapClusterNode] = []
+        for (idx, section) in self.state.groupSections.enumerated() {
+            let accent = section.isUngrouped
+                ? tokens.primaryInk.opacity(0.45)
+                : clusterAccents[idx % clusterAccents.count]
+            let leaves = section.items.map { item -> StarMapLeafNode in
+                let w = min(1.0, max(0.15, log10(Double(max(10, item.characterCount))) / log10(max(100.0, maxChars))))
+                let status: String? = item.isDirty ? "未保存" : (item.isOpenNow ? "打开中" : nil)
+                let dot: Color = item.isDirty ? .orange : (item.isOpenNow ? tokens.accent : accent.opacity(0.85))
+                return StarMapLeafNode(
+                    id: item.id,
+                    clusterID: section.id,
+                    title: item.title,
+                    metaLine: "\(Self.compactChars(item.characterCount)) · \(Self.relativeTime(item.updatedAt))",
+                    statusBadge: status,
+                    dotColor: dot,
+                    weight: w,
+                    isHighlighted: item.isOpenNow
+                )
+            }
+            result.append(StarMapClusterNode(
+                id: section.id,
+                title: section.name,
+                countText: "\(leaves.count)",
+                accent: accent,
+                isCollapsed: self.state.collapsedGroups.contains(section.id),
+                leaves: leaves
+            ))
+        }
+        return result
     }
     
     
     private func selectedItem(in items: [DocumentCenterState.ManagedDocumentItem]) -> DocumentCenterState.ManagedDocumentItem? {
-        if let selectedID = self.state.selectedID,
-           let matched = items.first(where: { $0.id == selectedID })
-        {
-            return matched
+        if let id = self.state.selectedID, let match = items.first(where: { $0.id == id }) {
+            return match
         }
         return items.first
     }
     
     
-    private static func cleanExcerpt(_ content: String, limit: Int = 72) -> String {
-        let singleLine = content
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first(where: { !$0.isEmpty && !$0.hasPrefix("⟦🖼") }) ?? ""
-        if singleLine.count <= limit { return singleLine }
-        return String(singleLine.prefix(limit - 1)) + "…"
+    private static func compactChars(_ count: Int) -> String {
+        if count >= 10_000 { return String(format: "%.1f万字", Double(count) / 10_000.0) }
+        if count >= 1_000 { return String(format: "%.1fK字", Double(count) / 1_000.0) }
+        return "\(count)字"
     }
     
     
-    private static let shortDateFormatter: DateFormatter = {
+    private static func relativeTime(_ date: Date) -> String {
+        let interval = max(0, Date().timeIntervalSince(date))
+        if interval < 60 { return "刚刚" }
+        if interval < 3600 { return "\(Int(interval / 60))分前" }
+        if interval < 86_400 { return "\(Int(interval / 3600))时前" }
+        let days = Int(interval / 86_400)
+        if days < 30 { return "\(days)天前" }
         let f = DateFormatter()
-        f.dateFormat = "M/d HH:mm"
-        return f
-    }()
+        f.dateFormat = "M/d"
+        return f.string(from: date)
+    }
     
-    private static func shortDate(_ date: Date) -> String {
-        Self.shortDateFormatter.string(from: date)
+    
+    // MARK: Keyboard Navigation
+    
+    private func handleEscapePop() -> Bool {
+        if self.isQuickLookOpen {
+            withAnimation(.easeOut(duration: 0.14)) { self.isQuickLookOpen = false }
+            return true
+        }
+        if self.isRenaming {
+            self.isRenaming = false
+            return true
+        }
+        if self.isCreatingGroup {
+            self.isCreatingGroup = false
+            self.pendingAssignAfterGroupCreate = nil
+            return true
+        }
+        if self.renamingGroupName != nil {
+            self.renamingGroupName = nil
+            return true
+        }
+        if self.focusedClusterID != nil {
+            self.focusedClusterID = nil
+            return true
+        }
+        return false
     }
     
     
     private func installKeyboardMonitor() {
         self.removeKeyboardMonitor()
-        self.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            if NSApp.keyWindow?.firstResponder is NSTextView {
+        self.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [self] event in
+            if let responder = NSApp.keyWindow?.firstResponder, responder is NSTextView {
                 return event
             }
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            guard flags.isDisjoint(with: [.command, .control, .option]) else { return event }
+            let items = self.state.displayedItems
+            guard !items.isEmpty else { return event }
             
             switch event.keyCode {
-                case 53: // Esc
-                    if self.handleEscapePop() {
+                case 49: // Spacebar QuickLook toggle
+                    if self.selectedItem(in: items) != nil {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            self.isQuickLookOpen.toggle()
+                        }
                         return nil
                     }
-                    if let onDismiss = self.onDismiss {
-                        onDismiss()
-                        return nil
-                    }
-                    return event
-                    
-                case 36: // Return -> Open selected document
-                    if !self.isRenaming, let active = self.selectedItem(in: self.scopedItems), !active.isTrashed {
+                case 123, 126: // Left / Up
+                    self.stepSelection(by: -1, in: items)
+                    return nil
+                case 124, 125: // Right / Down
+                    self.stepSelection(by: 1, in: items)
+                    return nil
+                case 36: // Return -> open
+                    if let active = self.selectedItem(in: items), !active.isTrashed {
+                        self.isQuickLookOpen = false
                         self.open(item: active)
                         return nil
                     }
-                    return event
-                    
-                case 126: // Up
-                    self.stepSelection(by: -1, in: self.scopedItems)
-                    return nil
-                    
-                case 125: // Down
-                    self.stepSelection(by: 1, in: self.scopedItems)
-                    return nil
-                    
                 default:
-                    return event
+                    break
             }
+            return event
         }
     }
     
@@ -1747,14 +2065,9 @@ struct DocumentCenterView: View {
     
     private func stepSelection(by delta: Int, in list: [DocumentCenterState.ManagedDocumentItem]) {
         guard !list.isEmpty else { return }
-        if let currentID = self.state.selectedID,
-           let idx = list.firstIndex(where: { $0.id == currentID })
-        {
-            let next = (idx + delta + list.count) % list.count
-            self.state.selectedID = list[next].id
-        } else {
-            self.state.selectedID = list.first?.id
-        }
+        let curIdx = list.firstIndex(where: { $0.id == self.state.selectedID }) ?? 0
+        let nextIdx = (curIdx + delta + list.count) % list.count
+        self.state.selectedID = list[nextIdx].id
     }
     
     
@@ -1860,7 +2173,6 @@ struct DocumentCenterView: View {
             self.pendingAssignAfterGroupCreate = nil
             self.move(item: pending, toGroup: created)
         } else {
-            self.scope = .group(created)
             self.state.refresh()
             self.showToast("已新建分组「\(created)」")
         }
@@ -1872,9 +2184,6 @@ struct DocumentCenterView: View {
         self.renamingGroupName = nil
         guard !trimmed.isEmpty, trimmed != oldName else { return }
         if self.db.renameDocumentGroup(from: oldName, to: trimmed) {
-            if self.scope == .group(oldName) {
-                self.scope = .group(trimmed)
-            }
             self.state.refresh()
             self.showToast("分组已重命名为「\(trimmed)」")
         } else {

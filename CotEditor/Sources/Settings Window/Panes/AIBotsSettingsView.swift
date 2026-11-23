@@ -45,6 +45,8 @@ struct AIModelsSettingsView: View {
     @State private var imageLoader = AIGijinkaImageLoader.shared
     @State private var piKernel = PiKernelManager.shared
     @State private var kernelEnabled: Bool = PiKernelManager.shared.isKernelEnabled
+    @State private var showPiInstallPrompt = false
+    @State private var didCopyPiPrompt = false
     
     
     private struct EndpointEditTarget: Identifiable {
@@ -195,7 +197,7 @@ struct AIModelsSettingsView: View {
                 .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
             }
             
-            // Section 2: Pi 内核桥接与运行底座
+            // Section 2: Pi 内核底座
             VStack(alignment: .leading, spacing: 7) {
                 Text(AppLanguage.text("Pi 内核底座", en: "Pi Kernel Runtime"))
                     .font(.system(size: 11.5, weight: .semibold))
@@ -208,15 +210,27 @@ struct AIModelsSettingsView: View {
                             .fill(self.piKernel.isAvailable && self.kernelEnabled ? Color.green : Color.orange)
                             .frame(width: 7, height: 7)
                         
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(self.piKernel.statusSummary)
-                                .font(.system(size: 12.5, weight: .medium))
-                            Text(AppLanguage.text("自动将所选网关与模型同步至 Pi 内核，驱动各 Bot 执行任务并联动专属形象", en: "Syncs gateways & models to Pi kernel to power working Bots"))
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                        }
+                        Text(self.piKernel.statusSummary)
+                            .font(.system(size: 13, weight: .medium))
                         
                         Spacer()
+                        
+                        if !self.piKernel.isAvailable {
+                            Button(self.didCopyPiPrompt ? AppLanguage.text("已复制提示词", en: "Copied") : AppLanguage.text("安装提示词", en: "Install Prompt")) {
+                                self.copyPiInstallPrompt()
+                                withAnimation(.easeOut(duration: 0.16)) {
+                                    self.showPiInstallPrompt.toggle()
+                                }
+                            }
+                            .controlSize(.small)
+                        } else {
+                            Button(self.showPiInstallPrompt ? AppLanguage.text("收起提示词", en: "Hide Prompt") : AppLanguage.text("安装提示词", en: "Install Prompt")) {
+                                withAnimation(.easeOut(duration: 0.16)) {
+                                    self.showPiInstallPrompt.toggle()
+                                }
+                            }
+                            .controlSize(.small)
+                        }
                         
                         Button {
                             Task { await self.piKernel.refreshEnvironment() }
@@ -225,7 +239,7 @@ struct AIModelsSettingsView: View {
                                 .font(.system(size: 11, weight: .semibold))
                         }
                         .buttonStyle(.borderless)
-                        .help(AppLanguage.text("重新检测并同步 Pi 内核工作区", en: "Sync Pi Kernel Workspace"))
+                        .help(AppLanguage.text("刷新 Pi 状态", en: "Refresh Pi Status"))
                         
                         Toggle("", isOn: self.$kernelEnabled)
                             .labelsHidden()
@@ -236,7 +250,43 @@ struct AIModelsSettingsView: View {
                             }
                     }
                     .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                    .frame(minHeight: 40)
+                    
+                    if self.showPiInstallPrompt || !self.piKernel.isAvailable {
+                        self.rowDivider
+                        
+                        VStack(alignment: .leading, spacing: 8) {
+                            ScrollView(.vertical, showsIndicators: true) {
+                                Text(PiKernelManager.installPrompt)
+                                    .font(.system(size: 11.5, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(10)
+                            }
+                            .frame(maxHeight: 150)
+                            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .strokeBorder(self.cardBorder, lineWidth: 1)
+                            )
+                            
+                            HStack {
+                                Spacer()
+                                Button {
+                                    self.copyPiInstallPrompt()
+                                } label: {
+                                    Label(
+                                        self.didCopyPiPrompt
+                                            ? AppLanguage.text("已复制", en: "Copied")
+                                            : AppLanguage.text("复制提示词", en: "Copy Prompt"),
+                                        systemImage: self.didCopyPiPrompt ? "checkmark" : "doc.on.doc"
+                                    )
+                                }
+                                .controlSize(.small)
+                            }
+                        }
+                        .padding(12)
+                    }
                 }
                 .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
@@ -550,6 +600,17 @@ struct AIModelsSettingsView: View {
     
     private var cardBorder: Color {
         self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.07)
+    }
+    
+    
+    private func copyPiInstallPrompt() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(PiKernelManager.installPrompt, forType: .string)
+        self.didCopyPiPrompt = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.8))
+            self.didCopyPiPrompt = false
+        }
     }
     
     

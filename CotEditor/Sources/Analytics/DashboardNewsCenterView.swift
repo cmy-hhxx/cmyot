@@ -23,8 +23,8 @@ import AppKit
 import SwiftUI
 import WebKit
 
-/// Focused, distraction-free NEWS reader inside the Analytics Dashboard.
-/// Keeps a single quiet top bar, a scannable left headline list, and a clean right reading pane.
+/// Xiaohongshu-style visual card NEWS workspace with distraction-free reading and a simple
+/// AI one-click commentary/summary & follow-up chat with easy one-click reply copying.
 struct DashboardNewsCenterView: View {
     
     enum ReaderMode: String, CaseIterable, Identifiable {
@@ -51,10 +51,12 @@ struct DashboardNewsCenterView: View {
     @State private var readerMode: ReaderMode = .editorial
     @State private var searchText: String = ""
     @State private var selectedItemID: String?
+    @State private var chatInput: String = ""
+    @State private var copiedMessageID: String?
     @State private var webProgress: Double = 0
     @State private var webIsLoading: Bool = false
     
-    private let bodyFontSize: CGFloat = 15.5
+    private let bodyFontSize: CGFloat = 15.0
     
     private var secondaryInk: Color {
         self.tokens.isDark
@@ -83,13 +85,9 @@ struct DashboardNewsCenterView: View {
     }
     
     private var selectedItem: AIHotNewsItem? {
-        if let id = self.selectedItemID,
-           let match = self.displayedItems.first(where: { $0.id == id })
+        guard let id = self.selectedItemID else { return nil }
+        return self.displayedItems.first(where: { $0.id == id })
             ?? self.newsService.items.first(where: { $0.id == id })
-        {
-            return match
-        }
-        return self.displayedItems.first
     }
     
     private var adjacentItems: (previous: AIHotNewsItem?, next: AIHotNewsItem?) {
@@ -111,66 +109,58 @@ struct DashboardNewsCenterView: View {
                 .fill(self.tokens.hairline)
                 .frame(height: 1)
             
-            GeometryReader { geo in
-                let compactWidth = geo.size.width < 760
-                if compactWidth {
-                    VStack(spacing: 0) {
-                        self.feedListPane
-                            .frame(height: max(180, floor(geo.size.height * 0.38)))
-                        Rectangle()
-                            .fill(self.tokens.hairline)
-                            .frame(height: 1)
-                        self.readerPane
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                } else {
-                    let listWidth = min(360, max(300, floor(geo.size.width * 0.32)))
-                    HStack(spacing: 0) {
-                        self.feedListPane
-                            .frame(width: listWidth)
-                        
-                        Rectangle()
-                            .fill(self.tokens.hairline)
-                            .frame(width: 1)
-                        
-                        self.readerPane
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }
+            if let item = self.selectedItem {
+                self.detailAndChatStage(for: item)
+                    .transition(.opacity)
+            } else {
+                self.xiaohongshuCardGridStage
+                    .transition(.opacity)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(self.tokens.canvasTop)
         .onAppear {
             self.selectedCategory = self.newsService.selectedCategory
-            if let initialSelectedID {
-                self.selectedItemID = initialSelectedID
-            } else if self.selectedItemID == nil {
-                self.selectedItemID = self.displayedItems.first?.id
-            }
+            self.selectedItemID = self.initialSelectedID
             self.syncSelectionSideEffects()
-            self.newsService.preloadFeedResources(limit: 16)
+            self.newsService.preloadFeedResources(limit: 20)
         }
         .onChange(of: self.selectedItemID) { _, _ in
+            self.chatInput = ""
             self.syncSelectionSideEffects()
         }
-        .onKeyPress(.upArrow) {
-            self.stepSelection(by: -1)
-        }
-        .onKeyPress(.downArrow) {
-            self.stepSelection(by: 1)
+        .onKeyPress(.escape) {
+            if self.selectedItemID != nil {
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                    self.selectedItemID = nil
+                }
+                return .handled
+            }
+            self.onClose()
+            return .handled
         }
     }
     
     
-    // MARK: - Single Quiet Top Bar
+    // MARK: - Top Bar
     
     private var topBar: some View {
         HStack(spacing: 12) {
-            Button(action: self.onClose) {
+            Button {
+                if self.selectedItemID != nil {
+                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                        self.selectedItemID = nil
+                    }
+                } else {
+                    self.onClose()
+                }
+            } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 11, weight: .semibold))
-                    Text(AppLanguage.text("返回", en: "Back"))
+                    Text(self.selectedItemID != nil
+                         ? AppLanguage.text("全部卡片", en: "All Cards")
+                         : AppLanguage.text("返回", en: "Back"))
                         .font(.system(size: 12.5, weight: .medium))
                 }
                 .foregroundStyle(self.secondaryInk)
@@ -185,115 +175,122 @@ struct DashboardNewsCenterView: View {
             .buttonStyle(.plain)
             .pointerStyle(.link)
             
-            HStack(spacing: 2) {
-                ForEach(NewsFeedCategory.allCases) { category in
-                    let isActive = (self.selectedCategory == category)
-                    Button {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                            self.selectedCategory = category
-                            self.newsService.selectedCategory = category
-                            if let first = self.displayedItems.first {
-                                self.selectedItemID = first.id
+            if self.selectedItemID == nil {
+                HStack(spacing: 2) {
+                    ForEach(NewsFeedCategory.allCases) { category in
+                        let isActive = (self.selectedCategory == category)
+                        Button {
+                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                                self.selectedCategory = category
+                                self.newsService.selectedCategory = category
                             }
+                        } label: {
+                            Text(category == .xSocial ? "X" : category.label)
+                                .font(.system(size: 12, weight: isActive ? .medium : .regular))
+                                .foregroundStyle(isActive ? self.tokens.onAccentInk : self.secondaryInk)
+                                .padding(.horizontal, 10)
+                                .frame(height: 26)
+                                .background(
+                                    isActive ? self.tokens.accent : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                )
                         }
-                    } label: {
-                        Text(category == .xSocial ? "X" : category.label)
-                            .font(.system(size: 12, weight: isActive ? .medium : .regular))
-                            .foregroundStyle(isActive ? self.tokens.onAccentInk : self.secondaryInk)
-                            .padding(.horizontal, 10)
-                            .frame(height: 26)
-                            .background(
-                                isActive ? self.tokens.accent : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            )
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
                     }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
                 }
+                .padding(3)
+                .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
+                )
+            } else if let item = self.selectedItem {
+                Text(item.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(self.tokens.primaryInk)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            .padding(3)
-            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
-            )
             
             Spacer(minLength: 8)
             
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11.5, weight: .regular))
-                    .foregroundStyle(self.mutedInk)
-                TextField(AppLanguage.text("搜索", en: "Search"), text: self.$searchText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(self.tokens.primaryInk)
-                    .frame(minWidth: 96, maxWidth: 168)
-                if !self.searchText.isEmpty {
-                    Button {
-                        self.searchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(self.mutedInk)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 32)
-            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
-            )
-            
-            HStack(spacing: 2) {
-                ForEach(ReaderMode.allCases) { mode in
-                    let active = (self.readerMode == mode)
-                    Button {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                            self.readerMode = mode
+            if self.selectedItemID == nil {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11.5, weight: .regular))
+                        .foregroundStyle(self.mutedInk)
+                    TextField(AppLanguage.text("搜索资讯", en: "Search"), text: self.$searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(self.tokens.primaryInk)
+                        .frame(minWidth: 110, maxWidth: 180)
+                    if !self.searchText.isEmpty {
+                        Button {
+                            self.searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(self.mutedInk)
                         }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
+                )
+            } else {
+                HStack(spacing: 2) {
+                    ForEach(ReaderMode.allCases) { mode in
+                        let active = (self.readerMode == mode)
+                        Button {
+                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                                self.readerMode = mode
+                            }
+                        } label: {
+                            Text(mode.label)
+                                .font(.system(size: 12, weight: active ? .medium : .regular))
+                                .foregroundStyle(active ? self.tokens.onAccentInk : self.secondaryInk)
+                                .padding(.horizontal, 10)
+                                .frame(height: 26)
+                                .background(
+                                    active ? self.tokens.accent : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                    }
+                }
+                .padding(3)
+                .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
+                )
+                
+                if let url = self.selectedItem?.url {
+                    Button {
+                        NSWorkspace.shared.open(url)
                     } label: {
-                        Text(mode.label)
-                            .font(.system(size: 12, weight: active ? .medium : .regular))
-                            .foregroundStyle(active ? self.tokens.onAccentInk : self.secondaryInk)
-                            .padding(.horizontal, 10)
-                            .frame(height: 26)
-                            .background(
-                                active ? self.tokens.accent : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(self.secondaryInk)
+                            .frame(width: 32, height: 32)
+                            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
                             )
                     }
                     .buttonStyle(.plain)
                     .pointerStyle(.link)
+                    .help(AppLanguage.text("在浏览器中打开", en: "Open in Browser"))
                 }
-            }
-            .padding(3)
-            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
-            )
-            
-            if let url = self.selectedItem?.url {
-                Button {
-                    NSWorkspace.shared.open(url)
-                } label: {
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(self.secondaryInk)
-                        .frame(width: 32, height: 32)
-                        .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .help(AppLanguage.text("在浏览器中打开", en: "Open in Browser"))
             }
             
             Button {
@@ -321,134 +318,114 @@ struct DashboardNewsCenterView: View {
     }
     
     
-    // MARK: - Left Scannable Headline List
+    // MARK: - Xiaohongshu Small-Card Grid Feed
     
-    private var feedListPane: some View {
+    private var xiaohongshuCardGridStage: some View {
         let items = self.displayedItems
-        return Group {
+        return GeometryReader { geo in
+            let colCount: Int = {
+                if geo.size.width >= 1040 { return 4 }
+                if geo.size.width >= 760 { return 3 }
+                return 2
+            }()
+            let columns = Array(repeating: GridItem(.flexible(), spacing: 14, alignment: .top), count: colCount)
+            
             if items.isEmpty {
-                VStack(spacing: 8) {
+                VStack(spacing: 10) {
                     Image(systemName: "newspaper")
-                        .font(.system(size: 22, weight: .regular))
+                        .font(.system(size: 26, weight: .light))
                         .foregroundStyle(self.mutedInk.opacity(0.6))
-                    Text(AppLanguage.text("暂无匹配资讯", en: "No articles"))
-                        .font(.system(size: 12.5))
+                    Text(self.newsService.isLoading
+                         ? AppLanguage.text("正在加载资讯…", en: "Loading articles…")
+                         : AppLanguage.text("暂无匹配资讯", en: "No articles"))
+                        .font(.system(size: 13))
                         .foregroundStyle(self.mutedInk)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollViewReader { scrollProxy in
-                    ScrollView(.vertical, showsIndicators: true) {
-                        LazyVStack(spacing: 4) {
-                            ForEach(items) { item in
-                                self.headlineRow(item)
-                                    .id(item.id)
+                ScrollView(.vertical, showsIndicators: true) {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                        ForEach(items) { item in
+                            XiaohongshuNewsCard(
+                                item: item,
+                                cover: self.newsService.coverImage(for: item),
+                                isRead: self.newsService.isRead(item),
+                                hasAIBrief: !(self.newsService.aiBriefs[item.id] ?? "").isEmpty,
+                                tokens: self.tokens,
+                                secondaryInk: self.secondaryInk,
+                                mutedInk: self.mutedInk
+                            ) {
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                                    self.selectedItemID = item.id
+                                }
                             }
                         }
-                        .padding(12)
                     }
-                    .onChange(of: self.selectedItemID) { _, nextID in
-                        guard let nextID else { return }
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
-                            scrollProxy.scrollTo(nextID, anchor: .center)
-                        }
-                    }
+                    .padding(20)
                 }
             }
         }
-        .background(self.tokens.canvasTop)
     }
     
     
-    private func headlineRow(_ item: AIHotNewsItem) -> some View {
-        let isSelected = (self.selectedItem?.id == item.id)
-        let isRead = self.newsService.isRead(item)
-        let publisher = item.displayPublisherLabel
-        
-        return Button {
-            self.selectedItemID = item.id
-        } label: {
-            HStack(alignment: .top, spacing: 10) {
-                Circle()
-                    .fill(isRead ? Color.clear : self.tokens.accent)
-                    .frame(width: 5, height: 5)
-                    .padding(.top, 6.5)
-                
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(item.title)
-                        .font(.system(size: 13.5, weight: isSelected || !isRead ? .medium : .regular))
-                        .foregroundStyle(isSelected ? self.tokens.primaryInk : (isRead ? self.secondaryInk : self.tokens.primaryInk))
-                        .lineLimit(2)
-                        .lineSpacing(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+    // MARK: - Detail Reader + Simple AI Chat Split Stage
+    
+    private func detailAndChatStage(for item: AIHotNewsItem) -> some View {
+        GeometryReader { geo in
+            let isCompact = geo.size.width < 820
+            if isCompact {
+                VStack(spacing: 0) {
+                    self.readerPane(for: item)
+                        .frame(height: max(220, geo.size.height * 0.54))
+                    Rectangle()
+                        .fill(self.tokens.hairline)
+                        .frame(height: 1)
+                    self.aiChatPane(for: item)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            } else {
+                let chatWidth = min(420, max(320, floor(geo.size.width * 0.36)))
+                HStack(spacing: 0) {
+                    self.readerPane(for: item)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     
-                    HStack(spacing: 8) {
-                        Text(publisher.isEmpty ? item.resolvedCategory.label : publisher)
-                            .font(.system(size: 11.5, weight: .regular))
-                            .foregroundStyle(self.mutedInk)
-                            .lineLimit(1)
-                        
-                        if let date = item.publishedAt {
-                            Text(Self.relativeTimeString(from: date))
-                                .font(.system(size: 11, design: .monospaced).monospacedDigit())
-                                .foregroundStyle(self.mutedInk)
-                        }
-                        
-                        Spacer(minLength: 0)
-                    }
+                    Rectangle()
+                        .fill(self.tokens.hairline)
+                        .frame(width: 1)
+                    
+                    self.aiChatPane(for: item)
+                        .frame(width: chatWidth)
+                        .frame(maxHeight: .infinity)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isSelected ? self.tokens.card : Color.clear)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(isSelected ? self.tokens.hairlineStrong : Color.clear, lineWidth: 0.8)
-            )
         }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
     }
     
     
-    // MARK: - Right Distraction-Free Reader
+    // MARK: - Left Reading Pane
     
-    @ViewBuilder
-    private var readerPane: some View {
-        if let item = self.selectedItem {
-            VStack(spacing: 0) {
-                if self.readerMode == .web && self.webIsLoading {
-                    GeometryReader { barGeo in
-                        Rectangle()
-                            .fill(self.tokens.accent)
-                            .frame(width: max(16, barGeo.size.width * CGFloat(self.webProgress)), height: 2)
-                    }
-                    .frame(height: 2)
+    private func readerPane(for item: AIHotNewsItem) -> some View {
+        VStack(spacing: 0) {
+            if self.readerMode == .web && self.webIsLoading {
+                GeometryReader { barGeo in
+                    Rectangle()
+                        .fill(self.tokens.accent)
+                        .frame(width: max(16, barGeo.size.width * CGFloat(self.webProgress)), height: 2)
                 }
-                
-                if self.readerMode == .web, let webURL = item.url {
-                    NewsEmbeddedWebView(
-                        url: webURL,
-                        progress: self.$webProgress,
-                        isLoading: self.$webIsLoading
-                    )
-                    .id("web-\(item.id)")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    self.editorialArticleScroll(for: item)
-                }
+                .frame(height: 2)
             }
-        } else {
-            VStack {
-                Image(systemName: "doc.plaintext")
-                    .font(.system(size: 24, weight: .regular))
-                    .foregroundStyle(self.mutedInk.opacity(0.5))
+            
+            if self.readerMode == .web, let webURL = item.url {
+                NewsEmbeddedWebView(
+                    url: webURL,
+                    progress: self.$webProgress,
+                    isLoading: self.$webIsLoading
+                )
+                .id("web-\(item.id)")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                self.editorialArticleScroll(for: item)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
     
@@ -464,8 +441,7 @@ struct DashboardNewsCenterView: View {
         
         return ScrollViewReader { readerProxy in
             ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 20) {
-                    // Metadata line
+                VStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .center, spacing: 8) {
                         Text(item.resolvedCategory.label)
                             .font(.system(size: 12, weight: .medium))
@@ -491,15 +467,13 @@ struct DashboardNewsCenterView: View {
                     }
                     .id("article-top")
                     
-                    // Title
                     Text(item.title)
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.system(size: 21, weight: .semibold))
                         .foregroundStyle(self.tokens.primaryInk)
                         .lineSpacing(5)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     
-                    // Optional cover image
                     if let cover {
                         Image(nsImage: cover)
                             .resizable()
@@ -514,15 +488,14 @@ struct DashboardNewsCenterView: View {
                             )
                     }
                     
-                    // Body blocks or excerpt
                     if !blocks.isEmpty {
-                        VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 15) {
                             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                                 self.articleBlockView(block)
                             }
                         }
                     } else if !summaryText.isEmpty {
-                        VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 14) {
                             Text(summaryText)
                                 .font(.system(size: self.bodyFontSize, weight: .regular))
                                 .foregroundStyle(self.tokens.primaryInk.opacity(0.90))
@@ -555,12 +528,11 @@ struct DashboardNewsCenterView: View {
                         .pointerStyle(.link)
                     }
                     
-                    // Quiet Previous / Next article navigation
                     if neighbors.previous != nil || neighbors.next != nil {
                         Rectangle()
                             .fill(self.tokens.hairline)
                             .frame(height: 1)
-                            .padding(.top, 8)
+                            .padding(.top, 6)
                         
                         HStack(spacing: 12) {
                             if let prev = neighbors.previous {
@@ -569,8 +541,7 @@ struct DashboardNewsCenterView: View {
                                     readerProxy.scrollTo("article-top", anchor: .top)
                                 }
                             } else {
-                                Spacer(minLength: 0)
-                                    .frame(maxWidth: .infinity)
+                                Spacer(minLength: 0).frame(maxWidth: .infinity)
                             }
                             
                             if let next = neighbors.next {
@@ -579,20 +550,19 @@ struct DashboardNewsCenterView: View {
                                     readerProxy.scrollTo("article-top", anchor: .top)
                                 }
                             } else {
-                                Spacer(minLength: 0)
-                                    .frame(maxWidth: .infinity)
+                                Spacer(minLength: 0).frame(maxWidth: .infinity)
                             }
                         }
                     }
                 }
-                .padding(32)
+                .padding(28)
                 .frame(maxWidth: 720, alignment: .leading)
                 .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
                 )
-                .padding(24)
+                .padding(20)
                 .frame(maxWidth: .infinity, alignment: .center)
             }
             .onChange(of: item.id) { _, _ in
@@ -601,6 +571,295 @@ struct DashboardNewsCenterView: View {
         }
     }
     
+    
+    // MARK: - Right Simple AI Commentary & Follow-Up Chat Pane
+    
+    private func aiChatPane(for item: AIHotNewsItem) -> some View {
+        let messages = self.newsService.chatMessages(for: item)
+        let isStreaming = (self.newsService.streamingChatItemID == item.id)
+        
+        return VStack(spacing: 0) {
+            // Chat Header
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(self.tokens.accent)
+                
+                Text(AppLanguage.text("AI 点评 & 追问", en: "AI Chat"))
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(self.tokens.primaryInk)
+                
+                Spacer(minLength: 4)
+                
+                Button {
+                    Task {
+                        await self.newsService.requestAICommentary(for: item)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "wand.and.stars")
+                            .font(.system(size: 10.5, weight: .semibold))
+                        Text(AppLanguage.text("一键点评总结", en: "Summarize"))
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .foregroundStyle(self.tokens.onAccentInk)
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .background(self.tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .disabled(isStreaming)
+                
+                if !messages.isEmpty {
+                    Button {
+                        self.newsService.clearChat(for: item.id)
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(self.mutedInk)
+                            .frame(width: 26, height: 26)
+                            .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .disabled(isStreaming)
+                    .help(AppLanguage.text("清空对话", en: "Clear Chat"))
+                }
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 48)
+            
+            Rectangle()
+                .fill(self.tokens.hairline)
+                .frame(height: 1)
+            
+            // Messages List
+            ScrollViewReader { chatProxy in
+                ScrollView(.vertical, showsIndicators: true) {
+                    if messages.isEmpty {
+                        VStack(spacing: 14) {
+                            Spacer(minLength: 28)
+                            
+                            Button {
+                                Task {
+                                    await self.newsService.requestAICommentary(for: item)
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 12.5, weight: .semibold))
+                                    Text(AppLanguage.text("AI 一键点评总结", en: "AI Summary & Commentary"))
+                                        .font(.system(size: 13, weight: .semibold))
+                                }
+                                .foregroundStyle(self.tokens.onAccentInk)
+                                .padding(.horizontal, 18)
+                                .frame(height: 36)
+                                .background(self.tokens.accent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                            .disabled(isStreaming)
+                            
+                            VStack(spacing: 8) {
+                                ForEach([
+                                    "用大白话 3 句话讲清楚核心干货",
+                                    "这事对普通开发者/创作者有什么实际影响？",
+                                    "有没有什么坑或反面观点？",
+                                ], id: \.self) { prompt in
+                                    Button {
+                                        Task {
+                                            await self.newsService.sendChatFollowUp(prompt, for: item)
+                                        }
+                                    } label: {
+                                        Text(prompt)
+                                            .font(.system(size: 12, weight: .regular))
+                                            .foregroundStyle(self.secondaryInk)
+                                            .lineLimit(1)
+                                            .padding(.horizontal, 12)
+                                            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                                            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                                    .strokeBorder(self.tokens.hairline, lineWidth: 0.75)
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .pointerStyle(.link)
+                                    .disabled(isStreaming)
+                                }
+                            }
+                            .padding(.top, 4)
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity)
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(messages) { msg in
+                                self.chatBubble(msg, isStreaming: isStreaming && msg.id == messages.last?.id)
+                                    .id(msg.id)
+                            }
+                        }
+                        .padding(14)
+                    }
+                    
+                    if let err = self.newsService.chatErrorMessage, !err.isEmpty {
+                        Text(err)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 14)
+                            .padding(.bottom, 10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .onChange(of: messages.last?.text ?? "") { _, _ in
+                    if let lastID = messages.last?.id {
+                        chatProxy.scrollTo(lastID, anchor: .bottom)
+                    }
+                }
+            }
+            
+            Rectangle()
+                .fill(self.tokens.hairline)
+                .frame(height: 1)
+            
+            // Simple Follow-Up Chat Input
+            HStack(spacing: 8) {
+                TextField(AppLanguage.text("追问这篇文章…", en: "Ask a follow-up…"), text: self.$chatInput)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundStyle(self.tokens.primaryInk)
+                    .onSubmit {
+                        self.submitChatFollowUp(for: item)
+                    }
+                
+                Button {
+                    self.submitChatFollowUp(for: item)
+                } label: {
+                    Image(systemName: isStreaming ? "hourglass" : "arrow.up")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(self.tokens.onAccentInk)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            self.canSendFollowUp(isStreaming: isStreaming) ? self.tokens.accent : self.mutedInk.opacity(0.35),
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .disabled(!self.canSendFollowUp(isStreaming: isStreaming))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(self.tokens.hairlineStrong, lineWidth: 0.8)
+            )
+            .padding(12)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(self.tokens.canvasTop)
+    }
+    
+    
+    @ViewBuilder
+    private func chatBubble(_ message: NewsChatMessage, isStreaming: Bool) -> some View {
+        if message.role == .user {
+            HStack {
+                Spacer(minLength: 28)
+                Text(message.text)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(self.tokens.onAccentInk)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(self.tokens.accent, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .textSelection(.enabled)
+            }
+        } else {
+            let isCopied = (self.copiedMessageID == message.id)
+            VStack(alignment: .leading, spacing: 8) {
+                if message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isStreaming {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(AppLanguage.text("AI 正在思考…", en: "Thinking…"))
+                            .font(.system(size: 12))
+                            .foregroundStyle(self.mutedInk)
+                    }
+                } else {
+                    Text(message.text)
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(self.tokens.primaryInk.opacity(0.92))
+                        .lineSpacing(5)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    HStack {
+                        Spacer(minLength: 0)
+                        
+                        Button {
+                            self.copyAssistantReply(message)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                Text(isCopied
+                                     ? AppLanguage.text("已复制", en: "Copied")
+                                     : AppLanguage.text("复制回复", en: "Copy"))
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .foregroundStyle(isCopied ? self.tokens.accentText : self.secondaryInk)
+                            .padding(.horizontal, 9)
+                            .frame(height: 24)
+                            .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                    }
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
+            )
+        }
+    }
+    
+    
+    private func canSendFollowUp(isStreaming: Bool) -> Bool {
+        !isStreaming && !self.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    
+    private func submitChatFollowUp(for item: AIHotNewsItem) {
+        let prompt = self.chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty, self.newsService.streamingChatItemID == nil else { return }
+        self.chatInput = ""
+        Task {
+            await self.newsService.sendChatFollowUp(prompt, for: item)
+        }
+    }
+    
+    
+    private func copyAssistantReply(_ message: NewsChatMessage) {
+        let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        self.copiedMessageID = message.id
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.8))
+            if self.copiedMessageID == message.id {
+                self.copiedMessageID = nil
+            }
+        }
+    }
+    
+    
+    // MARK: - Article Blocks & Helpers
     
     @ViewBuilder
     private func articleBlockView(_ block: NewsArticleBlock) -> some View {
@@ -628,7 +887,7 @@ struct DashboardNewsCenterView: View {
                         .frame(width: 3)
                     
                     Text(text)
-                        .font(.system(size: 14.5, weight: .regular))
+                        .font(.system(size: 14, weight: .regular))
                         .foregroundStyle(self.secondaryInk)
                         .lineSpacing(5)
                         .textSelection(.enabled)
@@ -723,13 +982,8 @@ struct DashboardNewsCenterView: View {
     }
     
     
-    // MARK: - Helpers
-    
     private func syncSelectionSideEffects() {
         guard let item = self.selectedItem else { return }
-        if self.selectedItemID != item.id {
-            self.selectedItemID = item.id
-        }
         self.newsService.markRead(item)
         Task {
             await self.newsService.fetchArticleExcerptIfNeeded(for: item)
@@ -737,17 +991,7 @@ struct DashboardNewsCenterView: View {
     }
     
     
-    private func stepSelection(by delta: Int) -> KeyPress.Result {
-        let items = self.displayedItems
-        guard !items.isEmpty else { return .ignored }
-        let currentIndex = items.firstIndex(where: { $0.id == self.selectedItem?.id }) ?? 0
-        let nextIndex = min(max(0, currentIndex + delta), items.count - 1)
-        self.selectedItemID = items[nextIndex].id
-        return .handled
-    }
-    
-    
-    private static func relativeTimeString(from date: Date) -> String {
+    fileprivate static func relativeTimeString(from date: Date) -> String {
         let interval = max(0, Date().timeIntervalSince(date))
         if interval < 3600 {
             let mins = max(1, Int(interval / 60))
@@ -759,6 +1003,150 @@ struct DashboardNewsCenterView: View {
         }
         let days = Int(interval / 86_400)
         return "\(days)d"
+    }
+}
+
+
+// MARK: - Xiaohongshu-Style Visual News Card
+
+private struct XiaohongshuNewsCard: View {
+    
+    let item: AIHotNewsItem
+    let cover: NSImage?
+    let isRead: Bool
+    let hasAIBrief: Bool
+    let tokens: StudioColorTokens
+    let secondaryInk: Color
+    let mutedInk: Color
+    let onTap: () -> Void
+    
+    @State private var isHovered = false
+    
+    
+    var body: some View {
+        let publisher = self.item.displayPublisherLabel
+        let summarySnippet = self.item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        
+        Button(action: self.onTap) {
+            VStack(alignment: .leading, spacing: 0) {
+                ZStack(alignment: .topLeading) {
+                    if let cover = self.cover {
+                        GeometryReader { geo in
+                            Image(nsImage: cover)
+                                .resizable()
+                                .interpolation(.high)
+                                .antialiased(true)
+                                .scaledToFill()
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .clipped()
+                        }
+                        .frame(height: 148)
+                    } else {
+                        self.editorialCoverTile(summarySnippet: summarySnippet)
+                            .frame(height: 124)
+                    }
+                    
+                    HStack {
+                        Text(self.item.resolvedCategory.label)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(self.tokens.primaryInk)
+                            .padding(.horizontal, 7)
+                            .frame(height: 20)
+                            .background(self.tokens.card.opacity(0.88), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        
+                        Spacer()
+                        
+                        if self.hasAIBrief {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(self.tokens.onAccentInk)
+                                .frame(width: 20, height: 20)
+                                .background(self.tokens.accent, in: Circle())
+                        } else if !self.isRead {
+                            Circle()
+                                .fill(self.tokens.accent)
+                                .frame(width: 7, height: 7)
+                        }
+                    }
+                    .padding(8)
+                }
+                .frame(maxWidth: .infinity)
+                .clipped()
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(self.item.title)
+                        .font(.system(size: 13.5, weight: self.isRead ? .medium : .semibold))
+                        .foregroundStyle(self.isRead ? self.secondaryInk : self.tokens.primaryInk)
+                        .lineLimit(2)
+                        .lineSpacing(2.5)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, minHeight: 38, alignment: .topLeading)
+                    
+                    HStack(spacing: 6) {
+                        Text(publisher.isEmpty ? self.item.resolvedCategory.label : publisher)
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(self.mutedInk)
+                            .lineLimit(1)
+                        
+                        Spacer(minLength: 4)
+                        
+                        if let date = self.item.publishedAt {
+                            Text(DashboardNewsCenterView.relativeTimeString(from: date))
+                                .font(.system(size: 10.5, design: .monospaced).monospacedDigit())
+                                .foregroundStyle(self.mutedInk)
+                        }
+                    }
+                }
+                .padding(12)
+            }
+            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(
+                        self.isHovered ? self.tokens.accent.opacity(0.45) : self.tokens.hairline,
+                        lineWidth: self.isHovered ? 1.0 : 0.8
+                    )
+            )
+            .shadow(color: self.tokens.cardShadow, radius: self.isHovered ? 10 : 5, x: 0, y: self.isHovered ? 4 : 2)
+            .scaleEffect(self.isHovered ? 1.012 : 1.0)
+            .animation(.spring(response: 0.22, dampingFraction: 0.80), value: self.isHovered)
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { hovering in
+            if hovering != self.isHovered {
+                self.isHovered = hovering
+            }
+        }
+    }
+    
+    
+    private func editorialCoverTile(summarySnippet: String) -> some View {
+        let seed = abs(self.item.id.hashValue)
+        let accent: Color = switch seed % 4 {
+            case 0: self.tokens.accent
+            case 1: self.tokens.secondaryAccent
+            case 2: Color(red: 0.212, green: 0.478, blue: 0.612)
+            default: self.tokens.heat3
+        }
+        return ZStack(alignment: .bottomLeading) {
+            LinearGradient(
+                colors: [accent.opacity(self.tokens.isDark ? 0.30 : 0.18), self.tokens.inset],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            
+            if !summarySnippet.isEmpty {
+                Text(summarySnippet)
+                    .font(.system(size: 11.5, weight: .regular))
+                    .foregroundStyle(self.secondaryInk)
+                    .lineLimit(3)
+                    .lineSpacing(2.5)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
+            }
+        }
     }
 }
 

@@ -274,6 +274,23 @@ import Observation
     }
     
     
+    /// Runs a multi-turn chat conversation with streaming partial updates (used by NEWS AI chat).
+    func chat(
+        _ messages: [AIMessage],
+        analyticsFeature: String = "newsChat",
+        onPartial: (@MainActor @Sendable (String) -> Void)? = nil
+    ) async throws -> String {
+        
+        let resolvedConfig = AIBotStore.shared.resolvedConfiguration(for: .summarize, baseConfig: .current)
+        return try await self.send(
+            messages,
+            configuration: resolvedConfig,
+            analyticsFeature: analyticsFeature,
+            onPartial: onPartial
+        )
+    }
+    
+    
     /// Checks that the configuration actually reaches the service.
     ///
     /// - Returns: The short reply from the model.

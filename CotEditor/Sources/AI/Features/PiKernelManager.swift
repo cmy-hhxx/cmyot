@@ -93,6 +93,25 @@ final class PiKernelManager {
     
     static let kernelEnabledConfigKey = "ai.pi.kernelEnabled"
     static let customBinaryConfigKey = "ai.pi.binaryPath"
+    static let minimumRecommendedVersion = "1.6.0"
+    
+    /// Copy-ready installation prompt (< 50 lines) users can paste into an AI assistant or run themselves
+    /// when `pi` is not yet installed locally.
+    nonisolated static let installPrompt: String = """
+    请帮我在当前 macOS 环境中安装并验证 Pi 本地内核（@earendil-works/pi-coding-agent），供 CotEditor 调用：
+
+    1. 检查是否已有 `pi` 命令：
+       `command -v pi && pi --version`
+    2. 如未安装，优先使用官方一键脚本安装（无需 Node 环境，自动固定依赖）：
+       `curl -fsSL https://pi.dev/install.sh | sh`
+    3. 如网络或环境更适合 npm（需 Node.js >= 22.19），改用：
+       `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`
+    4. 若已安装但版本较旧，直接升级到最新内核：
+       `pi update`
+    5. 确保 `~/.local/bin` 或 `~/.pi/bin` 已加入 `~/.zshrc` 的 `PATH`，然后执行：
+       `which pi && pi --version`
+    6. 返回最终 `pi` 路径与版本号即可，无需在 `~/.pi/agent` 额外手写模型配置（CotEditor 会自动同步 API 网关与 Bot 配置到独立工作区）。
+    """
     
     private(set) var piBinaryPath: String?
     private(set) var piVersion: String?
@@ -121,15 +140,15 @@ final class PiKernelManager {
     var statusSummary: String {
         if let version = self.piVersion, self.isAvailable {
             return self.isKernelEnabled
-                ? AppLanguage.text("Pi 内核已就绪 · v\(version)", en: "Pi Kernel Ready · v\(version)")
-                : AppLanguage.text("Pi 内核已暂停 (直连模式) · v\(version)", en: "Pi Paused · v\(version)")
+                ? "Pi v\(version)"
+                : AppLanguage.text("Pi v\(version) · 已暂停", en: "Pi v\(version) · Paused")
         }
         if self.isAvailable {
             return self.isKernelEnabled
-                ? AppLanguage.text("Pi 内核已连接", en: "Pi Kernel Connected")
-                : AppLanguage.text("Pi 内核已暂停", en: "Pi Kernel Paused")
+                ? AppLanguage.text("Pi 已就绪", en: "Pi Ready")
+                : AppLanguage.text("Pi 已暂停", en: "Pi Paused")
         }
-        return AppLanguage.text("未检测到 pi CLI · 自动回退直连网关", en: "pi CLI Not Found · Direct HTTP Fallback")
+        return AppLanguage.text("未安装 Pi", en: "Pi Not Installed")
     }
     
     
@@ -154,7 +173,7 @@ final class PiKernelManager {
     }
     
     
-    // MARK: Binary Discovery
+    // MARK: Binary Discovery & Runtime Environment
     
     nonisolated static func discoverPiBinary(customOverride: String? = nil) -> String? {
         let fm = FileManager.default
@@ -167,9 +186,13 @@ final class PiKernelManager {
         
         let home = fm.homeDirectoryForCurrentUser.path(percentEncoded: false)
         var candidates: [String] = [
-            "\(home)/.local/share/mise/installs/npm-earendil-works-pi-coding-agent/latest/bin/pi",
+            "\(home)/.pi/bin/pi",
             "\(home)/.local/bin/pi",
+            "\(home)/.local/share/mise/shims/pi",
+            "\(home)/.local/share/mise/installs/npm-earendil-works-pi-coding-agent/latest/bin/pi",
             "\(home)/.bun/bin/pi",
+            "\(home)/.volta/bin/pi",
+            "\(home)/.nix-profile/bin/pi",
             "\(home)/.npm-global/bin/pi",
             "/opt/homebrew/bin/pi",
             "/usr/local/bin/pi",
@@ -181,11 +204,16 @@ final class PiKernelManager {
             }
         }
         
-        // Check mise installs directory if versioned path exists
+        // Check mise installs directory (both `latest` and versioned subdirectories)
         let miseRoot = URL(filePath: "\(home)/.local/share/mise/installs", directoryHint: .isDirectory)
         if let subdirs = try? fm.contentsOfDirectory(at: miseRoot, includingPropertiesForKeys: nil) {
             for dir in subdirs where dir.lastPathComponent.localizedCaseInsensitiveContains("pi") {
                 candidates.append(dir.appending(path: "latest/bin/pi").path(percentEncoded: false))
+                if let versions = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+                    for ver in versions.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
+                        candidates.append(ver.appending(path: "bin/pi").path(percentEncoded: false))
+                    }
+                }
             }
         }
         
@@ -198,14 +226,74 @@ final class PiKernelManager {
     }
     
     
+    /// Augments `PATH` for GUI-launched macOS apps so `#!/usr/bin/env node` / Bun / mise shims resolve reliably.
+    nonisolated static func augmentedRuntimeEnvironment(
+        binaryPath: String? = nil,
+        agentDirectoryPath: String? = nil,
+        base: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path(percentEncoded: false)
+        var extraBins: [String] = []
+        if let binaryPath {
+            let parent = URL(filePath: binaryPath).deletingLastPathComponent().path(percentEncoded: false)
+            if !parent.isEmpty { extraBins.append(parent) }
+        }
+        extraBins.append(contentsOf: [
+            "\(home)/.pi/bin",
+            "\(home)/.local/bin",
+            "\(home)/.local/share/mise/shims",
+            "\(home)/.bun/bin",
+            "\(home)/.volta/bin",
+            "\(home)/.fnm/current/bin",
+            "\(home)/.nix-profile/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+        ])
+        
+        // Include mise/nvm Node runtimes if present for npm-installed Pi 1.6+ (`#!/usr/bin/env node`)
+        let miseNodeDir = URL(filePath: "\(home)/.local/share/mise/installs/node", directoryHint: .isDirectory)
+        if let versions = try? fm.contentsOfDirectory(at: miseNodeDir, includingPropertiesForKeys: nil) {
+            for ver in versions.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
+                extraBins.append(ver.appending(path: "bin").path(percentEncoded: false))
+            }
+        }
+        let nvmNodeDir = URL(filePath: "\(home)/.nvm/versions/node", directoryHint: .isDirectory)
+        if let versions = try? fm.contentsOfDirectory(at: nvmNodeDir, includingPropertiesForKeys: nil) {
+            for ver in versions.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
+                extraBins.append(ver.appending(path: "bin").path(percentEncoded: false))
+            }
+        }
+        
+        let existingPath = base["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        var seen = Set<String>()
+        var merged: [String] = []
+        for entry in extraBins + existingPath.split(separator: ":").map(String.init) {
+            let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            merged.append(trimmed)
+        }
+        
+        var env = base
+        env["PATH"] = merged.joined(separator: ":")
+        if let agentDirectoryPath {
+            env["PI_CODING_AGENT_DIR"] = agentDirectoryPath
+        }
+        env["PI_OFFLINE"] = "1"
+        env["PI_SKIP_VERSION_CHECK"] = "1"
+        env["PI_TELEMETRY"] = "0"
+        return env
+    }
+    
+    
     func refreshEnvironment() async {
         let custom = self.database.string(forKey: Self.customBinaryConfigKey)
         let resolvedPath = Self.discoverPiBinary(customOverride: custom)
         self.piBinaryPath = resolvedPath
-        _ = try? self.syncWorkspace()
         
         guard let resolvedPath else {
             self.piVersion = nil
+            _ = try? self.syncWorkspace()
             return
         }
         
@@ -213,6 +301,7 @@ final class PiKernelManager {
             let proc = Process()
             proc.executableURL = URL(filePath: resolvedPath)
             proc.arguments = ["--version"]
+            proc.environment = Self.augmentedRuntimeEnvironment(binaryPath: resolvedPath)
             let outPipe = Pipe()
             proc.standardOutput = outPipe
             proc.standardError = Pipe()
@@ -231,6 +320,7 @@ final class PiKernelManager {
         if let detectedVersion, !detectedVersion.isEmpty {
             self.piVersion = detectedVersion
         }
+        _ = try? self.syncWorkspace()
     }
     
     
@@ -333,6 +423,7 @@ final class PiKernelManager {
                 modelEntries.append([
                     "id": mid,
                     "name": mid,
+                    "reasoning": Self.isReasoningModelID(mid),
                     "input": ["text", "image"],
                     "contextWindow": 128_000,
                     "maxTokens": 16_384,
@@ -381,9 +472,14 @@ final class PiKernelManager {
         try authData.write(to: authURL, options: .atomic)
         try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authURL.path(percentEncoded: false))
         
-        // Write quiet minimal settings.json for the embedded PiKernel directory
+        // Write Pi 1.6+ schema-compliant settings.json (quiet startup, no slow auto-retry loops during headless runs)
         let settingsPayload: [String: Any] = [
+            "$schema": "https://pi.dev/schemas/settings.schema.json",
             "quietStartup": true,
+            "lastChangelogVersion": self.piVersion ?? Self.minimumRecommendedVersion,
+            "retry": [
+                "enabled": false,
+            ],
         ]
         if let settingsData = try? JSONSerialization.data(withJSONObject: settingsPayload, options: [.prettyPrinted, .sortedKeys]) {
             try? settingsData.write(to: self.agentDirectoryURL.appending(path: "settings.json"), options: .atomic)
@@ -441,6 +537,110 @@ final class PiKernelManager {
             modelCount: totalModels,
             botCount: AIBotID.allCases.count
         )
+    }
+    
+    
+    nonisolated static func isReasoningModelID(_ modelID: String) -> Bool {
+        let lower = modelID.lowercased()
+        let markers = [
+            "reasoner", "deepseek-r1", "deepseek-v4", "gpt-5", "gpt-6",
+            "o1", "o3", "o4", "claude-3-7", "claude-4", "claude-opus-4", "claude-sonnet-4",
+            "gemini-2.5", "gemini-3", "qwen4", "qwq", "thinking",
+        ]
+        return markers.contains { lower.contains($0) }
+    }
+    
+    
+    /// Stateful accumulator for Pi 1.6+ delta-only JSONL event streams (`--mode json`).
+    nonisolated struct JSONLStreamState: Sendable {
+        var textBlocks: [Int: String] = [:]
+        var finalAssistantText: String?
+        var errorMessage: String?
+        var activeToolName: String?
+        var isSettled: Bool = false
+        
+        var streamedText: String {
+            self.textBlocks.keys.sorted().compactMap { self.textBlocks[$0] }.joined()
+        }
+        
+        var resolvedOutput: String {
+            (self.finalAssistantText ?? self.streamedText).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        
+        mutating func ingest(_ json: [String: Any]) -> (partialSnapshot: String?, toolHint: String?) {
+            guard let eventType = json["type"] as? String else { return (nil, nil) }
+            switch eventType {
+                case "message_update":
+                    if let assistantEvent = json["assistantMessageEvent"] as? [String: Any],
+                       let subType = assistantEvent["type"] as? String
+                    {
+                        let idx = assistantEvent["contentIndex"] as? Int ?? 0
+                        switch subType {
+                            case "text_delta":
+                                if let delta = assistantEvent["delta"] as? String, !delta.isEmpty {
+                                    self.textBlocks[idx, default: ""] += delta
+                                    return (self.streamedText, nil)
+                                }
+                            case "text_end":
+                                if let content = assistantEvent["content"] as? String {
+                                    self.textBlocks[idx] = content
+                                    return (self.streamedText, nil)
+                                }
+                            case "error":
+                                if let errStr = assistantEvent["error"] as? String, !errStr.isEmpty {
+                                    self.errorMessage = errStr
+                                } else if let errObj = assistantEvent["error"] as? [String: Any],
+                                          let errMsg = errObj["errorMessage"] as? String, !errMsg.isEmpty
+                                {
+                                    self.errorMessage = errMsg
+                                }
+                            default:
+                                break
+                        }
+                    }
+                    
+                case "tool_execution_start":
+                    if let toolName = json["toolName"] as? String, !toolName.isEmpty {
+                        self.activeToolName = toolName
+                        if self.streamedText.isEmpty {
+                            return (nil, "▸ Pi Agent 正在执行工具 `\(toolName)`…\n")
+                        }
+                    }
+                    
+                case "message_end":
+                    if let message = json["message"] as? [String: Any],
+                       (message["role"] as? String) == "assistant"
+                    {
+                        if let errMsg = message["errorMessage"] as? String, !errMsg.isEmpty {
+                            self.errorMessage = errMsg
+                        }
+                        if let blocks = message["content"] as? [[String: Any]] {
+                            let joined = blocks.compactMap { block -> String? in
+                                guard (block["type"] as? String) == "text" else { return nil }
+                                return block["text"] as? String
+                            }.joined()
+                            if !joined.isEmpty {
+                                self.finalAssistantText = joined
+                                return (joined, nil)
+                            }
+                        }
+                    }
+                    
+                case "auto_retry_end":
+                    if (json["success"] as? Bool) == false,
+                       let finalErr = json["finalError"] as? String, !finalErr.isEmpty
+                    {
+                        self.errorMessage = finalErr
+                    }
+                    
+                case "agent_settled":
+                    self.isSettled = true
+                    
+                default:
+                    break
+            }
+            return (nil, nil)
+        }
     }
     
     
@@ -522,12 +722,10 @@ final class PiKernelManager {
                 process.currentDirectoryURL = workingDirectory
             }
             
-            var env = ProcessInfo.processInfo.environment
-            env["PI_CODING_AGENT_DIR"] = agentDirPath
-            env["PI_OFFLINE"] = "1"
-            env["PI_SKIP_VERSION_CHECK"] = "1"
-            env["PI_TELEMETRY"] = "0"
-            process.environment = env
+            process.environment = Self.augmentedRuntimeEnvironment(
+                binaryPath: binaryPath,
+                agentDirectoryPath: agentDirPath
+            )
             
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
@@ -539,16 +737,18 @@ final class PiKernelManager {
             
             let handle = stdoutPipe.fileHandleForReading
             var lineBuffer = Data()
-            var streamedText = ""
-            var finalAssistantText: String?
-            var streamErrorText: String?
+            var streamState = JSONLStreamState()
             
             while true {
+                if Task.isCancelled {
+                    if process.isRunning { process.terminate() }
+                    throw CancellationError()
+                }
                 let chunk = try handle.read(upToCount: 4096) ?? Data()
                 if chunk.isEmpty { break }
                 lineBuffer.append(chunk)
                 
-                // Strict LF framing per Pi JSONL protocol specification
+                // Strict LF framing per Pi 1.6+ JSONL protocol specification
                 while let newlineIndex = lineBuffer.firstIndex(of: 0x0A) {
                     var recordBytes = lineBuffer.subdata(in: 0..<newlineIndex)
                     lineBuffer.removeSubrange(0...newlineIndex)
@@ -556,53 +756,16 @@ final class PiKernelManager {
                         recordBytes.removeLast()
                     }
                     guard !recordBytes.isEmpty,
-                          let json = try? JSONSerialization.jsonObject(with: recordBytes) as? [String: Any],
-                          let eventType = json["type"] as? String
+                          let json = try? JSONSerialization.jsonObject(with: recordBytes) as? [String: Any]
                     else { continue }
                     
-                    switch eventType {
-                        case "message_update":
-                            if let assistantEvent = json["assistantMessageEvent"] as? [String: Any],
-                               let subType = assistantEvent["type"] as? String
-                            {
-                                if subType == "text_delta", let delta = assistantEvent["delta"] as? String, !delta.isEmpty {
-                                    streamedText += delta
-                                    if let onPartial {
-                                        let snapshot = streamedText
-                                        await MainActor.run { onPartial(snapshot) }
-                                    }
-                                } else if subType == "error", let errMsg = assistantEvent["error"] as? String {
-                                    streamErrorText = errMsg
-                                }
-                            }
-                            
-                        case "tool_execution_start":
-                            if let onPartial, streamedText.isEmpty, let toolName = json["toolName"] as? String {
-                                await MainActor.run {
-                                    onPartial("▸ Pi Agent 正在执行工具 `\(toolName)`…\n")
-                                }
-                            }
-                            
-                        case "message_end":
-                            if let message = json["message"] as? [String: Any],
-                               (message["role"] as? String) == "assistant"
-                            {
-                                if let errMsg = message["errorMessage"] as? String, !errMsg.isEmpty {
-                                    streamErrorText = errMsg
-                                }
-                                if let blocks = message["content"] as? [[String: Any]] {
-                                    let joined = blocks.compactMap { block -> String? in
-                                        guard (block["type"] as? String) == "text" else { return nil }
-                                        return block["text"] as? String
-                                    }.joined()
-                                    if !joined.isEmpty {
-                                        finalAssistantText = joined
-                                    }
-                                }
-                            }
-                            
-                        default:
-                            break
+                    let update = streamState.ingest(json)
+                    if let onPartial {
+                        if let snapshot = update.partialSnapshot {
+                            await MainActor.run { onPartial(snapshot) }
+                        } else if let toolHint = update.toolHint {
+                            await MainActor.run { onPartial(toolHint) }
+                        }
                     }
                 }
             }
@@ -612,12 +775,12 @@ final class PiKernelManager {
             let stderrString = String(data: stderrData, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             
-            let resolvedOutput = (finalAssistantText ?? streamedText).trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedOutput = streamState.resolvedOutput
             if !resolvedOutput.isEmpty {
                 return resolvedOutput
             }
-            if let streamErrorText, !streamErrorText.isEmpty {
-                throw AIError.http(status: 502, message: streamErrorText)
+            if let errMsg = streamState.errorMessage, !errMsg.isEmpty {
+                throw AIError.http(status: 502, message: errMsg)
             }
             if process.terminationStatus != 0 {
                 let detail = stderrString.isEmpty ? "exit \(process.terminationStatus)" : stderrString

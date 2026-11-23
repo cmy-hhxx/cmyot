@@ -197,6 +197,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let editorWallpaperCustomCatalogJSON = "appearance.wallpaperCustomCatalogJSON"
         static let aiHotNewsCacheJSON = "analytics.aiHotNewsCacheJSON"
         static let aiActionPredictionsJSON = "analytics.aiActionPredictionsJSON"
+        static let aiDoneTodayCommentaryJSON = "analytics.aiDoneTodayCommentaryJSON"
         static let dashboardDanmakuEnabled = "analytics.dashboardDanmakuEnabled"
         static let newsBookmarkedItemsJSON = "analytics.newsBookmarkedItemsJSON"
         static let newsReadIDsJSON = "analytics.newsReadIDsJSON"

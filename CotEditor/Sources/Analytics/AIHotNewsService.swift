@@ -375,6 +375,21 @@ nonisolated enum NewsArticleExtractor {
 }
 
 
+/// A single chat message in the NEWS article AI commentary & follow-up conversation.
+nonisolated struct NewsChatMessage: Identifiable, Codable, Hashable, Sendable {
+    
+    enum Role: String, Codable, Hashable, Sendable {
+        case user
+        case assistant
+    }
+    
+    var id: String = UUID().uuidString
+    var role: Role
+    var text: String
+    var createdAt: Date = Date()
+}
+
+
 /// A single industry news item displayed in the Analytics Dashboard NEWS feed.
 nonisolated struct AIHotNewsItem: Identifiable, Codable, Hashable, Sendable {
     
@@ -511,6 +526,9 @@ final class AIHotNewsService {
     private(set) var aiBriefs: [String: String] = [:]
     private(set) var isGeneratingBriefID: String? = nil
     private(set) var briefErrorMessage: String? = nil
+    private(set) var chatHistories: [String: [NewsChatMessage]] = [:]
+    private(set) var streamingChatItemID: String? = nil
+    private(set) var chatErrorMessage: String? = nil
     
     private var inFlightCoverIDs: Set<String> = []
     private var resolvedNoCoverIDs: Set<String> = []
@@ -763,6 +781,126 @@ final class AIHotNewsService {
         } catch {
             self.briefErrorMessage = error.localizedDescription
         }
+    }
+    
+    
+    // MARK: Simple Article AI Chat (One-Click Commentary/Summary + Follow-Up)
+    
+    func chatMessages(for item: AIHotNewsItem) -> [NewsChatMessage] {
+        if let history = self.chatHistories[item.id], !history.isEmpty {
+            return history
+        }
+        if let savedBrief = self.aiBriefs[item.id]?.trimmingCharacters(in: .whitespacesAndNewlines), !savedBrief.isEmpty {
+            return [NewsChatMessage(id: "brief-\(item.id)", role: .assistant, text: savedBrief)]
+        }
+        return []
+    }
+    
+    
+    func clearChat(for itemID: String) {
+        self.chatHistories[itemID] = []
+        self.chatErrorMessage = nil
+    }
+    
+    
+    /// Triggers one-click sharp AI commentary & summary for `item` as the first chat turn.
+    func requestAICommentary(for item: AIHotNewsItem) async {
+        let prompt = AppLanguage.text(
+            "帮我一键点评并总结这篇文章：先说核心事实，再给犀利点评和实际启发。",
+            en: "Summarize and give sharp commentary on this article."
+        )
+        await self.sendChatFollowUp(prompt, for: item, displayUserText: AppLanguage.text("一键点评总结", en: "AI Summary & Commentary"), saveAsBrief: true)
+    }
+    
+    
+    /// Appends a user follow-up question and streams the AI reply in a simple multi-turn chat.
+    func sendChatFollowUp(
+        _ question: String,
+        for item: AIHotNewsItem,
+        displayUserText: String? = nil,
+        saveAsBrief: Bool = false
+    ) async {
+        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard self.streamingChatItemID == nil else { return }
+        guard AIService.shared.isConfigured else {
+            self.chatErrorMessage = AppLanguage.text("请先在「设置 → API 网关」配置 AI 模型", en: "Configure an AI model in Settings first")
+            return
+        }
+        
+        self.chatErrorMessage = nil
+        let itemID = item.id
+        var history = self.chatMessages(for: item)
+        
+        let userMsg = NewsChatMessage(role: .user, text: displayUserText ?? trimmed)
+        let assistantID = UUID().uuidString
+        let placeholderAssistant = NewsChatMessage(id: assistantID, role: .assistant, text: "")
+        history.append(userMsg)
+        history.append(placeholderAssistant)
+        self.chatHistories[itemID] = history
+        self.streamingChatItemID = itemID
+        
+        defer {
+            if self.streamingChatItemID == itemID {
+                self.streamingChatItemID = nil
+            }
+        }
+        
+        let sourceNote = item.displayPublisherLabel.isEmpty ? item.resolvedCategory.badgeLabel : item.displayPublisherLabel
+        let blocks = self.resolvedArticleBlocks(for: item)
+        let fullBody = blocks.map(\.markdownText).joined(separator: "\n\n")
+        let bodyContext = !fullBody.isEmpty
+            ? String(fullBody.prefix(4000))
+            : (item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+        
+        let systemContext = """
+        你是一位视野敏锐、说人话的科技与资讯陪读搭子。请紧扣下面这篇资讯原文回答用户的点评、总结和追问。
+        要求：直接给干货与犀利观点，结构清晰方便复制分享，不要废话客套。
+
+        标题：\(item.title)
+        分类：\(item.resolvedCategory.label)\(sourceNote.isEmpty ? "" : " · \(sourceNote)")
+        链接：\(item.urlString)
+        \(bodyContext.isEmpty ? "" : "正文内容：\n\(bodyContext)")
+        """
+        
+        var wireMessages: [AIMessage] = [.system(systemContext)]
+        let priorTurns = history.dropLast(2).suffix(10)
+        for turn in priorTurns {
+            let cleanText = turn.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanText.isEmpty else { continue }
+            wireMessages.append(turn.role == .user ? .user(cleanText) : AIMessage(role: .assistant, text: cleanText))
+        }
+        wireMessages.append(.user(trimmed))
+        
+        do {
+            let output = try await AIService.shared.chat(wireMessages, analyticsFeature: "newsChat") { [weak self] partial in
+                guard let self else { return }
+                self.updateAssistantMessage(id: assistantID, itemID: itemID, text: partial)
+            }
+            let finalClean = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.updateAssistantMessage(id: assistantID, itemID: itemID, text: finalClean)
+            if saveAsBrief, !finalClean.isEmpty {
+                self.setAIBrief(finalClean, for: itemID)
+            }
+        } catch {
+            self.chatErrorMessage = error.localizedDescription
+            if var list = self.chatHistories[itemID],
+               let idx = list.lastIndex(where: { $0.id == assistantID }),
+               list[idx].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                list.remove(at: idx)
+                self.chatHistories[itemID] = list
+            }
+        }
+    }
+    
+    
+    private func updateAssistantMessage(id: String, itemID: String, text: String) {
+        guard var list = self.chatHistories[itemID],
+              let idx = list.lastIndex(where: { $0.id == id })
+        else { return }
+        list[idx].text = text
+        self.chatHistories[itemID] = list
     }
     
     

@@ -377,6 +377,9 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     private(set) var isPredictingActions: Bool = false
     private(set) var actionPredictionsFromAI: Bool = false
     private(set) var actionPredictionUpdatedAt: Date?
+    private(set) var doneTodayCommentary: [String] = []
+    private(set) var isRefreshingDoneToday: Bool = false
+    private(set) var doneTodayFromAI: Bool = false
     private(set) var revision: Int = 0
     private(set) var lastKeystrokeAt: Date = .distantPast
     
@@ -384,6 +387,8 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     
     private let database: CotLocalDatabase
     private var actionPredictionFingerprint: String = ""
+    private var doneTodayFingerprint: String = ""
+    private var doneTodayUpdatedAt: Date?
     private var pendingTypedCharsDelta: Int = 0
     private var pendingTypedDateKey: String?
     private var pendingTypedHour: Int?
@@ -668,6 +673,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             self.personalityProfile = nil
         }
         
+        self.loadDoneTodayCommentaryFromDatabase()
         self.loadActionPredictionsFromDatabase()
         
         self.revision &+= 1
@@ -2618,17 +2624,61 @@ extension AnalyticsManager {
     }
     
     
-    /// Returns `true` when an action item carries meaningful substance beyond generic boilerplate
-    /// such as `cot 优化todos` or `cot Editors`.
+    /// Returns `true` when an action or snippet carries real semantic substance —
+    /// strictly rejecting test inputs (`111`, `222`, `test`, `测试111`, `asdf`), repeated filler chars,
+    /// and generic boilerplate like `cot 优化todos` or `cot Editors`.
     nonisolated static func hasMeaningfulActionSubstance(_ text: String) -> Bool {
-        let stripped = text.lowercased()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        
+        var stripped = trimmed.lowercased()
             .replacingOccurrences(of: #"(coteditor|editors?|cot|todos?|fixme|roadmap)"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\b(test(?:ing)?|demo|sample|tmp|temp|asdf|qwer|zxcv|foo|bar|baz|xxx+|abc+|placeholder|untitled|draft)\b"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: "测试", with: "")
             .replacingOccurrences(of: "优化", with: "")
             .replacingOccurrences(of: "待办", with: "")
             .replacingOccurrences(of: "清单", with: "")
             .replacingOccurrences(of: "事项", with: "")
+            .replacingOccurrences(of: #"[0-9]+"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters).union(.symbols))
-        return stripped.count >= 3
+        
+        // Remove whitespace inside to measure genuine semantic characters
+        stripped = stripped.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)
+        guard stripped.count >= 3 else { return false }
+        
+        // Reject repeated single-character spam like "aaa", "哈哈哈", "一一一"
+        let uniqueChars = Set(stripped)
+        guard uniqueChars.count >= 2 else { return false }
+        
+        // If purely ASCII letters, reject short keyboard-mash / gibberish tokens
+        let hasCJK = stripped.unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(scalar.value) || (0x3400...0x4DBF).contains(scalar.value)
+        }
+        if !hasCJK {
+            if stripped.count < 4 || uniqueChars.count < 3 {
+                return false
+            }
+            let mashPatterns = ["asdf", "qwer", "zxcv", "hjkl", "uiop", "abcd", "aaaa", "zzzz"]
+            if mashPatterns.contains(where: { stripped.contains($0) && stripped.count <= 8 }) {
+                return false
+            }
+        }
+        return true
+    }
+    
+    
+    /// Returns `true` if a document contains meaningful human writing rather than throwaway scratch tests (`111`, `222`, `test`).
+    nonisolated static func isMeaningfulDocumentContent(_ content: String) -> Bool {
+        let lines = content.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return false }
+        let meaningfulLines = lines.filter { Self.hasMeaningfulActionSubstance($0) }
+        if !meaningfulLines.isEmpty {
+            let totalMeaningfulChars = meaningfulLines.reduce(0) { $0 + $1.count }
+            return totalMeaningfulChars >= 8
+        }
+        return false
     }
     
     
@@ -2713,58 +2763,263 @@ extension AnalyticsManager {
     }
     
     
-    /// Clean, capsule-free bullet points summarizing what the user worked on today ("干了啥"),
-    /// strictly excluding document titles and word/character counts.
+    /// Lively, candid, sharp commentary summarizing what the user got done today ("干了啥"),
+    /// mixing real praise with witty mild profanity / roasts — zero dry corporate logs.
     var doneTodayPoints: [String] {
         let _ = self.revision
-        let todayKey = Self.dateKey()
-        let knownTitles = self.database.documents.map(\.title) + self.database.weeklyReports.map(\.title)
+        if !self.doneTodayCommentary.isEmpty {
+            return Array(self.doneTodayCommentary.prefix(4))
+        }
+        return self.buildLivelyLocalDoneTodayCommentary()
+    }
+    
+    
+    /// Builds witty, candid local commentary grounded in today's real writing metrics and touched work.
+    private func buildLivelyLocalDoneTodayCommentary() -> [String] {
+        let stats = self.todayStats
+        let totalChars = stats.typedChars + stats.aiCompletedChars
+        let hour = Calendar.current.component(.hour, from: Date())
+        let calendar = Calendar.current
+        let todayDocs = self.database.documents
+            .filter { !$0.id.hasPrefix("weekly:") && calendar.isDateInToday($0.updatedAt) && Self.isMeaningfulDocumentContent($0.content) }
+        
         var points: [String] = []
         
-        func appendCleaned(_ raw: String, fallback: String = "") {
-            guard points.count < 5 else { return }
-            let cleaned = Self.sanitizeDashboardActionText(raw, knownTitles: knownTitles, fallback: fallback)
-            guard !cleaned.isEmpty, !points.contains(cleaned) else { return }
-            points.append(cleaned)
+        // 1. Output & hand-typing punchline
+        if stats.typedChars >= 1500 {
+            points.append("手速直接干冒烟了，今天这波纯手搓输出太牛逼了，键盘都要给你磕一个。")
+        } else if stats.typedChars >= 400 {
+            points.append("实打实码了一大段，没光顾着画饼，这股狠劲值得夸爆。")
+        } else if totalChars > 0 {
+            points.append("稍微动了点笔热身，离火力全开还差一口气，别刚写两行就跑去摸鱼啊。")
+        } else if hour >= 14 {
+            points.append("快到点下班了还没咋开敲？今天摸鱼摸得挺坦然啊，键盘都快落灰了。")
+        } else {
+            points.append("刚开局还没怎么动手，先把第一段烂草稿拉出来，别搁这儿空想憋大招。")
         }
         
-        if let digest = self.todayDigest,
-           digest.dateKey == todayKey,
-           digest.modelUsed != "本地摘要"
-        {
-            let parsed = Self.structuredSummaryPoints(from: digest.summary, maxPoints: 5)
-            for item in parsed {
-                appendCleaned(item)
+        // 2. AI collaboration roast/praise
+        if stats.aiRequests >= 12 {
+            points.append("使唤 AI 跟使唤长工似的，真TM会偷懒但也真高效，赛博包工头实锤。")
+        } else if stats.aiRequests >= 3 {
+            points.append("边写边拉 AI 打配合，脏活累活全甩过去，脑子省下来干正事，聪明。")
+        } else if stats.typedChars >= 300 {
+            points.append("今天几乎全靠肉身硬扛不借外挂，纯血手艺人，牛逼。")
+        }
+        
+        // 3. Saves / files / momentum
+        if stats.filesCreated >= 2 {
+            points.append("一顿新建草稿，坑挖得比谁都欢，别光顾着爽，回头记得把坑填上。")
+        } else if stats.documentsSaved >= 5 {
+            points.append("疯狂狂按保存键，安全感拉满，稳得一批，绝不让电脑白嫖你半行心血。")
+        } else if !todayDocs.isEmpty {
+            points.append("盯着核心文稿来回打磨，没瞎切窗口乱逛，专注度拉满。")
+        }
+        
+        // 4. Time-of-day / streak roast or hype
+        if (hour >= 23 || hour < 5) && totalChars > 0 {
+            points.append("大半夜还在死磕，真TM是个狠人，写完赶紧滚去睡觉别把肝熬炸了。")
+        } else if self.currentWritingStreak >= 5 {
+            points.append("已经连轴转这么久还没断更，这自律程度有点离谱，继续保持别掉链子。")
+        }
+        
+        if points.count < 3 {
+            let knownTitles = self.database.documents.map(\.title) + self.database.weeklyReports.map(\.title)
+            if let digest = self.todayDigest,
+               digest.dateKey == Self.dateKey(),
+               digest.modelUsed != "本地摘要"
+            {
+                for item in Self.structuredSummaryPoints(from: digest.summary, maxPoints: 3) {
+                    let cleaned = Self.sanitizeDashboardActionText(item, knownTitles: knownTitles, maxLength: 36, fallback: "")
+                    if Self.hasMeaningfulActionSubstance(cleaned), !points.contains(cleaned), points.count < 4 {
+                        points.append(cleaned)
+                    }
+                }
             }
         }
+        
+        return Array(points.prefix(4))
+    }
+    
+    
+    func loadDoneTodayCommentaryFromDatabase() {
+        let todayKey = Self.dateKey()
+        let raw = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiDoneTodayCommentaryJSON)
+        guard !raw.isEmpty,
+              let data = raw.data(using: .utf8),
+              let bundle = try? JSONDecoder().decode(DoneTodayCommentaryBundle.self, from: data),
+              bundle.dateKey == todayKey,
+              !bundle.items.isEmpty
+        else {
+            self.doneTodayCommentary = []
+            self.doneTodayFromAI = false
+            return
+        }
+        self.doneTodayCommentary = bundle.items
+        self.doneTodayFromAI = bundle.isAIGenerated
+        self.doneTodayFingerprint = bundle.sourceFingerprint
+        self.doneTodayUpdatedAt = bundle.updatedAt
+    }
+    
+    
+    /// Generates witty, sharp, human-sounding commentary for "干了啥" using AI (with lively local fallback).
+    func refreshDoneTodayCommentary(force: Bool = false) async {
+        guard !self.isRefreshingDoneToday else { return }
+        
+        let todayKey = Self.dateKey()
+        let corpus = self.collectDoneTodayCorpus()
+        if !force,
+           !self.doneTodayCommentary.isEmpty,
+           self.doneTodayFromAI,
+           self.doneTodayFingerprint == corpus.fingerprint,
+           let updatedAt = self.doneTodayUpdatedAt,
+           Date().timeIntervalSince(updatedAt) < 2 * 3600
+        {
+            return
+        }
+        
+        let baseConfig = AIConfiguration.current
+        let resolvedConfig = AIBotStore.shared.resolvedConfiguration(for: .weeklyReport, baseConfig: baseConfig)
+        guard resolvedConfig.isUsable else {
+            self.doneTodayCommentary = self.buildLivelyLocalDoneTodayCommentary()
+            self.doneTodayFromAI = false
+            return
+        }
+        
+        self.isRefreshingDoneToday = true
+        defer { self.isRefreshingDoneToday = false }
+        
+        var config = resolvedConfig
+        config.temperature = 0.85
+        config.reasoningEffort = "low"
+        
+        let systemPrompt = """
+        你是用户最懂他、嘴毒又护短的铁哥们。根据用户今天真实的写作数据与文稿片段，给「干了啥」写 3 到 4 条犀利点评。
+        风格要求（极其重要）：
+        1. 拒绝流水账和官话！严禁出现"推进了""保持专注""完成了结构迭代"这种 AI 味废话。
+        2. 要有活人感：该夸就往死里夸（比如"这波输出太牛逼了""思路拆得真狠"），该损就犀利吐槽带点接地气的小脏话（比如"真TM卷""少摸点鱼""光挖坑不填坑""嘴上说着随便写写结果偷偷肝爆"），夸夸和毒舌穿插着来，像真朋友在工位旁边吐槽你。
+        3. 紧扣今天真实干的事或真实摸鱼状态；不要出现文件名、书名号《》或机械字数播报。
+        4. 每条 14 到 34 个字，口语化、有梗、有画面感。
+        5. 严格只输出 JSON 字符串数组，不要任何其他解释：
+        ["点评1", "点评2", "点评3"]
+        """
+        
+        let userPrompt = """
+        今天日期：\(todayKey)
+        \(corpus.promptText)
+        """
+        
+        do {
+            let response = try await AIClient(configuration: config).sendWithUsage([
+                AIMessage(role: .system, text: systemPrompt),
+                AIMessage(role: .user, text: userPrompt),
+            ])
+            let knownTitles = self.database.documents.map(\.title) + self.database.weeklyReports.map(\.title)
+            let parsed = Self.parseDoneTodayCommentary(from: response.text, knownTitles: knownTitles)
+            if !parsed.isEmpty {
+                self.persistDoneTodayCommentary(parsed, isAI: true, dateKey: todayKey, fingerprint: corpus.fingerprint)
+                self.recordAIUsage(
+                    feature: "doneTodayCommentary",
+                    model: config.wireConfiguration.model,
+                    provider: config.provider.rawValue,
+                    inputTokens: response.inputTokens ?? AINextTokenPredictor.estimateTokens(in: userPrompt),
+                    outputTokens: response.outputTokens ?? AINextTokenPredictor.estimateTokens(in: response.text),
+                    latencyMs: 600,
+                    success: true
+                )
+                self.revision &+= 1
+                return
+            }
+        } catch {
+            // Fall through to witty local commentary
+        }
+        
+        if self.doneTodayCommentary.isEmpty {
+            self.doneTodayCommentary = self.buildLivelyLocalDoneTodayCommentary()
+            self.doneTodayFromAI = false
+        }
+    }
+    
+    
+    private func persistDoneTodayCommentary(
+        _ items: [String],
+        isAI: Bool,
+        dateKey: String,
+        fingerprint: String
+    ) {
+        let now = Date()
+        self.doneTodayCommentary = items
+        self.doneTodayFromAI = isAI
+        self.doneTodayFingerprint = fingerprint
+        self.doneTodayUpdatedAt = now
+        let bundle = DoneTodayCommentaryBundle(
+            dateKey: dateKey,
+            items: items,
+            isAIGenerated: isAI,
+            sourceFingerprint: fingerprint,
+            updatedAt: now
+        )
+        if let data = try? JSONEncoder().encode(bundle),
+           let json = String(data: data, encoding: .utf8)
+        {
+            self.database.set(json, forKey: CotLocalDatabase.ConfigKey.aiDoneTodayCommentaryJSON)
+        }
+    }
+    
+    
+    private func collectDoneTodayCorpus() -> (promptText: String, fingerprint: String) {
+        let stats = self.todayStats
+        let hour = Calendar.current.component(.hour, from: Date())
+        var parts: [String] = [
+            "【今日实况】当前时刻：\(hour)点；手写强度：\(stats.typedChars >= 1500 ? "极高" : stats.typedChars >= 400 ? "中等偏高" : stats.typedChars > 0 ? "轻度" : "几乎没动")；AI调用：\(stats.aiRequests)次；保存：\(stats.documentsSaved)次；新建：\(stats.filesCreated)次；连续创作：\(self.currentWritingStreak)天。"
+        ]
         
         let calendar = Calendar.current
-        let todayDocs = self.recentTouchedManuscripts(referenceDate: Date(), limit: 5)
-            .filter { calendar.isDateInToday($0.updatedAt) }
-        if !todayDocs.isEmpty, points.count < 5 {
-            appendCleaned("推进近期文稿内容撰写与结构迭代")
-        }
-        
-        let stats = self.todayStats
-        if stats.typedChars > 0 || stats.documentsSaved > 0, points.count < 5 {
-            if stats.documentsSaved > 0 {
-                appendCleaned("保持专注手写输入并完成 \(stats.documentsSaved) 次文稿存档")
-            } else {
-                appendCleaned("保持沉浸创作节奏，持续打磨正文段落")
+        var snippets: [String] = []
+        if self.database === CotLocalDatabase.shared {
+            for case let doc as Document in NSDocumentController.shared.documents {
+                let text = doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard Self.isMeaningfulDocumentContent(text) else { continue }
+                snippets.append("正在写的片段：\n\(String(text.prefix(420)))")
+                if snippets.count >= 3 { break }
             }
         }
-        if stats.aiRequests > 0, points.count < 5 {
-            appendCleaned("协同调用 AI 协助润色与拓展思路")
+        let todayDocs = self.database.documents
+            .filter { !$0.id.hasPrefix("weekly:") && calendar.isDateInToday($0.updatedAt) }
+            .sorted { $0.updatedAt > $1.updatedAt }
+        for doc in todayDocs {
+            guard snippets.count < 4 else { break }
+            let trimmed = doc.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard Self.isMeaningfulDocumentContent(trimmed) else { continue }
+            snippets.append("今天改过的片段：\n\(String(trimmed.prefix(420)))")
         }
-        if stats.filesCreated > 0, points.count < 5 {
-            appendCleaned("新建文稿草稿并搭建核心内容脉络")
+        if !snippets.isEmpty {
+            parts.append(snippets.joined(separator: "\n---\n"))
         }
+        let combined = parts.joined(separator: "\n\n")
+        let fp = UserPersonalityAnalyzer.sha256Hex("done-v4|\(Self.dateKey())|\(stats.typedChars / 150)|\(stats.aiRequests / 2)|\(stats.documentsSaved)|\(snippets.count)|" + combined.prefix(800))
+        return (combined, fp)
+    }
+    
+    
+    nonisolated static func parseDoneTodayCommentary(from raw: String, knownTitles: [String]) -> [String] {
+        var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let start = cleaned.firstIndex(of: "["), let end = cleaned.lastIndex(of: "]"), start < end {
+            cleaned = String(cleaned[start...end])
+        }
+        guard let data = cleaned.data(using: .utf8),
+              let array = try? JSONSerialization.jsonObject(with: data) as? [String]
+        else { return [] }
         
-        if points.isEmpty {
-            appendCleaned("整理创作节奏，专注推进核心内容迭代")
+        var seen = Set<String>()
+        var results: [String] = []
+        for item in array {
+            let line = Self.sanitizeDashboardActionText(item, knownTitles: knownTitles, maxLength: 44, fallback: "")
+            guard line.count >= 6, Self.hasMeaningfulActionSubstance(line), seen.insert(line).inserted else { continue }
+            results.append(line)
+            if results.count >= 4 { break }
         }
-        
-        return Array(points.prefix(5))
+        return results
     }
     
     
@@ -2796,11 +3051,11 @@ extension AnalyticsManager {
                 sanitized.action = Self.sanitizeDashboardActionText(
                     rawTrim,
                     knownTitles: knownTitles,
-                    maxLength: 16,
+                    maxLength: 36,
                     fallback: ""
                 )
                 sanitized.reason = ""
-                guard sanitized.action.count >= 3, Self.hasMeaningfulActionSubstance(sanitized.action) else { return nil }
+                guard sanitized.action.count >= 4, Self.hasMeaningfulActionSubstance(sanitized.action) else { return nil }
                 let key = sanitized.action.lowercased().replacingOccurrences(of: " ", with: "")
                 guard seen.insert(key).inserted else { return nil }
                 return sanitized
@@ -2824,8 +3079,8 @@ extension AnalyticsManager {
     }
     
     
-    /// Uses AI (with rich local document-structure fallback) to predict the user's most valuable next actions
-    /// directly from recent document contents, unfinished sections, open questions, and implicit follow-ups.
+    /// Uses AI (with noise-filtered smart fallback) to predict genuinely meaningful next moves
+    /// in a direct, lively, human tone — never scraping `111`/`222` test noise.
     func refreshActionPredictions(force: Bool = false) async {
         
         guard !self.isPredictingActions else { return }
@@ -2843,8 +3098,8 @@ extension AnalyticsManager {
             return
         }
         
-        // Immediately ensure non-empty local predictions while AI thinks
-        if self.actionPredictions.isEmpty {
+        // Immediately ensure clean non-junk local predictions while AI thinks
+        if self.actionPredictions.isEmpty || force {
             self.actionPredictions = Self.buildHeuristicActionPredictions(
                 documents: recentDocs,
                 weeklyReports: self.database.weeklyReports,
@@ -2871,20 +3126,22 @@ extension AnalyticsManager {
         }
         
         var config = resolvedConfig
-        config.temperature = 0.35
+        config.temperature = 0.65
         config.reasoningEffort = "low"
         
         let systemPrompt = """
-        你是用户的个人文档洞察与行动预测助手。请仔细阅读用户最近编辑的真实文档片段（草稿、技术方案、笔记、周报、未完小节、问号/待定项），预测用户接下来最应该推进的 3 到 5 项具体行动。
-        要求：
-        1. 必须紧扣未完段落、开放问题或逻辑下一步，禁止空泛鸡汤（如"保持专注""整理思路"）。
-        2. action 字段严禁包含任何文档名称、书名号《》或字数统计，必须精炼为不超过 15 个字的单个短句（单行可完整显示）。
-        3. 严格只输出 JSON 数组，不要 Markdown 代码块外的任何说明：
-        [{"action":"15字以内单行行动","reason":"","doc_title":"内部关联文档标题","urgency":"高|中|常规"}]
+        你是用户身边超懂上下文的聪明搭子。阅读用户最近真实的文档、未完思路、周报和正经待办，替他推理接下来最值得干、最有价值的 3 到 4 件事（「要干啥」）。
+        核心要求：
+        1. 必须做**有意义的推理预测**，而不是机械抄写文档里的待办原句！结合上下文想清楚"下一步真正该攻克什么、哪个坑最急着收口、哪块值得接着深挖"。
+        2. 自动无视任何测试乱码或占位文本（如 111、222、test、测试、asdf 等），绝对不要把它们当成任务！
+        3. 语气要有活人感，像朋友直接提醒你干正事（自然直白、带点催促或调侃，比如"先把那个卡住的交互收尾掉，别留到明天""趁热把方案里的落地步骤补齐""把这周干的硬活顺手塞进周报免得周五抓瞎"），禁止空泛官话。
+        4. action 字段严禁包含文档文件名、书名号《》或字数统计，长度控制在 12 到 30 个字。
+        5. 严格只输出 JSON 数组，不要任何额外文字：
+        [{"action":"有活人感的具体下一步建议","reason":"","doc_title":"内部关联文档标题","urgency":"高|中|常规"}]
         """
         
         let userPrompt = """
-        以下是用户近期真实文档与上下文，请预测最关键的下一步行动：
+        以下是用户近期真实且有实质内容的文档与上下文，请预测最值得推进的下一步：
 
         \(corpus.promptText)
         """
@@ -2953,7 +3210,7 @@ extension AnalyticsManager {
         if self.database === CotLocalDatabase.shared {
             for case let doc as Document in NSDocumentController.shared.documents {
                 let text = doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard text.count >= 12 else { continue }
+                guard text.count >= 12, Self.isMeaningfulDocumentContent(text) else { continue }
                 let title = doc.displayName ?? "未命名文档"
                 guard usedTitles.insert(title).inserted else { continue }
                 let head = String(text.prefix(600))
@@ -2971,7 +3228,7 @@ extension AnalyticsManager {
             guard usedIDs.insert(record.id).inserted else { continue }
             guard !usedTitles.contains(record.title) else { continue }
             let trimmed = record.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.count >= 12 else { continue }
+            guard trimmed.count >= 12, Self.isMeaningfulDocumentContent(trimmed) else { continue }
             let head = String(trimmed.prefix(550))
             let tail = trimmed.count > 850 ? "\n...\n" + String(trimmed.suffix(450)) : ""
             blocks.append("【近期文档：《\(record.title)》】\n\(head)\(tail)")
@@ -2979,13 +3236,21 @@ extension AnalyticsManager {
         
         if let latestReport = self.database.weeklyReports.sorted(by: { $0.updatedAt > $1.updatedAt }).first {
             let trimmed = latestReport.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
+            if Self.isMeaningfulDocumentContent(trimmed) {
                 blocks.append("【最近周报：《\(latestReport.title)》】\n\(String(trimmed.prefix(600)))")
             }
         }
         
+        let meaningfulReminders = self.reminders
+            .filter { !$0.isCompleted && Self.hasMeaningfulActionSubstance($0.title) }
+            .prefix(4)
+            .map(\.title)
+        if !meaningfulReminders.isEmpty {
+            blocks.append("【未完成正经待办】\n" + meaningfulReminders.joined(separator: "\n"))
+        }
+        
         let combined = blocks.joined(separator: "\n\n")
-        let fp = UserPersonalityAnalyzer.sha256Hex("pred-v3|" + combined)
+        let fp = UserPersonalityAnalyzer.sha256Hex("pred-v4|" + combined)
         return (combined, fp)
     }
     
@@ -3012,10 +3277,10 @@ extension AnalyticsManager {
             let action = Self.sanitizeDashboardActionText(
                 rawAction,
                 knownTitles: knownTitles,
-                maxLength: 16,
+                maxLength: 36,
                 fallback: ""
             )
-            guard action.count >= 3,
+            guard action.count >= 4,
                   Self.hasMeaningfulActionSubstance(action),
                   seen.insert(action.lowercased()).inserted
             else { continue }
@@ -3045,14 +3310,14 @@ extension AnalyticsManager {
                 sourceDocumentID: matchedDoc?.id,
                 urgency: urgency
             ))
-            if results.count >= 5 { break }
+            if results.count >= 4 { break }
         }
         return results
     }
     
     
-    /// Deterministic document-structure analyzer used offline or before AI responds: extracts unfinished checklist items,
-    /// empty trailing headings, and open questions concisely with zero document names or word counts.
+    /// Noise-filtered local analyzer used offline or before AI responds: strictly discards test garbage (`111`, `222`, `test`)
+    /// and turns real unfinished sections, open questions, and meaningful deadlines into human-sounding next steps.
     nonisolated static func buildHeuristicActionPredictions(
         documents: [StoredDocumentRecord],
         weeklyReports: [StoredWeeklyReport],
@@ -3067,27 +3332,29 @@ extension AnalyticsManager {
             cleaned.action = Self.sanitizeDashboardActionText(
                 pred.action,
                 knownTitles: knownTitles,
-                maxLength: 16,
+                maxLength: 36,
                 fallback: ""
             )
             cleaned.reason = ""
             let key = cleaned.action.lowercased().replacingOccurrences(of: " ", with: "")
-            guard cleaned.action.count >= 3,
+            guard cleaned.action.count >= 4,
                   Self.hasMeaningfulActionSubstance(cleaned.action),
-                  results.count < 5,
+                  results.count < 4,
                   seen.insert(key).inserted
             else { return }
             results.append(cleaned)
         }
         
-        let sortedDocs = documents.sorted { $0.updatedAt > $1.updatedAt }
+        let sortedDocs = documents
+            .filter { Self.isMeaningfulDocumentContent($0.content) }
+            .sorted { $0.updatedAt > $1.updatedAt }
         
-        // 1. Scan recent docs for explicit unchecked todos / TODO / FIXME / 待确认 (never section headers ending in `:`)
+        // 1. Scan meaningful recent docs for real unfinished items (strictly rejecting junk/headers)
         for doc in sortedDocs.prefix(8) {
             let lines = doc.content.components(separatedBy: .newlines)
             for rawLine in lines {
                 let line = rawLine.trimmingCharacters(in: .whitespaces)
-                guard line.count >= 4, line.count <= 90,
+                guard line.count >= 5, line.count <= 90,
                       !line.hasSuffix(":"), !line.hasSuffix("：")
                 else { continue }
                 let lower = line.lowercased()
@@ -3108,12 +3375,12 @@ extension AnalyticsManager {
                     sourceDocumentID: doc.id,
                     urgency: (lower.contains("fixme") || line.contains("紧急")) ? "高" : "中"
                 ))
-                if results.count >= 3 { break }
+                if results.count >= 2 { break }
             }
         }
         
-        // 2. Detect empty / stub trailing headings or open questions in top active documents
-        for doc in sortedDocs.prefix(6) where results.count < 5 {
+        // 2. Detect empty trailing headings or real open questions in active docs
+        for doc in sortedDocs.prefix(6) where results.count < 4 {
             let lines = doc.content.components(separatedBy: .newlines)
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
@@ -3124,7 +3391,7 @@ extension AnalyticsManager {
                 if !heading.isEmpty, Self.hasMeaningfulActionSubstance(heading) {
                     appendIfUnique(DocumentActionPrediction(
                         id: "heur-heading-\(doc.id)",
-                        action: "补全\(String(heading.prefix(10)))小节",
+                        action: "趁热把「\(String(heading.prefix(12)))」那节空壳填实",
                         reason: "",
                         sourceDocumentTitle: doc.title,
                         sourceDocumentID: doc.id,
@@ -3134,10 +3401,12 @@ extension AnalyticsManager {
                 }
             }
             
-            if let openQuestion = lines.reversed().first(where: { ($0.hasSuffix("？") || $0.hasSuffix("?")) && $0.count >= 6 && $0.count <= 48 }) {
+            if let openQuestion = lines.reversed().first(where: {
+                ($0.hasSuffix("？") || $0.hasSuffix("?")) && $0.count >= 6 && $0.count <= 48 && Self.hasMeaningfulActionSubstance($0)
+            }) {
                 appendIfUnique(DocumentActionPrediction(
                     id: "heur-q-\(doc.id)",
-                    action: "确认：\(String(openQuestion.prefix(12)))",
+                    action: "先把这个问题拍板：\(String(openQuestion.prefix(16)))",
                     reason: "",
                     sourceDocumentTitle: doc.title,
                     sourceDocumentID: doc.id,
@@ -3145,21 +3414,10 @@ extension AnalyticsManager {
                 ))
                 continue
             }
-            
-            if doc.content.utf16.count < 400 {
-                appendIfUnique(DocumentActionPrediction(
-                    id: "heur-draft-\(doc.id)",
-                    action: "继续扩充未完草稿段落",
-                    reason: "",
-                    sourceDocumentTitle: doc.title,
-                    sourceDocumentID: doc.id,
-                    urgency: "常规"
-                ))
-            }
         }
         
-        // 3. Fold urgent active deadline reminders if space remains
-        for item in reminders.filter({ !$0.isCompleted && $0.hasDeadline }).prefix(2) where results.count < 5 {
+        // 3. Fold real (non-junk!) active deadline reminders if space remains
+        for item in reminders.filter({ !$0.isCompleted && $0.hasDeadline && Self.hasMeaningfulActionSubstance($0.title) }).prefix(2) where results.count < 4 {
             appendIfUnique(DocumentActionPrediction(
                 id: "heur-rem-\(item.id)",
                 action: item.title,
@@ -3170,13 +3428,21 @@ extension AnalyticsManager {
             ))
         }
         
-        if results.isEmpty, let latestDoc = sortedDocs.first {
+        if results.isEmpty {
             appendIfUnique(DocumentActionPrediction(
-                id: "heur-review-\(latestDoc.id)",
-                action: "复盘并定稿核心内容",
+                id: "heur-human-fallback-1",
+                action: "挑一篇最近写一半的稿子收个尾，别全烂尾了",
                 reason: "",
-                sourceDocumentTitle: latestDoc.title,
-                sourceDocumentID: latestDoc.id,
+                sourceDocumentTitle: sortedDocs.first?.title ?? "",
+                sourceDocumentID: sortedDocs.first?.id,
+                urgency: "中"
+            ))
+            appendIfUnique(DocumentActionPrediction(
+                id: "heur-human-fallback-2",
+                action: "把这周干完的硬活记两笔进周报，周五好早点溜",
+                reason: "",
+                sourceDocumentTitle: "",
+                sourceDocumentID: nil,
                 urgency: "常规"
             ))
         }
@@ -3201,6 +3467,16 @@ nonisolated struct DocumentActionPrediction: Identifiable, Codable, Sendable, Eq
 private nonisolated struct DocumentActionPredictionBundle: Codable, Sendable, Equatable {
     
     var predictions: [DocumentActionPrediction]
+    var isAIGenerated: Bool
+    var sourceFingerprint: String
+    var updatedAt: Date
+}
+
+
+private nonisolated struct DoneTodayCommentaryBundle: Codable, Sendable, Equatable {
+    
+    var dateKey: String
+    var items: [String]
     var isAIGenerated: Bool
     var sourceFingerprint: String
     var updatedAt: Date

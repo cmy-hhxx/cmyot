@@ -1046,12 +1046,16 @@ struct AnalyticsDashboardView: View {
             }
             async let newsTask: Void = AIHotNewsService.shared.refreshIfNeeded()
             async let predTask: Void = self.analytics.refreshActionPredictions(force: false)
-            _ = await (newsTask, predTask)
+            async let doneTask: Void = self.analytics.refreshDoneTodayCommentary(force: false)
+            _ = await (newsTask, predTask, doneTask)
         }
         .onChange(of: self.analytics.revision) { _, _ in
             self.scheduleCoalescedRebuild()
         }
         .onChange(of: self.analytics.actionPredictions) { _, _ in
+            self.scheduleCoalescedRebuild()
+        }
+        .onChange(of: self.analytics.doneTodayCommentary) { _, _ in
             self.scheduleCoalescedRebuild()
         }
         .onChange(of: self.selectedYear) { _, _ in
@@ -1194,8 +1198,8 @@ struct AnalyticsDashboardView: View {
     private func doneTodayColumn(points: [String]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle")
-                    .font(.system(size: 14, weight: .medium))
+                Image(systemName: "flame.fill")
+                    .font(.system(size: 13.5, weight: .medium))
                     .foregroundStyle(self.palette.emerald)
                     .frame(width: 16, alignment: .center)
                 
@@ -1205,38 +1209,50 @@ struct AnalyticsDashboardView: View {
                 
                 Spacer()
                 
-                if !points.isEmpty {
-                    Text("\(points.count)")
-                        .font(.system(size: 12, weight: .regular, design: .monospaced).monospacedDigit())
-                        .foregroundStyle(self.palette.mutedInk)
+                Button {
+                    Task {
+                        await self.analytics.refreshDoneTodayCommentary(force: true)
+                    }
+                } label: {
+                    Image(systemName: self.analytics.isRefreshingDoneToday ? "hourglass" : "arrow.clockwise")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(self.palette.secondaryInk)
+                        .frame(width: 24, height: 24)
+                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .disabled(self.analytics.isRefreshingDoneToday)
+                .help(AppLanguage.text("换一批犀利点评", en: "Refresh Commentary"))
             }
             .frame(height: 24)
             
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 8) {
                     if points.isEmpty {
-                        Text(AppLanguage.text("今日暂无已完成记录", en: "No completed items today"))
+                        Text(AppLanguage.text("今天还没开张，先敲两行？", en: "Nothing logged yet today"))
                             .font(.system(size: 12.5))
                             .foregroundStyle(self.palette.mutedInk)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, 8)
                     } else {
                         ForEach(Array(points.enumerated()), id: \.offset) { idx, point in
-                            HStack(alignment: .center, spacing: 10) {
+                            HStack(alignment: .top, spacing: 10) {
                                 RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                                    .fill(idx == 0 ? self.palette.accentFill : self.palette.pine.opacity(0.20))
-                                    .frame(width: 3, height: 14)
+                                    .fill(idx == 0 ? self.palette.accentFill : self.palette.pine.opacity(0.22))
+                                    .frame(width: 3, height: 15)
+                                    .padding(.top, 2)
                                 
                                 Text(point)
-                                    .font(.system(size: 13, weight: idx == 0 ? .medium : .regular))
+                                    .font(.system(size: 12.5, weight: idx == 0 ? .medium : .regular))
                                     .foregroundStyle(idx == 0 ? self.palette.pine : self.palette.secondaryInk)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
+                                    .lineLimit(3)
+                                    .lineSpacing(2.5)
+                                    .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .padding(.horizontal, 12)
-                            .frame(height: 36)
+                            .padding(.vertical, 9)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -1249,6 +1265,7 @@ struct AnalyticsDashboardView: View {
             }
         }
         .padding(self.isEmbeddedInSettings ? 12 : 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
     }
     
@@ -1256,8 +1273,8 @@ struct AnalyticsDashboardView: View {
     private func predictedActionsColumn(predictions: [DocumentActionPrediction]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: "arrow.right.circle")
-                    .font(.system(size: 14, weight: .medium))
+                Image(systemName: "arrow.right.circle.fill")
+                    .font(.system(size: 13.5, weight: .medium))
                     .foregroundStyle(self.palette.secondaryInk)
                     .frame(width: 16, alignment: .center)
                 
@@ -1267,46 +1284,70 @@ struct AnalyticsDashboardView: View {
                 
                 Spacer()
                 
-                if !predictions.isEmpty {
-                    Text("\(predictions.count)")
-                        .font(.system(size: 12, weight: .regular, design: .monospaced).monospacedDigit())
-                        .foregroundStyle(self.palette.mutedInk)
+                Button {
+                    Task {
+                        await self.analytics.refreshActionPredictions(force: true)
+                    }
+                } label: {
+                    Image(systemName: self.analytics.isPredictingActions ? "hourglass" : "arrow.clockwise")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(self.palette.secondaryInk)
+                        .frame(width: 24, height: 24)
+                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .disabled(self.analytics.isPredictingActions)
+                .help(AppLanguage.text("重新预测下一步", en: "Refresh Predictions"))
             }
             .frame(height: 24)
             
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 8) {
                     if predictions.isEmpty {
-                        Text(AppLanguage.text("暂无待推进事项", en: "No upcoming actions"))
+                        Text(AppLanguage.text("暂时没啥火烧眉毛的事", en: "No upcoming actions"))
                             .font(.system(size: 12.5))
                             .foregroundStyle(self.palette.mutedInk)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, 8)
                     } else {
                         ForEach(Array(predictions.enumerated()), id: \.element.id) { idx, pred in
-                            HStack(alignment: .center, spacing: 10) {
-                                Circle()
-                                    .strokeBorder(
-                                        idx == 0 ? self.palette.accentFill : self.palette.pine.opacity(0.28),
-                                        lineWidth: 1.5
-                                    )
-                                    .frame(width: 7, height: 7)
-                                
-                                Text(pred.action)
-                                    .font(.system(size: 13, weight: idx == 0 ? .medium : .regular))
-                                    .foregroundStyle(idx == 0 ? self.palette.pine : self.palette.secondaryInk)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            let linkedDoc = self.analytics.storedDocument(id: pred.sourceDocumentID, title: pred.sourceDocumentTitle)
+                            Button {
+                                if let linkedDoc {
+                                    if let onOpenDocument = self.onOpenDocument {
+                                        onOpenDocument(linkedDoc)
+                                    } else {
+                                        AnalyticsDashboardWindowController.shared.openDocument(linkedDoc)
+                                    }
+                                }
+                            } label: {
+                                HStack(alignment: .top, spacing: 10) {
+                                    Circle()
+                                        .fill(pred.urgency == "高" || idx == 0 ? self.palette.accentFill : self.palette.pine.opacity(0.28))
+                                        .frame(width: 6, height: 6)
+                                        .padding(.top, 5.5)
+                                    
+                                    Text(pred.action)
+                                        .font(.system(size: 12.5, weight: idx == 0 ? .medium : .regular))
+                                        .foregroundStyle(idx == 0 ? self.palette.pine : self.palette.secondaryInk)
+                                        .lineLimit(3)
+                                        .lineSpacing(2.5)
+                                        .multilineTextAlignment(.leading)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(self.palette.inset)
+                                )
                             }
-                            .padding(.horizontal, 12)
-                            .frame(height: 36)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(self.palette.inset)
-                            )
+                            .buttonStyle(.plain)
+                            .disabled(linkedDoc == nil)
+                            .pointerStyle(linkedDoc != nil ? .link : .default)
                         }
                     }
                 }
@@ -1314,6 +1355,7 @@ struct AnalyticsDashboardView: View {
             }
         }
         .padding(self.isEmbeddedInSettings ? 12 : 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
     }
     
@@ -1349,7 +1391,7 @@ struct AnalyticsDashboardView: View {
 }
 
 
-/// Isolated NEWS column card rendering a calm, scannable headline list aligned with the adjacent columns.
+/// Isolated NEWS column card rendering a Xiaohongshu-style 2-column visual card grid.
 private struct DashboardNewsColumnCard: View {
     
     let compact: Bool
@@ -1362,12 +1404,11 @@ private struct DashboardNewsColumnCard: View {
     
     var body: some View {
         let items = self.newsService.filteredItems
-        let visibleItems = Array(items.prefix(self.compact ? 5 : 6))
         
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Button {
-                    self.onOpenWorkspace(visibleItems.first?.id)
+                    self.onOpenWorkspace(nil)
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "newspaper")
@@ -1433,54 +1474,166 @@ private struct DashboardNewsColumnCard: View {
             }
             .frame(height: 24)
             
-            ScrollView(.vertical, showsIndicators: false) {
-                if visibleItems.isEmpty {
-                    if self.newsService.isLoading {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(0..<4, id: \.self) { _ in
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(self.palette.inset)
-                                    .frame(height: 36)
+            GeometryReader { geo in
+                let useTwoColumns = !self.compact && geo.size.width >= 220
+                let columns: [GridItem] = useTwoColumns
+                    ? [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
+                    : [GridItem(.flexible(), spacing: 8)]
+                let visibleItems = Array(items.prefix(useTwoColumns ? 6 : 4))
+                let coverH: CGFloat = useTwoColumns ? 62 : 52
+                
+                ScrollView(.vertical, showsIndicators: false) {
+                    if visibleItems.isEmpty {
+                        if self.newsService.isLoading {
+                            LazyVGrid(columns: columns, spacing: 8) {
+                                ForEach(0..<(useTwoColumns ? 4 : 2), id: \.self) { _ in
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(self.palette.inset)
+                                        .frame(height: coverH + 46)
+                                }
                             }
+                        } else {
+                            Button {
+                                Task {
+                                    await self.newsService.refreshIfNeeded(force: true)
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.clockwise")
+                                        .font(.system(size: 12, weight: .medium))
+                                    Text(AppLanguage.text("刷新资讯", en: "Refresh News"))
+                                        .font(.system(size: 12.5, weight: .medium))
+                                }
+                                .foregroundStyle(self.palette.secondaryInk)
+                                .padding(.horizontal, 12)
+                                .frame(height: 32)
+                                .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, minHeight: 120)
                         }
                     } else {
-                        Button {
-                            Task {
-                                await self.newsService.refreshIfNeeded(force: true)
-                            }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.system(size: 12, weight: .medium))
-                                Text(AppLanguage.text("刷新资讯", en: "Refresh News"))
-                                    .font(.system(size: 12.5, weight: .medium))
-                            }
-                            .foregroundStyle(self.palette.secondaryInk)
-                            .padding(.horizontal, 12)
-                            .frame(height: 32)
-                            .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .frame(maxWidth: .infinity, minHeight: 120)
-                    }
-                } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(visibleItems) { item in
-                            NewsHeadlineRow(
-                                item: item,
-                                isRead: self.newsService.isRead(item),
-                                palette: self.palette
-                            ) {
-                                self.onOpenWorkspace(item.id)
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                            ForEach(visibleItems) { item in
+                                NewsMiniVisualCard(
+                                    item: item,
+                                    cover: self.newsService.coverImage(for: item),
+                                    isRead: self.newsService.isRead(item),
+                                    coverHeight: coverH,
+                                    palette: self.palette
+                                ) {
+                                    self.onOpenWorkspace(item.id)
+                                }
                             }
                         }
+                        .padding(.bottom, 2)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
         .padding(self.compact ? 12 : 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
+    }
+}
+
+
+private struct NewsMiniVisualCard: View {
+    
+    let item: AIHotNewsItem
+    let cover: NSImage?
+    let isRead: Bool
+    let coverHeight: CGFloat
+    let palette: DashPalette
+    let onTap: () -> Void
+    
+    @State private var isHovered = false
+    
+    
+    var body: some View {
+        let publisher = self.item.displayPublisherLabel
+        
+        Button(action: self.onTap) {
+            VStack(alignment: .leading, spacing: 6) {
+                ZStack(alignment: .topLeading) {
+                    if let cover = self.cover {
+                        GeometryReader { geo in
+                            Image(nsImage: cover)
+                                .resizable()
+                                .interpolation(.high)
+                                .scaledToFill()
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .clipped()
+                        }
+                    } else {
+                        self.fallbackCover
+                    }
+                    
+                    if !self.isRead {
+                        Circle()
+                            .fill(self.palette.accentFill)
+                            .frame(width: 6, height: 6)
+                            .padding(6)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: self.coverHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                
+                Text(self.item.title)
+                    .font(.system(size: 11.5, weight: self.isRead ? .regular : .medium))
+                    .foregroundStyle(self.isRead ? self.palette.secondaryInk : self.palette.pine)
+                    .lineLimit(2)
+                    .lineSpacing(1.5)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .topLeading)
+                
+                Text(publisher.isEmpty ? self.item.resolvedCategory.label : publisher)
+                    .font(.system(size: 10, weight: .regular))
+                    .foregroundStyle(self.palette.mutedInk)
+                    .lineLimit(1)
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(self.isHovered ? self.palette.insetHover : self.palette.inset)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(self.isHovered ? self.palette.accentFill.opacity(0.35) : self.palette.hairline, lineWidth: 0.7)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { hovering in
+            if hovering != self.isHovered {
+                self.isHovered = hovering
+            }
+        }
+    }
+    
+    
+    private var fallbackCover: some View {
+        let seed = abs(self.item.id.hashValue)
+        let tint: Color = switch seed % 4 {
+            case 0: self.palette.accentFill
+            case 1: self.palette.mint
+            case 2: self.palette.statusPositive
+            default: self.palette.emerald
+        }
+        return ZStack(alignment: .bottomLeading) {
+            LinearGradient(
+                colors: [tint.opacity(self.palette.tokens.isDark ? 0.34 : 0.22), tint.opacity(0.06)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Text(self.item.resolvedCategory.label)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(self.palette.pine.opacity(0.72))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 5)
+        }
     }
 }
 
@@ -1672,6 +1825,9 @@ private struct DashboardAchievementHeroBar: View {
     @State private var hasProLicense: Bool
     @State private var isDanmakuEnabled: Bool
     @State private var isArtHovered = false
+    @State private var isArtPressed = false
+    @State private var hoverNorm = CGPoint(x: 0.5, y: 0.5)
+    @State private var tapPulseCount: Int = 0
     @State private var isBackHovered = false
     @State private var isToggleHovered = false
     @State private var brandLineEngine = BrandLinePassEngine()
@@ -1774,17 +1930,14 @@ private struct DashboardAchievementHeroBar: View {
     
     
     var body: some View {
-        let joinedText = Self.joinedFormatter.string(from: self.profile.createdAt)
-        let statusText = self.hasProLicense ? "PRO" : "ACTIVE"
         let streakDays = max(1, self.snapshot.currentStreak)
-        let accessText = "\(streakDays)D"
         let todayTotal = self.snapshot.today.typedChars + self.snapshot.today.aiCompletedChars
         let avg14 = Int(self.snapshot.trendCurve14.averageValue.rounded())
         let cardSeed = CotPassArtEngine.deterministicSeed(from: "\(self.passStyleIndex):\(self.serialCode)")
         let items = self.danmakuItems
         
         HStack(spacing: 0) {
-            self.identityZone(cardSeed: cardSeed, statusText: statusText, joinedText: joinedText)
+            self.identityZone
             
             Rectangle()
                 .fill(self.palette.hairline)
@@ -1800,7 +1953,7 @@ private struct DashboardAchievementHeroBar: View {
             
             self.perforatedSeam
             
-            self.integratedPassGalleryStub(seed: cardSeed, accessText: accessText)
+            self.integratedPassGalleryStub(seed: cardSeed)
                 .padding(self.compact ? 10 : 14)
                 .frame(width: self.compact ? 156 : 216)
                 .frame(maxHeight: .infinity)
@@ -1836,93 +1989,53 @@ private struct DashboardAchievementHeroBar: View {
     }
     
     
-    private func identityZone(cardSeed: Int, statusText: String, joinedText: String) -> some View {
+    private var identityZone: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                if let onBack = self.onBack {
-                    Button(action: onBack) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 11, weight: .semibold))
-                            Text(AppLanguage.text("返回编辑", en: "Back"))
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .foregroundStyle(self.isBackHovered ? self.palette.pine : self.palette.secondaryInk)
-                        .padding(.horizontal, 10)
-                        .frame(height: 28)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(self.isBackHovered ? self.palette.insetHover : self.palette.inset)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(self.palette.hairline, lineWidth: 0.75)
-                        )
+            if let onBack = self.onBack {
+                Button(action: onBack) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(AppLanguage.text("返回编辑", en: "Back"))
+                            .font(.system(size: 12, weight: .medium))
                     }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    .onHover { hovering in
-                        if hovering != self.isBackHovered {
-                            self.isBackHovered = hovering
-                        }
-                    }
+                    .foregroundStyle(self.isBackHovered ? self.palette.pine : self.palette.secondaryInk)
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(self.isBackHovered ? self.palette.insetHover : self.palette.inset)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(self.palette.hairline, lineWidth: 0.75)
+                    )
                 }
-                
-                HStack(spacing: 6) {
-                    self.microPixelBadge(seed: cardSeed)
-                    Text("CotEditor Pass")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(self.palette.mutedInk)
-                }
-                
-                Spacer(minLength: 0)
-            }
-            
-            Spacer(minLength: 8)
-            
-            HStack(alignment: .center, spacing: 12) {
-                self.authorPortrait(size: self.compact ? 40 : 48)
-                
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .center, spacing: 8) {
-                        Text(self.profile.displayName)
-                            .font(.system(size: self.compact ? 16 : 18, weight: .semibold))
-                            .foregroundStyle(self.palette.pine)
-                            .lineLimit(1)
-                        
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(self.palette.statusPositive)
-                                .frame(width: 5, height: 5)
-                            Text(statusText)
-                                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                                .foregroundStyle(self.palette.secondaryInk)
-                        }
-                        .padding(.horizontal, 7)
-                        .frame(height: 20)
-                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    
-                    HStack(spacing: 8) {
-                        Text("NO.\(self.serialCode)")
-                            .font(.system(size: 11.5, weight: .regular, design: .monospaced))
-                            .foregroundStyle(self.palette.mutedInk)
-                            .lineLimit(1)
-                        
-                        Text("·")
-                            .foregroundStyle(self.palette.mutedInk.opacity(0.6))
-                        
-                        Text("JOINED \(joinedText)")
-                            .font(.system(size: 11.5, weight: .regular, design: .monospaced).monospacedDigit())
-                            .foregroundStyle(self.palette.mutedInk)
-                            .lineLimit(1)
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .onHover { hovering in
+                    if hovering != self.isBackHovered {
+                        self.isBackHovered = hovering
                     }
                 }
             }
+            
+            Spacer(minLength: 6)
+            
+            HStack(alignment: .center, spacing: 14) {
+                self.authorPortrait(size: self.compact ? 42 : 52)
+                
+                Text(self.profile.displayName)
+                    .font(.system(size: self.compact ? 17 : 20, weight: .semibold))
+                    .foregroundStyle(self.palette.pine)
+                    .lineLimit(1)
+            }
+            
+            Spacer(minLength: 2)
         }
         .padding(.horizontal, self.compact ? 14 : 20)
         .padding(.vertical, self.compact ? 12 : 16)
-        .frame(minWidth: self.compact ? 228 : 300, maxWidth: self.compact ? 260 : 340, maxHeight: .infinity, alignment: .leading)
+        .frame(minWidth: self.compact ? 200 : 256, maxWidth: self.compact ? 236 : 296, maxHeight: .infinity, alignment: .leading)
     }
     
     
@@ -1932,9 +2045,7 @@ private struct DashboardAchievementHeroBar: View {
         avg14: Int,
         items: [DashboardHeroDanmakuScheduler.Item]
     ) -> some View {
-        let visibleTags = Array(items.prefix(self.compact ? 2 : 4))
-        
-        return VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center) {
                 Text(AppLanguage.text("创作概览", en: "Writing Overview"))
                     .font(.system(size: 12, weight: .medium))
@@ -1945,7 +2056,7 @@ private struct DashboardAchievementHeroBar: View {
                 self.danmakuToggleButton
             }
             
-            Spacer(minLength: 6)
+            Spacer(minLength: 8)
             
             if self.isDanmakuEnabled {
                 GeometryReader { stageGeo in
@@ -1957,7 +2068,7 @@ private struct DashboardAchievementHeroBar: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
             } else {
-                HStack(alignment: .lastTextBaseline, spacing: self.compact ? 16 : 28) {
+                HStack(alignment: .lastTextBaseline, spacing: self.compact ? 18 : 34) {
                     self.headerStatBlock(
                         label: AppLanguage.text("今日码字", en: "Today"),
                         value: todayTotal.formatted(),
@@ -1991,25 +2102,7 @@ private struct DashboardAchievementHeroBar: View {
                     Spacer(minLength: 0)
                 }
                 
-                Spacer(minLength: 8)
-                
-                HStack(spacing: 6) {
-                    ForEach(visibleTags) { tag in
-                        HStack(spacing: 5) {
-                            Circle()
-                                .fill(self.palette.toneColor(for: tag.tone))
-                                .frame(width: 4.5, height: 4.5)
-                            Text(tag.text)
-                                .font(.system(size: 11.5, weight: .regular))
-                                .foregroundStyle(self.palette.secondaryInk)
-                                .lineLimit(1)
-                        }
-                        .padding(.horizontal, 8)
-                        .frame(height: 22)
-                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    Spacer(minLength: 0)
-                }
+                Spacer(minLength: 4)
             }
         }
         .padding(.horizontal, self.compact ? 14 : 20)
@@ -2174,150 +2267,195 @@ private struct DashboardAchievementHeroBar: View {
     }
     
     
-    private func integratedPassGalleryStub(seed: Int, accessText: String) -> some View {
-        let styleRatios: [(Double, Double)] = [
-            (1.0, 0.75),
-            (0.85, 0.95),
-            (0.70, 0.85),
-            (0.92, 0.65),
+    private func integratedPassGalleryStub(seed: Int) -> some View {
+        let stylePalettes: [(Color, Color)] = [
+            (self.palette.accentFill, self.palette.mint),
+            (self.palette.emerald, self.palette.accentFill),
+            (self.palette.statusPositive, self.palette.accentFill),
+            (self.palette.mint, self.palette.emerald),
         ]
-        let mod = styleRatios[abs(self.passStyleIndex) % styleRatios.count]
+        let pair = stylePalettes[abs(self.passStyleIndex) % stylePalettes.count]
+        let tiltX = self.isArtHovered ? Double((self.hoverNorm.y - 0.5) * -7.0) : 0
+        let tiltY = self.isArtHovered ? Double((self.hoverNorm.x - 0.5) * 9.0) : 0
         
         return GeometryReader { geo in
             let rect = CGRect(origin: .zero, size: geo.size)
-            ZStack(alignment: .bottomLeading) {
+            ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(self.palette.inset)
                 
-                TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: AnimationConstants.isReducedMotionEnabled)) { context in
-                    let phase = AnimationConstants.isReducedMotionEnabled
-                        ? 0.8
-                        : context.date.timeIntervalSinceReferenceDate * 0.45
+                // Static GPU-cached generative artwork — only re-renders on theme/size change (0% idle CPU)
+                Canvas { canvasCtx, size in
+                    let artRect = CGRect(origin: .zero, size: size)
+                    let clipPath = RoundedRectangle(cornerRadius: 10, style: .continuous).path(in: artRect)
+                    canvasCtx.clip(to: clipPath)
                     
-                    Canvas { canvasCtx, size in
-                        let artRect = CGRect(origin: .zero, size: size)
-                        let clipPath = RoundedRectangle(cornerRadius: 10, style: .continuous).path(in: artRect)
-                        canvasCtx.clip(to: clipPath)
-                        
-                        let orbCenter = CGPoint(
-                            x: artRect.width * CGFloat(0.56 + 0.10 * cos(phase * 0.7)),
-                            y: artRect.height * CGFloat(0.42 + 0.10 * sin(phase * 0.6))
+                    let orbCenter = CGPoint(x: artRect.width * 0.58, y: artRect.height * 0.40)
+                    canvasCtx.fill(
+                        Path(artRect),
+                        with: .radialGradient(
+                            Gradient(colors: [
+                                pair.0.opacity(self.palette.tokens.isDark ? 0.30 : 0.22),
+                                pair.1.opacity(0.10),
+                                Color.clear,
+                            ]),
+                            center: orbCenter,
+                            startRadius: 4,
+                            endRadius: max(artRect.width, artRect.height) * 0.78
                         )
-                        canvasCtx.fill(
-                            Path(artRect),
-                            with: .radialGradient(
-                                Gradient(colors: [
-                                    self.palette.accentFill.opacity((self.palette.tokens.isDark ? 0.24 : 0.16) * mod.0),
-                                    self.palette.mint.opacity(0.08 * mod.1),
-                                    Color.clear,
-                                ]),
-                                center: orbCenter,
-                                startRadius: 4,
-                                endRadius: max(artRect.width, artRect.height) * 0.75
-                            )
-                        )
+                    )
+                    
+                    let staticPhase = Double(abs(self.passStyleIndex) + 1) * 1.15
+                    for tile in self.impastoTiles {
+                        let density = CotPassArtEngine.morphingSculptureDensity(u: tile.u, v: tile.v, phase: staticPhase)
+                        guard density > 0.20 else { continue }
+                        let tx = CGFloat(tile.u) * artRect.width
+                        let ty = CGFloat(tile.v) * artRect.height
+                        let scale = CGFloat(0.72 + 0.34 * density)
+                        let tw = tile.width * scale
+                        let th = tile.height * scale
                         
-                        for tile in self.impastoTiles {
-                            let density = CotPassArtEngine.morphingSculptureDensity(u: tile.u, v: tile.v, phase: phase)
-                            guard density > 0.18 else { continue }
-                            let tx = CGFloat(tile.u) * artRect.width
-                            let ty = CGFloat(tile.v) * artRect.height
-                            let scale = CGFloat(0.70 + 0.36 * density)
-                            let tw = tile.width * scale
-                            let th = tile.height * scale
-                            
-                            let tileColor: Color = switch tile.role {
-                                case .porcelainHighlight:
-                                    self.palette.card.opacity(0.65)
-                                case .pastelWash:
-                                    self.palette.paleMint.opacity(self.palette.tokens.isDark ? 0.55 : 0.85)
-                                case .mineralAccent:
-                                    self.palette.accentFill.opacity(0.28 + 0.24 * density)
-                                case .warmOchre:
-                                    self.palette.mint.opacity(0.24 + 0.22 * density)
-                            }
-                            
-                            canvasCtx.drawLayer { tileCtx in
-                                tileCtx.translateBy(x: tx, y: ty)
-                                tileCtx.rotate(by: .radians(tile.angle))
-                                let r = CGRect(x: -tw * 0.5, y: -th * 0.5, width: tw, height: th)
-                                tileCtx.fill(Capsule().path(in: r), with: .color(tileColor))
-                            }
+                        let tileColor: Color = switch tile.role {
+                            case .porcelainHighlight:
+                                self.palette.card.opacity(0.68)
+                            case .pastelWash:
+                                self.palette.paleMint.opacity(self.palette.tokens.isDark ? 0.55 : 0.86)
+                            case .mineralAccent:
+                                pair.0.opacity(0.28 + 0.24 * density)
+                            case .warmOchre:
+                                pair.1.opacity(0.24 + 0.22 * density)
                         }
                         
-                        let hatch = CotPassArtEngine.lithographHatchPath(in: artRect, seed: seed)
-                        canvasCtx.stroke(hatch, with: .color(self.palette.pine.opacity(0.10)), style: StrokeStyle(lineWidth: 0.55, lineCap: .round))
+                        canvasCtx.drawLayer { tileCtx in
+                            tileCtx.translateBy(x: tx, y: ty)
+                            tileCtx.rotate(by: .radians(tile.angle))
+                            let r = CGRect(x: -tw * 0.5, y: -th * 0.5, width: tw, height: th)
+                            tileCtx.fill(Capsule().path(in: r), with: .color(tileColor))
+                        }
+                    }
+                    
+                    let hatch = CotPassArtEngine.lithographHatchPath(in: artRect, seed: seed)
+                    canvasCtx.stroke(hatch, with: .color(self.palette.pine.opacity(0.09)), style: StrokeStyle(lineWidth: 0.55, lineCap: .round))
+                    
+                    // Pure geometric pixel emblem (no CoreText per-frame layout overhead)
+                    let rows = self.asciiMatrix.count
+                    let cols = self.asciiMatrix.first?.count ?? 0
+                    if rows > 0, cols > 0 {
+                        let step: CGFloat = self.compact ? 4.0 : 4.8
+                        let pad: CGFloat = 4
+                        let gw = CGFloat(cols) * step
+                        let gh = CGFloat(rows) * step
+                        let pRect = CGRect(
+                            x: artRect.maxX - gw - pad * 2 - 7,
+                            y: artRect.maxY - gh - pad * 2 - 7,
+                            width: gw + pad * 2,
+                            height: gh + pad * 2
+                        )
+                        let pPath = RoundedRectangle(cornerRadius: 5, style: .continuous).path(in: pRect)
+                        canvasCtx.fill(pPath, with: .color(self.palette.card.opacity(0.90)))
+                        canvasCtx.stroke(pPath, with: .color(self.palette.hairline), lineWidth: 0.6)
                         
-                        let rows = self.asciiMatrix.count
-                        let cols = self.asciiMatrix.first?.count ?? 0
-                        if rows > 0, cols > 0 {
-                            let step: CGFloat = self.compact ? 4.0 : 4.8
-                            let pad: CGFloat = 4
-                            let gw = CGFloat(cols) * step
-                            let gh = CGFloat(rows) * step
-                            let pRect = CGRect(
-                                x: artRect.maxX - gw - pad * 2 - 6,
-                                y: artRect.maxY - gh - pad * 2 - 6,
-                                width: gw + pad * 2,
-                                height: gh + pad * 2
-                            )
-                            let pPath = RoundedRectangle(cornerRadius: 5, style: .continuous).path(in: pRect)
-                            canvasCtx.fill(pPath, with: .color(self.palette.card.opacity(0.90)))
-                            canvasCtx.stroke(pPath, with: .color(self.palette.hairline), lineWidth: 0.6)
-                            
-                            for r in 0..<rows {
-                                for c in 0..<cols {
-                                    let cx = pRect.minX + pad + (CGFloat(c) + 0.5) * step
-                                    let cy = pRect.minY + pad + (CGFloat(r) + 0.5) * step
-                                    switch self.asciiMatrix[r][c] {
-                                        case .empty:
-                                            let dot = CGRect(x: cx - 0.5, y: cy - 0.5, width: 1, height: 1)
-                                            canvasCtx.fill(Rectangle().path(in: dot), with: .color(self.palette.pine.opacity(0.10)))
-                                        case .pixelBlock(let s):
-                                            let side = step * 0.66
-                                            let px = CGRect(x: cx - side * 0.5, y: cy - side * 0.5, width: side, height: side)
-                                            canvasCtx.fill(Rectangle().path(in: px), with: .color(self.palette.accentFill.opacity(0.40 + s * 0.45)))
-                                        case .ascii(let ch, let s):
-                                            canvasCtx.draw(
-                                                Text(String(ch))
-                                                    .font(.system(size: max(4.5, step * 0.85), weight: .semibold, design: .monospaced))
-                                                    .foregroundStyle(self.palette.pine.opacity(0.35 + s * 0.45)),
-                                                at: CGPoint(x: cx, y: cy),
-                                                anchor: .center
-                                            )
-                                    }
+                        for r in 0..<rows {
+                            for c in 0..<cols {
+                                let cx = pRect.minX + pad + (CGFloat(c) + 0.5) * step
+                                let cy = pRect.minY + pad + (CGFloat(r) + 0.5) * step
+                                switch self.asciiMatrix[r][c] {
+                                    case .empty:
+                                        let dot = CGRect(x: cx - 0.5, y: cy - 0.5, width: 1, height: 1)
+                                        canvasCtx.fill(Rectangle().path(in: dot), with: .color(self.palette.pine.opacity(0.10)))
+                                    case .pixelBlock(let s):
+                                        let side = step * 0.66
+                                        let px = CGRect(x: cx - side * 0.5, y: cy - side * 0.5, width: side, height: side)
+                                        canvasCtx.fill(RoundedRectangle(cornerRadius: 1).path(in: px), with: .color(pair.0.opacity(0.42 + s * 0.48)))
+                                    case .ascii(_, let s):
+                                        let side = step * 0.48
+                                        let px = CGRect(x: cx - side * 0.5, y: cy - side * 0.5, width: side, height: side)
+                                        canvasCtx.fill(Circle().path(in: px), with: .color(self.palette.pine.opacity(0.32 + s * 0.45)))
                                 }
                             }
                         }
                     }
                 }
+                .drawingGroup()
+                .id("pass-art-\(self.passStyleIndex)-\(seed)")
+                .transition(.opacity)
                 .allowsHitTesting(false)
                 
-                Text("ACCESS · \(accessText)")
-                    .font(.system(size: 9.5, weight: .medium, design: .monospaced).monospacedDigit())
-                    .foregroundStyle(self.palette.secondaryInk)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2.5)
-                    .background(self.palette.card.opacity(0.88), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                    .padding(7)
+                // Silky GPU-composited pointer specular sheen (only active on hover)
+                RadialGradient(
+                    colors: [
+                        Color.white.opacity(self.palette.tokens.isDark ? 0.16 : 0.42),
+                        pair.0.opacity(0.08),
+                        Color.clear,
+                    ],
+                    center: UnitPoint(x: self.hoverNorm.x, y: self.hoverNorm.y),
+                    startRadius: 2,
+                    endRadius: max(rect.width, rect.height) * 0.72
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .opacity(self.isArtHovered ? 1 : 0)
+                .allowsHitTesting(false)
+                
+                // Subtle style switcher indicator dots on hover
+                VStack {
+                    Spacer()
+                    HStack(spacing: 4) {
+                        ForEach(0..<min(4, CotPassTheme.allThemes.count), id: \.self) { idx in
+                            let active = (abs(self.passStyleIndex) % min(4, CotPassTheme.allThemes.count)) == idx
+                            Capsule()
+                                .fill(active ? pair.0 : self.palette.pine.opacity(0.25))
+                                .frame(width: active ? 12 : 4, height: 4)
+                        }
+                        Spacer()
+                    }
+                    .padding(8)
+                    .opacity(self.isArtHovered ? 1 : 0)
+                }
+                .allowsHitTesting(false)
             }
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(self.isArtHovered ? self.palette.accentFill.opacity(0.45) : self.palette.hairline, lineWidth: 0.8)
+                    .strokeBorder(
+                        self.isArtHovered ? pair.0.opacity(0.55) : self.palette.hairline,
+                        lineWidth: self.isArtHovered ? 1.1 : 0.8
+                    )
             )
+            .scaleEffect(self.isArtPressed ? 0.965 : (self.isArtHovered ? 1.018 : 1.0))
+            .rotation3DEffect(.degrees(tiltX), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
+            .rotation3DEffect(.degrees(tiltY), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+            .animation(.spring(response: 0.24, dampingFraction: 0.76), value: self.isArtHovered)
+            .animation(.spring(response: 0.18, dampingFraction: 0.68), value: self.isArtPressed)
+            .animation(.easeOut(duration: 0.20), value: self.passStyleIndex)
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .onHover { hovering in
-                if hovering != self.isArtHovered {
-                    self.isArtHovered = hovering
+            .onContinuousHover { phase in
+                switch phase {
+                    case .active(let loc):
+                        if !self.isArtHovered { self.isArtHovered = true }
+                        let nx = max(0, min(1, loc.x / max(1, rect.width)))
+                        let ny = max(0, min(1, loc.y / max(1, rect.height)))
+                        if abs(nx - self.hoverNorm.x) > 0.02 || abs(ny - self.hoverNorm.y) > 0.02 {
+                            self.hoverNorm = CGPoint(x: nx, y: ny)
+                        }
+                    case .ended:
+                        if self.isArtHovered { self.isArtHovered = false }
+                        self.hoverNorm = CGPoint(x: 0.5, y: 0.5)
                 }
             }
-            .onTapGesture {
-                withAnimation(DashMotion.standard) {
-                    let next = (self.passStyleIndex + 1) % CotPassTheme.allThemes.count
-                    self.passStyleIndex = next
-                    CotLocalDatabase.shared.set("\(next)", forKey: CotLocalDatabase.ConfigKey.cotPassStyleIndex)
-                }
-            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if !self.isArtPressed { self.isArtPressed = true }
+                    }
+                    .onEnded { value in
+                        self.isArtPressed = false
+                        if rect.insetBy(dx: -8, dy: -8).contains(value.location) {
+                            let next = (self.passStyleIndex + 1) % CotPassTheme.allThemes.count
+                            self.passStyleIndex = next
+                            self.tapPulseCount &+= 1
+                            CotLocalDatabase.shared.set("\(next)", forKey: CotLocalDatabase.ConfigKey.cotPassStyleIndex)
+                        }
+                    }
+            )
             .pointerStyle(.link)
             .onAppear {
                 if self.cachedArtSize != rect.size && rect.width > 20 {
@@ -2421,15 +2559,6 @@ private struct DashboardHeatmapCard: View {
                 }
                 
                 Spacer(minLength: 4)
-                
-                if self.currentStreak > 0 {
-                    Text("连更 \(self.currentStreak) 天")
-                        .font(.system(size: 11, weight: .medium).monospacedDigit())
-                        .foregroundStyle(self.palette.secondaryInk)
-                        .padding(.horizontal, 8)
-                        .frame(height: 22)
-                        .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
                 
                 HStack(spacing: 2) {
                     Button {
@@ -2697,6 +2826,7 @@ private struct DashboardHeatmapCard: View {
             .padding(.top, 2)
         }
         .padding(self.compact ? 12 : 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
     }
     
@@ -2966,10 +3096,12 @@ private struct DashboardAIUsageWideCard: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: self.isHovered)
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
+        .pointerStyle(.link)
         .onHover { hovering in
             if hovering != self.isHovered {
                 self.isHovered = hovering
@@ -3030,10 +3162,12 @@ private struct DashboardCompactQuadCard: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .padding(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: self.isHovered)
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
+        .pointerStyle(.link)
         .onHover { hovering in
             if hovering != self.isHovered {
                 self.isHovered = hovering
@@ -3106,6 +3240,8 @@ private struct DashboardExpandedQuadCard: View {
     let palette: DashPalette
     let onClose: () -> Void
     
+    @State private var hoverDetail: String?
+    
     
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -3113,8 +3249,25 @@ private struct DashboardExpandedQuadCard: View {
                 Text(self.metric.title)
                     .font(.system(size: 14.5, weight: .semibold))
                     .foregroundStyle(self.palette.pine)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 
-                Spacer()
+                Spacer(minLength: 8)
+                
+                // Fixed-height readout slot in header: never shifts or resizes chart layout on hover
+                Text(self.hoverDetail ?? " ")
+                    .font(.system(size: 11.5, weight: .medium, design: .rounded).monospacedDigit())
+                    .foregroundStyle(self.palette.secondaryInk)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, 9)
+                    .frame(height: 22)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(self.palette.inset)
+                    )
+                    .opacity(self.hoverDetail == nil ? 0 : 1)
+                    .allowsHitTesting(false)
                 
                 Button(action: self.onClose) {
                     Image(systemName: "arrow.uturn.backward")
@@ -3125,13 +3278,19 @@ private struct DashboardExpandedQuadCard: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .pointerStyle(.link)
             }
+            .frame(height: 26)
             
             self.detailedVisualization
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: true)
+        .onChange(of: self.metric) { _, _ in
+            self.hoverDetail = nil
+        }
     }
     
     
@@ -3139,13 +3298,34 @@ private struct DashboardExpandedQuadCard: View {
     private var detailedVisualization: some View {
         switch self.metric {
             case .typed:
-                TrendAreaChartView(days: self.snapshot.days14, curve: self.snapshot.trendCurve14, palette: self.palette, detailed: true)
+                TrendAreaChartView(
+                    days: self.snapshot.days14,
+                    curve: self.snapshot.trendCurve14,
+                    palette: self.palette,
+                    detailed: true,
+                    onHoverDetail: { self.hoverDetail = $0 }
+                )
             case .aiUsage:
-                AIUsageSunburstChartView(snapshot: self.snapshot, palette: self.palette, detailed: true)
+                AIUsageSunburstChartView(
+                    snapshot: self.snapshot,
+                    palette: self.palette,
+                    detailed: true,
+                    onHoverDetail: { self.hoverDetail = $0 }
+                )
             case .busyness:
-                NightingaleRoseChartView(metrics: self.snapshot.busyness, palette: self.palette, detailed: true)
+                NightingaleRoseChartView(
+                    metrics: self.snapshot.busyness,
+                    palette: self.palette,
+                    detailed: true,
+                    onHoverDetail: { self.hoverDetail = $0 }
+                )
             case .mood:
-                EmotionSankeyChartView(snapshot: self.snapshot, palette: self.palette, detailed: true)
+                EmotionSankeyChartView(
+                    snapshot: self.snapshot,
+                    palette: self.palette,
+                    detailed: true,
+                    onHoverDetail: { self.hoverDetail = $0 }
+                )
         }
     }
 }
@@ -3159,6 +3339,7 @@ private struct TrendAreaChartView: View {
     let curve: MathematicalTrendCurveEngine.Result
     let palette: DashPalette
     let detailed: Bool
+    var onHoverDetail: ((String?) -> Void)? = nil
     
     @State private var hoveredIndex: Int?
     
@@ -3166,110 +3347,103 @@ private struct TrendAreaChartView: View {
     var body: some View {
         let curve = self.curve
         
-        VStack(spacing: 6) {
-            GeometryReader { geo in
-                Canvas { context, size in
-                    guard size.width.isFinite, size.height.isFinite,
-                          size.width > 12, size.height > 12, !curve.samples.isEmpty else { return }
-                    let padTop: CGFloat = self.detailed ? 12 : 4
-                    let padBottom: CGFloat = self.detailed ? 20 : 4
-                    let padX: CGFloat = self.detailed ? 8 : 4
-                    let plotW = max(8, size.width - padX * 2)
-                    let plotH = max(8, size.height - padTop - padBottom)
-                    let maxY = max(1.0, curve.maxScale)
-                    
-                    func pointAt(t: Double, value: Double) -> CGPoint {
-                        let x = padX + CGFloat(t) * plotW
-                        let y = padTop + plotH * CGFloat(1.0 - min(1.0, max(0.0, value / maxY)))
-                        return CGPoint(x: x, y: y)
-                    }
-                    
-                    if self.detailed {
-                        for frac in [0.0, 0.5, 1.0] {
-                            let y = padTop + plotH * CGFloat(frac)
-                            var grid = Path()
-                            grid.move(to: CGPoint(x: padX, y: y))
-                            grid.addLine(to: CGPoint(x: size.width - padX, y: y))
-                            context.stroke(grid, with: .color(self.palette.hairline), lineWidth: 0.7)
-                        }
-                    }
-                    
-                    var area = Path()
-                    var line = Path()
-                    let baseY = padTop + plotH
-                    for (idx, s) in curve.samples.enumerated() {
-                        let pt = pointAt(t: s.t, value: s.value)
-                        if idx == 0 {
-                            area.move(to: CGPoint(x: pt.x, y: baseY))
-                            area.addLine(to: pt)
-                            line.move(to: pt)
-                        } else {
-                            area.addLine(to: pt)
-                            line.addLine(to: pt)
-                        }
-                    }
-                    if let last = curve.samples.last {
-                        area.addLine(to: CGPoint(x: pointAt(t: last.t, value: last.value).x, y: baseY))
-                        area.closeSubpath()
-                    }
-                    
-                    context.fill(
-                        area,
-                        with: .linearGradient(
-                            Gradient(colors: [self.palette.accentFill.opacity(0.28), self.palette.accentFill.opacity(0.02)]),
-                            startPoint: CGPoint(x: size.width * 0.5, y: padTop),
-                            endPoint: CGPoint(x: size.width * 0.5, y: baseY)
-                        )
-                    )
-                    context.stroke(line, with: .color(self.palette.emerald), style: StrokeStyle(lineWidth: self.detailed ? 2.2 : 1.7, lineCap: .round, lineJoin: .round))
-                    
-                    if self.detailed {
-                        let denom = Double(max(1, self.days.count - 1))
-                        for (idx, d) in self.days.enumerated() {
-                            let pt = pointAt(t: self.days.count > 1 ? Double(idx) / denom : 0.5, value: Double(d.typed + d.ai))
-                            let isHover = (self.hoveredIndex == idx)
-                            let r: CGFloat = isHover ? 4.5 : 2.6
-                            context.fill(
-                                Circle().path(in: CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2)),
-                                with: .color(isHover ? self.palette.pine : self.palette.emerald)
-                            )
-                            if idx == 0 || idx == self.days.count / 2 || idx == self.days.count - 1 {
-                                context.draw(
-                                    Text(Self.dayFmt.string(from: d.date))
-                                        .font(.system(size: 9.5, design: .rounded).monospacedDigit())
-                                        .foregroundStyle(self.palette.pine.opacity(0.45)),
-                                    at: CGPoint(x: pt.x, y: size.height - 8),
-                                    anchor: .center
-                                )
-                            }
-                        }
+        GeometryReader { geo in
+            Canvas { context, size in
+                guard size.width.isFinite, size.height.isFinite,
+                      size.width > 12, size.height > 12, !curve.samples.isEmpty else { return }
+                let padTop: CGFloat = self.detailed ? 12 : 4
+                let padBottom: CGFloat = self.detailed ? 20 : 4
+                let padX: CGFloat = self.detailed ? 8 : 4
+                let plotW = max(8, size.width - padX * 2)
+                let plotH = max(8, size.height - padTop - padBottom)
+                let maxY = max(1.0, curve.maxScale)
+                
+                func pointAt(t: Double, value: Double) -> CGPoint {
+                    let x = padX + CGFloat(t) * plotW
+                    let y = padTop + plotH * CGFloat(1.0 - min(1.0, max(0.0, value / maxY)))
+                    return CGPoint(x: x, y: y)
+                }
+                
+                if self.detailed {
+                    for frac in [0.0, 0.5, 1.0] {
+                        let y = padTop + plotH * CGFloat(frac)
+                        var grid = Path()
+                        grid.move(to: CGPoint(x: padX, y: y))
+                        grid.addLine(to: CGPoint(x: size.width - padX, y: y))
+                        context.stroke(grid, with: .color(self.palette.hairline), lineWidth: 0.7)
                     }
                 }
-                .onContinuousHover { phase in
-                    guard self.detailed, !self.days.isEmpty else { return }
-                    switch phase {
-                        case .active(let loc):
-                            let padX: CGFloat = 8
-                            let usable = max(1, geo.size.width - padX * 2)
-                            let frac = max(0, min(1, (loc.x - padX) / usable))
-                            let nextIdx = min(self.days.count - 1, Int((frac * CGFloat(self.days.count - 1)).rounded()))
-                            if nextIdx != self.hoveredIndex {
-                                self.hoveredIndex = nextIdx
-                            }
-                        case .ended:
-                            if self.hoveredIndex != nil {
-                                self.hoveredIndex = nil
-                            }
+                
+                var area = Path()
+                var line = Path()
+                let baseY = padTop + plotH
+                for (idx, s) in curve.samples.enumerated() {
+                    let pt = pointAt(t: s.t, value: s.value)
+                    if idx == 0 {
+                        area.move(to: CGPoint(x: pt.x, y: baseY))
+                        area.addLine(to: pt)
+                        line.move(to: pt)
+                    } else {
+                        area.addLine(to: pt)
+                        line.addLine(to: pt)
+                    }
+                }
+                if let last = curve.samples.last {
+                    area.addLine(to: CGPoint(x: pointAt(t: last.t, value: last.value).x, y: baseY))
+                    area.closeSubpath()
+                }
+                
+                context.fill(
+                    area,
+                    with: .linearGradient(
+                        Gradient(colors: [self.palette.accentFill.opacity(0.28), self.palette.accentFill.opacity(0.02)]),
+                        startPoint: CGPoint(x: size.width * 0.5, y: padTop),
+                        endPoint: CGPoint(x: size.width * 0.5, y: baseY)
+                    )
+                )
+                context.stroke(line, with: .color(self.palette.emerald), style: StrokeStyle(lineWidth: self.detailed ? 2.2 : 1.7, lineCap: .round, lineJoin: .round))
+                
+                if self.detailed {
+                    let denom = Double(max(1, self.days.count - 1))
+                    for (idx, d) in self.days.enumerated() {
+                        let pt = pointAt(t: self.days.count > 1 ? Double(idx) / denom : 0.5, value: Double(d.typed + d.ai))
+                        let isHover = (self.hoveredIndex == idx)
+                        let r: CGFloat = isHover ? 4.5 : 2.6
+                        context.fill(
+                            Circle().path(in: CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2)),
+                            with: .color(isHover ? self.palette.pine : self.palette.emerald)
+                        )
+                        if idx == 0 || idx == self.days.count / 2 || idx == self.days.count - 1 {
+                            context.draw(
+                                Text(Self.dayFmt.string(from: d.date))
+                                    .font(.system(size: 9.5, design: .rounded).monospacedDigit())
+                                    .foregroundStyle(self.palette.pine.opacity(0.45)),
+                                at: CGPoint(x: pt.x, y: size.height - 8),
+                                anchor: .center
+                            )
+                        }
                     }
                 }
             }
-            
-            if self.detailed, let idx = self.hoveredIndex, idx < self.days.count {
-                let d = self.days[idx]
-                Text("\(Self.dayFmt.string(from: d.date)) · \((d.typed + d.ai).formatted()) 字")
-                    .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
-                    .foregroundStyle(self.palette.pine.opacity(0.84))
-                    .frame(height: 16)
+            .onContinuousHover { phase in
+                guard self.detailed, !self.days.isEmpty else { return }
+                switch phase {
+                    case .active(let loc):
+                        let padX: CGFloat = 8
+                        let usable = max(1, geo.size.width - padX * 2)
+                        let frac = max(0, min(1, (loc.x - padX) / usable))
+                        let nextIdx = min(self.days.count - 1, Int((frac * CGFloat(self.days.count - 1)).rounded()))
+                        if nextIdx != self.hoveredIndex {
+                            self.hoveredIndex = nextIdx
+                            let d = self.days[nextIdx]
+                            self.onHoverDetail?("\(Self.dayFmt.string(from: d.date)) · \((d.typed + d.ai).formatted()) 字")
+                        }
+                    case .ended:
+                        if self.hoveredIndex != nil {
+                            self.hoveredIndex = nil
+                            self.onHoverDetail?(nil)
+                        }
+                }
             }
         }
     }
@@ -3283,74 +3457,55 @@ private struct TrendAreaChartView: View {
 }
 
 
-// MARK: - Chart 2: Reference-Faithful Eval Sunburst Chart (Precomputed Tree + Cached Layout + 120fps Morph)
+// MARK: - Chart 2: High-Performance Drill-Down Sunburst Chart (Value-Type Render Arcs + GPU Backing + Zero-Churn Hover)
 
-private struct SunburstArcGeom: Sendable {
+private struct SunburstRenderArc: Equatable, Identifiable {
+    let key: String
+    let nodeID: String
+    let isMark: Bool
     let a0: Double
     let a1: Double
-    let r0: CGFloat
-    let r1: CGFloat
+    let r0Ratio: CGFloat
+    let r1Ratio: CGFloat
+    let toneKey: Int
+    
+    var id: String { self.key }
 }
 
 
-private struct AnimatableSunburstDialCanvas: View, Animatable {
+private struct SunburstDialCanvas: View, Equatable {
     
-    let arcs: [EvalSunburstLayoutEngine.ArcItem]
-    let prevGeoms: [String: SunburstArcGeom]
-    var morphProgress: CGFloat
+    let renderArcs: [SunburstRenderArc]
     let hoveredNodeID: String?
     let detailed: Bool
+    let isDark: Bool
     let palette: DashPalette
     
-    var animatableData: CGFloat {
-        get { self.morphProgress }
-        set { self.morphProgress = newValue }
+    static func == (lhs: SunburstDialCanvas, rhs: SunburstDialCanvas) -> Bool {
+        lhs.renderArcs == rhs.renderArcs
+            && lhs.hoveredNodeID == rhs.hoveredNodeID
+            && lhs.detailed == rhs.detailed
+            && lhs.isDark == rhs.isDark
     }
     
-    
     var body: some View {
-        let t = Double(max(0, min(1, self.morphProgress)))
-        let cgT = CGFloat(t)
-        
-        Canvas { context, canvasSize in
+        Canvas(opaque: false, colorMode: .nonLinear, rendersAsynchronously: true) { context, canvasSize in
             guard canvasSize.width.isFinite, canvasSize.height.isFinite,
                   canvasSize.width > 8, canvasSize.height > 8 else { return }
             let center = CGPoint(x: canvasSize.width * 0.5, y: canvasSize.height * 0.5)
             let radius = max(16, min(canvasSize.width, canvasSize.height) * 0.5 - (self.detailed ? 4 : 2))
+            let hasHover = (self.hoveredNodeID != nil)
             
-            for arc in self.arcs {
-                let a0: Double
-                let a1: Double
-                let r0Ratio: CGFloat
-                let r1Ratio: CGFloat
-                
-                if t < 0.999, let prev = self.prevGeoms[arc.key] {
-                    a0 = prev.a0 + (arc.a0 - prev.a0) * t
-                    a1 = prev.a1 + (arc.a1 - prev.a1) * t
-                    r0Ratio = prev.r0 + (arc.r0Ratio - prev.r0) * cgT
-                    r1Ratio = prev.r1 + (arc.r1Ratio - prev.r1) * cgT
-                } else if t < 0.999 {
-                    let mid = (arc.a0 + arc.a1) * 0.5
-                    a0 = mid + (arc.a0 - mid) * t
-                    a1 = mid + (arc.a1 - mid) * t
-                    r0Ratio = arc.r0Ratio
-                    r1Ratio = arc.r1Ratio
-                } else {
-                    a0 = arc.a0
-                    a1 = arc.a1
-                    r0Ratio = arc.r0Ratio
-                    r1Ratio = arc.r1Ratio
-                }
-                
-                guard a1 - a0 > 1e-4 else { continue }
-                let sDeg = a0 * 180.0 / .pi - 90.0
-                let eDeg = a1 * 180.0 / .pi - 90.0
-                let r0 = radius * r0Ratio
-                let r1 = radius * r1Ratio
+            for arc in self.renderArcs {
+                guard arc.a1 - arc.a0 > 1e-4 else { continue }
+                let sDeg = arc.a0 * 180.0 / .pi - 90.0
+                let eDeg = arc.a1 * 180.0 / .pi - 90.0
+                let r0 = radius * arc.r0Ratio
+                let r1 = radius * arc.r1Ratio
                 guard r1 - r0 > 0.2 else { continue }
                 
                 var path = Path()
-                if a1 - a0 >= Double.pi * 1.9999 {
+                if arc.a1 - arc.a0 >= Double.pi * 1.9999 {
                     path.addArc(center: center, radius: r1, startAngle: .degrees(0), endAngle: .degrees(359.99), clockwise: false)
                     path.addArc(center: center, radius: r0, startAngle: .degrees(359.99), endAngle: .degrees(0), clockwise: true)
                     path.closeSubpath()
@@ -3360,17 +3515,84 @@ private struct AnimatableSunburstDialCanvas: View, Animatable {
                     path.closeSubpath()
                 }
                 
-                let isHovered = (self.hoveredNodeID == arc.node.id)
-                let baseColor = AIUsageSunburstChartView.color(for: arc.tone, palette: self.palette)
-                let opacityMod: Double = (self.hoveredNodeID == nil || isHovered) ? 1.0 : 0.42
+                let isHovered = (self.hoveredNodeID == arc.nodeID)
+                let baseColor = AIUsageSunburstChartView.color(forToneKey: arc.toneKey, palette: self.palette)
+                let opacityMod: Double = (!hasHover || isHovered) ? 1.0 : 0.36
                 context.fill(path, with: .color(baseColor.opacity(opacityMod)))
                 context.stroke(
                     path,
                     with: .color(self.palette.card),
-                    style: StrokeStyle(lineWidth: arc.isMark ? 0.75 : 1.5, lineJoin: .round)
+                    style: StrokeStyle(lineWidth: arc.isMark ? 0.75 : 1.4, lineJoin: .round)
                 )
             }
         }
+        .drawingGroup()
+    }
+}
+
+
+private struct SunburstLedgerRowView: View, Equatable {
+    
+    let nodeID: String
+    let name: String
+    let compactValue: String
+    let percentText: String
+    let isOpenHeader: Bool
+    let isSubRow: Bool
+    let isHovered: Bool
+    let toneKey: Int
+    let isDark: Bool
+    let palette: DashPalette
+    let onTap: () -> Void
+    let onHoverChanged: (Bool) -> Void
+    
+    static func == (lhs: SunburstLedgerRowView, rhs: SunburstLedgerRowView) -> Bool {
+        lhs.nodeID == rhs.nodeID
+            && lhs.name == rhs.name
+            && lhs.compactValue == rhs.compactValue
+            && lhs.percentText == rhs.percentText
+            && lhs.isOpenHeader == rhs.isOpenHeader
+            && lhs.isSubRow == rhs.isSubRow
+            && lhs.isHovered == rhs.isHovered
+            && lhs.toneKey == rhs.toneKey
+            && lhs.isDark == rhs.isDark
+    }
+    
+    var body: some View {
+        Button(action: self.onTap) {
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(AIUsageSunburstChartView.color(forToneKey: self.toneKey, palette: self.palette))
+                    .frame(width: 8, height: 8)
+                
+                Text(self.name)
+                    .font(.system(size: 12.5, weight: self.isOpenHeader ? .medium : .regular))
+                    .foregroundStyle(self.isOpenHeader ? self.palette.pine : self.palette.pine.opacity(0.84))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                Text(self.compactValue)
+                    .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
+                    .foregroundStyle(self.palette.pine)
+                    .frame(minWidth: 50, alignment: .trailing)
+                
+                Text(self.percentText)
+                    .font(.system(size: 11.5, weight: .regular, design: .rounded).monospacedDigit())
+                    .foregroundStyle(self.palette.pine.opacity(0.46))
+                    .frame(width: 42, alignment: .trailing)
+            }
+            .padding(.leading, self.isSubRow ? 20 : 8)
+            .padding(.trailing, 8)
+            .frame(minHeight: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(self.isHovered ? self.palette.insetHover : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover(perform: self.onHoverChanged)
     }
 }
 
@@ -3380,6 +3602,7 @@ private struct AIUsageSunburstChartView: View {
     let snapshot: DashboardSnapshot
     let palette: DashPalette
     let detailed: Bool
+    var onHoverDetail: ((String?) -> Void)? = nil
     
     @State private var focusID: String = "root"
     @State private var openID: String?
@@ -3387,11 +3610,10 @@ private struct AIUsageSunburstChartView: View {
     @State private var isCenterHovered = false
     
     @State private var cachedFocus: EvalSunburstLayoutEngine.Node?
-    @State private var cachedOpen: EvalSunburstLayoutEngine.Node?
     @State private var cachedArcs: [EvalSunburstLayoutEngine.ArcItem] = []
+    @State private var cachedRenderArcs: [SunburstRenderArc] = []
     @State private var cachedRows: [EvalSunburstLayoutEngine.LedgerRow] = []
-    @State private var prevGeoms: [String: SunburstArcGeom] = [:]
-    @State private var morphProgress: CGFloat = 1.0
+    @State private var dialScalePulse: CGFloat = 1.0
     
     
     private func resolveFocusAndOpen(focusID: String, openID: String?) -> (focus: EvalSunburstLayoutEngine.Node, open: EvalSunburstLayoutEngine.Node?) {
@@ -3415,74 +3637,116 @@ private struct AIUsageSunburstChartView: View {
     private func syncLayout(animated: Bool) {
         let resolved = self.resolveFocusAndOpen(focusID: self.focusID, openID: self.openID)
         let layout = EvalSunburstLayoutEngine.layout(focus: resolved.focus, open: resolved.open)
-        
-        if animated && !self.cachedArcs.isEmpty {
-            self.prevGeoms = Dictionary(
-                uniqueKeysWithValues: self.cachedArcs.map {
-                    ($0.key, SunburstArcGeom(a0: $0.a0, a1: $0.a1, r0: $0.r0Ratio, r1: $0.r1Ratio))
-                }
+        let renderArcs = layout.arcs.map { arc in
+            SunburstRenderArc(
+                key: arc.key,
+                nodeID: arc.node.id,
+                isMark: arc.isMark,
+                a0: arc.a0,
+                a1: arc.a1,
+                r0Ratio: arc.r0Ratio,
+                r1Ratio: arc.r1Ratio,
+                toneKey: Self.toneKey(for: arc.tone)
             )
-            self.cachedFocus = resolved.focus
-            self.cachedOpen = resolved.open
-            self.cachedArcs = layout.arcs
-            self.cachedRows = layout.rows
-            self.morphProgress = 0
-            withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.24)) {
-                self.morphProgress = 1.0
+        }
+        
+        self.cachedFocus = resolved.focus
+        self.cachedArcs = layout.arcs
+        self.cachedRenderArcs = renderArcs
+        self.cachedRows = layout.rows
+        
+        if animated {
+            // Fast GPU-composited spring pulse — zero per-frame Path re-tessellation on main thread
+            self.dialScalePulse = 0.96
+            withAnimation(.spring(response: 0.22, dampingFraction: 0.80)) {
+                self.dialScalePulse = 1.0
             }
-        } else {
-            self.prevGeoms = [:]
-            self.cachedFocus = resolved.focus
-            self.cachedOpen = resolved.open
-            self.cachedArcs = layout.arcs
-            self.cachedRows = layout.rows
-            self.morphProgress = 1.0
         }
     }
     
     
-    fileprivate static func color(for tone: EvalSunburstLayoutEngine.ArcItem.ToneKind, palette: DashPalette) -> Color {
+    fileprivate static func toneKey(for tone: EvalSunburstLayoutEngine.ArcItem.ToneKind) -> Int {
         switch tone {
-            case .openActive:
-                return palette.accentFill
-            case .sibling:
-                return palette.pine.opacity(0.38)
-            case .otherInner:
-                return palette.pine.opacity(0.22)
+            case .openActive: 0
+            case .sibling: 1
+            case .otherInner: 2
+            case .otherOuter: 3
+            case .outputMark: 4
             case .outerIndexed(let index, let count):
+                100 + min(20, max(1, count)) * 32 + min(31, max(0, index))
+        }
+    }
+    
+    
+    fileprivate static func color(forToneKey key: Int, palette: DashPalette) -> Color {
+        switch key {
+            case 0: return palette.accentFill
+            case 1: return palette.pine.opacity(0.38)
+            case 2: return palette.pine.opacity(0.22)
+            case 3: return palette.pine.opacity(0.14)
+            case 4: return palette.emerald.opacity(0.88)
+            default:
+                let encoded = max(0, key - 100)
+                let count = max(1, encoded / 32)
+                let index = encoded % 32
                 let share = count > 1 ? 0.92 - (Double(index) * 0.56 / Double(count - 1)) : 0.92
                 return palette.accentFill.opacity(share)
-            case .otherOuter:
-                return palette.pine.opacity(0.14)
-            case .outputMark:
-                return palette.emerald.opacity(0.88)
+        }
+    }
+    
+    
+    private func updateHover(_ nextID: String?) {
+        guard nextID != self.hoveredNodeID else { return }
+        self.hoveredNodeID = nextID
+        guard let onHoverDetail = self.onHoverDetail else { return }
+        if let nextID, let node = self.snapshot.sunburstIndex[nextID] {
+            let parentVal = max(1.0, node.parent?.value ?? self.snapshot.sunburstRoot.value)
+            let pct = Self.percentString(node.value / parentVal)
+            onHoverDetail("\(node.name) · \(Self.compactTokens(Int(node.value.rounded()))) tok (\(pct))")
+        } else {
+            onHoverDetail(nil)
         }
     }
     
     
     var body: some View {
         let focus = self.cachedFocus ?? self.snapshot.sunburstRoot
-        let arcs: [EvalSunburstLayoutEngine.ArcItem] = self.cachedFocus != nil
-            ? self.cachedArcs
+        let renderArcs: [SunburstRenderArc] = self.cachedFocus != nil
+            ? self.cachedRenderArcs
             : {
                 let resolved = self.resolveFocusAndOpen(focusID: self.focusID, openID: self.openID)
-                return EvalSunburstLayoutEngine.layout(focus: resolved.focus, open: resolved.open).arcs
+                return EvalSunburstLayoutEngine.layout(focus: resolved.focus, open: resolved.open).arcs.map { arc in
+                    SunburstRenderArc(
+                        key: arc.key,
+                        nodeID: arc.node.id,
+                        isMark: arc.isMark,
+                        a0: arc.a0,
+                        a1: arc.a1,
+                        r0Ratio: arc.r0Ratio,
+                        r1Ratio: arc.r1Ratio,
+                        toneKey: Self.toneKey(for: arc.tone)
+                    )
+                }
             }()
-        let rows: [EvalSunburstLayoutEngine.LedgerRow] = self.cachedFocus != nil
-            ? self.cachedRows
-            : {
-                let resolved = self.resolveFocusAndOpen(focusID: self.focusID, openID: self.openID)
-                return EvalSunburstLayoutEngine.layout(focus: resolved.focus, open: resolved.open).rows
-            }()
+        let arcs = self.cachedFocus != nil ? self.cachedArcs : []
+        let rows = self.cachedFocus != nil ? self.cachedRows : []
         
         Group {
             if !self.detailed {
-                self.sunburstDial(focus: focus, arcs: arcs)
+                SunburstDialCanvas(
+                    renderArcs: renderArcs,
+                    hoveredNodeID: nil,
+                    detailed: false,
+                    isDark: self.palette.tokens.isDark,
+                    palette: self.palette
+                )
+                .equatable()
+                .allowsHitTesting(false)
             } else {
                 GeometryReader { geo in
                     let dialSide = min(max(148, geo.size.height - 8), max(148, geo.size.width * 0.44))
                     HStack(alignment: .center, spacing: 18) {
-                        self.sunburstDial(focus: focus, arcs: arcs)
+                        self.sunburstDial(focus: focus, arcs: arcs, renderArcs: renderArcs)
                             .frame(width: dialSide, height: dialSide)
                         
                         self.ledgerView(rows: rows)
@@ -3503,90 +3767,92 @@ private struct AIUsageSunburstChartView: View {
     }
     
     
-    private func sunburstDial(focus: EvalSunburstLayoutEngine.Node, arcs: [EvalSunburstLayoutEngine.ArcItem]) -> some View {
+    private func sunburstDial(
+        focus: EvalSunburstLayoutEngine.Node,
+        arcs: [EvalSunburstLayoutEngine.ArcItem],
+        renderArcs: [SunburstRenderArc]
+    ) -> some View {
         GeometryReader { geo in
             let size = geo.size
             let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
-            let radius = max(16, min(size.width, size.height) * 0.5 - (self.detailed ? 4 : 2))
+            let radius = max(16, min(size.width, size.height) * 0.5 - 4)
             let holeRadius = radius * (52.0 / 110.0)
+            let up = focus.parent
             
             ZStack {
-                let dialCanvas = AnimatableSunburstDialCanvas(
-                    arcs: arcs,
-                    prevGeoms: self.prevGeoms,
-                    morphProgress: self.morphProgress,
+                SunburstDialCanvas(
+                    renderArcs: renderArcs,
                     hoveredNodeID: self.hoveredNodeID,
-                    detailed: self.detailed,
+                    detailed: true,
+                    isDark: self.palette.tokens.isDark,
                     palette: self.palette
                 )
+                .equatable()
+                .scaleEffect(self.dialScalePulse)
+                .allowsHitTesting(false)
                 
-                if self.detailed {
-                    dialCanvas
-                        .contentShape(Circle())
-                        .onContinuousHover { phase in
-                            let nextID: String? = switch phase {
-                                case .active(let pt):
-                                    self.hitTest(pt, center: center, radius: radius, arcs: arcs)?.node.id
-                                case .ended:
-                                    nil
-                            }
-                            if nextID != self.hoveredNodeID {
-                                self.hoveredNodeID = nextID
-                            }
-                        }
-                        .onTapGesture { pt in
-                            if let hit = self.hitTest(pt, center: center, radius: radius, arcs: arcs) {
-                                self.handleSelect(node: hit.node, ring: hit.ring)
-                            }
-                        }
-                } else {
-                    dialCanvas
+                // Center readout (non-interactive overlay — single unified hit-test below avoids hover fighting)
+                VStack(spacing: 2) {
+                    if let up {
+                        Text("‹ \(up.name)")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(self.palette.emerald)
+                            .lineLimit(1)
+                    }
+                    Text(Self.compactTokens(Int(focus.value.rounded())))
+                        .font(.system(size: 18, weight: .light, design: .rounded).monospacedDigit())
+                        .foregroundStyle(self.palette.pine)
+                        .lineLimit(1)
+                    if up != nil {
+                        Text(focus.name)
+                            .font(.system(size: 10.5, weight: .regular))
+                            .foregroundStyle(self.palette.pine.opacity(0.55))
+                            .lineLimit(1)
+                    }
                 }
-                
-                if self.detailed {
-                    let up = focus.parent
-                    Button {
-                        guard let up else { return }
-                        self.openID = focus.id
-                        self.focusID = up.id
-                        if self.hoveredNodeID != nil {
-                            self.hoveredNodeID = nil
-                        }
-                        self.syncLayout(animated: true)
-                    } label: {
-                        VStack(spacing: 2) {
-                            if let up {
-                                Text("‹ \(up.name)")
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundStyle(self.palette.emerald)
-                                    .lineLimit(1)
+                .padding(6)
+                .frame(width: holeRadius * 2, height: holeRadius * 2)
+                .background(
+                    Circle()
+                        .fill(self.isCenterHovered && up != nil ? self.palette.insetHover : self.palette.card)
+                )
+                .allowsHitTesting(false)
+            }
+            .contentShape(Circle())
+            .pointerStyle(.link)
+            .onContinuousHover { phase in
+                switch phase {
+                    case .active(let pt):
+                        let dist = hypot(pt.x - center.x, pt.y - center.y)
+                        if dist <= holeRadius {
+                            let centerHit = (up != nil)
+                            if centerHit != self.isCenterHovered {
+                                self.isCenterHovered = centerHit
                             }
-                            Text(Self.compactTokens(Int(focus.value.rounded())))
-                                .font(.system(size: 18, weight: .light, design: .rounded).monospacedDigit())
-                                .foregroundStyle(self.palette.pine)
-                                .lineLimit(1)
-                            if up != nil {
-                                Text(focus.name)
-                                    .font(.system(size: 10.5, weight: .regular))
-                                    .foregroundStyle(self.palette.pine.opacity(0.55))
-                                    .lineLimit(1)
-                            }
+                            self.updateHover(nil)
+                        } else {
+                            if self.isCenterHovered { self.isCenterHovered = false }
+                            let hitID = self.hitTest(pt, center: center, radius: radius, arcs: arcs)?.node.id
+                            self.updateHover(hitID)
                         }
-                        .padding(6)
-                        .frame(width: holeRadius * 2, height: holeRadius * 2)
-                        .background(
-                            Circle()
-                                .fill(self.isCenterHovered && up != nil ? self.palette.insetHover : self.palette.card)
-                        )
-                        .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(up == nil)
-                    .onHover { inside in
-                        if inside != self.isCenterHovered {
-                            self.isCenterHovered = inside
-                        }
-                    }
+                    case .ended:
+                        if self.isCenterHovered { self.isCenterHovered = false }
+                        self.updateHover(nil)
+                }
+            }
+            .onTapGesture { pt in
+                let dist = hypot(pt.x - center.x, pt.y - center.y)
+                if dist <= holeRadius {
+                    guard let up else { return }
+                    self.openID = focus.id
+                    self.focusID = up.id
+                    self.isCenterHovered = false
+                    self.updateHover(nil)
+                    self.syncLayout(animated: true)
+                    return
+                }
+                if let hit = self.hitTest(pt, center: center, radius: radius, arcs: arcs) {
+                    self.handleSelect(node: hit.node, ring: hit.ring)
                 }
             }
         }
@@ -3597,48 +3863,26 @@ private struct AIUsageSunburstChartView: View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: 2) {
                 ForEach(rows) { row in
-                    let isHovered = (self.hoveredNodeID == row.node.id)
-                    let pctText = Self.percentString(row.fraction)
-                    
-                    Button {
-                        self.handleSelect(node: row.node, ring: row.ring)
-                    } label: {
-                        HStack(spacing: 8) {
-                            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                .fill(Self.color(for: row.tone, palette: self.palette))
-                                .frame(width: 8, height: 8)
-                            
-                            Text(row.node.name)
-                                .font(.system(size: 12.5, weight: row.isOpenHeader ? .medium : .regular))
-                                .foregroundStyle(row.isOpenHeader ? self.palette.pine : self.palette.pine.opacity(0.84))
-                                .lineLimit(1)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            
-                            Text(Self.compactTokens(Int(row.node.value.rounded())))
-                                .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
-                                .foregroundStyle(self.palette.pine)
-                                .frame(minWidth: 50, alignment: .trailing)
-                            
-                            Text(pctText)
-                                .font(.system(size: 11.5, weight: .regular, design: .rounded).monospacedDigit())
-                                .foregroundStyle(self.palette.pine.opacity(0.46))
-                                .frame(width: 42, alignment: .trailing)
+                    SunburstLedgerRowView(
+                        nodeID: row.node.id,
+                        name: row.node.name,
+                        compactValue: Self.compactTokens(Int(row.node.value.rounded())),
+                        percentText: Self.percentString(row.fraction),
+                        isOpenHeader: row.isOpenHeader,
+                        isSubRow: row.isSubRow,
+                        isHovered: self.hoveredNodeID == row.node.id,
+                        toneKey: Self.toneKey(for: row.tone),
+                        isDark: self.palette.tokens.isDark,
+                        palette: self.palette,
+                        onTap: {
+                            self.handleSelect(node: row.node, ring: row.ring)
+                        },
+                        onHoverChanged: { inside in
+                            let nextHover: String? = inside ? row.node.id : (self.hoveredNodeID == row.node.id ? nil : self.hoveredNodeID)
+                            self.updateHover(nextHover)
                         }
-                        .padding(.leading, row.isSubRow ? 20 : 8)
-                        .padding(.trailing, 8)
-                        .frame(minHeight: 26)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(isHovered ? self.palette.insetHover : Color.clear)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .onHover { inside in
-                        let nextHover: String? = inside ? row.node.id : (self.hoveredNodeID == row.node.id ? nil : self.hoveredNodeID)
-                        if nextHover != self.hoveredNodeID {
-                            self.hoveredNodeID = nextHover
-                        }
-                    }
+                    )
+                    .equatable()
                 }
             }
             .padding(.vertical, 4)
@@ -3660,9 +3904,7 @@ private struct AIUsageSunburstChartView: View {
                 self.openID = node.id
             }
         }
-        if self.hoveredNodeID != nil {
-            self.hoveredNodeID = nil
-        }
+        self.updateHover(nil)
         self.syncLayout(animated: true)
     }
     
@@ -3712,109 +3954,156 @@ private struct NightingaleRoseChartView: View {
     let metrics: BusynessMetrics
     let palette: DashPalette
     let detailed: Bool
+    var onHoverDetail: ((String?) -> Void)? = nil
     
     @State private var hoveredSliceIndex: Int?
     
     
     var body: some View {
-        VStack(spacing: 4) {
-            GeometryReader { geo in
-                Canvas { context, size in
-                    guard size.width.isFinite, size.height.isFinite,
-                          size.width > 8, size.height > 8 else { return }
-                    let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
-                    let outerLimit = max(14, min(size.width, size.height) * 0.5 - (self.detailed ? 22 : 4))
-                    let innerR = max(5, outerLimit * (self.detailed ? 0.22 : 0.20))
-                    let maxPetalSpan = max(6, outerLimit - innerR)
-                    
-                    for frac in (self.detailed ? [0.35, 0.70, 1.0] : [0.5, 1.0]) {
-                        let r = innerR + maxPetalSpan * CGFloat(frac)
-                        let ringRect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
-                        context.stroke(
-                            Circle().path(in: ringRect),
-                            with: .color(self.palette.hairline),
-                            lineWidth: self.detailed ? 0.7 : 0.55
-                        )
-                    }
-                    
-                    let slices = self.metrics.slices
-                    let stepAngle = 360.0 / Double(max(1, slices.count))
-                    
-                    for slice in slices {
-                        let padDeg = self.detailed ? 1.5 : 1.8
-                        let startDeg = -90.0 + Double(slice.index) * stepAngle + padDeg
-                        let endDeg = -90.0 + Double(slice.index + 1) * stepAngle - padDeg
-                        // Nightingale area scaling (r proportional to sqrt(intensity) keeps area honest)
-                        let radiusFactor = max(0.16, sqrt(max(0.02, slice.intensity)))
-                        let petalOuter = innerR + maxPetalSpan * CGFloat(radiusFactor)
-                        
-                        var petal = Path()
-                        petal.addArc(
-                            center: center,
-                            radius: innerR,
-                            startAngle: .degrees(startDeg),
-                            endAngle: .degrees(endDeg),
-                            clockwise: false
-                        )
-                        petal.addArc(
-                            center: center,
-                            radius: petalOuter,
-                            startAngle: .degrees(endDeg),
-                            endAngle: .degrees(startDeg),
-                            clockwise: true
-                        )
-                        petal.closeSubpath()
-                        
-                        let isHovered = (self.hoveredSliceIndex == slice.index)
-                        let color: Color = {
-                            if slice.intensity >= 0.75 { return self.palette.emerald }
-                            if slice.intensity >= 0.45 { return self.palette.accentFill }
-                            if slice.intensity >= 0.22 { return self.palette.mint }
-                            return self.palette.emptyDot
-                        }()
-                        context.fill(petal, with: .color(color.opacity(isHovered ? 0.96 : 0.84)))
-                        if isHovered {
-                            context.stroke(petal, with: .color(self.palette.pine), lineWidth: 1.2)
-                        }
-                        
-                        if self.detailed, slice.index.isMultiple(of: 2) {
-                            let midRad = (startDeg + endDeg) * 0.5 * .pi / 180.0
-                            let labelR = outerLimit + 12
-                            let lx = center.x + CGFloat(cos(midRad)) * labelR
-                            let ly = center.y + CGFloat(sin(midRad)) * labelR
-                            context.draw(
-                                Text(slice.label)
-                                    .font(.system(size: 9.5, design: .rounded).monospacedDigit())
-                                    .foregroundStyle(self.palette.pine.opacity(0.55)),
-                                at: CGPoint(x: lx, y: ly),
-                                anchor: .center
-                            )
-                        }
-                    }
-                    
-                    let coreRect = CGRect(x: center.x - innerR + 1, y: center.y - innerR + 1, width: (innerR - 1) * 2, height: (innerR - 1) * 2)
-                    context.fill(Circle().path(in: coreRect), with: .color(self.palette.card))
+        GeometryReader { geo in
+            Canvas { context, size in
+                guard size.width.isFinite, size.height.isFinite,
+                      size.width > 8, size.height > 8 else { return }
+                let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+                let labelMargin: CGFloat = self.detailed ? 24 : 15
+                let outerLimit = max(14, min(size.width, size.height) * 0.5 - labelMargin)
+                let innerR = max(self.detailed ? 22 : 12, outerLimit * (self.detailed ? 0.28 : 0.34))
+                let maxPetalSpan = max(6, outerLimit - innerR)
+                
+                for frac in (self.detailed ? [0.35, 0.70, 1.0] : [0.5, 1.0]) {
+                    let r = innerR + maxPetalSpan * CGFloat(frac)
+                    let ringRect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
+                    context.stroke(
+                        Circle().path(in: ringRect),
+                        with: .color(self.palette.hairline),
+                        lineWidth: self.detailed ? 0.7 : 0.55
+                    )
                 }
-                .onContinuousHover { phase in
-                    guard self.detailed else { return }
-                    let nextIdx: Int? = switch phase {
-                        case .active(let loc):
-                            self.hitTestPetal(loc, in: geo.size)
-                        case .ended:
-                            nil
+                
+                let slices = self.metrics.slices
+                let stepAngle = 360.0 / Double(max(1, slices.count))
+                
+                for slice in slices {
+                    let padDeg = self.detailed ? 1.5 : 1.8
+                    let startDeg = -90.0 + Double(slice.index) * stepAngle + padDeg
+                    let endDeg = -90.0 + Double(slice.index + 1) * stepAngle - padDeg
+                    let radiusFactor = max(0.16, sqrt(max(0.02, slice.intensity)))
+                    let petalOuter = innerR + maxPetalSpan * CGFloat(radiusFactor)
+                    
+                    var petal = Path()
+                    petal.addArc(
+                        center: center,
+                        radius: innerR,
+                        startAngle: .degrees(startDeg),
+                        endAngle: .degrees(endDeg),
+                        clockwise: false
+                    )
+                    petal.addArc(
+                        center: center,
+                        radius: petalOuter,
+                        startAngle: .degrees(endDeg),
+                        endAngle: .degrees(startDeg),
+                        clockwise: true
+                    )
+                    petal.closeSubpath()
+                    
+                    let isHovered = (self.hoveredSliceIndex == slice.index)
+                    let color: Color = {
+                        if slice.intensity >= 0.75 { return self.palette.emerald }
+                        if slice.intensity >= 0.45 { return self.palette.accentFill }
+                        if slice.intensity >= 0.22 { return self.palette.mint }
+                        return self.palette.emptyDot
+                    }()
+                    context.fill(petal, with: .color(color.opacity(isHovered ? 0.96 : 0.84)))
+                    if isHovered {
+                        context.stroke(petal, with: .color(self.palette.pine), lineWidth: 1.2)
                     }
-                    if nextIdx != self.hoveredSliceIndex {
-                        self.hoveredSliceIndex = nextIdx
+                    
+                    if self.detailed, slice.index.isMultiple(of: 2) {
+                        let midRad = (startDeg + endDeg) * 0.5 * .pi / 180.0
+                        let labelR = outerLimit + 13
+                        let lx = center.x + CGFloat(cos(midRad)) * labelR
+                        let ly = center.y + CGFloat(sin(midRad)) * labelR
+                        context.draw(
+                            Text(slice.label)
+                                .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
+                                .foregroundStyle(self.palette.secondaryInk),
+                            at: CGPoint(x: lx, y: ly),
+                            anchor: .center
+                        )
                     }
+                }
+                
+                // Compact clock dial markers directly inside the rose chart (00 / 06 / 12 / 18)
+                if !self.detailed {
+                    let markers: [(String, Double)] = [
+                        ("夜", -90.0),
+                        ("晨", 0.0),
+                        ("午", 90.0),
+                        ("晚", 180.0),
+                    ]
+                    let labelR = outerLimit + 9
+                    for (text, deg) in markers {
+                        let rad = deg * .pi / 180.0
+                        let lx = center.x + CGFloat(cos(rad)) * labelR
+                        let ly = center.y + CGFloat(sin(rad)) * labelR
+                        context.draw(
+                            Text(text)
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(self.palette.secondaryInk),
+                            at: CGPoint(x: lx, y: ly),
+                            anchor: .center
+                        )
+                    }
+                }
+                
+                let coreRect = CGRect(x: center.x - innerR + 1, y: center.y - innerR + 1, width: (innerR - 1) * 2, height: (innerR - 1) * 2)
+                context.fill(Circle().path(in: coreRect), with: .color(self.palette.card))
+                
+                // Peak hour label directly inside the rose core
+                let peakShort = self.metrics.peakHourLabel.split(separator: ":").first.map { "\($0)h" } ?? "12h"
+                if self.detailed {
+                    context.draw(
+                        Text(self.metrics.peakHourLabel)
+                            .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(self.palette.pine),
+                        at: CGPoint(x: center.x, y: center.y - 5),
+                        anchor: .center
+                    )
+                    context.draw(
+                        Text("峰值")
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(self.palette.mutedInk),
+                        at: CGPoint(x: center.x, y: center.y + 8),
+                        anchor: .center
+                    )
+                } else {
+                    context.draw(
+                        Text(peakShort)
+                            .font(.system(size: 9, weight: .semibold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(self.palette.pine),
+                        at: center,
+                        anchor: .center
+                    )
                 }
             }
-            
-            if self.detailed, let idx = self.hoveredSliceIndex, idx < self.metrics.slices.count {
-                let slice = self.metrics.slices[idx]
-                Text("\(slice.label) · \(slice.rawChars.formatted()) 字 · \(slice.rawAIRequests) 次 AI")
-                    .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
-                    .foregroundStyle(self.palette.pine.opacity(0.84))
-                    .frame(height: 16)
+            .onContinuousHover { phase in
+                guard self.detailed else { return }
+                let nextIdx: Int? = switch phase {
+                    case .active(let loc):
+                        self.hitTestPetal(loc, in: geo.size)
+                    case .ended:
+                        nil
+                }
+                if nextIdx != self.hoveredSliceIndex {
+                    self.hoveredSliceIndex = nextIdx
+                    if let idx = nextIdx, idx < self.metrics.slices.count {
+                        let slice = self.metrics.slices[idx]
+                        self.onHoverDetail?("\(slice.label) · \(slice.rawChars.formatted()) 字 · \(slice.rawAIRequests) 次 AI")
+                    } else {
+                        self.onHoverDetail?(nil)
+                    }
+                }
             }
         }
     }
@@ -3825,8 +4114,8 @@ private struct NightingaleRoseChartView: View {
         let dx = point.x - center.x
         let dy = point.y - center.y
         let dist = hypot(dx, dy)
-        let outerLimit = max(14, min(size.width, size.height) * 0.5 - (self.detailed ? 22 : 4))
-        let innerR = max(5, outerLimit * 0.22)
+        let outerLimit = max(14, min(size.width, size.height) * 0.5 - 24)
+        let innerR = max(22, outerLimit * 0.28)
         guard dist >= innerR && dist <= outerLimit else { return nil }
         var angle = atan2(dy, dx) * 180.0 / .pi + 90.0
         if angle < 0 { angle += 360.0 }
@@ -3843,11 +4132,13 @@ private struct EmotionSankeyChartView: View {
     let snapshot: DashboardSnapshot
     let palette: DashPalette
     let detailed: Bool
+    var onHoverDetail: ((String?) -> Void)? = nil
     
     @State private var hoveredCaption: String?
     
     private struct SankeyNode {
         let label: String
+        let shortLabel: String
         let weight: Double
         let color: Color
     }
@@ -3858,108 +4149,142 @@ private struct EmotionSankeyChartView: View {
         let col2Nodes = self.middleMoodNodes()
         let col3Nodes = self.rightSubMoodNodes()
         
-        VStack(spacing: 4) {
-            GeometryReader { geo in
-                Canvas { context, size in
-                    guard size.width.isFinite, size.height.isFinite,
-                          size.width > 8, size.height > 8 else { return }
-                    let padX: CGFloat = self.detailed ? 74 : 6
-                    let topHeaderH: CGFloat = self.detailed ? 20 : 2
-                    let padBottom: CGFloat = self.detailed ? 10 : 3
-                    let nodeW: CGFloat = self.detailed ? 10 : 5.5
-                    let innerW = max(36, size.width - padX * 2)
-                    let innerH = max(30, size.height - topHeaderH - padBottom)
-                    
-                    let col1X = padX
-                    let col2X = padX + innerW * 0.5 - nodeW * 0.5
-                    let col3X = padX + innerW - nodeW
-                    
+        GeometryReader { geo in
+            Canvas { context, size in
+                guard size.width.isFinite, size.height.isFinite,
+                      size.width > 8, size.height > 8 else { return }
+                let leftMargin: CGFloat = self.detailed ? 72 : 20
+                let rightMargin: CGFloat = self.detailed ? 82 : 30
+                let topHeaderH: CGFloat = self.detailed ? 22 : 4
+                let padBottom: CGFloat = self.detailed ? 8 : 4
+                let nodeW: CGFloat = self.detailed ? 10 : 6
+                let innerW = max(36, size.width - leftMargin - rightMargin)
+                let innerH = max(30, size.height - topHeaderH - padBottom)
+                
+                let col1X = leftMargin
+                let col2X = leftMargin + innerW * 0.5 - nodeW * 0.5
+                let col3X = leftMargin + innerW - nodeW
+                
+                if self.detailed {
+                    let headerStyle = Font.system(size: 10.5, weight: .medium)
+                    let headerColor = self.palette.mutedInk
+                    context.draw(Text("时段").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col1X + nodeW * 0.5, y: 8), anchor: .center)
+                    context.draw(Text("心境").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col2X + nodeW * 0.5, y: 8), anchor: .center)
+                    context.draw(Text("状态").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col3X + nodeW * 0.5, y: 8), anchor: .center)
+                }
+                
+                let gap: CGFloat = self.detailed ? 8 : 4
+                let rects1 = Self.layoutColumn(nodes: col1Nodes, x: col1X, yStart: topHeaderH, height: innerH, width: nodeW, gap: gap)
+                let rects2 = Self.layoutColumn(nodes: col2Nodes, x: col2X, yStart: topHeaderH, height: innerH, width: nodeW, gap: gap)
+                let rects3 = Self.layoutColumn(nodes: col3Nodes, x: col3X, yStart: topHeaderH, height: innerH, width: nodeW, gap: gap)
+                
+                Self.drawFlows(context: &context, sources: rects1, targets: rects2)
+                Self.drawFlows(context: &context, sources: rects2, targets: rects3)
+                
+                let sum1 = max(1.0, col1Nodes.reduce(0.0) { $0 + $1.weight })
+                let sum3 = max(1.0, col3Nodes.reduce(0.0) { $0 + $1.weight })
+                
+                for (node, layout) in zip(col1Nodes, rects1) {
+                    context.fill(RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: layout.rect), with: .color(node.color))
                     if self.detailed {
-                        let headerStyle = Font.system(size: 10, weight: .medium)
-                        let headerColor = self.palette.pine.opacity(0.46)
-                        context.draw(Text("写作时段").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col1X + nodeW * 0.5, y: 7), anchor: .center)
-                        context.draw(Text("心境维度").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col2X + nodeW * 0.5, y: 7), anchor: .center)
-                        context.draw(Text("状态细分").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col3X + nodeW * 0.5, y: 7), anchor: .center)
-                    }
-                    
-                    let rects1 = Self.layoutColumn(nodes: col1Nodes, x: col1X, yStart: topHeaderH, height: innerH, width: nodeW, gap: self.detailed ? 7 : 4)
-                    let rects2 = Self.layoutColumn(nodes: col2Nodes, x: col2X, yStart: topHeaderH, height: innerH, width: nodeW, gap: self.detailed ? 7 : 4)
-                    let rects3 = Self.layoutColumn(nodes: col3Nodes, x: col3X, yStart: topHeaderH, height: innerH, width: nodeW, gap: self.detailed ? 7 : 4)
-                    
-                    Self.drawFlows(context: &context, sources: rects1, targets: rects2)
-                    Self.drawFlows(context: &context, sources: rects2, targets: rects3)
-                    
-                    let sum1 = max(1.0, col1Nodes.reduce(0.0) { $0 + $1.weight })
-                    let sum3 = max(1.0, col3Nodes.reduce(0.0) { $0 + $1.weight })
-                    
-                    for (node, layout) in zip(col1Nodes, rects1) {
-                        context.fill(RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: layout.rect), with: .color(node.color))
-                        if self.detailed {
-                            let pct = Int(((node.weight / sum1) * 100).rounded())
-                            let text = "\(node.label) \(pct)%"
-                            context.draw(
-                                Text(text)
-                                    .font(.system(size: 10.5, weight: .medium).monospacedDigit())
-                                    .foregroundStyle(self.palette.pine.opacity(0.84)),
-                                at: CGPoint(x: layout.rect.minX - 5, y: layout.rect.midY),
-                                anchor: .trailing
-                            )
-                        }
-                    }
-                    
-                    for (node, layout) in zip(col2Nodes, rects2) {
-                        context.fill(RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: layout.rect), with: .color(node.color))
-                        if self.detailed {
-                            context.draw(
-                                Text(node.label)
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(self.palette.pine.opacity(0.92)),
-                                at: CGPoint(x: layout.rect.midX, y: max(layout.rect.minY - 7, topHeaderH + 4)),
-                                anchor: .center
-                            )
-                        }
-                    }
-                    
-                    for (node, layout) in zip(col3Nodes, rects3) {
-                        context.fill(RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: layout.rect), with: .color(node.color))
-                        if self.detailed {
-                            let pct = Int(((node.weight / sum3) * 100).rounded())
-                            let text = "\(node.label) \(pct)%"
-                            context.draw(
-                                Text(text)
-                                    .font(.system(size: 10.5, weight: .medium).monospacedDigit())
-                                    .foregroundStyle(self.palette.pine.opacity(0.84)),
-                                at: CGPoint(x: layout.rect.maxX + 5, y: layout.rect.midY),
-                                anchor: .leading
-                            )
-                        }
+                        let pct = Int(((node.weight / sum1) * 100).rounded())
+                        context.draw(
+                            Text("\(node.label) \(pct)%")
+                                .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                                .foregroundStyle(self.palette.pine.opacity(0.86)),
+                            at: CGPoint(x: layout.rect.minX - 6, y: layout.rect.midY),
+                            anchor: .trailing
+                        )
+                    } else if layout.rect.height >= 10 {
+                        context.draw(
+                            Text(node.shortLabel)
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(self.palette.secondaryInk),
+                            at: CGPoint(x: layout.rect.minX - 4, y: layout.rect.midY),
+                            anchor: .trailing
+                        )
                     }
                 }
-                .onContinuousHover { phase in
-                    guard self.detailed else { return }
-                    let nextCaption: String? = switch phase {
-                        case .active(let loc):
-                            self.hitTestColumn(
-                                loc,
-                                in: geo.size,
-                                col1: col1Nodes,
-                                col2: col2Nodes,
-                                col3: col3Nodes
-                            )
-                        case .ended:
-                            nil
+                
+                for (node, layout) in zip(col2Nodes, rects2) {
+                    context.fill(RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: layout.rect), with: .color(node.color))
+                    if self.detailed {
+                        let pillW: CGFloat = 34
+                        let pillH: CGFloat = 15
+                        let pillRect = CGRect(
+                            x: layout.rect.midX - pillW * 0.5,
+                            y: layout.rect.midY - pillH * 0.5,
+                            width: pillW,
+                            height: pillH
+                        )
+                        context.fill(RoundedRectangle(cornerRadius: 4, style: .continuous).path(in: pillRect), with: .color(self.palette.card.opacity(0.92)))
+                        context.draw(
+                            Text(node.label)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(self.palette.pine),
+                            at: CGPoint(x: layout.rect.midX, y: layout.rect.midY),
+                            anchor: .center
+                        )
+                    } else if layout.rect.height >= 12 {
+                        let pillW: CGFloat = 26
+                        let pillH: CGFloat = 13
+                        let pillRect = CGRect(
+                            x: layout.rect.midX - pillW * 0.5,
+                            y: layout.rect.midY - pillH * 0.5,
+                            width: pillW,
+                            height: pillH
+                        )
+                        context.fill(RoundedRectangle(cornerRadius: 3.5, style: .continuous).path(in: pillRect), with: .color(self.palette.card.opacity(0.88)))
+                        context.draw(
+                            Text(node.shortLabel)
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(self.palette.pine),
+                            at: CGPoint(x: layout.rect.midX, y: layout.rect.midY),
+                            anchor: .center
+                        )
                     }
-                    if nextCaption != self.hoveredCaption {
-                        self.hoveredCaption = nextCaption
+                }
+                
+                for (node, layout) in zip(col3Nodes, rects3) {
+                    context.fill(RoundedRectangle(cornerRadius: 2.5, style: .continuous).path(in: layout.rect), with: .color(node.color))
+                    if self.detailed {
+                        let pct = Int(((node.weight / sum3) * 100).rounded())
+                        context.draw(
+                            Text("\(node.label) \(pct)%")
+                                .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                                .foregroundStyle(self.palette.pine.opacity(0.86)),
+                            at: CGPoint(x: layout.rect.maxX + 6, y: layout.rect.midY),
+                            anchor: .leading
+                        )
+                    } else if layout.rect.height >= 10 {
+                        context.draw(
+                            Text(node.shortLabel)
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(self.palette.secondaryInk),
+                            at: CGPoint(x: layout.rect.maxX + 4, y: layout.rect.midY),
+                            anchor: .leading
+                        )
                     }
                 }
             }
-            
-            if self.detailed, let caption = self.hoveredCaption {
-                Text(caption)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(self.palette.pine.opacity(0.84))
-                    .frame(height: 16)
+            .onContinuousHover { phase in
+                guard self.detailed else { return }
+                let nextCaption: String? = switch phase {
+                    case .active(let loc):
+                        self.hitTestColumn(
+                            loc,
+                            in: geo.size,
+                            col1: col1Nodes,
+                            col2: col2Nodes,
+                            col3: col3Nodes
+                        )
+                    case .ended:
+                        nil
+                }
+                if nextCaption != self.hoveredCaption {
+                    self.hoveredCaption = nextCaption
+                    self.onHoverDetail?(nextCaption)
+                }
             }
         }
     }
@@ -3979,25 +4304,26 @@ private struct EmotionSankeyChartView: View {
             }
         }
         return [
-            SankeyNode(label: "晨间", weight: max(1, morning * 100), color: self.palette.mint),
-            SankeyNode(label: "午后", weight: max(1, afternoon * 100), color: self.palette.accentFill),
-            SankeyNode(label: "夜间", weight: max(1, night * 100), color: self.palette.emerald),
+            SankeyNode(label: "晨间", shortLabel: "晨", weight: max(1, morning * 100), color: self.palette.mint),
+            SankeyNode(label: "午后", shortLabel: "午", weight: max(1, afternoon * 100), color: self.palette.accentFill),
+            SankeyNode(label: "夜间", shortLabel: "夜", weight: max(1, night * 100), color: self.palette.emerald),
         ]
     }
     
     
     private func middleMoodNodes() -> [SankeyNode] {
-        let segs = Array(self.snapshot.mood.segments.prefix(4))
+        let segs = Array(self.snapshot.mood.segments.prefix(self.detailed ? 4 : 3))
         guard !segs.isEmpty else {
             return [
-                SankeyNode(label: "沉稳", weight: 45, color: self.palette.accentFill),
-                SankeyNode(label: "专注", weight: 35, color: self.palette.mint),
-                SankeyNode(label: "松弛", weight: 20, color: self.palette.paleMint),
+                SankeyNode(label: "沉稳", shortLabel: "沉稳", weight: 45, color: self.palette.accentFill),
+                SankeyNode(label: "专注", shortLabel: "专注", weight: 35, color: self.palette.mint),
+                SankeyNode(label: "松弛", shortLabel: "松弛", weight: 20, color: self.palette.paleMint),
             ]
         }
         return segs.map { seg in
             SankeyNode(
                 label: seg.label,
+                shortLabel: String(seg.label.prefix(2)),
                 weight: max(1, seg.weight),
                 color: self.palette.toneColor(for: seg.tone)
             )
@@ -4012,18 +4338,19 @@ private struct EmotionSankeyChartView: View {
             for child in seg.children.prefix(2) {
                 collected.append(SankeyNode(
                     label: child.label,
+                    shortLabel: String(child.label.prefix(2)),
                     weight: max(1, child.value),
                     color: baseColor.opacity(0.82)
                 ))
             }
         }
         if !collected.isEmpty {
-            return Array(collected.sorted { $0.weight > $1.weight }.prefix(4))
+            return Array(collected.sorted { $0.weight > $1.weight }.prefix(self.detailed ? 4 : 3))
         }
         return [
-            SankeyNode(label: "心流", weight: 42, color: self.palette.accentFill),
-            SankeyNode(label: "克制", weight: 33, color: self.palette.mint),
-            SankeyNode(label: "愉悦", weight: 25, color: self.palette.heat(2)),
+            SankeyNode(label: "心流", shortLabel: "心流", weight: 42, color: self.palette.accentFill),
+            SankeyNode(label: "克制", shortLabel: "克制", weight: 33, color: self.palette.mint),
+            SankeyNode(label: "愉悦", shortLabel: "愉悦", weight: 25, color: self.palette.heat(2)),
         ]
     }
     
@@ -4040,17 +4367,18 @@ private struct EmotionSankeyChartView: View {
         let prefix: String
         if point.x < third {
             nodes = col1
-            prefix = "写作时段"
+            prefix = "时段"
         } else if point.x < third * 2 {
             nodes = col2
-            prefix = "心境维度"
+            prefix = "心境"
         } else {
             nodes = col3
-            prefix = "状态细分"
+            prefix = "状态"
         }
-        let padY: CGFloat = 14
-        let innerH = max(34, size.height - padY * 2)
-        let laid = Self.layoutColumn(nodes: nodes, x: 0, yStart: padY, height: innerH, width: 10, gap: 6)
+        let topHeaderH: CGFloat = 22
+        let padBottom: CGFloat = 8
+        let innerH = max(30, size.height - topHeaderH - padBottom)
+        let laid = Self.layoutColumn(nodes: nodes, x: 0, yStart: topHeaderH, height: innerH, width: 10, gap: 8)
         let total = max(1.0, nodes.reduce(0.0) { $0 + $1.weight })
         for (node, layout) in zip(nodes, laid) {
             if point.y >= layout.rect.minY - 3 && point.y <= layout.rect.maxY + 3 {
@@ -4149,59 +4477,7 @@ private struct EmotionSankeyChartView: View {
 }
 
 
-// MARK: - Supporting Components (Clean Editorial Headline Rows & Card Surface)
-
-private struct NewsHeadlineRow: View {
-    
-    let item: AIHotNewsItem
-    let isRead: Bool
-    let palette: DashPalette
-    let onTap: () -> Void
-    
-    @State private var isHovered = false
-    
-    
-    var body: some View {
-        let publisher = self.item.displayPublisherLabel
-        
-        Button(action: self.onTap) {
-            HStack(alignment: .center, spacing: 10) {
-                Circle()
-                    .fill(self.isRead ? self.palette.pine.opacity(0.18) : self.palette.accentFill)
-                    .frame(width: 5, height: 5)
-                
-                Text(self.item.title)
-                    .font(.system(size: 13, weight: self.isRead ? .regular : .medium))
-                    .foregroundStyle(self.isRead ? self.palette.secondaryInk : self.palette.pine)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                
-                if !publisher.isEmpty {
-                    Text(publisher)
-                        .font(.system(size: 11, weight: .regular))
-                        .foregroundStyle(self.palette.mutedInk)
-                        .lineLimit(1)
-                }
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 36)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(self.isHovered ? self.palette.insetHover : self.palette.inset)
-            )
-        }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-        .onHover { hovering in
-            if hovering != self.isHovered {
-                self.isHovered = hovering
-            }
-        }
-    }
-}
-
+// MARK: - Supporting Components (Card Surface)
 
 private extension View {
     

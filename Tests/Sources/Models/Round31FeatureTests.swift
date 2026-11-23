@@ -186,12 +186,15 @@ struct Round31FeatureTests {
             backing: .buffered,
             defer: false
         )
+        dashWindow.isReleasedWhenClosed = false
         dashWindow.appearance = NSAppearance(named: .aqua)
         let dashboardHost = NSHostingController(
             rootView: AnalyticsDashboardView(isEmbeddedInSettings: false, onDismiss: {})
                 .environment(\.colorScheme, .light)
         )
+        dashboardHost.sizingOptions = []
         dashWindow.contentViewController = dashboardHost
+        dashWindow.setContentSize(NSSize(width: 1200, height: 840))
         dashWindow.contentView?.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.35))
         dashWindow.contentView?.layoutSubtreeIfNeeded()
@@ -203,7 +206,7 @@ struct Round31FeatureTests {
         settingsDashHost.view.layoutSubtreeIfNeeded()
         #expect(settingsDashHost.view.bounds.width == SettingsPaneLayout.width)
         
-        // Verify simplified DashboardNewsCenterView renders cleanly without annotation text fields
+        // Verify DashboardNewsCenterView renders cleanly
         let tempDir = FileManager.default.temporaryDirectory
             .appending(path: "cot_r31_news_\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -217,6 +220,7 @@ struct Round31FeatureTests {
             backing: .buffered,
             defer: false
         )
+        newsWindow.isReleasedWhenClosed = false
         newsWindow.appearance = NSAppearance(named: .aqua)
         let newsView = DashboardNewsCenterView(
             newsService: service,
@@ -226,7 +230,9 @@ struct Round31FeatureTests {
         )
         .environment(\.colorScheme, .light)
         let newsHost = NSHostingController(rootView: newsView)
+        newsHost.sizingOptions = []
         newsWindow.contentViewController = newsHost
+        newsWindow.setContentSize(NSSize(width: 1120, height: 760))
         newsWindow.contentView?.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         newsWindow.contentView?.layoutSubtreeIfNeeded()

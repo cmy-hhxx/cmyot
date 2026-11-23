@@ -37,6 +37,8 @@ struct KeyBindingsSettingsView: View {
     @State private var model = KeyBindingModel()
     @State private var searchText: String = ""
     @State private var onlyModified: Bool = false
+    @State private var hoveredMenuIndex: Int?
+    @FocusState private var isSearchFocused: Bool
     
     
     var body: some View {
@@ -61,6 +63,7 @@ struct KeyBindingsSettingsView: View {
                     TextField(AppLanguage.text("搜索命令或快捷键…", en: "Search commands or shortcuts…"), text: self.$searchText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12.5))
+                        .focused(self.$isSearchFocused)
                     
                     if !self.searchText.isEmpty {
                         Button {
@@ -69,26 +72,40 @@ struct KeyBindingsSettingsView: View {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.system(size: 11.5))
                                 .foregroundStyle(.secondary)
+                                .frame(width: 22, height: 22)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .pointerStyle(.link)
                     }
                 }
                 .padding(.horizontal, 10)
-                .frame(height: 30)
+                .frame(height: 32)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(self.colorScheme == .dark ? Color.white.opacity(0.06) : Color.white)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(self.colorScheme == .dark ? 0.12 : 0.08), lineWidth: 0.75)
+                        .strokeBorder(
+                            self.isSearchFocused
+                                ? accent.opacity(0.65)
+                                : Color.primary.opacity(self.colorScheme == .dark ? 0.12 : 0.08),
+                            lineWidth: self.isSearchFocused ? 1.1 : 0.75
+                        )
                 )
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .onTapGesture {
+                    self.model.stopRecording()
+                    self.isSearchFocused = true
+                }
                 
                 HStack(spacing: 2) {
                     self.filterChip(
                         title: AppLanguage.text("全部", en: "All"),
                         isActive: !self.onlyModified
                     ) {
+                        self.model.stopRecording()
                         self.onlyModified = false
                     }
                     self.filterChip(
@@ -97,6 +114,7 @@ struct KeyBindingsSettingsView: View {
                             : AppLanguage.text("已修改", en: "Modified"),
                         isActive: self.onlyModified
                     ) {
+                        self.model.stopRecording()
                         self.onlyModified = true
                     }
                 }
@@ -110,23 +128,25 @@ struct KeyBindingsSettingsView: View {
             .padding(.top, 12)
             .padding(.bottom, 10)
             
-            // Zone 2: Split Two-Pane Shortcut Browser & Recorder
+            // Zone 2: Split Two-Pane Shortcut Browser & Instant Click-to-Record List
             HStack(spacing: 0) {
                 if !isGlobalList {
                     ScrollView(.vertical, showsIndicators: true) {
-                        LazyVStack(alignment: .leading, spacing: 2) {
+                        LazyVStack(alignment: .leading, spacing: 3) {
                             ForEach(Array(self.model.tree.enumerated()), id: \.offset) { idx, node in
                                 let isSelected = ((self.model.rootIndex ?? 0) == idx)
+                                let isHovered = (self.hoveredMenuIndex == idx)
                                 let hasModified = self.model.menuHasModified(at: idx)
                                 let menuTitle = KeyBindingModel.localizedMenuTitle(node.name)
                                 
                                 Button {
+                                    self.model.stopRecording()
                                     self.model.rootIndex = idx
                                 } label: {
                                     HStack(spacing: 6) {
                                         Text(menuTitle)
                                             .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
-                                            .foregroundStyle(isSelected ? onAccent : Color.primary.opacity(0.86))
+                                            .foregroundStyle(isSelected ? onAccent : Color.primary.opacity(0.88))
                                             .lineLimit(1)
                                         Spacer(minLength: 2)
                                         if hasModified {
@@ -136,20 +156,32 @@ struct KeyBindingsSettingsView: View {
                                         }
                                     }
                                     .padding(.horizontal, 10)
-                                    .frame(height: 29)
+                                    .frame(height: 32)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .background(
                                         RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                            .fill(isSelected ? accent : Color.clear)
+                                            .fill(
+                                                isSelected
+                                                    ? accent
+                                                    : (isHovered ? Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.055) : Color.clear)
+                                            )
                                     )
+                                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                                 }
                                 .buttonStyle(.plain)
                                 .pointerStyle(.link)
+                                .onHover { inside in
+                                    if inside {
+                                        self.hoveredMenuIndex = idx
+                                    } else if self.hoveredMenuIndex == idx {
+                                        self.hoveredMenuIndex = nil
+                                    }
+                                }
                             }
                         }
                         .padding(6)
                     }
-                    .frame(width: 146)
+                    .frame(width: 148)
                     .background(Color.primary.opacity(self.colorScheme == .dark ? 0.035 : 0.025))
                     
                     Rectangle()
@@ -180,6 +212,7 @@ struct KeyBindingsSettingsView: View {
                                     row: row,
                                     showMenuPrefix: isGlobalList,
                                     accent: accent,
+                                    onAccent: onAccent,
                                     model: self.model
                                 )
                                 Rectangle()
@@ -206,7 +239,10 @@ struct KeyBindingsSettingsView: View {
             
             // Zone 3: Elevated Unclipped Footer Action Bar (comfortably inset above bottom window edge)
             HStack(spacing: 10) {
-                Button(action: self.model.restore) {
+                Button {
+                    self.model.stopRecording()
+                    self.model.restore()
+                } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "arrow.counterclockwise")
                             .font(.system(size: 11, weight: .semibold))
@@ -214,7 +250,7 @@ struct KeyBindingsSettingsView: View {
                             .font(.system(size: 12, weight: .medium))
                     }
                     .foregroundStyle(self.model.isRestorable ? Color.primary.opacity(0.88) : Color.secondary.opacity(0.55))
-                    .padding(.horizontal, 11)
+                    .padding(.horizontal, 12)
                     .frame(height: 28)
                     .background(
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -231,6 +267,7 @@ struct KeyBindingsSettingsView: View {
                                 lineWidth: 0.75
                             )
                     )
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .disabled(!self.model.isRestorable)
@@ -249,6 +286,11 @@ struct KeyBindingsSettingsView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
                     .background(Color.red.opacity(0.10), in: Capsule())
+                } else if self.model.recordingItemID != nil {
+                    Text(AppLanguage.text("直接按下组合键 · Esc 取消 · Delete 清除", en: "Press shortcut · Esc to cancel · Delete to clear"))
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(accent)
+                        .lineLimit(1)
                 }
                 
                 Spacer(minLength: 6)
@@ -261,6 +303,17 @@ struct KeyBindingsSettingsView: View {
         }
         .onAppear {
             self.model.load()
+        }
+        .onDisappear {
+            self.model.stopRecording()
+        }
+        .onChange(of: self.isSearchFocused) { _, focused in
+            if focused {
+                self.model.stopRecording()
+            }
+        }
+        .onChange(of: self.searchText) { _, _ in
+            self.model.stopRecording()
         }
         .frame(
             width: self.usesFlexibleFrame ? nil : SettingsPaneLayout.width,
@@ -279,13 +332,14 @@ struct KeyBindingsSettingsView: View {
             Text(title)
                 .font(.system(size: 11.5, weight: isActive ? .semibold : .medium))
                 .foregroundStyle(isActive ? Color.primary : Color.secondary)
-                .padding(.horizontal, 10)
-                .frame(height: 24)
+                .padding(.horizontal, 11)
+                .frame(height: 26)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(isActive ? (self.colorScheme == .dark ? Color.white.opacity(0.14) : Color.white) : Color.clear)
                         .shadow(color: isActive ? .black.opacity(0.08) : .clear, radius: 1.5, y: 0.5)
                 )
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)
@@ -298,6 +352,7 @@ private struct KeyBindingCommandRowView: View {
     let row: KeyBindingModel.FlattenedCommandRow
     let showMenuPrefix: Bool
     let accent: Color
+    let onAccent: Color
     @Bindable var model: KeyBindingModel
     
     @Environment(\.colorScheme) private var colorScheme
@@ -308,100 +363,143 @@ private struct KeyBindingCommandRowView: View {
         let currentShortcut = self.row.item.shortcut
         let defaultShortcut = self.row.item.defaultShortcut
         let isModified = (currentShortcut != defaultShortcut)
+        let isRecording = self.model.isRecording(self.row.item)
         let localizedMenu = KeyBindingModel.localizedMenuTitle(self.row.menuName)
         let localizedSubmenu = self.row.submenuPath.map { KeyBindingModel.localizedSubmenuPath($0) }
         let breadcrumb = self.showMenuPrefix
             ? (localizedSubmenu.map { "\(localizedMenu) › \($0)" } ?? localizedMenu)
             : localizedSubmenu
-        let placeholder = defaultShortcut?.symbol ?? AppLanguage.text("点击录入", en: "Record")
         
-        let shortcutBinding = Binding<Shortcut?>(
-            get: { self.row.item.shortcut },
-            set: { newValue in
-                self.model.updateShortcut(newValue, for: self.row.item)
-            }
-        )
+        let showReset = isModified && !isRecording
+        let showClear = (currentShortcut != nil) && (self.isHovered || isModified) && !isRecording
         
         HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 5) {
-                    if let breadcrumb, !breadcrumb.isEmpty {
-                        Text(breadcrumb)
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                            .lineLimit(1)
-                    }
-                    
-                    Text(KeyBindingModel.localizedCommandTitle(self.row.commandTitle))
-                        .font(.system(size: 12.5, weight: isModified ? .semibold : .regular))
-                        .foregroundStyle(.primary)
+            // Left full-width clickable area: clicking anywhere on the row starts/toggles recording immediately
+            HStack(spacing: 6) {
+                if let breadcrumb, !breadcrumb.isEmpty {
+                    Text(breadcrumb)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
                         .lineLimit(1)
                 }
+                
+                Text(KeyBindingModel.localizedCommandTitle(self.row.commandTitle))
+                    .font(.system(size: 12.5, weight: (isModified || isRecording) ? .semibold : .regular))
+                    .foregroundStyle(isRecording ? self.accent : .primary)
+                    .lineLimit(1)
+                
+                Spacer(minLength: 4)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                self.model.toggleRecording(self.row.item)
             }
             
-            Spacer(minLength: 6)
-            
-            if isModified {
+            // Fixed-width trailing utility slot so hovering NEVER shifts the shortcut recorder pill
+            HStack(spacing: 4) {
                 Button {
+                    self.model.stopRecording()
                     self.model.updateShortcut(defaultShortcut, for: self.row.item)
                 } label: {
                     Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 22, height: 22)
-                        .background(Color.primary.opacity(0.06), in: Circle())
+                        .frame(width: 24, height: 24)
+                        .background(Color.primary.opacity(0.07), in: Circle())
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .opacity(showReset ? 1 : 0)
+                .allowsHitTesting(showReset)
                 .help(AppLanguage.text("恢复此项默认", en: "Reset Shortcut"))
-            }
-            
-            if currentShortcut != nil && (self.isHovered || isModified) {
+                
                 Button {
+                    self.model.stopRecording()
                     self.model.updateShortcut(nil, for: self.row.item)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 11))
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary.opacity(0.85))
-                        .frame(width: 20, height: 20)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .opacity(showClear ? 1 : 0)
+                .allowsHitTesting(showClear)
                 .help(AppLanguage.text("清除快捷键", en: "Clear Shortcut"))
             }
+            .frame(width: 52, alignment: .trailing)
             
-            ShortcutField(
-                value: shortcutBinding,
-                error: self.$model.error,
-                placeholder: placeholder,
-                alignment: .center
-            )
-            .frame(width: 106, height: 22)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(
-                        isModified
-                            ? self.accent.opacity(self.colorScheme == .dark ? 0.16 : 0.10)
-                            : Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05)
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(
-                        isModified
-                            ? self.accent.opacity(0.55)
-                            : Color.primary.opacity(self.colorScheme == .dark ? 0.14 : 0.10),
-                        lineWidth: isModified ? 1.0 : 0.6
-                    )
-            )
+            // Generous, single-click Shortcut Recorder Pill with unmistakable active recording state
+            Button {
+                self.model.toggleRecording(self.row.item)
+            } label: {
+                HStack(spacing: 4) {
+                    if isRecording {
+                        Circle()
+                            .fill(self.accent)
+                            .frame(width: 6, height: 6)
+                        Text(AppLanguage.text("按下快捷键…", en: "Type keys…"))
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(self.accent)
+                            .lineLimit(1)
+                    } else if let symbol = currentShortcut?.symbol, !symbol.isEmpty {
+                        Text(symbol)
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(isModified ? self.accent : .primary)
+                            .lineLimit(1)
+                    } else {
+                        Text(AppLanguage.text("点击设置", en: "Set Shortcut"))
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(.secondary.opacity(self.isHovered ? 0.90 : 0.60))
+                            .lineLimit(1)
+                    }
+                }
+                .frame(width: 122, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(
+                            isRecording
+                                ? self.accent.opacity(self.colorScheme == .dark ? 0.22 : 0.13)
+                                : (isModified
+                                    ? self.accent.opacity(self.colorScheme == .dark ? 0.15 : 0.09)
+                                    : Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05))
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(
+                            isRecording
+                                ? self.accent
+                                : (isModified
+                                    ? self.accent.opacity(0.55)
+                                    : Color.primary.opacity(self.isHovered ? 0.24 : (self.colorScheme == .dark ? 0.14 : 0.10))),
+                            lineWidth: isRecording ? 1.5 : (isModified ? 1.0 : 0.75)
+                        )
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
         }
         .padding(.horizontal, 12)
-        .frame(height: 34)
-        .background(self.isHovered ? Color.primary.opacity(self.colorScheme == .dark ? 0.05 : 0.03) : Color.clear)
+        .frame(height: 38)
+        .background(
+            isRecording
+                ? self.accent.opacity(self.colorScheme == .dark ? 0.09 : 0.05)
+                : (self.isHovered ? Color.primary.opacity(self.colorScheme == .dark ? 0.055 : 0.035) : Color.clear)
+        )
         .contentShape(Rectangle())
         .onHover { inside in
-            self.isHovered = inside
+            if inside != self.isHovered {
+                self.isHovered = inside
+            }
         }
     }
 }
@@ -423,11 +521,106 @@ private struct KeyBindingCommandRowView: View {
     private(set) var tree: [Item] = []
     private(set) var isRestorable: Bool = false
     private(set) var revision: Int = 0
+    private(set) var recordingItemID: ObjectIdentifier?
     var error: (any Error)?
     
     var rootIndex: Int?
     
     private let manager: KeyBindingManager = .shared
+    @ObservationIgnored private var recordingItem: KeyBindingItem?
+    @ObservationIgnored private var keyDownMonitor: Any?
+    
+    
+    isolated deinit {
+        if let monitor = self.keyDownMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+    
+    
+    func isRecording(_ item: KeyBindingItem) -> Bool {
+        self.recordingItemID == ObjectIdentifier(item)
+    }
+    
+    
+    func toggleRecording(_ item: KeyBindingItem) {
+        if self.isRecording(item) {
+            self.stopRecording()
+        } else {
+            self.startRecording(item)
+        }
+    }
+    
+    
+    func startRecording(_ item: KeyBindingItem) {
+        self.stopRecording()
+        // Dismiss any active search field focus so keystrokes go straight to the recorder
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        self.error = nil
+        self.recordingItem = item
+        self.recordingItemID = ObjectIdentifier(item)
+        
+        self.keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            return self.handleRecordedKeyEvent(event) ? nil : event
+        }
+    }
+    
+    
+    func stopRecording() {
+        if let monitor = self.keyDownMonitor {
+            NSEvent.removeMonitor(monitor)
+            self.keyDownMonitor = nil
+        }
+        self.recordingItem = nil
+        if self.recordingItemID != nil {
+            self.recordingItemID = nil
+        }
+    }
+    
+    
+    @discardableResult
+    func handleRecordedKeyEvent(_ event: NSEvent) -> Bool {
+        guard let item = self.recordingItem else { return false }
+        let cleanModifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        
+        // Single Escape cancels recording without modifying shortcut (even under IME)
+        if event.keyCode == 53, cleanModifiers.isEmpty {
+            self.error = nil
+            self.stopRecording()
+            return true
+        }
+        
+        // Single Delete / Backspace clears shortcut (even under IME)
+        if (event.specialKey == .delete || event.specialKey == .backspace || event.keyCode == 51 || event.keyCode == 117),
+           cleanModifiers.isEmpty
+        {
+            self.updateShortcut(nil, for: item)
+            self.stopRecording()
+            return true
+        }
+        
+        guard let shortcut = Shortcut(keyDownEvent: event) else { return true }
+        
+        // Pressing the exact same shortcut keeps it and ends recording cleanly
+        if shortcut == item.shortcut {
+            self.error = nil
+            self.stopRecording()
+            return true
+        }
+        
+        do {
+            try shortcut.checkCustomizationAvailability(for: NSApp.mainMenu)
+        } catch {
+            self.error = error
+            NSSound.beep()
+            return true
+        }
+        
+        self.updateShortcut(shortcut, for: item)
+        self.stopRecording()
+        return true
+    }
     
     
     /// Loads data from the user defaults.
@@ -465,6 +658,7 @@ private struct KeyBindingCommandRowView: View {
     
     /// Saves the current settings.
     func save() {
+        guard !self.tree.isEmpty else { return }
         
         do {
             try self.manager.save(tree: self.tree)
