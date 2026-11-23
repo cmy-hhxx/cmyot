@@ -1879,9 +1879,14 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                                                    object: textView)
         }
         
-        self.focusedChild = pane
-        self.updateSplitState()
-        self.view.window?.makeFirstResponderDiscardingMarkedText(pane.textView)
+        if !tab.isBoard {
+            self.focusedChild = pane
+            self.updateSplitState()
+            self.view.window?.makeFirstResponderDiscardingMarkedText(pane.textView)
+        } else {
+            self.focusedChild = pane
+            self.updateSplitState()
+        }
         
         NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
         return tab
@@ -2360,6 +2365,11 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     
     /// All editors in visual order, flattened across nested containers.
+    /// The editor pane that currently owns focus, falling back to the first pane.
+    var focusedEditorViewController: EditorViewController? {
+        self.focusedChild ?? self.editorViewControllers.first
+    }
+    
     var editorViewControllers: [EditorViewController] {
         
         var editors: [EditorViewController] = []
@@ -3024,7 +3034,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                         isPinned: tab.isPinned,
                         paneIndex: currentPaneIndex,
                         highlightsJSON: highlightsJSON,
-                        databaseID: doc.databaseDocumentID
+                        databaseID: doc.databaseDocumentID,
+                        boardState: tab.boardState
                     )
                 }
                 let selectedIdx = editor.tabs.firstIndex(where: { $0 === editor.selectedTab }) ?? 0
@@ -3090,7 +3101,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 for tab in pane.tabs {
                     let doc = tab.document
                     let content = doc.textStorage.string
-                    guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || doc.fileURL != nil else { continue }
+                    guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || doc.fileURL != nil || tab.boardState != nil else { continue }
                     let highlightsData = try? JSONEncoder().encode(doc.textHighlights)
                     let highlightsJSON = highlightsData.flatMap { String(data: $0, encoding: .utf8) }
                     flatItems.append(PersistedPaneTabItem(
@@ -3101,7 +3112,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                         isPinned: tab.isPinned,
                         paneIndex: paneIdx,
                         highlightsJSON: highlightsJSON,
-                        databaseID: doc.databaseDocumentID
+                        databaseID: doc.databaseDocumentID,
+                        boardState: tab.boardState
                     ))
                 }
             }
@@ -3341,20 +3353,20 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                 
                 let paneVC = self.makeEditorViewController(document: firstEntry.doc, copying: templateEditor)
                 paneVC.showsLineNumber = showsLineNumber
-                if firstEntry.item.isPinned, let firstTab = paneVC.tabs.first {
-                    firstTab.isPinned = true
+                if let firstTab = paneVC.tabs.first {
+                    firstTab.isPinned = firstEntry.item.isPinned
+                    firstTab.boardState = firstEntry.item.boardState
                 }
                 
                 for entry in createdDocs.dropFirst() {
                     let addedTab = self.addTab(entry.doc, to: paneVC, copying: paneVC.textView)
-                    if entry.item.isPinned {
-                        addedTab.isPinned = true
-                    }
+                    addedTab.isPinned = entry.item.isPinned
+                    addedTab.boardState = entry.item.boardState
                 }
                 
                 paneVC.updateTabState()
                 if let targetTab = paneVC.tabs[safe: selectedTabIndex] ?? paneVC.tabs.first {
-                    paneVC.select(tab: targetTab)
+                    paneVC.select(tab: targetTab, focusEditor: !targetTab.isBoard)
                 }
                 return paneVC
                 
@@ -3516,10 +3528,25 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         viewController.didChangeTabLayout = { [weak self] in
             self?.savePaneTabsSessionToDatabase()
         }
-        viewController.didSelectTab = { [weak self, weak viewController] _ in
+        viewController.requestConvertTabToBoard = { [weak self, weak viewController] tab, kind in
+            guard let self, let viewController else { return }
+            self.convertTab(tab, to: kind, in: viewController)
+        }
+        viewController.requestRevertBoardToDocument = { [weak self, weak viewController] tab in
+            guard let self, let viewController else { return }
+            self.revertBoardToDocument(tab, in: viewController)
+        }
+        viewController.requestNewBoardTab = { [weak self, weak viewController] kind in
+            guard let self, let viewController else { return }
+            self.openNewBoardTab(kind, in: viewController)
+        }
+        viewController.requestOpenNoteFromBoard = { [weak self] title, content in
+            self?.openNewDocumentTab(title: title, content: content, splitRight: true)
+        }
+        viewController.didSelectTab = { [weak self, weak viewController] tab in
             guard let self, let viewController else { return }
             self.focusedChild = viewController
-            if !viewController.isRenamingTab && !viewController.suppressesEditorFocusOnTabSelect {
+            if !tab.isBoard && !viewController.isRenamingTab && !viewController.suppressesEditorFocusOnTabSelect {
                 self.view.window?.makeFirstResponderDiscardingMarkedText(viewController.textView)
             }
             NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
@@ -4127,5 +4154,149 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             NotificationCenter.default.post(name: Self.focusedDocumentDidChangeNotification, object: self)
             return
         }
+    }
+    
+    
+    // MARK: - Modular Pane Boards (Market · Podcast · NEWS)
+    
+    /// Converts `tab` into an interactive board (`market`, `podcast`, `news`), analyzing
+    /// any text in its document synchronously first and asynchronously via the Pi Agent.
+    func convertTab(
+        _ tab: PaneTab,
+        to kind: PaneBoardKind,
+        in pane: EditorViewController,
+        explicitQuery: String? = nil
+    ) {
+        let sourceText = (explicitQuery ?? tab.document.textStorage.string)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let initial = PaneBoardIntentAnalyzer.initialState(for: kind, text: sourceText)
+        
+        tab.boardState = initial
+        pane.select(tab: tab, focusEditor: false)
+        pane.refreshSelectedTabContent()
+        self.focusedChild = pane
+        self.savePaneTabsSessionToDatabase()
+        _ = CotAgentCoordinator.shared.captureWorkspaceSnapshot()
+        
+        guard !sourceText.isEmpty && explicitQuery == nil && initial.isAnalyzingIntent else {
+            return
+        }
+        
+        Task { @MainActor [weak self, weak pane, weak tab] in
+            let refined = await PaneBoardIntentAnalyzer.refineWithPiAgent(kind: kind, documentText: sourceText)
+            guard let self, let pane, let tab, var state = tab.boardState, state.kind == kind else { return }
+            
+            state.isAnalyzingIntent = false
+            if let refined {
+                if !refined.primaryQuery.isEmpty {
+                    state.query = refined.primaryQuery
+                    if kind == .market, let inst = await CotMarketService.shared.resolveInstrument(for: refined.primaryQuery) {
+                        state.selectedInstrumentID = inst.instrumentID
+                        state.dynamicTitle = inst.name
+                    } else if refined.primaryQuery.count <= 14 {
+                        state.dynamicTitle = refined.primaryQuery
+                    }
+                }
+                if !refined.additionalQueries.isEmpty {
+                    state.topicChips = refined.additionalQueries
+                }
+                if let period = refined.marketPeriod {
+                    state.marketPeriod = period
+                }
+                if let cat = refined.newsCategory {
+                    state.newsCategoryRaw = cat.rawValue
+                }
+                if let dim = refined.kycDimension,
+                   let title = refined.kycTitle,
+                   !title.isEmpty
+                {
+                    CotMemoryStore.shared.upsertMemory(
+                        dimension: dim,
+                        factKey: "board_\(kind.rawValue)_\(title)",
+                        title: title,
+                        detail: refined.kycDetail ?? "",
+                        confidence: 0.78,
+                        source: "pi_board_router",
+                        actorBot: "PiRouter"
+                    )
+                }
+            }
+            tab.boardState = state
+            pane.refreshSelectedTabContent()
+            self.savePaneTabsSessionToDatabase()
+            _ = CotAgentCoordinator.shared.captureWorkspaceSnapshot()
+        }
+    }
+    
+    
+    /// Reverts a board tab back into its backing text document editor.
+    func revertBoardToDocument(_ tab: PaneTab, in pane: EditorViewController) {
+        tab.boardState = nil
+        pane.select(tab: tab, focusEditor: true)
+        pane.refreshSelectedTabContent()
+        self.focusedChild = pane
+        self.view.window?.makeFirstResponderDiscardingMarkedText(pane.textView)
+        self.savePaneTabsSessionToDatabase()
+        _ = CotAgentCoordinator.shared.captureWorkspaceSnapshot()
+    }
+    
+    
+    /// Opens a brand-new board tab inside `pane` (or in a new split pane to the right).
+    func openNewBoardTab(
+        _ kind: PaneBoardKind,
+        in pane: EditorViewController,
+        explicitQuery: String? = nil,
+        splitRight: Bool = false
+    ) {
+        guard pane.tabs.count < Self.maximumNumberOfTabsPerPane || splitRight else {
+            return NSSound.beep()
+        }
+        guard let scratchDoc = try? self.makePaneDocument() else { return NSSound.beep() }
+        
+        if splitRight, self.editorViewControllers.count < Self.maximumNumberOfSplitEditors {
+            let newPane = self.makeEditorViewController(document: scratchDoc, copying: pane)
+            self.insertPane(newPane, beside: pane, isVertical: true)
+            self.splitState.isVertical = true
+            self.updateSplitState()
+            self.view.layoutSubtreeIfNeeded()
+            self.rebalancePanes(in: self)
+            self.scheduleRatioRebalance()
+            self.convertTab(newPane.selectedTab, to: kind, in: newPane, explicitQuery: explicitQuery ?? "")
+            return
+        }
+        
+        let tab = self.addTab(scratchDoc, to: pane, copying: pane.textView)
+        self.convertTab(tab, to: kind, in: pane, explicitQuery: explicitQuery ?? "")
+    }
+    
+    
+    /// Opens a new Markdown note tab (used by boards or the Butler Bot) without disturbing current tabs.
+    func openNewDocumentTab(title: String, content: String, splitRight: Bool = false) {
+        let pane = self.focusedChild ?? self.editorViewControllers.first
+        guard let pane else { return }
+        guard let doc = try? self.makePaneDocument() else { return NSSound.beep() }
+        doc.displayName = title.hasSuffix(".md") ? title : "\(title).md"
+        doc.isExplicitlyNamed = true
+        doc.setSyntax(name: SyntaxName.markdown)
+        if !content.isEmpty {
+            doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: content)
+        }
+        doc.updateChangeCount(.changeCleared)
+        doc.hasUncommittedChanges = false
+        
+        if splitRight, self.editorViewControllers.count < Self.maximumNumberOfSplitEditors {
+            let newPane = self.makeEditorViewController(document: doc, copying: pane)
+            self.insertPane(newPane, beside: pane, isVertical: true)
+            self.splitState.isVertical = true
+            self.updateSplitState()
+            self.view.layoutSubtreeIfNeeded()
+            self.rebalancePanes(in: self)
+            self.scheduleRatioRebalance()
+            self.view.window?.makeFirstResponderDiscardingMarkedText(newPane.textView)
+        } else {
+            _ = self.addTab(doc, to: pane, copying: pane.textView)
+        }
+        doc.syncToLocalDatabase(force: true)
+        self.savePaneTabsSessionToDatabase()
     }
 }

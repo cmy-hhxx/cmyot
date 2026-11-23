@@ -382,6 +382,7 @@ final class AIGijinkaImageLoader {
     static let shared = AIGijinkaImageLoader()
     
     private(set) var images: [String: NSImage] = [:]
+    private var thumbnails: [String: NSImage] = [:]
     private var inFlight: Set<String> = []
     private let cacheDirectory: URL
     
@@ -414,6 +415,35 @@ final class AIGijinkaImageLoader {
         }
         self.triggerFetchIfNeeded(for: artwork)
         return nil
+    }
+    
+    
+    /// Returns a pre-downsampled cached thumbnail to avoid GPU texture re-rasterization hitches in animated Bot cards/packs.
+    func thumbnail(for artwork: AIGijinkaArtwork, maxPixelSize: CGFloat = 460) -> NSImage? {
+        let bucket = max(64, Int(maxPixelSize.rounded()))
+        let cacheKey = "\(artwork.id)@\(bucket)"
+        if let cached = self.thumbnails[cacheKey] {
+            return cached
+        }
+        guard let source = self.image(for: artwork) else { return nil }
+        let srcSize = source.size
+        let maxDim = max(srcSize.width, srcSize.height)
+        guard maxDim > CGFloat(bucket), srcSize.width > 1, srcSize.height > 1 else {
+            self.thumbnails[cacheKey] = source
+            return source
+        }
+        let scale = CGFloat(bucket) / maxDim
+        let targetSize = NSSize(
+            width: max(1, (srcSize.width * scale).rounded()),
+            height: max(1, (srcSize.height * scale).rounded())
+        )
+        let thumb = NSImage(size: targetSize, flipped: false) { rect in
+            NSGraphicsContext.current?.imageInterpolation = .high
+            source.draw(in: rect, from: NSRect(origin: .zero, size: srcSize), operation: .copy, fraction: 1.0)
+            return true
+        }
+        self.thumbnails[cacheKey] = thumb
+        return thumb
     }
     
     
@@ -472,6 +502,7 @@ final class AIGijinkaImageLoader {
 /// Specialized Bot identity managed by the `Pi` kernel, representing a distinct editor capability.
 nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable {
     
+    case butler
     case ghost
     case translate
     case summarize
@@ -512,7 +543,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .interactiveChart: .interactiveChart
             case .ocrPolish: .ocrPolish
             case .organizeAndMerge: .organizeAndMerge
-            case .ghost, .persona: nil
+            case .butler, .ghost, .persona: nil
         }
     }
     
@@ -523,7 +554,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
                 .pureChat
             case .weeklyReport, .interactiveChart, .ocrPolish:
                 .workspaceRead
-            case .organizeAndMerge:
+            case .butler, .organizeAndMerge:
                 .autonomousAgent
         }
     }
@@ -532,6 +563,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
     var handle: String {
         
         switch self {
+            case .butler: "@Butler"
             case .ghost: "@GhostBot"
             case .translate: "@TranslateBot"
             case .summarize: "@SummaryBot"
@@ -549,6 +581,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
     var displayName: String {
         
         switch self {
+            case .butler: "总管"
             case .ghost: "续写幽灵"
             case .translate: "双语翻译官"
             case .summarize: "极简提炼师"
@@ -566,6 +599,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
     var tagline: String {
         
         switch self {
+            case .butler: "全局记忆、工作区接管与多会话私人助手"
             case .ghost: "光标后静默预测半句，按 Tab 一次落笔"
             case .translate: "中英地道互译，保留代码与格式骨架"
             case .summarize: "剥离铺垫，提炼高信噪比纯文本要点"
@@ -583,6 +617,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
     var symbolName: String {
         
         switch self {
+            case .butler: "crown.fill"
             case .ghost: "bolt.horizontal.fill"
             case .translate: "character.bubble.fill"
             case .summarize: "text.alignleft"
@@ -599,6 +634,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
     
     var accentHex: String {
         switch self {
+            case .butler: "#2F6BFF"
             case .ghost: "#10B981"
             case .translate: "#3B82F6"
             case .summarize: "#6366F1"
@@ -616,6 +652,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
     var analyticsFeatureKey: String {
         
         switch self {
+            case .butler: "butler"
             case .ghost: "nextToken"
             case .persona: "personalityAnalyze"
             default: self.linkedAction?.analyticsKey ?? self.rawValue
@@ -626,6 +663,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
     var defaultSampleInput: String {
         
         switch self {
+            case .butler: "帮我看看当前工作区打开了哪些内容，并记下一条偏好：回答尽量精炼直接。"
             case .ghost: "今天把设置界面重写了一遍，接下来"
             case .translate: "The local SQLite migration now preserves all API gateways, keys, and user avatars."
             case .summarize: "本周重构了设置窗口为侧边栏模式，补全了本地数据库迁移时对 API Key 和头像的备份，同时修复了 Vim Visual 模式下 j/k 移动留下的 1px 残影问题。"
@@ -646,6 +684,8 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             return action.defaultSystemPrompt
         }
         switch self {
+            case .butler:
+                return "你是 CotEditor 顶部的总管家私人助手，直接感知工作区、多维 KYC 记忆与本地 SQLite 兴趣资产。回答极简干练、高信噪比，有偏好或编辑器操控诉求时附带 <cot_actions> JSON。"
             case .ghost:
                 return "你是嵌入编辑器光标处的续写幽灵。只接续光标后最自然的半句或短词，不重复前文，不加引号与解释。"
             case .persona:

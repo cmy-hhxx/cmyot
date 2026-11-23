@@ -130,17 +130,56 @@ struct AIEndpointEditorView: View {
                         .gridColumnAlignment(.trailing)
                         .frame(minWidth: 76, alignment: .trailing)
                     
-                    Picker(selection: self.$draft.endpoint) {
-                        ForEach(AIEndpoint.allCases, id: \.self) { endpoint in
-                            Text(verbatim: endpoint.label).tag(endpoint)
+                    VStack(alignment: .leading, spacing: 6) {
+                        if AIEndpoint.subscriptionProtocols.contains(self.draft.endpoint) {
+                            HStack(spacing: 6) {
+                                Picker(selection: self.$draft.endpoint) {
+                                    ForEach(AIEndpoint.subscriptionProtocols, id: \.self) { endpoint in
+                                        Text(verbatim: endpoint.shortProtocolBadge).tag(endpoint)
+                                    }
+                                } label: {
+                                    EmptyView()
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.segmented)
+                                .controlSize(.small)
+                                
+                                Menu {
+                                    Button(AIEndpoint.googleGemini.label) {
+                                        self.draft.endpoint = .googleGemini
+                                    }
+                                    Button(AIEndpoint.ollama.label) {
+                                        self.draft.endpoint = .ollama
+                                    }
+                                } label: {
+                                    Image(systemName: "ellipsis.circle")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .menuStyle(.borderlessButton)
+                                .menuIndicator(.hidden)
+                                .fixedSize()
+                            }
+                        } else {
+                            Picker(selection: self.$draft.endpoint) {
+                                ForEach(AIEndpoint.allCases, id: \.self) { endpoint in
+                                    Text(verbatim: endpoint.label).tag(endpoint)
+                                }
+                            } label: {
+                                EmptyView()
+                            }
+                            .labelsHidden()
+                            .fixedSize()
                         }
-                    } label: {
-                        EmptyView()
                     }
-                    .labelsHidden()
-                    .fixedSize()
+                    .frame(maxWidth: self.isEmbeddedInline ? .infinity : Self.controlWidth, alignment: .leading)
                     .help(Text(verbatim: self.draft.endpoint.hint))
-                    .onChange(of: self.draft.endpoint) { _, _ in
+                    .onChange(of: self.draft.endpoint) { _, newEndpoint in
+                        if self.draft.baseURL.lowercased().contains("opencode.ai") {
+                            self.draft.baseURL = (newEndpoint == .anthropicMessages)
+                                ? "https://opencode.ai/zen/go"
+                                : "https://opencode.ai/zen/go/v1"
+                        }
                         self.models = []
                         self.fetchError = nil
                     }
@@ -298,12 +337,30 @@ struct AIEndpointEditorView: View {
                         Text(fetchError)
                             .font(.caption)
                             .foregroundStyle(.red)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .help(fetchError)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                             .frame(maxWidth: self.isEmbeddedInline ? .infinity : Self.controlWidth, alignment: .leading)
                     }
                 }
+            }
+            
+            if let testMessage {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: self.testSucceeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(self.testSucceeded ? .green : .red)
+                        .padding(.top, 1)
+                    
+                    Text(testMessage)
+                        .font(.callout)
+                        .foregroundStyle(self.testSucceeded ? .green : .red)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background((self.testSucceeded ? Color.green : Color.red).opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             
             Divider()
@@ -319,15 +376,6 @@ struct AIEndpointEditorView: View {
                 if self.isTesting {
                     ProgressView()
                         .controlSize(.small)
-                }
-                
-                if let testMessage {
-                    Label(testMessage, systemImage: self.testSucceeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .font(.callout)
-                        .foregroundStyle(self.testSucceeded ? .green : .red)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .help(testMessage)
                 }
                 
                 Spacer()
@@ -455,9 +503,7 @@ struct AIEndpointEditorView: View {
     private var apiKeyPrompt: String {
         
         if self.draft.endpoint.requiresAPIKey {
-            String(localized: "ai.settings.apiKey.prompt",
-                   defaultValue: "sk-…",
-                   table: "AI")
+            "粘贴订阅 API Key"
         } else {
             String(localized: "ai.settings.apiKey.prompt.local",
                    defaultValue: "Leave empty for local services",

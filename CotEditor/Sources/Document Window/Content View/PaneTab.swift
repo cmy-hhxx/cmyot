@@ -80,18 +80,32 @@ enum PaneDropZone: Equatable {
     /// Whether the tab can be closed at all.
     var isClosable = true
     
+    /// Optional interactive board state when this tab has been converted into a dashboard module.
+    var boardState: PaneBoardState?
+    
+    /// Whether this tab currently hosts a modular board instead of a text editor.
+    var isBoard: Bool { self.boardState != nil }
+    
+    /// SF Symbol shown on the tab when hosting a modular board.
+    var boardSymbolName: String? { self.boardState?.kind.symbolName }
+    
     
     /// The title shown on the tab.
     var title: String {
         
-        self.document.displayName
+        if let board = self.boardState {
+            let dynamic = board.dynamicTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return dynamic.isEmpty ? board.kind.title : dynamic
+        }
+        return self.document.displayName
     }
     
     
     /// Whether the document behind the tab has unsaved changes.
     var isEdited: Bool {
         
-        self.document.hasUncommittedChanges || self.document.isDocumentEdited
+        if self.isBoard { return false }
+        return self.document.hasUncommittedChanges || self.document.isDocumentEdited
     }
     
     
@@ -129,4 +143,7 @@ enum PaneDropZone: Equatable {
     var onDetachToNewWindow: (PaneTab, NSPoint) -> Void = { _, _ in }
     var onClosePane: () -> Void = {}
     var onRequestInlineRename: ((PaneTab) -> Void)?
+    var onConvertTabToBoard: (PaneTab, PaneBoardKind) -> Void = { _, _ in }
+    var onRevertBoardToDocument: (PaneTab) -> Void = { _ in }
+    var onNewBoardTab: (PaneBoardKind) -> Void = { _ in }
 }

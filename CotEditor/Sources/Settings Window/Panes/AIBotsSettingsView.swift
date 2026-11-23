@@ -21,6 +21,7 @@
 
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - API 网关 (服务端点 · Pi 内核桥接 · 全局人设)
 
@@ -51,7 +52,7 @@ struct AIModelsSettingsView: View {
     @State private var quickConnectProvider: AIProvider? = nil
     @State private var quickConnectAPIKey: String = ""
     @State private var quickConnectModel: String = ""
-    @State private var quickConnectUseAnthropic: Bool = false
+    @State private var quickConnectProtocol: AIEndpoint = .openAIChatCompletions
     @State private var quickConnectNotice: String? = nil
     
     
@@ -139,10 +140,10 @@ struct AIModelsSettingsView: View {
     
     private var mainModelsContent: some View {
         VStack(alignment: .leading, spacing: 20) {
-            // Section 1: cc-switch 风格快速接入 (OpenCode Go 重点 + 主流预设)
+            // Section 1: BYO Subscription Presets (OpenCode Go + Mainstream)
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text(AppLanguage.text("快速接入网关", en: "Quick Switch & Presets"))
+                    Text(AppLanguage.text("自带订阅接入", en: "BYO Subscription"))
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .padding(.leading, 3)
@@ -172,33 +173,39 @@ struct AIModelsSettingsView: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 0) {
-                    // Featured Flagship Row: OpenCode Go + Top Mainstream Shortcuts
-                    HStack(spacing: 8) {
-                        self.quickPresetChip(.openCodeGo, prominent: true)
-                        self.quickPresetChip(.openAI, prominent: false)
-                        self.quickPresetChip(.anthropic, prominent: false)
-                        self.quickPresetChip(.deepSeek, prominent: false)
-                        self.quickPresetChip(.google, prominent: false)
-                        
-                        Spacer(minLength: 0)
-                        
-                        Button {
-                            self.beginAddingEndpoint()
-                        } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                Text(AppLanguage.text("自定义", en: "Custom"))
-                                    .font(.system(size: 11.5, weight: .medium))
-                            }
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 9)
-                            .frame(height: 28)
-                            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    // Balanced two-row flagship chip layout so full names display with zero ellipses
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            self.quickPresetChip(.openCodeGo, prominent: true)
+                            self.quickPresetChip(.openAI, prominent: false)
+                            self.quickPresetChip(.anthropic, prominent: false)
+                            self.quickPresetChip(.deepSeek, prominent: false)
+                            Spacer(minLength: 0)
                         }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
+                        
+                        HStack(spacing: 8) {
+                            self.quickPresetChip(.google, prominent: false)
+                            self.quickPresetChip(.openRouter, prominent: false)
+                            Spacer(minLength: 0)
+                            
+                            Button {
+                                self.beginAddingEndpoint()
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "plus")
+                                        .font(.system(size: 10.5, weight: .semibold))
+                                    Text(AppLanguage.text("自定义网关", en: "Custom"))
+                                        .font(.system(size: 11.5, weight: .medium))
+                                }
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 10)
+                                .frame(height: 28)
+                                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -206,8 +213,8 @@ struct AIModelsSettingsView: View {
                     if self.showPresetGallery {
                         self.rowDivider
                         
-                        let columns = Array(repeating: GridItem(.flexible(), spacing: 7), count: 4)
-                        LazyVGrid(columns: columns, spacing: 7) {
+                        let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
+                        LazyVGrid(columns: columns, spacing: 8) {
                             ForEach(Self.quickProviders, id: \.self) { provider in
                                 self.presetGridTile(provider)
                             }
@@ -225,15 +232,15 @@ struct AIModelsSettingsView: View {
                 .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
             }
             
-            // Section 2: 已配置网关 (cc-switch 一键切换)
+            // Section 2: Shared Global AI Subscription Gateway
             VStack(alignment: .leading, spacing: 7) {
-                HStack {
-                    Text(AppLanguage.text("已配置网关（点击一键切换）", en: "Configured Gateways"))
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(AppLanguage.text("全局 AI 订阅（全部功能共用）", en: "Active Subscription (All AI Features)"))
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .padding(.leading, 3)
                     
-                    Spacer()
+                    Spacer(minLength: 4)
                     
                     if let notice = self.quickConnectNotice {
                         Text(notice)
@@ -246,13 +253,23 @@ struct AIModelsSettingsView: View {
                 
                 VStack(spacing: 0) {
                     if self.profiles.isEmpty {
-                        VStack(spacing: 10) {
+                        VStack(spacing: 12) {
                             Image(systemName: "bolt.horizontal.circle")
                                 .font(.title2)
                                 .foregroundStyle(.tertiary)
-                            Text(AppLanguage.text("点上方 OpenCode Go 或任意预设，粘贴 Key 即可一键启用", en: "Pick a preset above to connect in one step"))
-                                .font(.system(size: 12.5, weight: .medium))
-                                .foregroundStyle(.secondary)
+                            
+                            Button {
+                                self.selectQuickConnect(.openCodeGo)
+                            } label: {
+                                Text(AppLanguage.text("接入 OpenCode Go 订阅", en: "Connect OpenCode Go"))
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 14)
+                                    .frame(height: 30)
+                                    .background(Color(hexString: AIProvider.openCodeGo.accentHex), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 24)
@@ -441,15 +458,19 @@ struct AIModelsSettingsView: View {
     private var activeEnginePill: some View {
         let activeProfile = self.profiles.first(where: { $0.id == self.activeID })
         let isUsable = activeProfile.map { $0.configuration(apiKey: AIEndpointStore.apiKey(for: $0)).isUsable } ?? false
+        let summary = activeProfile.map { profile in
+            let model = profile.displayModel ?? profile.endpoint.shortProtocolBadge
+            return "\(profile.displayName) · \(model)"
+        } ?? AppLanguage.text("未配置订阅", en: "Unconfigured")
         
         return HStack(spacing: 5) {
             Circle()
                 .fill(isUsable ? Color.green : Color.orange)
                 .frame(width: 6, height: 6)
-            Text(activeProfile?.displayName ?? AppLanguage.text("未配置网关", en: "Unconfigured"))
+            Text(summary)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(activeProfile != nil ? Color.secondary : Color.orange)
-                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.trailing, 3)
     }
@@ -469,14 +490,13 @@ struct AIModelsSettingsView: View {
                     .fill(prominent && !isSelected ? Color.white : accent)
                     .frame(width: 6, height: 6)
                 
-                Text(provider == .google ? "Gemini" : (provider == .anthropic ? "Claude" : provider.label))
+                Text(provider.label)
                     .font(.system(size: 11.5, weight: (prominent || isSelected) ? .semibold : .medium))
-                    .lineLimit(1)
                 
                 if provider.isFeatured {
-                    Text(AppLanguage.text("主打", en: "GO"))
+                    Text(AppLanguage.text("主力", en: "GO"))
                         .font(.system(size: 9, weight: .bold))
-                        .padding(.horizontal, 4)
+                        .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background(
                             (prominent && !isSelected ? Color.white.opacity(0.22) : accent.opacity(0.16)),
@@ -493,7 +513,7 @@ struct AIModelsSettingsView: View {
                     ? Color.white
                     : Color.primary.opacity(0.86)
             )
-            .padding(.horizontal, 9)
+            .padding(.horizontal, 10)
             .frame(height: 28)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -537,11 +557,10 @@ struct AIModelsSettingsView: View {
                     Text(provider.label)
                         .font(.system(size: 11.5, weight: isSelected || provider.isFeatured ? .semibold : .medium))
                         .foregroundStyle(.primary)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(provider.badgeLabel)
                         .font(.system(size: 9.5, weight: .medium))
                         .foregroundStyle(provider.isFeatured ? accent : .secondary)
-                        .lineLimit(1)
                 }
                 
                 Spacer(minLength: 2)
@@ -553,7 +572,7 @@ struct AIModelsSettingsView: View {
                 }
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(
@@ -581,6 +600,14 @@ struct AIModelsSettingsView: View {
         let accent = Color(hexString: provider.accentHex)
         let requiresKey = provider.endpoint.requiresAPIKey
         let canConnect = !requiresKey || !self.quickConnectAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let supportsMultiProtocol = (provider != .ollama && provider != .google)
+        let resolvedURL: String = if provider == .openCodeGo {
+            (self.quickConnectProtocol == .anthropicMessages)
+                ? "https://opencode.ai/zen/go"
+                : "https://opencode.ai/zen/go/v1"
+        } else {
+            provider.defaultBaseURL
+        }
         
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -591,26 +618,7 @@ struct AIModelsSettingsView: View {
                 Text(provider.label)
                     .font(.system(size: 13, weight: .semibold))
                 
-                Text(provider == .openCodeGo && self.quickConnectUseAnthropic
-                     ? "https://opencode.ai/zen/go"
-                     : provider.defaultBaseURL)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                
                 Spacer(minLength: 4)
-                
-                if provider == .openCodeGo {
-                    Picker("", selection: self.$quickConnectUseAnthropic) {
-                        Text("OpenAI 协议").tag(false)
-                        Text("Anthropic 协议").tag(true)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .controlSize(.mini)
-                    .frame(width: 158)
-                }
                 
                 Button {
                     withAnimation(.easeOut(duration: 0.15)) {
@@ -628,21 +636,33 @@ struct AIModelsSettingsView: View {
                 .pointerStyle(.link)
             }
             
-            HStack(spacing: 8) {
-                if requiresKey {
-                    SecureField(provider.apiKeyPlaceholder, text: self.$quickConnectAPIKey)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12))
-                        .onSubmit {
-                            if canConnect { self.commitQuickConnect(provider) }
-                        }
-                } else {
-                    Text(AppLanguage.text("本地模型免 API Key，直接启用", en: "No API Key needed for local runner"))
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            Text(resolvedURL)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            
+            if supportsMultiProtocol {
+                Picker("", selection: self.$quickConnectProtocol) {
+                    ForEach(AIEndpoint.subscriptionProtocols, id: \.self) { proto in
+                        Text(proto.shortProtocolBadge).tag(proto)
+                    }
                 }
-                
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+            }
+            
+            if requiresKey {
+                SecureField(provider.apiKeyPlaceholder, text: self.$quickConnectAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                    .onSubmit {
+                        if canConnect { self.commitQuickConnect(provider) }
+                    }
+            }
+            
+            HStack(spacing: 8) {
                 Menu {
                     ForEach(provider.recommendedModels, id: \.self) { m in
                         Button(m) {
@@ -650,46 +670,30 @@ struct AIModelsSettingsView: View {
                         }
                     }
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "cpu")
+                            .font(.system(size: 10))
+                            .foregroundStyle(accent)
                         Text(self.quickConnectModel.isEmpty ? provider.defaultModel : self.quickConnectModel)
                             .font(.system(size: 11.5, weight: .medium))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 8.5, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
-                    .padding(.horizontal, 9)
-                    .frame(height: 26)
-                    .frame(maxWidth: 146)
-                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
                 
-                Button {
-                    self.commitQuickConnect(provider)
-                } label: {
-                    Text(AppLanguage.text("接入并启用", en: "Connect"))
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.white)
-                        .padding(.horizontal, 12)
-                        .frame(height: 26)
-                        .background(
-                            canConnect ? accent : Color.secondary.opacity(0.35),
-                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        )
-                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(!canConnect)
-                .pointerStyle(canConnect ? .link : .default)
+                Spacer(minLength: 8)
                 
                 Button {
                     let built = provider.makeProfile(
                         modelOverride: self.quickConnectModel,
-                        useAnthropicProtocol: self.quickConnectUseAnthropic
+                        protocolOverride: supportsMultiProtocol ? self.quickConnectProtocol : nil
                     )
                     let key = self.quickConnectAPIKey
                     self.quickConnectProvider = nil
@@ -703,6 +707,24 @@ struct AIModelsSettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
+                
+                Button {
+                    self.commitQuickConnect(provider)
+                } label: {
+                    Text(AppLanguage.text("接入并设为全局订阅", en: "Connect & Activate"))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                        .padding(.horizontal, 12)
+                        .frame(height: 28)
+                        .background(
+                            canConnect ? accent : Color.secondary.opacity(0.35),
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canConnect)
+                .pointerStyle(canConnect ? .link : .default)
             }
         }
         .padding(.horizontal, 14)
@@ -719,7 +741,7 @@ struct AIModelsSettingsView: View {
                 self.quickConnectProvider = provider
                 self.quickConnectAPIKey = ""
                 self.quickConnectModel = provider.defaultModel
-                self.quickConnectUseAnthropic = false
+                self.quickConnectProtocol = provider.endpoint
             }
         }
     }
@@ -729,9 +751,10 @@ struct AIModelsSettingsView: View {
         let trimmedKey = self.quickConnectAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if provider.endpoint.requiresAPIKey && trimmedKey.isEmpty { return }
         
+        let supportsMultiProtocol = (provider != .ollama && provider != .google)
         let profile = provider.makeProfile(
             modelOverride: self.quickConnectModel,
-            useAnthropicProtocol: self.quickConnectUseAnthropic
+            protocolOverride: supportsMultiProtocol ? self.quickConnectProtocol : nil
         )
         AIEndpointStore.save(profile, apiKey: trimmedKey)
         self.activeID = profile.id
@@ -742,7 +765,7 @@ struct AIModelsSettingsView: View {
         withAnimation(.easeOut(duration: 0.18)) {
             self.quickConnectProvider = nil
             self.quickConnectAPIKey = ""
-            self.quickConnectNotice = "已接入并启用 \(profile.displayName)"
+            self.quickConnectNotice = "已接入 \(profile.displayName)"
         }
         self.reload()
         Task {
@@ -769,10 +792,11 @@ struct AIModelsSettingsView: View {
             endpointName: profile.displayName,
             baseURL: profile.baseURL
         )
-        let portrait = gijinka.flatMap { self.imageLoader.image(for: $0) }
+        let portrait = gijinka?.artworks.first.flatMap { self.imageLoader.thumbnail(for: $0, maxPixelSize: 120) }
+        let resolvedURL = profile.baseURL.isEmpty ? profile.endpoint.defaultBaseURL : profile.baseURL
         
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
                 Button {
                     self.activateEndpoint(profile)
                 } label: {
@@ -811,27 +835,17 @@ struct AIModelsSettingsView: View {
                             .help(gijinka.name)
                         }
                         
-                        VStack(alignment: .leading, spacing: 1) {
-                            HStack(spacing: 6) {
-                                Text(profile.displayName)
-                                    .font(.system(size: 13, weight: isActive ? .semibold : .medium))
-                                    .lineLimit(1)
-                                
-                                if isActive {
-                                    Text(AppLanguage.text("生效中", en: "Active"))
-                                        .font(.system(size: 9.5, weight: .semibold))
-                                        .foregroundStyle(.green)
-                                        .padding(.horizontal, 5.5)
-                                        .padding(.vertical, 1.5)
-                                        .background(Color.green.opacity(0.14), in: Capsule())
-                                }
-                            }
-                            
-                            Text(profile.baseURL.isEmpty ? profile.endpoint.defaultBaseURL : profile.baseURL)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                        Text(profile.displayName)
+                            .font(.system(size: 13.5, weight: isActive ? .semibold : .medium))
+                            .fixedSize(horizontal: false, vertical: true)
+                        
+                        if isActive {
+                            Text(AppLanguage.text("全局订阅", en: "Active"))
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .foregroundStyle(.green)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.green.opacity(0.14), in: Capsule())
                         }
                         
                         Spacer(minLength: 4)
@@ -840,54 +854,6 @@ struct AIModelsSettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
-                
-                Menu {
-                    if !fetched.isEmpty {
-                        Section(AppLanguage.text("接口实时返回", en: "Fetched Models")) {
-                            ForEach(fetched) { model in
-                                Button(model.name) {
-                                    self.switchModel(model.id, on: profile)
-                                }
-                            }
-                        }
-                    }
-                    let saved = Array(NSOrderedSet(array: profile.availableModelIDs + profile.provider.recommendedModels).compactMap { $0 as? String })
-                    if !saved.isEmpty {
-                        Section(AppLanguage.text("推荐与已保存模型", en: "Models")) {
-                            ForEach(saved, id: \.self) { modelID in
-                                Button(modelID) {
-                                    self.switchModel(modelID, on: profile)
-                                }
-                            }
-                        }
-                    }
-                    Divider()
-                    Button(AppLanguage.text("刷新模型列表", en: "Refresh Models"), systemImage: "arrow.triangle.2.circlepath") {
-                        Task { await self.fetchModels(for: profile) }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        if isFetching {
-                            ProgressView().controlSize(.mini)
-                        } else {
-                            Image(systemName: "cpu").font(.system(size: 10))
-                        }
-                        Text(profile.displayModel ?? AppLanguage.text("未选模型", en: "No Model"))
-                            .font(.system(size: 11.5))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8.5, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .frame(maxWidth: 132)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
                 
                 if isConfirmingDelete {
                     HStack(spacing: 5) {
@@ -905,7 +871,7 @@ struct AIModelsSettingsView: View {
                         .controlSize(.mini)
                     }
                 } else {
-                    HStack(spacing: 7) {
+                    HStack(spacing: 8) {
                         Button {
                             Task { await self.testEndpoint(profile) }
                         } label: {
@@ -960,35 +926,113 @@ struct AIModelsSettingsView: View {
                 }
             }
             
-            if let probe {
-                HStack(spacing: 6) {
-                    switch probe {
-                        case .running:
-                            Text(AppLanguage.text("正在测速", en: "Testing"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        case .succeeded(let reply, let latencyMs):
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                            Text("连通 · \(latencyMs) ms · \(reply)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        case .failed(let msg):
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
-                            Text(msg)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                                .lineLimit(2)
+            VStack(alignment: .leading, spacing: 7) {
+                Text(resolvedURL)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                
+                if AIEndpoint.subscriptionProtocols.contains(profile.endpoint) {
+                    Picker("", selection: Binding(
+                        get: { profile.endpoint },
+                        set: { self.switchProtocol($0, on: profile) }
+                    )) {
+                        ForEach(AIEndpoint.subscriptionProtocols, id: \.self) { proto in
+                            Text(proto.shortProtocolBadge).tag(proto)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                } else {
+                    Text(profile.endpoint.shortProtocolBadge)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.primary.opacity(0.06), in: Capsule())
+                }
+                
+                Menu {
+                    if !fetched.isEmpty {
+                        Section(AppLanguage.text("接口实时返回", en: "Fetched Models")) {
+                            ForEach(fetched) { model in
+                                Button(model.name) {
+                                    self.switchModel(model.id, on: profile)
+                                }
+                            }
+                        }
+                    }
+                    let saved = Array(NSOrderedSet(array: profile.availableModelIDs + profile.provider.recommendedModels).compactMap { $0 as? String })
+                    if !saved.isEmpty {
+                        Section(AppLanguage.text("推荐与已保存模型", en: "Models")) {
+                            ForEach(saved, id: \.self) { modelID in
+                                Button(modelID) {
+                                    self.switchModel(modelID, on: profile)
+                                }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button(AppLanguage.text("刷新模型列表", en: "Refresh Models"), systemImage: "arrow.triangle.2.circlepath") {
+                        Task { await self.fetchModels(for: profile) }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        if isFetching {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "cpu").font(.system(size: 10))
+                                .foregroundStyle(providerAccent)
+                        }
+                        Text(profile.displayModel ?? AppLanguage.text("未选模型", en: "No Model"))
+                            .font(.system(size: 11.5, weight: .medium))
+                            .fixedSize(horizontal: false, vertical: true)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                
+                if let probe {
+                    HStack(alignment: .top, spacing: 6) {
+                        switch probe {
+                            case .running:
+                                Text(AppLanguage.text("正在测速", en: "Testing"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            case .succeeded(let reply, let latencyMs):
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                Text("连通 · \(latencyMs) ms · \(reply)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+                            case .failed(let msg):
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                Text(msg)
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+                        }
                     }
                 }
-                .padding(.leading, 26)
             }
+            .padding(.leading, 26)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .frame(minHeight: 40)
+        .padding(.vertical, 11)
+        .frame(minHeight: 44)
     }
     
     
@@ -1054,6 +1098,23 @@ struct AIModelsSettingsView: View {
             AIEndpointStore.activeID = profile.id
         }
         CotLocalDatabase.shared.syncAIEndpointsToDatabase()
+        self.endpointStatus[profile.id] = nil
+        self.reload()
+    }
+    
+    
+    private func switchProtocol(_ newEndpoint: AIEndpoint, on profile: AIEndpointProfile) {
+        guard profile.endpoint != newEndpoint else { return }
+        var updated = profile
+        updated.endpoint = newEndpoint
+        if profile.provider == .openCodeGo {
+            updated.baseURL = (newEndpoint == .anthropicMessages)
+                ? "https://opencode.ai/zen/go"
+                : "https://opencode.ai/zen/go/v1"
+        }
+        AIEndpointStore.save(updated, apiKey: AIEndpointStore.apiKey(for: profile))
+        CotLocalDatabase.shared.syncAIEndpointsToDatabase()
+        _ = try? self.piKernel.syncWorkspace()
         self.endpointStatus[profile.id] = nil
         self.reload()
     }
@@ -1149,9 +1210,12 @@ struct AIBotsSettingsView: View {
     /// so entering the Agents pane matches all other panes flush edge-to-edge with zero geometry jump.
     private static let fixedStageWidth: CGFloat = 527
     
+    var settingsState: SidebarSettingsState? = nil
+    
     @Environment(\.colorScheme) private var colorScheme
     
     @State private var botStore = AIBotStore.shared
+    @State private var butlerManager = CotButlerManager.shared
     @State private var analytics = AnalyticsManager.shared
     @State private var imageLoader = AIGijinkaImageLoader.shared
     @State private var piKernel = PiKernelManager.shared
@@ -1184,11 +1248,38 @@ struct AIBotsSettingsView: View {
         .onAppear {
             self.reload()
             self.prefetchResolvedCharacters()
+            self.consumePendingBotSelection()
+        }
+        .onChange(of: self.settingsState?.pendingBotID) { _, _ in
+            self.consumePendingBotSelection()
         }
         .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
             self.reload()
             self.prefetchResolvedCharacters()
         }
+    }
+    
+    
+    private func consumePendingBotSelection() {
+        guard let pending = self.settingsState?.pendingBotID else { return }
+        self.inspectingBot = pending
+        self.settingsState?.pendingBotID = nil
+    }
+    
+    
+    private func botDisplayTitle(for botID: AIBotID) -> String {
+        if botID == .butler {
+            return "\(self.butlerManager.name) · \(botID.displayName)"
+        }
+        return botID.displayName
+    }
+    
+    
+    private func botPortraitImage(for botID: AIBotID, artwork: AIGijinkaArtwork?, maxPixelSize: CGFloat) -> NSImage? {
+        if botID == .butler, let custom = self.butlerManager.customAvatarImage {
+            return custom
+        }
+        return artwork.flatMap { self.imageLoader.thumbnail(for: $0, maxPixelSize: maxPixelSize) }
     }
     
     
@@ -1228,6 +1319,10 @@ struct AIBotsSettingsView: View {
             return character.artwork(for: botID, variantOverride: config.artworkVariantIndex)
         }
         self.imageLoader.prefetch(artworks)
+        for artwork in artworks {
+            _ = self.imageLoader.thumbnail(for: artwork, maxPixelSize: 440)
+            _ = self.imageLoader.thumbnail(for: artwork, maxPixelSize: 120)
+        }
     }
     
     
@@ -1266,8 +1361,11 @@ struct AIBotsSettingsView: View {
                 ForEach(BotCollectionLayoutMode.allCases) { mode in
                     let isSelected = (self.layoutMode == mode)
                     Button {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.36)) {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.32)) {
                             self.layoutMode = mode
+                            if mode == .pack, self.hoveredBotID == nil {
+                                self.hoveredBotID = bots.first
+                            }
                         }
                     } label: {
                         HStack(spacing: 5) {
@@ -1355,10 +1453,17 @@ struct AIBotsSettingsView: View {
                         
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
-                                Text(focusedPackBot.displayName)
+                                Text(self.botDisplayTitle(for: focusedPackBot))
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(.primary)
-                                if let focusedChar {
+                                if focusedPackBot == .butler {
+                                    Text("@\(self.butlerManager.nickname)")
+                                        .font(.system(size: 10.5, weight: .medium))
+                                        .foregroundStyle(focusedAccent)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 1.5)
+                                        .background(focusedAccent.opacity(0.14), in: Capsule())
+                                } else if let focusedChar {
                                     Text(focusedChar.name)
                                         .font(.system(size: 10.5, weight: .medium))
                                         .foregroundStyle(focusedAccent)
@@ -1404,6 +1509,35 @@ struct AIBotsSettingsView: View {
                 }
             }
             .frame(width: Self.fixedStageWidth, height: stageHeight, alignment: .topLeading)
+            .onContinuousHover(coordinateSpace: .local) { phase in
+                guard self.layoutMode == .pack else { return }
+                switch phase {
+                    case .active(let loc):
+                        guard loc.y <= 232, !bots.isEmpty else { return }
+                        let total = bots.count
+                        let bestIdx = (0..<total).min { lhs, rhs in
+                            abs(loc.x - self.packRestCenterX(index: lhs, total: total))
+                                < abs(loc.x - self.packRestCenterX(index: rhs, total: total))
+                        } ?? 0
+                        let currentIdx = self.hoveredBotID.flatMap { bots.firstIndex(of: $0) }
+                        let resolvedIdx: Int
+                        if let currentIdx, currentIdx != bestIdx {
+                            let currentDist = abs(loc.x - self.packRestCenterX(index: currentIdx, total: total))
+                            let bestDist = abs(loc.x - self.packRestCenterX(index: bestIdx, total: total))
+                            resolvedIdx = (bestDist + 6.0 < currentDist) ? bestIdx : currentIdx
+                        } else {
+                            resolvedIdx = bestIdx
+                        }
+                        let nextBot = bots[resolvedIdx]
+                        if self.hoveredBotID != nextBot {
+                            withAnimation(.spring(response: 0.22, dampingFraction: 0.88)) {
+                                self.hoveredBotID = nextBot
+                            }
+                        }
+                    case .ended:
+                        break
+                }
+            }
             
             HStack(spacing: 6) {
                 Circle()
@@ -1413,12 +1547,19 @@ struct AIBotsSettingsView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text(AppLanguage.text("角色形象随所选网关与模型自动切换", en: "Personas follow selected gateway & model"))
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.tertiary)
             }
             .padding(.top, 2)
         }
+    }
+    
+    
+    private func packRestCenterX(index: Int, total: Int) -> CGFloat {
+        let artWidth: CGFloat = 104
+        let maxDeckSpan = Self.fixedStageWidth - artWidth - 52
+        let spread = total > 1 ? min(45.0, maxDeckSpan / CGFloat(total - 1)) : 0
+        let mid = Double(total - 1) * 0.5
+        let offsetIndex = Double(index) - mid
+        return Self.fixedStageWidth * 0.5 + CGFloat(offsetIndex) * spread
     }
     
     
@@ -1438,7 +1579,11 @@ struct AIBotsSettingsView: View {
         let character = self.resolvedCharacter(for: botID, config: config)
         let artwork = character?.artwork(for: botID, variantOverride: config.artworkVariantIndex)
         let accent = Color(hexString: character?.accentHex ?? botID.accentHex)
-        let portrait = artwork.flatMap { self.imageLoader.image(for: $0) }
+        let portrait = self.botPortraitImage(
+            for: botID,
+            artwork: artwork,
+            maxPixelSize: self.layoutMode == .list ? 120 : 440
+        )
         let effectiveModelLabel = config.modelOverride.isEmpty
             ? (endpoint?.displayModel ?? AppLanguage.text("未选择模型", en: "No Model"))
             : config.modelOverride
@@ -1478,25 +1623,24 @@ struct AIBotsSettingsView: View {
                 rotation = 0
                 packScale = 1.0
             case .pack:
-                artWidth = 112
-                artHeight = 148
+                artWidth = 104
+                artHeight = 140
                 artCorner = 13
                 itemWidth = artWidth
                 itemHeight = artHeight
-                // Fit fanned deck cleanly inside fixedStageWidth (525pt) with zero edge clipping
-                let maxDeckSpan = Self.fixedStageWidth - artWidth - 56
-                let spread = total > 1 ? min(44.0, maxDeckSpan / CGFloat(total - 1)) : 0
+                // Fit fanned deck cleanly inside fixedStageWidth (527pt) with monotonic rest centers
+                let maxDeckSpan = Self.fixedStageWidth - artWidth - 52
+                let spread = total > 1 ? min(45.0, maxDeckSpan / CGFloat(total - 1)) : 0
                 let mid = Double(total - 1) * 0.5
                 let offsetIndex = Double(index) - mid
                 var fanShift: CGFloat = 0
                 if let hIdx = hoveredIndex, hIdx != index {
-                    fanShift = index < hIdx ? -18.0 : 18.0
+                    fanShift = index < hIdx ? -12.0 : 12.0
                 }
                 posX = (Self.fixedStageWidth - artWidth) * 0.5 + CGFloat(offsetIndex) * spread + fanShift
-                // Generous vertical headroom (baseY = 38) so rotated corners never clip top or bottom
-                posY = 38.0 + abs(CGFloat(offsetIndex)) * 3.2 - (isHovered ? 12.0 : 0.0)
-                rotation = isHovered ? 0.0 : offsetIndex * 3.2
-                packScale = isHovered ? 1.05 : 1.0
+                posY = 38.0 + abs(CGFloat(offsetIndex)) * 2.8 - (isHovered ? 12.0 : 0.0)
+                rotation = isHovered ? 0.0 : offsetIndex * 2.8
+                packScale = isHovered ? 1.055 : 1.0
         }
         
         return ZStack(alignment: .topLeading) {
@@ -1548,7 +1692,7 @@ struct AIBotsSettingsView: View {
                             Circle()
                                 .fill(config.isEnabled ? accent : Color.white.opacity(0.4))
                                 .frame(width: 5, height: 5)
-                            Text(botID.displayName)
+                            Text(botID == .butler ? self.butlerManager.name : botID.displayName)
                                 .font(.system(size: 10.5, weight: .semibold))
                                 .foregroundStyle(Color.white)
                                 .lineLimit(1)
@@ -1581,6 +1725,7 @@ struct AIBotsSettingsView: View {
             }
             .frame(width: artWidth, height: artHeight)
             .clipShape(RoundedRectangle(cornerRadius: artCorner, style: .continuous))
+            .drawingGroup(opaque: false)
             .overlay(
                 RoundedRectangle(cornerRadius: artCorner, style: .continuous)
                     .strokeBorder(
@@ -1589,9 +1734,9 @@ struct AIBotsSettingsView: View {
                     )
             )
             .shadow(
-                color: Color.black.opacity(self.layoutMode == .pack ? (isHovered ? 0.28 : 0.16) : 0.05),
-                radius: self.layoutMode == .pack ? (isHovered ? 14 : 7) : 3,
-                y: self.layoutMode == .pack ? (isHovered ? 8 : 3) : 1
+                color: Color.black.opacity(self.layoutMode == .pack ? 0.20 : 0.05),
+                radius: self.layoutMode == .pack ? 7 : 3,
+                y: self.layoutMode == .pack ? 3 : 1
             )
             .scaleEffect(packScale)
             .rotationEffect(.degrees(rotation))
@@ -1607,10 +1752,17 @@ struct AIBotsSettingsView: View {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 6) {
-                            Text(botID.displayName)
+                            Text(self.botDisplayTitle(for: botID))
                                 .font(.system(size: 13.5, weight: .semibold))
                                 .foregroundStyle(config.isEnabled ? .primary : .secondary)
-                            if let character {
+                            if botID == .butler {
+                                Text("@\(self.butlerManager.nickname)")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(accent)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1.5)
+                                    .background(accent.opacity(self.colorScheme == .dark ? 0.16 : 0.10), in: Capsule())
+                            } else if let character {
                                 Text(character.name)
                                     .font(.system(size: 11, weight: .medium))
                                     .foregroundStyle(accent)
@@ -1673,7 +1825,7 @@ struct AIBotsSettingsView: View {
             if self.layoutMode == .card {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 5) {
-                        Text(botID.displayName)
+                        Text(self.botDisplayTitle(for: botID))
                             .font(.system(size: 12.5, weight: .semibold))
                             .foregroundStyle(config.isEnabled ? .primary : .secondary)
                             .lineLimit(1)
@@ -1685,7 +1837,7 @@ struct AIBotsSettingsView: View {
                             .frame(width: 6.5, height: 6.5)
                     }
                     
-                    Text(character?.name ?? effectiveModelLabel)
+                    Text(botID == .butler ? "@\(self.butlerManager.nickname)" : (character?.name ?? effectiveModelLabel))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -1703,20 +1855,21 @@ struct AIBotsSettingsView: View {
         .offset(x: posX, y: posY)
         .zIndex(Double(index) + (isHovered && self.layoutMode == .pack ? 50 : 0))
         .onHover { hovering in
+            guard self.layoutMode != .pack else { return }
             if hovering {
                 if self.hoveredBotID != botID {
-                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
                         self.hoveredBotID = botID
                     }
                 }
-            } else if self.hoveredBotID == botID && self.layoutMode != .pack {
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+            } else if self.hoveredBotID == botID {
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.15)) {
                     self.hoveredBotID = nil
                 }
             }
         }
         .pointerStyle(.link)
-        .help(character.map { "\(botID.displayName) · \($0.name)" } ?? "\(botID.displayName) · \(effectiveModelLabel)")
+        .help(character.map { "\(self.botDisplayTitle(for: botID)) · \($0.name)" } ?? "\(self.botDisplayTitle(for: botID)) · \(effectiveModelLabel)")
     }
     
     
@@ -1800,6 +1953,7 @@ private struct AIBotInlineInspectorView: View {
     var onEndpointsUpdated: () -> Void = {}
     
     @State private var botStore = AIBotStore.shared
+    @State private var butlerManager = CotButlerManager.shared
     @State private var analytics = AnalyticsManager.shared
     @State private var imageLoader = AIGijinkaImageLoader.shared
     @State private var config: AIBotConfig = AIBotConfig()
@@ -1876,7 +2030,14 @@ private struct AIBotInlineInspectorView: View {
         let character = self.resolvedCharacter
         let artwork = character?.artwork(for: self.botID, variantOverride: self.config.artworkVariantIndex)
         let accent = Color(hexString: character?.accentHex ?? self.botID.accentHex)
-        let portrait = artwork.flatMap { self.imageLoader.image(for: $0) }
+        let portrait: NSImage? = if self.botID == .butler, let custom = self.butlerManager.customAvatarImage {
+            custom
+        } else {
+            artwork.flatMap { self.imageLoader.thumbnail(for: $0, maxPixelSize: 440) }
+        }
+        let headerTitle = self.botID == .butler
+            ? "\(self.butlerManager.name) · @\(self.butlerManager.nickname)"
+            : self.botID.displayName
         let modelLabel = self.config.modelOverride.isEmpty
             ? (endpoint?.displayModel ?? AppLanguage.text("未选择模型", en: "No Model"))
             : self.config.modelOverride
@@ -1916,7 +2077,7 @@ private struct AIBotInlineInspectorView: View {
                 )
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(self.botID.displayName)
+                    Text(headerTitle)
                         .font(.system(size: 15, weight: .semibold))
                     Text(character.map { "\($0.name) · \(modelLabel)" } ?? modelLabel)
                         .font(.system(size: 12))
@@ -1928,8 +2089,12 @@ private struct AIBotInlineInspectorView: View {
                             Button {
                                 self.config.artworkVariantIndex = nil
                                 self.saveBotConfig()
+                                if self.botID == .butler {
+                                    self.butlerManager.setCustomAvatarData(nil)
+                                    self.butlerManager.syncArtworkVariant(nil)
+                                }
                             } label: {
-                                if self.config.artworkVariantIndex == nil {
+                                if self.config.artworkVariantIndex == nil && (self.botID != .butler || self.butlerManager.customAvatarImage == nil) {
                                     Label(AppLanguage.text("自动分配形象", en: "Auto Variant"), systemImage: "checkmark")
                                 } else {
                                     Text(AppLanguage.text("自动分配形象", en: "Auto Variant"))
@@ -1940,8 +2105,12 @@ private struct AIBotInlineInspectorView: View {
                                 Button {
                                     self.config.artworkVariantIndex = idx
                                     self.saveBotConfig()
+                                    if self.botID == .butler {
+                                        self.butlerManager.setCustomAvatarData(nil)
+                                        self.butlerManager.syncArtworkVariant(idx)
+                                    }
                                 } label: {
-                                    if artwork?.id == item.id && self.config.artworkVariantIndex != nil {
+                                    if artwork?.id == item.id && self.config.artworkVariantIndex != nil && (self.botID != .butler || self.butlerManager.customAvatarImage == nil) {
                                         Label(item.title, systemImage: "checkmark")
                                     } else {
                                         Text(item.title)
@@ -2075,8 +2244,7 @@ private struct AIBotInlineInspectorView: View {
                             Text("\(endpointTag) · \(modelLabel)")
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(.primary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                                .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 4)
                             Image(systemName: "chevron.up.chevron.down")
                                 .font(.system(size: 9.5, weight: .semibold))
@@ -2160,6 +2328,10 @@ private struct AIBotInlineInspectorView: View {
                 }
             }
             
+            if self.botID == .butler {
+                self.butlerIdentityControls(accent: accent)
+            }
+            
             if self.botID == .ghost {
                 self.ghostControls
             }
@@ -2239,6 +2411,12 @@ private struct AIBotInlineInspectorView: View {
             HStack {
                 Button("全部恢复默认", role: .destructive) {
                     self.botStore.resetBotToDefaults(self.botID)
+                    if self.botID == .butler {
+                        self.butlerManager.name = "曜"
+                        self.butlerManager.nickname = "总管"
+                        self.butlerManager.setCustomAvatarData(nil)
+                        self.butlerManager.syncArtworkVariant(nil)
+                    }
                     self.loadInitialState()
                 }
                 .controlSize(.small)
@@ -2250,6 +2428,72 @@ private struct AIBotInlineInspectorView: View {
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
         .onAppear {
             self.loadInitialState()
+        }
+    }
+    
+    
+    private func butlerIdentityControls(accent: Color) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Text(AppLanguage.text("总管名称", en: "Name"))
+                    .font(.system(size: 12.5, weight: .medium))
+                    .frame(width: 66, alignment: .leading)
+                
+                TextField("曜", text: self.$butlerManager.name)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                
+                Text(AppLanguage.text("昵称", en: "Nick"))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                
+                TextField("总管", text: self.$butlerManager.nickname)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                    .frame(width: 112)
+            }
+            
+            HStack(spacing: 10) {
+                Text(AppLanguage.text("总管头像", en: "Avatar"))
+                    .font(.system(size: 12.5, weight: .medium))
+                    .frame(width: 66, alignment: .leading)
+                
+                Button {
+                    self.pickButlerCustomAvatar()
+                } label: {
+                    Label(AppLanguage.text("上传头像", en: "Upload Avatar"), systemImage: "photo.badge.plus")
+                        .font(.system(size: 11.5, weight: .medium))
+                }
+                .controlSize(.small)
+                
+                if self.butlerManager.customAvatarImage != nil {
+                    Button(AppLanguage.text("恢复立绘", en: "Reset Art")) {
+                        self.butlerManager.setCustomAvatarData(nil)
+                    }
+                    .controlSize(.small)
+                }
+                
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(10)
+        .background(accent.opacity(0.06), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(accent.opacity(0.18), lineWidth: 0.75))
+    }
+    
+    
+    private func pickButlerCustomAvatar() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.image]
+        panel.begin { response in
+            guard response == .OK,
+                  let url = panel.url,
+                  let data = try? Data(contentsOf: url)
+            else { return }
+            self.butlerManager.setCustomAvatarData(data)
         }
     }
     

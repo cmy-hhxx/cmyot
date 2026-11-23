@@ -766,7 +766,7 @@ private extension NSViewController {
 
 private extension NSToolbar.Identifier {
     
-    static let document = Self("Document.personal.12")
+    static let document = Self("Document.personal.13")
     static let directoryDocument = Self("DirectoryDocument")
 }
 
@@ -781,6 +781,7 @@ private extension NSToolbarItem.Identifier {
     static let appearanceMode = Self(Self.prefix + "appearanceMode")
     static let weeklyReportCenter = Self(Self.prefix + "weeklyReportCenter")
     static let documentCenter = Self(Self.prefix + "documentCenter")
+    static let butlerBot = Self(Self.prefix + "butlerBot")
     static let pinnedTodos = Self(Self.prefix + "pinnedTodos")
     static let userProfile = Self(Self.prefix + "userProfile")
     static let textScale = Self(Self.prefix + "textScale")
@@ -847,6 +848,7 @@ extension DocumentWindowController: NSToolbarDelegate {
             .aiSettings,
             .settings,
             .flexibleSpace,
+            .butlerBot,
             .pinnedTodos,
             .userProfile,
         ])
@@ -871,6 +873,7 @@ extension DocumentWindowController: NSToolbarDelegate {
             .aiSettings,
             .settings,
             .flexibleSpace,
+            .butlerBot,
             .pinnedTodos,
             .userProfile,
         ]
@@ -892,6 +895,7 @@ extension DocumentWindowController: NSToolbarDelegate {
             .terminal,
             .aiSettings,
             .settings,
+            .butlerBot,
             .pinnedTodos,
             .space,
             .flexibleSpace,
@@ -977,6 +981,15 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.stateImages[.on] = WorkspaceCenterIcons.analyticsDashboardIcon(isActive: true)
                 item.action = #selector(ContentViewController.toggleAnalyticsDashboard(_:))
                 item.isNavigational = true
+                item.visibilityPriority = .high
+                return item
+                
+            case .butlerBot:
+                let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+                item.label = AppLanguage.text("管家", en: "Butler")
+                item.toolTip = AppLanguage.text("总管家 Bot：全局记忆、资产与助手调优", en: "Chief Butler Bot")
+                item.view = ToolbarButlerBotButtonView()
+                item.isNavigational = false
                 item.visibilityPriority = .high
                 return item
                 

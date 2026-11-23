@@ -588,10 +588,12 @@ final class AIHotNewsService {
     private(set) var streamingChatItemID: String? = nil
     private(set) var chatErrorMessage: String? = nil
     
-    private var inFlightCoverIDs: Set<String> = []
-    private var resolvedNoCoverIDs: Set<String> = []
-    private var fetchedDetailIDs: Set<String> = []
-    private var preloadTask: Task<Void, Never>?
+    @ObservationIgnored private var checkedDiskCoverIDs: Set<String> = []
+    @ObservationIgnored private var checkedDiskArticleIDs: Set<String> = []
+    @ObservationIgnored private var inFlightCoverIDs: Set<String> = []
+    @ObservationIgnored private var resolvedNoCoverIDs: Set<String> = []
+    @ObservationIgnored private var fetchedDetailIDs: Set<String> = []
+    @ObservationIgnored private var preloadTask: Task<Void, Never>?
     private let database: CotLocalDatabase
     private let coverCacheDirectory: URL
     private let articleCacheDirectory: URL
@@ -728,13 +730,19 @@ final class AIHotNewsService {
         if let embedded = item.contentBlocks, !embedded.isEmpty {
             return Self.sanitizedArticleBlocks(embedded)
         }
-        let diskURL = self.diskArticleURL(for: item)
-        if let data = try? Data(contentsOf: diskURL),
-           let decoded = try? JSONDecoder().decode(NewsArticleContent.self, from: data),
-           !decoded.blocks.isEmpty
-        {
-            self.articleContents[item.id] = decoded
-            return Self.sanitizedArticleBlocks(decoded.blocks)
+        if !self.checkedDiskArticleIDs.contains(item.id) {
+            self.checkedDiskArticleIDs.insert(item.id)
+            let itemID = item.id
+            let diskURL = self.diskArticleURL(for: item)
+            Task.detached(priority: .userInitiated) { [weak self] in
+                guard let data = try? Data(contentsOf: diskURL),
+                      let decoded = try? JSONDecoder().decode(NewsArticleContent.self, from: data),
+                      !decoded.blocks.isEmpty
+                else { return }
+                await MainActor.run {
+                    self?.articleContents[itemID] = decoded
+                }
+            }
         }
         return []
     }
@@ -781,8 +789,25 @@ final class AIHotNewsService {
     
     
     func fetchArticleExcerptIfNeeded(for item: AIHotNewsItem) async {
-        // Check embedded or disk-cached full blocks first
-        if !self.resolvedArticleBlocks(for: item).isEmpty {
+        if let loaded = self.articleContents[item.id]?.blocks, !loaded.isEmpty {
+            self.fetchedDetailIDs.insert(item.id)
+            return
+        }
+        if let embedded = item.contentBlocks, !embedded.isEmpty {
+            self.fetchedDetailIDs.insert(item.id)
+            return
+        }
+        self.checkedDiskArticleIDs.insert(item.id)
+        let diskURL = self.diskArticleURL(for: item)
+        let diskCached: NewsArticleContent? = await Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: diskURL),
+                  let decoded = try? JSONDecoder().decode(NewsArticleContent.self, from: data),
+                  !decoded.blocks.isEmpty
+            else { return nil }
+            return decoded
+        }.value
+        if let diskCached {
+            self.articleContents[item.id] = diskCached
             self.fetchedDetailIDs.insert(item.id)
             return
         }
@@ -798,7 +823,6 @@ final class AIHotNewsService {
             self.fetchedDetailIDs.insert(item.id)
         }
         
-        let diskURL = self.diskArticleURL(for: item)
         let fetched = await Self.fetchFullArticleAndMeta(from: pageURL)
         guard !Task.isCancelled else { return }
         
@@ -992,31 +1016,31 @@ final class AIHotNewsService {
         self.chatHistories[itemID] = history
         self.streamingChatItemID = itemID
         
-        // Smooth typewriter reveal state: chunks land in `targetBuffer`, ticker glides `shownCount` smoothly
+        // Smooth ~30fps typewriter reveal state without per-tick Array(targetBuffer) copies
         var targetBuffer = ""
-        var shownCount = 0
+        var shownOffset = 0
         var streamDone = false
         
         let typewriterTask = Task { @MainActor [weak self] in
             while let self {
-                let targetChars = Array(targetBuffer)
-                if shownCount < targetChars.count {
-                    let backlog = targetChars.count - shownCount
+                let totalCount = targetBuffer.count
+                if shownOffset < totalCount {
+                    let backlog = totalCount - shownOffset
                     let step: Int = if streamDone {
-                        max(4, min(20, (backlog + 3) / 4))
+                        max(6, min(28, (backlog + 2) / 3))
                     } else if backlog > 48 {
-                        6
+                        10
                     } else if backlog > 18 {
-                        3
+                        5
                     } else {
-                        2
+                        3
                     }
-                    shownCount = min(targetChars.count, shownCount + step)
-                    self.updateAssistantMessage(id: assistantID, itemID: itemID, text: String(targetChars.prefix(shownCount)))
+                    shownOffset = min(totalCount, shownOffset + step)
+                    self.updateAssistantMessage(id: assistantID, itemID: itemID, text: String(targetBuffer.prefix(shownOffset)))
                 } else if streamDone {
                     break
                 }
-                try? await Task.sleep(for: .milliseconds(18))
+                try? await Task.sleep(for: .milliseconds(34))
                 if Task.isCancelled { break }
             }
         }
@@ -1071,8 +1095,8 @@ final class AIHotNewsService {
             streamDone = true
             // Let the typewriter gracefully finish the final few characters (~0.35s max)
             let deadline = Date().addingTimeInterval(0.35)
-            while shownCount < finalClean.count && Date() < deadline {
-                try? await Task.sleep(for: .milliseconds(16))
+            while shownOffset < finalClean.count && Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(34))
             }
             typewriterTask.cancel()
             self.updateAssistantMessage(id: assistantID, itemID: itemID, text: finalClean)
@@ -1180,12 +1204,25 @@ final class AIHotNewsService {
         if let cached = self.coverImages[item.id] {
             return cached
         }
-        let diskURL = self.diskCoverURL(for: item)
-        if let diskImage = Self.retinaAwareImage(fromFileAt: diskURL) {
-            self.coverImages[item.id] = diskImage
-            return diskImage
+        if !self.checkedDiskCoverIDs.contains(item.id),
+           !self.inFlightCoverIDs.contains(item.id),
+           !self.resolvedNoCoverIDs.contains(item.id)
+        {
+            self.checkedDiskCoverIDs.insert(item.id)
+            let itemID = item.id
+            let diskURL = self.diskCoverURL(for: item)
+            Task.detached(priority: .utility) { [weak self] in
+                let diskImage = Self.downsampledThumbnail(fromFileAt: diskURL, maxPixelSize: Self.retinaCoverMaxPixelSize)
+                await MainActor.run {
+                    guard let self else { return }
+                    if let diskImage {
+                        self.coverImages[itemID] = diskImage
+                    } else {
+                        self.triggerCoverLoadIfNeeded(for: item)
+                    }
+                }
+            }
         }
-        self.triggerCoverLoadIfNeeded(for: item)
         return nil
     }
     
@@ -1277,7 +1314,7 @@ final class AIHotNewsService {
                             
                             if work.needsCover,
                                FileManager.default.fileExists(atPath: work.diskURL.path),
-                               let diskImage = Self.retinaAwareImage(fromFileAt: work.diskURL)
+                               let diskImage = Self.downsampledThumbnail(fromFileAt: work.diskURL, maxPixelSize: Self.retinaCoverMaxPixelSize)
                             {
                                 loadedCover = diskImage
                             }
@@ -1663,7 +1700,7 @@ final class AIHotNewsService {
     
     // MARK: Real Post Cover Thumbnail Loader (Retina High-DPI Cover + og:image Fallback)
     
-    nonisolated static let retinaCoverMaxPixelSize: CGFloat = 1080
+    nonisolated static let retinaCoverMaxPixelSize: CGFloat = 560
     
     
     private func diskCoverURL(for item: AIHotNewsItem) -> URL {
@@ -1685,7 +1722,7 @@ final class AIHotNewsService {
         let diskURL = self.diskCoverURL(for: item)
         self.inFlightCoverIDs.insert(itemID)
         
-        Task.detached(priority: .utility) {
+        Task.detached(priority: .utility) { [weak self] in
             var resolvedImageURL = directCoverURL
             if resolvedImageURL == nil, let pageURL {
                 resolvedImageURL = await Self.fetchOpenGraphCoverURL(from: pageURL)
@@ -1693,8 +1730,8 @@ final class AIHotNewsService {
             
             guard let imgURL = resolvedImageURL else {
                 await MainActor.run {
-                    _ = AIHotNewsService.shared.inFlightCoverIDs.remove(itemID)
-                    _ = AIHotNewsService.shared.resolvedNoCoverIDs.insert(itemID)
+                    _ = self?.inFlightCoverIDs.remove(itemID)
+                    _ = self?.resolvedNoCoverIDs.insert(itemID)
                 }
                 return
             }
@@ -1710,8 +1747,8 @@ final class AIHotNewsService {
                   let thumbnail = Self.downsampledThumbnail(from: data, maxPixelSize: Self.retinaCoverMaxPixelSize)
             else {
                 await MainActor.run {
-                    _ = AIHotNewsService.shared.inFlightCoverIDs.remove(itemID)
-                    _ = AIHotNewsService.shared.resolvedNoCoverIDs.insert(itemID)
+                    _ = self?.inFlightCoverIDs.remove(itemID)
+                    _ = self?.resolvedNoCoverIDs.insert(itemID)
                 }
                 return
             }
@@ -1721,13 +1758,14 @@ final class AIHotNewsService {
             }
             
             await MainActor.run {
-                AIHotNewsService.shared.coverImages[itemID] = thumbnail
-                if let idx = AIHotNewsService.shared.items.firstIndex(where: { $0.id == itemID }),
-                   AIHotNewsService.shared.items[idx].coverURLString == nil
+                guard let self else { return }
+                self.coverImages[itemID] = thumbnail
+                if let idx = self.items.firstIndex(where: { $0.id == itemID }),
+                   self.items[idx].coverURLString == nil
                 {
-                    AIHotNewsService.shared.items[idx].coverURLString = imgURL.absoluteString
+                    self.items[idx].coverURLString = imgURL.absoluteString
                 }
-                _ = AIHotNewsService.shared.inFlightCoverIDs.remove(itemID)
+                _ = self.inFlightCoverIDs.remove(itemID)
             }
         }
     }
@@ -1805,6 +1843,24 @@ final class AIHotNewsService {
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
             return NSImage(data: data)
+        }
+        let scale: CGFloat = cg.width >= 360 ? 2.0 : 1.0
+        return NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width) / scale, height: CGFloat(cg.height) / scale))
+    }
+    
+    
+    nonisolated static func downsampledThumbnail(fromFileAt url: URL, maxPixelSize: CGFloat = AIHotNewsService.retinaCoverMaxPixelSize) -> NSImage? {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil)
+        else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
         }
         let scale: CGFloat = cg.width >= 360 ? 2.0 : 1.0
         return NSImage(cgImage: cg, size: NSSize(width: CGFloat(cg.width) / scale, height: CGFloat(cg.height) / scale))

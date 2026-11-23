@@ -404,6 +404,13 @@ extension Logger {
     }
     
     
+    /// Opens the Bots Settings pane and optionally inspects a specific Bot (e.g. `.butler`).
+    func openBotSettings(selecting botID: AIBotID? = nil) {
+        
+        self.settingsWindowController.openBot(botID)
+    }
+    
+    
     /// Opens the settings window at the AI pane.
     ///
     /// - Parameter sender: The action sender.

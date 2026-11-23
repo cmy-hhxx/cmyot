@@ -133,6 +133,9 @@ import AppKit
         self.newTabButton.target = self
         self.newTabButton.action = #selector(addNewTab(_:))
         self.newTabButton.toolTip = AppLanguage.text("新建标签页", en: "New Tab")
+        self.newTabButton.menuProvider = { [weak self] _ in
+            self?.newTabContextMenu()
+        }
         self.documentContainer.addSubview(self.newTabButton)
         
         self.insertionIndicator.wantsLayer = true
@@ -612,7 +615,59 @@ import AppKit
     }
     
     
-    // MARK: Tab Context Menu
+    // MARK: Tab & '+' Context Menus
+    
+    func newTabContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        
+        if let activeTab = self.state?.selectedTab {
+            for kind in PaneBoardKind.allCases {
+                let title = AppLanguage.text("转换为 \(kind.title)", en: "Convert to \(kind.title)")
+                let item = NSMenuItem(title: title, action: #selector(contextMenuConvertActiveToBoard(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = kind.rawValue
+                item.image = NSImage(systemSymbolName: kind.symbolName, accessibilityDescription: nil)
+                item.state = (activeTab.boardState?.kind == kind) ? .on : .off
+                menu.addItem(item)
+            }
+            if activeTab.isBoard {
+                let revert = NSMenuItem(
+                    title: AppLanguage.text("切回文档编辑", en: "Back to Document"),
+                    action: #selector(contextMenuRevertActiveToDocument(_:)),
+                    keyEquivalent: ""
+                )
+                revert.target = self
+                revert.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)
+                menu.addItem(revert)
+            }
+            menu.addItem(.separator())
+        }
+        
+        let newDoc = NSMenuItem(
+            title: AppLanguage.text("新建文档", en: "New Document"),
+            action: #selector(addNewTab(_:)),
+            keyEquivalent: ""
+        )
+        newDoc.target = self
+        newDoc.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
+        menu.addItem(newDoc)
+        
+        for kind in PaneBoardKind.allCases {
+            let item = NSMenuItem(
+                title: AppLanguage.text("新建 \(kind.title)", en: "New \(kind.title)"),
+                action: #selector(contextMenuOpenNewBoard(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = kind.rawValue
+            item.image = NSImage(systemSymbolName: kind.symbolName, accessibilityDescription: nil)
+            menu.addItem(item)
+        }
+        
+        return menu
+    }
+    
     
     func contextMenu(for tab: PaneTab) -> NSMenu {
         
@@ -626,6 +681,7 @@ import AppKit
         )
         renameItem.target = self
         renameItem.representedObject = tab
+        renameItem.isEnabled = !tab.isBoard
         menu.addItem(renameItem)
         
         let pinTitle = tab.isPinned
@@ -635,6 +691,30 @@ import AppKit
         pinItem.target = self
         pinItem.representedObject = tab
         menu.addItem(pinItem)
+        
+        menu.addItem(.separator())
+        
+        for kind in PaneBoardKind.allCases {
+            let title = AppLanguage.text("转换为 \(kind.title)", en: "Convert to \(kind.title)")
+            let item = NSMenuItem(title: title, action: #selector(contextMenuConvertTabToBoard(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = (tab, kind)
+            item.image = NSImage(systemSymbolName: kind.symbolName, accessibilityDescription: nil)
+            item.state = (tab.boardState?.kind == kind) ? .on : .off
+            menu.addItem(item)
+        }
+        
+        if tab.isBoard {
+            let revertItem = NSMenuItem(
+                title: AppLanguage.text("切回文档编辑", en: "Back to Document"),
+                action: #selector(contextMenuRevertBoardToDocument(_:)),
+                keyEquivalent: ""
+            )
+            revertItem.target = self
+            revertItem.representedObject = tab
+            revertItem.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)
+            menu.addItem(revertItem)
+        }
         
         menu.addItem(.separator())
         
@@ -649,6 +729,46 @@ import AppKit
         menu.addItem(closeItem)
         
         return menu
+    }
+    
+    
+    @objc private func contextMenuConvertActiveToBoard(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let kind = PaneBoardKind(rawValue: raw),
+              let activeTab = self.state?.selectedTab
+        else { return }
+        self.commitInlineRenameIfNeeded(restoreEditorFocus: false)
+        self.state?.onConvertTabToBoard(activeTab, kind)
+    }
+    
+    
+    @objc private func contextMenuRevertActiveToDocument(_ sender: NSMenuItem) {
+        guard let activeTab = self.state?.selectedTab else { return }
+        self.commitInlineRenameIfNeeded(restoreEditorFocus: false)
+        self.state?.onRevertBoardToDocument(activeTab)
+    }
+    
+    
+    @objc private func contextMenuOpenNewBoard(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let kind = PaneBoardKind(rawValue: raw)
+        else { return }
+        self.commitInlineRenameIfNeeded(restoreEditorFocus: false)
+        self.state?.onNewBoardTab(kind)
+    }
+    
+    
+    @objc private func contextMenuConvertTabToBoard(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? (PaneTab, PaneBoardKind) else { return }
+        self.commitInlineRenameIfNeeded(restoreEditorFocus: false)
+        self.state?.onConvertTabToBoard(pair.0, pair.1)
+    }
+    
+    
+    @objc private func contextMenuRevertBoardToDocument(_ sender: NSMenuItem) {
+        guard let tab = sender.representedObject as? PaneTab else { return }
+        self.commitInlineRenameIfNeeded(restoreEditorFocus: false)
+        self.state?.onRevertBoardToDocument(tab)
     }
     
     
@@ -955,8 +1075,14 @@ private final class CenteredIconButton: NSButton {
     
     private static let ease = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
     
+    var menuProvider: ((NSEvent) -> NSMenu?)?
+    
     override var mouseDownCanMoveWindow: Bool { false }
     var renderedIconBounds: CGRect { self.iconLayer.bounds }
+    
+    override func menu(for event: NSEvent) -> NSMenu? {
+        self.menuProvider?(event) ?? super.menu(for: event)
+    }
     
     
     init(
@@ -1234,6 +1360,12 @@ private final class TabStripContainerView: NSView {
     private let editedHaloLayer = CALayer()
     private let statusDotLayer = CALayer()
     private let pinButton = CenteredIconButton(symbolName: "pin.fill", pointSize: 8.0, weight: .semibold, accessibilityDescription: "Pinned", hoverStyle: .pin)
+    private let boardIconView: NSImageView = {
+        let view = NSImageView()
+        view.imageScaling = .scaleProportionallyDown
+        view.isHidden = true
+        return view
+    }()
     private let titleLabel: NonDraggableLabel = {
         let label = NonDraggableLabel(labelWithString: "")
         label.wantsLayer = true
@@ -1336,6 +1468,8 @@ private final class TabStripContainerView: NSView {
         self.pinButton.toolTip = String(localized: "chrome.tab.pinnedHelp", defaultValue: "Pinned; click to unpin", table: "Chrome")
         self.addSubview(self.pinButton)
         
+        self.addSubview(self.boardIconView)
+        
         self.titleLabel.font = .systemFont(ofSize: 12)
         self.titleLabel.cell?.truncatesLastVisibleLine = false
         self.titleLabel.lineBreakMode = .byClipping
@@ -1373,10 +1507,19 @@ private final class TabStripContainerView: NSView {
         self.titleLabel.stringValue = tab.title
         self.titleLabel.font = .systemFont(ofSize: 12, weight: isSelected ? .medium : .regular)
         let baseTip = tab.document.fileURL?.path(percentEncoded: false) ?? tab.title
-        self.toolTip = tab.isEdited ? "\(baseTip) · 未保存 (按 ⌘S 保存)" : "\(baseTip) · 已保存"
+        self.toolTip = tab.isBoard ? tab.title : (tab.isEdited ? "\(baseTip) · 未保存 (按 ⌘S 保存)" : "\(baseTip) · 已保存")
+        
+        if let boardSymbol = tab.boardSymbolName {
+            self.boardIconView.image = NSImage(systemSymbolName: boardSymbol, accessibilityDescription: tab.title)?
+                .withSymbolConfiguration(.init(pointSize: 10.5, weight: .medium))
+            self.boardIconView.isHidden = false
+        } else {
+            self.boardIconView.image = nil
+            self.boardIconView.isHidden = true
+        }
         
         self.pinButton.isHidden = !tab.isPinned
-        self.editedDot.isHidden = isRenaming
+        self.editedDot.isHidden = isRenaming || tab.isBoard
         self.applyChromePaletteTint()
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
             self.statusDotLayer.backgroundColor = tab.isEdited
@@ -1391,8 +1534,8 @@ private final class TabStripContainerView: NSView {
         self.titleLabel.isHidden = isRenaming
         
         self.updateBackground(animated: wasSelected != isSelected)
-        self.updateStatusDotAnimation(isEdited: tab.isEdited, previousEdited: previousEdited, isRenaming: isRenaming)
-        self.updateBreathingAnimation(isEdited: tab.isEdited, isSelected: isSelected, isRenaming: isRenaming)
+        self.updateStatusDotAnimation(isEdited: tab.isEdited, previousEdited: previousEdited, isRenaming: isRenaming || tab.isBoard)
+        self.updateBreathingAnimation(isEdited: tab.isEdited, isSelected: isSelected, isRenaming: isRenaming || tab.isBoard)
         
         if !AnimationConstants.isReducedMotionEnabled && !isRenaming {
             if !wasSelected && isSelected {
@@ -1522,11 +1665,11 @@ private final class TabStripContainerView: NSView {
     }
     
     
-    private static func layoutMetrics(isPinned: Bool, showsClose: Bool) -> (leading: CGFloat, trailing: CGFloat) {
+    private static func layoutMetrics(isPinned: Bool, hasBoardIcon: Bool, showsClose: Bool, showsEditedDot: Bool) -> (leading: CGFloat, trailing: CGFloat) {
         
-        let leading: CGFloat = 8 + (isPinned ? 13 : 0)
-        // Right pad (5) + optional close slot (12 + 3 gap) or non-closable pad (2) + status slot (10) + gap before status (4)
-        let trailing: CGFloat = 5 + (showsClose ? 15 : 2) + 10 + 4
+        let leading: CGFloat = 8 + (isPinned ? 13 : 0) + (hasBoardIcon ? 15 : 0)
+        // Right pad (5) + optional close slot (12 + 3 gap) or non-closable pad (2) + optional status slot (10 + 4 gap)
+        let trailing: CGFloat = 5 + (showsClose ? 15 : 2) + (showsEditedDot ? 14 : 2)
         return (leading, trailing)
     }
     
@@ -1554,8 +1697,9 @@ private final class TabStripContainerView: NSView {
         self.titleLabel.font = previousFont
         
         let isPinned = (self.tab?.isPinned == true)
+        let isBoard = (self.tab?.isBoard == true)
         let showsClose = !isPinned && (self.tab?.isClosable == true)
-        let metrics = Self.layoutMetrics(isPinned: isPinned, showsClose: showsClose)
+        let metrics = Self.layoutMetrics(isPinned: isPinned, hasBoardIcon: isBoard, showsClose: showsClose, showsEditedDot: !isBoard)
         let neededWidth = labelWidth + metrics.leading + metrics.trailing + 4
         return min(maxWidth, max(minWidth, neededWidth))
     }
@@ -1571,6 +1715,11 @@ private final class TabStripContainerView: NSView {
         if !self.pinButton.isHidden {
             self.pinButton.frame = NSRect(x: x - 2, y: ((h - 12) / 2).rounded(), width: 12, height: 12)
             x += 13
+        }
+        
+        if !self.boardIconView.isHidden {
+            self.boardIconView.frame = NSRect(x: x - 1, y: ((h - 12) / 2).rounded(), width: 12, height: 12)
+            x += 15
         }
         
         // Compact 12x12 close slot & 10x10 status dot slot aligned along the exact midline.
@@ -1656,6 +1805,7 @@ private final class TabStripContainerView: NSView {
         self.didStartDrag = false
         
         if event.clickCount == 2 {
+            guard !tab.isBoard else { return }
             if self.stripView?.state?.selectedTab !== tab {
                 self.stripView?.selectTabForRename(tab)
             }
@@ -1816,6 +1966,7 @@ private final class TabStripContainerView: NSView {
             ? (palette?.activeTabText ?? .labelColor)
             : (palette?.inactiveTabText ?? .secondaryLabelColor)
         self.titleLabel.textColor = titleColor
+        self.boardIconView.contentTintColor = self.isSelected ? (palette?.accent ?? .controlAccentColor) : titleColor
         self.inlineTextField?.textColor = palette?.activeTabText ?? .labelColor
         self.pinButton.contentTintColor = palette?.accent ?? .controlAccentColor
         self.closeButton.contentTintColor = titleColor

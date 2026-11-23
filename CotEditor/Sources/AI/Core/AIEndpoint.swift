@@ -142,4 +142,24 @@ nonisolated enum AIEndpoint: String, CaseIterable, Sendable, Codable {
         
         self == .openAIResponses
     }
+    
+    
+    /// Wire protocols selectable for BYO multi-model subscriptions such as OpenCode Go.
+    static let subscriptionProtocols: [AIEndpoint] = [
+        .openAIResponses,
+        .anthropicMessages,
+        .openAIChatCompletions,
+    ]
+    
+    
+    /// Untruncated protocol label displayed in gateway switchers and subscription cards.
+    var shortProtocolBadge: String {
+        switch self {
+            case .openAIResponses: "Responses"
+            case .anthropicMessages: "Messages (Anthropic)"
+            case .openAIChatCompletions: "Chat Completions"
+            case .googleGemini: "Gemini"
+            case .ollama: "Ollama"
+        }
+    }
 }

@@ -2114,6 +2114,9 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             self.database.set(json, forKey: CotLocalDatabase.ConfigKey.userPersonalityProfileJSON)
             self.personalityProfile = profile
             self.revision &+= 1
+            if self.database === CotLocalDatabase.shared {
+                CotMemoryStore.shared.syncPersonalityProfile(profile)
+            }
         }
     }
     

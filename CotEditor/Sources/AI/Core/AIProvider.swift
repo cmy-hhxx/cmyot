@@ -261,27 +261,40 @@ nonisolated enum AIProvider: String, CaseIterable, Sendable, Codable {
     /// Placeholder text shown in the quick-setup API Key input.
     var apiKeyPlaceholder: String {
         switch self {
-            case .openCodeGo: "oc_sk_... / OpenCode Go API Key"
-            case .openAI: "sk-..."
-            case .anthropic: "sk-ant-..."
-            case .deepSeek: "sk-..."
-            case .google: "AIza..."
-            case .openRouter: "sk-or-..."
-            case .ollama: "本地模型通常无需填写"
-            default: "粘贴 API Key"
+            case .openCodeGo: "粘贴 OpenCode Go 订阅 Key"
+            case .openAI: "粘贴 OpenAI API Key"
+            case .anthropic: "粘贴 Anthropic API Key"
+            case .deepSeek: "粘贴 DeepSeek API Key"
+            case .google: "粘贴 Gemini API Key"
+            case .openRouter: "粘贴 OpenRouter API Key"
+            case .ollama: "本地模型免 Key"
+            default: "粘贴订阅 API Key"
         }
     }
     
     
     /// Builds a ready-to-save `AIEndpointProfile` pre-filled with this provider's base URL, models, and headers.
-    func makeProfile(customName: String? = nil, modelOverride: String? = nil, useAnthropicProtocol: Bool = false) -> AIEndpointProfile {
+    func makeProfile(
+        customName: String? = nil,
+        modelOverride: String? = nil,
+        useAnthropicProtocol: Bool = false,
+        protocolOverride: AIEndpoint? = nil
+    ) -> AIEndpointProfile {
         let resolvedEndpoint: AIEndpoint
-        let resolvedURL: String
-        if self == .openCodeGo && useAnthropicProtocol {
+        if let protocolOverride {
+            resolvedEndpoint = protocolOverride
+        } else if self == .openCodeGo && useAnthropicProtocol {
             resolvedEndpoint = .anthropicMessages
-            resolvedURL = "https://opencode.ai/zen/go"
         } else {
             resolvedEndpoint = self.endpoint
+        }
+        
+        let resolvedURL: String
+        if self == .openCodeGo {
+            resolvedURL = (resolvedEndpoint == .anthropicMessages)
+                ? "https://opencode.ai/zen/go"
+                : "https://opencode.ai/zen/go/v1"
+        } else {
             resolvedURL = self.defaultBaseURL
         }
         let chosenModel = (modelOverride?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
@@ -308,14 +321,20 @@ nonisolated enum AIProvider: String, CaseIterable, Sendable, Codable {
             url = endpoint.defaultBaseURL
         }
         let lower = url.lowercased()
-        if lower.contains("opencode.ai") {
-            return .openCodeGo
-        }
+        if lower.contains("opencode.ai") { return .openCodeGo }
+        if lower.contains("api.openai.com") { return .openAI }
+        if lower.contains("api.anthropic.com") { return .anthropic }
+        if lower.contains("api.deepseek.com") { return .deepSeek }
+        if lower.contains("openrouter.ai") { return .openRouter }
+        if lower.contains("moonshot.") { return .moonshot }
         if lower.contains("bigmodel.cn") { return .zhipu }
         if lower.contains("minimax") { return .miniMax }
+        if lower.contains("dashscope") { return .qwen }
         if lower.contains("volces.com") { return .volcengine }
         if lower.contains("siliconflow") { return .siliconFlow }
         if lower.contains("aihubmix") { return .aiHubMix }
+        if lower.contains("generativelanguage.googleapis.com") { return .google }
+        if lower.contains("localhost:11434") || lower.contains("127.0.0.1:11434") { return .ollama }
         
         return self.allCases.first {
             $0 != .custom && $0.endpoint == endpoint && $0.defaultBaseURL == url

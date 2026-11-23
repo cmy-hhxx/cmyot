@@ -66,6 +66,7 @@ nonisolated struct PersistedPaneTabItem: Codable, Sendable, Equatable {
     var paneIndex: Int
     var highlightsJSON: String?
     var databaseID: String? = nil
+    var boardState: PaneBoardState? = nil
 }
 
 
@@ -204,9 +205,16 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let newsPersonalNotesJSON = "analytics.newsPersonalNotesJSON"
         static let newsAIBriefsJSON = "analytics.newsAIBriefsJSON"
         static let newsReaderFontScale = "analytics.newsReaderFontScale"
+        static let butlerName = "butler.name"
+        static let butlerNickname = "butler.nickname"
+        static let butlerAvatarVariant = "butler.avatarVariant"
+        static let butlerActiveSessionID = "butler.activeSessionID"
+        static let butlerCustomAvatarBase64 = "butler.customAvatarBase64"
+        static let watchlistSeededV1 = "market.watchlistSeededV1"
     }
     
     static let weeklyReportsDidChangeNotification = Notification.Name("CotLocalDatabaseWeeklyReportsDidChange")
+    static let structuredAssetsDidChangeNotification = Notification.Name("CotLocalDatabaseStructuredAssetsDidChange")
     static let defaultWeeklyReportsZipPath = "/Users/cmy/Downloads/周报.zip"
     
     
@@ -236,16 +244,16 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     private(set) var databaseURL: URL
     
     
-    // MARK: Private Properties
+    // MARK: SQLite Storage & Sync State
     
-    private var db: OpaquePointer?
-    private let transientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    var db: OpaquePointer?
+    let transientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     private var userDefaultsSyncObserver: (any NSObjectProtocol)?
     private var userDefaultsSyncTask: Task<Void, Never>?
     private var isApplyingSyncedDefaults = false
     
     
-    private static var isRunningUnitTests: Bool {
+    static var isRunningUnitTests: Bool {
         
         let env = ProcessInfo.processInfo.environment
         return NSClassFromString("XCTestCase") != nil
@@ -1497,6 +1505,10 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         self.migrateTypewriterV2IfNeeded()
         self.purgeEnhancedAndNormalizeWeeklyReports()
         self.reloadAll()
+        
+        if self === Self.shared {
+            NotificationCenter.default.post(name: Self.structuredAssetsDidChangeNotification, object: self)
+        }
     }
     
     
@@ -1695,6 +1707,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
             UserHabitPredictor.shared.reloadFromDatabase()
             AINextTokenPredictor.shared.reloadForActiveUser()
             AnalyticsManager.shared.reloadFromDatabase()
+            NotificationCenter.default.post(name: Self.structuredAssetsDidChangeNotification, object: self)
             NotificationCenter.default.post(name: UserProfileManager.activeProfileDidChangeNotification, object: UserProfileManager.shared)
         }
     }
@@ -1763,7 +1776,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     }
     
     
-    private func executeSQL(_ sql: String) {
+    func executeSQL(_ sql: String) {
         
         guard let db = self.db else { return }
         sqlite3_exec(db, sql, nil, nil, nil)
@@ -1861,6 +1874,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         self.ensureDocumentsCreatedAtColumnExists()
         self.ensureDailyStatsExtendedColumnsExist()
         self.ensureRemindersExtendedColumnsExist()
+        self.createStructuredAssetTablesIfNeeded()
     }
     
     
@@ -2184,7 +2198,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     }
     
     
-    private func logSQLiteError(_ operation: String, code: Int32) {
+    func logSQLiteError(_ operation: String, code: Int32) {
         
         let errmsg = self.db.flatMap { sqlite3_errmsg($0) }.map { String(cString: $0) } ?? "unknown"
         CotLogger.shared.error(

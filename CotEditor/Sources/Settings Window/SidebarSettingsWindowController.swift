@@ -41,6 +41,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
     case effects
     case models
     case bots
+    case memory
     case keyBindings
     case pass
     
@@ -58,6 +59,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .effects: AppLanguage.text("动效", en: "Motion")
             case .models: AppLanguage.text("API 网关", en: "API Gateway")
             case .bots: AppLanguage.text("Bots", en: "Bots")
+            case .memory: AppLanguage.text("记忆星图", en: "Memory")
             case .keyBindings: AppLanguage.text("快捷键", en: "Shortcuts")
             case .pass: AppLanguage.text("通行证", en: "Pass")
         }
@@ -75,6 +77,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .effects: "wand.and.stars"
             case .models: "network"
             case .bots: "sparkles"
+            case .memory: "point.3.connected.trianglepath.dotted"
             case .keyBindings: "keyboard.fill"
             case .pass: "lanyardcard.fill"
         }
@@ -92,6 +95,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .effects: Color(red: 0.96, green: 0.55, blue: 0.08)
             case .models: Color(red: 0.06, green: 0.72, blue: 0.51)
             case .bots: Color(red: 0.84, green: 0.22, blue: 0.26)
+            case .memory: Color(red: 0.35, green: 0.42, blue: 0.92)
             case .keyBindings: Color(red: 0.69, green: 0.32, blue: 0.87)
             case .pass: Color(red: 0.08, green: 0.72, blue: 0.65)
         }
@@ -116,6 +120,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
 final class SidebarSettingsState {
     
     var selectedItem: SidebarSettingsItem = .general
+    var pendingBotID: AIBotID? = nil
 }
 
 
@@ -186,6 +191,12 @@ final class SidebarSettingsWindowController: NSWindowController {
         self.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
+    
+    
+    func openBot(_ botID: AIBotID?) {
+        self.state.pendingBotID = botID
+        self.openItem(.bots)
+    }
 }
 
 
@@ -208,7 +219,7 @@ private enum SettingsDesignTokens {
     static let sidebarClusters: [[SidebarSettingsItem]] = [
         [.general, .appIcon, .appearance, .wallpaper],
         [.typography, .editing, .format, .effects],
-        [.models, .bots, .keyBindings, .pass],
+        [.models, .bots, .memory, .keyBindings, .pass],
     ]
 }
 
@@ -327,6 +338,10 @@ private struct SidebarSettingsRootView: View {
                                 SidebarWallpaperSettingsPane()
                                     .frame(width: SettingsDesignTokens.detailWidth)
                                     .frame(maxHeight: .infinity)
+                            case .memory:
+                                MemoryStarMapSettingsView()
+                                    .frame(width: SettingsDesignTokens.detailWidth)
+                                    .frame(maxHeight: .infinity)
                             default:
                                 ScrollView {
                                     self.detailContent
@@ -434,7 +449,9 @@ private struct SidebarSettingsRootView: View {
             case .models:
                 AIModelsSettingsView()
             case .bots:
-                AIBotsSettingsView()
+                AIBotsSettingsView(settingsState: self.state)
+            case .memory:
+                EmptyView()
             case .keyBindings:
                 EmptyView()
             case .pass:

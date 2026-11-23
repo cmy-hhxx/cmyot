@@ -96,7 +96,10 @@ import Observation
             ? db.aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
             : customBotPersona
         let stagePrompt = db.customStagePrompt(forKey: action.databaseConfigKey) ?? action.defaultSystemPrompt
-        let fullSystemPrompt = persona.isEmpty ? stagePrompt : "\(persona)\n\n\(stagePrompt)"
+        let kycContext = CotMemoryStore.shared.compiledKYCContext()
+        let fullSystemPrompt = [persona, kycContext, stagePrompt]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
         
         var effectiveContext = context
         if action == .weeklyReport {

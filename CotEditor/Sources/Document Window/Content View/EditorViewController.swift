@@ -42,7 +42,9 @@ final class EditorViewController: NSSplitViewController {
     var document: Document  { self.selectedTab.document }
     
     /// The text view of the selected tab.
-    var textView: EditorTextView?  { self.textViewController(for: self.selectedTab)?.textView }
+    var textView: EditorTextView?  {
+        self.selectedTab.isBoard ? nil : self.textViewController(for: self.selectedTab)?.textView
+    }
     
     /// The text views of every tab, including the ones not currently shown.
     var allTextViews: [EditorTextView]  {
@@ -90,6 +92,18 @@ final class EditorViewController: NSSplitViewController {
     /// Called when tab order or pin state changes inside this pane.
     var didChangeTabLayout: (() -> Void)?
     
+    /// Requests converting `tab` into a modular board (`market`, `podcast`, `news`).
+    var requestConvertTabToBoard: ((PaneTab, PaneBoardKind) -> Void)?
+    
+    /// Requests reverting a board tab back into a normal document editor.
+    var requestRevertBoardToDocument: ((PaneTab) -> Void)?
+    
+    /// Requests creating a brand-new board tab inside this pane.
+    var requestNewBoardTab: ((PaneBoardKind) -> Void)?
+    
+    /// Requests opening a linked Markdown note document from an interactive board.
+    var requestOpenNoteFromBoard: ((String, String) -> Void)?
+    
     
     // MARK: Private Properties
     
@@ -106,7 +120,8 @@ final class EditorViewController: NSSplitViewController {
     @ViewLoading private var navigationBarItem: NSSplitViewItem
     
     private var textViewControllers: [ObjectIdentifier: EditorTextViewController] = [:]
-    private weak var contentChild: EditorTextViewController?
+    private var boardControllers: [ObjectIdentifier: (controller: NSHostingController<PaneBoardHostView>, model: PaneBoardControllerModel)] = [:]
+    private weak var contentChild: NSViewController?
     private weak var dropOverlayView: PaneDropOverlayView?
     private var dropOverlayGeneration = 0
     
@@ -182,6 +197,15 @@ final class EditorViewController: NSSplitViewController {
             self?.requestDetachTabToNewWindow?(tab, screenPoint)
         }
         self.tabState.onClosePane = { [weak self] in self?.requestClosePane?() }
+        self.tabState.onConvertTabToBoard = { [weak self] tab, kind in
+            self?.requestConvertTabToBoard?(tab, kind)
+        }
+        self.tabState.onRevertBoardToDocument = { [weak self] tab in
+            self?.requestRevertBoardToDocument?(tab)
+        }
+        self.tabState.onNewBoardTab = { [weak self] kind in
+            self?.requestNewBoardTab?(kind)
+        }
         
         self.outlineNavigator.textView = self.textView
         self.navigationBarItem = NSSplitViewItem(viewController: self.navigationBarViewController)
@@ -306,11 +330,19 @@ final class EditorViewController: NSSplitViewController {
         
         let selectedWasRemoved = (self.selectedTab === tab)
         
-        if let textViewController = self.textViewControllers.removeValue(forKey: ObjectIdentifier(tab)),
+        let tabKey = ObjectIdentifier(tab)
+        if let textViewController = self.textViewControllers.removeValue(forKey: tabKey),
            self.contentChild === textViewController
         {
             textViewController.view.removeFromSuperview()
             textViewController.removeFromParent()
+            self.contentChild = nil
+        }
+        if let boardEntry = self.boardControllers.removeValue(forKey: tabKey),
+           self.contentChild === boardEntry.controller
+        {
+            boardEntry.controller.view.removeFromSuperview()
+            boardEntry.controller.removeFromParent()
             self.contentChild = nil
         }
         
@@ -346,11 +378,15 @@ final class EditorViewController: NSSplitViewController {
         
         self.installContent(of: tab)
         self.updateTabState()
-        self.observeOutline(of: tab.document)
-        tab.document.applyHighlightRendering()
+        if tab.isBoard {
+            self.outlineNavigator.items = nil
+        } else {
+            self.observeOutline(of: tab.document)
+            tab.document.applyHighlightRendering()
+        }
         self.updateNavigationBarVisibility()
         
-        if focusEditor, let textView = self.textView {
+        if focusEditor, !tab.isBoard, let textView = self.textView {
             textView.updateInsertionPointStateAndRestartTimer(true)
             textView.needsDisplay = true
         }
@@ -358,6 +394,21 @@ final class EditorViewController: NSSplitViewController {
         if didChange {
             self.didSelectTab?(tab)
         }
+    }
+    
+    
+    /// Refreshes the currently selected tab's content (switching cleanly between document editor and board view).
+    func refreshSelectedTabContent() {
+        
+        self.installContent(of: self.selectedTab)
+        self.updateTabState()
+        if self.selectedTab.isBoard {
+            self.outlineNavigator.items = nil
+        } else {
+            self.observeOutline(of: self.selectedTab.document)
+            self.selectedTab.document.applyHighlightRendering()
+        }
+        self.updateNavigationBarVisibility(animated: true)
     }
     
     
@@ -699,23 +750,66 @@ final class EditorViewController: NSSplitViewController {
     }
     
     
-    /// Installs the text view of the given tab in the content area.
+    /// Installs either the modular board or the text view of the given tab in the content area.
     ///
     /// - Parameter tab: The tab to show.
     private func installContent(of tab: PaneTab) {
         
-        guard let textViewController = self.textViewController(for: tab) else { return }
+        let tabKey = ObjectIdentifier(tab)
+        let targetController: NSViewController
+        let targetTextView: EditorTextView?
         
-        if let current = self.contentChild, current !== textViewController {
+        if let boardState = tab.boardState {
+            let entry: (controller: NSHostingController<PaneBoardHostView>, model: PaneBoardControllerModel)
+            if let existing = self.boardControllers[tabKey] {
+                existing.model.state = boardState
+                entry = existing
+            } else {
+                let model = PaneBoardControllerModel(state: boardState)
+                model.onStateChanged = { [weak self, weak tab] updatedState in
+                    guard let self, let tab else { return }
+                    tab.boardState = updatedState
+                    self.updateTabState()
+                    self.didChangeTabLayout?()
+                }
+                let hostView = PaneBoardHostView(
+                    model: model,
+                    onRevertToDocument: { [weak self, weak tab] in
+                        guard let self, let tab else { return }
+                        self.requestRevertBoardToDocument?(tab)
+                    },
+                    onOpenNote: { [weak self] title, content in
+                        self?.requestOpenNoteFromBoard?(title, content)
+                    }
+                )
+                let hosting = NSHostingController(rootView: hostView)
+                hosting.sizingOptions = []
+                self.boardControllers[tabKey] = (hosting, model)
+                entry = (hosting, model)
+            }
+            targetController = entry.controller
+            targetTextView = nil
+        } else {
+            self.boardControllers.removeValue(forKey: tabKey)
+            guard let textViewController = self.textViewController(for: tab) else { return }
+            targetController = textViewController
+            targetTextView = textViewController.textView
+        }
+        
+        if let current = self.contentChild, current !== targetController {
             current.view.removeFromSuperview()
             current.removeFromParent()
         }
         
-        if self.contentChild !== textViewController {
-            self.contentViewController.addChild(textViewController)
+        if self.contentChild !== targetController {
+            let hadPrevious = (self.contentChild != nil)
+            self.contentViewController.addChild(targetController)
             
-            let view = textViewController.view
+            let view = targetController.view
             view.translatesAutoresizingMaskIntoConstraints = false
+            if hadPrevious {
+                view.alphaValue = 0
+            }
             self.contentViewController.view.addSubview(view)
             
             NSLayoutConstraint.activate([
@@ -725,10 +819,18 @@ final class EditorViewController: NSSplitViewController {
                 view.bottomAnchor.constraint(equalTo: self.contentViewController.view.bottomAnchor),
             ])
             
-            self.contentChild = textViewController
+            if hadPrevious {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.14
+                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
+                    view.animator().alphaValue = 1
+                }
+            }
+            
+            self.contentChild = targetController
         }
         
-        self.outlineNavigator.textView = textViewController.textView
+        self.outlineNavigator.textView = targetTextView
     }
     
     

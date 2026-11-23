@@ -230,6 +230,7 @@ final class PiKernelManager {
     nonisolated static func augmentedRuntimeEnvironment(
         binaryPath: String? = nil,
         agentDirectoryPath: String? = nil,
+        databasePath: String? = nil,
         base: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: String] {
         let fm = FileManager.default
@@ -282,12 +283,16 @@ final class PiKernelManager {
         env["PI_OFFLINE"] = "1"
         env["PI_SKIP_VERSION_CHECK"] = "1"
         env["PI_TELEMETRY"] = "0"
+        if let databasePath, !databasePath.isEmpty {
+            env["COT_DB_PATH"] = databasePath
+        }
         return env
     }
     
     
     func refreshEnvironment() async {
         let custom = self.database.string(forKey: Self.customBinaryConfigKey)
+        let dbPath = self.database.databaseURL.path(percentEncoded: false)
         let resolvedPath = Self.discoverPiBinary(customOverride: custom)
         self.piBinaryPath = resolvedPath
         
@@ -301,7 +306,7 @@ final class PiKernelManager {
             let proc = Process()
             proc.executableURL = URL(filePath: resolvedPath)
             proc.arguments = ["--version"]
-            proc.environment = Self.augmentedRuntimeEnvironment(binaryPath: resolvedPath)
+            proc.environment = Self.augmentedRuntimeEnvironment(binaryPath: resolvedPath, databasePath: dbPath)
             let outPipe = Pipe()
             proc.standardOutput = outPipe
             proc.standardError = Pipe()
@@ -382,6 +387,8 @@ final class PiKernelManager {
         let activeID = AIEndpointStore.activeID ?? resolvedEndpoints.first?.id
         let activeEndpoint = resolvedEndpoints.first(where: { $0.id == activeID }) ?? resolvedEndpoints.first
         let globalPersona = self.database.aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+        let kycContext = CotMemoryStore.shared.compiledKYCContext()
+        let workspaceContext = CotAgentCoordinator.shared.workspaceContextSummary()
         
         try fm.createDirectory(at: self.agentDirectoryURL, withIntermediateDirectories: true)
         let agentsDir = self.agentDirectoryURL.appending(path: "agents", directoryHint: .isDirectory)
@@ -485,6 +492,28 @@ final class PiKernelManager {
             try? settingsData.write(to: self.agentDirectoryURL.appending(path: "settings.json"), options: .atomic)
         }
         
+        // Write live CotEditor perception & SQLite control contract for autonomous Pi runs
+        let dbFilePath = self.database.databaseURL.path(percentEncoded: false)
+        let cotContextDoc = """
+        # CotEditor Live Perception & Takeover Contract
+        
+        - `COT_DB_PATH`: `\(dbFilePath)`
+        - Core SQLite tables:
+          - `documents (id, title, file_path, syntax, content, group_name, updated_at)`
+          - `user_kyc_memories (id, dimension, fact_key, title, detail, confidence, is_pinned)`
+          - `user_watchlist_stocks (instrument_id, namespace, symbol, name, eastmoney_secid, tencent_code, last_price, last_change_pct)`
+          - `user_podcasts (id, platform, title, show_name, source_url, audio_url, playback_position_sec, is_saved)`
+          - `user_followed_feeds (id, title, site_url, feed_url, category)`
+          - `user_followed_creators (id, platform, handle, display_name, profile_url, focus_tags)`
+          - `workspace_live_state (slot, payload_json, updated_at)`
+          - `agent_command_queue (action_type, payload_json, status='pending')` — insert JSON rows (`convert_tab`, `open_board`, `open_document`, `upsert_memory`, `watch_stock`, `play_podcast`, `follow_feed`, `follow_creator`, `update_bot`) to drive the live editor UI.
+        
+        \(kycContext)
+        
+        \(workspaceContext.isEmpty ? "" : "## 实时工作区上下文\n\(workspaceContext)")
+        """
+        try? Data(cotContextDoc.utf8).write(to: self.agentDirectoryURL.appending(path: "COT_CONTEXT.md"), options: .atomic)
+        
         // Write per-bot agent workspace (SYSTEM.md + bot-manifest.json + session directory)
         for botID in AIBotID.allCases {
             let botCfg = resolvedBotStore.config(for: botID)
@@ -496,7 +525,8 @@ final class PiKernelManager {
             let customPersona = botCfg.customPersona.trimmingCharacters(in: .whitespacesAndNewlines)
             let effectivePersona = customPersona.isEmpty ? globalPersona : customPersona
             let stagePrompt = resolvedBotStore.systemPrompt(for: botID)
-            let fullPrompt = effectivePersona.isEmpty ? stagePrompt : "\(effectivePersona)\n\n\(stagePrompt)"
+            let promptParts = [effectivePersona, kycContext, stagePrompt].filter { !$0.isEmpty }
+            let fullPrompt = promptParts.joined(separator: "\n\n")
             try Data(fullPrompt.utf8).write(to: botDir.appending(path: "SYSTEM.md"), options: .atomic)
             
             let targetEndpoint = botCfg.endpointID.flatMap { id in resolvedEndpoints.first(where: { $0.id == id }) } ?? activeEndpoint
@@ -714,6 +744,8 @@ final class PiKernelManager {
         self.activeBotRuns.insert(botID)
         defer { self.activeBotRuns.remove(botID) }
         
+        let dbPath = self.database.databaseURL.path(percentEncoded: false)
+        
         return try await Task.detached(priority: .userInitiated) {
             let process = Process()
             process.executableURL = URL(filePath: binaryPath)
@@ -724,7 +756,8 @@ final class PiKernelManager {
             
             process.environment = Self.augmentedRuntimeEnvironment(
                 binaryPath: binaryPath,
-                agentDirectoryPath: agentDirPath
+                agentDirectoryPath: agentDirPath,
+                databasePath: dbPath
             )
             
             let stdoutPipe = Pipe()
