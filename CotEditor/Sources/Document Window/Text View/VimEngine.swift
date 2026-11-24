@@ -110,6 +110,10 @@ final class VimEngine {
     private var wasKeyRepeat = false
     private var lastMoveWasContinuous = false
     
+    var isContinuousMovement: Bool {
+        self.lastMoveWasContinuous
+    }
+    
     // Sticky horizontal goal column / visual X coordinate preserved across consecutive `j`/`k` motions
     // (including across blank lines, shorter lines, and soft-wrapped visual lines).
     private var preferredColumn: Int?
@@ -2674,8 +2678,12 @@ final class VimEngine {
     }
     
     
-    private func scrollLocationToVisible(_ location: Int, in textView: NSTextView) {
-        
+    private func scrollLocationToVisible(
+        _ location: Int,
+        cursorRect precomputedRect: NSRect? = nil,
+        in textView: NSTextView,
+        isContinuous: Bool = false
+    ) {
         let length = (textView.string as NSString).length
         let clamped = max(0, min(location, length))
         let targetRange = NSRange(location: clamped, length: 0)
@@ -2686,16 +2694,34 @@ final class VimEngine {
                 editorTextView.scrollRangeToVisible(targetRange)
                 return
             }
-            let marginY = min(24, visible.height * 0.15)
-            if let probeRect = editorTextView.vimCursorRect(at: clamped) {
-                let comfortable = visible.insetBy(dx: 0, dy: marginY)
-                if !comfortable.contains(probeRect) {
-                    let padded = probeRect.insetBy(dx: -8, dy: -marginY).intersection(editorTextView.bounds)
-                    if !padded.isEmpty {
-                        editorTextView.scrollToVisible(padded)
-                    } else {
-                        editorTextView.scrollRangeToVisible(targetRange)
-                    }
+            let marginY = min(44, visible.height * 0.14)
+            if let probeRect = precomputedRect ?? editorTextView.vimCursorRect(at: clamped) {
+                // Measure against the pending 120Hz glide target so rapid j/k presses accumulate smoothly
+                let effectiveMinY = editorTextView.funEffects.targetScrollOriginY ?? visible.minY
+                let effectiveMaxY = effectiveMinY + visible.height
+                let comfortableTop = effectiveMinY + marginY
+                let comfortableBottom = effectiveMaxY - marginY
+                
+                if probeRect.maxY > comfortableBottom {
+                    let desiredY = probeRect.maxY + marginY - visible.height
+                    editorTextView.funEffects.smoothScrollViewport(
+                        to: desiredY,
+                        in: editorTextView,
+                        isContinuous: isContinuous
+                    )
+                } else if probeRect.minY < comfortableTop {
+                    let desiredY = probeRect.minY - marginY
+                    editorTextView.funEffects.smoothScrollViewport(
+                        to: desiredY,
+                        in: editorTextView,
+                        isContinuous: isContinuous
+                    )
+                }
+                
+                // Handle horizontal scroll if cursor is outside horizontal visible bounds
+                if probeRect.minX < visible.minX || probeRect.maxX > visible.maxX {
+                    let hRect = NSRect(x: probeRect.minX - 8, y: visible.minY, width: probeRect.width + 16, height: 1)
+                    editorTextView.scrollToVisible(hRect.intersection(editorTextView.bounds))
                 }
             } else {
                 editorTextView.scrollRangeToVisible(targetRange)
@@ -2740,11 +2766,12 @@ final class VimEngine {
         editorTextView?.syncNativeCaretVisibility()
         
         textView.setSelectedRange(selectionRange)
-        self.scrollLocationToVisible(clamped, in: textView)
+        let newRect = editorTextView?.vimCursorRect(at: clamped)
+        self.scrollLocationToVisible(clamped, cursorRect: newRect, in: textView, isContinuous: self.lastMoveWasContinuous)
         
         if let editorTextView {
             if editorTextView.funEffects.ownsVimCursorDrawing,
-               let newRect = editorTextView.vimCursorRect(at: clamped)
+               let newRect
             {
                 if animated {
                     editorTextView.funEffects.animateVimCursorTransition(
@@ -2806,11 +2833,12 @@ final class VimEngine {
         
         textView.setSelectedRange(targetRange)
         let settled = textView.selectedRange().location
-        self.scrollLocationToVisible(settled, in: textView)
+        let newRect = editorTextView?.vimCursorRect(at: settled)
+        self.scrollLocationToVisible(settled, cursorRect: newRect, in: textView, isContinuous: self.lastMoveWasContinuous)
         
         if let editorTextView,
            editorTextView.funEffects.ownsVimCursorDrawing,
-           let newRect = editorTextView.vimCursorRect(at: settled)
+           let newRect
         {
             editorTextView.syncNativeCaretVisibility()
             editorTextView.funEffects.animateVimCursorTransition(

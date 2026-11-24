@@ -1878,4 +1878,94 @@ struct Round33FeatureTests {
         cardHost.layoutSubtreeIfNeeded()
         #expect(cardHost.bounds.width == 520)
     }
+    
+    
+    @Test func dashboardHeroCoverStorePersistsUploadedImageAndFocalAlignment() throws {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appending(path: "cot_hero_cover_test_\(UUID().uuidString).sqlite3")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        
+        let tempDB = CotLocalDatabase(customURL: tempURL)
+        let store = DashboardHeroCoverStore(database: tempDB)
+        #expect(store.coverImage == nil)
+        
+        let sample = NSImage(size: NSSize(width: 320, height: 180))
+        sample.lockFocus()
+        NSColor.systemTeal.setFill()
+        NSRect(x: 0, y: 0, width: 320, height: 180).fill()
+        sample.unlockFocus()
+        
+        #expect(store.setCoverImage(sample) == true)
+        #expect(store.coverImage != nil)
+        store.focalY = 0.15
+        
+        let reloaded = DashboardHeroCoverStore(database: tempDB)
+        #expect(reloaded.coverImage != nil)
+        #expect(abs(reloaded.focalY - 0.15) < 0.02)
+        
+        reloaded.clearCoverImage()
+        #expect(reloaded.coverImage == nil)
+        let afterClear = DashboardHeroCoverStore(database: tempDB)
+        #expect(afterClear.coverImage == nil)
+    }
+    
+    
+    @Test func butlerSystemPromptIncludesLocalTimeAndModelWithoutInternalJargonNoise() throws {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appending(path: "cot_butler_prompt_test_\(UUID().uuidString).sqlite3")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        
+        let tempDB = CotLocalDatabase(customURL: tempURL)
+        let memStore = CotMemoryStore(database: tempDB)
+        let manager = CotButlerManager(database: tempDB, memoryStore: memStore)
+        let config = AIConfiguration(
+            endpoint: .openAIChatCompletions,
+            baseURL: "https://example.com",
+            model: "glm-5.3",
+            apiKey: "test",
+            temperature: 0.4
+        )
+        
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone.current
+        let fixedNow = try #require(cal.date(from: DateComponents(year: 2026, month: 11, day: 24, hour: 14, minute: 5)))
+        
+        let casualPrompt = manager.buildButlerSystemPrompt(
+            resolvedConfig: config,
+            userMessage: "你是啥模型?",
+            now: fixedNow
+        )
+        #expect(casualPrompt.contains("14:05"))
+        #expect(casualPrompt.contains("glm-5.3"))
+        #expect(!casualPrompt.contains("众 Bot 当前编队状态"))
+        #expect(!casualPrompt.contains("全部助手配置"))
+        
+        let managePrompt = manager.buildButlerSystemPrompt(
+            resolvedConfig: config,
+            userMessage: "把翻译助手的模型换成 deepseek",
+            now: fixedNow
+        )
+        #expect(managePrompt.contains("全部助手配置"))
+        #expect(managePrompt.contains("双语翻译官"))
+    }
+    
+    
+    @Test func vimSmoothScrollConvergesMonotonicallyWithoutOvershoot() {
+        var y: CGFloat = 100
+        let target: CGFloat = 160
+        let dt: CGFloat = 1.0 / 120.0
+        var settled = false
+        for _ in 0..<120 {
+            let step = EditorFunEffectsController.stepSmoothScrollOrigin(currentY: y, targetY: target, rate: 20.0, dt: dt)
+            #expect(step.nextY >= y)
+            #expect(step.nextY <= target)
+            y = step.nextY
+            if step.settled {
+                settled = true
+                break
+            }
+        }
+        #expect(settled)
+        #expect(abs(y - target) < 0.01)
+    }
 }

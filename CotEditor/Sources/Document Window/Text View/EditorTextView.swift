@@ -1910,7 +1910,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             )
         }
         
-        if !stillSelectingFlag, !self.isShowingCompletion {
+        let isRapidVimCursorSweep = self.isPerformingVimCursorMove && self.vimEngine.isContinuousMovement
+        if !stillSelectingFlag, !self.isShowingCompletion, !isRapidVimCursorSweep {
             // highlight matching symbol
             if self.highlightsBraces {
                 self.highlightMatchingSymbol(candidates: SymbolPair.braces)

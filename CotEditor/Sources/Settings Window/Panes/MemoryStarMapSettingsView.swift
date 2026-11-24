@@ -184,14 +184,9 @@ struct MemoryStarMapSettingsView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 14)
                     
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(accent.opacity(isDark ? 0.22 : 0.12))
-                        .frame(width: 24, height: 24)
-                        .overlay(
-                            Image(systemName: domain.symbolName)
-                                .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(accent)
-                        )
+                    Capsule(style: .continuous)
+                        .fill(accent)
+                        .frame(width: 3, height: 14)
                     
                     Text(domain.title)
                         .font(.system(size: 13.5, weight: .semibold))
@@ -279,11 +274,7 @@ struct MemoryStarMapSettingsView: View {
                     
                     Circle()
                         .fill(accent)
-                        .frame(width: 7, height: 7)
-                    
-                    Image(systemName: category.symbolName)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(accent)
+                        .frame(width: 6, height: 6)
                     
                     Text(category.title)
                         .font(.system(size: 12.5, weight: .semibold))

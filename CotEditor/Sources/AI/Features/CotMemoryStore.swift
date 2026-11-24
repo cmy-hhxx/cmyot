@@ -305,7 +305,7 @@ final class CotMemoryStore {
         var sections: [String] = []
         
         if !activeMemories.isEmpty {
-            var lines: [String] = ["## 用户多维 KYC 画像"]
+            var lines: [String] = ["## 用户的习惯与偏好"]
             for dim in KYCDimension.allCases {
                 let dimMemories = activeMemories.filter { $0.dimension == dim }
                 guard !dimMemories.isEmpty else { continue }
@@ -337,7 +337,7 @@ final class CotMemoryStore {
             }
         }
         if !assetLines.isEmpty {
-            sections.append("## 用户兴趣资产\n" + assetLines.joined(separator: "\n"))
+            sections.append("## 用户的关注内容\n" + assetLines.joined(separator: "\n"))
         }
         
         return sections.joined(separator: "\n\n")

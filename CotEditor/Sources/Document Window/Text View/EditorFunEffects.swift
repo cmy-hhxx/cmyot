@@ -207,6 +207,18 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private var currentCursorAlpha: CGFloat = 0.56
     private static let trailLayerCount = 4
     
+    // 120Hz smooth viewport scrolling coupled to Vim cursor display link
+    private(set) var targetScrollOriginY: CGFloat?
+    private var lastAppliedScrollOriginY: CGFloat?
+    private var smoothScrollRate: CGFloat = 24.0
+    
+    private static var isRunningUnitTests: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return NSClassFromString("XCTestCase") != nil
+            || env["XCTestConfigurationFilePath"] != nil
+            || env["XCTestBundlePath"] != nil
+    }
+    
     // Elastic GPU-composited Vim Visual Selection bands (`v` / `V`)
     private var vimVisualRootLayer: CALayer?
     private var vimVisualBandLayers: [CAShapeLayer] = []
@@ -255,6 +267,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.fluidCursor = nil
         self.currentTargetRect = nil
         self.trailRects.removeAll()
+        self.cancelSmoothScroll()
         self.hideVimVisualSelection(animated: false, withYankPulse: false)
         self.hideGhostSuggestion(animated: false)
         self.hideComboHud(animated: false)
@@ -1643,12 +1656,88 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     }
     
     
-    /// Apple Fluid Interface spring tuning (`response` fast & responsive, `zeta` ~0.85–0.91 for crisp
+    /// Cancels any in-flight 120Hz smooth viewport glide (e.g. when the user scrolls manually).
+    func cancelSmoothScroll() {
+        self.targetScrollOriginY = nil
+        self.lastAppliedScrollOriginY = nil
+    }
+    
+    
+    /// Critically-damped exponential scroll step for buttery 120Hz ProMotion viewport glide (zero overshoot).
+    static func stepSmoothScrollOrigin(
+        currentY: CGFloat,
+        targetY: CGFloat,
+        rate: CGFloat,
+        dt: CGFloat
+    ) -> (nextY: CGFloat, settled: Bool) {
+        let diff = targetY - currentY
+        if abs(diff) <= 0.35 {
+            return (targetY, true)
+        }
+        let alpha = 1.0 - exp(-rate * dt)
+        let nextY = currentY + diff * alpha
+        if abs(targetY - nextY) <= 0.35 {
+            return (targetY, true)
+        }
+        return (nextY, false)
+    }
+    
+    
+    private static func maxScrollOriginY(in textView: EditorTextView, visibleHeight: CGFloat) -> CGFloat {
+        var docHeight = textView.bounds.height
+        if let layoutManager = textView.layoutManager,
+           let textContainer = textView.textContainer
+        {
+            let usedH = layoutManager.usedRect(for: textContainer).maxY + textView.textContainerInset.height * 2
+            docHeight = max(docHeight, usedH)
+        }
+        return max(0, docHeight - visibleHeight)
+    }
+    
+    
+    /// Smoothly glides the enclosing clip view vertically at 120Hz in lockstep with the Vim cursor spring,
+    /// avoiding choppy 30Hz key-repeat line teleports while snapping immediately for huge jumps or reduced motion.
+    func smoothScrollViewport(
+        to rawTargetY: CGFloat,
+        in textView: EditorTextView,
+        isContinuous: Bool
+    ) {
+        guard let scrollView = textView.enclosingScrollView else { return }
+        let visible = textView.visibleRect
+        let maxOriginY = Self.maxScrollOriginY(in: textView, visibleHeight: visible.height)
+        let clampedTarget = min(max(0, rawTargetY), maxOriginY)
+        let distance = abs(clampedTarget - visible.minY)
+        
+        guard distance >= 0.35 else {
+            self.cancelSmoothScroll()
+            return
+        }
+        
+        let shouldAnimate = !Self.isRunningUnitTests
+            && !AnimationConstants.isReducedMotionEnabled
+            && textView.window?.isVisible == true
+            && distance <= max(240, visible.height * 1.45)
+        
+        if !shouldAnimate {
+            self.cancelSmoothScroll()
+            textView.scroll(NSPoint(x: visible.minX, y: clampedTarget))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            return
+        }
+        
+        self.targetScrollOriginY = clampedTarget
+        self.lastAppliedScrollOriginY = visible.minY
+        self.smoothScrollRate = isContinuous ? 20.0 : 26.0
+        self.startOrResumeDisplayLink(for: textView)
+    }
+    
+    
+    /// Apple Fluid Interface spring tuning (`response` fast & responsive, `zeta` ~0.85–0.94 for crisp
     /// settled poise with a subtle, satisfying breath and zero harsh ringing).
     static func fluidSpringParameters(distance: CGFloat, isContinuous: Bool) -> (omega: CGFloat, zeta: CGFloat) {
         
         if isContinuous {
-            return (omega: 45.0, zeta: 0.90)
+            return (omega: 46.0, zeta: 0.94)
         }
         if distance < 28 {
             return (omega: 42.0, zeta: 0.85)
@@ -1714,7 +1803,8 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     
     private func stepVimCursorDisplayLink(_ link: CADisplayLink) {
         
-        guard self.ownsVimCursorDrawing else {
+        let hasActiveScroll = (self.targetScrollOriginY != nil)
+        guard self.ownsVimCursorDrawing || hasActiveScroll else {
             link.isPaused = true
             return
         }
@@ -1723,13 +1813,50 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         let dt = CGFloat(min(max(now - self.lastStepTime, 1.0 / 240.0), 1.0 / 24.0))
         self.lastStepTime = now
         
+        // Step 120Hz smooth viewport glide first so document scroll & cursor move in the exact same frame
+        var scrollSettled = true
+        if let targetY = self.targetScrollOriginY,
+           let textView = self.textView,
+           let scrollView = textView.enclosingScrollView
+        {
+            let visible = textView.visibleRect
+            if let lastY = self.lastAppliedScrollOriginY, abs(visible.minY - lastY) > 2.5 {
+                // User manually scrolled via trackpad/wheel/scrollbar; yield immediately
+                self.cancelSmoothScroll()
+            } else {
+                let maxOriginY = Self.maxScrollOriginY(in: textView, visibleHeight: visible.height)
+                let clampedTarget = min(max(0, targetY), maxOriginY)
+                let (nextY, settled) = Self.stepSmoothScrollOrigin(
+                    currentY: visible.minY,
+                    targetY: clampedTarget,
+                    rate: self.smoothScrollRate,
+                    dt: dt
+                )
+                let wasPerforming = textView.isPerformingVimCursorMove
+                textView.isPerformingVimCursorMove = true
+                textView.scroll(NSPoint(x: visible.minX, y: nextY))
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+                textView.isPerformingVimCursorMove = wasPerforming
+                
+                if settled {
+                    self.targetScrollOriginY = nil
+                    self.lastAppliedScrollOriginY = nil
+                    scrollSettled = true
+                } else {
+                    self.lastAppliedScrollOriginY = nextY
+                    scrollSettled = false
+                }
+            }
+        }
+        
         var visualSettled = true
         if self.isVimVisualActive && !self.vimVisualStates.isEmpty {
             visualSettled = self.stepVisualBands(dt: dt)
         }
         
         var cursorSettled = true
-        if let cursorLayer = self.vimCursorLayer,
+        if self.ownsVimCursorDrawing,
+           let cursorLayer = self.vimCursorLayer,
            var state = self.fluidCursor,
            let targetRect = self.currentTargetRect
         {
@@ -1851,7 +1978,7 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             }
         }
         
-        if cursorSettled && visualSettled {
+        if cursorSettled && visualSettled && scrollSettled {
             link.isPaused = true
         }
     }

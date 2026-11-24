@@ -224,7 +224,7 @@ final class CotAgentCoordinator {
         let snap = self.captureWorkspaceSnapshot()
         var lines: [String] = []
         if let title = snap.activeDocumentTitle {
-            lines.append("当前焦点标签：\(title)")
+            lines.append("正在编辑的文档：\(title)")
         }
         if let excerpt = snap.activeDocumentExcerpt, !excerpt.isEmpty {
             lines.append("当前文档摘录：\n\(String(excerpt.prefix(800)))")
@@ -236,7 +236,7 @@ final class CotAgentCoordinator {
             return tab.title
         }
         if !openTitles.isEmpty {
-            lines.append("打开的窗格标签：" + openTitles.prefix(10).joined(separator: " | "))
+            lines.append("已打开的标签页：" + openTitles.prefix(10).joined(separator: " | "))
         }
         if let podcast = snap.activePodcastTitle {
             lines.append("正在播放播客：\(podcast)")

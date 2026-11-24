@@ -897,7 +897,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
     var tagline: String {
         
         switch self {
-            case .butler: "全局记忆、工作区接管与多会话私人助手"
+            case .butler: "陪你聊天、记偏好、帮你整理文档与打开看板的私人助手"
             case .ghost: "光标后静默预测半句，按 Tab 一次落笔"
             case .translate: "中英地道互译，保留代码与格式骨架"
             case .summarize: "剥离铺垫，提炼高信噪比纯文本要点"
@@ -988,7 +988,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
         }
         switch self {
             case .butler:
-                return "你是 CotEditor 顶部的总管家私人助手，直接感知工作区、多维 KYC 记忆与本地 SQLite 兴趣资产。回答极简干练、高信噪比，有偏好或编辑器操控诉求时附带 <cot_actions> JSON。"
+                return "用自然、清楚、好懂的日常中文和用户交流，问什么答什么，不说生硬的系统黑话或内部代号；用户明确要求记住偏好或操作文档/看板时再执行对应操作。"
             case .ghost:
                 return "你是嵌入编辑器光标处的续写幽灵。只接续光标后最自然的半句或短词，不重复前文，不加引号与解释。"
             case .readingCompanion:
@@ -1430,6 +1430,9 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         }
         let custom = self.database.string(forKey: "ai.bot.\(botID.rawValue).prompt")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        if botID == .butler, custom.contains("多维 KYC 记忆与本地 SQLite") {
+            return botID.defaultSystemPrompt
+        }
         return custom.isEmpty ? botID.defaultSystemPrompt : custom
     }
     

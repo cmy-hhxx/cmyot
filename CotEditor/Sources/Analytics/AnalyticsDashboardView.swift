@@ -21,6 +21,7 @@
 
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Window / Settings Entry Points
 
@@ -1113,9 +1114,9 @@ struct AnalyticsDashboardView: View {
                 let outerPad: CGFloat = self.isEmbeddedInSettings ? 12 : 24
                 let vSpacing: CGFloat = self.isEmbeddedInSettings ? 12 : 16
                 let hSpacing: CGFloat = self.isEmbeddedInSettings ? 12 : 16
-                let heroH: CGFloat = self.isEmbeddedInSettings ? 120 : 148
+                let heroH: CGFloat = self.isEmbeddedInSettings ? 132 : 172
                 let row1H: CGFloat = self.isEmbeddedInSettings ? 228 : 304
-                let row2H: CGFloat = self.isEmbeddedInSettings ? 220 : 308
+                let row2H: CGFloat = self.isEmbeddedInSettings ? 236 : 336
                 
                 GeometryReader { viewportGeo in
                     ScrollView(.vertical, showsIndicators: true) {
@@ -1686,27 +1687,36 @@ private struct DashboardNewsColumnCard: View {
             .frame(height: 24)
             
             GeometryReader { geo in
-                let useTwoColumns = !self.compact && geo.size.width >= 220
-                let pageSize = useTwoColumns ? 2 : 1
+                let colCount = (!self.compact && geo.size.width >= 200) ? 2 : 1
+                let rowCount = geo.size.height >= 180 ? 2 : 1
+                let pageSize = colCount * rowCount
                 let pages: [[AIHotNewsItem]] = stride(from: 0, to: items.count, by: pageSize).map { start in
                     Array(items[start..<min(start + pageSize, items.count)])
                 }
                 let hasPager = pages.count > 1
                 let pagerSpacing: CGFloat = hasPager ? 8 : 0
                 let pagerBarH: CGFloat = hasPager ? 20 : 0
-                let slotH: CGFloat = max(92, floor(geo.size.height - pagerBarH - pagerSpacing))
-                let coverH: CGFloat = max(54, floor(slotH - (self.compact ? 62 : 72)))
+                let gridGap: CGFloat = 8
+                let gridAvailH = max(92, floor(geo.size.height - pagerBarH - pagerSpacing))
+                let slotH: CGFloat = max(78, floor((gridAvailH - CGFloat(max(0, rowCount - 1)) * gridGap) / CGFloat(rowCount)))
+                let showFooterLine = (slotH >= 136)
+                let textReservedH: CGFloat = showFooterLine ? 64 : 44
+                let coverH: CGFloat = max(46, floor(slotH - textReservedH))
                 let safePage = min(max(0, self.currentPage), max(0, pages.count - 1))
                 let activeItems = pages.isEmpty ? [] : pages[safePage]
                 
                 if items.isEmpty {
                     if self.newsService.isLoading {
-                        HStack(spacing: 8) {
-                            ForEach(0..<pageSize, id: \.self) { _ in
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(self.palette.inset)
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: slotH)
+                        VStack(spacing: gridGap) {
+                            ForEach(0..<rowCount, id: \.self) { _ in
+                                HStack(spacing: gridGap) {
+                                    ForEach(0..<colCount, id: \.self) { _ in
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .fill(self.palette.inset)
+                                            .frame(maxWidth: .infinity)
+                                            .frame(height: slotH)
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -1731,30 +1741,38 @@ private struct DashboardNewsColumnCard: View {
                     }
                 } else {
                     VStack(alignment: .leading, spacing: pagerSpacing) {
-                        HStack(alignment: .top, spacing: 8) {
-                            ForEach(activeItems) { item in
-                                NewsMiniVisualCard(
-                                    item: item,
-                                    cover: self.newsService.cachedCoverImage(for: item),
-                                    isRead: self.newsService.isRead(item),
-                                    coverHeight: coverH,
-                                    slotHeight: slotH,
-                                    palette: self.palette,
-                                    onAppearLoadCover: {
-                                        self.newsService.requestCoverLoad(for: item)
+                        VStack(alignment: .leading, spacing: gridGap) {
+                            ForEach(0..<rowCount, id: \.self) { rowIdx in
+                                HStack(alignment: .top, spacing: gridGap) {
+                                    ForEach(0..<colCount, id: \.self) { colIdx in
+                                        let itemIdx = rowIdx * colCount + colIdx
+                                        if itemIdx < activeItems.count {
+                                            let item = activeItems[itemIdx]
+                                            NewsMiniVisualCard(
+                                                item: item,
+                                                cover: self.newsService.cachedCoverImage(for: item),
+                                                isRead: self.newsService.isRead(item),
+                                                coverHeight: coverH,
+                                                slotHeight: slotH,
+                                                showPublisherLine: showFooterLine,
+                                                palette: self.palette,
+                                                onAppearLoadCover: {
+                                                    self.newsService.requestCoverLoad(for: item)
+                                                }
+                                            ) {
+                                                self.onOpenWorkspace(item.id)
+                                            }
+                                        } else {
+                                            Color.clear
+                                                .frame(maxWidth: .infinity)
+                                                .frame(height: slotH)
+                                        }
                                     }
-                                ) {
-                                    self.onOpenWorkspace(item.id)
                                 }
-                            }
-                            if useTwoColumns && activeItems.count < 2 {
-                                Color.clear
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: slotH)
                             }
                         }
                         .frame(maxWidth: .infinity)
-                        .frame(height: slotH, alignment: .top)
+                        .frame(height: gridAvailH, alignment: .top)
                         .id("dash-news-page-\(self.newsService.selectedCategory.rawValue)-\(safePage)")
                         .transition(
                             DashMotion.isReducedMotion
@@ -1866,6 +1884,7 @@ private struct NewsMiniVisualCard: View {
     let isRead: Bool
     let coverHeight: CGFloat
     let slotHeight: CGFloat
+    var showPublisherLine: Bool = true
     let palette: DashPalette
     let onAppearLoadCover: () -> Void
     let onTap: () -> Void
@@ -1896,16 +1915,16 @@ private struct NewsMiniVisualCard: View {
                     if !self.isRead {
                         Circle()
                             .fill(self.palette.accentFill)
-                            .frame(width: 5.5, height: 5.5)
+                            .frame(width: 5, height: 5)
                             .padding(5)
                     }
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: self.coverHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 6.5, style: .continuous))
                 
                 Text(self.item.title)
-                    .font(.system(size: 11.5, weight: self.isRead ? .regular : .medium))
+                    .font(.system(size: self.showPublisherLine ? 11.5 : 10.8, weight: self.isRead ? .regular : .medium))
                     .foregroundStyle(self.isRead ? self.palette.secondaryInk : self.palette.pine)
                     .lineLimit(2)
                     .lineSpacing(1)
@@ -1913,15 +1932,17 @@ private struct NewsMiniVisualCard: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .layoutPriority(1)
                 
-                Spacer(minLength: 0)
-                
-                Text(publisher.isEmpty ? self.item.resolvedCategory.label : publisher)
-                    .font(.system(size: 10, weight: .regular))
-                    .foregroundStyle(self.palette.mutedInk)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                if self.showPublisherLine {
+                    Spacer(minLength: 0)
+                    
+                    Text(publisher.isEmpty ? self.item.resolvedCategory.label : publisher)
+                        .font(.system(size: 10, weight: .regular))
+                        .foregroundStyle(self.palette.mutedInk)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
-            .padding(6)
+            .padding(self.showPublisherLine ? 6 : 5)
             .frame(maxWidth: .infinity)
             .frame(height: self.slotHeight, alignment: .topLeading)
             .background(
@@ -2143,6 +2164,135 @@ nonisolated enum DashboardHeroDanmakuScheduler {
 }
 
 
+/// Persists and caches the user-uploaded dashboard hero cover photo and its vertical focal alignment.
+@MainActor @Observable
+final class DashboardHeroCoverStore {
+    
+    static let shared = DashboardHeroCoverStore()
+    
+    private let database: CotLocalDatabase
+    private(set) var coverImage: NSImage?
+    
+    var focalY: Double {
+        didSet {
+            let clamped = max(0.0, min(1.0, self.focalY))
+            if abs(clamped - self.focalY) > 0.0001 {
+                self.focalY = clamped
+                return
+            }
+            guard abs(oldValue - clamped) > 0.0001 else { return }
+            self.database.set(String(format: "%.2f", clamped), forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFocalY)
+        }
+    }
+    
+    
+    init(database: CotLocalDatabase = .shared) {
+        self.database = database
+        let rawFocal = Double(database.string(forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFocalY))
+        self.focalY = max(0.0, min(1.0, rawFocal ?? 0.42))
+        self.reloadFromDatabase()
+    }
+    
+    
+    func reloadFromDatabase() {
+        let b64 = self.database.string(forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverImageBase64)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !b64.isEmpty,
+              let data = Data(base64Encoded: b64),
+              let image = NSImage(data: data)
+        else {
+            self.coverImage = nil
+            return
+        }
+        self.coverImage = image
+    }
+    
+    
+    @discardableResult
+    func setCoverImage(from url: URL) -> Bool {
+        guard let image = NSImage(contentsOf: url) else { return false }
+        return self.setCoverImage(image)
+    }
+    
+    
+    @discardableResult
+    func setCoverImage(_ image: NSImage) -> Bool {
+        guard let encodedData = Self.processedCoverJPEGData(from: image),
+              let decoded = NSImage(data: encodedData)
+        else { return false }
+        
+        self.database.set(encodedData.base64EncodedString(), forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverImageBase64)
+        self.coverImage = decoded
+        return true
+    }
+    
+    
+    func clearCoverImage() {
+        self.database.set("", forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverImageBase64)
+        self.coverImage = nil
+        self.focalY = 0.42
+    }
+    
+    
+    func presentImagePicker() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.prompt = AppLanguage.text("设为背景", en: "Use Image")
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor [weak self] in
+                _ = self?.setCoverImage(from: url)
+            }
+        }
+    }
+    
+    
+    private static func processedCoverJPEGData(from image: NSImage, maxDimension: CGFloat = 1920) -> Data? {
+        var proposedRect = NSRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) else {
+            return nil
+        }
+        let srcW = CGFloat(cgImage.width)
+        let srcH = CGFloat(cgImage.height)
+        guard srcW > 0, srcH > 0 else { return nil }
+        
+        let scale = min(1.0, maxDimension / max(srcW, srcH))
+        let dstW = max(1, Int((srcW * scale).rounded()))
+        let dstH = max(1, Int((srcH * scale).rounded()))
+        
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: dstW,
+            pixelsHigh: dstH,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return nil }
+        
+        NSGraphicsContext.saveGraphicsState()
+        if let ctx = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.current = ctx
+            ctx.imageInterpolation = .high
+            NSImage(cgImage: cgImage, size: NSSize(width: dstW, height: dstH)).draw(
+                in: NSRect(x: 0, y: 0, width: dstW, height: dstH),
+                from: .zero,
+                operation: .copy,
+                fraction: 1.0
+            )
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.88])
+    }
+}
+
+
 private struct DashboardAchievementHeroBar: View {
     
     let profile: UserProfile
@@ -2152,31 +2302,18 @@ private struct DashboardAchievementHeroBar: View {
     let palette: DashPalette
     let onBack: (() -> Void)?
     
-    @State private var passStyleIndex: Int
+    @State private var coverStore = DashboardHeroCoverStore.shared
     @State private var serialCode: String
     @State private var hasProLicense: Bool
     @State private var isDanmakuEnabled: Bool
-    @State private var heroHover = HeroHoverTracker()
-    @State private var isArtPressed = false
     @State private var activityGate = AppActivityRenderGate.shared
     @State private var isWindowVisible = true
-    @State private var tapPulseCount: Int = 0
     @State private var isBackHovered = false
     @State private var isToggleHovered = false
-    @State private var isThemePillHovered = false
+    @State private var isCoverButtonHovered = false
+    @State private var isDropTargeted = false
     @State private var hasAppeared = false
-    @State private var brandLineEngine = BrandLinePassEngine()
-    @State private var asciiMatrix: [[CotPassArtEngine.ASCIIPixelCell]] = []
-    @State private var impastoTiles: [CotPassArtEngine.ImpastoTile] = []
-    @State private var cachedArtSize: CGSize = .zero
-    @State private var cachedArtSeed: Int = -1
     @State private var startDate = Date()
-    
-    private static let joinedFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy.MM"
-        return f
-    }()
     
     
     init(
@@ -2195,7 +2332,6 @@ private struct DashboardAchievementHeroBar: View {
         self.onBack = onBack
         
         let db = CotLocalDatabase.shared
-        let syncedStyle = CotPassTheme.themeIndex(for: StudioPaletteManager.shared.selectedID)
         var serial = db.string(forKey: CotLocalDatabase.ConfigKey.cotPassSerialCode)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if serial.isEmpty {
@@ -2208,7 +2344,6 @@ private struct DashboardAchievementHeroBar: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         
-        _passStyleIndex = State(initialValue: syncedStyle)
         _serialCode = State(initialValue: serial)
         _hasProLicense = State(initialValue: tier != .explorer)
         _isDanmakuEnabled = State(initialValue: rawDanmaku == "true" || rawDanmaku == "1")
@@ -2268,8 +2403,9 @@ private struct DashboardAchievementHeroBar: View {
         let streakDays = max(1, self.snapshot.currentStreak)
         let todayTotal = self.snapshot.today.typedChars + self.snapshot.today.aiCompletedChars
         let avg14 = Int(self.snapshot.trendCurve14.averageValue.rounded())
-        let activeTheme = CotPassTheme.resolve(index: self.passStyleIndex)
         let isDark = self.palette.tokens.isDark
+        let hasPhoto = (self.coverStore.coverImage != nil)
+        let useDarkGlassPills = hasPhoto || isDark
         let moodLabel = self.snapshot.mood.dominantLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayMood = moodLabel.isEmpty ? AppLanguage.text("冷静", en: "Calm") : moodLabel
         let padH: CGFloat = self.compact ? 16 : 22
@@ -2278,10 +2414,10 @@ private struct DashboardAchievementHeroBar: View {
         
         GeometryReader { heroGeo in
             VStack(alignment: .leading, spacing: 0) {
-                // Top control bar: fixed 26pt height, left/right optically balanced over open fluted-glass sky
+                // Top floating frosted glass controls over photo / mist header
                 HStack(alignment: .center, spacing: 8) {
                     if let onBack = self.onBack {
-                        self.heroBackButton(action: onBack)
+                        self.heroBackButton(useDarkGlass: useDarkGlassPills, action: onBack)
                     } else {
                         Color.clear
                             .frame(width: 1, height: 26)
@@ -2293,28 +2429,28 @@ private struct DashboardAchievementHeroBar: View {
                         if self.compact {
                             Text(displayMood)
                                 .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(isDark ? Color.white.opacity(0.92) : Color(red: 0.051, green: 0.145, blue: 0.259))
+                                .foregroundStyle(self.heroCapsuleInk(useDarkGlass: useDarkGlassPills))
                                 .padding(.horizontal, 9)
                                 .frame(height: 26)
-                                .background(self.heroCapsuleBackground(isDark: isDark, hovered: false), in: Capsule())
-                                .overlay(Capsule().strokeBorder(self.heroCapsuleBorder(isDark: isDark, hovered: false), lineWidth: 0.8))
+                                .background(self.heroCapsuleBackground(useDarkGlass: useDarkGlassPills, hovered: false), in: Capsule())
+                                .overlay(Capsule().strokeBorder(self.heroCapsuleBorder(useDarkGlass: useDarkGlassPills, hovered: false), lineWidth: 0.8))
                         }
                         
-                        self.danmakuToggleButton
-                        self.subtleThemeSwitcherPill(activeTheme: activeTheme)
+                        self.danmakuToggleButton(useDarkGlass: useDarkGlassPills)
+                        self.coverImageControlPill(useDarkGlass: useDarkGlassPills, hasPhoto: hasPhoto)
                     }
                 }
                 .frame(height: 26)
                 
-                Spacer(minLength: self.compact ? 8 : 14)
+                Spacer(minLength: self.compact ? 10 : 18)
                 
-                // Bottom aligned identity + telemetry bar sharing a unified horizontal center & text baseline
+                // Bottom editorial identity + telemetry strip resting on melted pure card surface
                 HStack(alignment: .center, spacing: 0) {
                     self.identityLockup(streakDays: streakDays)
                         .frame(width: self.compact ? 186 : 228, alignment: .leading)
                     
                     Rectangle()
-                        .fill(Color.white.opacity(0.20))
+                        .fill(self.palette.hairlineStrong)
                         .frame(width: 1, height: self.compact ? 28 : 34)
                         .padding(.horizontal, self.compact ? 14 : 22)
                     
@@ -2333,38 +2469,28 @@ private struct DashboardAchievementHeroBar: View {
             .padding(.vertical, padV)
             .frame(width: heroGeo.size.width, height: heroGeo.size.height, alignment: .topLeading)
             .background {
-                HeroFlutedPrismBackdrop(
-                    activeTheme: activeTheme,
-                    isDark: isDark,
-                    tracker: self.heroHover
+                HeroPhotoFadeBackdrop(
+                    coverImage: self.coverStore.coverImage,
+                    focalY: self.coverStore.focalY,
+                    palette: self.palette
                 )
             }
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.white.opacity(isDark ? 0.16 : 0.52), lineWidth: 1)
+                    .strokeBorder(
+                        self.isDropTargeted ? self.palette.accentFill : self.palette.hairline,
+                        lineWidth: self.isDropTargeted ? 1.8 : 0.85
+                    )
             )
             .shadow(
-                color: isDark ? Color.black.opacity(0.28) : Color(red: 0.04, green: 0.16, blue: 0.36).opacity(0.10),
-                radius: 10,
+                color: self.palette.cardShadow,
+                radius: 6,
                 x: 0,
-                y: 4
+                y: 2
             )
-            .onContinuousHover { phase in
-                let w = max(120.0, heroGeo.size.width)
-                let h = max(60.0, heroGeo.size.height)
-                switch phase {
-                    case .active(let loc):
-                        if !self.heroHover.isHovered { self.heroHover.isHovered = true }
-                        let nx = max(0.04, min(0.96, loc.x / w))
-                        let ny = max(0.05, min(0.95, loc.y / h))
-                        if abs(nx - self.heroHover.norm.x) > 0.02 || abs(ny - self.heroHover.norm.y) > 0.02 {
-                            self.heroHover.norm = CGPoint(x: nx, y: ny)
-                        }
-                    case .ended:
-                        if self.heroHover.isHovered { self.heroHover.isHovered = false }
-                        self.heroHover.norm = CGPoint(x: 0.5, y: 0.5)
-                }
+            .onDrop(of: [.fileURL], isTargeted: self.$isDropTargeted) { providers in
+                self.handleImageDrop(providers: providers)
             }
             .observeWindowRenderActivity(self.$isWindowVisible)
             .onAppear {
@@ -2377,30 +2503,52 @@ private struct DashboardAchievementHeroBar: View {
     }
     
     
-    private func heroCapsuleInk(isDark: Bool) -> Color {
-        isDark ? Color.white.opacity(0.95) : Color(red: 0.051, green: 0.145, blue: 0.259)
-    }
-    
-    
-    private func heroCapsuleBackground(isDark: Bool, hovered: Bool) -> Color {
-        if isDark {
-            return Color.black.opacity(hovered ? 0.46 : 0.34)
+    private func handleImageDrop(providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) else {
+            return false
         }
-        return Color.white.opacity(hovered ? 0.94 : 0.82)
-    }
-    
-    
-    private func heroCapsuleBorder(isDark: Bool, hovered: Bool) -> Color {
-        if isDark {
-            return Color.white.opacity(hovered ? 0.32 : 0.18)
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+            let url: URL? = {
+                if let data = item as? Data {
+                    return URL(dataRepresentation: data, relativeTo: nil)
+                }
+                if let direct = item as? URL {
+                    return direct
+                }
+                return nil
+            }()
+            guard let url else { return }
+            Task { @MainActor in
+                _ = self.coverStore.setCoverImage(from: url)
+            }
         }
-        return Color.white.opacity(hovered ? 0.98 : 0.88)
+        return true
     }
     
     
-    private func heroBackButton(action: @escaping () -> Void) -> some View {
-        let isDark = self.palette.tokens.isDark
-        return Button(action: action) {
+    private func heroCapsuleInk(useDarkGlass: Bool) -> Color {
+        useDarkGlass ? Color.white.opacity(0.94) : self.palette.pine
+    }
+    
+    
+    private func heroCapsuleBackground(useDarkGlass: Bool, hovered: Bool) -> Color {
+        if useDarkGlass {
+            return Color.black.opacity(hovered ? 0.56 : 0.42)
+        }
+        return Color.white.opacity(hovered ? 0.96 : 0.84)
+    }
+    
+    
+    private func heroCapsuleBorder(useDarkGlass: Bool, hovered: Bool) -> Color {
+        if useDarkGlass {
+            return Color.white.opacity(hovered ? 0.34 : 0.20)
+        }
+        return self.palette.hairlineStrong.opacity(hovered ? 1.0 : 0.72)
+    }
+    
+    
+    private func heroBackButton(useDarkGlass: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             HStack(spacing: 3.5) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 10, weight: .semibold))
@@ -2408,18 +2556,17 @@ private struct DashboardAchievementHeroBar: View {
                 Text(AppLanguage.text("返回", en: "Back"))
                     .font(.system(size: 11.5, weight: .medium))
             }
-            .foregroundStyle(self.heroCapsuleInk(isDark: isDark))
+            .foregroundStyle(self.heroCapsuleInk(useDarkGlass: useDarkGlass))
             .padding(.horizontal, 10)
             .frame(height: 26)
             .background(
-                self.heroCapsuleBackground(isDark: isDark, hovered: self.isBackHovered),
+                self.heroCapsuleBackground(useDarkGlass: useDarkGlass, hovered: self.isBackHovered),
                 in: Capsule()
             )
             .overlay(
                 Capsule()
-                    .strokeBorder(self.heroCapsuleBorder(isDark: isDark, hovered: self.isBackHovered), lineWidth: 0.8)
+                    .strokeBorder(self.heroCapsuleBorder(useDarkGlass: useDarkGlass, hovered: self.isBackHovered), lineWidth: 0.8)
             )
-            .shadow(color: Color.black.opacity(isDark ? 0.24 : 0.06), radius: 4, y: 1)
             .contentShape(Capsule())
         }
         .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.94))
@@ -2434,90 +2581,138 @@ private struct DashboardAchievementHeroBar: View {
     }
     
     
-    private func subtleThemeSwitcherPill(activeTheme: CotPassTheme) -> some View {
-        let isDark = self.palette.tokens.isDark
-        let ink = self.heroCapsuleInk(isDark: isDark)
-        let activeDotColor = isDark ? Color.white : self.palette.accentFill
-        return Button {
-            let next = (self.passStyleIndex + 1) % CotPassTheme.allThemes.count
-            let nextTheme = CotPassTheme.resolve(index: next)
-            withAnimation(DashMotion.resolve(DashMotion.springCard)) {
-                self.passStyleIndex = next
-            }
-            CotLocalDatabase.shared.set("\(next)", forKey: CotLocalDatabase.ConfigKey.cotPassStyleIndex)
-            StudioPaletteManager.shared.selectPalette(nextTheme.pairedStudioPalette, syncEditorTheme: true)
-        } label: {
-            HStack(spacing: 6) {
-                Text(activeTheme.title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(ink)
-                    .contentTransition(.numericText())
-                HStack(spacing: 3) {
-                    ForEach(CotPassTheme.allThemes) { theme in
-                        let isActive = (theme.id == activeTheme.id)
-                        Capsule()
-                            .fill(isActive ? activeDotColor : ink.opacity(0.26))
-                            .frame(width: isActive ? 10 : 4, height: 4)
+    @ViewBuilder
+    private func coverImageControlPill(useDarkGlass: Bool, hasPhoto: Bool) -> some View {
+        let ink = self.heroCapsuleInk(useDarkGlass: useDarkGlass)
+        let pillLabel = HStack(spacing: 5) {
+            Image(systemName: hasPhoto ? "photo" : "photo.badge.plus")
+                .font(.system(size: 10.5, weight: .semibold))
+            Text(hasPhoto
+                 ? AppLanguage.text("背景图", en: "Cover")
+                 : AppLanguage.text("上传背景", en: "Add Cover"))
+                .font(.system(size: 11, weight: .medium))
+        }
+        .foregroundStyle(ink)
+        .padding(.horizontal, 10)
+        .frame(height: 26)
+        .background(
+            self.heroCapsuleBackground(useDarkGlass: useDarkGlass, hovered: self.isCoverButtonHovered),
+            in: Capsule()
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(self.heroCapsuleBorder(useDarkGlass: useDarkGlass, hovered: self.isCoverButtonHovered), lineWidth: 0.8)
+        )
+        .contentShape(Capsule())
+        
+        if hasPhoto {
+            Menu {
+                Button {
+                    self.coverStore.presentImagePicker()
+                } label: {
+                    Label(AppLanguage.text("更换背景图片…", en: "Choose New Image…"), systemImage: "photo.badge.plus")
+                }
+                
+                Divider()
+                
+                Button {
+                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                        self.coverStore.focalY = 0.15
+                    }
+                } label: {
+                    HStack {
+                        Text(AppLanguage.text("画面偏上", en: "Focus Top"))
+                        if self.coverStore.focalY < 0.30 { Image(systemName: "checkmark") }
                     }
                 }
-                .animation(DashMotion.resolve(DashMotion.springCard), value: activeTheme.id)
+                
+                Button {
+                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                        self.coverStore.focalY = 0.45
+                    }
+                } label: {
+                    HStack {
+                        Text(AppLanguage.text("画面居中", en: "Focus Center"))
+                        if self.coverStore.focalY >= 0.30 && self.coverStore.focalY <= 0.65 { Image(systemName: "checkmark") }
+                    }
+                }
+                
+                Button {
+                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                        self.coverStore.focalY = 0.82
+                    }
+                } label: {
+                    HStack {
+                        Text(AppLanguage.text("画面偏下", en: "Focus Bottom"))
+                        if self.coverStore.focalY > 0.65 { Image(systemName: "checkmark") }
+                    }
+                }
+                
+                Divider()
+                
+                Button(role: .destructive) {
+                    withAnimation(DashMotion.resolve(DashMotion.standard)) {
+                        self.coverStore.clearCoverImage()
+                    }
+                } label: {
+                    Label(AppLanguage.text("移除背景图片", en: "Remove Cover"), systemImage: "trash")
+                }
+            } label: {
+                pillLabel
             }
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .background(
-                self.heroCapsuleBackground(isDark: isDark, hovered: self.isThemePillHovered),
-                in: Capsule()
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(self.heroCapsuleBorder(isDark: isDark, hovered: self.isThemePillHovered), lineWidth: 0.8)
-            )
-            .shadow(color: Color.black.opacity(isDark ? 0.24 : 0.06), radius: 4, y: 1)
-            .contentShape(Capsule())
-        }
-        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.95))
-        .pointerStyle(.link)
-        .onHover { hovering in
-            guard hovering != self.isThemePillHovered else { return }
-            withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                self.isThemePillHovered = hovering
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .pointerStyle(.link)
+            .onHover { hovering in
+                guard hovering != self.isCoverButtonHovered else { return }
+                withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                    self.isCoverButtonHovered = hovering
+                }
+            }
+        } else {
+            Button {
+                self.coverStore.presentImagePicker()
+            } label: {
+                pillLabel
+            }
+            .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.95))
+            .pointerStyle(.link)
+            .onHover { hovering in
+                guard hovering != self.isCoverButtonHovered else { return }
+                withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                    self.isCoverButtonHovered = hovering
+                }
             }
         }
     }
     
     
     private func identityLockup(streakDays: Int) -> some View {
-        let ambient = AvatarColorExtractor.extractPalette(for: self.profile, image: self.avatarImage)
-        let accentColor = ambient.accent
         let tierBadge = self.hasProLicense ? "PRO" : "PASS"
         let subLabel = "#\(String(self.serialCode.prefix(4)))"
         
         return HStack(alignment: .center, spacing: 12) {
-            self.authorPortrait(size: self.compact ? 40 : 46, accent: accentColor)
+            self.authorPortrait(size: self.compact ? 40 : 46)
             
             VStack(alignment: .leading, spacing: 3) {
                 Text(self.profile.displayName)
                     .font(.system(size: self.compact ? 16.5 : 19, weight: .bold))
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(self.palette.pine)
                     .lineLimit(1)
                     .minimumScaleFactor(0.80)
-                    .shadow(color: Color(red: 0, green: 0.075, blue: 0.18).opacity(0.28), radius: 3, y: 1)
                 
                 HStack(spacing: 6) {
                     Text(tierBadge)
                         .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.white.opacity(0.95))
+                        .foregroundStyle(self.palette.accentFill)
                         .padding(.horizontal, 6)
                         .frame(height: 16)
-                        .background(Color.white.opacity(0.18), in: Capsule())
-                        .overlay(
-                            Capsule()
-                                .strokeBorder(Color.white.opacity(0.26), lineWidth: 0.6)
-                        )
+                        .background(self.palette.tokens.positivePillBg, in: Capsule())
                     
                     Text(subLabel)
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.76))
+                        .foregroundStyle(self.palette.mutedInk)
                         .lineLimit(1)
                 }
             }
@@ -2587,10 +2782,10 @@ private struct DashboardAchievementHeroBar: View {
                             HStack(spacing: 5) {
                                 Text(AppLanguage.text("心境", en: "Mood"))
                                     .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(Color.white.opacity(0.72))
+                                    .foregroundStyle(self.palette.mutedInk)
                                 Text("\(self.snapshot.mood.score)")
                                     .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
-                                    .foregroundStyle(Color.white.opacity(0.92))
+                                    .foregroundStyle(self.palette.accentFill)
                                     .contentTransition(.numericText())
                             }
                             .lineLimit(1)
@@ -2598,16 +2793,15 @@ private struct DashboardAchievementHeroBar: View {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Text(displayMood)
                                     .font(.system(size: 20, weight: .bold))
-                                    .foregroundStyle(Color.white)
+                                    .foregroundStyle(self.palette.pine)
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.75)
-                                    .shadow(color: Color(red: 0, green: 0.075, blue: 0.18).opacity(0.25), radius: 2, y: 1)
                                 
                                 HStack(alignment: .bottom, spacing: 3) {
                                     ForEach(Array(rhythmBars.enumerated()), id: \.element.id) { idx, slice in
                                         let h = max(5, CGFloat(slice.intensity) * 18)
                                         Capsule(style: .continuous)
-                                            .fill(slice.intensity > 0.35 ? Color.white.opacity(0.88) : Color.white.opacity(0.32))
+                                            .fill(slice.intensity > 0.35 ? self.palette.accentFill : self.palette.accentFill.opacity(0.22))
                                             .frame(width: 3, height: h)
                                             .scaleEffect(
                                                 y: self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.15,
@@ -2631,10 +2825,9 @@ private struct DashboardAchievementHeroBar: View {
     }
     
     
-    private var danmakuToggleButton: some View {
-        let isDark = self.palette.tokens.isDark
-        let ink = self.heroCapsuleInk(isDark: isDark)
-        let trackInactive = isDark ? Color.white.opacity(0.22) : ink.opacity(0.18)
+    private func danmakuToggleButton(useDarkGlass: Bool) -> some View {
+        let ink = self.heroCapsuleInk(useDarkGlass: useDarkGlass)
+        let trackInactive = useDarkGlass ? Color.white.opacity(0.26) : ink.opacity(0.18)
         return Button {
             let next = !self.isDanmakuEnabled
             if next {
@@ -2666,14 +2859,13 @@ private struct DashboardAchievementHeroBar: View {
             .padding(.horizontal, 10)
             .frame(height: 26)
             .background(
-                self.heroCapsuleBackground(isDark: isDark, hovered: self.isToggleHovered),
+                self.heroCapsuleBackground(useDarkGlass: useDarkGlass, hovered: self.isToggleHovered),
                 in: Capsule()
             )
             .overlay(
                 Capsule()
-                    .strokeBorder(self.heroCapsuleBorder(isDark: isDark, hovered: self.isToggleHovered), lineWidth: 0.8)
+                    .strokeBorder(self.heroCapsuleBorder(useDarkGlass: useDarkGlass, hovered: self.isToggleHovered), lineWidth: 0.8)
             )
-            .shadow(color: Color.black.opacity(isDark ? 0.24 : 0.06), radius: 4, y: 1)
             .contentShape(Capsule())
         }
         .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.95))
@@ -2688,7 +2880,7 @@ private struct DashboardAchievementHeroBar: View {
     }
     
     
-    private func authorPortrait(size: CGFloat, accent: Color) -> some View {
+    private func authorPortrait(size: CGFloat) -> some View {
         ZStack {
             if let avatarImage = self.avatarImage {
                 Image(nsImage: avatarImage)
@@ -2706,25 +2898,8 @@ private struct DashboardAchievementHeroBar: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.72), lineWidth: 1.25)
+                .strokeBorder(self.palette.hairlineStrong, lineWidth: 1.0)
         )
-        .shadow(color: Color.black.opacity(0.22), radius: 8, y: 3)
-    }
-    
-    
-    private func microPixelBadge(seed: Int) -> some View {
-        HStack(spacing: 1.5) {
-            ForEach(0..<5, id: \.self) { col in
-                VStack(spacing: 1.5) {
-                    ForEach(0..<2, id: \.self) { row in
-                        let on = ((seed >> (col + row * 3)) & 1) == 1
-                        Rectangle()
-                            .fill(on ? self.palette.accentFill : self.palette.pine.opacity(0.18))
-                            .frame(width: 2.5, height: 2.5)
-                    }
-                }
-            }
-        }
     }
     
     
@@ -2732,19 +2907,18 @@ private struct DashboardAchievementHeroBar: View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Color.white.opacity(0.72))
+                .foregroundStyle(self.palette.mutedInk)
                 .lineLimit(1)
             
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(value)
                     .font(.system(size: self.compact ? 17 : 20, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(self.palette.pine)
                     .contentTransition(.numericText())
                     .lineLimit(1)
-                    .shadow(color: Color(red: 0, green: 0.075, blue: 0.18).opacity(0.25), radius: 2, y: 1)
                 Text(unit)
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(Color.white.opacity(0.74))
+                    .foregroundStyle(self.palette.mutedInk)
                     .lineLimit(1)
             }
         }
@@ -2777,21 +2951,21 @@ private struct DashboardAchievementHeroBar: View {
                 if fade > 0.02 {
                     HStack(spacing: 5) {
                         Circle()
-                            .fill(Color.white.opacity(0.92))
+                            .fill(self.palette.accentFill)
                             .frame(width: 4.5, height: 4.5)
                         Text(item.text)
                             .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(Color.white)
+                            .foregroundStyle(self.palette.pine)
                             .lineLimit(1)
                     }
                     .padding(.horizontal, 9)
                     .frame(height: pillHeight)
                     .background(
                         Capsule()
-                            .fill(Color.white.opacity(0.16))
+                            .fill(self.palette.inset)
                             .overlay(
                                 Capsule()
-                                    .strokeBorder(Color.white.opacity(0.28), lineWidth: 0.75)
+                                    .strokeBorder(self.palette.hairline, lineWidth: 0.75)
                             )
                     )
                     .position(x: centerX, y: centerY)
@@ -2800,164 +2974,95 @@ private struct DashboardAchievementHeroBar: View {
             }
         }
     }
-    
-    
-    private func integratedPassGalleryStub(seed: Int) -> some View {
-        let activeTheme = CotPassTheme.resolve(index: self.passStyleIndex)
-        let isArtHovered = self.heroHover.isHovered
-        let hoverNorm = self.heroHover.norm
-        let tiltX = isArtHovered ? Double((hoverNorm.y - 0.5) * -7.5) : 0
-        let tiltY = isArtHovered ? Double((hoverNorm.x - 0.5) * 9.5) : 0
-        
-        return GeometryReader { geo in
-            let rect = CGRect(origin: .zero, size: geo.size)
-            ZStack {
-                // Authentic LeiBox Fluted Glass Prism (leibox.pantoria.cn/docs/animations/blue-fluted-glass)
-                LeiBoxFlutedPrismView(
-                    theme: activeTheme,
-                    renderWidth: 164,
-                    renderHeight: 96,
-                    ribCount: 38.0,
-                    animate: true,
-                    specularPoint: UnitPoint(x: hoverNorm.x, y: hoverNorm.y),
-                    isHovered: isArtHovered
-                )
-                .frame(width: rect.width, height: rect.height)
-                .clipped()
-                .allowsHitTesting(false)
-                
-                // Bottom minimal colorway switcher readout & dots
-                VStack {
-                    Spacer()
-                    HStack(alignment: .center, spacing: 6) {
-                        Text(activeTheme.title)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.white.opacity(0.92))
-                            .fixedSize(horizontal: true, vertical: false)
-                        
-                        Spacer(minLength: 4)
-                        
-                        HStack(spacing: 3.5) {
-                            ForEach(CotPassTheme.allThemes) { theme in
-                                let isActive = (theme.id == activeTheme.id)
-                                Capsule()
-                                    .fill(isActive ? Color.white : Color.white.opacity(0.38))
-                                    .frame(width: isActive ? 11 : 4, height: 4)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(
-                        LinearGradient(
-                            colors: [Color.clear, Color.black.opacity(0.42)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                }
-                .allowsHitTesting(false)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(
-                        Color.white.opacity(isArtHovered ? 0.48 : 0.22),
-                        lineWidth: isArtHovered ? 1.1 : 0.8
-                    )
-            )
-            .scaleEffect(self.isArtPressed ? 0.965 : (isArtHovered ? 1.018 : 1.0))
-            .rotation3DEffect(.degrees(tiltX), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
-            .rotation3DEffect(.degrees(tiltY), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
-            .animation(.spring(response: 0.24, dampingFraction: 0.76), value: isArtHovered)
-            .animation(.spring(response: 0.18, dampingFraction: 0.68), value: self.isArtPressed)
-            .animation(.easeOut(duration: 0.22), value: self.passStyleIndex)
-            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .onContinuousHover { phase in
-                switch phase {
-                    case .active(let loc):
-                        if !self.heroHover.isHovered { self.heroHover.isHovered = true }
-                        let nx = max(0, min(1, loc.x / max(1, rect.width)))
-                        let ny = max(0, min(1, loc.y / max(1, rect.height)))
-                        if abs(nx - self.heroHover.norm.x) > 0.02 || abs(ny - self.heroHover.norm.y) > 0.02 {
-                            self.heroHover.norm = CGPoint(x: nx, y: ny)
-                        }
-                    case .ended:
-                        if self.heroHover.isHovered { self.heroHover.isHovered = false }
-                        self.heroHover.norm = CGPoint(x: 0.5, y: 0.5)
-                }
-            }
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        if !self.isArtPressed { self.isArtPressed = true }
-                    }
-                    .onEnded { value in
-                        self.isArtPressed = false
-                        if rect.insetBy(dx: -8, dy: -8).contains(value.location) {
-                            let next = (self.passStyleIndex + 1) % CotPassTheme.allThemes.count
-                            let nextTheme = CotPassTheme.resolve(index: next)
-                            self.passStyleIndex = next
-                            self.tapPulseCount &+= 1
-                            CotLocalDatabase.shared.set("\(next)", forKey: CotLocalDatabase.ConfigKey.cotPassStyleIndex)
-                            StudioPaletteManager.shared.selectPalette(nextTheme.pairedStudioPalette, syncEditorTheme: true)
-                        }
-                    }
-            )
-            .pointerStyle(.link)
-            .help(AppLanguage.text("点击切换棱镜与全局配色", en: "Click to switch prism & global palette"))
-        }
-    }
-    
-    
-    private func syncStubCaches(seed: Int) {
-        self.brandLineEngine.syncAvatarContour(profile: self.profile, avatarImage: self.avatarImage)
-        self.asciiMatrix = CotPassArtEngine.buildASCIIPixelMatrix(
-            from: self.brandLineEngine.contourField,
-            cols: self.compact ? 8 : 9,
-            rows: self.compact ? 5 : 6
-        )
-        if self.cachedArtSeed != seed, self.cachedArtSize.width > 20 {
-            self.cachedArtSeed = seed
-            self.impastoTiles = CotPassArtEngine.computeImpastoTiles(
-                seed: seed,
-                in: CGRect(origin: .zero, size: self.cachedArtSize)
-            )
-        }
-    }
 }
 
 
-@MainActor @Observable
-private final class HeroHoverTracker {
-    var norm = CGPoint(x: 0.5, y: 0.5)
-    var isHovered = false
-}
-
-
-private struct HeroFlutedPrismBackdrop: View {
+/// Clean photographic hero backdrop that melts smoothly downward into the card surface (no dark prism slab).
+private struct HeroPhotoFadeBackdrop: View {
     
-    let activeTheme: CotPassTheme
-    let isDark: Bool
-    var tracker: HeroHoverTracker
+    let coverImage: NSImage?
+    let focalY: Double
+    let palette: DashPalette
     
     var body: some View {
-        GeometryReader { bgGeo in
-            let adaptiveRibs = max(48.0, (Double(bgGeo.size.width) / 13.5).rounded())
-            LeiBoxFlutedPrismView(
-                theme: self.activeTheme,
-                renderWidth: 360,
-                renderHeight: 96,
-                ribCount: adaptiveRibs,
-                animate: true,
-                specularPoint: UnitPoint(x: self.tracker.norm.x, y: self.tracker.norm.y),
-                isHovered: self.tracker.isHovered,
-                uniformBannerMode: true,
-                darkModeAdapt: self.isDark
-            )
-            .frame(width: bgGeo.size.width, height: bgGeo.size.height)
+        let isDark = self.palette.tokens.isDark
+        let cardColor = self.palette.card
+        
+        ZStack(alignment: .top) {
+            cardColor
+            
+            if let coverImage = self.coverImage {
+                GeometryReader { geo in
+                    let targetW = max(1, geo.size.width)
+                    let targetH = max(1, geo.size.height)
+                    let imgSize = coverImage.size
+                    let imgAspect = (imgSize.height > 0) ? (imgSize.width / imgSize.height) : 1.77
+                    let renderedH = max(targetH, targetW / max(0.2, imgAspect))
+                    let overflowY = max(0, renderedH - targetH)
+                    let clampedFocal = max(0.0, min(1.0, self.focalY))
+                    let yOffset = -overflowY * CGFloat(clampedFocal)
+                    
+                    Image(nsImage: coverImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: targetW, height: renderedH, alignment: .top)
+                        .offset(y: yOffset)
+                        .frame(width: targetW, height: targetH, alignment: .top)
+                        .clipped()
+                }
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .white, location: 0.00),
+                            .init(color: .white.opacity(0.96), location: 0.30),
+                            .init(color: .white.opacity(0.54), location: 0.52),
+                            .init(color: .white.opacity(0.14), location: 0.67),
+                            .init(color: .clear, location: 0.78),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                
+                // Silky card-surface mist wash ensuring crisp lower typography on any photo
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.00),
+                        .init(color: .clear, location: 0.24),
+                        .init(color: cardColor.opacity(0.55), location: 0.54),
+                        .init(color: cardColor.opacity(0.92), location: 0.69),
+                        .init(color: cardColor, location: 0.78),
+                        .init(color: cardColor, location: 1.00),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            } else {
+                // Soft, airy daylight mist default wash (zero heavy dark colors)
+                ZStack {
+                    LinearGradient(
+                        stops: [
+                            .init(color: self.palette.accentFill.opacity(isDark ? 0.16 : 0.09), location: 0.00),
+                            .init(color: self.palette.tokens.secondaryAccent.opacity(isDark ? 0.08 : 0.05), location: 0.36),
+                            .init(color: cardColor.opacity(0.0), location: 0.72),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    
+                    RadialGradient(
+                        colors: [
+                            self.palette.accentFill.opacity(isDark ? 0.14 : 0.08),
+                            Color.clear,
+                        ],
+                        center: UnitPoint(x: 0.78, y: 0.08),
+                        startRadius: 10,
+                        endRadius: 340
+                    )
+                }
+            }
         }
-        .animation(DashMotion.resolve(DashMotion.standard), value: self.activeTheme.id)
         .allowsHitTesting(false)
     }
 }

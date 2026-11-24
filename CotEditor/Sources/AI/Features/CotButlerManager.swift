@@ -350,7 +350,10 @@ final class CotButlerManager {
             self.streamingDraft = ""
         }
         
-        let systemPrompt = self.buildButlerSystemPrompt()
+        let systemPrompt = self.buildButlerSystemPrompt(
+            resolvedConfig: resolvedConfig,
+            userMessage: text
+        )
         var aiMessages: [AIMessage] = [.system(systemPrompt)]
         for turn in self.messages.suffix(12) {
             if turn.role == "assistant" {
@@ -463,38 +466,72 @@ final class CotButlerManager {
     }
     
     
-    private func buildButlerSystemPrompt() -> String {
+    private static let localClockFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy年M月d日 EEEE HH:mm (ZZZZ)"
+        return formatter
+    }()
+    
+    
+    func buildButlerSystemPrompt(
+        resolvedConfig: AIConfiguration? = nil,
+        userMessage: String = "",
+        now: Date = Date()
+    ) -> String {
         let workspaceSummary = CotAgentCoordinator.shared.workspaceContextSummary()
         let kyc = self.memoryStore.compiledKYCContext()
         let globalPersona = self.database.aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
         let butlerCfg = AIBotStore.shared.config(for: .butler)
         let customPersona = butlerCfg.customPersona.trimmingCharacters(in: .whitespacesAndNewlines)
         let stagePrompt = AIBotStore.shared.systemPrompt(for: .butler).trimmingCharacters(in: .whitespacesAndNewlines)
+        let activeModel = resolvedConfig?.model.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let timeString = Self.localClockFormatter.string(from: now)
         
-        let botLines = AIBotID.allCases.map { botID -> String in
-            let cfg = AIBotStore.shared.config(for: botID)
-            let status = cfg.isEnabled ? "on" : "off"
-            let model = cfg.modelOverride.isEmpty ? "default" : cfg.modelOverride
-            let custom = cfg.customPersona.isEmpty ? "inherit" : cfg.customPersona
-            return "- \(botID.rawValue) (\(botID.displayName)): \(status), model=\(model), persona=\(custom)"
-        }.joined(separator: "\n")
+        let lowerMsg = userMessage.lowercased()
+        let botManagementKeywords = [
+            "bot", "助手", "续写", "翻译", "提炼", "解释", "周报", "图表",
+            "识图", "整理", "人设", "风格", "全局", "性格", "调教", "切换模型", "换模型",
+        ]
+        let includeBotRoster = botManagementKeywords.contains { lowerMsg.contains($0) }
         
-        return """
-        你是 CotEditor 顶部的「总管家」个人助手，当前名字是「\(self.name)」，昵称「@\(self.nickname)」。
-        \(customPersona.isEmpty ? "" : "专属性格：\(customPersona)\n")\(stagePrompt.isEmpty ? "" : "核心准则：\(stagePrompt)\n")
-        你直接感知整个 CotEditor 工作区、用户本地 SQLite 数据库与多维 KYC 记忆，并可以直接调度其他 Bot、修改全局/单 Bot 偏好、记录用户兴趣资产，以及将工作区窗格切换为股票看盘 / 播客 / NEWS 看板。
+        var lines: [String] = [
+            "你是用户在 CotEditor 里的私人助手「\(self.name)」（昵称「@\(self.nickname)」）。",
+            "当前本地时间：\(timeString)",
+        ]
+        if !activeModel.isEmpty {
+            lines.append("你当前使用的模型：\(activeModel)")
+        }
+        if !customPersona.isEmpty {
+            lines.append("用户为你设定的风格：\(customPersona)")
+        }
+        if !stagePrompt.isEmpty {
+            lines.append("补充要求：\(stagePrompt)")
+        }
+        
+        lines.append("""
+        
+        ## 说话方式（非常重要）
+        - 用自然、顺耳、好懂的日常中文聊天，像一个靠谱又好相处的个人助理；不要端着、不要装酷冷漠，也不要油腻客套。
+        - 问什么答什么，直截了当：
+          - 用户问现在几点、今天星期几，直接根据上面的「当前本地时间」回答。
+          - 用户打招呼（如 hi / 你好 / 在吗），自然打个招呼并顺手问有什么可以帮忙的即可。
+          - 用户问你是什么模型，直接说你当前使用的模型名称即可，不要主动扯出其他助手或一堆配置。
+        - 严禁在给用户看的回复里说内部技术黑话：绝对不要出现「工作区」「编队」「KYC」「SQLite」「数据库」「兴趣资产」「时间戳」「状态栏」「Action」「JSON」「<cot_actions>」以及英文内部ID（如 `ghost`、`butler`、`ocrPolish`、`weeklyReportItem`）。如果确实需要提到其他功能，请用通俗中文名称（如「续写幽灵」「双语翻译官」「周报搭子」）。
+        - 简单问题一两句答清楚，复杂问题再条理清晰地展开。
 
-        ## 表达准则
-        - 回答极简干练、说人话、高信噪比，绝不堆砌客套或废话。
-        - 如果对话中体现出用户的偏好、习惯、禁忌、目标、关注标的/博客/X 账号，或用户要求操作编辑器/调教其他 Bot，务必在回复末尾附带一个 `<cot_actions>...</cot_actions>` JSON 数组，系统会自动执行并向用户展示回执。
+        ## 帮用户执行操作（仅在需要时使用）
+        - 只有当用户明确表达了需要你执行操作（例如：打开看盘/播客/资讯、新建文档、给你改名字、记住某个偏好或禁忌、关注股票/博客/X 账号、调整某个助手的开关/风格/模型）时，才在回复末尾附带 `<cot_actions>[...]</cot_actions>` JSON 数组，系统会自动执行。
+        - 普通闲聊、问答、查时间、问模型时，不要输出 `<cot_actions>`，也不要向用户提及这个标签。
 
-        ## 可执行 Action Schema（放入 <cot_actions>[...]</cot_actions>）
+        可用操作格式（仅放在 `<cot_actions>[...]</cot_actions>` 中）：
         - `{"type":"convert_tab","board":"market|podcast|news|document","query":"可选关键词"}`
         - `{"type":"open_board","board":"market|podcast|news","query":"可选关键词","splitRight":true}`
         - `{"type":"open_document","title":"标题","content":"Markdown内容","splitRight":false}`
         - `{"type":"rename_butler","name":"新名字","nickname":"新昵称"}`
-        - `{"type":"update_global_persona","prompt":"同步给全员 Bot 的新共享人设"}`
-        - `{"type":"update_bot","botID":"butler|ghost|translate|summarize|explain|weeklyReport|weeklyReportItem|interactiveChart|ocrPolish|organizeAndMerge|persona","isEnabled":true,"persona":"可选自定义人设","modelOverride":"可选模型"}`
+        - `{"type":"update_global_persona","prompt":"同步给全部助手的新风格"}`
+        - `{"type":"update_bot","botID":"butler|ghost|translate|summarize|explain|weeklyReport|weeklyReportItem|interactiveChart|ocrPolish|organizeAndMerge|readingCompanion|persona","isEnabled":true,"persona":"可选自定义风格","modelOverride":"可选模型"}`
         - `{"type":"upsert_memory","dimension":"identity|cognition|writingStyle|goals|finance|informationDiet|workflow|taboos","key":"英文唯一键","title":"简短要点","detail":"补充说明","isPinned":false}`
         - `{"type":"delete_memory","keyOrID":"id或key"}`
         - `{"type":"watch_stock","query":"如 恒生科技 / 00700 / NVDA","thesis":"关注理由"}`
@@ -502,17 +539,29 @@ final class CotButlerManager {
         - `{"type":"follow_feed","title":"博客名称","siteURL":"https://...","feedURL":"可选RSS","category":"可选分类"}`
         - `{"type":"follow_creator","platform":"x","handle":"@username","displayName":"显示名","why":"关注原因"}`
         - `{"type":"play_podcast","query":"搜索关键词或播客链接"}`
-
-        ## 当前全局人设
-        \(globalPersona)
-
-        ## 众 Bot 当前编队状态
-        \(botLines)
-
-        \(kyc)
-
-        \(workspaceSummary.isEmpty ? "" : "## 当前实时工作区\n\(workspaceSummary)")
-        """
+        """)
+        
+        if !globalPersona.isEmpty {
+            lines.append("## 用户的全局回复偏好\n\(globalPersona)")
+        }
+        if includeBotRoster {
+            let botLines = AIBotID.allCases.map { botID -> String in
+                let cfg = AIBotStore.shared.config(for: botID)
+                let displayName = AIBotStore.shared.resolvedName(for: botID)
+                let status = cfg.isEnabled ? "已开启" : "已关闭"
+                let model = cfg.modelOverride.isEmpty ? "跟随默认模型" : cfg.modelOverride
+                return "- \(displayName)（内部ID: \(botID.rawValue)）：\(status)，模型：\(model)"
+            }.joined(separator: "\n")
+            lines.append("## 全部助手配置（回复用户时一律使用中文名，不要说出内部ID）\n\(botLines)")
+        }
+        if !kyc.isEmpty {
+            lines.append(kyc)
+        }
+        if !workspaceSummary.isEmpty {
+            lines.append("## 用户当前正在看的文档与页面（仅供背景参考）\n\(workspaceSummary)")
+        }
+        
+        return lines.joined(separator: "\n\n")
     }
     
     

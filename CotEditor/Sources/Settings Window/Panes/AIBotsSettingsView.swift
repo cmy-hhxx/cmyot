@@ -49,12 +49,14 @@ struct GatewaySlot: Identifiable, Equatable {
 }
 
 
-/// Isolated Equatable subscription card so expanding/collapsing one card skips re-evaluating sibling rows.
+/// Isolated Equatable subscription card modeled after cc-switch rows:
+/// provider badge + editable custom name + endpoint subtitle + active status / play / edit / more menu.
 private struct GatewaySubscriptionCardView: View, Equatable {
     
     let slot: GatewaySlot
     let isSelected: Bool
     let isExpanded: Bool
+    let isRenaming: Bool
     let isRevealingKey: Bool
     let isFetchingModels: Bool
     let probe: GatewayProbeStatus?
@@ -62,6 +64,10 @@ private struct GatewaySubscriptionCardView: View, Equatable {
     let isDark: Bool
     let onSelectActive: () -> Void
     let onToggleExpand: () -> Void
+    let onStartRename: () -> Void
+    let onFinishRename: (String) -> Void
+    let onCancelRename: () -> Void
+    let onDuplicate: () -> Void
     let onRemove: () -> Void
     let onTest: () -> Void
     let onRefreshModels: () -> Void
@@ -74,7 +80,11 @@ private struct GatewaySubscriptionCardView: View, Equatable {
     let onSwitchProtocol: (AIEndpoint) -> Void
     
     @State private var isRowHovered = false
-    @State private var isTrashHovered = false
+    @State private var isPlayHovered = false
+    @State private var isEditHovered = false
+    @State private var isMoreHovered = false
+    @State private var draftRename: String = ""
+    @FocusState private var isRenameFocused: Bool
     
     private let labelColumnWidth: CGFloat = 64
     
@@ -82,6 +92,7 @@ private struct GatewaySubscriptionCardView: View, Equatable {
         lhs.slot == rhs.slot
             && lhs.isSelected == rhs.isSelected
             && lhs.isExpanded == rhs.isExpanded
+            && lhs.isRenaming == rhs.isRenaming
             && lhs.isRevealingKey == rhs.isRevealingKey
             && lhs.isFetchingModels == rhs.isFetchingModels
             && lhs.probe == rhs.probe
@@ -90,7 +101,12 @@ private struct GatewaySubscriptionCardView: View, Equatable {
     }
     
     private var cardSurface: Color {
-        self.isDark ? Color.white.opacity(0.055) : Color.white
+        if self.isSelected {
+            return self.isDark
+                ? Color.accentColor.opacity(0.14)
+                : Color.accentColor.opacity(0.065)
+        }
+        return self.isDark ? Color.white.opacity(0.055) : Color.white
     }
     
     private var cardBorder: Color {
@@ -105,12 +121,19 @@ private struct GatewaySubscriptionCardView: View, Equatable {
     }
     
     private var cardTitle: String {
-        let provider = self.slot.profile.provider
         let customName = self.slot.profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if provider != .custom && (customName.isEmpty || customName == provider.label) {
-            return provider.subscriptionTitle
+        if !customName.isEmpty {
+            return customName
         }
-        return self.slot.profile.displayName
+        return self.slot.profile.provider.subscriptionTitle
+    }
+    
+    private var endpointSubtitle: String {
+        let resolved = self.slot.profile.resolvedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !resolved.isEmpty {
+            return resolved
+        }
+        return self.standardURL.isEmpty ? self.slot.profile.endpoint.defaultBaseURL : self.standardURL
     }
     
     private var currentModelText: String {
@@ -150,60 +173,341 @@ private struct GatewaySubscriptionCardView: View, Equatable {
         let isReady = self.slot.isReady
         
         VStack(alignment: .leading, spacing: 0) {
-            // Header Row: Radio + Title + Summary + Test/Delete/Chevron
-            HStack(spacing: 10) {
-                Button(action: self.onSelectActive) {
-                    ZStack {
-                        if self.isSelected {
+            // Header Row: Provider Icon + Editable Name/URL + Model Status + Active/Play/Edit/More
+            HStack(spacing: 11) {
+                self.providerBadge(provider: provider, accent: accent)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    if self.isRenaming {
+                        TextField(
+                            provider.subscriptionTitle,
+                            text: self.$draftRename
+                        )
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2.5)
+                        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(Color.accentColor.opacity(0.65), lineWidth: 1)
+                        )
+                        .focused(self.$isRenameFocused)
+                        .onSubmit {
+                            self.commitInlineRename()
+                        }
+                        .onExitCommand {
+                            self.onCancelRename()
+                        }
+                        .onAppear {
+                            self.draftRename = self.cardTitle
+                            DispatchQueue.main.async {
+                                self.isRenameFocused = true
+                            }
+                        }
+                        .onChange(of: self.isRenameFocused) { _, focused in
+                            if !focused && self.isRenaming {
+                                self.commitInlineRename()
+                            }
+                        }
+                    } else {
+                        Text(self.cardTitle)
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .highPriorityGesture(
+                                TapGesture(count: 2).onEnded {
+                                    self.onStartRename()
+                                }
+                            )
+                            .help(AppLanguage.text("双击名称可快速重命名", en: "Double-click to rename"))
+                    }
+                    
+                    Text(self.endpointSubtitle)
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if !self.isRenaming {
+                        self.onToggleExpand()
+                    }
+                }
+                
+                if !self.isExpanded && !self.isRenaming {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(isReady ? Color.green : Color.orange.opacity(0.85))
+                            .frame(width: 5.5, height: 5.5)
+                        Text(self.currentModelText)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: 132, alignment: .trailing)
+                    }
+                }
+                
+                // Right action strip: Active pill / Play switch + Edit pencil + More menu
+                HStack(spacing: 3) {
+                    if self.isSelected {
+                        HStack(spacing: 4.5) {
                             Circle()
                                 .fill(Color.accentColor)
-                                .frame(width: 16, height: 16)
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 8.5, weight: .bold))
-                                .foregroundStyle(.white)
-                        } else {
-                            Circle()
-                                .strokeBorder(Color.secondary.opacity(0.45), lineWidth: 1.3)
-                                .frame(width: 16, height: 16)
+                                .frame(width: 5.5, height: 5.5)
+                            Text(AppLanguage.text("使用中", en: "Active"))
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(Color.accentColor)
                         }
+                        .padding(.horizontal, 7)
+                        .frame(height: 24)
+                    } else {
+                        Button(action: self.onSelectActive) {
+                            Image(systemName: "play")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(self.isPlayHovered ? Color.accentColor : Color.secondary)
+                                .frame(width: 26, height: 26)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(self.isPlayHovered ? Color.accentColor.opacity(0.10) : Color.clear)
+                                )
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                        .onHover { self.isPlayHovered = $0 }
+                        .help(AppLanguage.text("切换为当前使用", en: "Set as Active"))
                     }
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .help(self.isSelected
-                      ? AppLanguage.text("当前正在使用此服务", en: "Currently active")
-                      : AppLanguage.text("点击切换为此服务", en: "Set as active gateway"))
-                
-                HStack(spacing: 8) {
-                    Text(self.cardTitle)
-                        .font(.system(size: 13.5, weight: self.isSelected ? .semibold : .medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
                     
-                    Spacer(minLength: 8)
+                    Button(action: self.onToggleExpand) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(self.isExpanded || self.isEditHovered ? Color.primary : Color.secondary)
+                            .frame(width: 26, height: 26)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(self.isExpanded
+                                          ? Color.primary.opacity(self.isDark ? 0.12 : 0.08)
+                                          : (self.isEditHovered ? Color.primary.opacity(self.isDark ? 0.08 : 0.05) : Color.clear))
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .onHover { self.isEditHovered = $0 }
+                    .help(self.isExpanded
+                          ? AppLanguage.text("收起配置", en: "Collapse")
+                          : AppLanguage.text("编辑配置", en: "Edit"))
                     
-                    if !self.isExpanded {
-                        HStack(spacing: 6) {
-                            if isReady {
-                                Circle()
-                                    .fill(Color.green)
-                                    .frame(width: 6, height: 6)
+                    Menu {
+                        Button {
+                            self.onStartRename()
+                        } label: {
+                            Label(AppLanguage.text("重命名", en: "Rename"), systemImage: "pencil.line")
+                        }
+                        
+                        if !self.isSelected {
+                            Button {
+                                self.onSelectActive()
+                            } label: {
+                                Label(AppLanguage.text("切换为使用中", en: "Set as Active"), systemImage: "play")
                             }
-                            Text(self.currentModelText)
-                                .font(.system(size: 11.5, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
                         }
+                        
+                        if isReady {
+                            Button {
+                                if !self.isExpanded {
+                                    self.onToggleExpand()
+                                }
+                                self.onTest()
+                            } label: {
+                                Label(AppLanguage.text("测试连接", en: "Test Connection"), systemImage: "bolt.horizontal")
+                            }
+                        }
+                        
+                        Button {
+                            self.onDuplicate()
+                        } label: {
+                            Label(AppLanguage.text("复制配置", en: "Duplicate"), systemImage: "doc.on.doc")
+                        }
+                        
+                        Divider()
+                        
+                        Button(role: .destructive) {
+                            self.onRemove()
+                        } label: {
+                            Label(AppLanguage.text("删除此服务", en: "Delete"), systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(self.isMoreHovered ? Color.primary : Color.secondary)
+                            .frame(width: 26, height: 26)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(self.isMoreHovered ? Color.primary.opacity(self.isDark ? 0.08 : 0.05) : Color.clear)
+                            )
+                            .contentShape(Rectangle())
                     }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .pointerStyle(.link)
+                    .onHover { self.isMoreHovered = $0 }
+                    .help(AppLanguage.text("更多操作", en: "More Actions"))
                 }
-                .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture(perform: self.onToggleExpand)
-                .pointerStyle(.link)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            
+            if self.isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    self.rowDivider
+                    self.expandedFormBody(provider: provider, accent: accent, isReady: isReady)
+                }
+                // Lock natural vertical height so AppKit NSTextFields never squash/relayout per animation frame
+                .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity)
+            }
+        }
+        .clipped()
+        .background(
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(self.isDark ? Color.white.opacity(0.055) : Color.white)
+                if self.isSelected {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(self.cardSurface)
+                }
+            }
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(
+                    self.isSelected ? Color.accentColor.opacity(0.65) : self.cardBorder,
+                    lineWidth: self.isSelected ? 1.25 : 0.85
+                )
+        )
+        .onHover { hovering in
+            if hovering != self.isRowHovered {
+                self.isRowHovered = hovering
+            }
+        }
+        .contextMenu {
+            Button(AppLanguage.text("重命名", en: "Rename")) {
+                self.onStartRename()
+            }
+            if !self.isSelected {
+                Button(AppLanguage.text("切换为使用中", en: "Set as Active")) {
+                    self.onSelectActive()
+                }
+            }
+            Button(self.isExpanded
+                   ? AppLanguage.text("收起配置", en: "Collapse")
+                   : AppLanguage.text("编辑配置", en: "Edit")) {
+                self.onToggleExpand()
+            }
+            Button(AppLanguage.text("复制配置", en: "Duplicate")) {
+                self.onDuplicate()
+            }
+            Divider()
+            Button(AppLanguage.text("删除此服务", en: "Delete"), role: .destructive) {
+                self.onRemove()
+            }
+        }
+    }
+    
+    
+    private func commitInlineRename() {
+        let trimmed = self.draftRename.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            self.onFinishRename(trimmed)
+        } else {
+            self.onCancelRename()
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func providerBadge(provider: AIProvider, accent: Color) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(self.isDark ? Color.white.opacity(0.08) : Color.white)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(self.cardBorder, lineWidth: 0.75)
+                )
+            
+            if provider == .openCodeGo {
+                // Iconic minimalist dark frame emblem matching OpenCode Go
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .strokeBorder(self.isDark ? Color.white.opacity(0.88) : Color(red: 0.14, green: 0.15, blue: 0.18), lineWidth: 2.2)
+                    .frame(width: 12, height: 15)
+                    .overlay(
+                        Rectangle()
+                            .fill((self.isDark ? Color.white : Color.black).opacity(0.28))
+                            .frame(width: 5.5, height: 6)
+                            .offset(y: 2)
+                    )
+            } else {
+                Image(systemName: Self.providerSymbol(for: provider))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(accent)
+            }
+        }
+        .frame(width: 30, height: 30)
+    }
+    
+    
+    private static func providerSymbol(for provider: AIProvider) -> String {
+        switch provider {
+            case .openCodeGo: "terminal.fill"
+            case .openAI: "sparkle"
+            case .anthropic: "sun.max.fill"
+            case .deepSeek: "waveform.path.ecg"
+            case .google: "diamond.fill"
+            case .openRouter: "arrow.triangle.branch"
+            case .moonshot: "moon.stars.fill"
+            case .zhipu: "cpu.fill"
+            case .miniMax: "bolt.fill"
+            case .qwen: "cloud.fill"
+            case .volcengine: "flame.fill"
+            case .siliconFlow: "square.grid.2x2.fill"
+            case .aiHubMix: "circle.hexagongrid.fill"
+            case .ollama: "desktopcomputer"
+            case .custom: "network"
+        }
+    }
+    
+    @ViewBuilder
+    private func expandedFormBody(provider: AIProvider, accent: Color, isReady: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Editable Name Row — always available for EVERY subscription / official API
+            HStack(spacing: 12) {
+                Text(AppLanguage.text("名称", en: "Name"))
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: self.labelColumnWidth, alignment: .leading)
                 
-                if self.isExpanded && isReady {
+                TextField(
+                    provider.subscriptionTitle,
+                    text: Binding(
+                        get: { self.slot.profile.name },
+                        set: { self.onChangeName($0) }
+                    )
+                )
+                .textFieldStyle(.plain)
+                .font(.system(size: 12.5, weight: .medium))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5.5)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 0.85))
+                
+                if isReady {
                     Button(action: self.onTest) {
                         HStack(spacing: 4) {
                             if case .running = self.probe {
@@ -217,7 +521,7 @@ private struct GatewaySubscriptionCardView: View, Equatable {
                         }
                         .foregroundStyle(.primary)
                         .padding(.horizontal, 10)
-                        .frame(height: 25)
+                        .frame(height: 26)
                         .background(
                             Color.primary.opacity(self.isDark ? 0.10 : 0.06),
                             in: RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -228,112 +532,11 @@ private struct GatewaySubscriptionCardView: View, Equatable {
                     .disabled(self.probe == .running)
                     .pointerStyle(.link)
                 }
-                
-                // Clean 1-click delete button on EVERY subscription (visible on row hover or when expanded)
-                Button(action: self.onRemove) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11.5, weight: .regular))
-                        .foregroundStyle(self.isTrashHovered ? Color.red : Color.secondary.opacity(0.65))
-                        .frame(width: 24, height: 24)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(self.isTrashHovered ? Color.red.opacity(0.10) : Color.clear)
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .opacity((self.isExpanded || self.isRowHovered) ? 1.0 : 0.0)
-                .allowsHitTesting(self.isExpanded || self.isRowHovered)
-                .onHover { hovering in
-                    self.isTrashHovered = hovering
-                }
-                .help(AppLanguage.text("删除此服务", en: "Delete"))
-                
-                Button(action: self.onToggleExpand) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(self.isExpanded ? 90 : 0))
-                        .frame(width: 20, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
             
-            if self.isExpanded {
-                VStack(alignment: .leading, spacing: 0) {
-                    self.rowDivider
-                    self.expandedFormBody(provider: provider, accent: accent, isReady: isReady)
-                }
-                // Lock natural vertical height so AppKit NSTextFields never squash/relayout per animation frame
-                .fixedSize(horizontal: false, vertical: true)
-                .transition(.opacity)
-            }
-        }
-        .clipped()
-        .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(
-                    self.isSelected ? Color.accentColor.opacity(0.55) : self.cardBorder,
-                    lineWidth: self.isSelected ? 1.15 : 0.85
-                )
-        )
-        .onHover { hovering in
-            if hovering != self.isRowHovered {
-                self.isRowHovered = hovering
-            }
-        }
-        .contextMenu {
-            if !self.isSelected {
-                Button(AppLanguage.text("设为当前默认服务", en: "Set as Default")) {
-                    self.onSelectActive()
-                }
-            }
-            Button(self.isExpanded
-                   ? AppLanguage.text("收起配置", en: "Collapse")
-                   : AppLanguage.text("展开配置", en: "Expand")) {
-                self.onToggleExpand()
-            }
-            Divider()
-            Button(AppLanguage.text("删除此服务", en: "Delete"), role: .destructive) {
-                self.onRemove()
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private func expandedFormBody(provider: AIProvider, accent: Color, isReady: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if provider == .custom {
-                HStack(spacing: 12) {
-                    Text(AppLanguage.text("名称", en: "Name"))
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: self.labelColumnWidth, alignment: .leading)
-                    
-                    TextField(
-                        AIProvider.custom.subscriptionTitle,
-                        text: Binding(
-                            get: { self.slot.profile.name },
-                            set: { self.onChangeName($0) }
-                        )
-                    )
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5.5)
-                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 0.85))
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                
-                self.rowDivider
-            }
+            self.rowDivider
             
             if self.slot.profile.endpoint.requiresAPIKey {
                 HStack(spacing: 12) {
@@ -642,6 +845,7 @@ struct AIModelsSettingsView: View {
     @State private var slots: [GatewaySlot]
     @State private var activeID: UUID?
     @State private var expandedID: UUID?
+    @State private var renamingID: UUID?
     @State private var revealingKeyIDs: Set<UUID> = []
     @State private var probeStatuses: [UUID: GatewayProbeStatus] = [:]
     @State private var fetchedModelsByID: [UUID: [AIModel]] = [:]
@@ -696,6 +900,7 @@ struct AIModelsSettingsView: View {
                             slot: slot,
                             isSelected: self.activeID == slotID,
                             isExpanded: self.expandedID == slotID,
+                            isRenaming: self.renamingID == slotID,
                             isRevealingKey: self.revealingKeyIDs.contains(slotID),
                             isFetchingModels: self.fetchingModelIDs.contains(slotID),
                             probe: self.probeStatuses[slotID],
@@ -703,6 +908,19 @@ struct AIModelsSettingsView: View {
                             isDark: isDark,
                             onSelectActive: { self.selectActiveSlot(slotID) },
                             onToggleExpand: { self.toggleExpanded(slotID) },
+                            onStartRename: {
+                                withAnimation(.easeOut(duration: 0.12)) {
+                                    self.renamingID = slotID
+                                }
+                            },
+                            onFinishRename: { newName in
+                                self.renamingID = nil
+                                self.commitNameImmediately(newName, for: slotID)
+                            },
+                            onCancelRename: {
+                                self.renamingID = nil
+                            },
+                            onDuplicate: { self.duplicateSlot(slotID) },
                             onRemove: { self.removeSlot(slotID) },
                             onTest: { Task { await self.testSlot(slotID) } },
                             onRefreshModels: { Task { await self.fetchRemoteModels(for: slotID, silentError: false) } },
@@ -871,8 +1089,22 @@ struct AIModelsSettingsView: View {
         self.schedulePersist(for: id)
     }
     
+    private func uniqueSlotName(base: String) -> String {
+        let existing = Set(self.slots.map { $0.profile.name.trimmingCharacters(in: .whitespacesAndNewlines) })
+        if !existing.contains(base) {
+            return base
+        }
+        var n = 2
+        while existing.contains("\(base)-\(n)") {
+            n += 1
+        }
+        return "\(base)-\(n)"
+    }
+    
     private func addProviderSlot(_ provider: AIProvider) {
-        var created = provider.makeProfile(customName: provider == .custom ? AIProvider.custom.subscriptionTitle : provider.subscriptionTitle)
+        let baseTitle = provider == .custom ? AIProvider.custom.subscriptionTitle : provider.subscriptionTitle
+        let uniqueTitle = self.uniqueSlotName(base: baseTitle)
+        var created = provider.makeProfile(customName: uniqueTitle)
         if provider == .custom {
             created.baseURL = ""
             created.model = ""
@@ -889,6 +1121,29 @@ struct AIModelsSettingsView: View {
         }
     }
     
+    private func duplicateSlot(_ id: UUID) {
+        guard let source = self.slots.first(where: { $0.id == id }) else { return }
+        let baseName = source.profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let titleBase = baseName.isEmpty ? source.profile.provider.subscriptionTitle : baseName
+        var cloned = source.profile
+        cloned.id = UUID()
+        cloned.name = self.uniqueSlotName(base: titleBase)
+        let newSlot = GatewaySlot(profile: cloned, apiKey: "")
+        withAnimation(Self.accordionCurve) {
+            if let srcIdx = self.slots.firstIndex(where: { $0.id == id }) {
+                self.slots.insert(newSlot, at: srcIdx + 1)
+            } else {
+                self.slots.append(newSlot)
+            }
+            self.expandedID = newSlot.id
+            self.renamingID = newSlot.id
+        }
+        if let idx = self.slots.firstIndex(where: { $0.id == newSlot.id }) {
+            self.persistSlotInMemoryAndStore(at: idx, makeActive: false)
+            self.scheduleBackendSync()
+        }
+    }
+    
     private func removeSlot(_ id: UUID) {
         guard let idx = self.slots.firstIndex(where: { $0.id == id }) else { return }
         self.persistTasks[id]?.cancel()
@@ -901,6 +1156,9 @@ struct AIModelsSettingsView: View {
             self.slots.remove(at: idx)
             if self.expandedID == id {
                 self.expandedID = nil
+            }
+            if self.renamingID == id {
+                self.renamingID = nil
             }
             if wasActive {
                 self.activeID = self.slots.first?.id
@@ -919,6 +1177,15 @@ struct AIModelsSettingsView: View {
         guard let idx = self.slots.firstIndex(where: { $0.id == id }) else { return }
         self.slots[idx].profile.name = newValue
         self.schedulePersist(for: id)
+    }
+    
+    private func commitNameImmediately(_ newValue: String, for id: UUID) {
+        guard let idx = self.slots.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        self.slots[idx].profile.name = trimmed
+        self.persistSlotInMemoryAndStore(at: idx, makeActive: self.activeID == id)
+        self.scheduleBackendSync()
     }
     
     private func updateAPIKey(_ newKey: String, for id: UUID) {
@@ -1021,6 +1288,7 @@ struct AIModelsSettingsView: View {
         
         var updated = self.slots[index].profile
         let provider = updated.provider
+        let rawTypedName = updated.name
         if updated.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             updated.name = provider == .custom ? AIProvider.custom.subscriptionTitle : provider.subscriptionTitle
         }
@@ -1034,7 +1302,11 @@ struct AIModelsSettingsView: View {
         updated.rememberModels(provider.recommendedModels)
         
         let trimmedKey = self.slots[index].trimmedKey
-        self.slots[index].profile = updated
+        var inMemory = updated
+        if rawTypedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            inMemory.name = rawTypedName
+        }
+        self.slots[index].profile = inMemory
         self.probeStatuses[id] = nil
         
         AIEndpointStore.save(updated, apiKey: trimmedKey)
@@ -1254,7 +1526,7 @@ private struct BotPortraitTileSurface: View, Equatable {
                     .resizable()
                     .interpolation(.high)
                     .scaledToFill()
-                    .frame(width: self.width, height: self.height, alignment: .top)
+                    .frame(width: self.width, height: self.height, alignment: .center)
                     .opacity(self.isEnabled ? 1.0 : 0.48)
             } else {
                 LinearGradient(
@@ -2008,11 +2280,11 @@ struct AIBotsSettingsView: View {
     private static let galleryColumns = 4
     private static let galleryGap: CGFloat = 13
     private static let galleryCardWidth: CGFloat = 122
-    private static let galleryCardHeight: CGFloat = 166
-    private static let galleryRowStride: CGFloat = 214
-    private static let packCardWidth: CGFloat = 126
-    private static let packCardHeight: CGFloat = 170
-    private static let packStageHeight: CGFloat = 224
+    private static let galleryCardHeight: CGFloat = 122
+    private static let galleryRowStride: CGFloat = 172
+    private static let packCardWidth: CGFloat = 148
+    private static let packCardHeight: CGFloat = 148
+    private static let packStageHeight: CGFloat = 204
     
     var settingsState: SidebarSettingsState? = nil
     var initialLayoutMode: BotCollectionLayoutMode = .card
@@ -2226,7 +2498,7 @@ struct AIBotsSettingsView: View {
         let liveNearestIndex = min(maxIndex, max(0, self.packActiveIndex))
         let rowsCount = Int(ceil(Double(count) / Double(Self.galleryColumns)))
         let stageHeight: CGFloat = switch self.layoutMode {
-            case .list: CGFloat(count) * 66.0
+            case .list: CGFloat(count) * 56.0
             case .card: CGFloat(rowsCount) * Self.galleryRowStride
             case .pack: Self.packStageHeight + 70.0
         }
@@ -2347,13 +2619,13 @@ struct AIBotsSettingsView: View {
         let botID = snap.botID
         let accent = Color(hexString: snap.accentHex)
         
-        let artW: CGFloat = self.layoutMode == .list ? 42 : Self.galleryCardWidth
-        let artH: CGFloat = self.layoutMode == .list ? 56 : Self.galleryCardHeight
-        let artCorner: CGFloat = self.layoutMode == .list ? 9 : 15
+        let artW: CGFloat = self.layoutMode == .list ? 44 : Self.galleryCardWidth
+        let artH: CGFloat = self.layoutMode == .list ? 44 : Self.galleryCardHeight
+        let artCorner: CGFloat = self.layoutMode == .list ? 10 : 15
         let itemW: CGFloat = self.layoutMode == .list ? Self.fixedStageWidth : artW
-        let itemH: CGFloat = self.layoutMode == .list ? 56 : (artH + 40)
+        let itemH: CGFloat = self.layoutMode == .list ? 44 : (artH + 40)
         let posX: CGFloat = self.layoutMode == .list ? 0 : CGFloat(index % Self.galleryColumns) * (artW + Self.galleryGap)
-        let posY: CGFloat = self.layoutMode == .list ? CGFloat(index) * 66.0 : CGFloat(index / Self.galleryColumns) * Self.galleryRowStride
+        let posY: CGFloat = self.layoutMode == .list ? CGFloat(index) * 56.0 : CGFloat(index / Self.galleryColumns) * Self.galleryRowStride
         
         ZStack(alignment: .topLeading) {
             BotPortraitTileSurface(
@@ -2686,7 +2958,7 @@ private struct AIBotInlineInspectorView: View {
         let character = self.resolvedCharacter
         let artwork = character?.artwork(for: self.botID, variantOverride: self.config.artworkVariantIndex)
         let accent = Color(hexString: character?.accentHex ?? self.botID.accentHex)
-        let portrait = self.botStore.resolvedPortraitImage(for: self.botID, pointWidth: 78, pointHeight: 104)
+        let portrait = self.botStore.resolvedPortraitImage(for: self.botID, pointWidth: 80, pointHeight: 80)
         let shownName = self.botID == .butler
             ? (self.butlerManager.name.isEmpty ? "曜" : self.butlerManager.name)
             : (self.customNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? self.botID.displayName : self.customNameDraft)
@@ -2711,7 +2983,7 @@ private struct AIBotInlineInspectorView: View {
         let hasCustomAvatar = self.botStore.customAvatarImage(for: self.botID) != nil
         
         VStack(alignment: .leading, spacing: 14) {
-            // Identity Header with ~3:4 Vertical Portrait Frame
+            // Identity Header with 1:1 Square Avatar Frame
             HStack(spacing: 14) {
                 ZStack {
                     Color(red: 0.965, green: 0.969, blue: 0.980)
@@ -2720,7 +2992,7 @@ private struct AIBotInlineInspectorView: View {
                             .resizable()
                             .interpolation(.high)
                             .scaledToFill()
-                            .frame(width: 78, height: 104, alignment: .top)
+                            .frame(width: 80, height: 80, alignment: .center)
                             .opacity(self.config.isEnabled ? 1.0 : 0.48)
                     } else {
                         Text(String(shownName.prefix(1)))
@@ -2728,7 +3000,7 @@ private struct AIBotInlineInspectorView: View {
                             .foregroundStyle(accent)
                     }
                 }
-                .frame(width: 78, height: 104)
+                .frame(width: 80, height: 80)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)

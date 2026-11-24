@@ -221,6 +221,8 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let aiScheduledOrganizeCatchUpOnWake = "ai.scheduledOrganize.catchUpOnWake"
         static let aiScheduledOrganizeLastCycleKey = "ai.scheduledOrganize.lastCycleKey"
         static let aiScheduledOrganizeLastSummary = "ai.scheduledOrganize.lastSummary"
+        static let dashboardHeroCoverImageBase64 = "dashboard.heroCoverImageBase64"
+        static let dashboardHeroCoverFocalY = "dashboard.heroCoverFocalY"
     }
     
     static let weeklyReportsDidChangeNotification = Notification.Name("CotLocalDatabaseWeeklyReportsDidChange")
