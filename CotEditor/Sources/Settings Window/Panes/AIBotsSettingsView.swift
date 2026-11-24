@@ -760,9 +760,6 @@ struct AIModelsSettingsView: View {
                 .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
             }
-            
-            // Scheduled Nightly 03:00 AI Document Organizer
-            ScheduledAIOrganizeSettingsCard(isEmbeddedInGroupCard: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
             self.reload()

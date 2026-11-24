@@ -1850,9 +1850,31 @@ struct Round33FeatureTests {
         let at0430 = try #require(cal.date(from: DateComponents(year: 2026, month: 11, day: 24, hour: 4, minute: 30, second: 10)))
         #expect(freshOrganizer.dueCycleKey(now: at0430, calendar: cal) == "2026-11-24@04:30")
         
+        // Dedicated Scheduled Tasks sidebar item exists with valid SF Symbol and clean title
+        #expect(SidebarSettingsItem.allCases.contains(.scheduledTasks))
+        #expect(SidebarSettingsItem.scheduledTasks.title == AppLanguage.text("定时任务", en: "Schedules"))
+        #expect(NSImage(systemSymbolName: SidebarSettingsItem.scheduledTasks.symbolName, accessibilityDescription: nil) != nil)
+        
+        // Frequency filter & next-run label work cleanly
+        freshOrganizer.frequency = .weekends
+        // 2026-11-24 is Tuesday -> not a weekend
+        #expect(freshOrganizer.dueCycleKey(now: at0430, calendar: cal) == nil)
+        freshOrganizer.frequency = .daily
+        #expect(freshOrganizer.nextScheduledLabel(now: at0259, calendar: cal).contains("04:30"))
+        
+        // Step toggles persist and disable scheduled run when all steps are off
+        freshOrganizer.renameUntitledEnabled = false
+        freshOrganizer.organizeStarMapEnabled = false
+        freshOrganizer.refreshDashboardEnabled = false
+        #expect(!freshOrganizer.hasAnyStepEnabled)
+        #expect(freshOrganizer.dueCycleKey(now: at0430, calendar: cal) == nil)
+        freshOrganizer.renameUntitledEnabled = true
+        freshOrganizer.organizeStarMapEnabled = true
+        freshOrganizer.refreshDashboardEnabled = true
+        
         // Settings card mounts cleanly
         let cardHost = NSHostingView(rootView: ScheduledAIOrganizeSettingsCard(isEmbeddedInGroupCard: false))
-        cardHost.frame = NSRect(x: 0, y: 0, width: 520, height: 180)
+        cardHost.frame = NSRect(x: 0, y: 0, width: 520, height: 420)
         cardHost.layoutSubtreeIfNeeded()
         #expect(cardHost.bounds.width == 520)
     }

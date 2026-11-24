@@ -4799,6 +4799,31 @@ struct DocumentCenterView: View {
 
 @MainActor @Observable final class ScheduledAIDocumentOrganizer {
     
+    enum ScheduleFrequency: String, CaseIterable, Identifiable, Sendable {
+        case daily
+        case weekdays
+        case weekends
+        
+        var id: String { self.rawValue }
+        
+        var title: String {
+            switch self {
+                case .daily: AppLanguage.text("每天", en: "Daily")
+                case .weekdays: AppLanguage.text("工作日", en: "Weekdays")
+                case .weekends: AppLanguage.text("周末", en: "Weekends")
+            }
+        }
+        
+        func matches(_ date: Date, calendar: Calendar = .current) -> Bool {
+            let weekday = calendar.component(.weekday, from: date) // 1 = Sun ... 7 = Sat
+            switch self {
+                case .daily: return true
+                case .weekdays: return (2...6).contains(weekday)
+                case .weekends: return weekday == 1 || weekday == 7
+            }
+        }
+    }
+    
     struct OrganizeReport: Sendable, Equatable {
         let renamedCount: Int
         let regroupedCount: Int
@@ -4828,6 +4853,48 @@ struct DocumentCenterView: View {
                 self.markPassedSlotAsHandledIfNeeded(now: Date())
             }
         }
+    }
+    
+    var frequency: ScheduleFrequency {
+        didSet {
+            guard oldValue != self.frequency else { return }
+            self.database.set(self.frequency.rawValue, forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeFrequency)
+            if self.isEnabled && !self.suppressAutoSlotStamp {
+                self.markPassedSlotAsHandledIfNeeded(now: Date())
+            }
+        }
+    }
+    
+    var renameUntitledEnabled: Bool {
+        didSet {
+            guard oldValue != self.renameUntitledEnabled else { return }
+            self.database.set(self.renameUntitledEnabled ? "1" : "0", forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeRenameUntitled)
+        }
+    }
+    
+    var organizeStarMapEnabled: Bool {
+        didSet {
+            guard oldValue != self.organizeStarMapEnabled else { return }
+            self.database.set(self.organizeStarMapEnabled ? "1" : "0", forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeStarMap)
+        }
+    }
+    
+    var refreshDashboardEnabled: Bool {
+        didSet {
+            guard oldValue != self.refreshDashboardEnabled else { return }
+            self.database.set(self.refreshDashboardEnabled ? "1" : "0", forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeRefreshDashboard)
+        }
+    }
+    
+    var catchUpOnWakeEnabled: Bool {
+        didSet {
+            guard oldValue != self.catchUpOnWakeEnabled else { return }
+            self.database.set(self.catchUpOnWakeEnabled ? "1" : "0", forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeCatchUpOnWake)
+        }
+    }
+    
+    var hasAnyStepEnabled: Bool {
+        self.renameUntitledEnabled || self.organizeStarMapEnabled || self.refreshDashboardEnabled
     }
     
     func setEnabled(_ enabled: Bool, now: Date = Date()) {
@@ -4866,6 +4933,14 @@ struct DocumentCenterView: View {
         // Default ON at 03:00 AM unless user explicitly toggled it off ("0")
         self.isEnabled = (rawEnabled != "0")
         
+        let rawFreq = database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeFrequency)
+        self.frequency = ScheduleFrequency(rawValue: rawFreq) ?? .daily
+        
+        self.renameUntitledEnabled = database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeRenameUntitled) != "0"
+        self.organizeStarMapEnabled = database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeStarMap) != "0"
+        self.refreshDashboardEnabled = database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeRefreshDashboard) != "0"
+        self.catchUpOnWakeEnabled = database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeCatchUpOnWake) != "0"
+        
         let rawHour = Int(database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeHour))
         let rawMinute = Int(database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeMinute))
         self.scheduledHour = min(23, max(0, rawHour ?? 3))
@@ -4884,6 +4959,40 @@ struct DocumentCenterView: View {
     
     var formattedScheduledTime: String {
         String(format: "%02d:%02d", self.scheduledHour, self.scheduledMinute)
+    }
+    
+    func nextScheduledLabel(now: Date = Date(), calendar: Calendar = .current) -> String {
+        guard self.isEnabled, self.hasAnyStepEnabled else {
+            return AppLanguage.text("已暂停", en: "Paused")
+        }
+        let timeText = self.formattedScheduledTime
+        let chineseWeekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+        let englishWeekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        
+        for dayOffset in 0...7 {
+            guard let candidateDay = calendar.date(byAdding: .day, value: dayOffset, to: now),
+                  self.frequency.matches(candidateDay, calendar: calendar),
+                  let slot = calendar.date(
+                      bySettingHour: self.scheduledHour,
+                      minute: self.scheduledMinute,
+                      second: 0,
+                      of: candidateDay
+                  )
+            else { continue }
+            
+            let key = Self.cycleKey(for: slot, hour: self.scheduledHour, minute: self.scheduledMinute, calendar: calendar)
+            if slot > now && key != self.lastCycleKey {
+                if dayOffset == 0 {
+                    return AppLanguage.text("下次 今日 \(timeText)", en: "Next Today \(timeText)")
+                } else if dayOffset == 1 {
+                    return AppLanguage.text("下次 明日 \(timeText)", en: "Next Tomorrow \(timeText)")
+                } else {
+                    let wdIdx = max(0, min(6, calendar.component(.weekday, from: slot) - 1))
+                    return AppLanguage.text("下次 \(chineseWeekdays[wdIdx]) \(timeText)", en: "Next \(englishWeekdays[wdIdx]) \(timeText)")
+                }
+            }
+        }
+        return AppLanguage.text("下次 \(timeText)", en: "Next \(timeText)")
     }
     
     var scheduledDateBindingValue: Date {
@@ -4926,7 +5035,7 @@ struct DocumentCenterView: View {
     /// Returns the cycle key if the scheduled time is currently due (or within a 12-hour sleep-wake catch-up window)
     /// and has not yet been executed for that cycle.
     func dueCycleKey(now: Date = Date(), calendar: Calendar = .current) -> String? {
-        guard self.isEnabled else { return nil }
+        guard self.isEnabled, self.hasAnyStepEnabled else { return nil }
         guard let todayTarget = calendar.date(bySettingHour: self.scheduledHour, minute: self.scheduledMinute, second: 0, of: now) else {
             return nil
         }
@@ -4939,8 +5048,11 @@ struct DocumentCenterView: View {
             return nil
         }
         
+        guard self.frequency.matches(latestTarget, calendar: calendar) else { return nil }
+        
+        let maxLag: TimeInterval = self.catchUpOnWakeEnabled ? (12 * 3600) : 120
         let lag = now.timeIntervalSince(latestTarget)
-        guard lag >= 0, lag <= 12 * 3600 else { return nil }
+        guard lag >= 0, lag <= maxLag else { return nil }
         
         let key = Self.cycleKey(for: latestTarget, hour: self.scheduledHour, minute: self.scheduledMinute, calendar: calendar)
         guard key != self.lastCycleKey else { return nil }
@@ -5080,7 +5192,7 @@ struct DocumentCenterView: View {
         var regroupedCount = 0
         var usedAI = false
         
-        if !candidates.isEmpty {
+        if !candidates.isEmpty && (self.renameUntitledEnabled || self.organizeStarMapEnabled) {
             let inputs = candidates.map { item in
                 DocumentCenterAgentOrganizer.InputItem(
                     id: item.canonicalID,
@@ -5110,12 +5222,15 @@ struct DocumentCenterView: View {
             }
             usedAI = planOutcome.usedAI
             
+            let allowRename = self.renameUntitledEnabled
+            let allowRegroup = self.organizeStarMapEnabled
             self.database.withTransaction {
                 for assignment in planOutcome.plan.assignments {
                     guard let item = byID[assignment.id] else { continue }
                     let targetGroup = assignment.group
                     let wantsRename: String? = {
-                        guard let suggested = assignment.suggestedTitle,
+                        guard allowRename,
+                              let suggested = assignment.suggestedTitle,
                               !suggested.isEmpty,
                               suggested != item.title,
                               DocumentCenterAgentOrganizer.isGenericUntitled(item.title, hasFilePath: item.filePath != nil)
@@ -5123,7 +5238,7 @@ struct DocumentCenterView: View {
                         return suggested
                     }()
                     
-                    let groupChanged = (targetGroup != item.currentGroup)
+                    let groupChanged = allowRegroup && (targetGroup != item.currentGroup)
                     guard groupChanged || wantsRename != nil else { continue }
                     
                     if groupChanged {
@@ -5164,29 +5279,34 @@ struct DocumentCenterView: View {
         
         // Refresh semantic relation graph cache for clean Star-Map connections
         let updatedDocs = self.database.documents.filter { !$0.id.hasPrefix("weekly:") }
-        let relationEdges = StarMapRelationEngine.buildRelations(
-            for: updatedDocs.map { rec in
-                let folder = rec.filePath.map { URL(filePath: $0).deletingLastPathComponent().path(percentEncoded: false) }
-                return StarMapRelationEngine.CorpusDocument(
-                    id: DocumentCenterState.canonicalKey(filePath: rec.filePath, rawID: rec.id),
-                    title: rec.title,
-                    group: rec.groupName,
-                    folderPath: folder,
-                    content: rec.content,
-                    sortTimestamp: rec.updatedAt.timeIntervalSince1970
-                )
-            }
-        )
-        
-        // Stage 3: Synthesize "干了啥" (Daily Digest + Lively Commentary)
-        if allowRemoteAI {
-            await self.analytics.refreshDailyDigest(force: true)
-            await self.analytics.refreshDoneTodayCommentary(force: true)
-            // Stage 4: Predict "要干啥" (Next Concrete Actions)
-            await self.analytics.refreshActionPredictions(force: true)
+        let relationCount: Int = if self.organizeStarMapEnabled {
+            StarMapRelationEngine.buildRelations(
+                for: updatedDocs.map { rec in
+                    let folder = rec.filePath.map { URL(filePath: $0).deletingLastPathComponent().path(percentEncoded: false) }
+                    return StarMapRelationEngine.CorpusDocument(
+                        id: DocumentCenterState.canonicalKey(filePath: rec.filePath, rawID: rec.id),
+                        title: rec.title,
+                        group: rec.groupName,
+                        folderPath: folder,
+                        content: rec.content,
+                        sortTimestamp: rec.updatedAt.timeIntervalSince1970
+                    )
+                }
+            ).count
         } else {
-            self.analytics.loadDoneTodayCommentaryFromDatabase()
-            self.analytics.loadActionPredictionsFromDatabase()
+            0
+        }
+        
+        // Stage 3: Synthesize "干了啥" (Daily Digest + Lively Commentary) & Stage 4: Predict "要干啥"
+        if self.refreshDashboardEnabled {
+            if allowRemoteAI {
+                await self.analytics.refreshDailyDigest(force: true)
+                await self.analytics.refreshDoneTodayCommentary(force: true)
+                await self.analytics.refreshActionPredictions(force: true)
+            } else {
+                self.analytics.loadDoneTodayCommentaryFromDatabase()
+                self.analytics.loadActionPredictionsFromDatabase()
+            }
         }
         
         let activeGroups = Set(updatedDocs.map(\.groupName).filter { !$0.isEmpty })
@@ -5195,8 +5315,12 @@ struct DocumentCenterView: View {
         if renamedCount > 0 {
             summaryParts.append("重命名 \(renamedCount) 篇")
         }
-        summaryParts.append("星图 \(max(1, activeGroups.count)) 组")
-        summaryParts.append("已更新干了啥与预测")
+        if self.organizeStarMapEnabled {
+            summaryParts.append("星图 \(max(1, activeGroups.count)) 组")
+        }
+        if self.refreshDashboardEnabled {
+            summaryParts.append("已更新看板")
+        }
         let summary = summaryParts.joined(separator: " · ")
         
         if let cycleKey = markCycleKey {
@@ -5212,7 +5336,7 @@ struct DocumentCenterView: View {
             renamedCount: renamedCount,
             regroupedCount: regroupedCount,
             groupCount: activeGroups.count,
-            relationCount: relationEdges.count,
+            relationCount: relationCount,
             doneTodayCount: self.analytics.doneTodayPoints.count,
             predictionCount: self.analytics.actionPredictions.count,
             usedAI: usedAI || self.analytics.doneTodayFromAI || self.analytics.actionPredictionsFromAI,
@@ -5222,7 +5346,7 @@ struct DocumentCenterView: View {
 }
 
 
-// MARK: - Reusable Settings Card for Nightly AI Document Organizer
+// MARK: - Dedicated Scheduled Tasks Settings Pane (Zero Clutter · Intuitive UX)
 
 struct ScheduledAIOrganizeSettingsCard: View {
     
@@ -5230,8 +5354,23 @@ struct ScheduledAIOrganizeSettingsCard: View {
     
     @Environment(\.colorScheme) private var colorScheme
     @State private var organizer = ScheduledAIDocumentOrganizer.shared
+    @State private var studioPalette = StudioPaletteManager.shared
+    @State private var justCompleted = false
+    
+    private static let timePresets: [(hour: Int, minute: Int, label: String)] = [
+        (3, 0, "03:00"),
+        (9, 0, "09:00"),
+        (18, 30, "18:30"),
+        (23, 0, "23:00"),
+    ]
+    
+    private static let minuteSteps: [Int] = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]
     
     private var isDark: Bool { self.colorScheme == .dark }
+    
+    private var accent: Color {
+        self.studioPalette.tokens(isDark: self.isDark).accent
+    }
     
     private var cardSurface: Color {
         self.isDark ? Color.white.opacity(0.055) : Color.white
@@ -5241,107 +5380,349 @@ struct ScheduledAIOrganizeSettingsCard: View {
         self.isDark ? Color.white.opacity(0.09) : Color.black.opacity(0.07)
     }
     
+    private var dividerColor: Color {
+        self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06)
+    }
+    
+    private var chipSurface: Color {
+        self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.045)
+    }
+    
     var body: some View {
-        if self.isEmbeddedInGroupCard {
-            self.rowsContent
-        } else {
+        @Bindable var bindableOrganizer = self.organizer
+        let isActive = self.organizer.isEnabled && self.organizer.hasAnyStepEnabled
+        
+        VStack(alignment: .leading, spacing: 18) {
+            // Card 1: Master Schedule + Frequency + Preset & Custom Time Picker
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(self.accent.opacity(self.isDark ? 0.22 : 0.12))
+                        Image(systemName: "clock.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(self.accent)
+                    }
+                    .frame(width: 26, height: 26)
+                    
+                    Text(AppLanguage.text("自动整理文档", en: "Auto-Organize Documents"))
+                        .font(.system(size: 13.5, weight: .semibold))
+                    
+                    Spacer(minLength: 8)
+                    
+                    self.scheduleStatusPill(isActive: isActive)
+                    
+                    Toggle("", isOn: $bindableOrganizer.isEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 46)
+                
+                if self.organizer.isEnabled {
+                    self.rowDivider
+                    
+                    // Frequency segmented selector
+                    HStack(spacing: 12) {
+                        Text(AppLanguage.text("执行频率", en: "Frequency"))
+                            .font(.system(size: 13))
+                        
+                        Spacer()
+                        
+                        Picker("", selection: $bindableOrganizer.frequency) {
+                            ForEach(ScheduledAIDocumentOrganizer.ScheduleFrequency.allCases) { freq in
+                                Text(freq.title).tag(freq)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 188)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 44)
+                    
+                    self.rowDivider
+                    
+                    // Intuitive time presets + clean HH:mm dropdown selector
+                    HStack(spacing: 8) {
+                        Text(AppLanguage.text("执行时间", en: "Run Time"))
+                            .font(.system(size: 13))
+                        
+                        Spacer(minLength: 8)
+                        
+                        HStack(spacing: 5) {
+                            ForEach(Self.timePresets, id: \.label) { preset in
+                                let selected = (self.organizer.scheduledHour == preset.hour && self.organizer.scheduledMinute == preset.minute)
+                                Button {
+                                    withAnimation(.easeOut(duration: 0.14)) {
+                                        self.organizer.updateScheduledTime(hour: preset.hour, minute: preset.minute)
+                                    }
+                                } label: {
+                                    Text(preset.label)
+                                        .font(.system(size: 11.5, weight: selected ? .semibold : .medium, design: .monospaced).monospacedDigit())
+                                        .foregroundStyle(selected ? Color.white : Color.primary.opacity(0.78))
+                                        .padding(.horizontal, 8)
+                                        .frame(height: 24)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                                .fill(selected ? self.accent : self.chipSurface)
+                                        )
+                                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                                .pointerStyle(.link)
+                            }
+                        }
+                        
+                        Rectangle()
+                            .fill(self.dividerColor)
+                            .frame(width: 1, height: 14)
+                            .padding(.horizontal, 2)
+                        
+                        self.customTimeMenu
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 46)
+                }
+            }
+            .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
+            
+            // Card 2: Explicit Toggleable Task Steps (Replaces all explanatory subtitles)
             VStack(alignment: .leading, spacing: 6) {
-                Text(AppLanguage.text("定时 AI 整理文档", en: "Scheduled AI Organizer"))
+                Text(AppLanguage.text("执行内容", en: "Actions"))
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .padding(.leading, 4)
                 
-                self.rowsContent
-                    .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
+                VStack(alignment: .leading, spacing: 0) {
+                    self.stepToggleRow(
+                        symbol: "pencil.line",
+                        title: AppLanguage.text("未命名文档自动起标题", en: "Name Untitled Documents"),
+                        isOn: $bindableOrganizer.renameUntitledEnabled
+                    )
+                    
+                    self.rowDivider
+                    
+                    self.stepToggleRow(
+                        symbol: "point.3.connected.trianglepath.dotted",
+                        title: AppLanguage.text("文档分组与星图连线", en: "Group Documents & Star Map"),
+                        isOn: $bindableOrganizer.organizeStarMapEnabled
+                    )
+                    
+                    self.rowDivider
+                    
+                    self.stepToggleRow(
+                        symbol: "chart.bar.doc.horizontal",
+                        title: AppLanguage.text("更新今日「干了啥」与「要干啥」", en: "Refresh Daily Summary & Next Actions"),
+                        isOn: $bindableOrganizer.refreshDashboardEnabled
+                    )
+                    
+                    self.rowDivider
+                    
+                    self.stepToggleRow(
+                        symbol: "moon.zzz",
+                        title: AppLanguage.text("休眠错过后唤醒补跑", en: "Catch Up After Sleep"),
+                        isOn: $bindableOrganizer.catchUpOnWakeEnabled
+                    )
+                }
+                .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
             }
+            .opacity(self.organizer.isEnabled ? 1.0 : 0.52)
+            .disabled(!self.organizer.isEnabled)
+            
+            // Card 3: Run Now & Latest Result Status
+            HStack(spacing: 12) {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(self.organizer.lastSummary.isEmpty ? Color.secondary.opacity(0.4) : Color.green.opacity(0.85))
+                        .frame(width: 7, height: 7)
+                    
+                    Text(
+                        self.organizer.lastSummary.isEmpty
+                            ? AppLanguage.text("尚未执行过", en: "Not run yet")
+                            : self.organizer.lastSummary
+                    )
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(self.organizer.lastSummary.isEmpty ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                }
+                
+                Spacer(minLength: 8)
+                
+                if self.organizer.isRunning {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(AppLanguage.text("整理中…", en: "Running…"))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(self.chipSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                } else {
+                    Button {
+                        Task {
+                            _ = await self.organizer.runOrganizePipeline()
+                            withAnimation(.easeOut(duration: 0.16)) {
+                                self.justCompleted = true
+                            }
+                            try? await Task.sleep(for: .seconds(2.2))
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                self.justCompleted = false
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: self.justCompleted ? "checkmark" : "play.fill")
+                                .font(.system(size: 10.5, weight: .semibold))
+                            Text(self.justCompleted
+                                 ? AppLanguage.text("已完成", en: "Done")
+                                 : AppLanguage.text("立即执行", en: "Run Now"))
+                                .font(.system(size: 12.5, weight: .semibold))
+                        }
+                        .foregroundStyle(Color.white)
+                        .padding(.horizontal, 12)
+                        .frame(height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(self.justCompleted ? Color.green : self.accent)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!self.organizer.hasAnyStepEnabled)
+                    .opacity(self.organizer.hasAnyStepEnabled ? 1.0 : 0.45)
+                    .pointerStyle(self.organizer.hasAnyStepEnabled ? .link : .default)
+                }
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 48)
+            .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
+        }
+        .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20), value: self.organizer.isEnabled)
+    }
+    
+    
+    private var rowDivider: some View {
+        Rectangle()
+            .fill(self.dividerColor)
+            .frame(height: 0.75)
+            .padding(.horizontal, 14)
+    }
+    
+    
+    private func scheduleStatusPill(isActive: Bool) -> some View {
+        HStack(spacing: 5) {
+            if self.organizer.isRunning {
+                ProgressView()
+                    .controlSize(.mini)
+                Text(AppLanguage.text("整理中", en: "Running"))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(self.accent)
+            } else {
+                Circle()
+                    .fill(isActive ? Color.green : Color.secondary.opacity(0.45))
+                    .frame(width: 6, height: 6)
+                Text(self.organizer.nextScheduledLabel())
+                    .font(.system(size: 11, weight: .medium, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(isActive ? Color.primary.opacity(0.75) : Color.secondary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 22)
+        .background(self.chipSurface, in: Capsule())
+    }
+    
+    
+    private var customTimeMenu: some View {
+        HStack(spacing: 4) {
+            Menu {
+                ForEach(0..<24, id: \.self) { hour in
+                    Button {
+                        self.organizer.updateScheduledTime(hour: hour, minute: self.organizer.scheduledMinute)
+                    } label: {
+                        HStack {
+                            Text(String(format: "%02d:00", hour))
+                            if hour == self.organizer.scheduledHour {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Text(AppLanguage.text(String(format: "%02d 时", self.organizer.scheduledHour), en: String(format: "%02dh", self.organizer.scheduledHour)))
+                    .font(.system(size: 11.5, weight: .semibold, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 8)
+                    .frame(height: 24)
+                    .background(self.chipSurface, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(self.cardBorder, lineWidth: 0.8)
+                    )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .pointerStyle(.link)
+            
+            Menu {
+                ForEach(Self.minuteSteps, id: \.self) { minute in
+                    Button {
+                        self.organizer.updateScheduledTime(hour: self.organizer.scheduledHour, minute: minute)
+                    } label: {
+                        HStack {
+                            Text(String(format: ":%02d", minute))
+                            if minute == self.organizer.scheduledMinute {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Text(AppLanguage.text(String(format: "%02d 分", self.organizer.scheduledMinute), en: String(format: "%02dm", self.organizer.scheduledMinute)))
+                    .font(.system(size: 11.5, weight: .semibold, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 8)
+                    .frame(height: 24)
+                    .background(self.chipSurface, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(self.cardBorder, lineWidth: 0.8)
+                    )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .pointerStyle(.link)
         }
     }
     
-    private var rowsContent: some View {
-        @Bindable var bindableOrganizer = self.organizer
-        let timeBinding = Binding<Date>(
-            get: { self.organizer.scheduledDateBindingValue },
-            set: { self.organizer.scheduledDateBindingValue = $0 }
-        )
-        
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(AppLanguage.text("定时自动整理文档", en: "Auto-Organize Documents"))
-                        .font(.system(size: 13, weight: .medium))
-                    Text(AppLanguage.text("重命名标题 · 梳理星图 · 总结干了啥与预测要干啥", en: "Rename titles, organize map, summarize progress & predict next actions"))
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                }
-                
-                Spacer()
-                
-                Toggle("", isOn: $bindableOrganizer.isEnabled)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+    
+    private func stepToggleRow(symbol: String, title: String, isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(isOn.wrappedValue ? self.accent : Color.secondary)
+                .frame(width: 18, alignment: .center)
             
-            if self.organizer.isEnabled {
-                Rectangle()
-                    .fill(self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
-                    .frame(height: 0.75)
-                    .padding(.horizontal, 14)
-                
-                HStack(spacing: 10) {
-                    Text(AppLanguage.text("每天定时时间", en: "Daily Time"))
-                        .font(.system(size: 13))
-                    
-                    Spacer()
-                    
-                    DatePicker("", selection: timeBinding, displayedComponents: .hourAndMinute)
-                        .labelsHidden()
-                        .datePickerStyle(.stepperField)
-                        .controlSize(.small)
-                        .frame(width: 88)
-                    
-                    if self.organizer.isRunning {
-                        HStack(spacing: 5) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text(AppLanguage.text("整理中…", en: "Running…"))
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Button(AppLanguage.text("立即执行", en: "Run Now")) {
-                            Task {
-                                _ = await self.organizer.runOrganizePipeline()
-                            }
-                        }
-                        .controlSize(.small)
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                
-                if !self.organizer.lastSummary.isEmpty {
-                    Rectangle()
-                        .fill(self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
-                        .frame(height: 0.75)
-                        .padding(.horizontal, 14)
-                    
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(Color.green.opacity(0.85))
-                            .frame(width: 6, height: 6)
-                        Text(self.organizer.lastSummary)
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                }
-            }
+            Text(title)
+                .font(.system(size: 13, weight: .regular))
+            
+            Spacer()
+            
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
         }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 42)
     }
 }

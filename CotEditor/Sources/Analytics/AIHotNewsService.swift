@@ -1184,7 +1184,7 @@ final class AIHotNewsService {
             : (item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
         
         let systemContext = """
-        你是一位视野敏锐、说人话的科技与资讯陪读搭子。请紧扣下面这篇资讯原文回答用户的点评、总结和追问。
+        你是一位视野敏锐、说人话的科技与资讯分析助手。请紧扣下面这篇资讯原文回答用户的点评、总结和追问。
         \(effort.styleDirective)
         要求：使用标准 Markdown 排版（善用标题、加粗、列表、引用、代码块或表格），直接给干货与犀利观点，方便用户阅读与复制分享，不要废话客套。
 

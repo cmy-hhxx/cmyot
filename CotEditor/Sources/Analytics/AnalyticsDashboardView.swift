@@ -1434,11 +1434,7 @@ private struct EditorialLedgerRow: View {
         }
         .padding(.horizontal, self.horizontalInset)
         .padding(.vertical, self.verticalPad)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(self.isHovered ? self.palette.inset.opacity(0.68) : Color.clear)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(Rectangle())
         .onHover { hovering in
             self.onHoverChange(hovering)
         }
@@ -1525,7 +1521,7 @@ private struct DoneTodayEditorialCard: View {
         }
         .padding(.vertical, outerV)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 16, showsShadow: false)
     }
 }
 
@@ -1609,12 +1605,12 @@ private struct NextActionsEditorialCard: View {
         }
         .padding(.vertical, outerV)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 16, showsShadow: false)
     }
 }
 
 
-/// Isolated NEWS column card supporting full vertical scrolling + crisp page controls and 2-up Xiaohongshu mini cards.
+/// Isolated NEWS column card with pure pagination (no vertical scrollbar) and 2-up Xiaohongshu mini cards.
 private struct DashboardNewsColumnCard: View {
     
     let compact: Bool
@@ -1624,7 +1620,7 @@ private struct DashboardNewsColumnCard: View {
     
     @State private var newsService = AIHotNewsService.shared
     @State private var currentPage: Int = 0
-    @State private var scrollPageID: Int? = 0
+    @State private var pageTurnDirection: Int = 1
     
     
     var body: some View {
@@ -1696,13 +1692,12 @@ private struct DashboardNewsColumnCard: View {
                     Array(items[start..<min(start + pageSize, items.count)])
                 }
                 let hasPager = pages.count > 1
-                let scrollAvailH = max(96, geo.size.height - (hasPager ? 26 : 0))
-                let slotH: CGFloat = self.compact
-                    ? min(134, max(92, floor(scrollAvailH - 6)))
-                    : min(182, max(124, floor(scrollAvailH - 18)))
-                let coverH: CGFloat = self.compact
-                    ? max(54, min(74, slotH - 58))
-                    : max(76, min(112, slotH - 68))
+                let pagerSpacing: CGFloat = hasPager ? 8 : 0
+                let pagerBarH: CGFloat = hasPager ? 20 : 0
+                let slotH: CGFloat = max(92, floor(geo.size.height - pagerBarH - pagerSpacing))
+                let coverH: CGFloat = max(54, floor(slotH - (self.compact ? 62 : 72)))
+                let safePage = min(max(0, self.currentPage), max(0, pages.count - 1))
+                let activeItems = pages.isEmpty ? [] : pages[safePage]
                 
                 if items.isEmpty {
                     if self.newsService.isLoading {
@@ -1735,48 +1730,44 @@ private struct DashboardNewsColumnCard: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ScrollView(.vertical, showsIndicators: true) {
-                            LazyVStack(alignment: .leading, spacing: 10) {
-                                ForEach(Array(pages.enumerated()), id: \.offset) { pageIdx, pageItems in
-                                    HStack(alignment: .top, spacing: 8) {
-                                        ForEach(pageItems) { item in
-                                            NewsMiniVisualCard(
-                                                item: item,
-                                                cover: self.newsService.cachedCoverImage(for: item),
-                                                isRead: self.newsService.isRead(item),
-                                                coverHeight: coverH,
-                                                slotHeight: slotH,
-                                                palette: self.palette,
-                                                onAppearLoadCover: {
-                                                    self.newsService.requestCoverLoad(for: item)
-                                                }
-                                            ) {
-                                                self.onOpenWorkspace(item.id)
-                                            }
-                                        }
-                                        if useTwoColumns && pageItems.count < 2 {
-                                            Color.clear
-                                                .frame(maxWidth: .infinity)
-                                                .frame(height: slotH)
-                                        }
+                    VStack(alignment: .leading, spacing: pagerSpacing) {
+                        HStack(alignment: .top, spacing: 8) {
+                            ForEach(activeItems) { item in
+                                NewsMiniVisualCard(
+                                    item: item,
+                                    cover: self.newsService.cachedCoverImage(for: item),
+                                    isRead: self.newsService.isRead(item),
+                                    coverHeight: coverH,
+                                    slotHeight: slotH,
+                                    palette: self.palette,
+                                    onAppearLoadCover: {
+                                        self.newsService.requestCoverLoad(for: item)
                                     }
-                                    .id(pageIdx)
+                                ) {
+                                    self.onOpenWorkspace(item.id)
                                 }
                             }
-                            .padding(.bottom, 4)
-                            .scrollTargetLayout()
-                        }
-                        .scrollPosition(id: self.$scrollPageID, anchor: .top)
-                        .onChange(of: self.scrollPageID) { _, nextPage in
-                            if let nextPage, nextPage >= 0, nextPage < pages.count, nextPage != self.currentPage {
-                                self.currentPage = nextPage
+                            if useTwoColumns && activeItems.count < 2 {
+                                Color.clear
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: slotH)
                             }
                         }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: slotH, alignment: .top)
+                        .id("dash-news-page-\(self.newsService.selectedCategory.rawValue)-\(safePage)")
+                        .transition(
+                            DashMotion.isReducedMotion
+                                ? .opacity
+                                : .asymmetric(
+                                    insertion: .opacity.combined(with: .offset(x: CGFloat(self.pageTurnDirection) * 14)),
+                                    removal: .opacity.combined(with: .offset(x: CGFloat(-self.pageTurnDirection) * 10))
+                                )
+                        )
                         
                         if hasPager {
                             HStack(spacing: 8) {
-                                Text("\(min(self.currentPage + 1, pages.count)) / \(pages.count)")
+                                Text("\(safePage + 1) / \(pages.count)")
                                     .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
                                     .foregroundStyle(self.palette.mutedInk)
                                 
@@ -1785,40 +1776,46 @@ private struct DashboardNewsColumnCard: View {
                                 HStack(spacing: 4) {
                                     self.newsPageButton(
                                         systemName: "chevron.left",
-                                        disabled: self.currentPage <= 0
+                                        disabled: safePage <= 0
                                     ) {
-                                        let target = max(0, self.currentPage - 1)
-                                        self.currentPage = target
-                                        withAnimation(DashMotion.travel) {
-                                            self.scrollPageID = target
+                                        let target = max(0, safePage - 1)
+                                        self.pageTurnDirection = -1
+                                        withAnimation(DashMotion.resolve(DashMotion.travel)) {
+                                            self.currentPage = target
                                         }
                                     }
                                     
                                     self.newsPageButton(
                                         systemName: "chevron.right",
-                                        disabled: self.currentPage >= pages.count - 1
+                                        disabled: safePage >= pages.count - 1
                                     ) {
-                                        let target = min(pages.count - 1, self.currentPage + 1)
-                                        self.currentPage = target
-                                        withAnimation(DashMotion.travel) {
-                                            self.scrollPageID = target
+                                        let target = min(pages.count - 1, safePage + 1)
+                                        self.pageTurnDirection = 1
+                                        withAnimation(DashMotion.resolve(DashMotion.travel)) {
+                                            self.currentPage = target
                                         }
                                     }
                                 }
                             }
-                            .frame(height: 20)
+                            .frame(height: pagerBarH)
                         }
                     }
+                    .onAppear {
+                        self.prefetchNeighborCovers(pages: pages, safePage: safePage)
+                    }
+                    .onChange(of: safePage) { _, nextPage in
+                        self.prefetchNeighborCovers(pages: pages, safePage: nextPage)
+                    }
                     .onChange(of: self.newsService.selectedCategory) { _, _ in
+                        self.pageTurnDirection = 1
                         self.currentPage = 0
-                        self.scrollPageID = 0
                     }
                     .onChange(of: items.count) { _, _ in
                         let maxPage = max(0, pages.count - 1)
                         if self.currentPage > maxPage {
                             self.currentPage = maxPage
-                            self.scrollPageID = maxPage
                         }
+                        self.prefetchNeighborCovers(pages: pages, safePage: min(self.currentPage, maxPage))
                     }
                 }
             }
@@ -1828,6 +1825,17 @@ private struct DashboardNewsColumnCard: View {
         .padding(.vertical, outerV)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
+    }
+    
+    
+    private func prefetchNeighborCovers(pages: [[AIHotNewsItem]], safePage: Int) {
+        guard !pages.isEmpty else { return }
+        let nextIdx = safePage + 1
+        if nextIdx < pages.count {
+            for item in pages[nextIdx] {
+                self.newsService.requestCoverLoad(for: item)
+            }
+        }
     }
     
     
@@ -2934,28 +2942,20 @@ private struct HeroFlutedPrismBackdrop: View {
     var tracker: HeroHoverTracker
     
     var body: some View {
-        ZStack {
-            GeometryReader { bgGeo in
-                let adaptiveRibs = max(48.0, (Double(bgGeo.size.width) / 13.5).rounded())
-                LeiBoxFlutedPrismView(
-                    theme: self.activeTheme,
-                    renderWidth: 360,
-                    renderHeight: 96,
-                    ribCount: adaptiveRibs,
-                    animate: true,
-                    specularPoint: UnitPoint(x: self.tracker.norm.x, y: self.tracker.norm.y),
-                    isHovered: self.tracker.isHovered,
-                    uniformBannerMode: true,
-                    darkModeAdapt: self.isDark
-                )
-                .frame(width: bgGeo.size.width, height: bgGeo.size.height)
-            }
-            
-            LinearGradient(
-                colors: [.clear, Color.black.opacity(0.12)],
-                startPoint: .center,
-                endPoint: .bottom
+        GeometryReader { bgGeo in
+            let adaptiveRibs = max(48.0, (Double(bgGeo.size.width) / 13.5).rounded())
+            LeiBoxFlutedPrismView(
+                theme: self.activeTheme,
+                renderWidth: 360,
+                renderHeight: 96,
+                ribCount: adaptiveRibs,
+                animate: true,
+                specularPoint: UnitPoint(x: self.tracker.norm.x, y: self.tracker.norm.y),
+                isHovered: self.tracker.isHovered,
+                uniformBannerMode: true,
+                darkModeAdapt: self.isDark
             )
+            .frame(width: bgGeo.size.width, height: bgGeo.size.height)
         }
         .animation(DashMotion.resolve(DashMotion.standard), value: self.activeTheme.id)
         .allowsHitTesting(false)
@@ -5490,22 +5490,25 @@ private extension View {
     func dashboardCardSurface(
         palette: DashPalette,
         cornerRadius: CGFloat = 16,
-        isHighlighted: Bool = false
+        isHighlighted: Bool = false,
+        showsShadow: Bool = true
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         let strokeColor = isHighlighted ? palette.accentFill.opacity(0.48) : palette.hairline
-        let shadowColor = isHighlighted
-            ? (palette.tokens.isDark ? Color.black.opacity(0.32) : palette.accentFill.opacity(0.11))
-            : palette.cardShadow
+        let shadowColor = showsShadow
+            ? (isHighlighted
+                ? (palette.tokens.isDark ? Color.black.opacity(0.32) : palette.accentFill.opacity(0.11))
+                : palette.cardShadow)
+            : .clear
         return self
             .background(
                 shape
                     .fill(palette.card)
                     .shadow(
                         color: shadowColor,
-                        radius: isHighlighted ? 12 : 6,
+                        radius: showsShadow ? (isHighlighted ? 12 : 6) : 0,
                         x: 0,
-                        y: isHighlighted ? 4 : 2
+                        y: showsShadow ? (isHighlighted ? 4 : 2) : 0
                     )
             )
             .overlay(

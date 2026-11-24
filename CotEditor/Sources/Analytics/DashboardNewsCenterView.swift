@@ -39,6 +39,7 @@ struct DashboardNewsCenterView: View {
     @State private var searchText: String
     @State private var selectedItemID: String?
     @State private var gridPage: Int = 1
+    @State private var knownTotalPages: Int = 1
     @State private var pageTurnDirection: Int = 1
     @FocusState private var isSearchFieldFocused: Bool
     @State private var reasoningEffort: NewsReasoningEffort = .balanced
@@ -425,8 +426,8 @@ struct DashboardNewsCenterView: View {
     }
     
     private func turnGridPageByDelta(_ delta: Int) {
-        let target = self.gridPage + delta
-        guard target >= 1 else { return }
+        let target = min(max(1, self.gridPage + delta), max(1, self.knownTotalPages))
+        guard target != self.gridPage else { return }
         self.pageTurnDirection = delta >= 0 ? 1 : -1
         withAnimation(Self.pageTurnCurve) {
             self.gridPage = target
@@ -469,30 +470,41 @@ struct DashboardNewsCenterView: View {
         return GeometryReader { geo in
             let innerW = min(1320, max(320, geo.size.width - 48))
             let colCount = Self.columnsForWidth(innerW)
-            let pageSize = colCount * 2
+            let colSpacing: CGFloat = 16
+            let rowSpacing: CGFloat = 16
+            let topPad: CGFloat = 16
+            let bottomPad: CGFloat = 12
+            let estAvailH = max(200, geo.size.height - 48 - topPad - bottomPad)
+            let rowCount: Int = if estAvailH >= 980 {
+                4
+            } else if estAvailH >= 660 {
+                3
+            } else if estAvailH >= 340 {
+                2
+            } else {
+                1
+            }
+            let pageSize = max(1, colCount * rowCount)
             let totalPages = max(1, Int(ceil(Double(items.count) / Double(pageSize))))
             let safePage = min(max(1, self.gridPage), totalPages)
             let startIdx = (safePage - 1) * pageSize
             let endIdx = min(items.count, startIdx + pageSize)
             let pageItems: [AIHotNewsItem] = (startIdx < endIdx) ? Array(items[startIdx..<endIdx]) : []
             
-            let colSpacing: CGFloat = 16
-            let rowSpacing: CGFloat = 16
-            let topPad: CGFloat = 18
-            let bottomPad: CGFloat = 10
-            let pagerH: CGFloat = totalPages > 1 ? 52 : 12
+            let pagerH: CGFloat = totalPages > 1 ? 48 : 12
             let cardWidth = max(120, (innerW - CGFloat(colCount - 1) * colSpacing) / CGFloat(colCount))
             
-            // Fit 2 rows cleanly inside the viewport height so fullscreen never forces endless scrolling
-            let availTwoRowsH = geo.size.height - pagerH - topPad - bottomPad - rowSpacing
-            let idealCardH = floor(availTwoRowsH * 0.5)
-            let maxRatioCoverH = (cardWidth * 0.86).rounded()
-            let coverHeight = min(max(132, maxRatioCoverH), max(108, idealCardH - Self.cardTextFooterHeight))
-            let row1 = Array(pageItems.prefix(colCount))
-            let row2 = pageItems.count > colCount ? Array(pageItems.dropFirst(colCount)) : []
-            let totalGridH = CGFloat(row2.isEmpty ? 1 : 2) * (coverHeight + Self.cardTextFooterHeight)
-                + (row2.isEmpty ? 0 : rowSpacing)
-            let needsCompactScroll = totalGridH > availTwoRowsH + 12
+            // Dynamically size rows & cover height to fill the viewport cleanly with zero bottom void and zero scrollbar
+            let availGridH = max(180, geo.size.height - pagerH - topPad - bottomPad)
+            let idealCardH = floor((availGridH - CGFloat(max(0, rowCount - 1)) * rowSpacing) / CGFloat(rowCount))
+            let maxRatioCoverH = max(120, (cardWidth * 1.08).rounded())
+            let coverHeight = min(maxRatioCoverH, max(86, idealCardH - Self.cardTextFooterHeight))
+            let rows: [[AIHotNewsItem]] = (0..<rowCount).compactMap { rowIdx in
+                let rStart = rowIdx * colCount
+                guard rStart < pageItems.count else { return nil }
+                let rEnd = min(pageItems.count, rStart + colCount)
+                return Array(pageItems[rStart..<rEnd])
+            }
             
             if items.isEmpty {
                 VStack(spacing: 10) {
@@ -506,16 +518,9 @@ struct DashboardNewsCenterView: View {
             } else {
                 VStack(spacing: 0) {
                     let pageGrid = VStack(alignment: .leading, spacing: rowSpacing) {
-                        self.paginatedCardRow(
-                            rowItems: row1,
-                            colCount: colCount,
-                            colSpacing: colSpacing,
-                            cardWidth: cardWidth,
-                            coverHeight: coverHeight
-                        )
-                        if !row2.isEmpty {
+                        ForEach(Array(rows.enumerated()), id: \.offset) { _, rowItems in
                             self.paginatedCardRow(
-                                rowItems: row2,
+                                rowItems: rowItems,
                                 colCount: colCount,
                                 colSpacing: colSpacing,
                                 cardWidth: cardWidth,
@@ -523,7 +528,7 @@ struct DashboardNewsCenterView: View {
                             )
                         }
                     }
-                    .frame(width: innerW, alignment: .topLeading)
+                    .frame(width: innerW, height: availGridH, alignment: .topLeading)
                     .id("news-page-\(self.selectedCategory.rawValue)-\(safePage)")
                     .transition(
                         .asymmetric(
@@ -533,29 +538,19 @@ struct DashboardNewsCenterView: View {
                     )
                     
                     ZStack {
-                        if needsCompactScroll {
-                            ScrollView(.vertical, showsIndicators: true) {
-                                pageGrid
-                                    .padding(.horizontal, 24)
-                                    .padding(.top, topPad)
-                                    .padding(.bottom, bottomPad)
-                                    .frame(maxWidth: .infinity, alignment: .center)
+                        pageGrid
+                            .padding(.horizontal, 24)
+                            .padding(.top, topPad)
+                            .padding(.bottom, bottomPad)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                        
+                        if totalPages > 1 {
+                            NewsGridWheelPagerRepresentable { delta in
+                                let next = safePage + delta
+                                guard next >= 1 && next <= totalPages else { return }
+                                self.turnGridPage(to: next, totalPages: totalPages)
                             }
-                        } else {
-                            pageGrid
-                                .padding(.horizontal, 24)
-                                .padding(.top, topPad)
-                                .padding(.bottom, bottomPad)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                            
-                            if totalPages > 1 {
-                                NewsGridWheelPagerRepresentable { delta in
-                                    let next = safePage + delta
-                                    guard next >= 1 && next <= totalPages else { return }
-                                    self.turnGridPage(to: next, totalPages: totalPages)
-                                }
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -572,10 +567,17 @@ struct DashboardNewsCenterView: View {
                     }
                 }
                 .onAppear {
+                    self.knownTotalPages = totalPages
                     if self.gridPage != safePage {
                         self.gridPage = safePage
                     }
                     self.prefetchAdjacentPageCovers(items: items, safePage: safePage, pageSize: pageSize)
+                }
+                .onChange(of: totalPages) { _, newTotal in
+                    self.knownTotalPages = newTotal
+                    if self.gridPage > newTotal {
+                        self.gridPage = newTotal
+                    }
                 }
                 .onChange(of: safePage) { _, newPage in
                     if self.gridPage > totalPages {
@@ -584,6 +586,7 @@ struct DashboardNewsCenterView: View {
                     self.prefetchAdjacentPageCovers(items: items, safePage: newPage, pageSize: pageSize)
                 }
                 .onChange(of: items.count) { _, _ in
+                    self.knownTotalPages = totalPages
                     if self.gridPage > totalPages {
                         self.gridPage = totalPages
                     }

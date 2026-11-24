@@ -1122,10 +1122,11 @@ nonisolated enum BlueFlutedGlassRenderer {
                     invRx: 1.0 / (0.21 + 0.025 * c), invRy: 1.0 / 0.25,
                     cosA: cos(holeAngle), sinA: sin(holeAngle)
                 ) * holeFade
-                let raw = (bTrunk + 0.56 * bCrown + 0.52 * bWest + 0.90 * bBase) * (1.0 - 0.78 * bHole)
+                let raw = (bTrunk + 0.56 * bCrown + 0.44 * bWest + 0.50 * bBase) * (1.0 - 0.78 * bHole)
+                let shaped = raw / (1.0 + 0.36 * raw)
                 let bedWave = 0.045 * sin(uPan * 6.2 - phase * 1.3)
-                let lowerBed = (0.58 + bedWave) * Self.smoothstep(0.26, 0.52, py)
-                return max(raw, lowerBed)
+                let lowerBed = (0.64 + bedWave) * Self.smoothstep(0.26, 0.52, py)
+                return max(shaped, lowerBed)
             }
             let px = rx + 0.025 * sin(py * 7.0 + twoPhase)
             let trunk = Self.blob(px: px, py: py, cx: trunkCx, cy: trunkCy, invRx: trunkInvRx, invRy: trunkInvRy, cosA: trunkCos, sinA: trunkSin)
@@ -1140,8 +1141,20 @@ nonisolated enum BlueFlutedGlassRenderer {
         let p0 = palette.base
         let p1 = palette.light
         let p2 = palette.mid
-        let p3 = palette.deep
-        let p4 = palette.midnight
+        let p3 = uniformBannerMode
+            ? FlutedRGB(
+                r: palette.deep.r + (palette.mid.r - palette.deep.r) * 0.48,
+                g: palette.deep.g + (palette.mid.g - palette.deep.g) * 0.48,
+                b: palette.deep.b + (palette.mid.b - palette.deep.b) * 0.48
+            )
+            : palette.deep
+        let p4 = uniformBannerMode
+            ? FlutedRGB(
+                r: palette.deep.r + (palette.mid.r - palette.deep.r) * 0.22,
+                g: palette.deep.g + (palette.mid.g - palette.deep.g) * 0.22,
+                b: palette.deep.b + (palette.mid.b - palette.deep.b) * 0.22
+            )
+            : palette.midnight
         
         @inline(__always)
         func sampleColor(rx: Double, py: Double) -> (Double, Double, Double) {
@@ -1160,12 +1173,12 @@ nonisolated enum BlueFlutedGlassRenderer {
             g += (p2.g - g) * k2
             b += (p2.b - b) * k2
             
-            let k3 = Self.smoothstep(0.40, 0.73, density)
+            let k3 = Self.smoothstep(uniformBannerMode ? 0.36 : 0.40, uniformBannerMode ? 0.70 : 0.73, density)
             r += (p3.r - r) * k3
             g += (p3.g - g) * k3
             b += (p3.b - b) * k3
             
-            let k4 = Self.smoothstep(0.62, 0.93, density)
+            let k4 = Self.smoothstep(uniformBannerMode ? 0.64 : 0.62, uniformBannerMode ? 0.94 : 0.93, density)
             r += (p4.r - r) * k4
             g += (p4.g - g) * k4
             b += (p4.b - b) * k4
@@ -1366,10 +1379,11 @@ private final class FlutedPrismMetalPipeline {
                 cos(hAngle),
                 sin(hAngle)
             ) * holeFade;
-            float raw = (trunk + 0.56 * crown + 0.52 * west + 0.90 * base) * (1.0 - 0.78 * hole);
+            float raw = (trunk + 0.56 * crown + 0.44 * west + 0.50 * base) * (1.0 - 0.78 * hole);
+            float shaped = raw / (1.0 + 0.36 * raw);
             float bedWave = 0.045 * sin(uPan * 6.2 - phase * 1.3);
-            float lowerBed = (0.58 + bedWave) * smoothstep(0.26, 0.52, py);
-            return max(raw, lowerBed);
+            float lowerBed = (0.64 + bedWave) * smoothstep(0.26, 0.52, py);
+            return max(shaped, lowerBed);
         }
         float px = rx + 0.025 * sin(py * 7.0 + twoPhase);
         float2 p = float2(px, py);
@@ -1401,11 +1415,14 @@ private final class FlutedPrismMetalPipeline {
             crownC, crownInvR, crownCos, crownSin,
             holeC, holeInvR, holeCos, holeSin
         );
+        bool isBanner = (u.uniformMode > 0.5);
+        float3 p3Col = isBanner ? mix(u.p3.rgb, u.p2.rgb, 0.48) : u.p3.rgb;
+        float3 p4Col = isBanner ? mix(u.p3.rgb, u.p2.rgb, 0.22) : u.p4.rgb;
         float3 col = u.p0.rgb;
         col = mix(col, u.p1.rgb, smoothstep(0.015, 0.20, density));
         col = mix(col, u.p2.rgb, smoothstep(0.16,  0.49, density));
-        col = mix(col, u.p3.rgb, smoothstep(0.40,  0.73, density));
-        col = mix(col, u.p4.rgb, smoothstep(0.62,  0.93, density));
+        col = mix(col, p3Col,    smoothstep(isBanner ? 0.36 : 0.40, isBanner ? 0.70 : 0.73, density));
+        col = mix(col, p4Col,    smoothstep(isBanner ? 0.64 : 0.62, isBanner ? 0.94 : 0.93, density));
         return col;
     }
     

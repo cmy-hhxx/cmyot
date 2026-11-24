@@ -851,7 +851,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .interactiveChart: "@ChartBot"
             case .ocrPolish: "@OCRBot"
             case .organizeAndMerge: "@TidyBot"
-            case .readingCompanion: "@CompanionBot"
+            case .readingCompanion: "@NewsBot"
             case .persona: "@PersonaBot"
         }
     }
@@ -870,7 +870,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .interactiveChart: "图表画师"
             case .ocrPolish: "识图整理员"
             case .organizeAndMerge: "工作区整理师"
-            case .readingCompanion: "资讯陪读"
+            case .readingCompanion: "资讯助手"
             case .persona: "性格观察员"
         }
     }
@@ -888,7 +888,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .interactiveChart: "图表"
             case .ocrPolish: "识图"
             case .organizeAndMerge: "整理"
-            case .readingCompanion: "陪读"
+            case .readingCompanion: "资讯"
             case .persona: "观察"
         }
     }
@@ -907,7 +907,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .interactiveChart: "把表格或杂乱数字变成可交互 HTML 图表"
             case .ocrPolish: "结合本地 OCR 与视觉纠错还原表格代码"
             case .organizeAndMerge: "多窗口零散草稿归类合并并重起正经标题"
-            case .readingCompanion: "紧扣文章内容自由问答的陪读搭子"
+            case .readingCompanion: "紧扣文章内容自由问答的资讯助手"
             case .persona: "每 6 小时静默感知写作习惯，凝练个性弹幕"
         }
     }
@@ -992,7 +992,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .ghost:
                 return "你是嵌入编辑器光标处的续写幽灵。只接续光标后最自然的半句或短词，不重复前文，不加引号与解释。"
             case .readingCompanion:
-                return "你是紧扣原文回答问题的资讯陪读搭子，直接给干货与犀利视角。"
+                return "你是紧扣原文回答问题的资讯分析助手，直接给干货与犀利视角。"
             case .persona:
                 return """
                 你是一位敏锐、幽默但不刻薄的私人写作观察员。阅读用户近期写下的文字与习惯，提炼出最贴切的人物概念标题、深入理解与 5~7 个不超过 8 个汉字的个性弹幕标签（如「深夜架构狂」「极简主义者」「说人话专家」）。严格输出 JSON，不添油加醋。
@@ -1136,6 +1136,9 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
             return trimmed.isEmpty ? "曜" : trimmed
         }
         let custom = self.config(for: botID).customName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if botID == .readingCompanion, custom.contains("陪读") {
+            return botID.displayName
+        }
         return custom.isEmpty ? botID.displayName : custom
     }
     
@@ -1149,6 +1152,9 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
             return trimmed.isEmpty ? "总管" : trimmed
         }
         let custom = self.config(for: botID).customNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        if botID == .readingCompanion, custom.contains("陪读") {
+            return botID.defaultNickname
+        }
         return custom.isEmpty ? botID.defaultNickname : custom
     }
     

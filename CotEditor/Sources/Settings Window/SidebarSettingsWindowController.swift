@@ -42,6 +42,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
     case models
     case bots
     case memory
+    case scheduledTasks
     case keyBindings
     case pass
     
@@ -60,6 +61,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .models: AppLanguage.text("API 网关", en: "API Gateway")
             case .bots: AppLanguage.text("Bots", en: "Bots")
             case .memory: AppLanguage.text("偏好记忆", en: "Preferences")
+            case .scheduledTasks: AppLanguage.text("定时任务", en: "Schedules")
             case .keyBindings: AppLanguage.text("快捷键", en: "Shortcuts")
             case .pass: AppLanguage.text("通行证", en: "Pass")
         }
@@ -78,6 +80,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .models: "network"
             case .bots: "sparkles"
             case .memory: "list.bullet.indent"
+            case .scheduledTasks: "clock.fill"
             case .keyBindings: "keyboard.fill"
             case .pass: "lanyardcard.fill"
         }
@@ -96,6 +99,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .models: Color(red: 0.06, green: 0.72, blue: 0.51)
             case .bots: Color(red: 0.84, green: 0.22, blue: 0.26)
             case .memory: Color(red: 0.35, green: 0.42, blue: 0.92)
+            case .scheduledTasks: Color(red: 0.08, green: 0.56, blue: 0.94)
             case .keyBindings: Color(red: 0.69, green: 0.32, blue: 0.87)
             case .pass: Color(red: 0.08, green: 0.72, blue: 0.65)
         }
@@ -219,7 +223,7 @@ private enum SettingsDesignTokens {
     static let sidebarClusters: [[SidebarSettingsItem]] = [
         [.general, .appIcon, .appearance, .wallpaper],
         [.typography, .editing, .format, .effects],
-        [.models, .bots, .memory, .keyBindings, .pass],
+        [.models, .bots, .memory, .scheduledTasks, .keyBindings, .pass],
     ]
 }
 
@@ -262,8 +266,8 @@ private struct SidebarSettingsRootView: View {
                 SidebarVisualEffectBackdrop()
                     .ignoresSafeArea()
                 
-                VStack(alignment: .leading, spacing: 10) {
-                    Spacer().frame(height: 42)
+                VStack(alignment: .leading, spacing: 8) {
+                    Spacer().frame(height: 40)
                     
                     ForEach(Array(SettingsDesignTokens.sidebarClusters.enumerated()), id: \.offset) { clusterIdx, cluster in
                         if clusterIdx > 0 {
@@ -402,7 +406,7 @@ private struct SidebarSettingsRootView: View {
                 Spacer()
             }
             .padding(.horizontal, 8)
-            .frame(minHeight: 32)
+            .frame(minHeight: 30)
             .background {
                 if isSelected {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -452,6 +456,8 @@ private struct SidebarSettingsRootView: View {
                 AIBotsSettingsView(settingsState: self.state)
             case .memory:
                 EmptyView()
+            case .scheduledTasks:
+                ScheduledAIOrganizeSettingsCard()
             case .keyBindings:
                 EmptyView()
             case .pass:
@@ -877,11 +883,6 @@ private struct SidebarGeneralSettingsPane: View {
                         .frame(minHeight: SettingsDesignTokens.rowHeight)
                     }
                 }
-            }
-            
-            // 1.5 定时 AI 整理文档
-            SettingsGroupCard(title: AppLanguage.text("AI 定时整理", en: "Scheduled AI Organizer")) {
-                ScheduledAIOrganizeSettingsCard(isEmbeddedInGroupCard: true)
             }
             
             // 2. 数据备份

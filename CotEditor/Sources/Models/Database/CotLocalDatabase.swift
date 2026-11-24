@@ -214,6 +214,11 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let aiScheduledOrganizeEnabled = "ai.scheduledOrganize.enabled"
         static let aiScheduledOrganizeHour = "ai.scheduledOrganize.hour"
         static let aiScheduledOrganizeMinute = "ai.scheduledOrganize.minute"
+        static let aiScheduledOrganizeFrequency = "ai.scheduledOrganize.frequency"
+        static let aiScheduledOrganizeRenameUntitled = "ai.scheduledOrganize.renameUntitled"
+        static let aiScheduledOrganizeStarMap = "ai.scheduledOrganize.starMap"
+        static let aiScheduledOrganizeRefreshDashboard = "ai.scheduledOrganize.refreshDashboard"
+        static let aiScheduledOrganizeCatchUpOnWake = "ai.scheduledOrganize.catchUpOnWake"
         static let aiScheduledOrganizeLastCycleKey = "ai.scheduledOrganize.lastCycleKey"
         static let aiScheduledOrganizeLastSummary = "ai.scheduledOrganize.lastSummary"
     }
