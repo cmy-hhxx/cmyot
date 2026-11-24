@@ -66,7 +66,7 @@ export default function CodeBlock({
 
   return (
     <div className="my-2.5 w-full overflow-hidden rounded-card bg-surface shadow-card">
-      <div className="flex h-9 items-center gap-2 border-b border-line px-3 text-[12px]">
+      <div className="flex h-9.5 items-center gap-2 border-b border-line px-3 text-[13px]">
         <span className="inline-flex min-w-0 items-center gap-1.5">
           <svg
             aria-hidden
@@ -90,7 +90,7 @@ export default function CodeBlock({
             <button
               type="button"
               onClick={() => onInsert(code)}
-              className="flex h-6 items-center gap-1 rounded-[6px] px-1.5 text-[11.5px] font-medium text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
+              className="flex h-7 items-center gap-1 rounded-[6px] px-2 text-[12.5px] font-medium text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
             >
               {locale === "zh" ? "插入" : "Insert"}
             </button>
@@ -99,16 +99,16 @@ export default function CodeBlock({
             type="button"
             aria-label="Copy code"
             onClick={handleCopy}
-            className={`flex h-6 items-center gap-1 rounded-[6px] px-1.5 text-[11.5px] font-medium transition-colors duration-100 hover:bg-hover ${
+            className={`flex h-7 items-center gap-1 rounded-[6px] px-2 text-[12.5px] font-medium transition-colors duration-100 hover:bg-hover ${
               copied ? "text-green" : "text-ink-3 hover:text-ink"
             }`}
           >
             {copied ? (
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M20 6L9 17l-5-5" />
               </svg>
             ) : (
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="9" y="9" width="12" height="12" rx="2.5" />
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
               </svg>
@@ -118,12 +118,12 @@ export default function CodeBlock({
         </div>
       </div>
 
-      <div className="bui-scroll overflow-x-auto py-2.5 font-mono text-[12px] leading-[1.65] text-ink-2">
+      <div className="bui-scroll overflow-x-auto py-2.5 font-mono text-[13px] leading-[1.65] text-ink-2">
         <div className="relative min-w-fit">
-          <span className="pointer-events-none absolute inset-y-0 left-7 w-px bg-line" />
+          <span className="pointer-events-none absolute inset-y-0 left-8 w-px bg-line" />
           {lines.map((line, i) => (
-            <div key={i} className="grid grid-cols-[28px_minmax(0,1fr)] items-start">
-              <span className="select-none pr-1 text-center text-[10.5px] text-ink-3 tabular-nums">{i + 1}</span>
+            <div key={i} className="grid grid-cols-[32px_minmax(0,1fr)] items-start">
+              <span className="select-none pr-1 text-center text-[12.5px] text-ink-3 tabular-nums">{i + 1}</span>
               <code className="pr-3 pl-2.5 whitespace-pre">{highlight(line)}</code>
             </div>
           ))}

@@ -34,6 +34,10 @@ export type AgentMessage = {
   isError?: boolean;
   quoteContext?: string;
   createdAt?: number;
+  attachedDocuments?: string[];
+  delegatedBotID?: string;
+  delegatedBotName?: string;
+  delegatedModel?: string;
 };
 
 export type SessionSummary = {
@@ -42,6 +46,41 @@ export type SessionSummary = {
   isPinned: boolean;
   messageCount?: number;
   updatedAt?: number;
+  workspacePath?: string | null;
+  workspaceName?: string | null;
+};
+
+export type WorkspaceOption = {
+  path: string;
+  name: string;
+  subtitle: string;
+  isOpenInEditor: boolean;
+};
+
+export type DocumentMentionItem = {
+  id: string;
+  title: string;
+  desc: string;
+  sourceKind: "open_tab" | "stored_doc" | "weekly_report" | "workspace_file";
+  filePath?: string | null;
+  isActive?: boolean;
+};
+
+export type BotMentionItem = {
+  id: string;
+  name: string;
+  nickname: string;
+  handle: string;
+  tagline: string;
+  accentHex: string;
+  model?: string | null;
+};
+
+export type AttachedDocumentRef = {
+  id: string;
+  title: string;
+  sourceKind: DocumentMentionItem["sourceKind"];
+  filePath?: string | null;
 };
 
 export type ModelOption = {
@@ -95,7 +134,7 @@ export type HostState = {
   errorMessage?: string | null;
   placeholder: string;
   greetingName?: string;
-  greetingSubtitle?: string;
+  greetingSubtitle?: string | null;
   articleTitle?: string;
   articleSource?: string;
   quotedExcerpt?: string | null;
@@ -106,6 +145,9 @@ export type HostState = {
   suggestions: QuickSuggestion[];
   contextSources: ContextSourceItem[];
   slashCommands: SlashCommandItem[];
+  availableWorkspaces?: WorkspaceOption[];
+  availableDocuments?: DocumentMentionItem[];
+  availableBots?: BotMentionItem[];
 };
 
 export type StreamPatch = {

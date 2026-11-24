@@ -489,4 +489,167 @@ struct Round35AIBackendAndDashboardHeroTests {
         #expect(focusedTop.topLeft.isLightBackground == true)
         #expect(focusedBottom.topLeft.isLightBackground == false)
     }
+    
+    
+    // MARK: 7. Workspace-Scoped Butler Sessions & @Document + @Bot Delegation
+    
+    @Test func butlerWorkspaceSessionsPersistAndInjectContext() throws {
+        let tempDir = self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let wsAlpha = tempDir.appending(path: "AlphaProject", directoryHint: .isDirectory)
+        let wsBeta = tempDir.appending(path: "BetaNotes", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: wsAlpha, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: wsBeta, withIntermediateDirectories: true)
+        try "# Alpha README\nArchitecture details.".write(to: wsAlpha.appending(path: "README.md"), atomically: true, encoding: .utf8)
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "ws-butler.sqlite3"))
+        let mem = CotMemoryStore(database: db)
+        let manager = CotButlerManager(database: db, memoryStore: mem)
+        
+        // Bind initial empty session to wsAlpha
+        manager.startNewSession(workspacePath: wsAlpha.path(percentEncoded: false))
+        let alphaSessionID = manager.activeSessionID
+        #expect(manager.activeWorkspacePath == wsAlpha.standardizedFileURL.path(percentEncoded: false))
+        #expect(manager.activeSession?.workspaceName == "AlphaProject")
+        
+        // Append a message so starting a new session in wsBeta creates a distinct session
+        db.appendButlerMessage(ButlerChatMessage(
+            id: UUID().uuidString,
+            sessionID: alphaSessionID,
+            role: "user",
+            content: "分析 Alpha 架构",
+            actionsJSON: "[]",
+            createdAt: Date()
+        ))
+        manager.reloadFromDatabase()
+        
+        manager.startNewSession(workspacePath: wsBeta.path(percentEncoded: false))
+        let betaSessionID = manager.activeSessionID
+        #expect(betaSessionID != alphaSessionID)
+        #expect(manager.activeSession?.workspaceName == "BetaNotes")
+        
+        // Update beta session to unbound (general) and verify persistence on fresh manager instance
+        manager.setSessionWorkspace(betaSessionID, workspacePath: nil)
+        #expect(manager.activeWorkspacePath == nil)
+        
+        let reloaded = CotButlerManager(database: db, memoryStore: mem)
+        let reloadedAlpha = try #require(reloaded.sessions.first(where: { $0.id == alphaSessionID }))
+        #expect(reloadedAlpha.workspaceName == "AlphaProject")
+        
+        // Verify workspace files listing and system prompt injection
+        let files = CotAgentCoordinator.listWorkspaceFiles(at: wsAlpha, limit: 10)
+        #expect(files.contains(where: { $0.title == "README.md" }))
+        let sysPrompt = reloaded.buildButlerSystemPrompt(workspacePath: wsAlpha.path(percentEncoded: false))
+        #expect(sysPrompt.contains("AlphaProject"))
+        #expect(sysPrompt.contains("README.md"))
+    }
+    
+    
+    @Test func butlerResolvesAtDocumentsAndAtBotDelegationCleanly() throws {
+        let tempDir = self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let wsDir = tempDir.appending(path: "DocsWS", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: wsDir, withIntermediateDirectories: true)
+        let specFile = wsDir.appending(path: "launch-plan.md")
+        try "Launch Q4 milestone with zero downtime.".write(to: specFile, atomically: true, encoding: .utf8)
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "delegate.sqlite3"))
+        let mem = CotMemoryStore(database: db)
+        let manager = CotButlerManager(database: db, memoryStore: mem)
+        let botStore = AIBotStore(database: db)
+        
+        // Bot mention resolution across explicit ID, Chinese nickname, display name, and handle
+        #expect(CotButlerManager.resolveDelegatedBot(in: "帮我处理", explicitBotID: "translate", botStore: botStore) == .translate)
+        #expect(CotButlerManager.resolveDelegatedBot(in: "@翻译 这段文字", explicitBotID: nil, botStore: botStore) == .translate)
+        #expect(CotButlerManager.resolveDelegatedBot(in: "@极简提炼师 总结要点", explicitBotID: nil, botStore: botStore) == .summarize)
+        #expect(CotButlerManager.resolveDelegatedBot(in: "交给 @WeeklyBot 整理", explicitBotID: nil, botStore: botStore) == .weeklyReport)
+        #expect(CotButlerManager.resolveDelegatedBot(in: "普通聊天内容", explicitBotID: nil, botStore: botStore) == nil)
+        
+        // Inline @document matching & content resolution
+        let inlineMatched = manager.resolveInlineDocumentMentions(
+            in: "请帮我把 @launch-plan.md 交给 @翻译",
+            excluding: [],
+            workspacePath: wsDir.path(percentEncoded: false)
+        )
+        #expect(inlineMatched.count == 1)
+        #expect(inlineMatched.first?.title == "launch-plan.md")
+        
+        let prompt = manager.buildTurnUserPrompt(
+            userText: "翻成中文",
+            quote: nil,
+            contextSources: [],
+            attachedDocuments: inlineMatched,
+            delegatedBotID: .translate
+        )
+        #expect(prompt.contains("<attached_document title=\"launch-plan.md\""))
+        #expect(prompt.contains("Launch Q4 milestone with zero downtime."))
+        
+        // Metadata round-trip for delegated bot + attached documents
+        let meta = ButlerMessageMetadata(
+            thinkingDurationMs: 680,
+            attachedDocuments: ["launch-plan.md"],
+            delegatedBotID: "translate",
+            delegatedBotName: "双语翻译官",
+            delegatedModel: "deepseek-chat"
+        )
+        let encoded = CotButlerManager.encodeMetadata(meta)
+        let decoded = CotButlerManager.decodeMetadata(from: encoded)
+        #expect(decoded == meta)
+        
+        // Clean compiled WebUI bundle check: no "已连接 Pi 内核", no cheap 4-point sparkle SVG, includes @文档 and @助手
+        let html = BeautifulAgentUIBundle.htmlDocument()
+        #expect(!html.contains("已连接 Pi 内核"))
+        #expect(!html.contains("M12 2l2.4 7.2"))
+        #expect(html.contains("@文档"))
+        #expect(html.contains("@助手"))
+        #expect(html.contains("工作区会话"))
+    }
+    
+    
+    // MARK: 8. Single-Page Dashboard Responsive Viewport Layout
+    
+    @Test func dashboardViewportLayoutFitsStandardWindowsWithoutVerticalScroll() {
+        // Standard 13"/14" laptop window (1280x700) with hero cover photo -> single page, zero vertical scroll
+        let laptop = DashboardViewportLayout.resolve(
+            viewportSize: CGSize(width: 1280, height: 700),
+            isEmbeddedInSettings: false,
+            hasHeroPhoto: true
+        )
+        #expect(laptop.needsVerticalScroll == false)
+        #expect(laptop.totalContentHeight <= 700)
+        #expect(laptop.heroHeight >= 142 && laptop.heroHeight <= 204)
+        #expect(laptop.row1Height >= 226)
+        #expect(laptop.row2Height >= 216)
+        
+        // Large display (1440x960) -> single page, capped heights so cards keep balanced proportions
+        let desktop = DashboardViewportLayout.resolve(
+            viewportSize: CGSize(width: 1440, height: 960),
+            isEmbeddedInSettings: false,
+            hasHeroPhoto: true
+        )
+        #expect(desktop.needsVerticalScroll == false)
+        #expect(desktop.totalContentHeight <= 960)
+        #expect(desktop.heroHeight <= 204)
+        #expect(desktop.row1Height <= 292)
+        #expect(desktop.row2Height <= 326)
+        
+        // Embedded Settings pane (980x620) -> single page, zero vertical scroll
+        let settings = DashboardViewportLayout.resolve(
+            viewportSize: CGSize(width: 980, height: 620),
+            isEmbeddedInSettings: true,
+            hasHeroPhoto: true
+        )
+        #expect(settings.needsVerticalScroll == false)
+        #expect(settings.totalContentHeight <= 620)
+        
+        // Very short window (1000x520) -> gracefully enables vertical scrolling instead of crushing cards
+        let tiny = DashboardViewportLayout.resolve(
+            viewportSize: CGSize(width: 1000, height: 520),
+            isEmbeddedInSettings: false,
+            hasHeroPhoto: true
+        )
+        #expect(tiny.needsVerticalScroll == true)
+    }
 }

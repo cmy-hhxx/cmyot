@@ -89,6 +89,10 @@ nonisolated struct BeautifulAgentMessagePayload: Codable, Equatable, Identifiabl
     var isError: Bool?
     var quoteContext: String?
     var createdAt: Double?
+    var attachedDocuments: [String]? = nil
+    var delegatedBotID: String? = nil
+    var delegatedBotName: String? = nil
+    var delegatedModel: String? = nil
 }
 
 
@@ -98,6 +102,39 @@ nonisolated struct BeautifulAgentSessionPayload: Codable, Equatable, Identifiabl
     var isPinned: Bool
     var messageCount: Int?
     var updatedAt: Double?
+    var workspacePath: String? = nil
+    var workspaceName: String? = nil
+}
+
+
+nonisolated struct BeautifulAgentWorkspacePayload: Codable, Equatable, Identifiable, Sendable {
+    var path: String
+    var name: String
+    var subtitle: String
+    var isOpenInEditor: Bool
+    
+    var id: String { self.path }
+}
+
+
+nonisolated struct BeautifulAgentDocumentMentionPayload: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var title: String
+    var desc: String
+    var sourceKind: String // "open_tab" | "stored_doc" | "weekly_report" | "workspace_file"
+    var filePath: String? = nil
+    var isActive: Bool? = nil
+}
+
+
+nonisolated struct BeautifulAgentBotMentionPayload: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var name: String
+    var nickname: String
+    var handle: String
+    var tagline: String
+    var accentHex: String
+    var model: String? = nil
 }
 
 
@@ -167,6 +204,9 @@ nonisolated struct BeautifulAgentHostStatePayload: Codable, Equatable, Sendable 
     var suggestions: [BeautifulAgentSuggestionPayload]
     var contextSources: [BeautifulAgentContextSourcePayload]
     var slashCommands: [BeautifulAgentSlashCommandPayload]
+    var availableWorkspaces: [BeautifulAgentWorkspacePayload]? = nil
+    var availableDocuments: [BeautifulAgentDocumentMentionPayload]? = nil
+    var availableBots: [BeautifulAgentBotMentionPayload]? = nil
 }
 
 
@@ -184,6 +224,7 @@ nonisolated struct BeautifulAgentStreamPatchPayload: Codable, Equatable, Sendabl
 
 struct BeautifulAgentWebActionCallbacks {
     var onSend: (String, String) -> Void = { _, _ in } // (prompt, quote)
+    var onSendRich: ((String, String, [ButlerDocumentAttachment], String?) -> Void)? = nil
     var onAbort: () -> Void = { }
     var onRetry: () -> Void = { }
     var onClearChat: () -> Void = { }
@@ -191,10 +232,13 @@ struct BeautifulAgentWebActionCallbacks {
     var onSelectModel: (BeautifulAgentModelPayload) -> Void = { _ in }
     var onSelectEffort: (String) -> Void = { _ in }
     var onNewSession: () -> Void = { }
+    var onNewSessionInWorkspace: ((String?) -> Void)? = nil
     var onSelectSession: (String) -> Void = { _ in }
     var onDeleteSession: (String) -> Void = { _ in }
     var onRenameSession: (String, String) -> Void = { _, _ in }
     var onTogglePinSession: (String) -> Void = { _ in }
+    var onSetSessionWorkspace: (String, String?) -> Void = { _, _ in }
+    var onChooseWorkspaceFolder: (String, Bool) -> Void = { _, _ in }
     var onInsertToEditor: (String) -> Void = { _ in }
     var onOpenNewDocument: (String) -> Void = { _ in }
     var onOpenSettings: (String) -> Void = { _ in }
@@ -426,7 +470,19 @@ struct BeautifulAgentWebView: NSViewRepresentable {
                 case "send":
                     let text = (dict["text"] as? String) ?? ""
                     let quote = (dict["quote"] as? String) ?? ""
-                    self.callbacks.onSend(text, quote)
+                    if let onSendRich = self.callbacks.onSendRich {
+                        var docs: [ButlerDocumentAttachment] = []
+                        if let rawDocs = dict["documents"],
+                           let data = try? JSONSerialization.data(withJSONObject: rawDocs),
+                           let decoded = try? JSONDecoder().decode([ButlerDocumentAttachment].self, from: data)
+                        {
+                            docs = decoded
+                        }
+                        let botID = (dict["botId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        onSendRich(text, quote, docs, (botID?.isEmpty == false) ? botID : nil)
+                    } else {
+                        self.callbacks.onSend(text, quote)
+                    }
                     
                 case "abort":
                     self.callbacks.onAbort()
@@ -454,7 +510,22 @@ struct BeautifulAgentWebView: NSViewRepresentable {
                     }
                     
                 case "newSession":
-                    self.callbacks.onNewSession()
+                    let wsPath = (dict["workspacePath"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let onNewInWorkspace = self.callbacks.onNewSessionInWorkspace {
+                        onNewInWorkspace((wsPath?.isEmpty == false) ? wsPath : nil)
+                    } else {
+                        self.callbacks.onNewSession()
+                    }
+                    
+                case "setSessionWorkspace":
+                    let sessionID = (dict["sessionId"] as? String) ?? ""
+                    let wsPath = (dict["workspacePath"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.callbacks.onSetSessionWorkspace(sessionID, (wsPath?.isEmpty == false) ? wsPath : nil)
+                    
+                case "chooseWorkspaceFolder":
+                    let sessionID = (dict["sessionId"] as? String) ?? ""
+                    let createNew = (dict["createNew"] as? Bool) == true
+                    self.callbacks.onChooseWorkspaceFolder(sessionID, createNew)
                     
                 case "selectSession":
                     if let id = dict["id"] as? String {

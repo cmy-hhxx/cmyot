@@ -1064,6 +1064,77 @@ struct DashboardSnapshot {
 }
 
 
+// MARK: - Responsive Single-Page Viewport Layout Solver
+
+/// Pure deterministic single-page layout solver for `AnalyticsDashboardView`.
+/// Fits Hero + Row 1 + Row 2 cleanly inside standard macOS windows without vertical scrolling,
+/// preserving balanced editorial proportions and falling back to scrolling only on very short windows.
+nonisolated struct DashboardViewportLayout: Equatable, Sendable {
+    let outerPadH: CGFloat
+    let outerPadV: CGFloat
+    let vSpacing: CGFloat
+    let hSpacing: CGFloat
+    let heroHeight: CGFloat
+    let row1Height: CGFloat
+    let row2Height: CGFloat
+    let leftColumnRatio: CGFloat
+    let maxContentWidth: CGFloat
+    let isTight: Bool
+    let needsVerticalScroll: Bool
+    
+    var totalContentHeight: CGFloat {
+        self.outerPadV * 2 + self.vSpacing * 2 + self.heroHeight + self.row1Height + self.row2Height
+    }
+    
+    static func resolve(
+        viewportSize: CGSize,
+        isEmbeddedInSettings: Bool,
+        hasHeroPhoto: Bool
+    ) -> DashboardViewportLayout {
+        let vpH = max(480, viewportSize.height)
+        let vpW = max(680, viewportSize.width)
+        let isTight = isEmbeddedInSettings || vpH < 760
+        
+        let outerPadH: CGFloat = isEmbeddedInSettings ? 12 : (vpW >= 1280 ? 22 : 16)
+        let outerPadV: CGFloat = isEmbeddedInSettings ? 10 : (vpH >= 840 ? 16 : 12)
+        let vSpacing: CGFloat = isEmbeddedInSettings ? 10 : (vpH >= 840 ? 14 : 11)
+        let hSpacing: CGFloat = isEmbeddedInSettings ? 10 : (vpW >= 1200 ? 14 : 12)
+        
+        let minHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 132 : 116) : (hasHeroPhoto ? 142 : 122)
+        let maxHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 164 : 138) : (hasHeroPhoto ? 204 : 164)
+        let minRow1: CGFloat = isEmbeddedInSettings ? 206 : 226
+        let maxRow1: CGFloat = isEmbeddedInSettings ? 248 : 292
+        let minRow2: CGFloat = isEmbeddedInSettings ? 196 : 216
+        let maxRow2: CGFloat = isEmbeddedInSettings ? 248 : 326
+        
+        let minTotal = outerPadV * 2 + vSpacing * 2 + minHero + minRow1 + minRow2
+        let needsScroll = vpH < minTotal
+        let usableH = max(minHero + minRow1 + minRow2, vpH - outerPadV * 2 - vSpacing * 2)
+        
+        let heroWeight: CGFloat = hasHeroPhoto ? 0.225 : 0.185
+        let heroH = min(maxHero, max(minHero, floor(usableH * heroWeight)))
+        
+        let remainingAfterHero = usableH - heroH
+        let row1H = min(maxRow1, max(minRow1, floor(remainingAfterHero * 0.485)))
+        let row2H = min(maxRow2, max(minRow2, floor(remainingAfterHero - row1H)))
+        
+        return DashboardViewportLayout(
+            outerPadH: outerPadH,
+            outerPadV: outerPadV,
+            vSpacing: vSpacing,
+            hSpacing: hSpacing,
+            heroHeight: heroH,
+            row1Height: row1H,
+            row2Height: row2H,
+            leftColumnRatio: isEmbeddedInSettings ? 0.51 : 0.545,
+            maxContentWidth: isEmbeddedInSettings ? 1120 : 1320,
+            isTight: isTight,
+            needsVerticalScroll: needsScroll
+        )
+    }
+}
+
+
 // MARK: - Two-Row Bento Dashboard + Interactive NEWS Workspace
 
 struct AnalyticsDashboardView: View {
@@ -1124,22 +1195,18 @@ struct AnalyticsDashboardView: View {
                     }
                 )
             } else {
-                let outerPad: CGFloat = self.isEmbeddedInSettings ? 12 : 24
-                let vSpacing: CGFloat = self.isEmbeddedInSettings ? 12 : 16
-                let hSpacing: CGFloat = self.isEmbeddedInSettings ? 12 : 16
                 let hasHeroPhoto = (self.heroCoverStore.coverImage != nil)
-                let heroH: CGFloat = if self.isEmbeddedInSettings {
-                    hasHeroPhoto ? 196 : 152
-                } else {
-                    hasHeroPhoto ? 276 : 208
-                }
-                let row1H: CGFloat = self.isEmbeddedInSettings ? 228 : 304
-                let row2H: CGFloat = self.isEmbeddedInSettings ? 236 : 336
                 
                 GeometryReader { viewportGeo in
-                    ScrollView(.vertical, showsIndicators: true) {
+                    let layout = DashboardViewportLayout.resolve(
+                        viewportSize: viewportGeo.size,
+                        isEmbeddedInSettings: self.isEmbeddedInSettings,
+                        hasHeroPhoto: hasHeroPhoto
+                    )
+                    
+                    let contentStack = Group {
                         if let snapshot = self.snapshot {
-                            VStack(alignment: .leading, spacing: vSpacing) {
+                            VStack(alignment: .leading, spacing: layout.vSpacing) {
                                 DashboardAchievementHeroBar(
                                     profile: self.profileManager.activeProfile,
                                     avatarImage: self.profileManager.avatarImage(for: self.profileManager.activeProfile),
@@ -1149,25 +1216,37 @@ struct AnalyticsDashboardView: View {
                                     onBack: self.isEmbeddedInSettings ? nil : self.onDismiss
                                 )
                                 .frame(maxWidth: .infinity)
-                                .frame(height: heroH)
+                                .frame(height: layout.heroHeight)
                                 .animation(DashMotion.resolve(DashMotion.standard), value: hasHeroPhoto)
                                 .opacity(self.hasAppeared ? 1 : 0)
                                 .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.992)
                                 .offset(y: self.hasAppeared || DashMotion.isReducedMotion ? 0 : 8)
                                 .animation(DashMotion.resolve(DashMotion.staggeredEntrance), value: self.hasAppeared)
                                 
-                                self.row1Section(snapshot, height: row1H, spacing: hSpacing)
+                                self.row1Section(snapshot, layout: layout)
                                 
-                                self.row2Section(snapshot, height: row2H, spacing: hSpacing)
+                                self.row2Section(snapshot, layout: layout)
                             }
-                            .padding(outerPad)
-                            .frame(maxWidth: 1200, alignment: .leading)
+                            .padding(.horizontal, layout.outerPadH)
+                            .padding(.vertical, layout.outerPadV)
+                            .frame(maxWidth: layout.maxContentWidth, alignment: .leading)
                             .frame(maxWidth: .infinity, minHeight: viewportGeo.size.height, alignment: .center)
                         } else {
-                            Color.clear.frame(height: 460)
+                            Color.clear.frame(maxWidth: .infinity, minHeight: viewportGeo.size.height)
                         }
                     }
-                    .transition(.opacity)
+                    
+                    if layout.needsVerticalScroll {
+                        ScrollView(.vertical, showsIndicators: true) {
+                            contentStack
+                        }
+                        .transition(.opacity)
+                    } else {
+                        contentStack
+                            .frame(width: viewportGeo.size.width, height: viewportGeo.size.height, alignment: .center)
+                            .clipped()
+                            .transition(.opacity)
+                    }
                 }
             }
         }
@@ -1234,11 +1313,12 @@ struct AnalyticsDashboardView: View {
     
     // MARK: Row 1 — Unified Heatmap + Mathematical Wave Card & AI Usage / Busyness Rose / Mood Flow
     
-    private func row1Section(_ snapshot: DashboardSnapshot, height: CGFloat, spacing: CGFloat) -> some View {
-        GeometryReader { proxy in
+    private func row1Section(_ snapshot: DashboardSnapshot, layout: DashboardViewportLayout) -> some View {
+        let height = layout.row1Height
+        let spacing = layout.hSpacing
+        return GeometryReader { proxy in
             let usableW = max(320, proxy.size.width - spacing)
-            let leftRatio: CGFloat = self.isEmbeddedInSettings ? 0.50 : 0.54
-            let leftWidth = floor(usableW * leftRatio)
+            let leftWidth = floor(usableW * layout.leftColumnRatio)
             let rightWidth = max(160, usableW - leftWidth)
             
             HStack(alignment: .top, spacing: spacing) {
@@ -1251,7 +1331,7 @@ struct AnalyticsDashboardView: View {
                     currentStreak: snapshot.currentStreak,
                     availableYears: snapshot.availableYears,
                     selectedYear: self.$selectedYear,
-                    compact: self.isEmbeddedInSettings,
+                    compact: layout.isTight,
                     palette: self.palette
                 )
                 .frame(width: leftWidth, height: height)
@@ -1260,7 +1340,7 @@ struct AnalyticsDashboardView: View {
                 .offset(y: self.hasAppeared || DashMotion.isReducedMotion ? 0 : 10)
                 .animation(DashMotion.resolve(DashMotion.staggeredEntrance.delay(0.05)), value: self.hasAppeared)
                 
-                self.flippableQuadSection(snapshot, height: height)
+                self.flippableQuadSection(snapshot, height: height, gap: spacing)
                     .frame(width: rightWidth, height: height)
                     .opacity(self.hasAppeared ? 1 : 0)
                     .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.988)
@@ -1272,7 +1352,7 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    private func flippableQuadSection(_ snapshot: DashboardSnapshot, height: CGFloat) -> some View {
+    private func flippableQuadSection(_ snapshot: DashboardSnapshot, height: CGFloat, gap: CGFloat) -> some View {
         ZStack {
             if let expanded = self.expandedQuad {
                 DashboardExpandedQuadCard(
@@ -1291,9 +1371,9 @@ struct AnalyticsDashboardView: View {
                     removal: .opacity.combined(with: .scale(scale: 0.97))
                 ))
             } else {
-                let vGap: CGFloat = self.isEmbeddedInSettings ? 12 : 16
-                let hGap: CGFloat = self.isEmbeddedInSettings ? 12 : 16
-                let topH = max(88, floor((height - vGap) * 0.50))
+                let vGap: CGFloat = gap
+                let hGap: CGFloat = gap
+                let topH = max(88, floor((height - vGap) * 0.49))
                 let botH = max(84, height - vGap - topH)
                 
                 VStack(spacing: vGap) {
@@ -1340,16 +1420,18 @@ struct AnalyticsDashboardView: View {
     
     // MARK: Row 2 — Equal 3-Column Layout (干了啥 / 要干啥 / NEWS)
     
-    private func row2Section(_ snapshot: DashboardSnapshot, height: CGFloat, spacing: CGFloat) -> some View {
-        HStack(alignment: .top, spacing: spacing) {
-            self.doneTodayColumn(points: snapshot.doneTodayPoints)
+    private func row2Section(_ snapshot: DashboardSnapshot, layout: DashboardViewportLayout) -> some View {
+        let height = layout.row2Height
+        let spacing = layout.hSpacing
+        return HStack(alignment: .top, spacing: spacing) {
+            self.doneTodayColumn(points: snapshot.doneTodayPoints, compact: layout.isTight)
                 .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
                 .opacity(self.hasAppeared ? 1 : 0)
                 .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.988)
                 .offset(y: self.hasAppeared || DashMotion.isReducedMotion ? 0 : 12)
                 .animation(DashMotion.resolve(DashMotion.staggeredEntrance.delay(0.12)), value: self.hasAppeared)
             
-            self.predictedActionsColumn(predictions: snapshot.actionPredictions)
+            self.predictedActionsColumn(predictions: snapshot.actionPredictions, compact: layout.isTight)
                 .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
                 .opacity(self.hasAppeared ? 1 : 0)
                 .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.988)
@@ -1358,6 +1440,7 @@ struct AnalyticsDashboardView: View {
             
             DashboardNewsColumnCard(
                 compact: self.isEmbeddedInSettings,
+                tightPadding: layout.isTight,
                 cardHeight: height,
                 palette: self.palette,
                 onOpenWorkspace: { selectedID in
@@ -1373,19 +1456,19 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    private func doneTodayColumn(points: [String]) -> some View {
+    private func doneTodayColumn(points: [String], compact: Bool) -> some View {
         DoneTodayEditorialCard(
             points: points,
-            compact: self.isEmbeddedInSettings,
+            compact: compact,
             palette: self.palette
         )
     }
     
     
-    private func predictedActionsColumn(predictions: [DocumentActionPrediction]) -> some View {
+    private func predictedActionsColumn(predictions: [DocumentActionPrediction], compact: Bool) -> some View {
         NextActionsEditorialCard(
             predictions: predictions,
-            compact: self.isEmbeddedInSettings,
+            compact: compact,
             palette: self.palette
         )
     }
@@ -1634,6 +1717,7 @@ private struct NextActionsEditorialCard: View {
 private struct DashboardNewsColumnCard: View {
     
     let compact: Bool
+    var tightPadding: Bool = false
     let cardHeight: CGFloat
     let palette: DashPalette
     let onOpenWorkspace: (String?) -> Void
@@ -1645,8 +1729,8 @@ private struct DashboardNewsColumnCard: View {
     
     var body: some View {
         let items = self.newsService.filteredItems
-        let outerH: CGFloat = self.compact ? 14 : 18
-        let outerV: CGFloat = self.compact ? 12 : 16
+        let outerH: CGFloat = (self.compact || self.tightPadding) ? 14 : 18
+        let outerV: CGFloat = (self.compact || self.tightPadding) ? 12 : 16
         
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -2787,14 +2871,15 @@ private struct DashboardAchievementHeroBar: View {
         let coverImageID = self.coverStore.coverImage.map(ObjectIdentifier.init)
         let moodLabel = self.snapshot.mood.dominantLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayMood = moodLabel.isEmpty ? AppLanguage.text("冷静", en: "Calm") : moodLabel
-        let padH: CGFloat = self.compact ? 16 : 22
-        let padTop: CGFloat = self.compact ? 12 : 16
-        let padBottom: CGFloat = self.compact ? 12 : 16
-        let rowHeight: CGFloat = self.compact ? 44 : 48
+        let padH: CGFloat = self.compact ? 16 : 20
         let topLeftTone = self.toneSnapshot.topLeft
         let topRightTone = self.toneSnapshot.topRight
         
         GeometryReader { heroGeo in
+            let isShortHero = self.compact || heroGeo.size.height < 176
+            let padTop: CGFloat = isShortHero ? 10 : 14
+            let padBottom: CGFloat = isShortHero ? 10 : 14
+            let rowHeight: CGFloat = isShortHero ? 42 : 46
             let aspectBucket = Int(((heroGeo.size.width / max(1, heroGeo.size.height)) * 20).rounded())
             
             VStack(alignment: .leading, spacing: 0) {
@@ -2857,7 +2942,7 @@ private struct DashboardAchievementHeroBar: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.vertical, self.compact ? 4 : 8)
+                .padding(.vertical, isShortHero ? 2 : 6)
                 
                 // Bottom editorial identity + telemetry strip resting on smoothly melted card-surface dock (always visible!)
                 HStack(alignment: .center, spacing: 0) {
@@ -4288,114 +4373,118 @@ private struct DashboardAIUsageWideCard: View {
         let outPct = max(0, 100 - inPct)
         
         Button(action: self.onTap) {
-            HStack(spacing: 16) {
-                ZStack {
-                    AIUsageSunburstChartView(snapshot: self.snapshot, palette: self.palette, detailed: false)
-                        .frame(width: 92, height: 92)
-                        .scaleEffect(self.isHovered && !DashMotion.isReducedMotion ? 1.04 : 1.0)
-                        .animation(DashMotion.resolve(DashMotion.springCard), value: self.isHovered)
-                    
-                    VStack(spacing: 0.5) {
-                        Text("\(displayReqs)")
-                            .font(.system(size: 13.5, weight: .bold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(self.palette.pine)
-                            .contentTransition(.numericText())
-                        Text(AppLanguage.text("次", en: "req"))
-                            .font(.system(size: 9.5, weight: .medium))
-                            .foregroundStyle(self.palette.mutedInk)
-                    }
-                    .allowsHitTesting(false)
-                }
-                .frame(width: 94, height: 94)
-                
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(alignment: .top, spacing: 8) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(AppLanguage.text("AI 用量", en: "AI Usage"))
-                                .font(.system(size: 11.5, weight: .medium))
+            GeometryReader { cardGeo in
+                let ringSide = min(88, max(68, floor(cardGeo.size.height - 20)))
+                HStack(spacing: 14) {
+                    ZStack {
+                        AIUsageSunburstChartView(snapshot: self.snapshot, palette: self.palette, detailed: false)
+                            .frame(width: ringSide, height: ringSide)
+                            .scaleEffect(self.isHovered && !DashMotion.isReducedMotion ? 1.04 : 1.0)
+                            .animation(DashMotion.resolve(DashMotion.springCard), value: self.isHovered)
+                        
+                        VStack(spacing: 0.5) {
+                            Text("\(displayReqs)")
+                                .font(.system(size: ringSide < 78 ? 12 : 13.5, weight: .bold, design: .rounded).monospacedDigit())
+                                .foregroundStyle(self.palette.pine)
+                                .contentTransition(.numericText())
+                            Text(AppLanguage.text("次", en: "req"))
+                                .font(.system(size: 9.5, weight: .medium))
                                 .foregroundStyle(self.palette.mutedInk)
+                        }
+                        .allowsHitTesting(false)
+                    }
+                    .frame(width: ringSide + 2, height: ringSide + 2)
+                    
+                    VStack(alignment: .leading, spacing: cardGeo.size.height < 118 ? 8 : 12) {
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(AppLanguage.text("AI 用量", en: "AI Usage"))
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(self.palette.mutedInk)
+                                
+                                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                                    Text(Self.compactTokens(totals.totalTokens))
+                                        .font(.system(size: cardGeo.size.height < 118 ? 18 : 20, weight: .semibold).monospacedDigit())
+                                        .foregroundStyle(self.palette.pine)
+                                        .contentTransition(.numericText())
+                                    Text("tok")
+                                        .font(.system(size: 11, weight: .regular))
+                                        .foregroundStyle(self.palette.mutedInk)
+                                }
+                            }
                             
-                            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                                Text(Self.compactTokens(totals.totalTokens))
-                                    .font(.system(size: 20, weight: .semibold).monospacedDigit())
-                                    .foregroundStyle(self.palette.pine)
-                                    .contentTransition(.numericText())
-                                Text("tok")
-                                    .font(.system(size: 11, weight: .regular))
+                            Spacer(minLength: 4)
+                            
+                            VStack(alignment: .trailing, spacing: 5) {
+                                HStack(spacing: 4) {
+                                    Text(costEstimate.formattedRMB)
+                                        .font(.system(size: 11.5, weight: .bold, design: .rounded).monospacedDigit())
+                                        .foregroundStyle(self.palette.emerald)
+                                    Text("·")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(self.palette.secondaryInk)
+                                    Text(costEstimate.formattedUSD)
+                                        .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
+                                        .foregroundStyle(self.palette.secondaryInk)
+                                }
+                                .padding(.horizontal, 8)
+                                .frame(height: 22)
+                                .background(self.palette.tokens.positivePillBg, in: Capsule())
+                                
+                                HStack(alignment: .bottom, spacing: 3) {
+                                    let aiMax = max(20.0, self.snapshot.days14.map { Double($0.ai) }.max() ?? 20.0)
+                                    ForEach(Array(self.snapshot.days14.suffix(10).enumerated()), id: \.offset) { idx, day in
+                                        let frac = CGFloat(Double(day.ai) / aiMax)
+                                        let h = max(3, frac * 11)
+                                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                                            .fill(day.ai > 0 ? (idx == 9 ? self.palette.accentFill : self.palette.accentFill.opacity(0.45)) : self.palette.emptyDot)
+                                            .frame(width: 3, height: h)
+                                            .scaleEffect(y: self.hasAppeared ? 1.0 : 0.15, anchor: .bottom)
+                                            .animation(
+                                                DashMotion.resolve(DashMotion.springCard.delay(0.08 + Double(idx) * 0.022)),
+                                                value: self.hasAppeared
+                                            )
+                                    }
+                                }
+                                .frame(height: 11, alignment: .bottom)
+                            }
+                        }
+                        
+                        VStack(spacing: 4) {
+                            GeometryReader { barGeo in
+                                let w = max(40, barGeo.size.width)
+                                let splitX = max(14, min(w - 14, w * CGFloat(inFrac)))
+                                HStack(spacing: 2) {
+                                    RoundedRectangle(cornerRadius: 3.2, style: .continuous)
+                                        .fill(self.palette.accentFill)
+                                        .frame(width: max(8, splitX - 1))
+                                    
+                                    RoundedRectangle(cornerRadius: 3.2, style: .continuous)
+                                        .fill(self.palette.mint.opacity(0.70))
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .scaleEffect(x: self.hasAppeared ? 1.0 : 0.08, anchor: .leading)
+                                .animation(DashMotion.resolve(DashMotion.chartReveal.delay(0.12)), value: self.hasAppeared)
+                            }
+                            .frame(height: 6)
+                            
+                            HStack {
+                                Text("输入 \(Self.compactTokens(inTok)) · \(inPct)%")
+                                    .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                                    .foregroundStyle(self.palette.secondaryInk)
+                                Spacer()
+                                Text("生成 \(Self.compactTokens(outTok)) · \(outPct)%")
+                                    .font(.system(size: 10.5, weight: .regular).monospacedDigit())
                                     .foregroundStyle(self.palette.mutedInk)
                             }
                         }
-                        
-                        Spacer(minLength: 4)
-                        
-                        VStack(alignment: .trailing, spacing: 6) {
-                            HStack(spacing: 4) {
-                                Text(costEstimate.formattedRMB)
-                                    .font(.system(size: 11.5, weight: .bold, design: .rounded).monospacedDigit())
-                                    .foregroundStyle(self.palette.emerald)
-                                Text("·")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(self.palette.secondaryInk)
-                                Text(costEstimate.formattedUSD)
-                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
-                                    .foregroundStyle(self.palette.secondaryInk)
-                            }
-                            .padding(.horizontal, 8)
-                            .frame(height: 22)
-                            .background(self.palette.tokens.positivePillBg, in: Capsule())
-                            
-                            HStack(alignment: .bottom, spacing: 3) {
-                                let aiMax = max(20.0, self.snapshot.days14.map { Double($0.ai) }.max() ?? 20.0)
-                                ForEach(Array(self.snapshot.days14.suffix(10).enumerated()), id: \.offset) { idx, day in
-                                    let frac = CGFloat(Double(day.ai) / aiMax)
-                                    let h = max(3, frac * 12)
-                                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                                        .fill(day.ai > 0 ? (idx == 9 ? self.palette.accentFill : self.palette.accentFill.opacity(0.45)) : self.palette.emptyDot)
-                                        .frame(width: 3, height: h)
-                                        .scaleEffect(y: self.hasAppeared ? 1.0 : 0.15, anchor: .bottom)
-                                        .animation(
-                                            DashMotion.resolve(DashMotion.springCard.delay(0.08 + Double(idx) * 0.022)),
-                                            value: self.hasAppeared
-                                        )
-                                }
-                            }
-                            .frame(height: 12, alignment: .bottom)
-                        }
                     }
-                    
-                    VStack(spacing: 5) {
-                        GeometryReader { barGeo in
-                            let w = max(40, barGeo.size.width)
-                            let splitX = max(14, min(w - 14, w * CGFloat(inFrac)))
-                            HStack(spacing: 2) {
-                                RoundedRectangle(cornerRadius: 3.2, style: .continuous)
-                                    .fill(self.palette.accentFill)
-                                    .frame(width: max(8, splitX - 1))
-                                
-                                RoundedRectangle(cornerRadius: 3.2, style: .continuous)
-                                    .fill(self.palette.mint.opacity(0.70))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .scaleEffect(x: self.hasAppeared ? 1.0 : 0.08, anchor: .leading)
-                            .animation(DashMotion.resolve(DashMotion.chartReveal.delay(0.12)), value: self.hasAppeared)
-                        }
-                        .frame(height: 6.5)
-                        
-                        HStack {
-                            Text("输入 \(Self.compactTokens(inTok)) · \(inPct)%")
-                                .font(.system(size: 10.5, weight: .medium).monospacedDigit())
-                                .foregroundStyle(self.palette.secondaryInk)
-                            Spacer()
-                            Text("生成 \(Self.compactTokens(outTok)) · \(outPct)%")
-                                .font(.system(size: 10.5, weight: .regular).monospacedDigit())
-                                .foregroundStyle(self.palette.mutedInk)
-                        }
-                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(width: cardGeo.size.width, height: cardGeo.size.height, alignment: .center)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: self.isHovered)
             .offset(y: self.isHovered && !DashMotion.isReducedMotion ? -1.5 : 0)

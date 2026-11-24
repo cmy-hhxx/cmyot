@@ -625,10 +625,198 @@ final class CotAgentCoordinator {
     }
     
     
-    /// Returns the working directory of the currently focused file document, if available.
+    /// Returns the working directory of the active folder window or focused file document, if available.
     func activeWorkingDirectoryURL() -> URL? {
+        if let mainWC = NSApp?.mainWindow?.windowController as? DocumentWindowController {
+            if let dirURL = (mainWC.contentViewController as? WindowContentViewController)?.directoryDocument?.fileURL {
+                return dirURL.standardizedFileURL
+            }
+            if let fileURL = mainWC.documentViewController?.focusedDocument.fileURL {
+                return fileURL.deletingLastPathComponent().standardizedFileURL
+            }
+        }
         guard let docVC = Self.activeDocumentViewController() else { return nil }
-        return docVC.focusedDocument.fileURL?.deletingLastPathComponent()
+        if let wc = docVC.view.window?.windowController as? DocumentWindowController,
+           let dirURL = (wc.contentViewController as? WindowContentViewController)?.directoryDocument?.fileURL
+        {
+            return dirURL.standardizedFileURL
+        }
+        return docVC.focusedDocument.fileURL?.deletingLastPathComponent().standardizedFileURL
+    }
+    
+    
+    /// Discovers unique local workspace folders currently open in CotEditor windows (folder windows first, then open file parents).
+    func openWorkspaceDirectories() -> [URL] {
+        var seen: Set<String> = []
+        var result: [URL] = []
+        let appendUnique: (URL) -> Void = { url in
+            let std = url.standardizedFileURL
+            let path = std.path(percentEncoded: false)
+            guard !path.isEmpty, path != "/", FileManager.default.fileExists(atPath: path) else { return }
+            if seen.insert(path).inserted {
+                result.append(std)
+            }
+        }
+        
+        if let windows = NSApp?.orderedWindows {
+            for window in windows {
+                guard let wc = window.windowController as? DocumentWindowController else { continue }
+                if let dirURL = (wc.contentViewController as? WindowContentViewController)?.directoryDocument?.fileURL {
+                    appendUnique(dirURL)
+                }
+            }
+            for window in windows {
+                guard let docVC = (window.windowController as? DocumentWindowController)?.documentViewController else { continue }
+                for editorVC in docVC.editorViewControllers {
+                    for tab in editorVC.tabs where !tab.isBoard {
+                        if let fileURL = tab.document.fileURL {
+                            appendUnique(fileURL.deletingLastPathComponent())
+                        }
+                    }
+                }
+            }
+        }
+        return result
+    }
+    
+    
+    /// Snapshot of currently open non-board text documents across all CotEditor windows for live `@document` attachment.
+    struct OpenEditorDocumentInfo: Sendable {
+        let id: String
+        let title: String
+        let filePath: String?
+        let syntax: String
+        let isActive: Bool
+        let content: String
+    }
+    
+    
+    func openEditorDocuments(maxContentChars: Int = 36_000) -> [OpenEditorDocumentInfo] {
+        let frontDocVC = Self.activeDocumentViewController()
+        let activeTab = frontDocVC?.focusedEditorViewController?.selectedTab
+        var seenIDs: Set<String> = []
+        var items: [OpenEditorDocumentInfo] = []
+        
+        guard let windows = NSApp?.orderedWindows else { return [] }
+        for window in windows {
+            guard let docVC = (window.windowController as? DocumentWindowController)?.documentViewController else { continue }
+            for editorVC in docVC.editorViewControllers {
+                for tab in editorVC.tabs where !tab.isBoard {
+                    let filePath = tab.document.fileURL?.standardizedFileURL.path(percentEncoded: false)
+                    let docID = "open:\(tab.id.uuidString)"
+                    guard seenIDs.insert(docID).inserted else { continue }
+                    let ns = tab.document.textStorage.mutableString as NSString
+                    let len = min(ns.length, maxContentChars)
+                    let text: String = if len > 0 {
+                        ns.substring(with: ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: len)))
+                    } else {
+                        ""
+                    }
+                    items.append(OpenEditorDocumentInfo(
+                        id: docID,
+                        title: tab.title,
+                        filePath: filePath,
+                        syntax: tab.document.syntaxName,
+                        isActive: tab === activeTab,
+                        content: text
+                    ))
+                }
+            }
+        }
+        return items.sorted { lhs, rhs in
+            if lhs.isActive != rhs.isActive { return lhs.isActive }
+            return false
+        }
+    }
+    
+    
+    /// Lists readable text/code/markdown files inside a workspace folder (shallow traversal) for `@` document mentions.
+    struct WorkspaceFileCandidate: Sendable {
+        let title: String
+        let relativePath: String
+        let fullPath: String
+    }
+    
+    
+    nonisolated static func listWorkspaceFiles(at directoryURL: URL, limit: Int = 36) -> [WorkspaceFileCandidate] {
+        let fm = FileManager.default
+        let rootPath = directoryURL.standardizedFileURL.path(percentEncoded: false)
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: rootPath, isDirectory: &isDir), isDir.boolValue else { return [] }
+        
+        let ignoredNames: Set<String> = [
+            ".git", ".svn", ".hg", "node_modules", ".build", "DerivedData",
+            "dist", "build", ".next", ".nuxt", "Pods", "Carthage", ".venv", "__pycache__",
+            ".DS_Store", ".Trash",
+        ]
+        let allowedExts: Set<String> = [
+            "md", "markdown", "txt", "rtf", "swift", "ts", "tsx", "js", "jsx",
+            "py", "go", "rs", "java", "kt", "c", "cpp", "h", "hpp", "m", "mm",
+            "json", "yaml", "yml", "toml", "xml", "html", "css", "scss", "sql",
+            "sh", "zsh", "bash", "csv", "log", "env", "ini", "conf", "org", "rst",
+        ]
+        
+        var collected: [(url: URL, rel: String, mtime: Date)] = []
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isHiddenKey, .contentModificationDateKey, .fileSizeKey]
+        
+        func scan(_ dir: URL, prefix: String, depth: Int) {
+            guard depth <= 2, collected.count < limit * 3 else { return }
+            guard let entries = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: keys, options: [.skipsPackageDescendants]) else {
+                return
+            }
+            for entry in entries {
+                let name = entry.lastPathComponent
+                if ignoredNames.contains(name) || name.hasPrefix(".") { continue }
+                let vals = try? entry.resourceValues(forKeys: Set(keys))
+                if vals?.isDirectory == true {
+                    if depth < 2 {
+                        let nextPrefix = prefix.isEmpty ? name : "\(prefix)/\(name)"
+                        scan(entry, prefix: nextPrefix, depth: depth + 1)
+                    }
+                    continue
+                }
+                if let size = vals?.fileSize, size > 1_500_000 { continue }
+                let ext = entry.pathExtension.lowercased()
+                guard allowedExts.contains(ext) || ext.isEmpty else { continue }
+                let rel = prefix.isEmpty ? name : "\(prefix)/\(name)"
+                collected.append((entry, rel, vals?.contentModificationDate ?? .distantPast))
+            }
+        }
+        
+        scan(directoryURL.standardizedFileURL, prefix: "", depth: 0)
+        collected.sort { $0.mtime > $1.mtime }
+        return collected.prefix(limit).map { item in
+            WorkspaceFileCandidate(
+                title: item.url.lastPathComponent,
+                relativePath: item.rel,
+                fullPath: item.url.standardizedFileURL.path(percentEncoded: false)
+            )
+        }
+    }
+    
+    
+    /// Produces a compact top-level directory listing for system prompt context.
+    nonisolated static func workspaceDirectoryOverview(at directoryURL: URL, maxEntries: Int = 28) -> String {
+        let fm = FileManager.default
+        let rootPath = directoryURL.standardizedFileURL.path(percentEncoded: false)
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: rootPath, isDirectory: &isDir), isDir.boolValue else { return "" }
+        let ignored: Set<String> = [".git", "node_modules", ".build", "DerivedData", ".DS_Store"]
+        guard let entries = try? fm.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return "" }
+        
+        let names = entries
+            .filter { !ignored.contains($0.lastPathComponent) }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            .prefix(maxEntries)
+            .map { url -> String in
+                let isSubdir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                return isSubdir ? "\(url.lastPathComponent)/" : url.lastPathComponent
+            }
+        return names.joined(separator: ", ")
     }
     
     

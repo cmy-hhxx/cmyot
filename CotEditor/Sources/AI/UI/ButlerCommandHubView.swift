@@ -38,6 +38,7 @@ final class ToolbarButlerBotButtonView: NSView {
     private var panel: ButlerFloatingPanel?
     private var panelHosting: NSHostingController<AnyView>?
     private var isPinnedPanel: Bool = false
+    private var suppressAutoDismiss: Bool = false
     private var identityObserver: (any NSObjectProtocol)?
     private var openHubObserver: (any NSObjectProtocol)?
     private var localMouseMonitor: Any?
@@ -181,6 +182,12 @@ final class ToolbarButlerBotButtonView: NSView {
                 self?.closeFloatingPanel()
                 CotAgentCoordinator.shared.openBoard(.butler, splitRight: true)
             },
+            onSetSuppressDismiss: { [weak self] suppress in
+                self?.suppressAutoDismiss = suppress
+                if !suppress {
+                    self?.panel?.makeKeyAndOrderFront(nil)
+                }
+            },
             onDismiss: { [weak self] in
                 self?.closeFloatingPanel()
             }
@@ -269,7 +276,7 @@ final class ToolbarButlerBotButtonView: NSView {
     private func installMonitors(hostWindow: NSWindow, panel: ButlerFloatingPanel) {
         self.localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self, weak panel] event in
             guard let self, let panel, panel.isVisible else { return event }
-            if self.isPinnedPanel { return event }
+            if self.isPinnedPanel || self.suppressAutoDismiss { return event }
             if event.window === panel { return event }
             if event.window === self.window {
                 let locInSelf = self.convert(event.locationInWindow, from: nil)
@@ -281,14 +288,14 @@ final class ToolbarButlerBotButtonView: NSView {
         
         self.globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             Task { @MainActor in
-                guard let self, !self.isPinnedPanel else { return }
+                guard let self, !self.isPinnedPanel, !self.suppressAutoDismiss else { return }
                 self.closeFloatingPanel()
             }
         }
         
         self.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak panel] event in
             guard let self, let panel, panel.isVisible, event.keyCode == 53 else { return event }
-            if self.isPinnedPanel { return event }
+            if self.isPinnedPanel || self.suppressAutoDismiss { return event }
             // Allow Escape inside WebView menus/popovers; only close if panel is key and user presses Escape
             if panel.firstResponder is NSTextView {
                 return event
@@ -406,12 +413,14 @@ struct ButlerCommandHubView: View {
     var initialSeedPrompt: String = ""
     var isPinnedPanel: Binding<Bool> = .constant(false)
     var onDockToPane: (() -> Void)? = nil
+    var onSetSuppressDismiss: ((Bool) -> Void)? = nil
     let onDismiss: () -> Void
     
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(.documentAppearance) private var documentAppearance
     @State private var butler = CotButlerManager.shared
     @State private var botStore = AIBotStore.shared
+    @State private var database = CotLocalDatabase.shared
     @State private var piKernel = PiKernelManager.shared
     @State private var userProfile = UserProfileManager.shared
     @State private var webController = BeautifulAgentWebController()
@@ -504,6 +513,7 @@ struct ButlerCommandHubView: View {
     private func buildHostState() -> BeautifulAgentHostStatePayload {
         let isZh = AppLanguage.current == .simplifiedChinese
         let avatarDataURL = self.butler.resolvedAvatarDataURL(pointSize: 72)
+        _ = self.database.documentsRevision
         
         var payloadMessages: [BeautifulAgentMessagePayload] = self.butler.messages.map { msg in
             let meta = CotButlerManager.decodeMetadata(from: msg.actionsJSON)
@@ -525,7 +535,11 @@ struct ButlerCommandHubView: View {
                 isStreaming: false,
                 isError: meta.errorMessage != nil,
                 quoteContext: meta.quoteContext,
-                createdAt: msg.createdAt.timeIntervalSince1970 * 1000
+                createdAt: msg.createdAt.timeIntervalSince1970 * 1000,
+                attachedDocuments: meta.attachedDocuments.isEmpty ? nil : meta.attachedDocuments,
+                delegatedBotID: meta.delegatedBotID,
+                delegatedBotName: meta.delegatedBotName,
+                delegatedModel: meta.delegatedModel
             )
         }
         
@@ -555,9 +569,23 @@ struct ButlerCommandHubView: View {
                 title: $0.title,
                 isPinned: $0.isPinned,
                 messageCount: $0.messageCount,
-                updatedAt: $0.updatedAt.timeIntervalSince1970 * 1000
+                updatedAt: $0.updatedAt.timeIntervalSince1970 * 1000,
+                workspacePath: $0.workspacePath,
+                workspaceName: $0.workspaceName
             )
         }
+        
+        let workspaces = self.butler.availableWorkspaces().map {
+            BeautifulAgentWorkspacePayload(
+                path: $0.path,
+                name: $0.name,
+                subtitle: $0.subtitle,
+                isOpenInEditor: $0.isOpenInEditor
+            )
+        }
+        
+        let availableDocuments = self.buildDocumentMentionCandidates()
+        let availableBots = self.buildBotMentionCandidates()
         
         let snap = CotAgentCoordinator.shared.lastWorkspaceSnapshot
         var contextSources: [BeautifulAgentContextSourcePayload] = [
@@ -572,7 +600,7 @@ struct ButlerCommandHubView: View {
                 key: "selection",
                 name: AppLanguage.text("当前选区", en: "Selection"),
                 desc: AppLanguage.text("带入编辑器中选中的片段", en: "Attach selected text"),
-                glyph: "quote",
+                glyph: "selection",
                 insertText: "@选区 "
             ),
             .init(
@@ -602,33 +630,6 @@ struct ButlerCommandHubView: View {
             .init(key: "new", name: "/new", desc: AppLanguage.text("开启一段全新对话", en: "Start a fresh chat"), insertText: "/new"),
         ]
         
-        let suggestions: [BeautifulAgentSuggestionPayload] = [
-            .init(
-                id: "s-stock",
-                label: AppLanguage.text("查一只股票实时行情", en: "Check live stock quote"),
-                prompt: AppLanguage.text("帮我查一下三安光电和英伟达今天的实时行情和近期走势", en: "Look up live quotes and recent trends for NVDA"),
-                icon: "market"
-            ),
-            .init(
-                id: "s-news",
-                label: AppLanguage.text("今天有哪些重磅 AI 资讯", en: "Today's top AI news"),
-                prompt: AppLanguage.text("帮我看看今天有哪些最值得关注的 AI 与科技热点，用要点总结", en: "Summarize today's top AI and tech headlines"),
-                icon: "news"
-            ),
-            .init(
-                id: "s-doc",
-                label: AppLanguage.text("梳理当前正在写的文档", en: "Review active document"),
-                prompt: AppLanguage.text("读取我当前正在编辑的文档，提炼核心要点并给出结构优化建议", en: "Review my active document and suggest improvements"),
-                icon: "doc"
-            ),
-            .init(
-                id: "s-memory",
-                label: AppLanguage.text("查看我的记忆与自选清单", en: "Check memory & watchlist"),
-                prompt: AppLanguage.text("帮我回顾一下你记住的我的偏好和当前的自选股清单", en: "Review my saved preferences and watchlist"),
-                icon: "spark"
-            ),
-        ]
-        
         let userDisplayName = self.userProfile.activeProfile.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         let greetingName = userDisplayName.isEmpty ? self.butler.name : userDisplayName
         
@@ -650,11 +651,9 @@ struct ButlerCommandHubView: View {
             isStreaming: isActiveSessionStreaming,
             streamingStatusLabel: isActiveSessionStreaming && !self.butler.streamingStatusLabel.isEmpty ? self.butler.streamingStatusLabel : nil,
             errorMessage: self.butler.lastErrorMessage,
-            placeholder: AppLanguage.text("向 @\(self.butler.nickname) 提问，支持 @引用、/命令、查行情与操作编辑器…", en: "Ask @\(self.butler.nickname)..."),
+            placeholder: AppLanguage.text("输入问题，输入 @ 引用文档或指派助手…", en: "Ask anything, or type @ for docs & bots…"),
             greetingName: greetingName,
-            greetingSubtitle: self.piKernel.canRunRPC
-                ? AppLanguage.text("已连接 Pi 内核，可直接查实时行情、搜资讯、读本地笔记并控制编辑器", en: "Connected to Pi kernel for live quotes, search, notes & editor control")
-                : AppLanguage.text("随时帮你查行情、理文档、记偏好或切换看板", en: "Ask about live quotes, documents, preferences, or boards"),
+            greetingSubtitle: nil,
             articleTitle: nil,
             articleSource: nil,
             quotedExcerpt: self.quotedExcerpt,
@@ -662,19 +661,158 @@ struct ButlerCommandHubView: View {
             selectedModelID: self.activeModelID,
             selectedModelTitle: self.activeModelID,
             effort: nil,
-            suggestions: suggestions,
+            suggestions: [],
             contextSources: contextSources,
-            slashCommands: slashCommands
+            slashCommands: slashCommands,
+            availableWorkspaces: workspaces,
+            availableDocuments: availableDocuments,
+            availableBots: availableBots
         )
+    }
+    
+    
+    private func buildDocumentMentionCandidates() -> [BeautifulAgentDocumentMentionPayload] {
+        var result: [BeautifulAgentDocumentMentionPayload] = []
+        var seenPaths: Set<String> = []
+        var seenIDs: Set<String> = []
+        
+        // 1. Live open editor tabs
+        for openDoc in CotAgentCoordinator.shared.openEditorDocuments(maxContentChars: 120) {
+            if let fp = openDoc.filePath { seenPaths.insert(fp) }
+            guard seenIDs.insert(openDoc.id).inserted else { continue }
+            let desc = openDoc.isActive
+                ? AppLanguage.text("当前正在编辑", en: "Active tab")
+                : AppLanguage.text("已打开标签页", en: "Open tab")
+            result.append(BeautifulAgentDocumentMentionPayload(
+                id: openDoc.id,
+                title: openDoc.title,
+                desc: desc,
+                sourceKind: "open_tab",
+                filePath: openDoc.filePath,
+                isActive: openDoc.isActive
+            ))
+        }
+        
+        // 2. Files in active session's bound workspace folder
+        if let wsPath = self.butler.activeWorkspacePath, !wsPath.isEmpty {
+            let wsURL = URL(filePath: wsPath)
+            let wsName = wsURL.lastPathComponent
+            for file in CotAgentCoordinator.listWorkspaceFiles(at: wsURL, limit: 28) {
+                guard !seenPaths.contains(file.fullPath) else { continue }
+                seenPaths.insert(file.fullPath)
+                let id = "ws:\(file.fullPath)"
+                guard seenIDs.insert(id).inserted else { continue }
+                result.append(BeautifulAgentDocumentMentionPayload(
+                    id: id,
+                    title: file.title,
+                    desc: "\(wsName)/\(file.relativePath)",
+                    sourceKind: "workspace_file",
+                    filePath: file.fullPath,
+                    isActive: false
+                ))
+            }
+        }
+        
+        // 3. Stored Document Center documents
+        for doc in self.database.documents where doc.deletedAt == nil {
+            if result.count >= 64 { break }
+            if let fp = doc.filePath, !fp.isEmpty, seenPaths.contains(fp) { continue }
+            let id = "doc:\(doc.id)"
+            guard seenIDs.insert(id).inserted else { continue }
+            let desc = doc.groupName.isEmpty
+                ? AppLanguage.text("文档库", en: "Document Library")
+                : doc.groupName
+            result.append(BeautifulAgentDocumentMentionPayload(
+                id: id,
+                title: doc.title,
+                desc: desc,
+                sourceKind: "stored_doc",
+                filePath: doc.filePath,
+                isActive: false
+            ))
+        }
+        
+        // 4. Recent weekly reports
+        for rep in self.database.weeklyReports.prefix(8) {
+            let id = "report:\(rep.id)"
+            guard seenIDs.insert(id).inserted else { continue }
+            result.append(BeautifulAgentDocumentMentionPayload(
+                id: id,
+                title: rep.title,
+                desc: AppLanguage.text("周报 · \(rep.periodLabel)", en: "Report · \(rep.periodLabel)"),
+                sourceKind: "weekly_report",
+                filePath: rep.sourcePath,
+                isActive: false
+            ))
+        }
+        
+        return result
+    }
+    
+    
+    private func buildBotMentionCandidates() -> [BeautifulAgentBotMentionPayload] {
+        let delegatable: [AIBotID] = [
+            .translate,
+            .summarize,
+            .explain,
+            .weeklyReport,
+            .weeklyReportItem,
+            .interactiveChart,
+            .organizeAndMerge,
+            .ocrPolish,
+            .readingCompanion,
+            .persona,
+        ]
+        return delegatable.compactMap { botID in
+            let cfg = self.botStore.config(for: botID)
+            guard cfg.isEnabled else { return nil }
+            let resolvedModel = cfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+            return BeautifulAgentBotMentionPayload(
+                id: botID.rawValue,
+                name: self.botStore.resolvedName(for: botID),
+                nickname: self.botStore.resolvedNickname(for: botID),
+                handle: botID.handle,
+                tagline: botID.tagline,
+                accentHex: botID.accentHex,
+                model: resolvedModel.isEmpty ? nil : resolvedModel
+            )
+        }
+    }
+    
+    
+    private func presentWorkspaceFolderPicker(sessionID: String, createNewSession: Bool) {
+        self.onSetSuppressDismiss?(true)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = AppLanguage.text("绑定工作区", en: "Select Workspace")
+        panel.message = AppLanguage.text("选择该对话会话对应的本地工作区目录", en: "Choose a local workspace folder for this session")
+        if let existing = self.butler.activeWorkspacePath, FileManager.default.fileExists(atPath: existing) {
+            panel.directoryURL = URL(filePath: existing)
+        } else if let activeDir = CotAgentCoordinator.shared.activeWorkingDirectoryURL() {
+            panel.directoryURL = activeDir
+        }
+        let response = panel.runModal()
+        self.onSetSuppressDismiss?(false)
+        guard response == .OK, let selectedURL = panel.url else { return }
+        let path = selectedURL.standardizedFileURL.path(percentEncoded: false)
+        if createNewSession {
+            self.butler.startNewSession(workspacePath: path)
+        } else {
+            self.butler.setSessionWorkspace(sessionID.isEmpty ? self.butler.activeSessionID : sessionID, workspacePath: path)
+        }
+        self.webController.focusComposer()
     }
     
     
     private func buildCallbacks() -> BeautifulAgentWebActionCallbacks {
         var cb = BeautifulAgentWebActionCallbacks()
-        cb.onSend = { prompt, quote in
+        cb.onSendRich = { prompt, quote, attachedDocs, delegatedBotID in
             let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed == "/new" {
-                self.butler.startNewSession()
+                self.butler.startNewSession(workspacePath: self.butler.activeWorkspacePath)
                 return
             }
             let effectiveQuote = quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -704,8 +842,17 @@ struct ButlerCommandHubView: View {
             }
             
             Task {
-                await self.butler.sendMessage(resolvedPrompt, quote: effectiveQuote, contextSources: contextSources)
+                await self.butler.sendMessage(
+                    resolvedPrompt,
+                    quote: effectiveQuote,
+                    contextSources: contextSources,
+                    attachedDocuments: attachedDocs,
+                    delegatedBotID: delegatedBotID
+                )
             }
+        }
+        cb.onSend = { prompt, quote in
+            cb.onSendRich?(prompt, quote, [], nil)
         }
         cb.onAbort = {
             self.butler.abortStreaming()
@@ -729,7 +876,10 @@ struct ButlerCommandHubView: View {
             _ = try? PiKernelManager.shared.syncWorkspace()
         }
         cb.onNewSession = {
-            self.butler.startNewSession()
+            self.butler.startNewSession(workspacePath: self.butler.activeWorkspacePath)
+        }
+        cb.onNewSessionInWorkspace = { wsPath in
+            self.butler.startNewSession(workspacePath: wsPath)
         }
         cb.onSelectSession = { id in
             self.butler.selectSession(id)
@@ -742,6 +892,12 @@ struct ButlerCommandHubView: View {
         }
         cb.onTogglePinSession = { id in
             self.butler.togglePinSession(id)
+        }
+        cb.onSetSessionWorkspace = { sessionID, wsPath in
+            self.butler.setSessionWorkspace(sessionID, workspacePath: wsPath)
+        }
+        cb.onChooseWorkspaceFolder = { sessionID, createNew in
+            self.presentWorkspaceFolderPicker(sessionID: sessionID, createNewSession: createNew)
         }
         cb.onInsertToEditor = { text in
             CotAgentCoordinator.shared.insertTextIntoActiveEditor(text)

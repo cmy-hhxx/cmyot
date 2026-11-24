@@ -122,21 +122,18 @@ export default function ThinkingState({
         onClick={() => setManualExpanded((cur) => !(cur ?? autoExpanded))}
         className="-mx-1.5 flex w-fit max-w-full items-center gap-2 rounded-control px-1.5 py-1 transition-colors duration-100 hover:bg-hover-2"
       >
-        <svg
-          width="15"
-          height="15"
-          viewBox="0 0 24 24"
-          fill={isWorking ? "var(--ink-2)" : "var(--ink-3)"}
-          className="shrink-0 transition-colors duration-200"
-        >
-          <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z" />
-        </svg>
+        <span
+          aria-hidden
+          className={`size-2 shrink-0 rounded-full transition-colors duration-200 ${
+            isWorking ? "bg-accent" : "bg-ink-3"
+          }`}
+        />
 
         <span role="status" className="min-w-0 truncate">
           {isWorking ? (
             <span className="inline-flex items-center gap-1.5">
               <span
-                className="bg-clip-text text-[12.5px] font-medium whitespace-nowrap text-transparent"
+                className="bg-clip-text text-[13.5px] font-medium whitespace-nowrap text-transparent"
                 style={{
                   backgroundImage:
                     "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
@@ -147,13 +144,13 @@ export default function ThinkingState({
                 {activeTitle}
               </span>
               {liveHeaderMs !== undefined && liveHeaderMs >= 200 && (
-                <span className="shrink-0 font-mono text-[11px] text-ink-3 tabular-nums">
+                <span className="shrink-0 font-mono text-[12.5px] text-ink-3 tabular-nums">
                   {formatDuration(liveHeaderMs, true)}
                 </span>
               )}
             </span>
           ) : (
-            <span className="text-[12.5px] font-medium whitespace-nowrap text-ink-2" style={{ animation: "fade-in 260ms ease-out both" }}>
+            <span className="text-[13.5px] font-medium whitespace-nowrap text-ink-2" style={{ animation: "fade-in 260ms ease-out both" }}>
               {doneSummary}
             </span>
           )}
@@ -199,7 +196,7 @@ export default function ThinkingState({
               />
               <div ref={traceRef} className="flex flex-col gap-1 py-1">
                 {thinking.trim() && (
-                  <p className="select-text whitespace-pre-wrap px-1.5 py-0.5 text-[12px] leading-relaxed text-ink-2">
+                  <p className="select-text whitespace-pre-wrap px-1.5 py-0.5 text-[13px] leading-relaxed text-ink-2">
                     {thinking.trim()}
                   </p>
                 )}
@@ -216,30 +213,30 @@ export default function ThinkingState({
                         type="button"
                         disabled={!hasDetail}
                         onClick={() => hasDetail && toggleStepDetail(step.id)}
-                        className={`flex min-h-7 w-full items-center gap-2 rounded-[6px] px-1.5 py-0.5 text-left transition-colors duration-100 ${
+                        className={`flex min-h-7.5 w-full items-center gap-2 rounded-[6px] px-1.5 py-0.5 text-left transition-colors duration-100 ${
                           hasDetail ? "hover:bg-hover" : "cursor-default"
                         }`}
                       >
                         {step.status === "running" ? (
                           <span
-                            className="size-3 shrink-0 rounded-full border-[1.5px] border-line-strong border-t-ink-2"
+                            className="size-3.5 shrink-0 rounded-full border-[1.5px] border-line-strong border-t-ink-2"
                             style={{ animation: "spin 700ms linear infinite" }}
                           />
                         ) : step.status === "error" ? (
-                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--red)" strokeWidth="2.4" strokeLinecap="round" className="shrink-0">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--red)" strokeWidth="2.4" strokeLinecap="round" className="shrink-0">
                             <path d="M18 6L6 18M6 6l12 12" />
                           </svg>
                         ) : (
-                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
                             <path d="M20 6L9 17l-5-5" />
                           </svg>
                         )}
 
-                        <span className="shrink-0 text-[12px] font-medium text-ink">{step.label}</span>
+                        <span className="shrink-0 text-[13px] font-medium text-ink">{step.label}</span>
 
                         {step.chip && (
                           <span
-                            className={`inline-flex h-5 min-w-0 flex-1 items-center truncate rounded-chip bg-field px-1.5 text-[11px] text-ink-2 shadow-hairline ${
+                            className={`inline-flex h-6 min-w-0 flex-1 items-center truncate rounded-chip bg-field px-2 text-[12.5px] text-ink-2 shadow-hairline ${
                               step.mono ? "font-mono" : ""
                             }`}
                           >
@@ -251,14 +248,14 @@ export default function ThinkingState({
                           if (step.status === "running" && step.startedAtMs && step.startedAtMs > 0) {
                             const elapsed = Math.max(0, nowMs - step.startedAtMs);
                             return (
-                              <span className="shrink-0 font-mono text-[10.5px] text-ink-3 tabular-nums">
+                              <span className="shrink-0 font-mono text-[12.5px] text-ink-3 tabular-nums">
                                 {formatDuration(elapsed, true)}
                               </span>
                             );
                           }
                           if (step.durationMs !== undefined && step.durationMs > 0) {
                             return (
-                              <span className="shrink-0 font-mono text-[10.5px] text-ink-3 tabular-nums">
+                              <span className="shrink-0 font-mono text-[12.5px] text-ink-3 tabular-nums">
                                 {formatDuration(step.durationMs, false)}
                               </span>
                             );
@@ -281,7 +278,7 @@ export default function ThinkingState({
                               {step.detail!.slice(0, 12).map((line, lineIdx) => (
                                 <span
                                   key={lineIdx}
-                                  className="select-text break-words font-mono text-[11px] leading-[1.55] text-ink-2"
+                                  className="select-text break-words font-mono text-[12.5px] leading-[1.55] text-ink-2"
                                 >
                                   {line}
                                 </span>

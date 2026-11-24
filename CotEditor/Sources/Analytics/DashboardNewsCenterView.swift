@@ -401,10 +401,10 @@ struct DashboardNewsCenterView: View {
                         )
                     } label: {
                         HStack(spacing: 5) {
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 11, weight: .medium))
+                            Image(systemName: "bubble.left.and.bubble.right")
+                                .font(.system(size: 11.5, weight: .medium))
                             Text(AppLanguage.text("转交总管", en: "Ask Butler"))
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.system(size: 12.5, weight: .medium))
                         }
                         .foregroundStyle(self.secondaryInk)
                         .padding(.horizontal, 10)
@@ -824,6 +824,13 @@ struct DashboardNewsCenterView: View {
         let isLoadingArticle = self.newsService.loadingArticleIDs.contains(item.id)
             || (blocks.isEmpty && summaryText.isEmpty && !self.newsService.hasFinishedDetailFetch(for: item.id))
         let neighbors = self.adjacentItems
+        let relatedItems: [AIHotNewsItem] = {
+            let excludeIDs: Set<String> = [item.id]
+            let sameCategory = self.displayedItems.filter { !excludeIDs.contains($0.id) && $0.resolvedCategory == item.resolvedCategory }
+            let fallback = self.displayedItems.filter { !excludeIDs.contains($0.id) }
+            let pool = sameCategory.count >= 3 ? sameCategory : fallback
+            return Array(pool.prefix(4))
+        }()
         // Suppress synthetic auto-generated OG score-card banners (e.g. aihot.news dark headline cards) inside detail reader
         let readerCover: NSImage? = AIHotNewsService.isSyntheticOGCardURL(item.coverURLString)
             ? nil
@@ -848,6 +855,7 @@ struct DashboardNewsCenterView: View {
                         isLoadingArticle: isLoadingArticle,
                         previousItem: neighbors.previous,
                         nextItem: neighbors.next,
+                        relatedItems: relatedItems,
                         bodyFontSize: self.bodyFontSize,
                         tokens: self.tokens,
                         bui: bui,
@@ -861,7 +869,7 @@ struct DashboardNewsCenterView: View {
                         onQuoteToAI: quoteHandler
                     )
                     .equatable()
-                    .frame(height: max(220, geo.size.height * 0.50))
+                    .frame(height: max(240, geo.size.height * 0.52))
                     
                     Rectangle()
                         .fill(bui.line)
@@ -871,11 +879,11 @@ struct DashboardNewsCenterView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else {
-                // Harmonized split stage (~56 / 44) sharing Beautiful UI surface tokens seamlessly
-                let useCenteredCard = !self.isEmbeddedInPane && geo.size.width >= 940
-                let stageWidth = useCenteredCard ? min(1240, geo.size.width - 44) : geo.size.width
+                // Harmonized full-bleed editorial split stage (~58 / 42)
+                let useCenteredCard = !self.isEmbeddedInPane && geo.size.width >= 960
+                let stageWidth = useCenteredCard ? min(1400, geo.size.width - 28) : geo.size.width
                 let minChatWidth: CGFloat = 360
-                let maxChatWidth: CGFloat = max(minChatWidth, min(stageWidth * 0.48, stageWidth - 440))
+                let maxChatWidth: CGFloat = max(minChatWidth, min(stageWidth * 0.48, stageWidth - 460))
                 let proposedChatWidth = stageWidth * self.chatWidthFraction
                 let chatWidth = min(maxChatWidth, max(minChatWidth, proposedChatWidth))
                 
@@ -887,6 +895,7 @@ struct DashboardNewsCenterView: View {
                         isLoadingArticle: isLoadingArticle,
                         previousItem: neighbors.previous,
                         nextItem: neighbors.next,
+                        relatedItems: relatedItems,
                         bodyFontSize: self.bodyFontSize,
                         tokens: self.tokens,
                         bui: bui,
@@ -919,20 +928,20 @@ struct DashboardNewsCenterView: View {
                     splitContent
                         .frame(width: stageWidth)
                         .frame(maxHeight: .infinity)
-                        .background(bui.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .background(bui.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
                                 .strokeBorder(bui.line, lineWidth: 1)
                         )
                         .shadow(
-                            color: Color.black.opacity(self.tokens.isDark ? 0.36 : 0.06),
-                            radius: 20,
+                            color: Color.black.opacity(self.tokens.isDark ? 0.34 : 0.05),
+                            radius: 16,
                             x: 0,
-                            y: 8
+                            y: 6
                         )
-                        .padding(.horizontal, 22)
-                        .padding(.vertical, 14)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 } else {
                     splitContent
@@ -1065,33 +1074,6 @@ struct DashboardNewsCenterView: View {
             case .deep: "deep"
         }
         
-        let suggestions: [BeautifulAgentSuggestionPayload] = [
-            .init(
-                id: "n-tldr",
-                label: AppLanguage.text("一分钟核心精读", en: "1-min core takeaways"),
-                prompt: AppLanguage.text("请用一分钟能看完的结构化要点提炼这篇文章的核心事实、关键数字与结论。", en: "Extract the key facts, numbers, and conclusion in concise bullets."),
-                icon: "spark"
-            ),
-            .init(
-                id: "n-sharp",
-                label: AppLanguage.text("犀利点评与深层逻辑", en: "Sharp critique & logic"),
-                prompt: AppLanguage.text("你怎么看这件事？请给出犀利点评、背后的利益/技术逻辑以及对行业的中长期影响。", en: "Give sharp commentary on the deeper technical and industry logic behind this story."),
-                icon: "bolt"
-            ),
-            .init(
-                id: "n-stock",
-                label: AppLanguage.text("查关联股票与市场影响", en: "Check related stocks"),
-                prompt: AppLanguage.text("请识别这篇文章涉及的关键上市公司或产业链龙头，调用行情工具查询它们的最新实时股价与近期走势，并分析潜在市场影响。", en: "Identify related public companies, look up their live stock quotes, and analyze potential market impact."),
-                icon: "market"
-            ),
-            .init(
-                id: "n-risk",
-                label: AppLanguage.text("反面视角与潜在风险", en: "Counter-view & risks"),
-                prompt: AppLanguage.text("跳出新闻本身的立场，从反面视角指出这件事被忽视的风险、局限或潜在反转可能。", en: "Provide a contrarian perspective highlighting overlooked risks and limitations."),
-                icon: "shield"
-            ),
-        ]
-        
         let slashCommands: [BeautifulAgentSlashCommandPayload] = [
             .init(key: "tldr", name: "/tldr", desc: AppLanguage.text("提炼核心事实与关键数字", en: "Quick key takeaways"), insertText: AppLanguage.text("用 3-5 条要点提炼这篇文章最核心的事实与数字", en: "Summarize the core facts in 3-5 bullets")),
             .init(key: "stock", name: "/stock", desc: AppLanguage.text("查文中涉及公司的实时股价", en: "Lookup related stock quotes"), insertText: AppLanguage.text("查一下文中涉及公司的最新股价和近期走势，并分析市场影响", en: "Lookup live quotes for companies mentioned")),
@@ -1120,11 +1102,9 @@ struct DashboardNewsCenterView: View {
                 ? self.newsService.streamingChatStatusLabel
                 : nil,
             errorMessage: self.newsService.chatErrorMessage,
-            placeholder: AppLanguage.text("针对这篇资讯追问，点左侧段落可「引用提问」…", en: "Ask about this article, or quote any paragraph..."),
-            greetingName: nil,
-            greetingSubtitle: self.piKernel.canRunRPC
-                ? AppLanguage.text("可直接精读、犀利点评、实时查关联股价或存为笔记", en: "Summarize, critique, look up live stock quotes, or save notes")
-                : AppLanguage.text("点击下方快捷问题，或直接输入你想了解的角度", en: "Pick a prompt below or ask anything about this article"),
+            placeholder: AppLanguage.text("输入问题，或选中左侧段落引用提问…", en: "Ask about this article…"),
+            greetingName: AppLanguage.text("围绕这篇文章", en: "About this article"),
+            greetingSubtitle: nil,
             articleTitle: item.title,
             articleSource: sourceNote,
             quotedExcerpt: self.newsQuotedExcerpt,
@@ -1132,7 +1112,7 @@ struct DashboardNewsCenterView: View {
             selectedModelID: selectedTitle,
             selectedModelTitle: selectedTitle,
             effort: effortRaw,
-            suggestions: suggestions,
+            suggestions: [],
             contextSources: [],
             slashCommands: slashCommands
         )
@@ -1294,6 +1274,7 @@ private struct NewsEditorialArticlePane: View, Equatable {
     let isLoadingArticle: Bool
     let previousItem: AIHotNewsItem?
     let nextItem: AIHotNewsItem?
+    let relatedItems: [AIHotNewsItem]
     let bodyFontSize: CGFloat
     let tokens: StudioColorTokens
     let bui: BeautifulUITokens
@@ -1303,6 +1284,7 @@ private struct NewsEditorialArticlePane: View, Equatable {
     let onQuoteToAI: (String) -> Void
     
     @State private var hoveredBlockIndex: Int? = nil
+    @State private var hoveredRelatedID: String? = nil
     
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.item.id == rhs.item.id
@@ -1311,142 +1293,330 @@ private struct NewsEditorialArticlePane: View, Equatable {
             && lhs.isLoadingArticle == rhs.isLoadingArticle
             && lhs.previousItem?.id == rhs.previousItem?.id
             && lhs.nextItem?.id == rhs.nextItem?.id
+            && lhs.relatedItems.map(\.id) == rhs.relatedItems.map(\.id)
             && lhs.tokens.isDark == rhs.tokens.isDark
     }
+    
+    
+    /// Separates trailing `"来源：..."` / `"Source: ..."` attribution lines from body blocks so they render
+    /// inside a dedicated clickable source footer card instead of plain body prose.
+    private var parsedContent: (bodyBlocks: [NewsArticleBlock], sourceAttribution: String?, totalChars: Int) {
+        var cleaned: [NewsArticleBlock] = []
+        var sourceLine: String?
+        var charCount = 0
+        
+        for (idx, block) in self.blocks.enumerated() {
+            if case .paragraph(let raw) = block {
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                let lower = trimmed.lowercased()
+                let isSourceMeta = (idx == self.blocks.count - 1 || idx >= self.blocks.count - 2)
+                    && (trimmed.hasPrefix("来源：") || trimmed.hasPrefix("来源:") || lower.hasPrefix("source:") || lower.hasPrefix("via:"))
+                if isSourceMeta {
+                    sourceLine = trimmed
+                        .replacingOccurrences(of: #"^(来源[：:]\s*|source:\s*|via:\s*)"#, with: "", options: [.regularExpression, .caseInsensitive])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    continue
+                }
+                charCount += trimmed.count
+            } else {
+                switch block {
+                    case .heading(_, let t), .quote(let t), .code(let t):
+                        charCount += t.count
+                    case .list(let list):
+                        charCount += list.reduce(0) { $0 + $1.count }
+                    case .paragraph:
+                        break
+                }
+            }
+            cleaned.append(block)
+        }
+        return (cleaned, sourceLine, charCount)
+    }
+    
     
     var body: some View {
         let publisher = self.item.displayPublisherLabel
         let summaryText = self.item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let parsed = self.parsedContent
+        let effectiveSourceText: String? = {
+            if let attr = parsed.sourceAttribution, !attr.isEmpty {
+                return attr
+            }
+            let host = self.item.url?.host()?.replacingOccurrences(of: "^www\\.", with: "", options: .regularExpression)
+            if !publisher.isEmpty, let host, !publisher.localizedCaseInsensitiveContains(host) {
+                return "\(publisher) · \(host)"
+            }
+            if !publisher.isEmpty { return publisher }
+            return host
+        }()
+        let isShortBrief = !self.isLoadingArticle && self.cover == nil && parsed.totalChars < 420 && summaryText.count < 420
         
         return ScrollViewReader { readerProxy in
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 18) {
-                    HStack(alignment: .center, spacing: 8) {
-                        Text(self.item.resolvedCategory.label)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(self.bui.accentInk)
-                            .padding(.horizontal, 8)
-                            .frame(height: 22)
-                            .background(self.bui.accent.opacity(0.12), in: Capsule())
-                        
-                        if !publisher.isEmpty {
-                            Text(publisher)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(self.bui.ink2)
-                        }
-                        
-                        if let date = self.item.publishedAt {
-                            Text("·")
-                                .foregroundStyle(self.bui.ink3)
-                            Text(DashboardNewsCenterView.relativeTimeString(from: date))
-                                .font(.system(size: 11.5, design: .monospaced).monospacedDigit())
-                                .foregroundStyle(self.bui.ink3)
-                        }
-                        
-                        Spacer(minLength: 0)
-                    }
-                    .id("article-top")
-                    
-                    Text(self.item.title)
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundStyle(self.bui.ink)
-                        .lineSpacing(6)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    
-                    if let cover = self.cover {
-                        Image(nsImage: cover)
-                            .resizable()
-                            .interpolation(.medium)
-                            .antialiased(true)
-                            .aspectRatio(contentMode: .fit)
-                            .frame(maxWidth: .infinity, maxHeight: 280)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(self.bui.line, lineWidth: 0.8)
-                            )
-                    }
-                    
-                    if !self.blocks.isEmpty {
-                        VStack(alignment: .leading, spacing: 14) {
-                            ForEach(Array(self.blocks.enumerated()), id: \.offset) { idx, block in
-                                self.articleBlockView(block, index: idx)
-                            }
-                        }
-                    } else if !summaryText.isEmpty {
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text(summaryText)
-                                .font(.system(size: self.bodyFontSize, weight: .regular))
-                                .foregroundStyle(self.bui.ink.opacity(0.92))
-                                .lineSpacing(8)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(16)
-                                .background(self.bui.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            VStack(spacing: 0) {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        // Editorial Metadata Header
+                        HStack(alignment: .center, spacing: 10) {
+                            Text(self.item.resolvedCategory.label)
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(self.bui.accentInk)
+                                .padding(.horizontal, 9)
+                                .frame(height: 24)
+                                .background(self.bui.accent.opacity(0.11), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                             
-                            if self.isLoadingArticle {
-                                self.loadingPlaceholder
-                            }
-                        }
-                    } else if self.isLoadingArticle {
-                        self.loadingPlaceholder
-                    } else if let url = self.item.url {
-                        Button {
-                            NSWorkspace.shared.open(url)
-                        } label: {
-                            HStack(spacing: 6) {
-                                Text(AppLanguage.text("前往外部浏览器阅读完整原文", en: "Read Full Article in Browser"))
+                            if !publisher.isEmpty {
+                                Text(publisher)
                                     .font(.system(size: 13, weight: .medium))
-                                Image(systemName: "arrow.up.right")
-                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(self.bui.ink2)
+                                    .lineLimit(1)
                             }
-                            .foregroundStyle(self.bui.accentInk)
-                            .padding(.horizontal, 14)
-                            .frame(height: 36)
-                            .background(self.bui.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            
+                            if let date = self.item.publishedAt {
+                                Text("·")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(self.bui.ink3)
+                                Text(DashboardNewsCenterView.relativeTimeString(from: date))
+                                    .font(.system(size: 13, design: .monospaced).monospacedDigit())
+                                    .foregroundStyle(self.bui.ink3)
+                            }
+                            
+                            Spacer(minLength: 0)
                         }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                    }
-                    
-                    if self.previousItem != nil || self.nextItem != nil {
+                        .id("article-top")
+                        .padding(.bottom, 14)
+                        
+                        // Editorial Headline
+                        Text(self.item.title)
+                            .font(.system(size: 24, weight: .bold))
+                            .tracking(-0.35)
+                            .foregroundStyle(self.bui.ink)
+                            .lineSpacing(7)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.bottom, 18)
+                        
                         Rectangle()
                             .fill(self.bui.line)
                             .frame(height: 1)
-                            .padding(.top, 8)
+                            .padding(.bottom, 22)
                         
-                        HStack(spacing: 12) {
-                            if let prev = self.previousItem {
-                                self.neighborButton(prev, isNext: false) {
-                                    self.onSelectItem(prev.id)
-                                    readerProxy.scrollTo("article-top", anchor: .top)
+                        // Real Editorial Cover Image (if any)
+                        if let cover = self.cover {
+                            Image(nsImage: cover)
+                                .resizable()
+                                .interpolation(.medium)
+                                .antialiased(true)
+                                .aspectRatio(contentMode: .fit)
+                                .frame(maxWidth: .infinity, maxHeight: 280)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .strokeBorder(self.bui.line, lineWidth: 0.8)
+                                )
+                                .padding(.bottom, 22)
+                        }
+                        
+                        // Main Article Body
+                        if !parsed.bodyBlocks.isEmpty {
+                            VStack(alignment: .leading, spacing: 16) {
+                                ForEach(Array(parsed.bodyBlocks.enumerated()), id: \.offset) { idx, block in
+                                    self.articleBlockView(block, index: idx)
                                 }
-                            } else {
-                                Spacer(minLength: 0).frame(maxWidth: .infinity)
                             }
-                            
-                            if let next = self.nextItem {
-                                self.neighborButton(next, isNext: true) {
-                                    self.onSelectItem(next.id)
-                                    readerProxy.scrollTo("article-top", anchor: .top)
+                        } else if !summaryText.isEmpty {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Text(summaryText)
+                                    .font(.system(size: self.bodyFontSize, weight: .regular))
+                                    .foregroundStyle(self.bui.ink.opacity(0.92))
+                                    .lineSpacing(9)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                
+                                if self.isLoadingArticle {
+                                    self.loadingPlaceholder
                                 }
-                            } else {
-                                Spacer(minLength: 0).frame(maxWidth: .infinity)
                             }
+                        } else if self.isLoadingArticle {
+                            self.loadingPlaceholder
+                        }
+                        
+                        // Clickable Source Attribution Card
+                        let displaySource = effectiveSourceText ?? self.item.url?.host() ?? ""
+                        if !displaySource.isEmpty || self.item.url != nil {
+                            self.sourceAttributionCard(
+                                sourceText: displaySource.isEmpty ? AppLanguage.text("外部原文链接", en: "External Source") : displaySource,
+                                url: self.item.url
+                            )
+                            .padding(.top, 24)
+                        }
+                        
+                        // Related News Briefs Strip (prevents awkward white void on short news summaries)
+                        if isShortBrief, !self.relatedItems.isEmpty {
+                            self.relatedReadingSection(items: self.relatedItems) { targetID in
+                                self.onSelectItem(targetID)
+                                readerProxy.scrollTo("article-top", anchor: .top)
+                            }
+                            .padding(.top, 28)
                         }
                     }
+                    .padding(.horizontal, 36)
+                    .padding(.top, 26)
+                    .padding(.bottom, 28)
+                    .frame(maxWidth: 660, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
                 }
-                .padding(.horizontal, 40)
-                .padding(.vertical, 32)
-                .frame(maxWidth: 700, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .center)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                
+                // Pinned Editorial Navigation Footer (always anchored cleanly at bottom)
+                if self.previousItem != nil || self.nextItem != nil {
+                    Rectangle()
+                        .fill(self.bui.line)
+                        .frame(height: 1)
+                    
+                    HStack(spacing: 0) {
+                        if let prev = self.previousItem {
+                            self.footerNavButton(prev, isNext: false) {
+                                self.onSelectItem(prev.id)
+                                readerProxy.scrollTo("article-top", anchor: .top)
+                            }
+                        } else {
+                            Color.clear
+                                .frame(maxWidth: .infinity)
+                        }
+                        
+                        Rectangle()
+                            .fill(self.bui.line)
+                            .frame(width: 1, height: 22)
+                        
+                        if let next = self.nextItem {
+                            self.footerNavButton(next, isNext: true) {
+                                self.onSelectItem(next.id)
+                                readerProxy.scrollTo("article-top", anchor: .top)
+                            }
+                        } else {
+                            Color.clear
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .frame(height: 50)
+                    .background(self.bui.page)
+                }
             }
             .background(self.bui.surface)
             .onChange(of: self.item.id) { _, _ in
                 self.hoveredBlockIndex = nil
                 readerProxy.scrollTo("article-top", anchor: .top)
             }
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func sourceAttributionCard(sourceText: String, url: URL?) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(AppLanguage.text("内容来源", en: "Source"))
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(self.bui.ink3)
+                Text(sourceText)
+                    .font(.system(size: 13.5, weight: .medium))
+                    .foregroundStyle(self.bui.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            
+            if let url {
+                Button {
+                    NSWorkspace.shared.open(url)
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(AppLanguage.text("阅读原文", en: "Read Original"))
+                            .font(.system(size: 13, weight: .medium))
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(self.bui.accentInk)
+                    .padding(.horizontal, 12)
+                    .frame(height: 32)
+                    .background(self.bui.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(self.bui.lineStrong, lineWidth: 0.8)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(self.bui.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(self.bui.line, lineWidth: 0.8)
+        )
+    }
+    
+    
+    private func relatedReadingSection(items: [AIHotNewsItem], onPick: @escaping (String) -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(AppLanguage.text("延伸阅读", en: "More in Feed"))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(self.bui.ink2)
+            
+            VStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { idx, related in
+                    if idx > 0 {
+                        Rectangle()
+                            .fill(self.bui.line)
+                            .frame(height: 0.75)
+                            .padding(.horizontal, 12)
+                    }
+                    let isHovered = (self.hoveredRelatedID == related.id)
+                    Button {
+                        onPick(related.id)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Text(related.title)
+                                .font(.system(size: 13.5, weight: .medium))
+                                .foregroundStyle(isHovered ? self.bui.ink : self.bui.ink.opacity(0.86))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            
+                            if let date = related.publishedAt {
+                                Text(DashboardNewsCenterView.relativeTimeString(from: date))
+                                    .font(.system(size: 12.5, design: .monospaced).monospacedDigit())
+                                    .foregroundStyle(self.bui.ink3)
+                            }
+                            
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(self.bui.ink3)
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(height: 40)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(isHovered ? self.bui.inset : Color.clear)
+                        )
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .onHover { hovering in
+                        self.hoveredRelatedID = hovering ? related.id : (self.hoveredRelatedID == related.id ? nil : self.hoveredRelatedID)
+                    }
+                }
+            }
+            .padding(4)
+            .background(self.bui.page, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(self.bui.line, lineWidth: 0.8)
+            )
         }
     }
     
@@ -1468,11 +1638,11 @@ private struct NewsEditorialArticlePane: View, Equatable {
                     Text(text)
                         .font(.system(size: self.bodyFontSize, weight: .regular))
                         .foregroundStyle(self.bui.ink.opacity(0.90))
-                        .lineSpacing(8)
+                        .lineSpacing(9)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .padding(.horizontal, 10)
                         .background(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .fill(isHovered ? self.bui.inset.opacity(0.75) : Color.clear)
@@ -1480,11 +1650,11 @@ private struct NewsEditorialArticlePane: View, Equatable {
                     
                     if isHovered && text.count >= 12 {
                         self.quoteToAIButton(text: text)
-                            .padding(.top, 4)
-                            .padding(.trailing, 6)
+                            .padding(.top, 5)
+                            .padding(.trailing, 8)
                     }
                 }
-                .padding(.horizontal, -8)
+                .padding(.horizontal, -10)
                 .onHover { hovering in
                     self.hoveredBlockIndex = hovering ? index : (self.hoveredBlockIndex == index ? nil : self.hoveredBlockIndex)
                 }
@@ -1497,9 +1667,9 @@ private struct NewsEditorialArticlePane: View, Equatable {
                             .frame(width: 3)
                         
                         Text(text)
-                            .font(.system(size: 14, weight: .regular))
+                            .font(.system(size: 14.5, weight: .regular))
                             .foregroundStyle(self.bui.ink2)
-                            .lineSpacing(6.5)
+                            .lineSpacing(7)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -1519,7 +1689,7 @@ private struct NewsEditorialArticlePane: View, Equatable {
             case .code(let code):
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text(code)
-                        .font(.system(size: 12.5, weight: .regular, design: .monospaced))
+                        .font(.system(size: 13, weight: .regular, design: .monospaced))
                         .foregroundStyle(self.bui.ink)
                         .textSelection(.enabled)
                         .padding(12)
@@ -1532,18 +1702,18 @@ private struct NewsEditorialArticlePane: View, Equatable {
                 )
                 
             case .list(let items):
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     ForEach(Array(items.enumerated()), id: \.offset) { _, line in
                         HStack(alignment: .top, spacing: 10) {
                             Circle()
                                 .fill(self.bui.ink3)
                                 .frame(width: 4.5, height: 4.5)
-                                .padding(.top, 8)
+                                .padding(.top, 9)
                             
                             Text(line)
                                 .font(.system(size: self.bodyFontSize, weight: .regular))
                                 .foregroundStyle(self.bui.ink.opacity(0.90))
-                                .lineSpacing(7)
+                                .lineSpacing(8)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -1560,13 +1730,13 @@ private struct NewsEditorialArticlePane: View, Equatable {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "text.quote")
-                    .font(.system(size: 10, weight: .semibold))
-                Text(AppLanguage.text("问 AI", en: "Ask AI"))
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11, weight: .semibold))
+                Text(AppLanguage.text("引用提问", en: "Quote"))
+                    .font(.system(size: 12.5, weight: .medium))
             }
             .foregroundStyle(self.bui.accentInk)
-            .padding(.horizontal, 8)
-            .frame(height: 22)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
             .background(self.bui.surface, in: Capsule())
             .overlay(Capsule().strokeBorder(self.bui.lineStrong, lineWidth: 0.8))
             .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 1)
@@ -1578,48 +1748,48 @@ private struct NewsEditorialArticlePane: View, Equatable {
     
     
     private var loadingPlaceholder: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(self.tokens.inset)
                 .frame(maxWidth: .infinity)
-                .frame(height: 12)
+                .frame(height: 13)
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(self.tokens.inset)
                 .frame(maxWidth: .infinity)
-                .frame(height: 12)
+                .frame(height: 13)
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(self.tokens.inset)
-                .frame(width: 220, height: 12)
+                .frame(width: 240, height: 13)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
     }
     
     
-    private func neighborButton(_ item: AIHotNewsItem, isNext: Bool, action: @escaping () -> Void) -> some View {
+    private func footerNavButton(_ item: AIHotNewsItem, isNext: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
                 if !isNext {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(self.mutedInk)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(self.bui.ink3)
                 }
                 
                 Text(item.title)
-                    .font(.system(size: 12.5, weight: .regular))
-                    .foregroundStyle(self.secondaryInk)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(self.bui.ink2)
                     .lineLimit(1)
+                    .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: isNext ? .trailing : .leading)
                 
                 if isNext {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(self.mutedInk)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(self.bui.ink3)
                 }
             }
-            .padding(.horizontal, 12)
-            .frame(height: 36)
-            .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .padding(.horizontal, 18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)

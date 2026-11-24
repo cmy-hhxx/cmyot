@@ -1,15 +1,31 @@
-import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, forwardRef, type ReactNode } from "react";
+import {
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  forwardRef,
+  type ReactNode,
+} from "react";
 import { createShader, playSweep, accentChain, ACCENTS } from "glimm";
-import type { ContextSourceItem, EffortLevel, ModelOption, SlashCommandItem } from "../types";
+import type {
+  AttachedDocumentRef,
+  BotMentionItem,
+  ContextSourceItem,
+  DocumentMentionItem,
+  EffortLevel,
+  ModelOption,
+  SlashCommandItem,
+} from "../types";
 
 /* ─────────────────────────────────────────────────────────
- * PROMPT BAR (adapted directly from beautifului.dev)
- * Real composer with:
- *   · @ context sources + / slash commands with gliding hover highlight
- *   · Model picker with gliding hover highlight + rainbow glimm sweep
- *   · Quoted passage attachment pill
- *   · Optional reasoning effort toggle (News mode)
- *   · Tactile Send ↔ Stop button
+ * PROMPT BAR — Composer with @Document + @Bot Delegation
+ *   · @ Documents (open tabs, workspace files, library docs, reports)
+ *   · @ Bots (delegate execution to any specialized Bot with its own model & prompt)
+ *   · @ Context sources + / slash commands
+ *   · Removable structured attachment pills above the input
+ *   · Zero tiny text: all typography ≥ 13px
  * ───────────────────────────────────────────────────────── */
 
 const RAINBOW = accentChain([
@@ -61,7 +77,7 @@ const SOURCE_GLYPHS: Record<ContextSourceItem["glyph"], ReactNode> = {
   ),
   memory: (
     <g>
-      <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z" />
+      <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
     </g>
   ),
   globe: (
@@ -82,6 +98,14 @@ function parseToken(draft: string): { kind: "at" | "slash"; query: string; start
   };
 }
 
+type MentionTab = "all" | "docs" | "bots" | "context";
+
+type MentionRow =
+  | { kind: "doc"; key: string; doc: DocumentMentionItem }
+  | { kind: "bot"; key: string; bot: BotMentionItem }
+  | { kind: "context"; key: string; source: ContextSourceItem }
+  | { kind: "slash"; key: string; command: SlashCommandItem };
+
 export type PromptBarHandle = {
   focus: () => void;
   setDraft: (text: string) => void;
@@ -97,6 +121,8 @@ type PromptBarProps = {
   selectedModelTitle: string;
   contextSources: ContextSourceItem[];
   slashCommands: SlashCommandItem[];
+  availableDocuments?: DocumentMentionItem[];
+  availableBots?: BotMentionItem[];
   quotedExcerpt?: string | null;
   effort?: EffortLevel;
   showEffort?: boolean;
@@ -104,7 +130,7 @@ type PromptBarProps = {
   onSelectModel: (model: ModelOption) => void;
   onSelectEffort?: (effort: EffortLevel) => void;
   onOpenSettings: () => void;
-  onSend: (text: string) => void;
+  onSend: (text: string, documents: AttachedDocumentRef[], botId: string | null) => void;
   onAbort: () => void;
 };
 
@@ -119,6 +145,8 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
     selectedModelTitle,
     contextSources,
     slashCommands,
+    availableDocuments = [],
+    availableBots = [],
     quotedExcerpt,
     effort = "balanced",
     showEffort = false,
@@ -132,8 +160,11 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
   ref,
 ) {
   const [draft, setDraft] = useState("");
+  const [attachedDocs, setAttachedDocs] = useState<AttachedDocumentRef[]>([]);
+  const [selectedBot, setSelectedBot] = useState<BotMentionItem | null>(null);
   const [dismissed, setDismissed] = useState(false);
-  const [plusOpen, setPlusOpen] = useState(false);
+  const [manualAtTab, setManualAtTab] = useState<MentionTab | null>(null);
+  const [activeTab, setActiveTab] = useState<MentionTab>("all");
   const [modelOpen, setModelOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [engaged, setEngaged] = useState(false);
@@ -162,29 +193,80 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
   }));
 
   const token = dismissed ? null : parseToken(draft);
-  const menu: "at" | "slash" | null = plusOpen ? "at" : token?.kind ?? null;
-  const query = plusOpen ? "" : token?.query ?? "";
+  const menu: "at" | "slash" | null = manualAtTab !== null ? "at" : token?.kind ?? null;
+  const query = manualAtTab !== null ? "" : token?.query ?? "";
+  const effectiveTab: MentionTab = manualAtTab ?? activeTab;
 
-  const rows =
-    menu === "at"
-      ? contextSources.filter(
-          (s) => s.name.toLowerCase().includes(query) || s.desc.toLowerCase().includes(query) || s.key.includes(query),
-        )
-      : menu === "slash"
-        ? slashCommands.filter(
-            (c) => c.name.slice(1).toLowerCase().includes(query) || c.desc.toLowerCase().includes(query),
-          )
-        : [];
+  const hasRichMentions = availableDocuments.length > 0 || availableBots.length > 0;
+
+  const rows = useMemo<MentionRow[]>(() => {
+    if (menu === "slash") {
+      return slashCommands
+        .filter((c) => c.name.slice(1).toLowerCase().includes(query) || c.desc.toLowerCase().includes(query))
+        .map((command) => ({ kind: "slash", key: `slash:${command.key}`, command }));
+    }
+    if (menu !== "at") return [];
+
+    const out: MentionRow[] = [];
+    const wantDocs = effectiveTab === "all" || effectiveTab === "docs";
+    const wantBots = effectiveTab === "all" || effectiveTab === "bots";
+    const wantContext = effectiveTab === "all" || effectiveTab === "context";
+
+    if (wantDocs && availableDocuments.length > 0) {
+      const matchedDocs = availableDocuments.filter(
+        (d) =>
+          !query ||
+          d.title.toLowerCase().includes(query) ||
+          d.desc.toLowerCase().includes(query) ||
+          (d.filePath && d.filePath.toLowerCase().includes(query)),
+      );
+      const limit = effectiveTab === "all" && !query ? 6 : 16;
+      for (const doc of matchedDocs.slice(0, limit)) {
+        out.push({ kind: "doc", key: `doc:${doc.id}`, doc });
+      }
+    }
+
+    if (wantBots && availableBots.length > 0) {
+      const matchedBots = availableBots.filter(
+        (b) =>
+          !query ||
+          b.name.toLowerCase().includes(query) ||
+          b.nickname.toLowerCase().includes(query) ||
+          b.handle.toLowerCase().includes(query) ||
+          b.tagline.toLowerCase().includes(query) ||
+          b.id.toLowerCase().includes(query),
+      );
+      const limit = effectiveTab === "all" && !query ? 6 : 12;
+      for (const bot of matchedBots.slice(0, limit)) {
+        out.push({ kind: "bot", key: `bot:${bot.id}`, bot });
+      }
+    }
+
+    if (wantContext && contextSources.length > 0) {
+      const matchedSources = contextSources.filter(
+        (s) =>
+          !query ||
+          s.name.toLowerCase().includes(query) ||
+          s.desc.toLowerCase().includes(query) ||
+          s.key.includes(query),
+      );
+      for (const source of matchedSources) {
+        out.push({ kind: "context", key: `ctx:${source.key}`, source });
+      }
+    }
+
+    return out;
+  }, [menu, query, effectiveTab, availableDocuments, availableBots, contextSources, slashCommands]);
 
   useEffect(() => {
     setActive(0);
     setEngaged(false);
-  }, [menu, query]);
+  }, [menu, query, effectiveTab]);
 
   useLayoutEffect(() => {
     const target = rowRefs.current[active];
     if (target) setRowBox({ top: target.offsetTop, height: target.offsetHeight });
-  }, [menu, query, active, rows.length]);
+  }, [menu, query, active, rows.length, effectiveTab]);
 
   const modelIndex = Math.max(
     0,
@@ -201,7 +283,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
     if (!modelOpen || !composerAnchorRef.current || !modelRef.current) return;
     const anchorRect = composerAnchorRef.current.getBoundingClientRect();
     const triggerRect = modelRef.current.getBoundingClientRect();
-    setModelMenuLeft(Math.max(0, Math.min(triggerRect.left - anchorRect.left, Math.max(0, anchorRect.width - 210))));
+    setModelMenuLeft(Math.max(0, Math.min(triggerRect.left - anchorRect.left, Math.max(0, anchorRect.width - 230))));
     setModelMenuBottom(anchorRect.bottom - triggerRect.top + 8);
   }, [modelOpen, selectedModelTitle]);
 
@@ -273,8 +355,8 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
   useLayoutEffect(() => {
     const input = inputRef.current;
     if (!input) return;
-    const minH = tall ? 46 : 26;
-    const maxH = 128;
+    const minH = tall ? 48 : 28;
+    const maxH = 136;
     input.style.height = "0px";
     const h = input.scrollHeight;
     input.style.height = `${Math.min(Math.max(h, minH), maxH)}px`;
@@ -282,37 +364,72 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
   }, [draft, tall]);
 
   useEffect(() => {
-    if (!modelOpen && !plusOpen) return;
+    if (!modelOpen && manualAtTab === null) return;
     const close = (event: PointerEvent) => {
       if (!(event.target as Element).closest("[data-promptbar]")) {
         setModelOpen(false);
-        setPlusOpen(false);
+        setManualAtTab(null);
       }
     };
     document.addEventListener("pointerdown", close);
     return () => document.removeEventListener("pointerdown", close);
-  }, [modelOpen, plusOpen]);
+  }, [modelOpen, manualAtTab]);
 
   const closeMenus = () => {
-    setPlusOpen(false);
+    setManualAtTab(null);
     setModelOpen(false);
   };
 
-  const pickRow = (row: ContextSourceItem | SlashCommandItem) => {
+  const pickRow = (row: MentionRow) => {
     const prefix = token ? draft.slice(0, token.start) : draft;
-    setDraft(`${prefix}${row.insertText} `);
-    setPlusOpen(false);
-    setDismissed(true);
-    inputRef.current?.focus();
+    if (row.kind === "doc") {
+      const refDoc: AttachedDocumentRef = {
+        id: row.doc.id,
+        title: row.doc.title,
+        sourceKind: row.doc.sourceKind,
+        filePath: row.doc.filePath ?? null,
+      };
+      setAttachedDocs((prev) => (prev.some((d) => d.id === refDoc.id) ? prev : [...prev, refDoc]));
+      setDraft(prefix);
+      setManualAtTab(null);
+      setDismissed(true);
+      inputRef.current?.focus();
+      return;
+    }
+    if (row.kind === "bot") {
+      setSelectedBot(row.bot);
+      setDraft(prefix);
+      setManualAtTab(null);
+      setDismissed(true);
+      inputRef.current?.focus();
+      return;
+    }
+    if (row.kind === "context") {
+      setDraft(`${prefix}${row.source.insertText}`);
+      setManualAtTab(null);
+      setDismissed(true);
+      inputRef.current?.focus();
+      return;
+    }
+    if (row.kind === "slash") {
+      setDraft(`${prefix}${row.command.insertText}`);
+      setManualAtTab(null);
+      setDismissed(true);
+      inputRef.current?.focus();
+    }
   };
 
-  const canSend = !isStreaming && draft.trim().length > 0;
+  const canSend = !isStreaming && (draft.trim().length > 0 || attachedDocs.length > 0 || selectedBot !== null);
   const submit = () => {
     if (!canSend) return;
     const text = draft.trim();
+    const docsSnapshot = attachedDocs.slice();
+    const botSnapshot = selectedBot?.id ?? null;
     setDraft("");
+    setAttachedDocs([]);
+    setSelectedBot(null);
     closeMenus();
-    onSend(text);
+    onSend(text, docsSnapshot, botSnapshot);
   };
 
   const cycleEffort = () => {
@@ -335,67 +452,183 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
           ? "Deep"
           : "Balanced";
 
+  const openAtPicker = (tab: MentionTab) => {
+    setModelOpen(false);
+    setActiveTab(tab);
+    setManualAtTab((cur) => (cur === tab ? null : tab));
+    inputRef.current?.focus();
+  };
+
   return (
     <div data-promptbar className="w-full">
       <div ref={composerAnchorRef} className="relative">
-        {/* ── @ / slash menu ─────────────────────────────── */}
+        {/* ── @ / slash mention menu ─────────────────────── */}
         {menu && (
           <div
             onMouseLeave={() => setEngaged(false)}
-            className="absolute inset-x-0 bottom-full z-20 mb-2 max-h-60 overflow-y-auto rounded-[10px] bg-surface p-1 shadow-raised bui-scroll"
+            className="absolute inset-x-0 bottom-full z-20 mb-2 overflow-hidden rounded-[12px] bg-surface shadow-raised"
             style={{ animation: "pop-in 160ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom center" }}
           >
-            <span
-              aria-hidden
-              className="pointer-events-none absolute inset-x-1 rounded-[6px] bg-hover"
-              style={{
-                top: rowBox?.top ?? 0,
-                height: rowBox?.height ?? 0,
-                opacity: rowBox && engaged && rows.length > 0 ? 1 : 0,
-                transition:
-                  "top 200ms cubic-bezier(0.23,1,0.32,1), height 200ms cubic-bezier(0.23,1,0.32,1), opacity 140ms ease",
-              }}
-            />
-            {rows.map((row, i) => {
-              const sourceRow = "glyph" in row ? (row as ContextSourceItem) : null;
-              return (
-                <button
-                  key={row.key}
-                  type="button"
-                  ref={(el) => {
-                    rowRefs.current[i] = el;
-                  }}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onMouseEnter={() => {
-                    setActive(i);
-                    setEngaged(true);
-                  }}
-                  onClick={() => pickRow(row)}
-                  className="relative z-10 flex h-8.5 w-full items-center gap-2.5 rounded-[6px] px-2 text-left"
-                >
-                  {sourceRow && (
-                    <span className="flex size-5 shrink-0 items-center justify-center text-ink-2">
-                      <Icon size={14}>{SOURCE_GLYPHS[sourceRow.glyph]}</Icon>
-                    </span>
-                  )}
-                  <span className="shrink-0 text-[12.5px] font-medium text-ink">{row.name}</span>
-                  <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-3">{row.desc}</span>
-                </button>
-              );
-            })}
-            {rows.length === 0 && (
-              <div className="flex h-8 items-center px-2 text-[12px] text-ink-3">
-                {locale === "zh" ? `没有匹配“${query}”` : `No matches for "${query}"`}
+            {menu === "at" && hasRichMentions && (
+              <div className="flex items-center gap-1 border-b border-line px-2 py-1.5">
+                {(
+                  [
+                    ["all", locale === "zh" ? "全部" : "All"],
+                    ["docs", locale === "zh" ? "文档" : "Docs"],
+                    ["bots", locale === "zh" ? "助手" : "Bots"],
+                    ["context", locale === "zh" ? "上下文" : "Context"],
+                  ] as [MentionTab, string][]
+                ).map(([tabKey, tabLabel]) => {
+                  const isTabActive = effectiveTab === tabKey;
+                  return (
+                    <button
+                      key={tabKey}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setActiveTab(tabKey);
+                        if (manualAtTab !== null) setManualAtTab(tabKey);
+                      }}
+                      className={`h-7 rounded-[7px] px-2.5 text-[13px] font-medium transition-colors duration-100 ${
+                        isTabActive ? "bg-hover-2 text-ink" : "text-ink-3 hover:bg-hover hover:text-ink"
+                      }`}
+                    >
+                      {tabLabel}
+                    </button>
+                  );
+                })}
               </div>
             )}
-            <div className="mt-1 border-t border-line px-2 pt-1.5 pb-1 text-[10.5px] text-ink-3">
-              {menu === "at"
-                ? locale === "zh"
-                  ? "选择要带入的上下文来源"
-                  : "Attach workspace context"
-                : locale === "zh"
-                  ? "选择快捷指令（↑↓ 选择，Enter 插入）"
-                  : "Choose a command"}
+
+            <div className="bui-scroll relative max-h-68 overflow-y-auto p-1">
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-x-1 rounded-[7px] bg-hover"
+                style={{
+                  top: rowBox?.top ?? 0,
+                  height: rowBox?.height ?? 0,
+                  opacity: rowBox && engaged && rows.length > 0 ? 1 : 0,
+                  transition:
+                    "top 200ms cubic-bezier(0.23,1,0.32,1), height 200ms cubic-bezier(0.23,1,0.32,1), opacity 140ms ease",
+                }}
+              />
+              {rows.map((row, i) => {
+                if (row.kind === "doc") {
+                  const alreadyAttached = attachedDocs.some((d) => d.id === row.doc.id);
+                  return (
+                    <button
+                      key={row.key}
+                      type="button"
+                      ref={(el) => {
+                        rowRefs.current[i] = el;
+                      }}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onMouseEnter={() => {
+                        setActive(i);
+                        setEngaged(true);
+                      }}
+                      onClick={() => pickRow(row)}
+                      className="relative z-10 flex h-9.5 w-full items-center gap-2.5 rounded-[7px] px-2.5 text-left"
+                    >
+                      <span className="flex size-5 shrink-0 items-center justify-center text-ink-2">
+                        <Icon size={15}>{SOURCE_GLYPHS.doc}</Icon>
+                      </span>
+                      <span className="max-w-[55%] shrink-0 truncate text-[13.5px] font-medium text-ink">
+                        {row.doc.title}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-ink-3">{row.doc.desc}</span>
+                      {alreadyAttached && (
+                        <span className="shrink-0 text-[12.5px] font-medium text-accent-ink">
+                          {locale === "zh" ? "已选" : "Added"}
+                        </span>
+                      )}
+                    </button>
+                  );
+                }
+
+                if (row.kind === "bot") {
+                  const isChosen = selectedBot?.id === row.bot.id;
+                  return (
+                    <button
+                      key={row.key}
+                      type="button"
+                      ref={(el) => {
+                        rowRefs.current[i] = el;
+                      }}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onMouseEnter={() => {
+                        setActive(i);
+                        setEngaged(true);
+                      }}
+                      onClick={() => pickRow(row)}
+                      className="relative z-10 flex h-9.5 w-full items-center gap-2.5 rounded-[7px] px-2.5 text-left"
+                    >
+                      <span
+                        className="size-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: row.bot.accentHex || "var(--accent)" }}
+                      />
+                      <span className="shrink-0 text-[13.5px] font-medium text-ink">@{row.bot.name}</span>
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-ink-3">{row.bot.tagline}</span>
+                      {isChosen && (
+                        <span className="shrink-0 text-[12.5px] font-medium text-accent-ink">
+                          {locale === "zh" ? "已指派" : "Selected"}
+                        </span>
+                      )}
+                    </button>
+                  );
+                }
+
+                if (row.kind === "context") {
+                  return (
+                    <button
+                      key={row.key}
+                      type="button"
+                      ref={(el) => {
+                        rowRefs.current[i] = el;
+                      }}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onMouseEnter={() => {
+                        setActive(i);
+                        setEngaged(true);
+                      }}
+                      onClick={() => pickRow(row)}
+                      className="relative z-10 flex h-9.5 w-full items-center gap-2.5 rounded-[7px] px-2.5 text-left"
+                    >
+                      <span className="flex size-5 shrink-0 items-center justify-center text-ink-2">
+                        <Icon size={15}>{SOURCE_GLYPHS[row.source.glyph] ?? SOURCE_GLYPHS.doc}</Icon>
+                      </span>
+                      <span className="shrink-0 text-[13.5px] font-medium text-ink">{row.source.name}</span>
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-ink-3">{row.source.desc}</span>
+                    </button>
+                  );
+                }
+
+                return (
+                  <button
+                    key={row.key}
+                    type="button"
+                    ref={(el) => {
+                      rowRefs.current[i] = el;
+                    }}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onMouseEnter={() => {
+                      setActive(i);
+                      setEngaged(true);
+                    }}
+                    onClick={() => pickRow(row)}
+                    className="relative z-10 flex h-9.5 w-full items-center gap-2.5 rounded-[7px] px-2.5 text-left"
+                  >
+                    <span className="shrink-0 font-mono text-[13.5px] font-medium text-ink">{row.command.name}</span>
+                    <span className="min-w-0 flex-1 truncate text-[13px] text-ink-3">{row.command.desc}</span>
+                  </button>
+                );
+              })}
+
+              {rows.length === 0 && (
+                <div className="flex h-9 items-center px-2.5 text-[13px] text-ink-3">
+                  {locale === "zh" ? `没有匹配“${query}”` : `No matches for "${query}"`}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -404,7 +637,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
         {modelOpen && (
           <div
             onMouseLeave={() => setModelHovered(null)}
-            className="bui-scroll absolute z-20 max-h-60 w-52 overflow-y-auto rounded-[10px] bg-surface p-1 shadow-raised"
+            className="bui-scroll absolute z-20 max-h-64 w-60 overflow-y-auto rounded-[12px] bg-surface p-1 shadow-raised"
             style={{
               left: modelMenuLeft,
               bottom: modelMenuBottom,
@@ -414,7 +647,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
           >
             <span
               aria-hidden
-              className="pointer-events-none absolute inset-x-1 rounded-[6px] bg-hover"
+              className="pointer-events-none absolute inset-x-1 rounded-[7px] bg-hover"
               style={{
                 top: modelBox?.top ?? 0,
                 height: modelBox?.height ?? 0,
@@ -430,7 +663,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                   setModelOpen(false);
                   onOpenSettings();
                 }}
-                className="relative z-10 flex h-8 w-full items-center gap-2 rounded-[6px] px-2 text-left text-[12px] font-medium text-accent-ink hover:bg-hover"
+                className="relative z-10 flex h-9 w-full items-center gap-2 rounded-[7px] px-2.5 text-left text-[13px] font-medium text-accent-ink hover:bg-hover"
               >
                 {locale === "zh" ? "前往设置配置 API 网关…" : "Configure AI models…"}
               </button>
@@ -452,12 +685,12 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                       if (m.isFlagship) celebrate();
                       inputRef.current?.focus();
                     }}
-                    className="relative z-10 flex h-7.5 w-full items-center gap-2 rounded-[6px] px-2 text-left"
+                    className="relative z-10 flex h-8.5 w-full items-center gap-2 rounded-[7px] px-2.5 text-left"
                   >
-                    <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink">{m.title}</span>
-                    {m.tag && <span className="shrink-0 text-[10.5px] text-ink-3">{m.tag}</span>}
+                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{m.title}</span>
+                    {m.tag && <span className="shrink-0 text-[12.5px] text-ink-3">{m.tag}</span>}
                     <span className={`shrink-0 text-ink ${isSelected ? "" : "invisible"}`}>
-                      <Icon size={12} strokeWidth={2.5}>
+                      <Icon size={13} strokeWidth={2.5}>
                         <path d="M20 6L9 17l-5-5" />
                       </Icon>
                     </span>
@@ -471,7 +704,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
         {/* ── composer shell ─────────────────────────────── */}
         <div
           className={`relative isolate flex flex-col overflow-hidden border border-line bg-surface shadow-card transition-[border-color] duration-150 focus-within:border-line-strong ${
-            tall ? "gap-2 rounded-[18px] px-3 pt-2.5 pb-2" : "gap-1.5 rounded-[14px] px-2.5 pt-2 pb-1.5"
+            tall ? "gap-2 rounded-[18px] px-3.5 pt-3 pb-2.5" : "gap-2 rounded-[14px] px-3 pt-2.5 pb-2"
           }`}
         >
           <canvas
@@ -481,14 +714,67 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
             style={{ borderRadius: "inherit" }}
           />
 
+          {/* Attached @Documents + @Bot delegation chips */}
+          {(attachedDocs.length > 0 || selectedBot) && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {attachedDocs.map((doc) => (
+                <span
+                  key={doc.id}
+                  className="inline-flex h-7.5 max-w-[260px] items-center gap-1.5 rounded-[8px] bg-inset px-2.5 text-[13px] font-medium text-ink shadow-hairline"
+                  style={{ animation: "pop-in 160ms cubic-bezier(0.23,1,0.32,1) both" }}
+                >
+                  <span className="shrink-0 text-ink-2">
+                    <Icon size={13.5}>{SOURCE_GLYPHS.doc}</Icon>
+                  </span>
+                  <span className="truncate">{doc.title}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${doc.title}`}
+                    onClick={() => setAttachedDocs((prev) => prev.filter((d) => d.id !== doc.id))}
+                    className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-colors duration-100 hover:bg-hover-2 hover:text-ink"
+                  >
+                    <Icon size={11} strokeWidth={2.4}>
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </Icon>
+                  </button>
+                </span>
+              ))}
+
+              {selectedBot && (
+                <span
+                  className="inline-flex h-7.5 max-w-[240px] items-center gap-1.5 rounded-[8px] bg-accent-tint px-2.5 text-[13px] font-medium text-accent-ink"
+                  style={{ animation: "pop-in 160ms cubic-bezier(0.23,1,0.32,1) both" }}
+                >
+                  <span
+                    className="size-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: selectedBot.accentHex || "var(--accent)" }}
+                  />
+                  <span className="truncate">
+                    {locale === "zh" ? `交由 @${selectedBot.name}` : `Assign @${selectedBot.name}`}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Clear assigned bot"
+                    onClick={() => setSelectedBot(null)}
+                    className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-accent-ink/75 transition-colors duration-100 hover:bg-hover-2 hover:text-accent-ink"
+                  >
+                    <Icon size={11} strokeWidth={2.4}>
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </Icon>
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
+
           {/* Quoted excerpt / selection attachment chip */}
           {quotedExcerpt && (
             <div
-              className="flex items-start gap-2 rounded-[8px] bg-inset px-2.5 py-1.5 text-[11.5px] text-ink-2 shadow-hairline"
+              className="flex items-start gap-2 rounded-[8px] bg-inset px-2.5 py-1.5 text-[13px] text-ink-2 shadow-hairline"
               style={{ animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both" }}
             >
               <span className="mt-0.5 shrink-0 text-accent">
-                <Icon size={12} strokeWidth={2.2}>
+                <Icon size={13} strokeWidth={2.2}>
                   <path d="M9 10l-5 5 5 5M20 4v7a4 4 0 0 1-4 4H4" />
                 </Icon>
               </span>
@@ -500,7 +786,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                   onClick={onClearQuote}
                   className="flex size-5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-colors duration-100 hover:bg-hover-2 hover:text-ink"
                 >
-                  <Icon size={10} strokeWidth={2.4}>
+                  <Icon size={11} strokeWidth={2.4}>
                     <path d="M18 6L6 18M6 6l12 12" />
                   </Icon>
                 </button>
@@ -515,7 +801,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
             onChange={(event) => {
               setDraft(event.target.value);
               setDismissed(false);
-              setPlusOpen(false);
+              setManualAtTab(null);
             }}
             onKeyDown={(event) => {
               if (menu && rows.length > 0) {
@@ -549,50 +835,81 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                 submit();
               }
             }}
-            placeholder={placeholder}
+            placeholder={
+              selectedBot
+                ? locale === "zh"
+                  ? `给 @${selectedBot.name} 补充要求，或直接按 Enter 开始处理…`
+                  : `Add instructions for @${selectedBot.name}, or press Enter…`
+                : placeholder
+            }
             aria-label="Prompt"
-            className="min-w-0 w-full resize-none bg-transparent px-1 py-0.5 text-[13.5px] leading-[1.5] text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3 select-text"
+            className="min-w-0 w-full resize-none bg-transparent px-1 py-0.5 text-[14px] leading-[1.55] text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3 select-text"
           />
 
           <div className="flex items-center gap-1">
-            {/* + attach / @ context */}
-            <button
-              type="button"
-              aria-label="Add context"
-              aria-expanded={plusOpen}
-              onClick={() => {
-                setModelOpen(false);
-                setPlusOpen((cur) => !cur);
-                inputRef.current?.focus();
-              }}
-              className={`flex size-7 shrink-0 items-center justify-center rounded-[8px] text-ink-3 transition-[background-color,color,transform] duration-150 hover:bg-hover hover:text-ink active:scale-[0.94] ${
-                plusOpen ? "bg-hover text-ink" : ""
-              }`}
-            >
-              <Icon size={15} strokeWidth={2}>
-                <path d="M12 5v14M5 12h14" />
-              </Icon>
-            </button>
-
-            {/* model selector */}
-            <button
-              ref={modelRef}
-              type="button"
-              aria-expanded={modelOpen}
-              aria-label="Choose model"
-              onClick={() => {
-                setPlusOpen(false);
-                setModelOpen((cur) => !cur);
-              }}
-              className="flex h-7 max-w-[180px] shrink-0 items-center gap-1 rounded-[8px] px-2 text-[12px] font-medium text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink"
-            >
-              <span className="truncate">{selectedModelTitle || "Model"}</span>
-              <span className="shrink-0 text-ink-3">
-                <Icon size={11} strokeWidth={2.4}>
-                  <path d="M6 9l6 6 6-6" />
+            {/* Quick @文档 & @助手 triggers when available (Butler mode), otherwise + attach when context exists */}
+            {hasRichMentions ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => openAtPicker("docs")}
+                  className={`flex h-7.5 shrink-0 items-center rounded-[8px] px-2 text-[13px] font-medium transition-colors duration-150 ${
+                    manualAtTab === "docs"
+                      ? "bg-hover-2 text-ink"
+                      : "text-ink-2 hover:bg-hover hover:text-ink"
+                  }`}
+                >
+                  {locale === "zh" ? "@文档" : "@Doc"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openAtPicker("bots")}
+                  className={`flex h-7.5 shrink-0 items-center rounded-[8px] px-2 text-[13px] font-medium transition-colors duration-150 ${
+                    manualAtTab === "bots" || selectedBot
+                      ? "bg-accent-tint text-accent-ink"
+                      : "text-ink-2 hover:bg-hover hover:text-ink"
+                  }`}
+                >
+                  {locale === "zh" ? "@助手" : "@Bot"}
+                </button>
+              </>
+            ) : contextSources.length > 0 ? (
+              <button
+                type="button"
+                aria-label="Add context"
+                aria-expanded={manualAtTab !== null}
+                onClick={() => openAtPicker("all")}
+                className={`flex size-7.5 shrink-0 items-center justify-center rounded-[8px] text-ink-3 transition-[background-color,color,transform] duration-150 hover:bg-hover hover:text-ink active:scale-[0.94] ${
+                  manualAtTab !== null ? "bg-hover text-ink" : ""
+                }`}
+              >
+                <Icon size={15} strokeWidth={2}>
+                  <path d="M12 5v14M5 12h14" />
                 </Icon>
-              </span>
-            </button>
+              </button>
+            ) : null}
+
+            {/* model selector (hidden when delegated bot is active, since bot uses its own configured model) */}
+            {!selectedBot && (
+              <button
+                ref={modelRef}
+                type="button"
+                aria-expanded={modelOpen}
+                aria-label="Choose model"
+                onClick={() => {
+                  setManualAtTab(null);
+                  setModelOpen((cur) => !cur);
+                }}
+                className="flex h-7.5 max-w-[200px] shrink-0 items-center gap-1 rounded-[8px] px-2 text-[13px] font-medium text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink"
+              >
+                <span className="truncate">{selectedModelTitle || "Model"}</span>
+                <span className="shrink-0 text-ink-3">
+                  <Icon size={12} strokeWidth={2.4}>
+                    <path d="M6 9l6 6 6-6" />
+                  </Icon>
+                </span>
+              </button>
+            )}
 
             {/* reasoning effort cycle button (News mode) */}
             {showEffort && onSelectEffort && (
@@ -600,15 +917,12 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                 type="button"
                 onClick={cycleEffort}
                 title={locale === "zh" ? "切换推理深度（快速 / 均衡 / 深度）" : "Cycle reasoning effort"}
-                className={`flex h-7 shrink-0 items-center gap-1 rounded-[8px] px-2 text-[11.5px] font-medium transition-colors duration-150 ${
+                className={`flex h-7.5 shrink-0 items-center rounded-[8px] px-2.5 text-[13px] font-medium transition-colors duration-150 ${
                   effort === "deep"
                     ? "bg-accent-tint text-accent-ink"
-                    : "text-ink-3 hover:bg-hover hover:text-ink"
+                    : "text-ink-2 hover:bg-hover hover:text-ink"
                 }`}
               >
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                  <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z" />
-                </svg>
                 {effortLabel}
               </button>
             )}
@@ -621,7 +935,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                 type="button"
                 aria-label="Stop"
                 onClick={onAbort}
-                className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-ink text-surface transition-[transform,opacity] duration-150 hover:opacity-90 active:scale-[0.94]"
+                className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-ink text-surface transition-[transform,opacity] duration-150 hover:opacity-90 active:scale-[0.94]"
                 title={locale === "zh" ? "停止生成" : "Stop"}
               >
                 <span className="size-2.5 rounded-[2px] bg-current" />
@@ -632,7 +946,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                 aria-label="Send"
                 disabled={!canSend}
                 onClick={submit}
-                className="flex size-7 shrink-0 items-center justify-center rounded-[8px] transition-[background-color,color,transform] duration-150 enabled:active:scale-[0.94]"
+                className="flex size-8 shrink-0 items-center justify-center rounded-[9px] transition-[background-color,color,transform] duration-150 enabled:active:scale-[0.94]"
                 style={{
                   background: canSend ? "var(--ink)" : "var(--line-strong)",
                   color: canSend ? "var(--surface)" : "var(--ink-2)",

@@ -73,7 +73,7 @@ export default function LoadingState({
     <div role="status" className="flex w-fit items-center gap-2.5 py-0.5" style={{ animation: "fade-in 200ms ease-out both" }}>
       <LoaderGrid delays={delays} dur={dur} round={round} />
       <span
-        className="bg-clip-text text-[13px] font-medium text-transparent"
+        className="bg-clip-text text-[13.5px] font-medium text-transparent"
         style={{
           backgroundImage: "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
           backgroundSize: "200% 100%",
@@ -82,7 +82,7 @@ export default function LoadingState({
       >
         {label}
       </span>
-      <span className="font-mono text-[11.5px] text-ink-3 tabular-nums">{elapsed}</span>
+      <span className="font-mono text-[12.5px] text-ink-3 tabular-nums">{elapsed}</span>
     </div>
   );
 }

@@ -23,6 +23,16 @@ import AppKit
 import Foundation
 import Observation
 
+/// Structured reference to a document attached via `@文档` in the Butler composer.
+nonisolated struct ButlerDocumentAttachment: Codable, Sendable, Equatable, Identifiable {
+    var id: String
+    var title: String
+    /// `"open_tab" | "stored_doc" | "weekly_report" | "workspace_file"`
+    var sourceKind: String
+    var filePath: String? = nil
+}
+
+
 /// Structured persisted metadata stored inside `ButlerChatMessage.actionsJSON`.
 ///
 /// Backward-compatible with legacy `[AppliedActionReceipt]` JSON arrays.
@@ -35,6 +45,59 @@ nonisolated struct ButlerMessageMetadata: Codable, Sendable, Equatable {
     var quoteContext: String? = nil
     var followUps: [String] = []
     var errorMessage: String? = nil
+    var attachedDocuments: [String] = []
+    var delegatedBotID: String? = nil
+    var delegatedBotName: String? = nil
+    var delegatedModel: String? = nil
+    
+    init(
+        receipts: [AppliedActionReceipt] = [],
+        thinking: String? = nil,
+        thinkingDurationMs: Int? = nil,
+        steps: [BeautifulAgentThinkingStep] = [],
+        toolChips: [String] = [],
+        quoteContext: String? = nil,
+        followUps: [String] = [],
+        errorMessage: String? = nil,
+        attachedDocuments: [String] = [],
+        delegatedBotID: String? = nil,
+        delegatedBotName: String? = nil,
+        delegatedModel: String? = nil
+    ) {
+        self.receipts = receipts
+        self.thinking = thinking
+        self.thinkingDurationMs = thinkingDurationMs
+        self.steps = steps
+        self.toolChips = toolChips
+        self.quoteContext = quoteContext
+        self.followUps = followUps
+        self.errorMessage = errorMessage
+        self.attachedDocuments = attachedDocuments
+        self.delegatedBotID = delegatedBotID
+        self.delegatedBotName = delegatedBotName
+        self.delegatedModel = delegatedModel
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case receipts, thinking, thinkingDurationMs, steps, toolChips, quoteContext, followUps, errorMessage
+        case attachedDocuments, delegatedBotID, delegatedBotName, delegatedModel
+    }
+    
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.receipts = try c.decodeIfPresent([AppliedActionReceipt].self, forKey: .receipts) ?? []
+        self.thinking = try c.decodeIfPresent(String.self, forKey: .thinking)
+        self.thinkingDurationMs = try c.decodeIfPresent(Int.self, forKey: .thinkingDurationMs)
+        self.steps = try c.decodeIfPresent([BeautifulAgentThinkingStep].self, forKey: .steps) ?? []
+        self.toolChips = try c.decodeIfPresent([String].self, forKey: .toolChips) ?? []
+        self.quoteContext = try c.decodeIfPresent(String.self, forKey: .quoteContext)
+        self.followUps = try c.decodeIfPresent([String].self, forKey: .followUps) ?? []
+        self.errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
+        self.attachedDocuments = try c.decodeIfPresent([String].self, forKey: .attachedDocuments) ?? []
+        self.delegatedBotID = try c.decodeIfPresent(String.self, forKey: .delegatedBotID)
+        self.delegatedBotName = try c.decodeIfPresent(String.self, forKey: .delegatedBotName)
+        self.delegatedModel = try c.decodeIfPresent(String.self, forKey: .delegatedModel)
+    }
 }
 
 
@@ -387,22 +450,44 @@ final class CotButlerManager {
     }
     
     
-    func startNewSession() {
+    var activeSession: ButlerSessionRecord? {
+        self.sessions.first(where: { $0.id == self.activeSessionID })
+    }
+    
+    var activeWorkspacePath: String? {
+        self.activeSession?.workspacePath
+    }
+    
+    
+    func startNewSession(workspacePath: String? = nil) {
         self.lastErrorMessage = nil
         let hadStreaming = self.isStreaming
         if hadStreaming {
             self.cancelAndResetStreaming(savePartial: true, resetRPC: true)
         }
+        let normalizedWorkspace: String? = {
+            guard let raw = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+                return nil
+            }
+            return URL(filePath: raw).standardizedFileURL.path(percentEncoded: false)
+        }()
         if let active = self.sessions.first(where: { $0.id == self.activeSessionID }),
            self.messages.isEmpty,
            active.messageCount == 0
         {
+            if active.workspacePath != normalizedWorkspace {
+                self.database.updateButlerSessionWorkspace(id: active.id, workspacePath: normalizedWorkspace)
+                self.sessions = self.database.fetchButlerSessions()
+            }
             if !hadStreaming, self.database === CotLocalDatabase.shared {
                 PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: true)
             }
             return
         }
-        let created = self.database.createButlerSession(title: AppLanguage.text("新对话", en: "New Chat"))
+        let created = self.database.createButlerSession(
+            title: AppLanguage.text("新对话", en: "New Chat"),
+            workspacePath: normalizedWorkspace
+        )
         self.activeSessionID = created.id
         self.database.set(created.id, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
         self.sessions = self.database.fetchButlerSessions()
@@ -410,6 +495,76 @@ final class CotButlerManager {
         if !hadStreaming, self.database === CotLocalDatabase.shared {
             PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: true)
         }
+    }
+    
+    
+    func setSessionWorkspace(_ sessionID: String, workspacePath: String?) {
+        let targetID = sessionID.isEmpty ? self.activeSessionID : sessionID
+        guard !targetID.isEmpty,
+              self.sessions.contains(where: { $0.id == targetID })
+        else { return }
+        let normalized: String? = {
+            guard let raw = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+                return nil
+            }
+            return URL(filePath: raw).standardizedFileURL.path(percentEncoded: false)
+        }()
+        let previous = self.sessions.first(where: { $0.id == targetID })?.workspacePath
+        guard previous != normalized else { return }
+        self.database.updateButlerSessionWorkspace(id: targetID, workspacePath: normalized)
+        self.sessions = self.database.fetchButlerSessions()
+        if targetID == self.activeSessionID, self.database === CotLocalDatabase.shared {
+            PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: false)
+        }
+    }
+    
+    
+    struct WorkspaceOption: Sendable, Equatable {
+        let path: String
+        let name: String
+        let subtitle: String
+        let isOpenInEditor: Bool
+    }
+    
+    
+    func availableWorkspaces() -> [WorkspaceOption] {
+        var seen: Set<String> = []
+        var options: [WorkspaceOption] = []
+        let home = FileManager.default.homeDirectoryForCurrentUser.path(percentEncoded: false)
+        let compactSubtitle: (String) -> String = { fullPath in
+            if fullPath.hasPrefix(home) {
+                return "~" + fullPath.dropFirst(home.count)
+            }
+            return fullPath
+        }
+        
+        if self.database === CotLocalDatabase.shared {
+            for dir in CotAgentCoordinator.shared.openWorkspaceDirectories() {
+                let path = dir.standardizedFileURL.path(percentEncoded: false)
+                guard seen.insert(path).inserted else { continue }
+                options.append(WorkspaceOption(
+                    path: path,
+                    name: dir.lastPathComponent.isEmpty ? path : dir.lastPathComponent,
+                    subtitle: compactSubtitle(path),
+                    isOpenInEditor: true
+                ))
+            }
+        }
+        for session in self.sessions {
+            guard let raw = session.workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty
+            else { continue }
+            let std = URL(filePath: raw).standardizedFileURL.path(percentEncoded: false)
+            guard FileManager.default.fileExists(atPath: std), seen.insert(std).inserted else { continue }
+            let url = URL(filePath: std)
+            options.append(WorkspaceOption(
+                path: std,
+                name: url.lastPathComponent.isEmpty ? std : url.lastPathComponent,
+                subtitle: compactSubtitle(std),
+                isOpenInEditor: false
+            ))
+        }
+        return options
     }
     
     
@@ -510,7 +665,182 @@ final class CotButlerManager {
         guard let lastUser = self.messages.last(where: { $0.role == "user" }) else { return }
         let meta = Self.decodeMetadata(from: lastUser.actionsJSON)
         Task {
-            await self.sendMessage(lastUser.content, quote: meta.quoteContext)
+            await self.sendMessage(
+                lastUser.content,
+                quote: meta.quoteContext,
+                delegatedBotID: meta.delegatedBotID
+            )
+        }
+    }
+    
+    
+    /// Resolves which specialized Bot (if any) the user targeted via chip selection or inline `@BotName` / `@Nickname` / `@Handle`.
+    static func resolveDelegatedBot(
+        in text: String,
+        explicitBotID: String?,
+        botStore: AIBotStore = .shared
+    ) -> AIBotID? {
+        if let raw = explicitBotID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty,
+           let parsed = AIBotID(rawValue: raw),
+           parsed != .butler
+        {
+            return parsed
+        }
+        guard text.contains("@") else { return nil }
+        let pattern = #"@([^\s@，,。！？!?：:;；()（）\[\]【】]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else { return nil }
+        
+        let candidates = AIBotID.allCases.filter { $0 != .butler && $0 != .ghost }
+        for match in matches {
+            let token = nsText.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !token.isEmpty else { continue }
+            let lower = token.lowercased()
+            for botID in candidates {
+                let resolvedName = botStore.resolvedName(for: botID).lowercased()
+                let resolvedNick = botStore.resolvedNickname(for: botID).lowercased()
+                let handleBare = botID.handle.dropFirst().lowercased()
+                if lower == botID.rawValue.lowercased()
+                    || lower == handleBare
+                    || lower == botID.displayName.lowercased()
+                    || lower == botID.defaultNickname.lowercased()
+                    || lower == resolvedName
+                    || lower == resolvedNick
+                {
+                    return botID
+                }
+            }
+        }
+        return nil
+    }
+    
+    
+    /// Matches inline `@文档名` tokens against open tabs, workspace files, stored documents, and weekly reports.
+    func resolveInlineDocumentMentions(
+        in text: String,
+        excluding existing: [ButlerDocumentAttachment],
+        workspacePath: String?
+    ) -> [ButlerDocumentAttachment] {
+        guard text.contains("@") else { return [] }
+        let pattern = #"@([^\s@，,。！？!?：:;；()（）\[\]【】]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else { return [] }
+        
+        let reserved: Set<String> = ["当前文档", "选区", "自选股", "资讯", "active", "selection", "watchlist", "news"]
+        var existingIDs = Set(existing.map(\.id))
+        var existingTitles = Set(existing.map { $0.title.lowercased() })
+        var found: [ButlerDocumentAttachment] = []
+        
+        let openDocs = (self.database === CotLocalDatabase.shared)
+            ? CotAgentCoordinator.shared.openEditorDocuments(maxContentChars: 200)
+            : []
+        let workspaceFiles: [CotAgentCoordinator.WorkspaceFileCandidate] = {
+            guard let wp = workspacePath, !wp.isEmpty else { return [] }
+            return CotAgentCoordinator.listWorkspaceFiles(at: URL(filePath: wp), limit: 48)
+        }()
+        
+        for match in matches {
+            let token = nsText.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let lower = token.lowercased()
+            guard !token.isEmpty, !reserved.contains(lower), !existingTitles.contains(lower) else { continue }
+            if Self.resolveDelegatedBot(in: "@\(token)", explicitBotID: nil) != nil { continue }
+            
+            if let openMatch = openDocs.first(where: {
+                $0.title.lowercased() == lower || URL(filePath: $0.title).deletingPathExtension().lastPathComponent.lowercased() == lower
+            }) {
+                let att = ButlerDocumentAttachment(id: openMatch.id, title: openMatch.title, sourceKind: "open_tab", filePath: openMatch.filePath)
+                if existingIDs.insert(att.id).inserted {
+                    existingTitles.insert(att.title.lowercased())
+                    found.append(att)
+                }
+                continue
+            }
+            if let wsMatch = workspaceFiles.first(where: {
+                $0.title.lowercased() == lower || $0.relativePath.lowercased() == lower
+            }) {
+                let att = ButlerDocumentAttachment(id: "ws:\(wsMatch.fullPath)", title: wsMatch.title, sourceKind: "workspace_file", filePath: wsMatch.fullPath)
+                if existingIDs.insert(att.id).inserted {
+                    existingTitles.insert(att.title.lowercased())
+                    found.append(att)
+                }
+                continue
+            }
+            if let storedMatch = self.database.documents.first(where: {
+                $0.deletedAt == nil && ($0.title.lowercased() == lower || $0.title.lowercased().contains(lower))
+            }) {
+                let att = ButlerDocumentAttachment(id: "doc:\(storedMatch.id)", title: storedMatch.title, sourceKind: "stored_doc", filePath: storedMatch.filePath)
+                if existingIDs.insert(att.id).inserted {
+                    existingTitles.insert(att.title.lowercased())
+                    found.append(att)
+                }
+                continue
+            }
+            if let reportMatch = self.database.weeklyReports.first(where: {
+                $0.title.lowercased() == lower || $0.periodLabel.lowercased() == lower
+            }) {
+                let att = ButlerDocumentAttachment(id: "report:\(reportMatch.id)", title: reportMatch.title, sourceKind: "weekly_report", filePath: reportMatch.sourcePath)
+                if existingIDs.insert(att.id).inserted {
+                    existingTitles.insert(att.title.lowercased())
+                    found.append(att)
+                }
+            }
+        }
+        return found
+    }
+    
+    
+    /// Loads full readable text for a `@文档` attachment (live open tab, local workspace file, stored document, or weekly report).
+    func resolveDocumentContent(
+        for attachment: ButlerDocumentAttachment,
+        maxChars: Int = 36_000
+    ) -> (title: String, sourceLabel: String, path: String?, content: String)? {
+        switch attachment.sourceKind {
+            case "open_tab":
+                if self.database === CotLocalDatabase.shared {
+                    let openDocs = CotAgentCoordinator.shared.openEditorDocuments(maxContentChars: maxChars)
+                    if let matched = openDocs.first(where: { $0.id == attachment.id || $0.title == attachment.title }) {
+                        return (matched.title, AppLanguage.text("当前打开", en: "Open Tab"), matched.filePath, matched.content)
+                    }
+                }
+                if let path = attachment.filePath,
+                   let diskText = try? String(contentsOfFile: path, encoding: .utf8)
+                {
+                    return (attachment.title, AppLanguage.text("本地文件", en: "File"), path, String(diskText.prefix(maxChars)))
+                }
+                return nil
+                
+            case "workspace_file":
+                let rawPath = attachment.filePath ?? (attachment.id.hasPrefix("ws:") ? String(attachment.id.dropFirst(3)) : "")
+                guard !rawPath.isEmpty,
+                      let diskText = try? String(contentsOfFile: rawPath, encoding: .utf8)
+                else { return nil }
+                return (attachment.title, AppLanguage.text("工作区文件", en: "Workspace File"), rawPath, String(diskText.prefix(maxChars)))
+                
+            case "weekly_report":
+                let cleanID = attachment.id.hasPrefix("report:") ? String(attachment.id.dropFirst(7)) : attachment.id
+                if let report = self.database.weeklyReports.first(where: { $0.id == cleanID || $0.title == attachment.title }) {
+                    return (report.title, AppLanguage.text("周报库", en: "Weekly Report"), report.sourcePath, String(report.content.prefix(maxChars)))
+                }
+                return nil
+                
+            default: // "stored_doc"
+                let cleanID = attachment.id.hasPrefix("doc:") ? String(attachment.id.dropFirst(4)) : attachment.id
+                if let record = self.database.fetchDocumentRecord(id: cleanID, filePath: attachment.filePath)
+                    ?? self.database.documents.first(where: { $0.deletedAt == nil && ($0.id == cleanID || $0.title == attachment.title) })
+                {
+                    return (record.title, record.groupName.isEmpty ? AppLanguage.text("文档库", en: "Document") : record.groupName, record.filePath, String(record.content.prefix(maxChars)))
+                }
+                if let path = attachment.filePath,
+                   let diskText = try? String(contentsOfFile: path, encoding: .utf8)
+                {
+                    return (attachment.title, AppLanguage.text("本地文件", en: "File"), path, String(diskText.prefix(maxChars)))
+                }
+                return nil
         }
     }
     
@@ -518,9 +848,43 @@ final class CotButlerManager {
     func sendMessage(
         _ rawText: String,
         quote: String? = nil,
-        contextSources: [String] = []
+        contextSources: [String] = [],
+        attachedDocuments: [ButlerDocumentAttachment] = [],
+        delegatedBotID: String? = nil
     ) async {
-        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedInput = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetBot = Self.resolveDelegatedBot(in: trimmedInput, explicitBotID: delegatedBotID)
+        
+        if self.activeSessionID.isEmpty {
+            self.bootstrapSessionsAndMessages()
+        }
+        let targetSessionID = self.activeSessionID
+        let sessionWorkspacePath = self.sessions.first(where: { $0.id == targetSessionID })?.workspacePath
+        
+        let inlineDocs = self.resolveInlineDocumentMentions(
+            in: trimmedInput,
+            excluding: attachedDocuments,
+            workspacePath: sessionWorkspacePath
+        )
+        let allAttachedDocs = attachedDocuments + inlineDocs
+        
+        // Allow sending with empty text when user attached `@文档` and/or `@Bot`
+        let text: String = {
+            if !trimmedInput.isEmpty { return trimmedInput }
+            if let targetBot {
+                let botName = AIBotStore.shared.resolvedName(for: targetBot)
+                if !allAttachedDocs.isEmpty {
+                    let docList = allAttachedDocs.map { "「\($0.title)」" }.joined(separator: "、")
+                    return AppLanguage.text("请 @\(botName) 处理 \(docList)", en: "Ask @\(botName) to process \(docList)")
+                }
+                return AppLanguage.text("请 @\(botName) 协助处理", en: "Ask @\(botName) to help")
+            }
+            if !allAttachedDocs.isEmpty {
+                let docList = allAttachedDocs.map { "「\($0.title)」" }.joined(separator: "、")
+                return AppLanguage.text("帮我看看 \(docList)", en: "Review \(docList)")
+            }
+            return ""
+        }()
         guard !text.isEmpty else { return }
         
         if self.isStreaming {
@@ -532,16 +896,18 @@ final class CotButlerManager {
             }
         }
         
-        if self.activeSessionID.isEmpty {
-            self.bootstrapSessionsAndMessages()
-        }
-        let targetSessionID = self.activeSessionID
         let cleanQuote = quote?.trimmingCharacters(in: .whitespacesAndNewlines)
         
         // Refresh live workspace snapshot before every turn so Pi tools read the freshest editor state
         _ = CotAgentCoordinator.shared.captureWorkspaceSnapshot()
         
-        let userMeta = ButlerMessageMetadata(quoteContext: (cleanQuote?.isEmpty == false) ? cleanQuote : nil)
+        let targetBotName = targetBot.map { AIBotStore.shared.resolvedName(for: $0) }
+        let userMeta = ButlerMessageMetadata(
+            quoteContext: (cleanQuote?.isEmpty == false) ? cleanQuote : nil,
+            attachedDocuments: allAttachedDocs.map(\.title),
+            delegatedBotID: targetBot?.rawValue,
+            delegatedBotName: targetBotName
+        )
         let userMsg = ButlerChatMessage(
             id: UUID().uuidString,
             sessionID: targetSessionID,
@@ -555,7 +921,8 @@ final class CotButlerManager {
         self.sessions = self.database.fetchButlerSessions()
         self.lastErrorMessage = nil
         
-        let resolvedConfig = AIBotStore.shared.resolvedConfiguration(for: .butler)
+        let effectiveBotID: AIBotID = targetBot ?? .butler
+        let resolvedConfig = AIBotStore.shared.resolvedConfiguration(for: effectiveBotID)
         guard resolvedConfig.isUsable else {
             await self.handleOfflineCommand(text, sessionID: targetSessionID)
             return
@@ -570,19 +937,39 @@ final class CotButlerManager {
         self.streamingDraft = ""
         self.streamingThinking = ""
         self.streamingSteps = []
-        self.streamingStatusLabel = AppLanguage.text("正在思考…", en: "Thinking...")
+        self.streamingStatusLabel = if let targetBotName {
+            AppLanguage.text("\(targetBotName) 正在处理…", en: "\(targetBotName) is working...")
+        } else {
+            AppLanguage.text("正在思考…", en: "Thinking...")
+        }
         self.streamingStartedAt = Date()
         
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.performTurn(
-                userText: text,
-                quote: cleanQuote,
-                contextSources: contextSources,
-                sessionID: targetSessionID,
-                resolvedConfig: resolvedConfig,
-                generation: turnGeneration
-            )
+            if let targetBot {
+                await self.performDelegatedBotTurn(
+                    botID: targetBot,
+                    userText: text,
+                    quote: cleanQuote,
+                    contextSources: contextSources,
+                    attachedDocuments: allAttachedDocs,
+                    sessionID: targetSessionID,
+                    workspacePath: sessionWorkspacePath,
+                    resolvedConfig: resolvedConfig,
+                    generation: turnGeneration
+                )
+            } else {
+                await self.performTurn(
+                    userText: text,
+                    quote: cleanQuote,
+                    contextSources: contextSources,
+                    attachedDocuments: allAttachedDocs,
+                    sessionID: targetSessionID,
+                    workspacePath: sessionWorkspacePath,
+                    resolvedConfig: resolvedConfig,
+                    generation: turnGeneration
+                )
+            }
         }
         self.activeTurnTask = task
         await task.value
@@ -592,11 +979,318 @@ final class CotButlerManager {
     }
     
     
+    private func resolveWorkingDirectory(sessionWorkspacePath: String?) -> URL? {
+        if let raw = sessionWorkspacePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty,
+           FileManager.default.fileExists(atPath: raw)
+        {
+            return URL(filePath: raw).standardizedFileURL
+        }
+        return CotAgentCoordinator.shared.activeWorkingDirectoryURL()
+    }
+    
+    
+    private func performDelegatedBotTurn(
+        botID: AIBotID,
+        userText: String,
+        quote: String?,
+        contextSources: [String],
+        attachedDocuments: [ButlerDocumentAttachment],
+        sessionID: String,
+        workspacePath: String?,
+        resolvedConfig: AIConfiguration,
+        generation: UInt64
+    ) async {
+        let turnClockStart = ContinuousClock.now
+        let botName = AIBotStore.shared.resolvedName(for: botID)
+        let effectiveModel = resolvedConfig.wireConfiguration.model
+        defer {
+            if self.activeTurnGeneration == generation {
+                self.isStreaming = false
+                self.streamingSessionID = nil
+                self.streamingMessageID = nil
+                self.streamingDraft = ""
+                self.streamingThinking = ""
+                self.streamingSteps = []
+                self.streamingStatusLabel = ""
+                self.streamingStartedAt = nil
+            }
+        }
+        
+        let docTitles = attachedDocuments.map(\.title)
+        let stepChip = docTitles.isEmpty ? effectiveModel : "\(botName) · \(docTitles.prefix(2).joined(separator: "、"))"
+        let delegateStepID = "delegate-\(botID.rawValue)"
+        let delegateStepStart = Date().timeIntervalSince1970 * 1000
+        self.streamingSteps = [
+            BeautifulAgentThinkingStep(
+                id: delegateStepID,
+                label: AppLanguage.text("调度助手", en: "Delegating Bot"),
+                chip: stepChip,
+                status: "running",
+                mono: false,
+                detail: docTitles.isEmpty ? nil : docTitles.map { "📄 \($0)" },
+                durationMs: nil,
+                kind: "tool",
+                startedAtMs: delegateStepStart
+            ),
+        ]
+        self.streamingStatusLabel = AppLanguage.text("\(botName) 正在处理…", en: "\(botName) is working...")
+        self.emitStreamPatch()
+        
+        let botSystemPrompt = self.buildDelegatedBotSystemPrompt(
+            for: botID,
+            workspacePath: workspacePath
+        )
+        let augmentedUserPrompt = self.buildTurnUserPrompt(
+            userText: userText,
+            quote: quote,
+            contextSources: contextSources,
+            attachedDocuments: attachedDocuments,
+            delegatedBotID: botID
+        )
+        
+        let toolProfile = AIBotStore.shared.config(for: botID).effectiveToolProfile(for: botID)
+        let shouldTryPiRPC = self.database === CotLocalDatabase.shared
+            && PiKernelManager.shared.canRunRPC
+            && toolProfile != .pureChat
+            && (workspacePath != nil || attachedDocuments.isEmpty)
+        
+        if shouldTryPiRPC,
+           let endpointProfile = AIBotStore.shared.resolvedEndpointProfile(for: botID)
+        {
+            let workingDir = self.resolveWorkingDirectory(sessionWorkspacePath: workspacePath)
+            do {
+                let result = try await PiKernelManager.shared.runRPCTurn(
+                    channel: .butler,
+                    logicalSessionKey: "\(sessionID):bot:\(botID.rawValue)",
+                    systemPrompt: botSystemPrompt,
+                    userPrompt: augmentedUserPrompt,
+                    priorHistoryContext: nil,
+                    endpointProfile: endpointProfile,
+                    configuration: resolvedConfig,
+                    workingDirectory: workingDir
+                ) { [weak self] event in
+                    guard let self, self.activeTurnGeneration == generation else { return }
+                    self.handlePiStreamEvent(event)
+                }
+                guard self.activeTurnGeneration == generation else { return }
+                await CotAgentCoordinator.shared.drainCommandQueueNow()
+                guard self.activeTurnGeneration == generation else { return }
+                
+                let extracted = Self.extractActions(from: result.text)
+                let receipts = extracted.actions.isEmpty ? [] : await CotAgentCoordinator.shared.execute(extracted.actions)
+                guard self.activeTurnGeneration == generation else { return }
+                
+                let replyText = extracted.cleanText.isEmpty
+                    ? (result.aborted ? AppLanguage.text("已停止生成。", en: "Stopped.") : AppLanguage.text("已处理完毕。", en: "Done."))
+                    : extracted.cleanText
+                
+                let elapsed = turnClockStart.duration(to: .now)
+                let latencyMs = max(1, Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))
+                AnalyticsManager.shared.recordAIUsage(
+                    feature: botID.analyticsFeatureKey,
+                    model: effectiveModel,
+                    provider: "Pi RPC · \(resolvedConfig.wireConfiguration.endpoint.label)",
+                    inputTokens: AINextTokenPredictor.estimateTokens(in: botSystemPrompt + "\n" + augmentedUserPrompt),
+                    outputTokens: AINextTokenPredictor.estimateTokens(in: replyText + "\n" + result.thinking),
+                    latencyMs: latencyMs,
+                    success: true
+                )
+                
+                var finalSteps = result.steps
+                finalSteps.insert(
+                    BeautifulAgentThinkingStep(
+                        id: delegateStepID,
+                        label: AppLanguage.text("调度助手", en: "Delegated Bot"),
+                        chip: stepChip,
+                        status: "done",
+                        mono: false,
+                        detail: docTitles.isEmpty ? nil : docTitles.map { "📄 \($0)" },
+                        durationMs: latencyMs,
+                        kind: "tool",
+                        startedAtMs: delegateStepStart
+                    ),
+                    at: 0
+                )
+                let meta = ButlerMessageMetadata(
+                    receipts: receipts,
+                    thinking: result.thinking.isEmpty ? nil : result.thinking,
+                    thinkingDurationMs: result.thinkingDurationMs > 0 ? result.thinkingDurationMs : latencyMs,
+                    steps: finalSteps,
+                    toolChips: [botName] + result.toolNames.map { PiToolDisplayMeta.label(for: $0) },
+                    followUps: Self.suggestDelegatedFollowUps(for: botID),
+                    attachedDocuments: docTitles,
+                    delegatedBotID: botID.rawValue,
+                    delegatedBotName: botName,
+                    delegatedModel: effectiveModel
+                )
+                self.appendAssistantMessage(replyText, metadata: meta, sessionID: sessionID)
+                return
+            } catch is CancellationError {
+                guard self.activeTurnGeneration == generation else { return }
+                let partial = Self.stripActionEnvelope(self.streamingDraft)
+                let final = partial.isEmpty ? AppLanguage.text("已停止生成。", en: "Stopped.") : partial
+                let meta = ButlerMessageMetadata(
+                    thinking: self.streamingThinking.isEmpty ? nil : self.streamingThinking,
+                    steps: self.streamingSteps,
+                    attachedDocuments: docTitles,
+                    delegatedBotID: botID.rawValue,
+                    delegatedBotName: botName,
+                    delegatedModel: effectiveModel
+                )
+                self.appendAssistantMessage(final, metadata: meta, sessionID: sessionID)
+                return
+            } catch {
+                guard self.activeTurnGeneration == generation, !Task.isCancelled else { return }
+                self.streamingDraft = ""
+                self.streamingThinking = ""
+            }
+        }
+        
+        guard self.activeTurnGeneration == generation, !Task.isCancelled else { return }
+        
+        let aiMessages: [AIMessage] = [
+            .system(botSystemPrompt),
+            .user(augmentedUserPrompt),
+        ]
+        var lastDraftFlushAt: Date = .distantPast
+        do {
+            let fullRaw = try await AIService.shared.chat(
+                aiMessages,
+                configuration: resolvedConfig,
+                analyticsFeature: botID.analyticsFeatureKey
+            ) { [weak self] partial in
+                guard let self, self.activeTurnGeneration == generation else { return }
+                let now = Date()
+                guard now.timeIntervalSince(lastDraftFlushAt) >= 0.04 else { return }
+                lastDraftFlushAt = now
+                self.streamingDraft = Self.stripActionEnvelope(partial)
+                self.emitStreamPatch()
+            }
+            guard self.activeTurnGeneration == generation else { return }
+            let elapsed = turnClockStart.duration(to: .now)
+            let latencyMs = max(1, Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))
+            let cleanReply = Self.stripActionEnvelope(fullRaw)
+            let doneStep = BeautifulAgentThinkingStep(
+                id: delegateStepID,
+                label: AppLanguage.text("调度助手", en: "Delegated Bot"),
+                chip: stepChip,
+                status: "done",
+                mono: false,
+                detail: docTitles.isEmpty ? nil : docTitles.map { "📄 \($0)" },
+                durationMs: latencyMs,
+                kind: "tool",
+                startedAtMs: delegateStepStart
+            )
+            let meta = ButlerMessageMetadata(
+                thinkingDurationMs: latencyMs,
+                steps: [doneStep],
+                toolChips: [botName],
+                followUps: Self.suggestDelegatedFollowUps(for: botID),
+                attachedDocuments: docTitles,
+                delegatedBotID: botID.rawValue,
+                delegatedBotName: botName,
+                delegatedModel: effectiveModel
+            )
+            self.appendAssistantMessage(cleanReply.isEmpty ? AppLanguage.text("已处理完毕。", en: "Done.") : cleanReply, metadata: meta, sessionID: sessionID)
+        } catch is CancellationError {
+            guard self.activeTurnGeneration == generation else { return }
+            let partial = Self.stripActionEnvelope(self.streamingDraft)
+            if !partial.isEmpty {
+                let meta = ButlerMessageMetadata(
+                    steps: self.streamingSteps,
+                    attachedDocuments: docTitles,
+                    delegatedBotID: botID.rawValue,
+                    delegatedBotName: botName,
+                    delegatedModel: effectiveModel
+                )
+                self.appendAssistantMessage(partial, metadata: meta, sessionID: sessionID)
+            }
+        } catch {
+            guard self.activeTurnGeneration == generation else { return }
+            self.lastErrorMessage = error.localizedDescription
+            let meta = ButlerMessageMetadata(
+                errorMessage: error.localizedDescription,
+                attachedDocuments: docTitles,
+                delegatedBotID: botID.rawValue,
+                delegatedBotName: botName,
+                delegatedModel: effectiveModel
+            )
+            self.appendAssistantMessage(error.localizedDescription, metadata: meta, sessionID: sessionID)
+        }
+    }
+    
+    
+    func buildDelegatedBotSystemPrompt(for botID: AIBotID, workspacePath: String?) -> String {
+        let botName = AIBotStore.shared.resolvedName(for: botID)
+        let stagePrompt = AIBotStore.shared.systemPrompt(for: botID).trimmingCharacters(in: .whitespacesAndNewlines)
+        let customPersona = AIBotStore.shared.config(for: botID).customPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+        let globalPersona = self.database.aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        var parts: [String] = [
+            "你现在以 CotEditor 专业助手「\(botName)」的身份执行用户指派的任务。",
+        ]
+        if !stagePrompt.isEmpty {
+            parts.append(stagePrompt)
+        }
+        if botID == .organizeAndMerge {
+            parts.append("注意：本次是在对话面板中由用户直接调用，除非用户明确要求 JSON，请直接输出清晰整理后的文档正文与简明合并说明，方便用户一键插入或存为新笔记。")
+        }
+        if !customPersona.isEmpty {
+            parts.append("角色风格要求：\(customPersona)")
+        }
+        if !globalPersona.isEmpty {
+            parts.append("用户的全局表达偏好：\(globalPersona)")
+        }
+        if let wp = workspacePath, !wp.isEmpty {
+            let url = URL(filePath: wp)
+            let overview = CotAgentCoordinator.workspaceDirectoryOverview(at: url)
+            var wsBlock = "当前会话绑定的工作区：\(url.lastPathComponent)（\(wp)）"
+            if !overview.isEmpty {
+                wsBlock += "\n顶层目录：\(overview)"
+            }
+            parts.append(wsBlock)
+        }
+        return parts.joined(separator: "\n\n")
+    }
+    
+    
+    private static func suggestDelegatedFollowUps(for botID: AIBotID) -> [String] {
+        switch botID {
+            case .translate:
+                [
+                    AppLanguage.text("把译文润色得更地道口语化一些", en: "Make the translation more natural"),
+                    AppLanguage.text("整理成中英对照格式", en: "Format as bilingual side-by-side"),
+                ]
+            case .summarize:
+                [
+                    AppLanguage.text("把这些要点扩写成完整行动清单", en: "Expand into an action checklist"),
+                    AppLanguage.text("再精简成 3 句话版本", en: "Condense into 3 sentences"),
+                ]
+            case .weeklyReport, .weeklyReportItem:
+                [
+                    AppLanguage.text("再精炼一点，方便直接发给团队", en: "Make it tighter for team sharing"),
+                    AppLanguage.text("补充下周计划与风险提示", en: "Add next week plan and risks"),
+                ]
+            case .explain:
+                [
+                    AppLanguage.text("举一个具体生活例子再讲一遍", en: "Give a concrete real-world example"),
+                ]
+            default:
+                [
+                    AppLanguage.text("继续完善这份结果", en: "Refine this result"),
+                ]
+        }
+    }
+    
+    
     private func performTurn(
         userText: String,
         quote: String?,
         contextSources: [String],
+        attachedDocuments: [ButlerDocumentAttachment],
         sessionID: String,
+        workspacePath: String?,
         resolvedConfig: AIConfiguration,
         generation: UInt64
     ) async {
@@ -617,9 +1311,11 @@ final class CotButlerManager {
         let augmentedUserPrompt = self.buildTurnUserPrompt(
             userText: userText,
             quote: quote,
-            contextSources: contextSources
+            contextSources: contextSources,
+            attachedDocuments: attachedDocuments
         )
         let priorHistory = self.buildPriorHistoryContext(excludingLastUserMessage: true)
+        let workingDir = self.resolveWorkingDirectory(sessionWorkspacePath: workspacePath)
         
         // 1. Primary path: Warm Persistent Pi RPC Kernel with native Cot tools
         if self.database === CotLocalDatabase.shared,
@@ -629,9 +1325,9 @@ final class CotButlerManager {
             let piSystemPrompt = self.buildButlerSystemPrompt(
                 resolvedConfig: resolvedConfig,
                 userMessage: userText,
-                piToolsAvailable: true
+                piToolsAvailable: true,
+                workspacePath: workspacePath
             )
-            let workingDir = CotAgentCoordinator.shared.activeWorkingDirectoryURL()
             
             do {
                 let result = try await PiKernelManager.shared.runRPCTurn(
@@ -734,7 +1430,8 @@ final class CotButlerManager {
         let systemPrompt = self.buildButlerSystemPrompt(
             resolvedConfig: resolvedConfig,
             userMessage: userText,
-            piToolsAvailable: false
+            piToolsAvailable: false,
+            workspacePath: workspacePath
         )
         var aiMessages: [AIMessage] = [.system(systemPrompt)]
         let recent = Array(self.messages.dropLast().suffix(10))
@@ -945,10 +1642,31 @@ final class CotButlerManager {
     }
     
     
-    private func buildTurnUserPrompt(userText: String, quote: String?, contextSources: [String]) -> String {
+    func buildTurnUserPrompt(
+        userText: String,
+        quote: String?,
+        contextSources: [String],
+        attachedDocuments: [ButlerDocumentAttachment] = [],
+        delegatedBotID: AIBotID? = nil
+    ) -> String {
         var sections: [String] = []
         if let quote, !quote.isEmpty {
             sections.append("<quoted_excerpt>\n\(quote)\n</quoted_excerpt>")
+        }
+        for doc in attachedDocuments {
+            if let resolved = self.resolveDocumentContent(for: doc) {
+                let pathAttr = resolved.path.map { " path=\"\($0)\"" } ?? ""
+                sections.append("<attached_document title=\"\(resolved.title)\" source=\"\(resolved.sourceLabel)\"\(pathAttr)>\n\(resolved.content)\n</attached_document>")
+            }
+        }
+        if delegatedBotID == .weeklyReport {
+            let recentReports = self.database.weeklyReports.prefix(2)
+            if !recentReports.isEmpty {
+                let styleSamples = recentReports.map { rep in
+                    "--- 历史周报示例：\(rep.title) (\(rep.periodLabel)) ---\n\(String(rep.content.prefix(1800)))"
+                }.joined(separator: "\n\n")
+                sections.append("<historical_weekly_report_style>\n\(styleSamples)\n</historical_weekly_report_style>")
+            }
         }
         if !contextSources.isEmpty {
             let snap = CotAgentCoordinator.shared.lastWorkspaceSnapshot ?? CotAgentCoordinator.shared.captureWorkspaceSnapshot()
@@ -1076,7 +1794,8 @@ final class CotButlerManager {
         resolvedConfig: AIConfiguration? = nil,
         userMessage: String = "",
         now: Date = Date(),
-        piToolsAvailable: Bool = false
+        piToolsAvailable: Bool = false,
+        workspacePath: String? = nil
     ) -> String {
         let workspaceSummary = CotAgentCoordinator.shared.workspaceContextSummary()
         let kyc = self.memoryStore.compiledKYCContext()
@@ -1162,6 +1881,16 @@ final class CotButlerManager {
         if !kyc.isEmpty {
             lines.append(kyc)
         }
+        if let wp = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines), !wp.isEmpty {
+            let url = URL(filePath: wp)
+            let overview = CotAgentCoordinator.workspaceDirectoryOverview(at: url)
+            var wsSection = "## 当前会话绑定的工作区\n目录名：\(url.lastPathComponent)\n路径：\(wp)"
+            if !overview.isEmpty {
+                wsSection += "\n顶层内容：\(overview)"
+            }
+            wsSection += "\n请优先围绕这个工作区回答问题或使用文件/检索工具。"
+            lines.append(wsSection)
+        }
         if !workspaceSummary.isEmpty {
             lines.append("## 用户当前正在看的文档与页面（仅供背景参考）\n\(workspaceSummary)")
         }
@@ -1208,7 +1937,11 @@ final class CotButlerManager {
            meta.toolChips.isEmpty,
            meta.quoteContext == nil,
            meta.followUps.isEmpty,
-           meta.errorMessage == nil
+           meta.errorMessage == nil,
+           meta.attachedDocuments.isEmpty,
+           meta.delegatedBotID == nil,
+           meta.delegatedBotName == nil,
+           meta.delegatedModel == nil
         {
             return (try? String(data: JSONEncoder().encode(meta.receipts), encoding: .utf8)) ?? "[]"
         }

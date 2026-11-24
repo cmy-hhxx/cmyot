@@ -147,8 +147,8 @@ body,
   background: var(--page);
   color: var(--ink);
   font-family: var(--font-sans);
-  font-size: 13.5px;
-  line-height: 1.55;
+  font-size: 14px;
+  line-height: 1.58;
   letter-spacing: -0.008em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -203,7 +203,7 @@ select:focus-visible {
 
 /* Sidebar collapse mechanics (from beautifului.dev SidebarNav) */
 .sidebar-row {
-  width: 196px;
+  width: 216px;
   transition-duration: var(--sidebar-copy-duration, 180ms);
   transition-timing-function: var(--sidebar-easing, cubic-bezier(0.16, 1, 0.3, 1));
 }
@@ -341,7 +341,7 @@ a:hover .animated-underline::after {
 /* Editorial Markdown typography inside assistant prose */
 .bui-prose {
   color: var(--ink);
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.68;
   user-select: text;
   -webkit-user-select: text;
@@ -353,14 +353,14 @@ a:hover .animated-underline::after {
   margin-bottom: 0;
 }
 .bui-prose h1 {
-  font-size: 16.5px;
+  font-size: 17.5px;
   font-weight: 600;
   letter-spacing: -0.015em;
   margin: 16px 0 8px;
   color: var(--ink);
 }
 .bui-prose h2 {
-  font-size: 14.5px;
+  font-size: 15.5px;
   font-weight: 600;
   letter-spacing: -0.012em;
   margin: 14px 0 6px;
@@ -368,7 +368,7 @@ a:hover .animated-underline::after {
 }
 .bui-prose h3,
 .bui-prose h4 {
-  font-size: 13.5px;
+  font-size: 14.5px;
   font-weight: 600;
   margin: 12px 0 5px;
   color: var(--ink);
@@ -392,7 +392,7 @@ a:hover .animated-underline::after {
 }
 .bui-prose code.inline-code {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   padding: 1.5px 5px;
   border-radius: 5px;
   background: var(--field);
@@ -422,7 +422,7 @@ a:hover .animated-underline::after {
   border-radius: 0 8px 8px 0;
   background: var(--inset);
   color: var(--ink-2);
-  font-size: 13px;
+  font-size: 13.5px;
 }
 .bui-prose hr {
   border: 0;
@@ -440,7 +440,7 @@ a:hover .animated-underline::after {
 .bui-prose table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 .bui-prose th {
   text-align: left;
