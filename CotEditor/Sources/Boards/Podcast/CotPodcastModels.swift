@@ -165,6 +165,8 @@ final class PodcastArtworkColorModel {
     private(set) var color: Color?
     private var task: Task<Void, Never>?
     private static var cache: [String: Color] = [:]
+    private static var cacheOrder: [String] = []
+    private static let maxCachedColors = 64
     
     
     func load(from urlString: String?) {
@@ -192,6 +194,12 @@ final class PodcastArtworkColorModel {
             let b = min((lum + (sampled.2 - lum) * sat) * 0.62 + 0.04, 1)
             let resolved = Color(red: r, green: g, blue: b)
             Self.cache[urlString] = resolved
+            Self.cacheOrder.removeAll { $0 == urlString }
+            Self.cacheOrder.append(urlString)
+            while Self.cacheOrder.count > Self.maxCachedColors {
+                let evicted = Self.cacheOrder.removeFirst()
+                Self.cache.removeValue(forKey: evicted)
+            }
             self?.color = resolved
         }
     }

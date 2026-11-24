@@ -160,7 +160,11 @@ final class CotMarketService {
     
     
     @discardableResult
-    func refresh(instrument: MarketInstrument, period: MarketChartPeriod) async -> MarketQuoteSnapshot? {
+    func refresh(
+        instrument: MarketInstrument,
+        period: MarketChartPeriod,
+        isBackgroundWatchlistRefresh: Bool = false
+    ) async -> MarketQuoteSnapshot? {
         self.loadingInstrumentIDs.insert(instrument.instrumentID)
         defer { self.loadingInstrumentIDs.remove(instrument.instrumentID) }
         
@@ -183,27 +187,58 @@ final class CotMarketService {
             updatedAt: snapshot.updatedAt
         )
         self.quotes[instrument.instrumentID] = merged
-        self.selectedInstrumentName = "\(instrument.name) (\(instrument.symbol))"
-        if self.isWatched(instrument.instrumentID) {
-            self.database.updateWatchlistStockQuote(
-                instrumentID: instrument.instrumentID,
-                lastPrice: merged.lastPrice,
-                changePercent: merged.changePercent
-            )
-            self.reloadFromDatabase()
+        self.evictUnwatchedQuotesIfNeeded(preserving: instrument.instrumentID)
+        if !isBackgroundWatchlistRefresh {
+            self.selectedInstrumentName = "\(instrument.name) (\(instrument.symbol))"
+            if self.isWatched(instrument.instrumentID) {
+                self.database.updateWatchlistStockQuote(
+                    instrumentID: instrument.instrumentID,
+                    lastPrice: merged.lastPrice,
+                    changePercent: merged.changePercent
+                )
+                self.reloadFromDatabase()
+            }
         }
         return merged
     }
     
     
+    private func evictUnwatchedQuotesIfNeeded(preserving activeID: String) {
+        guard self.quotes.count > 32 else { return }
+        let watchedIDs = Set(self.watchlist.map(\.instrumentID))
+        for key in self.quotes.keys where key != activeID && !watchedIDs.contains(key) {
+            self.quotes.removeValue(forKey: key)
+            if self.quotes.count <= 32 { break }
+        }
+    }
+    
+    
     func refreshWatchlist(period: MarketChartPeriod = .day) async {
         let targets = self.watchlist.map(MarketInstrument.init(record:))
-        await withTaskGroup(of: Void.self) { group in
+        let refreshed: [MarketQuoteSnapshot] = await withTaskGroup(of: MarketQuoteSnapshot?.self) { group in
             for inst in targets.prefix(8) {
                 group.addTask {
-                    _ = await self.refresh(instrument: inst, period: period)
+                    await self.refresh(instrument: inst, period: period, isBackgroundWatchlistRefresh: true)
                 }
             }
+            var snapshots: [MarketQuoteSnapshot] = []
+            for await snap in group {
+                if let snap { snapshots.append(snap) }
+            }
+            return snapshots
+        }
+        if !refreshed.isEmpty {
+            self.database.withTransaction {
+                for snap in refreshed where self.isWatched(snap.instrument.instrumentID) {
+                    self.database.updateWatchlistStockQuote(
+                        instrumentID: snap.instrument.instrumentID,
+                        lastPrice: snap.lastPrice,
+                        changePercent: snap.changePercent
+                    )
+                }
+            }
+            self.memoryStore.reloadStocks()
+            self.reloadFromDatabase()
         }
     }
 }

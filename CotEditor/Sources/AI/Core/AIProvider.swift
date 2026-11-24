@@ -210,11 +210,37 @@ nonisolated enum AIProvider: String, CaseIterable, Sendable, Codable {
     }
     
     
+    /// Grouped recommended models presented on the OpenCode Go configuration card.
+    struct OpenCodeGoModelGroup: Identifiable, Sendable {
+        let id: String
+        let title: String
+        let models: [String]
+    }
+    
+    static let openCodeGoModelGroups: [OpenCodeGoModelGroup] = [
+        .init(id: "flagship", title: "主力快推", models: ["deepseek-v4.1-flash", "glm-5.3"]),
+        .init(id: "claude", title: "Claude", models: ["claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"]),
+        .init(id: "openai", title: "OpenAI", models: ["gpt-5.2", "gpt-5.2-codex", "gpt-4.1"]),
+        .init(id: "gemini", title: "Gemini", models: ["gemini-2.5-pro", "gemini-2.5-flash"]),
+    ]
+    
+    
     /// Curated models pre-populated into the model switcher so the user can switch immediately without waiting for `/models`.
     var recommendedModels: [String] {
         switch self {
             case .openCodeGo:
-                ["kimi-k2.5", "glm-5", "minimax-m2.5", "deepseek-v4-pro", "claude-sonnet-4-5", "gpt-5.2-codex"]
+                [
+                    "deepseek-v4.1-flash",
+                    "glm-5.3",
+                    "claude-sonnet-4-5",
+                    "claude-opus-4-5",
+                    "claude-haiku-4-5",
+                    "gpt-5.2",
+                    "gpt-5.2-codex",
+                    "gpt-4.1",
+                    "gemini-2.5-pro",
+                    "gemini-2.5-flash",
+                ]
             case .openAI:
                 ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "o4-mini"]
             case .anthropic:

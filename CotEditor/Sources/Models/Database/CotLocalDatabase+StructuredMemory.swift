@@ -379,7 +379,12 @@ extension CotLocalDatabase {
         self.executeSQL(sql)
         
         self.ensureButlerMessageSessionColumnExists()
-        self.executeSQL("CREATE INDEX IF NOT EXISTS idx_butler_messages_session ON butler_messages(session_id, created_at ASC);")
+        self.executeSQL("""
+        CREATE INDEX IF NOT EXISTS idx_kyc_active_sort ON user_kyc_memories(is_archived, is_pinned DESC, confidence DESC, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_kyc_fact_key ON user_kyc_memories(fact_key);
+        CREATE INDEX IF NOT EXISTS idx_watchlist_symbol_lower ON user_watchlist_stocks(lower(symbol));
+        CREATE INDEX IF NOT EXISTS idx_butler_messages_session ON butler_messages(session_id, created_at ASC);
+        """)
         self.migrateLegacyButlerMessagesToSessionIfNeeded()
         
         let now = Date().timeIntervalSince1970
@@ -472,8 +477,10 @@ extension CotLocalDatabase {
                 updatedAt: now
             ),
         ]
-        for stock in defaults {
-            self.upsertWatchlistStock(stock)
+        self.withTransaction {
+            for stock in defaults {
+                self.upsertWatchlistStock(stock)
+            }
         }
     }
     
@@ -813,15 +820,17 @@ extension CotLocalDatabase {
     
     
     func reorderWatchlistStocks(orderedIDs: [String]) {
-        self.executeSQL("BEGIN TRANSACTION;")
-        defer { self.executeSQL("COMMIT;") }
-        let sql = "UPDATE user_watchlist_stocks SET sort_order = ? WHERE instrument_id = ?;"
-        for (idx, id) in orderedIDs.enumerated() {
+        self.withTransaction {
+            let sql = "UPDATE user_watchlist_stocks SET sort_order = ? WHERE instrument_id = ?;"
             var stmt: OpaquePointer?
             if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
-                sqlite3_bind_int(stmt, 1, Int32(idx))
-                sqlite3_bind_text(stmt, 2, id, -1, self.transientDestructor)
-                sqlite3_step(stmt)
+                for (idx, id) in orderedIDs.enumerated() {
+                    sqlite3_reset(stmt)
+                    sqlite3_clear_bindings(stmt)
+                    sqlite3_bind_int(stmt, 1, Int32(idx))
+                    sqlite3_bind_text(stmt, 2, id, -1, self.transientDestructor)
+                    sqlite3_step(stmt)
+                }
             }
             sqlite3_finalize(stmt)
         }
@@ -835,7 +844,7 @@ extension CotLocalDatabase {
         SELECT id, item_kind, platform, title, show_name, source_url, audio_url, artwork_url,
                duration_sec, playback_position_sec, is_saved, topic_tag, notes, last_played_at, created_at, updated_at
         FROM user_podcasts
-        ORDER BY is_saved DESC, COALESCE(last_played_at, 0) DESC, updated_at DESC;
+        ORDER BY is_saved DESC, last_played_at DESC, updated_at DESC;
         """
         var stmt: OpaquePointer?
         var items: [StoredPodcastRecord] = []
@@ -1235,7 +1244,7 @@ extension CotLocalDatabase {
                s.is_pinned,
                s.created_at,
                s.updated_at,
-               COALESCE((SELECT m.content FROM butler_messages m WHERE m.session_id = s.id ORDER BY m.created_at DESC LIMIT 1), ''),
+               COALESCE((SELECT SUBSTR(m.content, 1, 200) FROM butler_messages m WHERE m.session_id = s.id ORDER BY m.created_at DESC LIMIT 1), ''),
                (SELECT COUNT(*) FROM butler_messages m WHERE m.session_id = s.id)
         FROM butler_sessions s
         ORDER BY s.is_pinned DESC, s.updated_at DESC;
@@ -1327,21 +1336,23 @@ extension CotLocalDatabase {
     
     
     func deleteButlerSession(id: String) {
-        let msgSQL = "DELETE FROM butler_messages WHERE session_id = ?;"
-        var msgStmt: OpaquePointer?
-        if sqlite3_prepare_v2(self.db, msgSQL, -1, &msgStmt, nil) == SQLITE_OK {
-            sqlite3_bind_text(msgStmt, 1, id, -1, self.transientDestructor)
-            sqlite3_step(msgStmt)
+        self.withTransaction {
+            let msgSQL = "DELETE FROM butler_messages WHERE session_id = ?;"
+            var msgStmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, msgSQL, -1, &msgStmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(msgStmt, 1, id, -1, self.transientDestructor)
+                sqlite3_step(msgStmt)
+            }
+            sqlite3_finalize(msgStmt)
+            
+            let sessSQL = "DELETE FROM butler_sessions WHERE id = ?;"
+            var sessStmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, sessSQL, -1, &sessStmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(sessStmt, 1, id, -1, self.transientDestructor)
+                sqlite3_step(sessStmt)
+            }
+            sqlite3_finalize(sessStmt)
         }
-        sqlite3_finalize(msgStmt)
-        
-        let sessSQL = "DELETE FROM butler_sessions WHERE id = ?;"
-        var sessStmt: OpaquePointer?
-        if sqlite3_prepare_v2(self.db, sessSQL, -1, &sessStmt, nil) == SQLITE_OK {
-            sqlite3_bind_text(sessStmt, 1, id, -1, self.transientDestructor)
-            sqlite3_step(sessStmt)
-        }
-        sqlite3_finalize(sessStmt)
     }
     
     
@@ -1406,54 +1417,56 @@ extension CotLocalDatabase {
         let resolvedSessionID = message.sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "default"
             : message.sessionID
-        _ = self.createButlerSession(id: resolvedSessionID)
-        
-        let sql = "INSERT OR REPLACE INTO butler_messages (id, session_id, role, content, actions_json, created_at) VALUES (?, ?, ?, ?, ?, ?);"
-        var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
-            sqlite3_bind_text(stmt, 1, message.id, -1, self.transientDestructor)
-            sqlite3_bind_text(stmt, 2, resolvedSessionID, -1, self.transientDestructor)
-            sqlite3_bind_text(stmt, 3, message.role, -1, self.transientDestructor)
-            sqlite3_bind_text(stmt, 4, message.content, -1, self.transientDestructor)
-            sqlite3_bind_text(stmt, 5, message.actionsJSON, -1, self.transientDestructor)
-            sqlite3_bind_double(stmt, 6, message.createdAt.timeIntervalSince1970)
-            let rc = sqlite3_step(stmt)
-            if rc != SQLITE_DONE {
-                self.logSQLiteError(#function, code: rc)
-            }
-        }
-        sqlite3_finalize(stmt)
-        
-        // Update session updated_at and auto-title untitled sessions on the first user turn
-        let ts = message.createdAt.timeIntervalSince1970
-        if message.role == "user" {
-            let candidateTitle = Self.condensedSessionTitle(from: message.content)
-            if !candidateTitle.isEmpty {
-                let titleSQL = """
-                UPDATE butler_sessions
-                SET title = CASE WHEN title IN ('新对话', 'New Chat', '历史对话', 'Previous Chat') THEN ? ELSE title END,
-                    updated_at = MAX(updated_at, ?)
-                WHERE id = ?;
-                """
-                var tStmt: OpaquePointer?
-                if sqlite3_prepare_v2(self.db, titleSQL, -1, &tStmt, nil) == SQLITE_OK {
-                    sqlite3_bind_text(tStmt, 1, candidateTitle, -1, self.transientDestructor)
-                    sqlite3_bind_double(tStmt, 2, ts)
-                    sqlite3_bind_text(tStmt, 3, resolvedSessionID, -1, self.transientDestructor)
-                    sqlite3_step(tStmt)
+        self.withTransaction {
+            _ = self.createButlerSession(id: resolvedSessionID)
+            
+            let sql = "INSERT OR REPLACE INTO butler_messages (id, session_id, role, content, actions_json, created_at) VALUES (?, ?, ?, ?, ?, ?);"
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, message.id, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 2, resolvedSessionID, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 3, message.role, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 4, message.content, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 5, message.actionsJSON, -1, self.transientDestructor)
+                sqlite3_bind_double(stmt, 6, message.createdAt.timeIntervalSince1970)
+                let rc = sqlite3_step(stmt)
+                if rc != SQLITE_DONE {
+                    self.logSQLiteError(#function, code: rc)
                 }
-                sqlite3_finalize(tStmt)
-                return
             }
+            sqlite3_finalize(stmt)
+            
+            // Update session updated_at and auto-title untitled sessions on the first user turn
+            let ts = message.createdAt.timeIntervalSince1970
+            if message.role == "user" {
+                let candidateTitle = Self.condensedSessionTitle(from: message.content)
+                if !candidateTitle.isEmpty {
+                    let titleSQL = """
+                    UPDATE butler_sessions
+                    SET title = CASE WHEN title IN ('新对话', 'New Chat', '历史对话', 'Previous Chat') THEN ? ELSE title END,
+                        updated_at = MAX(updated_at, ?)
+                    WHERE id = ?;
+                    """
+                    var tStmt: OpaquePointer?
+                    if sqlite3_prepare_v2(self.db, titleSQL, -1, &tStmt, nil) == SQLITE_OK {
+                        sqlite3_bind_text(tStmt, 1, candidateTitle, -1, self.transientDestructor)
+                        sqlite3_bind_double(tStmt, 2, ts)
+                        sqlite3_bind_text(tStmt, 3, resolvedSessionID, -1, self.transientDestructor)
+                        sqlite3_step(tStmt)
+                    }
+                    sqlite3_finalize(tStmt)
+                    return
+                }
+            }
+            let touchSQL = "UPDATE butler_sessions SET updated_at = MAX(updated_at, ?) WHERE id = ?;"
+            var touchStmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, touchSQL, -1, &touchStmt, nil) == SQLITE_OK {
+                sqlite3_bind_double(touchStmt, 1, ts)
+                sqlite3_bind_text(touchStmt, 2, resolvedSessionID, -1, self.transientDestructor)
+                sqlite3_step(touchStmt)
+            }
+            sqlite3_finalize(touchStmt)
         }
-        let touchSQL = "UPDATE butler_sessions SET updated_at = MAX(updated_at, ?) WHERE id = ?;"
-        var touchStmt: OpaquePointer?
-        if sqlite3_prepare_v2(self.db, touchSQL, -1, &touchStmt, nil) == SQLITE_OK {
-            sqlite3_bind_double(touchStmt, 1, ts)
-            sqlite3_bind_text(touchStmt, 2, resolvedSessionID, -1, self.transientDestructor)
-            sqlite3_step(touchStmt)
-        }
-        sqlite3_finalize(touchStmt)
     }
     
     

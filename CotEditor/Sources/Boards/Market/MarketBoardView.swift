@@ -125,6 +125,7 @@ struct MarketBoardView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))
                 guard !Task.isCancelled, let inst = self.activeInstrument else { break }
+                guard NSApp?.isActive != false else { continue }
                 _ = await self.marketService.refresh(instrument: inst, period: self.boardState.marketPeriod)
             }
         }

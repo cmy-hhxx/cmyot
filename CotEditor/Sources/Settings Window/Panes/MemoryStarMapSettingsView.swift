@@ -63,356 +63,648 @@ struct MemoryStarMapLeafDetail: Identifiable, Equatable {
 }
 
 
-/// Strictly read-only Constellation Star-Map displaying the user's structured KYC profile
-/// and portable SQLite asset collections inside Settings -> Memory.
+// MARK: - Multi-Level Preference Hierarchy Models
+
+struct PreferenceDetailAttribute: Identifiable, Equatable, Sendable {
+    let label: String
+    let value: String
+    var id: String { "\(self.label):\(self.value)" }
+}
+
+struct PreferenceItemNode: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let summaryTag: String?
+    let secondaryMeta: String?
+    let isPrimary: Bool
+    let detailBody: String
+    let attributes: [PreferenceDetailAttribute]
+    
+    var hasExpandableDetail: Bool {
+        !self.detailBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !self.attributes.isEmpty
+    }
+}
+
+struct PreferenceCategoryNode: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let symbolName: String
+    let accentHex: String
+    let items: [PreferenceItemNode]
+}
+
+struct PreferenceDomainNode: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let symbolName: String
+    let accentHex: String
+    let categories: [PreferenceCategoryNode]
+    
+    var totalItemCount: Int {
+        self.categories.reduce(0) { $0 + $1.items.count }
+    }
+}
+
+
+/// Hierarchical user preference browser inside Settings -> Preferences.
 struct MemoryStarMapSettingsView: View {
     
     @Environment(\.colorScheme) private var colorScheme
     
     @State private var memoryStore = CotMemoryStore.shared
-    @State private var scope: MemoryStarMapScope = .all
-    @State private var searchText: String = ""
-    @State private var focusedClusterID: String?
-    @State private var collapsedClusterIDs: Set<String> = []
-    @State private var selectedLeafID: String?
-    @State private var quickLookLeafID: String?
-    @Namespace private var scopePillNamespace
+    @State private var domains: [PreferenceDomainNode] = []
+    @State private var expandedDomainIDs: Set<String> = []
+    @State private var expandedCategoryIDs: Set<String> = []
+    @State private var expandedItemIDs: Set<String> = []
     
     
     var body: some View {
         let isDark = (self.colorScheme == .dark)
-        let tokens = DashPalette.editorialTokens(isDark: isDark)
-        let built = Self.buildConstellationClusters(
+        let cardSurface = isDark ? Color.white.opacity(0.055) : Color.white
+        let cardBorder = isDark ? Color.white.opacity(0.09) : Color.black.opacity(0.07)
+        let railColor = isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.10)
+        
+        ScrollView(.vertical, showsIndicators: true) {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                ForEach(self.domains) { domain in
+                    self.domainSection(
+                        domain: domain,
+                        isDark: isDark,
+                        cardSurface: cardSurface,
+                        cardBorder: cardBorder,
+                        railColor: railColor
+                    )
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 20)
+            .padding(.bottom, 28)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .onAppear {
+            self.memoryStore.reloadFromDatabase()
+            self.rebuildHierarchy(initializeExpansion: self.domains.isEmpty)
+        }
+        .onChange(of: self.memoryStore.revision) { _, _ in
+            self.rebuildHierarchy(initializeExpansion: false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
+            self.memoryStore.reloadFromDatabase()
+            self.rebuildHierarchy(initializeExpansion: true)
+        }
+    }
+    
+    
+    // MARK: - Level 1 Domain Card
+    
+    @ViewBuilder
+    private func domainSection(
+        domain: PreferenceDomainNode,
+        isDark: Bool,
+        cardSurface: Color,
+        cardBorder: Color,
+        railColor: Color
+    ) -> some View {
+        let accent = Color(hexString: domain.accentHex)
+        let isExpanded = self.expandedDomainIDs.contains(domain.id)
+        
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.16)) {
+                    if isExpanded {
+                        self.expandedDomainIDs.remove(domain.id)
+                    } else {
+                        self.expandedDomainIDs.insert(domain.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14)
+                    
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(accent.opacity(isDark ? 0.22 : 0.12))
+                        .frame(width: 24, height: 24)
+                        .overlay(
+                            Image(systemName: domain.symbolName)
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundStyle(accent)
+                        )
+                    
+                    Text(domain.title)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    
+                    Spacer(minLength: 8)
+                    
+                    Text("\(domain.categories.count) · \(domain.totalItemCount)")
+                        .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2.5)
+                        .background(Color.primary.opacity(isDark ? 0.08 : 0.045), in: Capsule())
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+            
+            if isExpanded {
+                Rectangle()
+                    .fill(cardBorder)
+                    .frame(height: 1)
+                    .padding(.horizontal, 14)
+                
+                if domain.categories.isEmpty {
+                    Text(AppLanguage.text("暂无记录条目", en: "No entries yet"))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 38)
+                        .padding(.vertical, 12)
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(domain.categories) { category in
+                            self.categoryBranch(
+                                category: category,
+                                isDark: isDark,
+                                railColor: railColor
+                            )
+                        }
+                    }
+                    .padding(.top, 6)
+                    .padding(.bottom, 10)
+                    .padding(.horizontal, 14)
+                }
+            }
+        }
+        .background(cardSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(cardBorder, lineWidth: 1)
+        )
+    }
+    
+    
+    // MARK: - Level 2 Sub-Category Branch
+    
+    @ViewBuilder
+    private func categoryBranch(
+        category: PreferenceCategoryNode,
+        isDark: Bool,
+        railColor: Color
+    ) -> some View {
+        let accent = Color(hexString: category.accentHex)
+        let isExpanded = self.expandedCategoryIDs.contains(category.id)
+        
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    if isExpanded {
+                        self.expandedCategoryIDs.remove(category.id)
+                    } else {
+                        self.expandedCategoryIDs.insert(category.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 12)
+                    
+                    Circle()
+                        .fill(accent)
+                        .frame(width: 7, height: 7)
+                    
+                    Image(systemName: category.symbolName)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(accent)
+                    
+                    Text(category.title)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    
+                    Spacer(minLength: 8)
+                    
+                    Text("\(category.items.count)")
+                        .font(.system(size: 10.5, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 7)
+                .padding(.horizontal, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(isDark ? 0.04 : 0.025))
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+            
+            if isExpanded {
+                HStack(alignment: .top, spacing: 0) {
+                    Rectangle()
+                        .fill(railColor)
+                        .frame(width: 1.5)
+                        .padding(.leading, 13)
+                        .padding(.vertical, 4)
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(category.items) { item in
+                            self.itemNodeRow(
+                                item: item,
+                                accent: accent,
+                                isDark: isDark,
+                                railColor: railColor
+                            )
+                        }
+                    }
+                    .padding(.leading, 12)
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+    
+    
+    // MARK: - Level 3 Preference Item & Level 4 Detail Drawer
+    
+    @ViewBuilder
+    private func itemNodeRow(
+        item: PreferenceItemNode,
+        accent: Color,
+        isDark: Bool,
+        railColor: Color
+    ) -> some View {
+        let canExpand = item.hasExpandableDetail
+        let isExpanded = canExpand && self.expandedItemIDs.contains(item.id)
+        
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                guard canExpand else { return }
+                withAnimation(.easeOut(duration: 0.14)) {
+                    if isExpanded {
+                        self.expandedItemIDs.remove(item.id)
+                    } else {
+                        self.expandedItemIDs.insert(item.id)
+                    }
+                }
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    if canExpand {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 11)
+                    } else {
+                        Circle()
+                            .fill(accent.opacity(0.75))
+                            .frame(width: 5, height: 5)
+                            .frame(width: 11)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title)
+                            .font(.system(size: 12.5, weight: item.isPrimary ? .semibold : .medium))
+                            .foregroundStyle(.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+                        
+                        if let secondary = item.secondaryMeta, !secondary.isEmpty {
+                            Text(secondary)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    
+                    Spacer(minLength: 8)
+                    
+                    if let badge = item.summaryTag, !badge.isEmpty {
+                        Text(badge)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(accent)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(accent.opacity(isDark ? 0.16 : 0.10), in: Capsule())
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(isExpanded ? accent.opacity(isDark ? 0.10 : 0.05) : Color.clear)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(canExpand ? .link : .default)
+            
+            if isExpanded {
+                HStack(alignment: .top, spacing: 0) {
+                    Rectangle()
+                        .fill(accent.opacity(0.35))
+                        .frame(width: 1.5)
+                        .padding(.leading, 14)
+                        .padding(.vertical, 4)
+                    
+                    VStack(alignment: .leading, spacing: 8) {
+                        let cleanBody = item.detailBody.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !cleanBody.isEmpty {
+                            Text(cleanBody)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.primary.opacity(0.88))
+                                .lineSpacing(3.5)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+                        
+                        if !item.attributes.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(item.attributes) { attr in
+                                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                        Text(attr.label)
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundStyle(.secondary)
+                                            .frame(width: 68, alignment: .leading)
+                                        
+                                        Text(attr.value)
+                                            .font(.system(size: 11, design: .rounded))
+                                            .foregroundStyle(.primary.opacity(0.85))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(Color.primary.opacity(isDark ? 0.045 : 0.03))
+                            )
+                        }
+                    }
+                    .padding(.leading, 10)
+                    .padding(.top, 4)
+                    .padding(.bottom, 6)
+                }
+            }
+        }
+    }
+    
+    
+    // MARK: - Hierarchy Construction
+    
+    private func rebuildHierarchy(initializeExpansion: Bool) {
+        let built = Self.buildPreferenceDomains(
             memories: self.memoryStore.memories,
             stocks: self.memoryStore.stocks,
             podcasts: self.memoryStore.podcasts,
             feeds: self.memoryStore.feeds,
-            creators: self.memoryStore.creators,
-            scope: self.scope,
-            collapsedClusterIDs: self.collapsedClusterIDs,
-            searchQuery: self.searchText
+            creators: self.memoryStore.creators
         )
-        let orderedLeafIDs = built.clusters.flatMap { $0.leaves.map(\.id) }
-        let selectedDetail = self.selectedLeafID.flatMap { built.detailsByLeafID[$0] }
-        let quickLookDetail = self.quickLookLeafID.flatMap { built.detailsByLeafID[$0] }
-        let totalNodeCount = built.clusters.reduce(0) { $0 + $1.leaves.count }
+        self.domains = built
+        if initializeExpansion {
+            self.expandedDomainIDs = Set(built.map(\.id))
+            self.expandedCategoryIDs = Set(built.flatMap(\.categories).map(\.id))
+            self.expandedItemIDs = Set(
+                built.flatMap(\.categories)
+                    .flatMap(\.items)
+                    .filter { $0.isPrimary && $0.hasExpandableDetail }
+                    .map(\.id)
+            )
+        }
+    }
+    
+    
+    private static let updatedTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
+    
+    
+    static func buildPreferenceDomains(
+        memories: [UserKYCMemoryRecord],
+        stocks: [WatchlistStockRecord],
+        podcasts: [StoredPodcastRecord],
+        feeds: [FollowedFeedRecord],
+        creators: [FollowedCreatorRecord]
+    ) -> [PreferenceDomainNode] {
+        let formatter = Self.updatedTimestampFormatter
         
-        ZStack {
-            VStack(spacing: 0) {
-                self.topToolbar(tokens: tokens, totalNodeCount: totalNodeCount, clusterCount: built.clusters.count)
-                
-                Rectangle()
-                    .fill(tokens.hairline)
-                    .frame(height: 1)
-                
-                ZStack(alignment: .bottom) {
-                    ConstellationStarMapView(
-                        hubTitle: AppLanguage.text("记忆星图", en: "Memory Map"),
-                        hubSubtitle: "\(totalNodeCount)",
-                        clusters: built.clusters,
-                        selectedLeafID: self.selectedLeafID,
-                        focusedClusterID: self.focusedClusterID,
-                        searchQuery: self.searchText,
-                        onSelectLeaf: { leafID in
-                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                                self.selectedLeafID = (self.selectedLeafID == leafID) ? nil : leafID
-                            }
-                        },
-                        onDoubleClickLeaf: { leafID in
-                            self.selectedLeafID = leafID
-                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
-                                self.quickLookLeafID = leafID
-                            }
-                        },
-                        onToggleCluster: { clusterID in
-                            withAnimation(.spring(response: 0.30, dampingFraction: 0.86)) {
-                                if self.focusedClusterID == clusterID {
-                                    self.focusedClusterID = nil
-                                } else {
-                                    self.focusedClusterID = clusterID
-                                    self.collapsedClusterIDs.remove(clusterID)
-                                }
-                            }
-                        },
-                        clusterContextMenu: { _ in EmptyView() },
-                        leafContextMenu: { leaf in
-                            Button {
-                                self.selectedLeafID = leaf.id
-                                self.quickLookLeafID = leaf.id
-                            } label: {
-                                Label(AppLanguage.text("查看详情", en: "Inspect"), systemImage: "eye")
-                            }
-                        }
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    
-                    if let selectedDetail {
-                        self.selectedSummaryPill(detail: selectedDetail, tokens: tokens)
-                            .padding(.bottom, 16)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
+        let activeMemories = memories.filter { !$0.isArchived }
+        func kycCategory(for dimension: KYCDimension) -> PreferenceCategoryNode? {
+            let items = activeMemories
+                .filter { $0.dimension == dimension }
+                .sorted { lhs, rhs in
+                    if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
+                    return lhs.updatedAt > rhs.updatedAt
                 }
-            }
-            
-            if let quickLookDetail,
-               let currentIndex = orderedLeafIDs.firstIndex(of: quickLookDetail.id)
-            {
-                let canPrev = currentIndex > 0
-                let canNext = currentIndex + 1 < orderedLeafIDs.count
-                StarMapQuickLookOverlay(
-                    title: quickLookDetail.title,
-                    subtitle: quickLookDetail.subtitle,
-                    canStepPrevious: canPrev,
-                    canStepNext: canNext,
-                    onPrevious: {
-                        guard canPrev else { return }
-                        let prevID = orderedLeafIDs[currentIndex - 1]
-                        self.selectedLeafID = prevID
-                        self.quickLookLeafID = prevID
-                    },
-                    onNext: {
-                        guard canNext else { return }
-                        let nextID = orderedLeafIDs[currentIndex + 1]
-                        self.selectedLeafID = nextID
-                        self.quickLookLeafID = nextID
-                    },
-                    onClose: {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                            self.quickLookLeafID = nil
-                        }
-                    },
-                    headerActions: {
-                        EmptyView()
-                    },
-                    bodyContent: {
-                        self.readOnlyDetailSheetBody(detail: quickLookDetail, tokens: tokens)
-                    }
+            guard !items.isEmpty else { return nil }
+            let nodes: [PreferenceItemNode] = items.map { record in
+                let confPct = "\(Int((record.confidence * 100).rounded()))%"
+                var attrs: [PreferenceDetailAttribute] = [
+                    PreferenceDetailAttribute(label: AppLanguage.text("置信度", en: "Confidence"), value: confPct),
+                    PreferenceDetailAttribute(label: AppLanguage.text("强化次数", en: "Reinforced"), value: "\(record.reinforcementCount)"),
+                    PreferenceDetailAttribute(label: AppLanguage.text("来源", en: "Source"), value: record.source),
+                    PreferenceDetailAttribute(label: AppLanguage.text("键名", en: "Key"), value: record.factKey),
+                    PreferenceDetailAttribute(label: AppLanguage.text("更新时间", en: "Updated"), value: formatter.string(from: record.updatedAt)),
+                ]
+                if let ref = record.evidenceRef, !ref.isEmpty {
+                    attrs.append(PreferenceDetailAttribute(label: AppLanguage.text("依据", en: "Evidence"), value: ref))
+                }
+                return PreferenceItemNode(
+                    id: "kyc:\(record.id)",
+                    title: record.title,
+                    summaryTag: record.isPinned ? AppLanguage.text("核心", en: "Core") : confPct,
+                    secondaryMeta: nil,
+                    isPrimary: record.isPinned,
+                    detailBody: record.detail,
+                    attributes: attrs
                 )
             }
+            return PreferenceCategoryNode(
+                id: "cat:kyc:\(dimension.rawValue)",
+                title: dimension.label,
+                symbolName: dimension.symbolName,
+                accentHex: Self.accentHex(for: dimension),
+                items: nodes
+            )
         }
-        .background(tokens.canvasTop)
-        .onAppear {
-            self.memoryStore.reloadFromDatabase()
+        
+        // Domain 1: 创作与表达偏好
+        let expressionCategories: [PreferenceCategoryNode] = [
+            kycCategory(for: .writingStyle),
+            kycCategory(for: .workflow),
+            kycCategory(for: .taboos),
+        ].compactMap { $0 }
+        
+        // Domain 2: 个人认知与目标
+        let cognitionCategories: [PreferenceCategoryNode] = [
+            kycCategory(for: .identity),
+            kycCategory(for: .cognition),
+            kycCategory(for: .goals),
+        ].compactMap { $0 }
+        
+        // Domain 3: 信息与关注偏好
+        var interestCategories: [PreferenceCategoryNode] = [
+            kycCategory(for: .informationDiet),
+            kycCategory(for: .finance),
+        ].compactMap { $0 }
+        
+        if !stocks.isEmpty {
+            let stockItems = stocks.map { stock in
+                let displayTitle = stock.name.isEmpty ? stock.symbol : stock.name
+                let changeBadge = stock.lastChangePct.map { String(format: "%+.2f%%", $0) }
+                return PreferenceItemNode(
+                    id: "stock:\(stock.instrumentID)",
+                    title: displayTitle,
+                    summaryTag: changeBadge ?? stock.symbol,
+                    secondaryMeta: stock.symbol,
+                    isPrimary: false,
+                    detailBody: stock.thesisNote,
+                    attributes: [
+                        PreferenceDetailAttribute(label: AppLanguage.text("代码", en: "Symbol"), value: stock.symbol),
+                        PreferenceDetailAttribute(label: AppLanguage.text("市场", en: "Market"), value: stock.namespace),
+                        PreferenceDetailAttribute(label: AppLanguage.text("来源", en: "Added By"), value: stock.addedBy),
+                    ]
+                )
+            }
+            interestCategories.append(PreferenceCategoryNode(
+                id: "cat:asset:stocks",
+                title: AppLanguage.text("关注标的", en: "Watchlist"),
+                symbolName: "chart.line.uptrend.xyaxis",
+                accentHex: "#2563EB",
+                items: stockItems
+            ))
         }
-    }
-    
-    
-    // MARK: - Top Control Strip (Zero Helper Copy)
-    
-    private func topToolbar(
-        tokens: StudioColorTokens,
-        totalNodeCount: Int,
-        clusterCount: Int
-    ) -> some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 3) {
-                ForEach(MemoryStarMapScope.allCases) { item in
-                    let isSelected = (self.scope == item)
-                    Button {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
-                            self.scope = item
-                            self.focusedClusterID = nil
-                        }
-                    } label: {
-                        Text(item.label)
-                            .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
-                            .foregroundStyle(isSelected ? tokens.primaryInk : tokens.primaryInk.opacity(0.62))
-                            .padding(.horizontal, 10)
-                            .frame(height: 26)
-                            .background {
-                                if isSelected {
-                                    Capsule()
-                                        .fill(tokens.card)
-                                        .matchedGeometryEffect(id: "memoryScopePill", in: self.scopePillNamespace)
-                                }
-                            }
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
+        
+        if !podcasts.isEmpty {
+            let podItems = podcasts.map { pod in
+                var attrs = [
+                    PreferenceDetailAttribute(label: AppLanguage.text("平台", en: "Platform"), value: pod.platform),
+                ]
+                if !pod.showName.isEmpty {
+                    attrs.append(PreferenceDetailAttribute(label: AppLanguage.text("节目", en: "Show"), value: pod.showName))
                 }
-            }
-            .padding(3)
-            .background(tokens.inset, in: Capsule())
-            
-            HStack(spacing: 4) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 9.5, weight: .semibold))
-                Text(AppLanguage.text("只读", en: "Read-Only"))
-                    .font(.system(size: 10.5, weight: .semibold))
-            }
-            .foregroundStyle(tokens.primaryInk.opacity(0.60))
-            .padding(.horizontal, 8)
-            .frame(height: 22)
-            .background(tokens.inset, in: Capsule())
-            
-            Spacer(minLength: 8)
-            
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.45))
-                
-                TextField(AppLanguage.text("检索节点", en: "Filter"), text: self.$searchText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11.5))
-                    .frame(width: 118)
-                
-                if !self.searchText.isEmpty {
-                    Button {
-                        self.searchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(tokens.primaryInk.opacity(0.42))
-                    }
-                    .buttonStyle(.plain)
+                if !pod.sourceURL.isEmpty {
+                    attrs.append(PreferenceDetailAttribute(label: AppLanguage.text("链接", en: "URL"), value: pod.sourceURL))
                 }
+                return PreferenceItemNode(
+                    id: "podcast:\(pod.id)",
+                    title: pod.title,
+                    summaryTag: pod.topicTag.isEmpty ? pod.platform : pod.topicTag,
+                    secondaryMeta: pod.showName.isEmpty ? pod.platform : pod.showName,
+                    isPrimary: pod.isSaved,
+                    detailBody: pod.notes,
+                    attributes: attrs
+                )
             }
-            .padding(.horizontal, 9)
-            .frame(height: 28)
-            .background(tokens.inset, in: Capsule())
-            .overlay(Capsule().strokeBorder(tokens.hairline, lineWidth: 0.75))
-            
-            Text("\(clusterCount) · \(totalNodeCount)")
-                .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
-                .foregroundStyle(tokens.primaryInk.opacity(0.55))
+            interestCategories.append(PreferenceCategoryNode(
+                id: "cat:asset:podcasts",
+                title: AppLanguage.text("播客节目", en: "Podcasts"),
+                symbolName: "mic.fill",
+                accentHex: "#9333EA",
+                items: podItems
+            ))
         }
-        .padding(.horizontal, 16)
-        .frame(height: 48)
-    }
-    
-    
-    // MARK: - Bottom Selection Capsule & Read-Only Inspector
-    
-    private func selectedSummaryPill(detail: MemoryStarMapLeafDetail, tokens: StudioColorTokens) -> some View {
-        let accent = Color(hexString: detail.accentHex)
-        return HStack(spacing: 10) {
-            Circle()
-                .fill(accent)
-                .frame(width: 7, height: 7)
-            
-            VStack(alignment: .leading, spacing: 1) {
-                Text(detail.title)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(tokens.primaryInk)
-                    .lineLimit(1)
-                if !detail.subtitle.isEmpty {
-                    Text(detail.subtitle)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(tokens.primaryInk.opacity(0.56))
-                        .lineLimit(1)
+        
+        if !feeds.isEmpty {
+            let feedItems = feeds.map { feed in
+                var attrs: [PreferenceDetailAttribute] = []
+                if !feed.author.isEmpty {
+                    attrs.append(PreferenceDetailAttribute(label: AppLanguage.text("作者", en: "Author"), value: feed.author))
                 }
-            }
-            
-            if let badge = detail.badgeText, !badge.isEmpty {
-                Text(badge)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(accent)
-                    .padding(.horizontal, 7)
-                    .frame(height: 20)
-                    .background(accent.opacity(0.12), in: Capsule())
-            }
-            
-            Button {
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
-                    self.quickLookLeafID = detail.id
+                if !feed.siteURL.isEmpty {
+                    attrs.append(PreferenceDetailAttribute(label: AppLanguage.text("主页", en: "Site"), value: feed.siteURL))
                 }
-            } label: {
-                HStack(spacing: 3) {
-                    Text(AppLanguage.text("详情", en: "Inspect"))
-                        .font(.system(size: 11, weight: .semibold))
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 9.5, weight: .semibold))
+                if !feed.feedURL.isEmpty {
+                    attrs.append(PreferenceDetailAttribute(label: "RSS", value: feed.feedURL))
                 }
-                .foregroundStyle(tokens.primaryInk)
-                .padding(.horizontal, 10)
-                .frame(height: 26)
-                .background(tokens.inset, in: Capsule())
+                return PreferenceItemNode(
+                    id: "feed:\(feed.id)",
+                    title: feed.title,
+                    summaryTag: feed.isPinned ? AppLanguage.text("置顶", en: "Pinned") : (feed.category.isEmpty ? nil : feed.category),
+                    secondaryMeta: feed.author.isEmpty ? feed.siteURL : feed.author,
+                    isPrimary: feed.isPinned,
+                    detailBody: feed.notes,
+                    attributes: attrs
+                )
             }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
+            interestCategories.append(PreferenceCategoryNode(
+                id: "cat:asset:feeds",
+                title: AppLanguage.text("订阅博客", en: "Feeds"),
+                symbolName: "dot.radiowaves.left.and.right",
+                accentHex: "#0D9488",
+                items: feedItems
+            ))
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(tokens.hairlineStrong, lineWidth: 0.85))
-        .shadow(color: Color.black.opacity(0.14), radius: 14, y: 6)
-        .padding(.horizontal, 24)
-    }
-    
-    
-    private func readOnlyDetailSheetBody(detail: MemoryStarMapLeafDetail, tokens: StudioColorTokens) -> some View {
-        let accent = Color(hexString: detail.accentHex)
-        return ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 8) {
-                    Text(detail.clusterTitle)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(accent)
-                        .padding(.horizontal, 9)
-                        .frame(height: 22)
-                        .background(accent.opacity(0.12), in: Capsule())
-                    
-                    if let metric = detail.primaryMetric, !metric.isEmpty {
-                        Text(metric)
-                            .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(tokens.primaryInk.opacity(0.76))
-                            .padding(.horizontal, 9)
-                            .frame(height: 22)
-                            .background(tokens.inset, in: Capsule())
-                    }
-                    
-                    Spacer(minLength: 0)
-                    
-                    Label(AppLanguage.text("只读档案", en: "Read-Only"), systemImage: "lock.fill")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(tokens.primaryInk.opacity(0.50))
+        
+        if !creators.isEmpty {
+            let creatorItems = creators.map { creator in
+                let handle = creator.handle.hasPrefix("@") ? creator.handle : "@\(creator.handle)"
+                let title = creator.displayName.isEmpty ? handle : creator.displayName
+                var attrs = [
+                    PreferenceDetailAttribute(label: AppLanguage.text("账号", en: "Handle"), value: handle),
+                ]
+                if !creator.focusTags.isEmpty {
+                    attrs.append(PreferenceDetailAttribute(label: AppLanguage.text("领域", en: "Focus"), value: creator.focusTags))
                 }
-                
-                if !detail.bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(detail.bodyText)
-                        .font(.system(size: 13.5))
-                        .foregroundStyle(tokens.primaryInk.opacity(0.92))
-                        .lineSpacing(5)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
-                        .background(tokens.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                if !creator.profileURL.isEmpty {
+                    attrs.append(PreferenceDetailAttribute(label: AppLanguage.text("主页", en: "Profile"), value: creator.profileURL))
                 }
-                
-                if !detail.attributes.isEmpty {
-                    VStack(spacing: 0) {
-                        ForEach(Array(detail.attributes.enumerated()), id: \.offset) { idx, pair in
-                            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                                Text(pair.label)
-                                    .font(.system(size: 11.5, weight: .medium))
-                                    .foregroundStyle(tokens.primaryInk.opacity(0.52))
-                                    .frame(width: 86, alignment: .leading)
-                                
-                                Text(pair.value)
-                                    .font(.system(size: 12, design: .rounded))
-                                    .foregroundStyle(tokens.primaryInk)
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 9)
-                            
-                            if idx + 1 < detail.attributes.count {
-                                Rectangle()
-                                    .fill(tokens.hairline)
-                                    .frame(height: 0.75)
-                                    .padding(.leading, 12)
-                            }
-                        }
-                    }
-                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
+                return PreferenceItemNode(
+                    id: "creator:\(creator.id)",
+                    title: title,
+                    summaryTag: creator.focusTags.isEmpty ? nil : creator.focusTags,
+                    secondaryMeta: handle,
+                    isPrimary: creator.isPinned,
+                    detailBody: creator.whyFollowing,
+                    attributes: attrs
+                )
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            interestCategories.append(PreferenceCategoryNode(
+                id: "cat:asset:creators",
+                title: AppLanguage.text("关注创作者", en: "Creators"),
+                symbolName: "person.2.fill",
+                accentHex: "#D97706",
+                items: creatorItems
+            ))
         }
+        
+        return [
+            PreferenceDomainNode(
+                id: "domain:expression",
+                title: AppLanguage.text("创作风格与表达习惯", en: "Writing & Workflow Preferences"),
+                symbolName: "pencil.and.outline",
+                accentHex: "#7C3AED",
+                categories: expressionCategories
+            ),
+            PreferenceDomainNode(
+                id: "domain:cognition",
+                title: AppLanguage.text("身份背景与思维偏好", en: "Identity & Cognitive Profile"),
+                symbolName: "brain.head.profile",
+                accentHex: "#2563EB",
+                categories: cognitionCategories
+            ),
+            PreferenceDomainNode(
+                id: "domain:interests",
+                title: AppLanguage.text("关注领域与信息食谱", en: "Interests & Information Diet"),
+                symbolName: "safari",
+                accentHex: "#0D9488",
+                categories: interestCategories
+            ),
+        ]
     }
     
     
@@ -429,8 +721,7 @@ struct MemoryStarMapSettingsView: View {
         searchQuery: String = ""
     ) -> (clusters: [StarMapClusterNode], detailsByLeafID: [String: MemoryStarMapLeafDetail]) {
         let needle = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        let formatter = Self.updatedTimestampFormatter
         
         var clusters: [StarMapClusterNode] = []
         var details: [String: MemoryStarMapLeafDetail] = [:]

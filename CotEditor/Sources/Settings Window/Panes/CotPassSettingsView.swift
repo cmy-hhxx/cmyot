@@ -160,6 +160,24 @@ nonisolated struct FlutedGlassPalette: Sendable, Equatable {
         deep: FlutedRGB(r: 0.031, g: 0.200, b: 0.239),
         midnight: FlutedRGB(r: 0.012, g: 0.063, b: 0.078)
     )
+    
+    
+    /// Gently softens the porcelain base toward the ice tint in dark mode while preserving full bright airiness in light mode.
+    func adapted(forDarkMode: Bool) -> FlutedGlassPalette {
+        guard forDarkMode else { return self }
+        let t = 0.22
+        return FlutedGlassPalette(
+            base: FlutedRGB(
+                r: self.base.r + (self.light.r - self.base.r) * t,
+                g: self.base.g + (self.light.g - self.base.g) * t,
+                b: self.base.b + (self.light.b - self.base.b) * t
+            ),
+            light: self.light,
+            mid: self.mid,
+            deep: self.deep,
+            midnight: self.midnight
+        )
+    }
 }
 
 
@@ -547,17 +565,68 @@ final class BrandLinePassEngine {
         var minLuma: Float = 1
         var maxLuma: Float = 0
         
-        for y in 0..<size {
-            for x in 0..<size {
-                let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) ?? .clear
-                let a = Float(c.alphaComponent)
-                let l = Float(0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent)
+        if let bitmapData = rep.bitmapData,
+           rep.bitsPerPixel == 32,
+           !rep.bitmapFormat.contains(.floatingPointSamples),
+           !rep.bitmapFormat.contains(.sixteenBitBigEndian),
+           !rep.bitmapFormat.contains(.sixteenBitLittleEndian)
+        {
+            let bpr = rep.bytesPerRow
+            let isAlphaFirst = rep.bitmapFormat.contains(.alphaFirst)
+            let isNonPremul = rep.bitmapFormat.contains(.alphaNonpremultiplied)
+            for y in 0..<size {
+                let rowBase = y * bpr
                 let row = size - 1 - y
-                lumaGrid[row * size + x] = l
-                alphaGrid[row * size + x] = a
-                if a > 0.3 {
-                    minLuma = min(minLuma, l)
-                    maxLuma = max(maxLuma, l)
+                let gridRowBase = row * size
+                for x in 0..<size {
+                    let px = rowBase + x * 4
+                    let rRaw: UInt8
+                    let gRaw: UInt8
+                    let bRaw: UInt8
+                    let aRaw: UInt8
+                    if isAlphaFirst {
+                        aRaw = bitmapData[px]
+                        rRaw = bitmapData[px + 1]
+                        gRaw = bitmapData[px + 2]
+                        bRaw = bitmapData[px + 3]
+                    } else {
+                        rRaw = bitmapData[px]
+                        gRaw = bitmapData[px + 1]
+                        bRaw = bitmapData[px + 2]
+                        aRaw = bitmapData[px + 3]
+                    }
+                    let a = Float(aRaw) / 255.0
+                    var r = Float(rRaw) / 255.0
+                    var g = Float(gRaw) / 255.0
+                    var b = Float(bRaw) / 255.0
+                    if !isNonPremul, a > 0.001 {
+                        let invA = min(1.0 / a, 255.0)
+                        r = min(1.0, r * invA)
+                        g = min(1.0, g * invA)
+                        b = min(1.0, b * invA)
+                    }
+                    let l = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                    lumaGrid[gridRowBase + x] = l
+                    alphaGrid[gridRowBase + x] = a
+                    if a > 0.3 {
+                        minLuma = min(minLuma, l)
+                        maxLuma = max(maxLuma, l)
+                    }
+                }
+            }
+        } else {
+            for y in 0..<size {
+                for x in 0..<size {
+                    let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) ?? .clear
+                    let a = Float(c.alphaComponent)
+                    let l = Float(0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent)
+                    let row = size - 1 - y
+                    lumaGrid[row * size + x] = l
+                    alphaGrid[row * size + x] = a
+                    if a > 0.3 {
+                        minLuma = min(minLuma, l)
+                        maxLuma = max(maxLuma, l)
+                    }
                 }
             }
         }
@@ -659,11 +728,56 @@ final class BrandLinePassEngine {
         NSGraphicsContext.restoreGraphicsState()
         
         var field = [Float](repeating: 0, count: size * size)
-        for y in 0..<size {
-            for x in 0..<size {
-                let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) ?? .black
-                let luma = Float(0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent)
-                field[(size - 1 - y) * size + x] = min(1, max(0, luma))
+        if let bitmapData = rep.bitmapData,
+           rep.bitsPerPixel == 32,
+           !rep.bitmapFormat.contains(.floatingPointSamples),
+           !rep.bitmapFormat.contains(.sixteenBitBigEndian),
+           !rep.bitmapFormat.contains(.sixteenBitLittleEndian)
+        {
+            let bpr = rep.bytesPerRow
+            let isAlphaFirst = rep.bitmapFormat.contains(.alphaFirst)
+            let isNonPremul = rep.bitmapFormat.contains(.alphaNonpremultiplied)
+            for y in 0..<size {
+                let rowBase = y * bpr
+                let gridRowBase = (size - 1 - y) * size
+                for x in 0..<size {
+                    let px = rowBase + x * 4
+                    let rRaw: UInt8
+                    let gRaw: UInt8
+                    let bRaw: UInt8
+                    let aRaw: UInt8
+                    if isAlphaFirst {
+                        aRaw = bitmapData[px]
+                        rRaw = bitmapData[px + 1]
+                        gRaw = bitmapData[px + 2]
+                        bRaw = bitmapData[px + 3]
+                    } else {
+                        rRaw = bitmapData[px]
+                        gRaw = bitmapData[px + 1]
+                        bRaw = bitmapData[px + 2]
+                        aRaw = bitmapData[px + 3]
+                    }
+                    let a = Float(aRaw) / 255.0
+                    var r = Float(rRaw) / 255.0
+                    var g = Float(gRaw) / 255.0
+                    var b = Float(bRaw) / 255.0
+                    if !isNonPremul, a > 0.001 {
+                        let invA = min(1.0 / a, 255.0)
+                        r = min(1.0, r * invA)
+                        g = min(1.0, g * invA)
+                        b = min(1.0, b * invA)
+                    }
+                    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                    field[gridRowBase + x] = min(1, max(0, luma))
+                }
+            }
+        } else {
+            for y in 0..<size {
+                for x in 0..<size {
+                    let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) ?? .black
+                    let luma = Float(0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent)
+                    field[(size - 1 - y) * size + x] = min(1, max(0, luma))
+                }
             }
         }
         return field
@@ -721,14 +835,18 @@ struct CotPassSettingsView: View {
     @State private var isCardHovered = false
     
     
+    private static let joinedDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy.MM.dd"
+        return formatter
+    }()
+    
     private var theme: CotPassTheme {
         CotPassTheme.resolve(index: self.styleIndex)
     }
     
     private var joinedText: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy.MM.dd"
-        return formatter.string(from: self.profileManager.activeProfile.createdAt)
+        Self.joinedDateFormatter.string(from: self.profileManager.activeProfile.createdAt)
     }
     
     
@@ -950,39 +1068,64 @@ nonisolated enum BlueFlutedGlassRenderer {
         let holeSin = sin(holeRot)
         
         // Precompute per-column fluted rib geometry & edge sheen
-        var colRib = [Double](repeating: 0, count: width)
         var colRefrX = [Double](repeating: 0, count: width)
         var colRefrDy = [Double](repeating: 0, count: width)
         var colSheenFactor = [Double](repeating: 0, count: width)
-        var colBaseY = [Double](repeating: 0, count: width)
         
         let invW = 1.0 / Double(width)
         let invH = 1.0 / Double(height)
+        let ribScale = min(1.35, max(0.55, 71.0 / max(24.0, ribCount)))
         
         for x in 0..<width {
             let u = (Double(x) + 0.5) * invW
             let scaled = u * ribCount
             let rib = (scaled - floor(scaled)) - 0.5
-            let rx = u + rib * (uniformBannerMode ? 0.014 : 0.018)
-            let dy = (rib * rib - 0.0833) * (uniformBannerMode ? 0.026 : 0.034)
+            let rx = u + rib * 0.018 * ribScale
+            let dy = (rib * rib - 0.0833) * 0.034
             let edge = pow(abs(rib) * 2.0, 10.0)
-            colRib[x] = rib
             colRefrX[x] = rx
             colRefrDy[x] = dy
-            colSheenFactor[x] = uniformBannerMode ? (rib * 0.54 + edge * 0.19) : (rib * 0.65 + edge * 0.24)
-            colBaseY[x] = 1.045 - 0.17 * rx + 0.075 * sin(rx * 5.0 + twoPhase)
+            colSheenFactor[x] = rib * 0.65 + edge * 0.24
         }
         
         @inline(__always)
-        func sampleDensity(rx: Double, py: Double, baseYHint: Double) -> Double {
+        func sampleDensity(rx: Double, py: Double) -> Double {
             if uniformBannerMode {
-                let px = rx + 0.018 * sin(py * 5.2 + twoPhase * 0.6)
-                let w1 = 0.5 + 0.5 * sin(px * 4.6 + phase + 0.42 * sin(py * 3.1 - phase * 0.7))
-                let w2 = 0.5 + 0.5 * cos(px * 7.4 - phase * 1.15 + py * 2.15)
-                let w3 = 0.5 + 0.5 * sin((px * 2.8 - py * 1.35) + phase * 0.65)
-                let vBias = 0.05 * (py - 0.45)
-                let raw = 0.42 * w1 + 0.30 * w2 + 0.28 * w3 + vBias
-                return min(0.58, max(0.24, 0.24 + raw * 0.34))
+                let uPan = 0.05 + rx * 0.90 + 0.024 * sin(py * 6.8 + twoPhase)
+                let vPan = 0.05 + py * 0.92
+                let bTrunk = Self.blob(
+                    px: uPan, py: vPan,
+                    cx: 0.54 + 0.14 * s - 0.06 * s2, cy: 0.74,
+                    invRx: 1.0 / 0.27, invRy: 1.0 / 0.50,
+                    cosA: cos(-0.15 - 0.46 * s), sinA: sin(-0.15 - 0.46 * s)
+                )
+                let bCrown = Self.blob(
+                    px: uPan, py: vPan,
+                    cx: 0.75 - 0.46 * s, cy: 0.20 - 0.08 * s2,
+                    invRx: 1.0 / 0.24, invRy: 1.0 / 0.25,
+                    cosA: cos(-0.46 + 0.40 * s), sinA: sin(-0.46 + 0.40 * s)
+                )
+                let bWest = Self.blob(
+                    px: uPan, py: vPan,
+                    cx: 0.16 + 0.07 * c, cy: 0.76 + 0.04 * s,
+                    invRx: 1.0 / 0.25, invRy: 1.0 / 0.36,
+                    cosA: cos(0.20 - 0.22 * c), sinA: sin(0.20 - 0.22 * c)
+                )
+                let baseY = 0.94 - 0.14 * uPan + 0.065 * sin(uPan * 5.0 + twoPhase)
+                let bd = (vPan - baseY) / 0.14
+                let bBase = exp(-(bd * bd))
+                let holeAngle = 0.10 + 0.45 * s
+                let holeFade = 1.0 - Self.smoothstep(0.14, 0.54, py)
+                let bHole = Self.blob(
+                    px: uPan, py: vPan,
+                    cx: 0.82 - 0.48 * s, cy: 0.24 - 0.07 * s,
+                    invRx: 1.0 / (0.21 + 0.025 * c), invRy: 1.0 / 0.25,
+                    cosA: cos(holeAngle), sinA: sin(holeAngle)
+                ) * holeFade
+                let raw = (bTrunk + 0.56 * bCrown + 0.52 * bWest + 0.90 * bBase) * (1.0 - 0.78 * bHole)
+                let bedWave = 0.045 * sin(uPan * 6.2 - phase * 1.3)
+                let lowerBed = (0.58 + bedWave) * Self.smoothstep(0.26, 0.52, py)
+                return max(raw, lowerBed)
             }
             let px = rx + 0.025 * sin(py * 7.0 + twoPhase)
             let trunk = Self.blob(px: px, py: py, cx: trunkCx, cy: trunkCy, invRx: trunkInvRx, invRy: trunkInvRy, cosA: trunkCos, sinA: trunkSin)
@@ -991,7 +1134,6 @@ nonisolated enum BlueFlutedGlassRenderer {
             let bd = (py - baseY) / 0.092
             let base = exp(-(bd * bd))
             let hole = Self.blob(px: px, py: py, cx: holeCx, cy: holeCy, invRx: holeInvRx, invRy: holeInvRy, cosA: holeCos, sinA: holeSin)
-            _ = baseYHint
             return (trunk + 0.56 * crown + 0.90 * base) * (1.0 - 0.78 * hole)
         }
         
@@ -1000,6 +1142,35 @@ nonisolated enum BlueFlutedGlassRenderer {
         let p2 = palette.mid
         let p3 = palette.deep
         let p4 = palette.midnight
+        
+        @inline(__always)
+        func sampleColor(rx: Double, py: Double) -> (Double, Double, Double) {
+            let density = sampleDensity(rx: rx, py: py)
+            var r = p0.r
+            var g = p0.g
+            var b = p0.b
+            
+            let k1 = Self.smoothstep(0.015, 0.20, density)
+            r += (p1.r - r) * k1
+            g += (p1.g - g) * k1
+            b += (p1.b - b) * k1
+            
+            let k2 = Self.smoothstep(0.16, 0.49, density)
+            r += (p2.r - r) * k2
+            g += (p2.g - g) * k2
+            b += (p2.b - b) * k2
+            
+            let k3 = Self.smoothstep(0.40, 0.73, density)
+            r += (p3.r - r) * k3
+            g += (p3.g - g) * k3
+            b += (p3.b - b) * k3
+            
+            let k4 = Self.smoothstep(0.62, 0.93, density)
+            r += (p4.r - r) * k4
+            g += (p4.g - g) * k4
+            b += (p4.b - b) * k4
+            return (r, g, b)
+        }
         
         let byteCount = width * height * 4
         var pixels = [UInt8](repeating: 255, count: byteCount)
@@ -1015,47 +1186,24 @@ nonisolated enum BlueFlutedGlassRenderer {
                 for x in 0..<width {
                     let rx = colRefrX[x]
                     let ry = v + colRefrDy[x]
-                    let baseHint = colBaseY[x]
                     
-                    // 5-tap vertical frost softening matching reference shader weights
-                    let d0 = sampleDensity(rx: rx, py: ry, baseYHint: baseHint)
-                    let d1 = sampleDensity(rx: rx, py: ry + 0.025, baseYHint: baseHint)
-                    let d2 = sampleDensity(rx: rx, py: ry - 0.025, baseYHint: baseHint)
-                    let d3 = sampleDensity(rx: rx, py: ry + 0.055, baseYHint: baseHint)
-                    let d4 = sampleDensity(rx: rx, py: ry - 0.055, baseYHint: baseHint)
-                    let density = d0 * 0.40 + (d1 + d2) * 0.24 + (d3 + d4) * 0.06
-                    
-                    // 5-stop sRGB palette ramp
-                    var r = p0.r
-                    var g = p0.g
-                    var b = p0.b
-                    
-                    let k1 = Self.smoothstep(0.015, 0.20, density)
-                    r += (p1.r - r) * k1
-                    g += (p1.g - g) * k1
-                    b += (p1.b - b) * k1
-                    
-                    let k2 = Self.smoothstep(0.16, 0.49, density)
-                    r += (p2.r - r) * k2
-                    g += (p2.g - g) * k2
-                    b += (p2.b - b) * k2
-                    
-                    let k3 = Self.smoothstep(0.40, 0.73, density)
-                    r += (p3.r - r) * k3
-                    g += (p3.g - g) * k3
-                    b += (p3.b - b) * k3
-                    
-                    let k4 = Self.smoothstep(0.62, 0.93, density)
-                    r += (p4.r - r) * k4
-                    g += (p4.g - g) * k4
-                    b += (p4.b - b) * k4
+                    // Color-space 5-tap vertical frost integration matching original LeiBox GLSL shader
+                    let c0 = sampleColor(rx: rx, py: ry)
+                    let c1 = sampleColor(rx: rx, py: ry + 0.025)
+                    let c2 = sampleColor(rx: rx, py: ry - 0.025)
+                    let c3 = sampleColor(rx: rx, py: ry + 0.055)
+                    let c4 = sampleColor(rx: rx, py: ry - 0.055)
+                    var r = c0.0 * 0.40 + (c1.0 + c2.0) * 0.24 + (c3.0 + c4.0) * 0.06
+                    var g = c0.1 * 0.40 + (c1.1 + c2.1) * 0.24 + (c3.1 + c4.1) * 0.06
+                    var b = c0.2 * 0.40 + (c1.2 + c2.2) * 0.24 + (c3.2 + c4.2) * 0.06
                     
                     // Chroma-aware specular rib facet sheen across every fluted palette
                     let maxC = max(r, max(g, b))
                     let minC = min(r, min(g, b))
                     let luma = (r + g + b) / 3.0
                     let chromaMask = (1.0 - luma) * Self.smoothstep(0.025, 0.20, maxC - minC)
-                    let sheen = colSheenFactor[x] * chromaMask
+                    let ribMask = uniformBannerMode ? max(chromaMask, 0.22 * (1.0 - 0.55 * luma)) : chromaMask
+                    let sheen = colSheenFactor[x] * ribMask
                     r = max(0.0, min(1.0, r + (0.018 + 0.014 * p1.r) * sheen))
                     g = max(0.0, min(1.0, g + (0.018 + 0.014 * p1.g) * sheen))
                     b = max(0.0, min(1.0, b + (0.018 + 0.014 * p1.b) * sheen))
@@ -1171,6 +1319,9 @@ private final class FlutedPrismMetalPipeline {
         float rx,
         float py,
         float phase,
+        float s,
+        float c,
+        float s2,
         float twoPhase,
         float uniformMode,
         float2 trunkC, float2 trunkInvR, float trunkCos, float trunkSin,
@@ -1178,15 +1329,47 @@ private final class FlutedPrismMetalPipeline {
         float2 holeC,  float2 holeInvR,  float holeCos,  float holeSin
     ) {
         if (uniformMode > 0.5) {
-            // Balanced multi-lobe harmonic ribbon distribution across full horizontal width
-            // (eliminates blown-out pure-white voids on wide hero banners).
-            float px = rx + 0.018 * sin(py * 5.2 + twoPhase * 0.6);
-            float w1 = 0.5 + 0.5 * sin(px * 4.6 + phase + 0.42 * sin(py * 3.1 - phase * 0.7));
-            float w2 = 0.5 + 0.5 * cos(px * 7.4 - phase * 1.15 + py * 2.15);
-            float w3 = 0.5 + 0.5 * sin((px * 2.8 - py * 1.35) + phase * 0.65);
-            float vBias = 0.05 * (py - 0.45);
-            float raw = 0.42 * w1 + 0.30 * w2 + 0.28 * w3 + vBias;
-            return clamp(0.24 + raw * 0.34, 0.24, 0.58);
+            // Panoramic LeiBox fluid folds with airy upper-sky breathing space & deep cobalt lower bed
+            float uPan = 0.05 + rx * 0.90 + 0.024 * sin(py * 6.8 + twoPhase);
+            float vPan = 0.05 + py * 0.92;
+            float2 pPan = float2(uPan, vPan);
+            float trunk = prismBlob(
+                pPan,
+                float2(0.54 + 0.14 * s - 0.06 * s2, 0.74),
+                float2(1.0 / 0.27, 1.0 / 0.50),
+                cos(-0.15 - 0.46 * s),
+                sin(-0.15 - 0.46 * s)
+            );
+            float crown = prismBlob(
+                pPan,
+                float2(0.75 - 0.46 * s, 0.20 - 0.08 * s2),
+                float2(1.0 / 0.24, 1.0 / 0.25),
+                cos(-0.46 + 0.40 * s),
+                sin(-0.46 + 0.40 * s)
+            );
+            float west = prismBlob(
+                pPan,
+                float2(0.16 + 0.07 * c, 0.76 + 0.04 * s),
+                float2(1.0 / 0.25, 1.0 / 0.36),
+                cos(0.20 - 0.22 * c),
+                sin(0.20 - 0.22 * c)
+            );
+            float baseY = 0.94 - 0.14 * uPan + 0.065 * sin(uPan * 5.0 + twoPhase);
+            float bd = (vPan - baseY) / 0.14;
+            float base = exp(-(bd * bd));
+            float hAngle = 0.10 + 0.45 * s;
+            float holeFade = 1.0 - smoothstep(0.14, 0.54, py);
+            float hole = prismBlob(
+                pPan,
+                float2(0.82 - 0.48 * s, 0.24 - 0.07 * s),
+                float2(1.0 / (0.21 + 0.025 * c), 1.0 / 0.25),
+                cos(hAngle),
+                sin(hAngle)
+            ) * holeFade;
+            float raw = (trunk + 0.56 * crown + 0.52 * west + 0.90 * base) * (1.0 - 0.78 * hole);
+            float bedWave = 0.045 * sin(uPan * 6.2 - phase * 1.3);
+            float lowerBed = (0.58 + bedWave) * smoothstep(0.26, 0.52, py);
+            return max(raw, lowerBed);
         }
         float px = rx + 0.025 * sin(py * 7.0 + twoPhase);
         float2 p = float2(px, py);
@@ -1197,6 +1380,33 @@ private final class FlutedPrismMetalPipeline {
         float base = exp(-(bd * bd));
         float hole = prismBlob(p, holeC, holeInvR, holeCos, holeSin);
         return (trunk + 0.56 * crown + 0.90 * base) * (1.0 - 0.78 * hole);
+    }
+    
+    inline float3 samplePrismColor(
+        float rx,
+        float py,
+        float phase,
+        float s,
+        float c,
+        float s2,
+        float twoPhase,
+        constant PrismUniforms& u,
+        float2 trunkC, float2 trunkInvR, float trunkCos, float trunkSin,
+        float2 crownC, float2 crownInvR, float crownCos, float crownSin,
+        float2 holeC,  float2 holeInvR,  float holeCos,  float holeSin
+    ) {
+        float density = samplePrismDensity(
+            rx, py, phase, s, c, s2, twoPhase, u.uniformMode,
+            trunkC, trunkInvR, trunkCos, trunkSin,
+            crownC, crownInvR, crownCos, crownSin,
+            holeC, holeInvR, holeCos, holeSin
+        );
+        float3 col = u.p0.rgb;
+        col = mix(col, u.p1.rgb, smoothstep(0.015, 0.20, density));
+        col = mix(col, u.p2.rgb, smoothstep(0.16,  0.49, density));
+        col = mix(col, u.p3.rgb, smoothstep(0.40,  0.73, density));
+        col = mix(col, u.p4.rgb, smoothstep(0.62,  0.93, density));
+        return col;
     }
     
     fragment float4 flutedPrismFragment(VertexOut in [[stage_in]], constant PrismUniforms& u [[buffer(0)]]) {
@@ -1232,39 +1442,37 @@ private final class FlutedPrismMetalPipeline {
         float vCoord = in.uv.y;
         float scaled = uCoord * u.ribCount;
         float rib = fract(scaled) - 0.5;
-        float rx = uCoord + rib * (isBanner ? 0.014 : 0.018);
-        float dy = (rib * rib - 0.0833) * (isBanner ? 0.026 : 0.034);
+        float ribScale = clamp(71.0 / max(24.0, u.ribCount), 0.55, 1.35);
+        float rx = uCoord + rib * 0.018 * ribScale;
+        float dy = (rib * rib - 0.0833) * 0.034;
         float edge = pow(abs(rib) * 2.0, 10.0);
-        float sheenFactor = isBanner ? (rib * 0.54 + edge * 0.19) : (rib * 0.65 + edge * 0.24);
+        float sheenFactor = rib * 0.65 + edge * 0.24;
         float ry = vCoord + dy;
         
-        float d0 = samplePrismDensity(rx, ry, phase, twoPhase, u.uniformMode, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
-        float d1 = samplePrismDensity(rx, ry + 0.025, phase, twoPhase, u.uniformMode, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
-        float d2 = samplePrismDensity(rx, ry - 0.025, phase, twoPhase, u.uniformMode, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
-        float d3 = samplePrismDensity(rx, ry + 0.055, phase, twoPhase, u.uniformMode, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
-        float d4 = samplePrismDensity(rx, ry - 0.055, phase, twoPhase, u.uniformMode, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin);
-        float density = d0 * 0.40 + (d1 + d2) * 0.24 + (d3 + d4) * 0.06;
-        
-        float3 col = u.p0.rgb;
-        col = mix(col, u.p1.rgb, smoothstep(0.015, 0.20, density));
-        col = mix(col, u.p2.rgb, smoothstep(0.16,  0.49, density));
-        col = mix(col, u.p3.rgb, smoothstep(0.40,  0.73, density));
-        col = mix(col, u.p4.rgb, smoothstep(0.62,  0.93, density));
+        float3 col = samplePrismColor(rx, ry, phase, s, c, s2, twoPhase, u, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin) * 0.40;
+        col += (
+            samplePrismColor(rx, ry + 0.025, phase, s, c, s2, twoPhase, u, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin)
+            + samplePrismColor(rx, ry - 0.025, phase, s, c, s2, twoPhase, u, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin)
+        ) * 0.24;
+        col += (
+            samplePrismColor(rx, ry + 0.055, phase, s, c, s2, twoPhase, u, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin)
+            + samplePrismColor(rx, ry - 0.055, phase, s, c, s2, twoPhase, u, trunkC, trunkInvR, trunkCos, trunkSin, crownC, crownInvR, crownCos, crownSin, holeC, holeInvR, holeCos, holeSin)
+        ) * 0.06;
         
         float maxC = max(col.r, max(col.g, col.b));
         float minC = min(col.r, min(col.g, col.b));
         float luma = (col.r + col.g + col.b) / 3.0;
         float chromaMask = (1.0 - luma) * smoothstep(0.025, 0.20, maxC - minC);
-        float ribMask = isBanner ? (0.45 + 0.55 * chromaMask) : chromaMask;
+        float ribMask = isBanner ? max(chromaMask, 0.22 * (1.0 - 0.55 * luma)) : chromaMask;
         float sheen = sheenFactor * ribMask;
-        col += (0.018 + 0.016 * u.p1.rgb) * sheen;
+        col += (0.018 + 0.014 * u.p1.rgb) * sheen;
         
-        // Silky cursor-reactive optical prism bloom (restrained in banner mode to avoid white washout)
+        // Silky cursor-reactive optical prism bloom (restrained in banner mode to keep airy porcelain highlight crisp)
         float2 sp = float2(u.specX, u.specY);
         float dist = length((in.uv - sp) * (isBanner ? float2(1.35, 0.90) : float2(1.15, 0.85)));
         float glow = exp(-dist * dist * (isBanner ? 4.4 : 5.2))
-            * (isBanner ? (0.022 + 0.085 * u.hoverStrength) : (0.06 + 0.20 * u.hoverStrength));
-        float3 glowTint = isBanner ? mix(u.p1.rgb, float3(1.0), 0.24) : mix(float3(1.0), u.p1.rgb, 0.35);
+            * (isBanner ? (0.018 + 0.075 * u.hoverStrength) : (0.06 + 0.20 * u.hoverStrength));
+        float3 glowTint = isBanner ? mix(u.p1.rgb, float3(1.0), 0.22) : mix(float3(1.0), u.p1.rgb, 0.35);
         col += glowTint * glow;
         
         return float4(clamp(col, 0.0, 1.0), 1.0);
@@ -1296,6 +1504,102 @@ private final class FlutedPrismMetalPipeline {
 }
 
 
+private final class OcclusionAwareMTKView: MTKView {
+    
+    var wantsAnimation: Bool = true {
+        didSet {
+            if self.wantsAnimation != oldValue {
+                self.updatePauseState()
+            }
+        }
+    }
+    
+    private var occlusionObserver: NSObjectProtocol?
+    private var activeObserver: NSObjectProtocol?
+    private var resignObserver: NSObjectProtocol?
+    
+    
+    override init(frame frameRect: CGRect, device: (any MTLDevice)?) {
+        super.init(frame: frameRect, device: device)
+        self.activeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updatePauseState() }
+        }
+        self.resignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updatePauseState() }
+        }
+    }
+    
+    
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    
+    isolated deinit {
+        if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
+        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+    }
+    
+    
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
+            self.occlusionObserver = nil
+        }
+        if let window = self.window {
+            self.occlusionObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updatePauseState() }
+            }
+        }
+        self.updatePauseState()
+    }
+    
+    
+    override func viewDidHide() {
+        super.viewDidHide()
+        self.updatePauseState()
+    }
+    
+    
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        self.updatePauseState()
+    }
+    
+    
+    func updatePauseState() {
+        let isVisible = self.window?.occlusionState.contains(.visible) ?? false
+        let isActiveApp = NSApp?.isActive ?? true
+        let shouldPause = !self.wantsAnimation
+            || AnimationConstants.isReducedMotionEnabled
+            || self.isHiddenOrHasHiddenAncestor
+            || !isVisible
+            || !isActiveApp
+        if self.isPaused != shouldPause {
+            self.isPaused = shouldPause
+            self.enableSetNeedsDisplay = shouldPause
+            if shouldPause {
+                self.setNeedsDisplay(self.bounds)
+            }
+        }
+    }
+}
+
+
 private struct FlutedPrismMetalView: NSViewRepresentable {
     
     let palette: FlutedGlassPalette
@@ -1311,13 +1615,13 @@ private struct FlutedPrismMetalView: NSViewRepresentable {
     }
     
     
-    func makeNSView(context: Context) -> MTKView {
-        let mtkView = MTKView(frame: .zero, device: FlutedPrismMetalPipeline.shared.device)
+    func makeNSView(context: Context) -> OcclusionAwareMTKView {
+        let mtkView = OcclusionAwareMTKView(frame: .zero, device: FlutedPrismMetalPipeline.shared.device)
         mtkView.colorPixelFormat = .bgra8Unorm
         mtkView.framebufferOnly = true
         mtkView.preferredFramesPerSecond = 60
-        mtkView.isPaused = !self.animate || AnimationConstants.isReducedMotionEnabled
-        mtkView.enableSetNeedsDisplay = mtkView.isPaused
+        mtkView.wantsAnimation = self.animate
+        mtkView.updatePauseState()
         mtkView.clearColor = MTLClearColor(red: 0.02, green: 0.04, blue: 0.09, alpha: 1.0)
         mtkView.delegate = context.coordinator
         mtkView.wantsLayer = true
@@ -1326,7 +1630,7 @@ private struct FlutedPrismMetalView: NSViewRepresentable {
     }
     
     
-    func updateNSView(_ mtkView: MTKView, context: Context) {
+    func updateNSView(_ mtkView: OcclusionAwareMTKView, context: Context) {
         let coord = context.coordinator
         coord.targetPalette = self.palette
         coord.ribCount = Float(self.ribCount)
@@ -1335,18 +1639,12 @@ private struct FlutedPrismMetalView: NSViewRepresentable {
         coord.targetHover = self.isHovered ? 1.0 : 0.0
         coord.uniformMode = self.uniformBannerMode ? 1.0 : 0.0
         
-        let shouldPause = !self.animate || AnimationConstants.isReducedMotionEnabled
-        if mtkView.isPaused != shouldPause {
-            mtkView.isPaused = shouldPause
-            mtkView.enableSetNeedsDisplay = shouldPause
-        }
-        if shouldPause {
-            mtkView.setNeedsDisplay(mtkView.bounds)
-        }
+        mtkView.wantsAnimation = self.animate
+        mtkView.updatePauseState()
     }
     
     
-    static func dismantleNSView(_ mtkView: MTKView, coordinator: Coordinator) {
+    static func dismantleNSView(_ mtkView: OcclusionAwareMTKView, coordinator: Coordinator) {
         mtkView.isPaused = true
         mtkView.delegate = nil
     }
@@ -1459,43 +1757,49 @@ struct LeiBoxFlutedPrismView: View {
     var specularPoint: UnitPoint = UnitPoint(x: 0.5, y: 0.5)
     var isHovered: Bool = false
     var uniformBannerMode: Bool = false
+    var darkModeAdapt: Bool = false
     
     
     var body: some View {
+        let effectivePalette = self.theme.flutedPalette.adapted(forDarkMode: self.darkModeAdapt)
         Color.clear
             .overlay {
-                if FlutedPrismMetalPipeline.shared.pipelineState != nil {
-                    FlutedPrismMetalView(
-                        palette: self.theme.flutedPalette,
+                Group {
+                    if FlutedPrismMetalPipeline.shared.pipelineState != nil {
+                        FlutedPrismMetalView(
+                            palette: effectivePalette,
+                            ribCount: self.ribCount,
+                            animate: self.animate,
+                            specularPoint: self.specularPoint,
+                            isHovered: self.isHovered,
+                            uniformBannerMode: self.uniformBannerMode
+                        )
+                    } else if let fallback = BlueFlutedGlassRenderer.renderFrame(
+                        time: 4.2,
+                        palette: effectivePalette,
+                        width: self.renderWidth,
+                        height: self.renderHeight,
                         ribCount: self.ribCount,
-                        animate: self.animate,
-                        specularPoint: self.specularPoint,
-                        isHovered: self.isHovered,
                         uniformBannerMode: self.uniformBannerMode
-                    )
-                } else if let fallback = BlueFlutedGlassRenderer.renderFrame(
-                    time: 4.2,
-                    palette: self.theme.flutedPalette,
-                    width: self.renderWidth,
-                    height: self.renderHeight,
-                    ribCount: self.ribCount,
-                    uniformBannerMode: self.uniformBannerMode
-                ) {
-                    Image(decorative: fallback, scale: 1.0)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFill()
-                } else {
-                    LinearGradient(
-                        colors: [
-                            self.theme.flutedPalette.mid.swiftUIColor,
-                            self.theme.flutedPalette.deep.swiftUIColor,
-                            self.theme.flutedPalette.midnight.swiftUIColor,
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
+                    ) {
+                        Image(decorative: fallback, scale: 1.0)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFill()
+                    } else {
+                        LinearGradient(
+                            colors: [
+                                effectivePalette.mid.swiftUIColor,
+                                effectivePalette.deep.swiftUIColor,
+                                effectivePalette.midnight.swiftUIColor,
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    }
                 }
+                .blur(radius: 0.95)
+                .scaleEffect(1.016)
             }
             .clipped()
     }
@@ -1537,7 +1841,12 @@ nonisolated enum CotPassArtEngine {
     }
     
     private final class StockCache: @unchecked Sendable {
-        let cache = NSCache<NSString, CGImage>()
+        let cache: NSCache<NSString, CGImage> = {
+            let c = NSCache<NSString, CGImage>()
+            c.countLimit = 12
+            c.totalCostLimit = 32 * 1024 * 1024
+            return c
+        }()
     }
     
     private static let stockCache = StockCache()
@@ -1684,7 +1993,7 @@ nonisolated enum CotPassArtEngine {
         }
         
         guard let image = ctx.makeImage() else { return nil }
-        Self.stockCache.cache.setObject(image, forKey: cacheKey)
+        Self.stockCache.cache.setObject(image, forKey: cacheKey, cost: max(4096, w * h * 4))
         return image
     }
     

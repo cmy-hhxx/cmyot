@@ -39,6 +39,7 @@ nonisolated enum AIEndpointStore {
     private static let cacheLock = NSLock()
     private nonisolated(unsafe) static var cachedProfilesData: Data?
     private nonisolated(unsafe) static var cachedProfiles: [AIEndpointProfile]?
+    private nonisolated(unsafe) static var didCheckLegacyMigration: Bool = false
     
     // MARK: Public Computed Properties
     
@@ -90,18 +91,39 @@ nonisolated enum AIEndpointStore {
     /// The service in use, falling back to the first one when the stored id is stale.
     static var activeProfile: AIEndpointProfile? {
         
-        self.profiles.first { $0.id == self.activeID } ?? self.profiles.first
+        let profiles = self.profiles
+        return self.resolveActiveProfile(from: profiles)
     }
     
     
     /// The configuration every AI feature uses.
     static var activeConfiguration: AIConfiguration {
         
-        self.migrateLegacyConfigurationIfNeeded()
+        var profiles = self.profiles
+        if profiles.isEmpty {
+            self.cacheLock.lock()
+            let shouldCheckLegacy = !self.didCheckLegacyMigration
+            self.cacheLock.unlock()
+            if shouldCheckLegacy {
+                self.migrateLegacyConfigurationIfNeeded()
+                profiles = self.profiles
+            }
+        }
         
-        guard let profile = self.activeProfile else { return .empty }
+        guard let profile = self.resolveActiveProfile(from: profiles) else { return .empty }
         
         return profile.configuration(apiKey: AIKeychain.apiKey(for: profile.id))
+    }
+    
+    
+    private static func resolveActiveProfile(from profiles: [AIEndpointProfile]) -> AIEndpointProfile? {
+        
+        if let activeID = self.activeID,
+           let matched = profiles.first(where: { $0.id == activeID })
+        {
+            return matched
+        }
+        return profiles.first
     }
     
     
@@ -164,7 +186,12 @@ nonisolated enum AIEndpointStore {
     /// from the places that only need the configuration.
     static func migrateLegacyConfigurationIfNeeded() {
         
-        guard self.profiles.isEmpty else { return }
+        guard self.profiles.isEmpty else {
+            self.cacheLock.lock()
+            self.didCheckLegacyMigration = true
+            self.cacheLock.unlock()
+            return
+        }
         
         let defaults = UserDefaults.standard
         let endpoint = defaults[.aiEndpoint] ?? .openAIChatCompletions
@@ -172,7 +199,12 @@ nonisolated enum AIEndpointStore {
         let model = defaults[.aiModel]
         let apiKey = AIKeychain.legacyAPIKey
         
-        guard !baseURL.isEmpty || !model.isEmpty || !apiKey.isEmpty else { return }
+        guard !baseURL.isEmpty || !model.isEmpty || !apiKey.isEmpty else {
+            self.cacheLock.lock()
+            self.didCheckLegacyMigration = true
+            self.cacheLock.unlock()
+            return
+        }
         
         // The name stays empty: the profile falls back to the service or the host, which reads
         // better than the "custom" preset label the old configuration cannot distinguish from.
@@ -182,5 +214,8 @@ nonisolated enum AIEndpointStore {
         self.profiles = [profile]
         AIKeychain.setAPIKey(apiKey, for: profile.id)
         self.activeID = profile.id
+        self.cacheLock.lock()
+        self.didCheckLegacyMigration = true
+        self.cacheLock.unlock()
     }
 }

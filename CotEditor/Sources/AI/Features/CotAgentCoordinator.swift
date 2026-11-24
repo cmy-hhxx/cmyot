@@ -20,6 +20,7 @@
 //
 
 import AppKit
+import Darwin
 import Foundation
 import Observation
 
@@ -106,11 +107,22 @@ nonisolated struct LiveWorkspaceSnapshot: Codable, Sendable, Equatable {
 @MainActor @Observable
 final class CotAgentCoordinator {
     
+    private struct DBFileSignature: Equatable {
+        var dbMtimeSec: Int
+        var dbMtimeNsec: Int
+        var dbSize: off_t
+        var walMtimeSec: Int
+        var walMtimeNsec: Int
+        var walSize: off_t
+    }
+    
     static let shared = CotAgentCoordinator()
     
     private let database: CotLocalDatabase
     private let memoryStore: CotMemoryStore
     private var pollTask: Task<Void, Never>?
+    @ObservationIgnored private var activationObserver: NSObjectProtocol?
+    @ObservationIgnored private var lastPolledDBSignature: DBFileSignature?
     private(set) var lastWorkspaceSnapshot: LiveWorkspaceSnapshot?
     
     
@@ -129,6 +141,9 @@ final class CotAgentCoordinator {
     
     isolated deinit {
         self.pollTask?.cancel()
+        if let observer = self.activationObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
     
     
@@ -144,14 +159,21 @@ final class CotAgentCoordinator {
             let focusedEditor = docVC.focusedEditorViewController
             let panes = docVC.editorViewControllers.enumerated().map { idx, editorVC in
                 let tabs = editorVC.tabs.map { tab in
-                    let rawText = tab.document.textStorage.string
+                    let excerpt: String
+                    if tab.isBoard {
+                        excerpt = ""
+                    } else {
+                        let ns = tab.document.textStorage.mutableString as NSString
+                        let range = ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(ns.length, 240)))
+                        excerpt = ns.substring(with: range)
+                    }
                     return LiveWorkspaceSnapshot.PaneTabSummary(
                         title: tab.title,
                         isSelected: tab === editorVC.selectedTab,
                         boardKind: tab.boardState?.kind.rawValue,
                         boardQuery: tab.boardState?.query,
                         syntax: tab.document.syntaxName,
-                        excerpt: tab.isBoard ? "" : String(rawText.prefix(240))
+                        excerpt: excerpt
                     )
                 }
                 return LiveWorkspaceSnapshot.PaneSummary(
@@ -167,7 +189,10 @@ final class CotAgentCoordinator {
         let activeTab = frontDocVC?.focusedEditorViewController?.selectedTab
         let activeExcerpt = activeTab.flatMap { tab -> String? in
             guard !tab.isBoard else { return nil }
-            let text = tab.document.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ns = tab.document.textStorage.mutableString as NSString
+            guard ns.length > 0 else { return nil }
+            let range = ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(ns.length, 1500)))
+            let text = ns.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : String(text.prefix(1200))
         }
         
@@ -411,13 +436,76 @@ final class CotAgentCoordinator {
     
     private func startCommandQueueLoop() {
         self.pollTask?.cancel()
-        self.pollTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(1200))
-                guard !Task.isCancelled else { break }
-                await self?.drainCommandQueueNow()
+        if let existing = self.activationObserver {
+            NotificationCenter.default.removeObserver(existing)
+            self.activationObserver = nil
+        }
+        self.activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.drainCommandQueueIfDatabaseChanged()
             }
         }
+        
+        self.pollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                let delayMs: Int = if let self {
+                    self.adaptivePollIntervalMilliseconds()
+                } else {
+                    4500
+                }
+                try? await Task.sleep(for: .milliseconds(delayMs))
+                guard !Task.isCancelled else { break }
+                await self?.drainCommandQueueIfDatabaseChanged()
+            }
+        }
+    }
+    
+    
+    private func adaptivePollIntervalMilliseconds() -> Int {
+        if !PiKernelManager.shared.activeBotRuns.isEmpty {
+            return 1200
+        }
+        let hasVisibleTerminal = NSApp?.orderedWindows.contains {
+            ($0.windowController as? DocumentWindowController)?.workspaceContentViewController?.isTerminalVisible == true
+        } ?? false
+        if hasVisibleTerminal {
+            return 1200
+        }
+        if NSApp?.isActive == false {
+            return 12_000
+        }
+        return 4500
+    }
+    
+    
+    private func currentDatabaseFileSignature() -> DBFileSignature? {
+        let dbPath = self.database.databaseURL.path(percentEncoded: false)
+        var dbStat = stat()
+        guard stat(dbPath, &dbStat) == 0 else { return nil }
+        var walStat = stat()
+        let hasWal = stat(dbPath + "-wal", &walStat) == 0
+        return DBFileSignature(
+            dbMtimeSec: dbStat.st_mtimespec.tv_sec,
+            dbMtimeNsec: dbStat.st_mtimespec.tv_nsec,
+            dbSize: dbStat.st_size,
+            walMtimeSec: hasWal ? walStat.st_mtimespec.tv_sec : 0,
+            walMtimeNsec: hasWal ? walStat.st_mtimespec.tv_nsec : 0,
+            walSize: hasWal ? walStat.st_size : 0
+        )
+    }
+    
+    
+    private func drainCommandQueueIfDatabaseChanged() async {
+        let signature = self.currentDatabaseFileSignature()
+        if let signature, let last = self.lastPolledDBSignature, signature == last {
+            return
+        }
+        await self.drainCommandQueueNow()
+        self.lastPolledDBSignature = self.currentDatabaseFileSignature() ?? signature
     }
     
     

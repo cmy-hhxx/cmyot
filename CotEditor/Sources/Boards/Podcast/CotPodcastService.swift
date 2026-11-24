@@ -108,7 +108,7 @@ final class CotPodcastService {
             isSaved: !currentlySaved
         )
         self.database.upsertStoredPodcast(record)
-        self.memoryStore.reloadFromDatabase()
+        self.memoryStore.reloadPodcasts()
         self.reloadFromDatabase()
     }
     
@@ -146,8 +146,9 @@ final class CotPodcastService {
         self.persistPosition(force: true)
         self.tearDownPlayer()
         
-        let existingPos = self.database.fetchStoredPodcasts()
-            .first(where: { $0.id == episode.id })?.playbackPositionSec ?? 0
+        let existingPos = self.historyEpisodes.first(where: { $0.id == episode.id })?.playbackPositionSec
+            ?? self.savedEpisodes.first(where: { $0.id == episode.id })?.playbackPositionSec
+            ?? 0
         let keepSaved = self.isSaved(episode.id)
         self.database.upsertStoredPodcast(episode.toStoredRecord(positionSec: existingPos, isSaved: keepSaved))
         self.reloadFromDatabase()
@@ -230,11 +231,13 @@ final class CotPodcastService {
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
             queue: .main
         ) { [weak self, weak player] time in
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated {
                 guard let self, let player, self.player === player, self.currentEpisode?.id == episodeID else { return }
                 let secs = time.seconds
                 if secs.isFinite && secs >= 0 {
-                    self.currentTime = secs
+                    if abs(secs - self.currentTime) >= 0.25 || secs == 0 {
+                        self.currentTime = secs
+                    }
                     let secInt = Int(secs.rounded(.down))
                     if secInt / 5 != self.lastPersistedSecond / 5 {
                         self.lastPersistedSecond = secInt

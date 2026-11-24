@@ -686,7 +686,7 @@ extension EditorTextView {
         
         guard self.hasMultipleInsertions else {
             super.deleteForward(sender)
-            self.refreshHabitGhostSuggestion(animateEntrance: true, allowAIRefresh: false)
+            self.scheduleHabitGhostRefresh(animateEntrance: true, allowAIRefresh: false)
             return
         }
         

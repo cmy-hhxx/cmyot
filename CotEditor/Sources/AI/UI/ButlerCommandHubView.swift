@@ -300,15 +300,15 @@ private struct ButlerToolbarCapsuleLabel: View {
                         .resizable()
                         .scaledToFill()
                 } else {
-                    Circle()
-                        .fill(tokens.accent.opacity(0.18))
-                    Image(systemName: "crown.fill")
-                        .font(.system(size: 10, weight: .semibold))
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(tokens.accent.opacity(0.16))
+                    Text(String(shownLabel.prefix(1)))
+                        .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(tokens.accent)
                 }
             }
             .frame(width: 20, height: 20)
-            .clipShape(Circle())
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             
             Text(shownLabel)
                 .font(.system(size: 12, weight: .medium))
@@ -316,9 +316,13 @@ private struct ButlerToolbarCapsuleLabel: View {
                 .lineLimit(1)
             
             if self.butler.isStreaming {
-                Circle()
-                    .fill(tokens.accent)
-                    .frame(width: 6, height: 6)
+                DissolveThinkingOrbView(
+                    state: .thinking,
+                    size: 14,
+                    dots: 42,
+                    interactive: false,
+                    color: tokens.accent
+                )
             }
         }
         .padding(.horizontal, 8)
@@ -336,7 +340,7 @@ private struct ButlerToolbarCapsuleLabel: View {
 }
 
 
-// MARK: - Pure Session Chat Hub (Zero Helper Text · Preferences in Settings -> Bots -> 总管)
+// MARK: - Unified Bot Chat Hub (Beautiful UI + DissolveThinkingOrbView · Hello Empty State)
 
 struct ButlerCommandHubView: View {
     
@@ -345,15 +349,15 @@ struct ButlerCommandHubView: View {
     
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(.documentAppearance) private var documentAppearance
-    @State private var studioPalette = StudioPaletteManager.shared
     @State private var butler = CotButlerManager.shared
+    @State private var botStore = AIBotStore.shared
     @State private var imageLoader = AIGijinkaImageLoader.shared
     
     @State private var showSessionSidebar = true
-    @State private var draftMessage: String = ""
     @State private var hoveredSessionID: String?
     @State private var renamingSessionID: String?
     @State private var renameDraft: String = ""
+    @State private var availableModels: [AgentModelOption] = []
     
     private var resolvedIsDark: Bool {
         switch self.documentAppearance {
@@ -363,177 +367,196 @@ struct ButlerCommandHubView: View {
         }
     }
     
-    private var tokens: StudioColorTokens {
-        _ = self.studioPalette.revision
-        return self.studioPalette.tokens(isDark: self.resolvedIsDark)
+    private var buiTokens: BeautifulUITokens {
+        BeautifulUITokens.resolve(isDark: self.resolvedIsDark)
     }
     
-    private var secondaryInk: Color {
-        self.tokens.isDark
-            ? Color(red: 0.62, green: 0.65, blue: 0.72)
-            : Color(red: 0.34, green: 0.37, blue: 0.44)
-    }
-    
-    private var mutedInk: Color {
-        self.tokens.isDark
-            ? Color(red: 0.46, green: 0.50, blue: 0.57)
-            : Color(red: 0.48, green: 0.52, blue: 0.58)
+    private var activeModelTitle: String {
+        let cfg = self.botStore.config(for: .butler)
+        let custom = cfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !custom.isEmpty {
+            return custom
+        }
+        return self.botStore.openCodeGoSelectableModels().profile?.displayModel ?? AIProvider.openCodeGo.defaultModel
     }
     
     
     var body: some View {
+        let tokens = self.buiTokens
+        let portrait = self.botStore.resolvedAvatarImage(for: .butler, pointSize: 80)
+            ?? self.butler.customAvatarImage
+            ?? self.imageLoader.thumbnail(for: self.butler.resolvedArtwork(), maxPixelSize: 80)
+        
         VStack(spacing: 0) {
-            self.headerBar
+            AgentChatHeaderBar(
+                avatarImage: portrait,
+                name: self.butler.name,
+                nickname: self.butler.nickname,
+                accent: tokens.accent,
+                tokens: tokens,
+                leadingControl: {
+                    Button {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                            self.showSessionSidebar.toggle()
+                        }
+                    } label: {
+                        Image(systemName: "sidebar.leading")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(self.showSessionSidebar ? tokens.accentInk : tokens.ink2)
+                            .frame(width: 26, height: 26)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                },
+                trailingActions: {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.14)) {
+                            self.butler.startNewSession()
+                        }
+                    } label: {
+                        Text(AppLanguage.text("新对话", en: "New Chat"))
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(tokens.ink2)
+                            .padding(.horizontal, 8)
+                            .frame(height: 24)
+                            .background(tokens.field, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    
+                    Button {
+                        self.onDismiss()
+                        (NSApp.delegate as? AppDelegate)?.openBotSettings(selecting: .butler)
+                    } label: {
+                        Text(AppLanguage.text("设置", en: "Settings"))
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(tokens.ink2)
+                            .padding(.horizontal, 8)
+                            .frame(height: 24)
+                            .background(tokens.field, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                }
+            )
             
             Rectangle()
-                .fill(self.tokens.hairline)
+                .fill(tokens.line)
                 .frame(height: 1)
             
             HStack(spacing: 0) {
                 if self.showSessionSidebar {
-                    self.sessionRail
-                        .frame(width: 154)
+                    self.sessionRail(tokens: tokens)
+                        .frame(width: 152)
                         .transition(.move(edge: .leading).combined(with: .opacity))
                     
                     Rectangle()
-                        .fill(self.tokens.hairline)
+                        .fill(tokens.line)
                         .frame(width: 1)
                 }
                 
-                self.chatStage
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                AgentChatTranscriptSurface(
+                    messages: self.mappedMessages,
+                    isStreaming: self.butler.isStreaming,
+                    streamingDraft: self.butler.streamingDraft,
+                    errorMessage: nil,
+                    placeholder: "@\(self.butler.nickname)",
+                    availableModels: self.availableModels,
+                    selectedModelTitle: self.activeModelTitle,
+                    orbColor: tokens.ink,
+                    tokens: tokens,
+                    onSelectModel: { option in
+                        var cfg = self.botStore.config(for: .butler)
+                        cfg.endpointID = option.endpointID
+                        cfg.modelOverride = option.modelID
+                        self.botStore.updateConfig(cfg, for: .butler)
+                    },
+                    onOpenSettings: {
+                        self.onDismiss()
+                        (NSApp.delegate as? AppDelegate)?.showAIPreferences(nil)
+                    },
+                    onSend: { prompt in
+                        Task {
+                            await self.butler.sendMessage(prompt)
+                        }
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(self.tokens.canvasTop.opacity(0.95))
+        .background(tokens.page)
+        .task {
+            self.reloadModels()
+            if let fetched = try? await self.botStore.refreshOpenCodeGoModels() {
+                let profileID = self.botStore.openCodeGoSelectableModels().profile?.id
+                self.availableModels = fetched.map { AgentModelOption(endpointID: profileID, modelID: $0) }
+            }
+        }
     }
     
     
-    // MARK: - Top Identity & Actions Bar (Read-Only Identity, Settings Gear)
-    
-    private var headerBar: some View {
-        let artwork = self.butler.resolvedArtwork()
-        let portrait = self.butler.customAvatarImage ?? self.imageLoader.thumbnail(for: artwork, maxPixelSize: 80)
-        
-        return HStack(spacing: 8) {
-            Button {
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
-                    self.showSessionSidebar.toggle()
-                }
-            } label: {
-                Image(systemName: "sidebar.leading")
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(self.showSessionSidebar ? self.tokens.accentText : self.secondaryInk)
-                    .frame(width: 26, height: 26)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            
-            ZStack {
-                if let portrait {
-                    Image(nsImage: portrait)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    self.tokens.accent.opacity(0.16)
-                    Image(systemName: "crown.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(self.tokens.accent)
-                }
-            }
-            .frame(width: 24, height: 24)
-            .clipShape(Circle())
-            .overlay(Circle().strokeBorder(self.tokens.hairlineStrong, lineWidth: 0.7))
-            
-            Text(self.butler.name)
-                .font(.system(size: 13.5, weight: .semibold))
-                .foregroundStyle(self.tokens.primaryInk)
-                .lineLimit(1)
-            
-            Text("@\(self.butler.nickname)")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(self.secondaryInk)
-                .padding(.horizontal, 7)
-                .frame(height: 20)
-                .background(self.tokens.inset, in: Capsule())
-                .lineLimit(1)
-            
-            Spacer(minLength: 4)
-            
-            Button {
-                withAnimation(.easeOut(duration: 0.14)) {
-                    self.butler.startNewSession()
-                }
-            } label: {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(self.secondaryInk)
-                    .frame(width: 26, height: 26)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            .help(AppLanguage.text("新建对话", en: "New Chat"))
-            
-            Button {
-                self.onDismiss()
-                (NSApp.delegate as? AppDelegate)?.openBotSettings(selecting: .butler)
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(self.secondaryInk)
-                    .frame(width: 26, height: 26)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            .help(AppLanguage.text("总管设置", en: "Butler Settings"))
+    private var mappedMessages: [AgentChatMessageItem] {
+        self.butler.messages.map { msg in
+            let receipts = CotButlerManager.decodeReceipts(from: msg.actionsJSON)
+            let chips = receipts.map { AgentToolChipItem(id: $0.id, label: $0.summary) }
+            return AgentChatMessageItem(
+                id: msg.id,
+                isUser: (msg.role == "user"),
+                text: msg.content,
+                toolChips: chips
+            )
         }
-        .padding(.horizontal, 12)
-        .frame(height: 44)
+    }
+    
+    
+    private func reloadModels() {
+        let info = self.botStore.openCodeGoSelectableModels()
+        let endpointID = info.profile?.id
+        self.availableModels = info.models.map { AgentModelOption(endpointID: endpointID, modelID: $0) }
     }
     
     
     // MARK: - Left Persisted Sessions Rail
     
-    private var sessionRail: some View {
+    private func sessionRail(tokens: BeautifulUITokens) -> some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: 3) {
                 ForEach(self.butler.sessions) { session in
-                    self.sessionRow(session)
+                    self.sessionRow(session, tokens: tokens)
                 }
             }
             .padding(8)
         }
-        .background(self.tokens.inset.opacity(0.45))
+        .background(tokens.inset)
     }
     
     
     @ViewBuilder
-    private func sessionRow(_ session: ButlerSessionRecord) -> some View {
+    private func sessionRow(_ session: ButlerSessionRecord, tokens: BeautifulUITokens) -> some View {
         let isActive = (session.id == self.butler.activeSessionID)
         let isHovered = (self.hoveredSessionID == session.id)
         let isRenaming = (self.renamingSessionID == session.id)
         
         HStack(spacing: 5) {
             if session.isPinned {
-                Image(systemName: "pin.fill")
-                    .font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(self.tokens.accent)
+                Circle()
+                    .fill(tokens.accent)
+                    .frame(width: 5, height: 5)
             }
             
             if isRenaming {
                 TextField("", text: self.$renameDraft)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(self.tokens.primaryInk)
+                    .foregroundStyle(tokens.ink)
                     .onSubmit {
                         self.commitSessionRename(session.id)
                     }
             } else {
                 Text(session.title)
                     .font(.system(size: 12, weight: isActive ? .semibold : .regular))
-                    .foregroundStyle(isActive ? self.tokens.primaryInk : self.secondaryInk)
+                    .foregroundStyle(isActive ? tokens.ink : tokens.ink2)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -546,7 +569,7 @@ struct ButlerCommandHubView: View {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(self.mutedInk)
+                        .foregroundStyle(tokens.ink3)
                         .frame(width: 16, height: 16)
                         .contentShape(Rectangle())
                 }
@@ -557,11 +580,11 @@ struct ButlerCommandHubView: View {
         .frame(height: 30)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isActive ? self.tokens.card : (isHovered ? self.tokens.card.opacity(0.55) : Color.clear))
+                .fill(isActive ? tokens.surface : (isHovered ? tokens.hover : Color.clear))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(isActive ? self.tokens.hairlineStrong : Color.clear, lineWidth: 0.7)
+                .strokeBorder(isActive ? tokens.lineStrong : Color.clear, lineWidth: 0.7)
         )
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onHover { hovering in
@@ -599,175 +622,5 @@ struct ButlerCommandHubView: View {
             self.butler.renameSession(sessionID, to: trimmed)
         }
         self.renamingSessionID = nil
-    }
-    
-    
-    // MARK: - Main Pure Chat Stage
-    
-    private var chatStage: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView(.vertical, showsIndicators: true) {
-                    if self.butler.messages.isEmpty && !self.butler.isStreaming {
-                        VStack(spacing: 9) {
-                            Spacer().frame(height: 110)
-                            ForEach(self.starterChips, id: \.self) { chip in
-                                Button {
-                                    self.sendPrompt(chip)
-                                } label: {
-                                    Text(chip)
-                                        .font(.system(size: 12.5, weight: .medium))
-                                        .foregroundStyle(self.tokens.primaryInk)
-                                        .padding(.horizontal, 14)
-                                        .frame(height: 32)
-                                        .background(self.tokens.card, in: Capsule())
-                                        .overlay(Capsule().strokeBorder(self.tokens.hairlineStrong, lineWidth: 0.7))
-                                }
-                                .buttonStyle(.plain)
-                                .pointerStyle(.link)
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(16)
-                    } else {
-                        LazyVStack(alignment: .leading, spacing: 10) {
-                            ForEach(self.butler.messages) { msg in
-                                self.chatBubble(msg)
-                                    .id(msg.id)
-                            }
-                            if self.butler.isStreaming {
-                                self.streamingBubble
-                                    .id("streaming-draft")
-                            }
-                        }
-                        .padding(14)
-                    }
-                }
-                .onChange(of: self.butler.messages.count) { _, _ in
-                    if let lastID = self.butler.messages.last?.id {
-                        withAnimation(.easeOut(duration: 0.16)) {
-                            proxy.scrollTo(lastID, anchor: .bottom)
-                        }
-                    }
-                }
-            }
-            
-            Rectangle()
-                .fill(self.tokens.hairline)
-                .frame(height: 1)
-            
-            self.composerBar
-        }
-    }
-    
-    
-    private var composerBar: some View {
-        let canSend = !self.butler.isStreaming && !self.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return HStack(alignment: .bottom, spacing: 8) {
-            TextField("", text: self.$draftMessage, prompt: Text("@\(self.butler.nickname)"), axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .foregroundStyle(self.tokens.primaryInk)
-                .lineLimit(1...5)
-                .onSubmit {
-                    self.sendPrompt(self.draftMessage)
-                }
-                .padding(.vertical, 6)
-            
-            Button {
-                self.sendPrompt(self.draftMessage)
-            } label: {
-                Image(systemName: self.butler.isStreaming ? "hourglass" : "arrow.up.circle.fill")
-                    .font(.system(size: 21, weight: .medium))
-                    .foregroundStyle(canSend ? self.tokens.accent : self.mutedInk.opacity(0.65))
-            }
-            .buttonStyle(.plain)
-            .disabled(!canSend)
-            .padding(.bottom, 3)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(self.tokens.card.opacity(0.75))
-    }
-    
-    
-    private var starterChips: [String] {
-        [
-            AppLanguage.text("看盘 恒生科技", en: "Markets HSTECH"),
-            AppLanguage.text("记住我的写作风格", en: "Remember Style"),
-            AppLanguage.text("帮我看看当前工作区", en: "Inspect Workspace"),
-        ]
-    }
-    
-    
-    private func chatBubble(_ msg: ButlerChatMessage) -> some View {
-        let isUser = (msg.role == "user")
-        let receipts = CotButlerManager.decodeReceipts(from: msg.actionsJSON)
-        
-        return VStack(alignment: isUser ? .trailing : .leading, spacing: 5) {
-            Text(msg.content)
-                .font(.system(size: 12.5))
-                .foregroundStyle(isUser ? self.tokens.onAccentInk : self.tokens.primaryInk)
-                .textSelection(.enabled)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    isUser ? self.tokens.accent : self.tokens.card,
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(isUser ? Color.clear : self.tokens.hairline, lineWidth: 0.8)
-                )
-            
-            if !receipts.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 5) {
-                        ForEach(receipts) { receipt in
-                            HStack(spacing: 4) {
-                                Image(systemName: receipt.symbolName)
-                                    .font(.system(size: 10, weight: .semibold))
-                                Text(receipt.summary)
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .foregroundStyle(self.tokens.accentText)
-                            .padding(.horizontal, 8)
-                            .frame(height: 22)
-                            .background(self.tokens.accent.opacity(0.12), in: Capsule())
-                        }
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
-    }
-    
-    
-    private var streamingBubble: some View {
-        HStack(spacing: 8) {
-            if self.butler.streamingDraft.isEmpty {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Text(self.butler.streamingDraft)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(self.tokens.primaryInk)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(self.tokens.hairline, lineWidth: 0.8))
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    
-    
-    private func sendPrompt(_ raw: String) {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        self.draftMessage = ""
-        Task {
-            await self.butler.sendMessage(trimmed)
-        }
     }
 }

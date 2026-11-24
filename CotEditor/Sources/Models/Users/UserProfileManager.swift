@@ -123,6 +123,7 @@ nonisolated struct UserProfile: Identifiable, Codable, Sendable, Equatable {
     isolated deinit {
         
         if let db = self.db {
+            sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE);", nil, nil, nil)
             sqlite3_close(db)
         }
     }
@@ -382,10 +383,11 @@ nonisolated struct UserProfile: Identifiable, Codable, Sendable, Equatable {
             for case let document as Document in NSDocumentController.shared.documents {
                 document.syncToLocalDatabase(force: true)
             }
-            for window in NSApp.orderedWindows {
-                if let docVC = (window.windowController as? DocumentWindowController)?.documentViewController {
-                    docVC.savePaneTabsSessionToDatabase()
-                }
+            if let docVC = NSApp.orderedWindows.lazy
+                .compactMap({ ($0.windowController as? DocumentWindowController)?.documentViewController })
+                .first
+            {
+                docVC.savePaneTabsSessionToDatabase()
             }
             CotLocalDatabase.shared.syncAIEndpointsToDatabase()
             CotLocalDatabase.shared.syncUserProfileToDatabase()
@@ -485,7 +487,15 @@ nonisolated struct UserProfile: Identifiable, Codable, Sendable, Equatable {
         
         if sqlite3_open(self.accountsDatabaseURL.path, &self.db) != SQLITE_OK {
             self.db = nil
+            return
         }
+        let pragmas = """
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA busy_timeout = 5000;
+        PRAGMA temp_store = MEMORY;
+        """
+        sqlite3_exec(self.db, pragmas, nil, nil, nil)
     }
     
     

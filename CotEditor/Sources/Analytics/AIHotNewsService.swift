@@ -115,6 +115,28 @@ nonisolated enum NewsArticleExtractor {
         "share this article", "follow us on", "advertisement", "版权所有", "未经允许不得转载",
     ]
     
+    private nonisolated(unsafe) static let numericEntityRegex = try? NSRegularExpression(pattern: #"&#(x?[0-9A-Fa-f]{1,6});"#)
+    private nonisolated(unsafe) static let blockRegex = try? NSRegularExpression(
+        pattern: #"<(h[1-4]|pre|blockquote|ul|ol|p)\b[^>]*>([\s\S]*?)</\1>"#,
+        options: [.caseInsensitive]
+    )
+    private nonisolated(unsafe) static let listItemRegex = try? NSRegularExpression(
+        pattern: #"<li\b[^>]*>([\s\S]*?)</li>"#,
+        options: [.caseInsensitive]
+    )
+    private nonisolated(unsafe) static let ldJSONRegex = try? NSRegularExpression(
+        pattern: #"<script[^>]+type\s*=\s*["']application/ld\+json["'][^>]*>([\s\S]*?)</script>"#,
+        options: [.caseInsensitive]
+    )
+    private nonisolated(unsafe) static let articleContainerRegex = try? NSRegularExpression(
+        pattern: #"<article\b[^>]*>([\s\S]*?)</article>"#,
+        options: [.caseInsensitive]
+    )
+    private nonisolated(unsafe) static let mainContainerRegex = try? NSRegularExpression(
+        pattern: #"<main\b[^>]*>([\s\S]*?)</main>"#,
+        options: [.caseInsensitive]
+    )
+    
     
     static func decodeHTMLEntities(_ raw: String) -> String {
         var text = raw
@@ -129,7 +151,7 @@ nonisolated enum NewsArticleExtractor {
             text = text.replacingOccurrences(of: entity, with: value)
         }
         if text.contains("&#"),
-           let numRegex = try? NSRegularExpression(pattern: #"&#(x?[0-9A-Fa-f]{1,6});"#)
+           let numRegex = Self.numericEntityRegex
         {
             let ns = text as NSString
             let matches = numRegex.matches(in: text, range: NSRange(location: 0, length: ns.length)).reversed()
@@ -203,10 +225,7 @@ nonisolated enum NewsArticleExtractor {
         var blocks: [NewsArticleBlock] = []
         var seenNorm = Set<String>()
         
-        guard let blockRegex = try? NSRegularExpression(
-            pattern: #"<(h[1-4]|pre|blockquote|ul|ol|p)\b[^>]*>([\s\S]*?)</\1>"#,
-            options: [.caseInsensitive]
-        ) else {
+        guard let blockRegex = Self.blockRegex else {
             return []
         }
         
@@ -237,7 +256,7 @@ nonisolated enum NewsArticleExtractor {
                     blocks.append(.quote(String(quote.prefix(900))))
                 }
             } else if tag == "ul" || tag == "ol" {
-                if let liRegex = try? NSRegularExpression(pattern: #"<li\b[^>]*>([\s\S]*?)</li>"#, options: [.caseInsensitive]) {
+                if let liRegex = Self.listItemRegex {
                     let nsInner = inner as NSString
                     let liMatches = liRegex.matches(in: inner, range: NSRange(location: 0, length: nsInner.length))
                     var items: [String] = []
@@ -311,10 +330,7 @@ nonisolated enum NewsArticleExtractor {
         var ldAuthor: String?
         
         // 1. Inspect JSON-LD `articleBody` & `author`
-        if let ldRegex = try? NSRegularExpression(
-            pattern: #"<script[^>]+type\s*=\s*["']application/ld\+json["'][^>]*>([\s\S]*?)</script>"#,
-            options: [.caseInsensitive]
-        ) {
+        if let ldRegex = Self.ldJSONRegex {
             let ns = html as NSString
             for match in ldRegex.matches(in: html, range: NSRange(location: 0, length: ns.length)) where match.numberOfRanges >= 2 {
                 let jsonStr = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -350,19 +366,14 @@ nonisolated enum NewsArticleExtractor {
         
         // 2. Isolate semantic `<article>` or `<main>` container
         var targetFragment = html
-        for containerTag in ["article", "main"] {
-            if let regex = try? NSRegularExpression(
-                pattern: "<\(containerTag)\\b[^>]*>([\\s\\S]*?)</\(containerTag)>",
-                options: [.caseInsensitive]
-            ) {
-                let ns = html as NSString
-                let matches = regex.matches(in: html, range: NSRange(location: 0, length: ns.length))
-                if let longest = matches.max(by: { $0.range(at: 1).length < $1.range(at: 1).length }),
-                   longest.range(at: 1).length > 240
-                {
-                    targetFragment = ns.substring(with: longest.range(at: 1))
-                    break
-                }
+        for regex in [Self.articleContainerRegex, Self.mainContainerRegex].compactMap(\.self) {
+            let ns = html as NSString
+            let matches = regex.matches(in: html, range: NSRange(location: 0, length: ns.length))
+            if let longest = matches.max(by: { $0.range(at: 1).length < $1.range(at: 1).length }),
+               longest.range(at: 1).length > 240
+            {
+                targetFragment = ns.substring(with: longest.range(at: 1))
+                break
             }
         }
         
@@ -590,17 +601,60 @@ final class AIHotNewsService {
     
     @ObservationIgnored private var checkedDiskCoverIDs: Set<String> = []
     @ObservationIgnored private var checkedDiskArticleIDs: Set<String> = []
+    @ObservationIgnored private var coverAccessOrder: [String] = []
+    @ObservationIgnored private var articleAccessOrder: [String] = []
     @ObservationIgnored private var inFlightCoverIDs: Set<String> = []
     @ObservationIgnored private var resolvedNoCoverIDs: Set<String> = []
     @ObservationIgnored private var fetchedDetailIDs: Set<String> = []
     @ObservationIgnored private var preloadTask: Task<Void, Never>?
+    @ObservationIgnored private var memoryPressureSource: DispatchSourceMemoryPressure?
     private let database: CotLocalDatabase
     private let coverCacheDirectory: URL
     private let articleCacheDirectory: URL
     
+    private static let maxCachedCovers = 36
+    private static let maxCachedArticles = 24
     private static let bookmarksDefaultsKey = "cot.news.bookmarkedItemsJSON"
     private static let readIDsDefaultsKey = "cot.news.readIDs"
     private static let notesDefaultsKey = "cot.news.personalNotes"
+    
+    private nonisolated(unsafe) static let parseDateLock = NSLock()
+    private nonisolated(unsafe) static let isoFracFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private nonisolated(unsafe) static let isoStdFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+    private nonisolated(unsafe) static let fallbackDateFormatters: [DateFormatter] = [
+        "EEE, dd MMM yyyy HH:mm:ss Z",
+        "EEE, dd MMM yyyy HH:mm:ss zzz",
+        "yyyy-MM-dd HH:mm:ss",
+        "yyyy-MM-dd",
+    ].map { fmt in
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = fmt
+        return f
+    }
+    private nonisolated(unsafe) static let agentLinkRegex = try? NSRegularExpression(pattern: #"\[([^\]]+)\]\((https?://[^\s\)]+)\)"#)
+    private nonisolated(unsafe) static let agentBareURLRegex = try? NSRegularExpression(pattern: #"https?://[^\s\)\]>]+"#)
+    private nonisolated(unsafe) static let ogImageRegexes: [NSRegularExpression] = [
+        #"<meta[^>]+(?:property|name)\s*=\s*["'](?:og:image:secure_url|og:image|twitter:image:src|twitter:image)["'][^>]+content\s*=\s*["']([^"']+)["']"#,
+        #"<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+(?:property|name)\s*=\s*["'](?:og:image:secure_url|og:image|twitter:image:src|twitter:image)["']"#,
+        #"<link[^>]+rel\s*=\s*["']image_src["'][^>]+href\s*=\s*["']([^"']+)["']"#,
+    ].compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+    private nonisolated(unsafe) static let firstHTMLImageRegex = try? NSRegularExpression(
+        pattern: #"<img[^>]+src\s*=\s*["']([^"']+)["']"#,
+        options: [.caseInsensitive]
+    )
+    private nonisolated(unsafe) static let ogDescRegexes: [NSRegularExpression] = [
+        #"<meta[^>]+(?:property|name)\s*=\s*["'](?:og:description|twitter:description|description)["'][^>]+content\s*=\s*["']([^"']+)["']"#,
+        #"<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+(?:property|name)\s*=\s*["'](?:og:description|twitter:description|description)["']"#,
+    ].compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
     
     
     var filteredItems: [AIHotNewsItem] {
@@ -641,10 +695,70 @@ final class AIHotNewsService {
         try? FileManager.default.createDirectory(at: self.articleCacheDirectory, withIntermediateDirectories: true)
         self.loadCachedItems()
         self.loadInteractiveState()
-        if !self.items.isEmpty && database === CotLocalDatabase.shared {
-            Task { @MainActor [weak self] in
-                self?.preloadFeedResources(limit: 20)
+        
+        if Self.isNetworkPreloadAllowed, database === CotLocalDatabase.shared {
+            let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+            source.setEventHandler { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.trimCachesForMemoryPressure()
+                }
             }
+            source.resume()
+            self.memoryPressureSource = source
+        }
+    }
+    
+    
+    isolated deinit {
+        self.preloadTask?.cancel()
+        self.memoryPressureSource?.cancel()
+    }
+    
+    
+    func trimCachesForMemoryPressure() {
+        let visibleIDs = Set(self.currentPageItems.map(\.id))
+        for key in Array(self.coverImages.keys) where !visibleIDs.contains(key) {
+            self.coverImages.removeValue(forKey: key)
+            self.checkedDiskCoverIDs.remove(key)
+        }
+        self.coverAccessOrder.removeAll { !visibleIDs.contains($0) }
+        self.articleContents.removeAll()
+        self.articleAccessOrder.removeAll()
+        self.checkedDiskArticleIDs.removeAll()
+    }
+    
+    
+    private func storeCoverImage(_ image: NSImage, for itemID: String) {
+        self.coverImages[itemID] = image
+        self.coverAccessOrder.removeAll { $0 == itemID }
+        self.coverAccessOrder.append(itemID)
+        if self.coverAccessOrder.count > Self.maxCachedCovers {
+            let visibleIDs = Set(self.currentPageItems.map(\.id))
+            var idx = 0
+            while self.coverAccessOrder.count > Self.maxCachedCovers && idx < self.coverAccessOrder.count {
+                let candidate = self.coverAccessOrder[idx]
+                if visibleIDs.contains(candidate) && self.coverAccessOrder.count > visibleIDs.count {
+                    idx += 1
+                    continue
+                }
+                self.coverAccessOrder.remove(at: idx)
+                self.coverImages.removeValue(forKey: candidate)
+                self.checkedDiskCoverIDs.remove(candidate)
+            }
+        }
+    }
+    
+    
+    private func storeArticleContent(_ content: NewsArticleContent, for itemID: String) {
+        var normalized = content
+        normalized.blocks = Self.sanitizedArticleBlocks(content.blocks)
+        self.articleContents[itemID] = normalized
+        self.articleAccessOrder.removeAll { $0 == itemID }
+        self.articleAccessOrder.append(itemID)
+        while self.articleAccessOrder.count > Self.maxCachedArticles {
+            let evicted = self.articleAccessOrder.removeFirst()
+            self.articleContents.removeValue(forKey: evicted)
+            self.checkedDiskArticleIDs.remove(evicted)
         }
     }
     
@@ -725,7 +839,7 @@ final class AIHotNewsService {
     
     func resolvedArticleBlocks(for item: AIHotNewsItem) -> [NewsArticleBlock] {
         if let loaded = self.articleContents[item.id]?.blocks, !loaded.isEmpty {
-            return Self.sanitizedArticleBlocks(loaded)
+            return loaded
         }
         if let embedded = item.contentBlocks, !embedded.isEmpty {
             return Self.sanitizedArticleBlocks(embedded)
@@ -740,7 +854,7 @@ final class AIHotNewsService {
                       !decoded.blocks.isEmpty
                 else { return }
                 await MainActor.run {
-                    self?.articleContents[itemID] = decoded
+                    self?.storeArticleContent(decoded, for: itemID)
                 }
             }
         }
@@ -807,7 +921,7 @@ final class AIHotNewsService {
             return decoded
         }.value
         if let diskCached {
-            self.articleContents[item.id] = diskCached
+            self.storeArticleContent(diskCached, for: item.id)
             self.fetchedDetailIDs.insert(item.id)
             return
         }
@@ -827,7 +941,7 @@ final class AIHotNewsService {
         guard !Task.isCancelled else { return }
         
         if let content = fetched.content, !content.blocks.isEmpty {
-            self.articleContents[item.id] = content
+            self.storeArticleContent(content, for: item.id)
             if let encoded = try? JSONEncoder().encode(content) {
                 try? encoded.write(to: diskURL, options: .atomic)
             }
@@ -882,9 +996,16 @@ final class AIHotNewsService {
         3. 可借鉴切入点或后续跟进方向
         """
         
+        final class BriefEmitGate: @unchecked Sendable {
+            var lastUptime: TimeInterval = 0
+        }
+        let emitGate = BriefEmitGate()
         let itemID = item.id
         do {
             let output = try await AIService.shared.run(.summarize, on: payload) { partial in
+                let now = ProcessInfo.processInfo.systemUptime
+                guard now - emitGate.lastUptime >= 0.05 else { return }
+                emitGate.lastUptime = now
                 AIHotNewsService.shared.aiBriefs[itemID] = partial
             }
             self.setAIBrief(output, for: itemID)
@@ -956,7 +1077,7 @@ final class AIHotNewsService {
             overridden.model = selectedModel.modelID
             config = overridden.configuration(apiKey: AIEndpointStore.apiKey(for: profile))
         } else {
-            config = AIBotStore.shared.resolvedConfiguration(for: .summarize, baseConfig: .current)
+            config = AIBotStore.shared.resolvedConfiguration(for: .readingCompanion, baseConfig: .current)
         }
         config.reasoningEffort = effort.apiValue
         config.temperature = effort.temperature
@@ -1040,7 +1161,7 @@ final class AIHotNewsService {
                 } else if streamDone {
                     break
                 }
-                try? await Task.sleep(for: .milliseconds(34))
+                try? await Task.sleep(for: .milliseconds(50))
                 if Task.isCancelled { break }
             }
         }
@@ -1096,7 +1217,7 @@ final class AIHotNewsService {
             // Let the typewriter gracefully finish the final few characters (~0.35s max)
             let deadline = Date().addingTimeInterval(0.35)
             while shownOffset < finalClean.count && Date() < deadline {
-                try? await Task.sleep(for: .milliseconds(34))
+                try? await Task.sleep(for: .milliseconds(50))
             }
             typewriterTask.cancel()
             self.updateAssistantMessage(id: assistantID, itemID: itemID, text: finalClean)
@@ -1211,12 +1332,14 @@ final class AIHotNewsService {
             self.checkedDiskCoverIDs.insert(item.id)
             let itemID = item.id
             let diskURL = self.diskCoverURL(for: item)
+            let legacyURL = self.legacyDiskCoverURL(for: item)
             Task.detached(priority: .utility) { [weak self] in
                 let diskImage = Self.downsampledThumbnail(fromFileAt: diskURL, maxPixelSize: Self.retinaCoverMaxPixelSize)
+                    ?? Self.downsampledThumbnail(fromFileAt: legacyURL, maxPixelSize: Self.retinaCoverMaxPixelSize)
                 await MainActor.run {
                     guard let self else { return }
                     if let diskImage {
-                        self.coverImages[itemID] = diskImage
+                        self.storeCoverImage(diskImage, for: itemID)
                     } else {
                         self.triggerCoverLoadIfNeeded(for: item)
                     }
@@ -1243,7 +1366,7 @@ final class AIHotNewsService {
     
     /// Proactively preloads cover thumbnails and OpenGraph article excerpts in bounded background batches
     /// so hovering pages and opening the NEWS reader renders instantaneously.
-    func preloadFeedResources(limit: Int = 24) {
+    func preloadFeedResources(limit: Int = 12) {
         guard Self.isNetworkPreloadAllowed else { return }
         let snapshotItems = Array(self.items.prefix(limit))
         guard !snapshotItems.isEmpty else { return }
@@ -1256,6 +1379,7 @@ final class AIHotNewsService {
                 let item: AIHotNewsItem
                 let index: Int
                 let diskURL: URL
+                let legacyDiskURL: URL
                 let articleDiskURL: URL
                 let needsCover: Bool
                 let needsExcerpt: Bool
@@ -1285,7 +1409,7 @@ final class AIHotNewsService {
                     let needsCover = !hasMemCover && !self.inFlightCoverIDs.contains(item.id) && !self.resolvedNoCoverIDs.contains(item.id)
                     let existingSummaryLen = item.summary?.trimmingCharacters(in: .whitespacesAndNewlines).count ?? 0
                     let hasFullBlocks = (self.articleContents[item.id] != nil) || ((item.contentBlocks?.count ?? 0) >= 2)
-                    let needsFullArticle = absIdx < 12 && !hasFullBlocks && !self.fetchedDetailIDs.contains(item.id)
+                    let needsFullArticle = absIdx < 6 && !hasFullBlocks && !self.fetchedDetailIDs.contains(item.id)
                     let needsExcerpt = !needsFullArticle && (existingSummaryLen < 40) && !self.fetchedDetailIDs.contains(item.id)
                     if needsCover || needsExcerpt || needsFullArticle {
                         if needsCover { self.inFlightCoverIDs.insert(item.id) }
@@ -1294,6 +1418,7 @@ final class AIHotNewsService {
                             item: item,
                             index: absIdx,
                             diskURL: self.diskCoverURL(for: item),
+                            legacyDiskURL: self.legacyDiskCoverURL(for: item),
                             articleDiskURL: self.diskArticleURL(for: item),
                             needsCover: needsCover,
                             needsExcerpt: needsExcerpt,
@@ -1312,11 +1437,16 @@ final class AIHotNewsService {
                             var discoveredSummary: String?
                             var failedCover = false
                             
-                            if work.needsCover,
-                               FileManager.default.fileExists(atPath: work.diskURL.path),
-                               let diskImage = Self.downsampledThumbnail(fromFileAt: work.diskURL, maxPixelSize: Self.retinaCoverMaxPixelSize)
-                            {
-                                loadedCover = diskImage
+                            if work.needsCover {
+                                if FileManager.default.fileExists(atPath: work.diskURL.path),
+                                   let diskImage = Self.downsampledThumbnail(fromFileAt: work.diskURL, maxPixelSize: Self.retinaCoverMaxPixelSize)
+                                {
+                                    loadedCover = diskImage
+                                } else if FileManager.default.fileExists(atPath: work.legacyDiskURL.path),
+                                          let diskImage = Self.downsampledThumbnail(fromFileAt: work.legacyDiskURL, maxPixelSize: Self.retinaCoverMaxPixelSize)
+                                {
+                                    loadedCover = diskImage
+                                }
                             }
                             
                             if work.needsFullArticle,
@@ -1403,12 +1533,12 @@ final class AIHotNewsService {
                 for outcome in outcomes {
                     self.inFlightCoverIDs.remove(outcome.id)
                     if let thumb = outcome.coverImage {
-                        self.coverImages[outcome.id] = thumb
+                        self.storeCoverImage(thumb, for: outcome.id)
                     } else if outcome.failedCover {
                         self.resolvedNoCoverIDs.insert(outcome.id)
                     }
                     if let art = outcome.articleContent {
-                        self.articleContents[outcome.id] = art
+                        self.storeArticleContent(art, for: outcome.id)
                     }
                     if let idx = self.items.firstIndex(where: { $0.id == outcome.id }) {
                         if let sum = outcome.resolvedSummary, !sum.isEmpty,
@@ -1450,7 +1580,7 @@ final class AIHotNewsService {
            !self.items.isEmpty
         {
             self.prefetchCoversForCurrentPage()
-            self.preloadFeedResources(limit: 24)
+            self.preloadFeedResources(limit: 12)
             return
         }
         
@@ -1527,7 +1657,7 @@ final class AIHotNewsService {
             self.loadFailed = false
             self.saveCachedItems(mergedItems)
             self.prefetchCoversForCurrentPage()
-            self.preloadFeedResources(limit: 24)
+            self.preloadFeedResources(limit: 12)
         } else {
             self.loadFailed = self.items.isEmpty
         }
@@ -1700,10 +1830,17 @@ final class AIHotNewsService {
     
     // MARK: Real Post Cover Thumbnail Loader (Retina High-DPI Cover + og:image Fallback)
     
-    nonisolated static let retinaCoverMaxPixelSize: CGFloat = 560
+    nonisolated static let retinaCoverMaxPixelSize: CGFloat = 1080
     
     
     private func diskCoverURL(for item: AIHotNewsItem) -> URL {
+        let digest = SHA256.hash(data: Data((item.coverURLString ?? item.urlString).utf8))
+        let hex = digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+        return self.coverCacheDirectory.appending(path: "\(hex)-hd2x.jpg")
+    }
+    
+    
+    private func legacyDiskCoverURL(for item: AIHotNewsItem) -> URL {
         let digest = SHA256.hash(data: Data((item.coverURLString ?? item.urlString).utf8))
         let hex = digest.prefix(12).map { String(format: "%02x", $0) }.joined()
         return self.coverCacheDirectory.appending(path: "\(hex)-hd2x.png")
@@ -1759,7 +1896,7 @@ final class AIHotNewsService {
             
             await MainActor.run {
                 guard let self else { return }
-                self.coverImages[itemID] = thumbnail
+                self.storeCoverImage(thumbnail, for: itemID)
                 if let idx = self.items.firstIndex(where: { $0.id == itemID }),
                    self.items[idx].coverURLString == nil
                 {
@@ -1886,7 +2023,8 @@ final class AIHotNewsService {
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff)
         else { return nil }
-        return rep.representation(using: .png, properties: [:])
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.84])
+            ?? rep.representation(using: .png, properties: [:])
     }
     
     
@@ -2004,8 +2142,8 @@ final class AIHotNewsService {
     
     nonisolated static func parseAgentMarkdown(_ text: String) -> [AIHotNewsItem] {
         
-        let linkRegex = try? NSRegularExpression(pattern: #"\[([^\]]+)\]\((https?://[^\s\)]+)\)"#)
-        let bareURLRegex = try? NSRegularExpression(pattern: #"https?://[^\s\)\]>]+"#)
+        let linkRegex = Self.agentLinkRegex
+        let bareURLRegex = Self.agentBareURLRegex
         
         var seen = Set<String>()
         var results: [AIHotNewsItem] = []
@@ -2192,24 +2330,14 @@ final class AIHotNewsService {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         
-        let isoFrac = ISO8601DateFormatter()
-        isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = isoFrac.date(from: trimmed) { return d }
+        Self.parseDateLock.lock()
+        defer { Self.parseDateLock.unlock() }
         
-        let isoStd = ISO8601DateFormatter()
-        isoStd.formatOptions = [.withInternetDateTime]
-        if let d = isoStd.date(from: trimmed) { return d }
+        if let d = Self.isoFracFormatter.date(from: trimmed) { return d }
+        if let d = Self.isoStdFormatter.date(from: trimmed) { return d }
         
-        let rfc822 = DateFormatter()
-        rfc822.locale = Locale(identifier: "en_US_POSIX")
-        for format in [
-            "EEE, dd MMM yyyy HH:mm:ss Z",
-            "EEE, dd MMM yyyy HH:mm:ss zzz",
-            "yyyy-MM-dd HH:mm:ss",
-            "yyyy-MM-dd",
-        ] {
-            rfc822.dateFormat = format
-            if let d = rfc822.date(from: trimmed) { return d }
+        for formatter in Self.fallbackDateFormatters {
+            if let d = formatter.date(from: trimmed) { return d }
         }
         return nil
     }
@@ -2255,15 +2383,9 @@ final class AIHotNewsService {
     
     /// Extracts `og:image`, `twitter:image`, or `<link rel="image_src">` from a post's HTML head.
     nonisolated static func extractOpenGraphImageURL(from html: String, pageURL: URL) -> String? {
-        let patterns: [String] = [
-            #"<meta[^>]+(?:property|name)\s*=\s*["'](?:og:image:secure_url|og:image|twitter:image:src|twitter:image)["'][^>]+content\s*=\s*["']([^"']+)["']"#,
-            #"<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+(?:property|name)\s*=\s*["'](?:og:image:secure_url|og:image|twitter:image:src|twitter:image)["']"#,
-            #"<link[^>]+rel\s*=\s*["']image_src["'][^>]+href\s*=\s*["']([^"']+)["']"#,
-        ]
         let nsHTML = html as NSString
         let range = NSRange(location: 0, length: nsHTML.length)
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+        for regex in Self.ogImageRegexes {
             if let match = regex.firstMatch(in: html, range: range), match.numberOfRanges >= 2 {
                 let raw = nsHTML.substring(with: match.range(at: 1))
                     .replacingOccurrences(of: "&amp;", with: "&")
@@ -2302,10 +2424,7 @@ final class AIHotNewsService {
     
     
     fileprivate nonisolated static func firstHTMLImageURL(in html: String) -> String? {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"<img[^>]+src\s*=\s*["']([^"']+)["']"#,
-            options: [.caseInsensitive]
-        ) else { return nil }
+        guard let regex = Self.firstHTMLImageRegex else { return nil }
         let ns = html as NSString
         if let match = regex.firstMatch(in: html, range: NSRange(location: 0, length: ns.length)),
            match.numberOfRanges >= 2
@@ -2318,14 +2437,9 @@ final class AIHotNewsService {
     
     
     nonisolated static func extractOpenGraphDescription(from html: String) -> String? {
-        let patterns: [String] = [
-            #"<meta[^>]+(?:property|name)\s*=\s*["'](?:og:description|twitter:description|description)["'][^>]+content\s*=\s*["']([^"']+)["']"#,
-            #"<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+(?:property|name)\s*=\s*["'](?:og:description|twitter:description|description)["']"#,
-        ]
         let nsHTML = html as NSString
         let range = NSRange(location: 0, length: nsHTML.length)
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+        for regex in Self.ogDescRegexes {
             if let match = regex.firstMatch(in: html, range: range), match.numberOfRanges >= 2 {
                 let raw = nsHTML.substring(with: match.range(at: 1))
                 if let clean = Self.stripHTMLToPlainText(raw, maxLength: 360) {

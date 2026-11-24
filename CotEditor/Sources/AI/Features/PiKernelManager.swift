@@ -122,6 +122,11 @@ final class PiKernelManager {
     
     let agentDirectoryURL: URL
     private let database: CotLocalDatabase
+    @ObservationIgnored private var workspaceSyncTask: Task<Void, Never>?
+    @ObservationIgnored private var writtenFileCache: [String: Data] = [:]
+    @ObservationIgnored private var ensuredDirectoryPaths: Set<String> = []
+    private static let extraBinsLock = NSLock()
+    private nonisolated(unsafe) static var cachedNodeRuntimeBins: (expiresAt: TimeInterval, bins: [String])?
     
     var isAvailable: Bool {
         guard let path = self.piBinaryPath else { return false }
@@ -164,8 +169,12 @@ final class PiKernelManager {
                 .appending(path: "PiKernel", directoryHint: .isDirectory)
         }
         
-        self.piBinaryPath = Self.discoverPiBinary(customOverride: database.string(forKey: Self.customBinaryConfigKey))
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+        let isTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+        if isTesting {
+            self.piBinaryPath = Self.discoverPiBinary(customOverride: database.string(forKey: Self.customBinaryConfigKey))
+        } else {
+            self.piBinaryPath = nil
             Task { @MainActor [weak self] in
                 await self?.refreshEnvironment()
             }
@@ -252,19 +261,36 @@ final class PiKernelManager {
             "/usr/local/bin",
         ])
         
-        // Include mise/nvm Node runtimes if present for npm-installed Pi 1.6+ (`#!/usr/bin/env node`)
-        let miseNodeDir = URL(filePath: "\(home)/.local/share/mise/installs/node", directoryHint: .isDirectory)
-        if let versions = try? fm.contentsOfDirectory(at: miseNodeDir, includingPropertiesForKeys: nil) {
-            for ver in versions.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
-                extraBins.append(ver.appending(path: "bin").path(percentEncoded: false))
+        // Include mise/nvm Node runtimes if present for npm-installed Pi 1.6+ (`#!/usr/bin/env node`), cached 60s.
+        let nowUptime = ProcessInfo.processInfo.systemUptime
+        let nodeBins: [String] = {
+            Self.extraBinsLock.lock()
+            if let cached = Self.cachedNodeRuntimeBins, nowUptime < cached.expiresAt {
+                let bins = cached.bins
+                Self.extraBinsLock.unlock()
+                return bins
             }
-        }
-        let nvmNodeDir = URL(filePath: "\(home)/.nvm/versions/node", directoryHint: .isDirectory)
-        if let versions = try? fm.contentsOfDirectory(at: nvmNodeDir, includingPropertiesForKeys: nil) {
-            for ver in versions.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
-                extraBins.append(ver.appending(path: "bin").path(percentEncoded: false))
+            Self.extraBinsLock.unlock()
+            
+            var discovered: [String] = []
+            let miseNodeDir = URL(filePath: "\(home)/.local/share/mise/installs/node", directoryHint: .isDirectory)
+            if let versions = try? fm.contentsOfDirectory(at: miseNodeDir, includingPropertiesForKeys: nil) {
+                for ver in versions.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
+                    discovered.append(ver.appending(path: "bin").path(percentEncoded: false))
+                }
             }
-        }
+            let nvmNodeDir = URL(filePath: "\(home)/.nvm/versions/node", directoryHint: .isDirectory)
+            if let versions = try? fm.contentsOfDirectory(at: nvmNodeDir, includingPropertiesForKeys: nil) {
+                for ver in versions.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
+                    discovered.append(ver.appending(path: "bin").path(percentEncoded: false))
+                }
+            }
+            Self.extraBinsLock.lock()
+            Self.cachedNodeRuntimeBins = (nowUptime + 60.0, discovered)
+            Self.extraBinsLock.unlock()
+            return discovered
+        }()
+        extraBins.append(contentsOf: nodeBins)
         
         let existingPath = base["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
         var seen = Set<String>()
@@ -293,7 +319,9 @@ final class PiKernelManager {
     func refreshEnvironment() async {
         let custom = self.database.string(forKey: Self.customBinaryConfigKey)
         let dbPath = self.database.databaseURL.path(percentEncoded: false)
-        let resolvedPath = Self.discoverPiBinary(customOverride: custom)
+        let resolvedPath = await Task.detached(priority: .utility) {
+            Self.discoverPiBinary(customOverride: custom)
+        }.value
         self.piBinaryPath = resolvedPath
         
         guard let resolvedPath else {
@@ -372,6 +400,48 @@ final class PiKernelManager {
     }
     
     
+    /// Debounces non-urgent `syncWorkspace()` calls so rapid memory/bot edits coalesce into one write.
+    func scheduleWorkspaceSync(delayMs: Int = 250) {
+        self.workspaceSyncTask?.cancel()
+        self.workspaceSyncTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(max(10, delayMs)))
+            guard let self, !Task.isCancelled else { return }
+            self.workspaceSyncTask = nil
+            _ = try? self.syncWorkspace()
+        }
+    }
+    
+    
+    private func ensureDirectory(_ url: URL, fileManager: FileManager = .default) throws {
+        let path = url.path(percentEncoded: false)
+        if self.ensuredDirectoryPaths.contains(path), fileManager.fileExists(atPath: path) {
+            return
+        }
+        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        self.ensuredDirectoryPaths.insert(path)
+    }
+    
+    
+    @discardableResult
+    private func writeIfChanged(
+        _ data: Data,
+        to url: URL,
+        permissions: Int? = nil,
+        fileManager: FileManager = .default
+    ) throws -> Bool {
+        let path = url.path(percentEncoded: false)
+        if self.writtenFileCache[path] == data, fileManager.fileExists(atPath: path) {
+            return false
+        }
+        try data.write(to: url, options: .atomic)
+        if let permissions {
+            try? fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: path)
+        }
+        self.writtenFileCache[path] = data
+        return true
+    }
+    
+    
     /// Synchronizes all configured API Gateways and Bots into `<agentDirectoryURL>/models.json`,
     /// `auth.json` (`0o600`), and `agents/<botID>/` manifests + `SYSTEM.md` instructions.
     @discardableResult
@@ -390,11 +460,11 @@ final class PiKernelManager {
         let kycContext = CotMemoryStore.shared.compiledKYCContext()
         let workspaceContext = CotAgentCoordinator.shared.workspaceContextSummary()
         
-        try fm.createDirectory(at: self.agentDirectoryURL, withIntermediateDirectories: true)
+        try self.ensureDirectory(self.agentDirectoryURL, fileManager: fm)
         let agentsDir = self.agentDirectoryURL.appending(path: "agents", directoryHint: .isDirectory)
         let sessionsDir = self.agentDirectoryURL.appending(path: "sessions", directoryHint: .isDirectory)
-        try fm.createDirectory(at: agentsDir, withIntermediateDirectories: true)
-        try fm.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        try self.ensureDirectory(agentsDir, fileManager: fm)
+        try self.ensureDirectory(sessionsDir, fileManager: fm)
         
         // Collect extra model overrides referenced by individual Bots
         var extraModelsByEndpoint: [UUID: Set<String>] = [:]
@@ -466,18 +536,22 @@ final class PiKernelManager {
             }
         }
         
+        var didWriteAnyFile = false
         let modelsPayload: [String: Any] = [
             "$schema": "https://pi.dev/schemas/models.schema.json",
             "providers": providersDict,
         ]
         let modelsData = try JSONSerialization.data(withJSONObject: modelsPayload, options: [.prettyPrinted, .sortedKeys])
-        try modelsData.write(to: self.agentDirectoryURL.appending(path: "models.json"), options: .atomic)
+        if try self.writeIfChanged(modelsData, to: self.agentDirectoryURL.appending(path: "models.json"), fileManager: fm) {
+            didWriteAnyFile = true
+        }
         
         // Write auth.json with strict owner-only 0o600 permissions
         let authURL = self.agentDirectoryURL.appending(path: "auth.json")
         let authData = try JSONSerialization.data(withJSONObject: authDict, options: [.prettyPrinted, .sortedKeys])
-        try authData.write(to: authURL, options: .atomic)
-        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authURL.path(percentEncoded: false))
+        if try self.writeIfChanged(authData, to: authURL, permissions: 0o600, fileManager: fm) {
+            didWriteAnyFile = true
+        }
         
         // Write Pi 1.6+ schema-compliant settings.json (quiet startup, no slow auto-retry loops during headless runs)
         let settingsPayload: [String: Any] = [
@@ -489,7 +563,9 @@ final class PiKernelManager {
             ],
         ]
         if let settingsData = try? JSONSerialization.data(withJSONObject: settingsPayload, options: [.prettyPrinted, .sortedKeys]) {
-            try? settingsData.write(to: self.agentDirectoryURL.appending(path: "settings.json"), options: .atomic)
+            if (try? self.writeIfChanged(settingsData, to: self.agentDirectoryURL.appending(path: "settings.json"), fileManager: fm)) == true {
+                didWriteAnyFile = true
+            }
         }
         
         // Write live CotEditor perception & SQLite control contract for autonomous Pi runs
@@ -512,22 +588,26 @@ final class PiKernelManager {
         
         \(workspaceContext.isEmpty ? "" : "## 实时工作区上下文\n\(workspaceContext)")
         """
-        try? Data(cotContextDoc.utf8).write(to: self.agentDirectoryURL.appending(path: "COT_CONTEXT.md"), options: .atomic)
+        if (try? self.writeIfChanged(Data(cotContextDoc.utf8), to: self.agentDirectoryURL.appending(path: "COT_CONTEXT.md"), fileManager: fm)) == true {
+            didWriteAnyFile = true
+        }
         
         // Write per-bot agent workspace (SYSTEM.md + bot-manifest.json + session directory)
         for botID in AIBotID.allCases {
             let botCfg = resolvedBotStore.config(for: botID)
             let botDir = agentsDir.appending(path: botID.rawValue, directoryHint: .isDirectory)
             let botSessionDir = sessionsDir.appending(path: botID.rawValue, directoryHint: .isDirectory)
-            try fm.createDirectory(at: botDir, withIntermediateDirectories: true)
-            try fm.createDirectory(at: botSessionDir, withIntermediateDirectories: true)
+            try self.ensureDirectory(botDir, fileManager: fm)
+            try self.ensureDirectory(botSessionDir, fileManager: fm)
             
             let customPersona = botCfg.customPersona.trimmingCharacters(in: .whitespacesAndNewlines)
             let effectivePersona = customPersona.isEmpty ? globalPersona : customPersona
             let stagePrompt = resolvedBotStore.systemPrompt(for: botID)
             let promptParts = [effectivePersona, kycContext, stagePrompt].filter { !$0.isEmpty }
             let fullPrompt = promptParts.joined(separator: "\n\n")
-            try Data(fullPrompt.utf8).write(to: botDir.appending(path: "SYSTEM.md"), options: .atomic)
+            if try self.writeIfChanged(Data(fullPrompt.utf8), to: botDir.appending(path: "SYSTEM.md"), fileManager: fm) {
+                didWriteAnyFile = true
+            }
             
             let targetEndpoint = botCfg.endpointID.flatMap { id in resolvedEndpoints.first(where: { $0.id == id }) } ?? activeEndpoint
             let effectiveModel = botCfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -554,12 +634,16 @@ final class PiKernelManager {
                 "toolProfile": toolProfile.rawValue,
             ]
             let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
-            try manifestData.write(to: botDir.appending(path: "bot-manifest.json"), options: .atomic)
+            if try self.writeIfChanged(manifestData, to: botDir.appending(path: "bot-manifest.json"), fileManager: fm) {
+                didWriteAnyFile = true
+            }
         }
         
-        self.syncedProviderCount = providersDict.count
-        self.syncedBotCount = AIBotID.allCases.count
-        self.lastSyncedAt = Date()
+        if didWriteAnyFile || self.lastSyncedAt == nil || self.syncedProviderCount != providersDict.count || self.syncedBotCount != AIBotID.allCases.count {
+            self.syncedProviderCount = providersDict.count
+            self.syncedBotCount = AIBotID.allCases.count
+            self.lastSyncedAt = Date()
+        }
         
         return PiWorkspaceSyncSummary(
             agentDirectory: self.agentDirectoryURL,
@@ -698,6 +782,9 @@ final class PiKernelManager {
         onPartial: (@MainActor @Sendable (String) -> Void)? = nil
     ) async throws -> String {
         
+        if self.piBinaryPath == nil {
+            self.piBinaryPath = Self.discoverPiBinary(customOverride: self.database.string(forKey: Self.customBinaryConfigKey))
+        }
         guard let binaryPath = self.piBinaryPath, FileManager.default.isExecutableFile(atPath: binaryPath) else {
             throw AIError.http(status: 503, message: AppLanguage.text("未找到 pi 可执行文件", en: "pi executable not found"))
         }
@@ -769,12 +856,19 @@ final class PiKernelManager {
             try process.run()
             
             let handle = stdoutPipe.fileHandleForReading
+            let stderrHandle = stderrPipe.fileHandleForReading
+            let stderrTask = Task.detached(priority: .utility) { () -> Data in
+                stderrHandle.readDataToEndOfFile()
+            }
             var lineBuffer = Data()
             var streamState = JSONLStreamState()
+            var lastEmitUptime: TimeInterval = 0
+            var pendingPartial: String?
             
             while true {
                 if Task.isCancelled {
                     if process.isRunning { process.terminate() }
+                    stderrTask.cancel()
                     throw CancellationError()
                 }
                 let chunk = try handle.read(upToCount: 4096) ?? Data()
@@ -793,18 +887,24 @@ final class PiKernelManager {
                     else { continue }
                     
                     let update = streamState.ingest(json)
-                    if let onPartial {
-                        if let snapshot = update.partialSnapshot {
+                    if let onPartial, let snapshot = update.partialSnapshot ?? update.toolHint {
+                        let now = ProcessInfo.processInfo.systemUptime
+                        if now - lastEmitUptime >= 0.035 {
+                            lastEmitUptime = now
+                            pendingPartial = nil
                             await MainActor.run { onPartial(snapshot) }
-                        } else if let toolHint = update.toolHint {
-                            await MainActor.run { onPartial(toolHint) }
+                        } else {
+                            pendingPartial = snapshot
                         }
                     }
                 }
             }
+            if let onPartial, let trailing = pendingPartial {
+                await MainActor.run { onPartial(trailing) }
+            }
             
             process.waitUntilExit()
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderrData = await stderrTask.value
             let stderrString = String(data: stderrData, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             
@@ -829,6 +929,9 @@ final class PiKernelManager {
     /// Builds a clean shell command to launch `botID` interactively inside CotEditor's built-in Terminal
     /// using `PiKernel`'s synchronized `models.json`, `auth.json`, session directory, and `SYSTEM.md`.
     func interactiveTerminalCommand(for botID: AIBotID, workingDirectory: URL? = nil) -> String? {
+        if self.piBinaryPath == nil {
+            self.piBinaryPath = Self.discoverPiBinary(customOverride: self.database.string(forKey: Self.customBinaryConfigKey))
+        }
         guard let binaryPath = self.piBinaryPath else { return nil }
         _ = try? self.syncWorkspace()
         

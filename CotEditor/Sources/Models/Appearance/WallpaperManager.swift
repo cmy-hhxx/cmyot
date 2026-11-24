@@ -21,6 +21,7 @@
 
 import AppKit
 import CoreImage
+import ImageIO
 import Observation
 import SwiftUI
 
@@ -165,7 +166,16 @@ final class WallpaperManager {
                 self.spec = normalized
                 return
             }
-            self.persistSpec()
+            if !self.spec.isEnabled {
+                self.clearTransientImageCaches()
+            }
+            if self.shouldDebouncePersist(from: oldValue, to: self.spec) {
+                self.scheduleDebouncedPersistSpec()
+            } else {
+                self.persistDebounceTask?.cancel()
+                self.persistDebounceTask = nil
+                self.persistSpecImmediately()
+            }
             NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
         }
     }
@@ -175,10 +185,31 @@ final class WallpaperManager {
     
     private let database: CotLocalDatabase
     private let storageDirectory: URL
-    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
-    private var rawImageCache: [String: NSImage] = [:]
-    private var thumbnailCache: [String: NSImage] = [:]
-    private var blurredImageCache: [String: NSImage] = [:]
+    @ObservationIgnored private lazy var ciContext = CIContext(options: [.useSoftwareRenderer: false])
+    private let rawImageCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.totalCostLimit = 64 * 1024 * 1024
+        cache.countLimit = 12
+        return cache
+    }()
+    private let thumbnailCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.totalCostLimit = 16 * 1024 * 1024
+        cache.countLimit = 48
+        return cache
+    }()
+    private let blurredImageCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.totalCostLimit = 48 * 1024 * 1024
+        cache.countLimit = 16
+        return cache
+    }()
+    @ObservationIgnored private var persistDebounceTask: Task<Void, Never>?
+    
+    
+    isolated deinit {
+        self.persistDebounceTask?.cancel()
+    }
     
     
     var allItems: [WallpaperItem] {
@@ -244,9 +275,9 @@ final class WallpaperManager {
         } else {
             self.customRecords = []
         }
-        self.rawImageCache.removeAll()
-        self.thumbnailCache.removeAll()
-        self.blurredImageCache.removeAll()
+        self.rawImageCache.removeAllObjects()
+        self.thumbnailCache.removeAllObjects()
+        self.blurredImageCache.removeAllObjects()
         self.catalogVersion += 1
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
@@ -377,7 +408,7 @@ final class WallpaperManager {
         self.persistCustomCatalog()
         
         if let cachedImg = NSImage(data: jpegData) {
-            self.rawImageCache[id] = cachedImg
+            self.rawImageCache.setObject(cachedImg, forKey: id as NSString, cost: Self.estimatedImageCost(cachedImg))
         }
         self.catalogVersion += 1
         self.selectWallpaper(id: id, enableIfDisabled: true)
@@ -390,9 +421,9 @@ final class WallpaperManager {
         let removed = self.customRecords.remove(at: idx)
         let url = self.storageDirectory.appending(path: removed.filename)
         try? FileManager.default.removeItem(at: url)
-        self.rawImageCache.removeValue(forKey: id)
-        self.thumbnailCache.removeValue(forKey: id)
-        self.blurredImageCache.keys.filter { $0.hasPrefix("\(id)|") }.forEach { self.blurredImageCache.removeValue(forKey: $0) }
+        self.rawImageCache.removeObject(forKey: id as NSString)
+        self.thumbnailCache.removeObject(forKey: id as NSString)
+        self.blurredImageCache.removeAllObjects()
         self.persistCustomCatalog()
         self.catalogVersion += 1
         
@@ -415,40 +446,40 @@ final class WallpaperManager {
     
     /// Returns a lightweight cached `192×128` thumbnail for zero-lag Settings gallery scrolling.
     func thumbnailImage(for id: String) -> NSImage {
-        if let cached = self.thumbnailCache[id] {
+        if let cached = self.thumbnailCache.object(forKey: id as NSString) {
             return cached
         }
         let targetSize = NSSize(width: 192, height: 128)
         if let record = self.customRecords.first(where: { $0.id == id }) {
             let url = self.storageDirectory.appending(path: record.filename)
-            if let source = self.rawImageCache[id] ?? NSImage(contentsOf: url) {
+            if let source = self.rawImageCache.object(forKey: id as NSString) ?? Self.downsampledImage(from: url, maxPixelSize: 384) {
                 let thumb = Self.downsample(source, to: targetSize)
-                self.thumbnailCache[id] = thumb
+                self.thumbnailCache.setObject(thumb, forKey: id as NSString, cost: Self.estimatedImageCost(thumb))
                 return thumb
             }
         }
         let item = Self.builtInItems.first(where: { $0.id == id }) ?? Self.builtInItems[0]
         let rendered = Self.renderProceduralArtwork(item: item, size: targetSize)
-        self.thumbnailCache[id] = rendered
+        self.thumbnailCache.setObject(rendered, forKey: id as NSString, cost: Self.estimatedImageCost(rendered))
         return rendered
     }
     
     
     /// Returns the sharp preview/thumbnail artwork for the editor preview or card cover.
     func artworkImage(for id: String) -> NSImage {
-        if let cached = self.rawImageCache[id] {
+        if let cached = self.rawImageCache.object(forKey: id as NSString) {
             return cached
         }
         if let record = self.customRecords.first(where: { $0.id == id }) {
             let url = self.storageDirectory.appending(path: record.filename)
-            if let img = NSImage(contentsOf: url) {
-                self.rawImageCache[id] = img
+            if let img = Self.downsampledImage(from: url, maxPixelSize: 2048) ?? NSImage(contentsOf: url) {
+                self.rawImageCache.setObject(img, forKey: id as NSString, cost: Self.estimatedImageCost(img))
                 return img
             }
         }
         let item = Self.builtInItems.first(where: { $0.id == id }) ?? Self.builtInItems[0]
         let rendered = Self.renderProceduralArtwork(item: item, size: NSSize(width: 640, height: 420))
-        self.rawImageCache[id] = rendered
+        self.rawImageCache.setObject(rendered, forKey: id as NSString, cost: Self.estimatedImageCost(rendered))
         return rendered
     }
     
@@ -461,8 +492,8 @@ final class WallpaperManager {
         let quantizedBlur = Int((self.spec.blurRadius / 2.0).rounded()) * 2
         guard quantizedBlur >= 2 else { return raw }
         
-        let cacheKey = "\(self.spec.selectedID)|\(quantizedBlur)"
-        if let cached = self.blurredImageCache[cacheKey] {
+        let cacheKey = "\(self.spec.selectedID)|\(quantizedBlur)" as NSString
+        if let cached = self.blurredImageCache.object(forKey: cacheKey) {
             return cached
         }
         // Downsample large custom wallpapers to max 640px before Gaussian blur so GPU pass is instantaneous.
@@ -480,10 +511,7 @@ final class WallpaperManager {
         else { return raw }
         
         let blurred = NSImage(cgImage: outCG, size: blurInput.size)
-        if self.blurredImageCache.count > 24 {
-            self.blurredImageCache.removeAll()
-        }
-        self.blurredImageCache[cacheKey] = blurred
+        self.blurredImageCache.setObject(blurred, forKey: cacheKey, cost: Self.estimatedImageCost(blurred))
         return blurred
     }
     
@@ -512,7 +540,54 @@ final class WallpaperManager {
     }
     
     
-    private func persistSpec() {
+    private func clearTransientImageCaches() {
+        self.rawImageCache.removeAllObjects()
+        self.blurredImageCache.removeAllObjects()
+    }
+    
+    
+    private func shouldDebouncePersist(from oldSpec: WallpaperSpec, to newSpec: WallpaperSpec) -> Bool {
+        guard self.database === CotLocalDatabase.shared, !CotLocalDatabase.isRunningUnitTests else {
+            return false
+        }
+        return oldSpec.selectedID == newSpec.selectedID && oldSpec.isEnabled == newSpec.isEnabled
+    }
+    
+    
+    private func scheduleDebouncedPersistSpec() {
+        self.persistDebounceTask?.cancel()
+        self.persistDebounceTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            self?.persistSpecImmediately()
+        }
+    }
+    
+    
+    private static func downsampledImage(from url: URL, maxPixelSize: Int) -> NSImage? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else {
+            return nil
+        }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+    
+    
+    private static func estimatedImageCost(_ image: NSImage) -> Int {
+        if let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return max(4096, cg.bytesPerRow * cg.height)
+        }
+        return max(4096, Int(image.size.width * image.size.height * 16))
+    }
+    
+    
+    private func persistSpecImmediately() {
         guard let data = try? JSONEncoder().encode(self.spec),
               let json = String(data: data, encoding: .utf8)
         else { return }

@@ -299,7 +299,7 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
         }
         
         if self.rendersPlainTextInlineImages {
-            let nsString = self.attributedString().string as NSString
+            let nsString = self.backingNSString
             if nsString.length > 0 {
                 var minChar = nsString.length - 1
                 var maxChar = 0
@@ -404,10 +404,16 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
     // MARK: Private Methods
     
     
+    private var backingNSString: NSString {
+        
+        self.textStorage?.mutableString ?? (self.attributedString().string as NSString)
+    }
+    
+    
     private func invalidateLineDisplay(around charLocation: Int?) {
         
         guard let charLocation, charLocation >= 0 else { return }
-        let nsString = self.attributedString().string as NSString
+        let nsString = self.backingNSString
         guard nsString.length > 0 else { return }
         let safeLoc = min(charLocation, max(0, nsString.length - 1))
         let lineRange = nsString.lineRange(for: NSRange(location: safeLoc, length: 0))
@@ -454,7 +460,7 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
     private func resolvedInlineImageToken(startingAt charIndex: Int) -> (range: NSRange, identifier: String)? {
         
         guard self.rendersPlainTextInlineImages else { return nil }
-        let nsString = self.attributedString().string as NSString
+        let nsString = self.backingNSString
         guard charIndex >= 0, charIndex < nsString.length, nsString.character(at: charIndex) == 0x27E6 else { return nil }
         let lineRange = nsString.lineRange(for: NSRange(location: charIndex, length: 0))
         let tokens = PlainTextInlineImageStore.shared.findTokens(in: nsString, range: lineRange)
@@ -481,7 +487,7 @@ extension LayoutManager: NSLayoutManagerDelegate {
            glyphRange.location != NSNotFound, glyphRange.length > 0
         {
             let charRange = self.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-            let string = self.attributedString().string as NSString
+            let string = self.backingNSString
             if charRange.location != NSNotFound, string.length > 0 {
                 let safeRange = NSIntersectionRange(charRange, NSRange(location: 0, length: string.length))
                 if safeRange.length >= 4,

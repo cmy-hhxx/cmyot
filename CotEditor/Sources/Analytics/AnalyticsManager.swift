@@ -419,8 +419,10 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     @ObservationIgnored private var cachedBucketTime: CFAbsoluteTime = 0
     @ObservationIgnored private var cachedBucketDateKey: String = ""
     @ObservationIgnored private var cachedBucketHour: Int = 0
+    @ObservationIgnored private var lastPendingMutationUptime: TimeInterval = 0
     @ObservationIgnored private var flushTask: Task<Void, Never>?
     @ObservationIgnored private var backgroundDigestTask: Task<Void, Never>?
+    @ObservationIgnored private var aiWindowStartKey: String = ""
     
     @ObservationIgnored private var cachedYearlyHeatmapKey: String = ""
     @ObservationIgnored private var cachedYearlyHeatmapValue: YearlyHeatmapData?
@@ -428,6 +430,26 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     @ObservationIgnored private var cachedBusynessValue: BusynessMetrics?
     @ObservationIgnored private var cachedMoodKey: String = ""
     @ObservationIgnored private var cachedMoodValue: MoodMetrics?
+    
+    private static let relativeTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+    
+    private static let relativeDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M月d日"
+        return formatter
+    }()
+    
+    private static let readableTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日 EEEE HH:mm"
+        return formatter
+    }()
     
     
     private static var isRunningUnitTests: Bool {
@@ -504,11 +526,19 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     
     private func schedulePendingFlush() {
         
-        self.flushTask?.cancel()
+        self.lastPendingMutationUptime = ProcessInfo.processInfo.systemUptime
+        guard self.flushTask == nil else { return }
         self.flushTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(2000))
-            guard !Task.isCancelled else { return }
-            self?.flushPendingStats()
+            while let self, !Task.isCancelled {
+                let elapsed = ProcessInfo.processInfo.systemUptime - self.lastPendingMutationUptime
+                let remaining = 2.0 - elapsed
+                if remaining <= 0.02 {
+                    self.flushPendingStats()
+                    return
+                }
+                let nanos = UInt64((remaining * 1_000_000_000).rounded(.up))
+                try? await Task.sleep(nanoseconds: max(20_000_000, nanos))
+            }
         }
     }
     
@@ -614,11 +644,25 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         self.pendingTypedDateKey = nil
         self.pendingTypedHour = nil
         
+        let precomputedBuckets: [Int]? = {
+            guard charsDelta > 0, (0..<24).contains(targetHour) else { return nil }
+            let existingBuckets: [Int]? = if self.storedTodayStats.dateKey == targetDateKey {
+                self.storedTodayStats.hourlyTypedChars
+            } else {
+                self.recentDailyStats.first(where: { $0.dateKey == targetDateKey })?.hourlyTypedChars
+            }
+            guard let existingBuckets, existingBuckets.count == 24 else { return nil }
+            var updated = existingBuckets
+            updated[targetHour] += charsDelta
+            return updated
+        }()
+        
         self.database.incrementDailyWritingStats(
             dateKey: targetDateKey,
             typedChars: charsDelta,
             localHits: hitsDelta,
-            hourBucket: charsDelta > 0 ? targetHour : nil
+            hourBucket: charsDelta > 0 ? targetHour : nil,
+            precomputedHourlyBuckets: precomputedBuckets
         )
         self.applyInPlaceDailyStatsUpdate(
             dateKey: targetDateKey,
@@ -735,7 +779,15 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             outputTokens: safeOut
         )
         self.database.insertAIUsageEvent(event)
-        self.recentAIEvents.insert(event, at: 0)
+        if let first = self.recentAIEvents.first, first.timestamp > event.timestamp {
+            let idx = self.recentAIEvents.firstIndex(where: { $0.timestamp <= event.timestamp }) ?? self.recentAIEvents.endIndex
+            self.recentAIEvents.insert(event, at: idx)
+        } else {
+            self.recentAIEvents.insert(event, at: 0)
+        }
+        if self.recentAIEvents.count > 5_000 {
+            self.recentAIEvents.removeLast(self.recentAIEvents.count - 5_000)
+        }
         self.applyInPlaceDailyStatsUpdate(
             dateKey: key,
             aiRequests: 1,
@@ -756,14 +808,15 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         let calendar = Calendar.current
         let today = Date()
         let todayKey = Self.dateKey(for: today)
-        let aiLookbackDate = calendar.date(byAdding: .day, value: -400, to: calendar.startOfDay(for: today)) ?? today
+        let aiLookbackDate = calendar.date(byAdding: .day, value: -90, to: calendar.startOfDay(for: today)) ?? today
         let aiSinceKey = Self.dateKey(for: aiLookbackDate)
+        self.aiWindowStartKey = aiSinceKey
         
         let stats = self.database.fetchDailyWritingStats(sinceDateKey: "2000-01-01")
         self.recentDailyStats = stats
         self.storedTodayStats = stats.first(where: { $0.dateKey == todayKey }) ?? DailyWritingStats(dateKey: todayKey)
         
-        self.recentAIEvents = self.database.fetchAIUsageEvents(sinceDateKey: aiSinceKey)
+        self.recentAIEvents = self.database.fetchAIUsageEvents(sinceDateKey: aiSinceKey, limit: 5_000)
         self.todayDigest = self.database.fetchDailyAIDigest(forDateKey: todayKey)
             ?? self.database.fetchRecentDailyAIDigests(limit: 1).first
         self.reminders = self.database.fetchAllReminders()
@@ -939,34 +992,36 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             return label.isEmpty ? "AI" : label
         }()
         
-        for (dateKey, seed) in seedsByDay.sorted(by: { $0.key < $1.key }) {
-            let derived = Self.deriveHistoricalStats(
-                dateKey: dateKey,
-                anchorDate: seed.anchorDate,
-                charBudget: seed.charBudget,
-                filesCreated: seed.filesCreated,
-                saves: seed.saves,
-                reportCount: seed.reportCount
-            )
-            self.database.backfillDailyWritingStatsIfEmpty(derived)
-            
-            // Seed matching AI usage events for recent 30-day window so model & feature charts align with daily totals.
-            if seed.anchorDate >= thirtyDaysAgo, !existingEventDays.contains(dateKey), derived.aiRequests > 0 {
-                let events = Self.deriveHistoricalAIEvents(
-                    stats: derived,
+        self.database.withTransaction {
+            for (dateKey, seed) in seedsByDay.sorted(by: { $0.key < $1.key }) {
+                let derived = Self.deriveHistoricalStats(
+                    dateKey: dateKey,
                     anchorDate: seed.anchorDate,
-                    primaryModel: primaryModel,
-                    lightweightModel: lightweightModel,
-                    provider: primaryProvider,
+                    charBudget: seed.charBudget,
+                    filesCreated: seed.filesCreated,
+                    saves: seed.saves,
                     reportCount: seed.reportCount
                 )
-                for event in events {
-                    self.database.insertAIUsageEvent(event)
+                self.database.backfillDailyWritingStatsIfEmpty(derived)
+                
+                // Seed matching AI usage events for recent 30-day window so model & feature charts align with daily totals.
+                if seed.anchorDate >= thirtyDaysAgo, !existingEventDays.contains(dateKey), derived.aiRequests > 0 {
+                    let events = Self.deriveHistoricalAIEvents(
+                        stats: derived,
+                        anchorDate: seed.anchorDate,
+                        primaryModel: primaryModel,
+                        lightweightModel: lightweightModel,
+                        provider: primaryProvider,
+                        reportCount: seed.reportCount
+                    )
+                    for event in events {
+                        self.database.insertAIUsageEvent(event)
+                    }
                 }
             }
+            
+            self.database.set(true, forKey: CotLocalDatabase.ConfigKey.analyticsHistoricalBackfillV2)
         }
-        
-        self.database.set(true, forKey: CotLocalDatabase.ConfigKey.analyticsHistoricalBackfillV2)
     }
     
     
@@ -1344,7 +1399,13 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     /// Builds full rich details for a clicked heatmap cell, including models, features, documents, and daily digest.
     func dayDetail(for cell: HeatmapDayCell) -> HeatmapDayDetail {
         
-        let dayEvents = self.recentAIEvents.filter { $0.dateKey == cell.dateKey }
+        let dayEvents: [AIUsageEvent] = if (!self.aiWindowStartKey.isEmpty && cell.dateKey < self.aiWindowStartKey)
+            || (self.recentAIEvents.count >= 5_000 && !self.recentAIEvents.contains(where: { $0.dateKey == cell.dateKey }))
+        {
+            self.database.fetchAIUsageEvents(forDateKey: cell.dateKey)
+        } else {
+            self.recentAIEvents.filter { $0.dateKey == cell.dateKey }
+        }
         let models = Self.aggregateModelDistribution(from: dayEvents)
         let features = Self.aggregateFeatureDistribution(from: dayEvents)
         let validLatencies = dayEvents.map(\.latencyMs).filter { $0 > 0 }
@@ -1574,15 +1635,23 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             hasDeadline: deadline != nil
         )
         self.database.saveReminder(todo)
-        self.reloadFromDatabase()
+        self.reloadRemindersOnly()
         return todo
+    }
+    
+    
+    /// Reloads only reminders without triggering a full historical stats & events reload.
+    private func reloadRemindersOnly() {
+        
+        self.reminders = self.database.fetchAllReminders()
+        self.revision &+= 1
     }
     
     
     func unpinReminder(id: String) {
         
         self.database.setReminderPinned(id: id, isPinned: false)
-        self.reloadFromDatabase()
+        self.reloadRemindersOnly()
     }
     
     
@@ -1597,7 +1666,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             dueDayKey: Self.dateKey(for: newDue),
             hasDeadline: true
         )
-        self.reloadFromDatabase()
+        self.reloadRemindersOnly()
     }
     
     
@@ -1624,7 +1693,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             completedAt: nil
         )
         self.database.saveReminder(reminder)
-        self.reloadFromDatabase()
+        self.reloadRemindersOnly()
         return reminder
     }
     
@@ -1633,14 +1702,14 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         
         guard let item = self.reminders.first(where: { $0.id == id }) else { return }
         self.database.toggleReminderCompleted(id: id, isCompleted: !item.isCompleted)
-        self.reloadFromDatabase()
+        self.reloadRemindersOnly()
     }
     
     
     func deleteReminder(id: String) {
         
         self.database.deleteReminder(id: id)
-        self.reloadFromDatabase()
+        self.reloadRemindersOnly()
     }
     
     
@@ -1733,11 +1802,18 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     func refreshDailyDigest(force: Bool) async {
         
         guard !self.isSummarizingDigest else { return }
-        self.flushPendingStats()
-        
         let todayKey = Self.dateKey()
-        let corpus = self.collectTodayCorpus(dateKey: todayKey)
         let existing = self.database.fetchDailyAIDigest(forDateKey: todayKey)
+        if !force,
+           let existing,
+           !existing.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           Date().timeIntervalSince(existing.generatedAt) < Self.digestAutoInterval
+        {
+            return
+        }
+        
+        self.flushPendingStats()
+        let corpus = self.collectTodayCorpus(dateKey: todayKey)
         
         if !force {
             guard self.shouldAutoRunDigest(
@@ -1946,6 +2022,33 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     
     // MARK: Private Corpus Helpers
     
+    private static func boundedTextSlice(
+        from textStorage: NSTextStorage,
+        headLimit: Int,
+        tailLimit: Int = 0
+    ) -> (text: String, totalLength: Int) {
+        let ns = textStorage.mutableString as NSString
+        let total = ns.length
+        guard total > 0 else { return ("", 0) }
+        if tailLimit <= 0 {
+            let range = ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(total, headLimit)))
+            let head = ns.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
+            return (head, total <= range.length ? head.count : total)
+        }
+        if total <= headLimit + tailLimit {
+            let full = (ns as String).trimmingCharacters(in: .whitespacesAndNewlines)
+            return (full, full.count)
+        }
+        let headRange = ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(total, headLimit)))
+        let tailStart = max(0, total - tailLimit)
+        let tailRange = ns.rangeOfComposedCharacterSequences(for: NSRange(location: tailStart, length: total - tailStart))
+        let head = ns.substring(with: headRange)
+        let tail = ns.substring(with: tailRange)
+        let combined = "\(head)\n...\n\(tail)".trimmingCharacters(in: .whitespacesAndNewlines)
+        return (combined, total)
+    }
+    
+    
     private func collectTodayCorpus(dateKey: String) -> (promptText: String, charCount: Int, fingerprint: String) {
         
         var segments: [String] = []
@@ -1954,13 +2057,14 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         
         if self.database === CotLocalDatabase.shared {
             for case let doc as Document in NSDocumentController.shared.documents {
-                let text = doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                let sliced = Self.boundedTextSlice(from: doc.textStorage, headLimit: 1800)
+                let text = sliced.text
                 guard !text.isEmpty else { continue }
                 let docDateKey = doc.lastManualSaveDate.map { Self.dateKey(for: $0) } ?? dateKey
                 guard doc.hasUncommittedChanges || docDateKey == dateKey else { continue }
                 let docTitle = doc.displayName ?? "未命名文档"
                 usedTitles.insert(docTitle)
-                totalChars += text.count
+                totalChars += sliced.totalLength
                 segments.append("【写作片段 #\(segments.count + 1)】\n\(String(text.prefix(1200)))")
                 if segments.count >= 6 { break }
             }
@@ -2085,9 +2189,17 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             guard autoEnabled else { return }
         }
         
+        let existing = self.personalityProfile
+        if !force,
+           let existing,
+           !existing.isLocalFallback,
+           Date().timeIntervalSince(existing.generatedAt) < UserPersonalityAnalyzer.autoInterval
+        {
+            return
+        }
+        
         self.flushPendingStats()
         let corpus = self.collectPersonalityCorpus()
-        let existing = self.personalityProfile
         
         if !force {
             guard UserPersonalityAnalyzer.shouldAutoRun(
@@ -2254,7 +2366,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         
         if self.database === CotLocalDatabase.shared {
             for case let doc as Document in NSDocumentController.shared.documents {
-                let text = doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = Self.boundedTextSlice(from: doc.textStorage, headLimit: 1024).text
                 guard !text.isEmpty else { continue }
                 let title = doc.displayName ?? "未命名"
                 usedTitles.insert(title)
@@ -2515,24 +2627,19 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             return "\(max(1, Int(delta / 60))) 分钟前"
         }
         let calendar = Calendar.current
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "HH:mm"
         if calendar.isDate(date, inSameDayAs: referenceDate) {
-            return "今天 \(timeFormatter.string(from: date))"
+            return "今天 \(Self.relativeTimeFormatter.string(from: date))"
         }
         if let yesterday = calendar.date(byAdding: .day, value: -1, to: referenceDate),
            calendar.isDate(date, inSameDayAs: yesterday)
         {
-            return "昨天 \(timeFormatter.string(from: date))"
+            return "昨天 \(Self.relativeTimeFormatter.string(from: date))"
         }
         let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: referenceDate)).day ?? 0
         if (2...6).contains(days) {
             return "\(days) 天前"
         }
-        let dateFormatter = DateFormatter()
-        dateFormatter.locale = Locale(identifier: "zh_CN")
-        dateFormatter.dateFormat = "M月d日"
-        return dateFormatter.string(from: date)
+        return Self.relativeDateFormatter.string(from: date)
     }
 }
 
@@ -2608,7 +2715,9 @@ extension AnalyticsManager {
         let calendar = Calendar.current
         
         var hourlyAI = Array(repeating: 0, count: 24)
-        for event in self.recentAIEvents where event.dateKey == todayKey {
+        for event in self.recentAIEvents {
+            if event.dateKey < todayKey { break }
+            guard event.dateKey == todayKey else { continue }
             let h = calendar.component(.hour, from: event.timestamp)
             if (0..<24).contains(h) {
                 hourlyAI[h] += 1
@@ -2980,6 +3089,100 @@ extension AnalyticsManager {
     }
     
     
+    /// Sanitizes predicted next-action text ("要干啥") by stripping all parenthetical explanations,
+    /// bracket markers, numbering, and document names while condensing to a crisp single-line action.
+    nonisolated static func sanitizePredictedActionText(
+        _ raw: String,
+        knownTitles: [String],
+        maxLength: Int = 20
+    ) -> String {
+        var text = raw
+            .replacingOccurrences(of: "\u{FFFD}", with: "")
+            .replacingOccurrences(of: "\u{FEFF}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return "" }
+        
+        // 1. Strip leading numbering ("1. ", "(1) ", "（3）", "① ")
+        text = text.replacingOccurrences(
+            of: #"^\s*(?:\d+[.、)\]]|\(\d+\)|（\d+）|[①②③④⑤⑥⑦⑧⑨⑩])\s*"#,
+            with: "",
+            options: .regularExpression
+        )
+        
+        // 2. Remove paired brackets and their parenthetical supplements
+        text = text.replacingOccurrences(
+            of: #"\([^\)\n]*\)|（[^）\n]*）|\[[^\]\n]*\]|【[^】\n]*】|《[^》\n]*》|〈[^〉\n]*〉"#,
+            with: "",
+            options: .regularExpression
+        )
+        
+        // 3. Unwrap corner quotes while retaining core words inside
+        text = text
+            .replacingOccurrences(of: "「", with: "")
+            .replacingOccurrences(of: "」", with: "")
+            .replacingOccurrences(of: "『", with: "")
+            .replacingOccurrences(of: "』", with: "")
+        
+        // 4. Clean document titles, word counts, and noise via base sanitizer
+        var result = Self.sanitizeDashboardActionText(
+            text,
+            knownTitles: knownTitles,
+            maxLength: nil,
+            fallback: ""
+        )
+        
+        // 5. Fallback strip of any stray unpaired bracket characters
+        let strayBrackets = CharacterSet(charactersIn: "()（）[]【】「」『』《》〈〉")
+        if result.rangeOfCharacter(from: strayBrackets) != nil {
+            result = String(result.unicodeScalars.filter { !strayBrackets.contains($0) })
+        }
+        result = result.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ，,、；;：:·-—\n\t"))
+        guard !result.isEmpty else { return "" }
+        
+        if result.count <= maxLength {
+            return result
+        }
+        
+        // 6. Prefer first concise complete clause within `maxLength`
+        let clauseSeparators = CharacterSet(charactersIn: "，,；;。：:—")
+        let clauses = result.components(separatedBy: clauseSeparators)
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " ，,、；;：:·-—\n\t")) }
+            .filter { $0.count >= 4 }
+        for clause in clauses {
+            if clause.count <= maxLength && Self.isCompleteDashboardSentence(clause) {
+                return clause
+            }
+        }
+        
+        let limit = min(maxLength, result.count)
+        var endIdx = result.index(result.startIndex, offsetBy: limit)
+        while endIdx > result.startIndex {
+            let candidate = String(result[..<endIdx])
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ，,、；;：:·-—\n\t"))
+            if candidate.count >= 4 && Self.isCompleteDashboardSentence(candidate) {
+                if endIdx < result.endIndex,
+                   let lastScalar = candidate.unicodeScalars.last,
+                   let nextScalar = result[endIdx...].unicodeScalars.first,
+                   CharacterSet.alphanumerics.contains(lastScalar) && lastScalar.isASCII,
+                   CharacterSet.alphanumerics.contains(nextScalar) && nextScalar.isASCII,
+                   let spaceIdx = candidate.lastIndex(where: { $0.isWhitespace })
+                {
+                    let wordBounded = String(candidate[..<spaceIdx]).trimmingCharacters(in: .whitespaces)
+                    if wordBounded.count >= 4 && Self.isCompleteDashboardSentence(wordBounded) {
+                        return wordBounded
+                    }
+                }
+                return candidate
+            }
+            endIdx = result.index(before: endIdx)
+        }
+        
+        return String(result.prefix(limit))
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ，,、；;：:·-—\n\t"))
+    }
+    
+    
     /// Lively, candid, sharp commentary summarizing what the user got done today ("干了啥"),
     /// mixing real praise with witty mild profanity / roasts — zero dry corporate logs.
     var doneTodayPoints: [String] {
@@ -3207,7 +3410,7 @@ extension AnalyticsManager {
         var snippets: [String] = []
         if self.database === CotLocalDatabase.shared {
             for case let doc as Document in NSDocumentController.shared.documents {
-                let text = doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = Self.boundedTextSlice(from: doc.textStorage, headLimit: 800).text
                 guard Self.isMeaningfulDocumentContent(text) else { continue }
                 snippets.append("正在写的片段：\n\(String(text.prefix(420)))")
                 if snippets.count >= 3 { break }
@@ -3277,15 +3480,19 @@ extension AnalyticsManager {
            !bundle.predictions.isEmpty
         {
             var seen = Set<String>()
+            let bracketChars = CharacterSet(charactersIn: "()（）[]【】「」『』《》〈〉")
+            var needsConciseRefresh = false
             let cleanedPredictions: [DocumentActionPrediction] = bundle.predictions.compactMap { pred in
                 let rawTrim = pred.action.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !rawTrim.hasSuffix(":"), !rawTrim.hasSuffix("：") else { return nil }
+                if rawTrim.count > 20 || rawTrim.rangeOfCharacter(from: bracketChars) != nil {
+                    needsConciseRefresh = true
+                }
                 var sanitized = pred
-                sanitized.action = Self.sanitizeDashboardActionText(
+                sanitized.action = Self.sanitizePredictedActionText(
                     rawTrim,
                     knownTitles: knownTitles,
-                    maxLength: nil,
-                    fallback: ""
+                    maxLength: 20
                 )
                 sanitized.reason = ""
                 guard sanitized.action.count >= 4,
@@ -3299,7 +3506,9 @@ extension AnalyticsManager {
             if !cleanedPredictions.isEmpty {
                 self.actionPredictions = cleanedPredictions
                 self.actionPredictionsFromAI = bundle.isAIGenerated
-                self.actionPredictionUpdatedAt = (cleanedPredictions.count == bundle.predictions.count) ? bundle.updatedAt : nil
+                self.actionPredictionUpdatedAt = (cleanedPredictions.count == bundle.predictions.count && !needsConciseRefresh)
+                    ? bundle.updatedAt
+                    : nil
                 self.actionPredictionFingerprint = bundle.sourceFingerprint
                 return
             }
@@ -3321,9 +3530,6 @@ extension AnalyticsManager {
         
         guard !self.isPredictingActions else { return }
         
-        let corpus = self.collectActionPredictionCorpus()
-        let recentDocs = self.database.documents.filter { !$0.id.hasPrefix("weekly:") }
-        
         if !force,
            !self.actionPredictions.isEmpty,
            let updatedAt = self.actionPredictionUpdatedAt,
@@ -3331,6 +3537,9 @@ extension AnalyticsManager {
         {
             return
         }
+        
+        let corpus = self.collectActionPredictionCorpus()
+        let recentDocs = self.database.documents.filter { !$0.id.hasPrefix("weekly:") }
         
         // Immediately ensure clean non-junk local predictions while AI thinks
         if self.actionPredictions.isEmpty || force {
@@ -3365,15 +3574,15 @@ extension AnalyticsManager {
         
         let systemPrompt = """
         你是用户最懂业务与上下文的资深工作搭子。你手里有他刚打开/修改的真实文档、未勾完的待办、停笔段落、开放问题和最近周报。
-        请你**精准且犀利**地推理出接下来最该立刻推进的 3 到 4 件事（「要干啥」）。
+        请你**精准且凝练**地推理出接下来最该立刻推进的 3 到 4 件事（「要干啥」）。
 
         铁律：
-        1. **准**：必须死死咬住上下文里真实存在的具体问题、卡点、未完模块或决定，给出明确可执行的下一步（例如「把支付回调超时的重试上限敲定并补单测」），绝不写"梳理一下思路/回顾文档/继续加油"这种废话！
-        2. **犀利有活人感**：一针见血点破拖延点或风险，口吻像聪明直爽的同事提醒你干正事（带点催促、吐槽或调侃，但字字在点上）。
-        3. **洁癖过滤**：无视所有测试占位词（111、222、test、测试、asdf、demo），绝不把垃圾输入当任务。
-        4. `action` 控制在 14～34 字（不含书名号《》或字数统计），**每条都必须是语义完整、有头有尾的完整句子**，绝不能出现半截话、省略号截断、冒号悬空或未写完的短语；`reason` 用 8～18 字点出为什么急/依据来自哪块进展（如「停笔在鉴权分支还没闭环」）。
+        1. **准**：死死咬住上下文里真实存在的具体问题、卡点或未完模块，直给最核心的下一步动作（例如「敲定支付回调重试上限并补单测」），绝不写"梳理一下思路/回顾文档/继续加油"这种废话！
+        2. **极简短句**：`action` **严格控制在 8～15 个字**，单行即可读完；不要写解释、不要带尾巴从句、不要加冒号。
+        3. **严禁出现任何括号**：绝对禁止使用任何括号或书名号（严禁 `()`、`（）`、`[]`、`【】`、`「」`、`《》`），也不要带字数统计。
+        4. **洁癖过滤**：无视所有测试占位词（111、222、test、测试、asdf、demo），每条都必须是语义完整、自然收尾的短句。
         5. 严格只输出 JSON 数组，不要任何多余文字：
-        [{"action":"具体犀利的下一步动作","reason":"一句话点破痛点或依据","doc_title":"关联文档标题","urgency":"高|中|常规"}]
+        [{"action":"8到15字无括号短句","doc_title":"关联文档标题","urgency":"高|中|常规"}]
         """
         
         let userPrompt = """
@@ -3440,10 +3649,7 @@ extension AnalyticsManager {
     
     
     private static func currentReadableTimestamp() -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = "yyyy年M月d日 EEEE HH:mm"
-        return f.string(from: Date())
+        Self.readableTimestampFormatter.string(from: Date())
     }
     
     
@@ -3479,7 +3685,7 @@ extension AnalyticsManager {
         
         if self.database === CotLocalDatabase.shared {
             for case let doc as Document in NSDocumentController.shared.documents {
-                let text = doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = Self.boundedTextSlice(from: doc.textStorage, headLimit: 16_384, tailLimit: 16_384).text
                 guard text.count >= 12, Self.isMeaningfulDocumentContent(text) else { continue }
                 let title = doc.displayName ?? "未命名文档"
                 guard usedTitles.insert(title).inserted else { continue }
@@ -3524,7 +3730,7 @@ extension AnalyticsManager {
         }
         
         let combined = blocks.joined(separator: "\n\n")
-        let fp = UserPersonalityAnalyzer.sha256Hex("pred-v6|" + combined)
+        let fp = UserPersonalityAnalyzer.sha256Hex("pred-v7|" + combined)
         return (combined, fp)
     }
     
@@ -3548,11 +3754,10 @@ extension AnalyticsManager {
         for (idx, dict) in array.enumerated() {
             let rawAction = (dict["action"] as? String ?? dict["task"] as? String ?? dict["title"] as? String ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let action = Self.sanitizeDashboardActionText(
+            let action = Self.sanitizePredictedActionText(
                 rawAction,
                 knownTitles: knownTitles,
-                maxLength: nil,
-                fallback: ""
+                maxLength: 20
             )
             guard action.count >= 4,
                   Self.hasMeaningfulActionSubstance(action),
@@ -3613,11 +3818,10 @@ extension AnalyticsManager {
         
         func appendIfUnique(_ pred: DocumentActionPrediction) {
             var cleaned = pred
-            cleaned.action = Self.sanitizeDashboardActionText(
+            cleaned.action = Self.sanitizePredictedActionText(
                 pred.action,
                 knownTitles: knownTitles,
-                maxLength: nil,
-                fallback: ""
+                maxLength: 20
             )
             cleaned.reason = ""
             let key = cleaned.action.lowercased().replacingOccurrences(of: " ", with: "")
@@ -3679,7 +3883,7 @@ extension AnalyticsManager {
                 {
                     appendIfUnique(DocumentActionPrediction(
                         id: "heur-heading-\(doc.id)",
-                        action: "趁热把「\(heading)」那节空壳填实，别光留个标题。",
+                        action: "补齐\(heading)章节内容",
                         reason: "",
                         sourceDocumentTitle: doc.title,
                         sourceDocumentID: doc.id,
@@ -3695,9 +3899,12 @@ extension AnalyticsManager {
                     && Self.hasMeaningfulActionSubstance($0)
                     && Self.isCompleteDashboardSentence($0)
             }) {
+                let condensed = openQuestion.count <= 18
+                    ? openQuestion
+                    : Self.sanitizePredictedActionText(openQuestion, knownTitles: knownTitles, maxLength: 18)
                 appendIfUnique(DocumentActionPrediction(
                     id: "heur-q-\(doc.id)",
-                    action: "先把这个问题拍板：\(openQuestion)",
+                    action: condensed,
                     reason: "",
                     sourceDocumentTitle: doc.title,
                     sourceDocumentID: doc.id,
@@ -3722,7 +3929,7 @@ extension AnalyticsManager {
         if results.isEmpty {
             appendIfUnique(DocumentActionPrediction(
                 id: "heur-human-fallback-1",
-                action: "挑一篇最近写一半的稿子收个尾，别全烂尾了",
+                action: "把写了一半的草稿收个尾",
                 reason: "",
                 sourceDocumentTitle: sortedDocs.first?.title ?? "",
                 sourceDocumentID: sortedDocs.first?.id,
@@ -3730,7 +3937,7 @@ extension AnalyticsManager {
             ))
             appendIfUnique(DocumentActionPrediction(
                 id: "heur-human-fallback-2",
-                action: "把这周干完的硬活记两笔进周报，周五好早点溜",
+                action: "把本周完成的进展记入周报",
                 reason: "",
                 sourceDocumentTitle: "",
                 sourceDocumentID: nil,

@@ -360,12 +360,16 @@ final class CotButlerManager {
             }
         }
         
+        var lastDraftFlushAt: Date = .distantPast
         do {
             let fullRaw = try await AIService.shared.chat(
                 aiMessages,
                 configuration: resolvedConfig,
                 analyticsFeature: "butler"
             ) { [weak self] partial in
+                let now = Date()
+                guard now.timeIntervalSince(lastDraftFlushAt) >= 0.06 else { return }
+                lastDraftFlushAt = now
                 self?.streamingDraft = Self.stripActionEnvelope(partial)
             }
             

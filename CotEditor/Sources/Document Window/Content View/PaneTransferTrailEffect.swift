@@ -167,7 +167,12 @@ enum PaneTransferTrailEffect {
         targetTabRectInWindow: NSRect,
         accentColor: NSColor = .controlAccentColor
     ) {
-        guard self.shouldAnimate, let contentView = window.contentView else { return }
+        guard self.shouldAnimate,
+              window.isVisible,
+              window.occlusionState.contains(.visible),
+              NSApp?.isActive != false,
+              let contentView = window.contentView
+        else { return }
         
         let overlay = PaneTransferTrailOverlayView(frame: contentView.bounds)
         overlay.autoresizingMask = [.width, .height]
@@ -328,6 +333,7 @@ enum PaneTransferTrailEffect {
                     capsule.shadowRadius = 5
                     capsule.shadowOpacity = 0.55
                     capsule.shadowOffset = .zero
+                    capsule.shadowPath = CGPath(roundedRect: capsule.bounds, cornerWidth: 4.5, cornerHeight: 4.5, transform: nil)
                 }
                 rootLayer.addSublayer(capsule)
                 

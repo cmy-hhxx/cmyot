@@ -242,8 +242,8 @@ final class ContentViewController: NSSplitViewController {
     private var centerHostView: NSHostingView<WorkspaceCenterHostView>?
     private var wallpaperBackdropView: EditorWallpaperBackdropView?
     private let centerHostModel = WorkspaceCenterHostModel()
-    private let weeklyReportState = WeeklyReportCenterState()
-    private let documentCenterState = DocumentCenterState()
+    private lazy var weeklyReportState = WeeklyReportCenterState()
+    private lazy var documentCenterState = DocumentCenterState()
     
     
     // MARK: Lifecycle

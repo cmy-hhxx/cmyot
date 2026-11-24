@@ -154,7 +154,12 @@ enum WorkspaceOrganizer {
     
     /// - Returns: The resulting display title if renaming succeeded.
     @discardableResult
-    static func renameDocument(_ document: Document, to rawNewName: String) throws -> String {
+    static func renameDocument(
+        _ document: Document,
+        to rawNewName: String,
+        syncDatabase: Bool = true,
+        reloadAfter: Bool = true
+    ) throws -> String {
         
         let trimmed = rawNewName
             .replacingOccurrences(of: "/", with: "-")
@@ -191,7 +196,8 @@ enum WorkspaceOrganizer {
                 oldFilePath: oldPath,
                 newID: newPath,
                 newTitle: targetURL.lastPathComponent,
-                newFilePath: newPath
+                newFilePath: newPath,
+                reloadAfter: reloadAfter
             )
             // Migrate any pre-save untitled DB record into this file-backed row so no stale duplicate lingers.
             if CotLocalDatabase.shared.documents.contains(where: { $0.id == rawDocID }) {
@@ -200,10 +206,13 @@ enum WorkspaceOrganizer {
                     oldFilePath: nil,
                     newID: newPath,
                     newTitle: targetURL.lastPathComponent,
-                    newFilePath: newPath
+                    newFilePath: newPath,
+                    reloadAfter: reloadAfter
                 )
             }
-            document.syncToLocalDatabase(force: true)
+            if syncDatabase {
+                document.syncToLocalDatabase(force: true)
+            }
             NotificationCenter.default.post(name: NSDocument.DidChangeFileURLMessage.name, object: document)
             return targetURL.lastPathComponent
         } else {
@@ -214,9 +223,12 @@ enum WorkspaceOrganizer {
                 oldFilePath: nil,
                 newID: rawDocID,
                 newTitle: trimmed,
-                newFilePath: nil
+                newFilePath: nil,
+                reloadAfter: reloadAfter
             )
-            document.syncToLocalDatabase(force: true)
+            if syncDatabase {
+                document.syncToLocalDatabase(force: true)
+            }
             NotificationCenter.default.post(name: NSDocument.DidChangeFileURLMessage.name, object: document)
             return trimmed
         }
@@ -305,9 +317,11 @@ enum WorkspaceOrganizer {
             progress: 0.12,
             headline: "步骤 1/4：备份当前文档快照"
         )
-        for entry in entries {
-            guard let doc = entry.document else { continue }
-            doc.syncToLocalDatabase(force: true)
+        CotLocalDatabase.shared.withTransaction {
+            for entry in entries {
+                guard let doc = entry.document else { continue }
+                doc.syncToLocalDatabase(force: true)
+            }
         }
         progressController.state.markStepCompleted(0, detail: "已安全备份 \(entries.count) 份文档快照")
         
@@ -377,14 +391,16 @@ enum WorkspaceOrganizer {
                     mapDoc?.syncToLocalDatabase(force: true)
                 }
                 
+                var primaryDocVC: DocumentViewController?
                 for window in NSApp.orderedWindows {
                     guard let docVC = (window.windowController as? DocumentWindowController)?.documentViewController else { continue }
+                    if primaryDocVC == nil { primaryDocVC = docVC }
                     for pane in docVC.editorViewControllers {
                         pane.updateTabState()
                     }
                     window.windowController?.synchronizeWindowTitleWithDocumentName()
-                    docVC.savePaneTabsSessionToDatabase()
                 }
+                primaryDocVC?.savePaneTabsSessionToDatabase()
                 
                 progressController.state.markStepCompleted(3, detail: "已生成并在当前焦点 Pane 中打开《整理合并 Map》")
                 progressController.state.markCompleted(
@@ -653,7 +669,7 @@ enum WorkspaceOrganizer {
                     doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: formattedContent)
                 }
                 
-                if let renamed = try? self.renameDocument(doc, to: finalTitle) {
+                if let renamed = try? self.renameDocument(doc, to: finalTitle, syncDatabase: false, reloadAfter: false) {
                     if renamed != primary.originalTitle {
                         renamedCount += 1
                     }
@@ -662,6 +678,7 @@ enum WorkspaceOrganizer {
                 // Always keep AI-organized summaries as Plain Text rather than Markdown.
                 doc.setSyntax(name: resolvedSyntax)
                 doc.syncToLocalDatabase(force: true)
+                CotLocalDatabase.shared.reloadDocuments()
                 primary.pane?.updateTabState()
                 primary.windowVC?.view.window?.windowController?.synchronizeWindowTitleWithDocumentName()
                 

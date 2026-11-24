@@ -40,10 +40,11 @@ struct DashboardNewsCenterView: View {
     @State private var selectedItemID: String?
     @State private var reasoningEffort: NewsReasoningEffort = .balanced
     @State private var availableModels: [NewsChatModelOption] = []
+    @State private var cachedModelOptions: [AgentModelOption] = []
     @State private var selectedModel: NewsChatModelOption?
     @State private var isModelPopoverOpen: Bool = false
     @State private var copiedMessageID: String?
-    @State private var chatWidthFraction: CGFloat = 0.38
+    @State private var chatWidthFraction: CGFloat = 0.40
     @State private var dragStartChatFraction: CGFloat?
     @State private var isSplitDividerHovering: Bool = false
     @State private var lastAutoScrollAt: Date = .distantPast
@@ -120,7 +121,7 @@ struct DashboardNewsCenterView: View {
             self.selectedItemID = self.initialSelectedID
             self.reloadAvailableModels()
             self.syncSelectionSideEffects()
-            self.newsService.preloadFeedResources(limit: 20)
+            self.newsService.preloadFeedResources(limit: 12)
             Task {
                 await self.newsService.refreshIfNeeded()
             }
@@ -353,24 +354,56 @@ struct DashboardNewsCenterView: View {
     }
     
     
-    // MARK: - Harmonious Xiaohongshu Card Grid Feed
+    // MARK: - Harmonious Xiaohongshu Waterfall Feed
+    
+    private struct WaterfallColumnItem: Identifiable {
+        let item: AIHotNewsItem
+        let coverHeight: CGFloat
+        var id: String { self.item.id }
+    }
+    
+    private func waterfallCoverHeight(for item: AIHotNewsItem, cover: NSImage?, cardWidth: CGFloat) -> CGFloat {
+        if let cover, cover.size.width > 0, cover.size.height > 0 {
+            let rawRatio = cover.size.height / cover.size.width
+            let clamped = min(1.33, max(0.85, rawRatio))
+            return (cardWidth * clamped).rounded()
+        }
+        let seed = abs(item.id.hashValue)
+        let ratio = 1.16 + Double(seed % 13) * 0.01
+        return (cardWidth * ratio).rounded()
+    }
+    
+    private func distributedWaterfallColumns(items: [AIHotNewsItem], colCount: Int, cardWidth: CGFloat) -> [[WaterfallColumnItem]] {
+        var columns = Array(repeating: [WaterfallColumnItem](), count: max(1, colCount))
+        var heights = Array(repeating: CGFloat(0), count: max(1, colCount))
+        
+        for item in items {
+            let cover = self.newsService.coverImage(for: item)
+            let coverH = self.waterfallCoverHeight(for: item, cover: cover, cardWidth: cardWidth)
+            let textEstimate: CGFloat = item.title.count > 16 ? 78 : 60
+            let shortestCol = heights.enumerated().min(by: { $0.element < $1.element })?.offset ?? 0
+            columns[shortestCol].append(WaterfallColumnItem(item: item, coverHeight: coverH))
+            heights[shortestCol] += coverH + textEstimate + 16
+        }
+        return columns
+    }
     
     private var xiaohongshuCardGridStage: some View {
         let items = self.displayedItems
         return GeometryReader { geo in
-            let contentW = min(1320, max(320, geo.size.width - 40))
+            let innerW = min(1260, max(320, geo.size.width - 48))
             let colCount: Int = {
-                if contentW >= 1060 { return 4 }
-                if contentW >= 740 { return 3 }
+                if innerW >= 1180 { return 5 }
+                if innerW >= 900 { return 4 }
+                if innerW >= 620 { return 3 }
                 return 2
             }()
-            let columns = Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: colCount)
+            let colSpacing: CGFloat = 16
+            let cardWidth = max(120, (innerW - CGFloat(colCount - 1) * colSpacing) / CGFloat(colCount))
+            let columns = self.distributedWaterfallColumns(items: items, colCount: colCount, cardWidth: cardWidth)
             
             if items.isEmpty {
                 VStack(spacing: 10) {
-                    Image(systemName: "newspaper")
-                        .font(.system(size: 26, weight: .light))
-                        .foregroundStyle(self.mutedInk.opacity(0.6))
                     Text(self.newsService.isLoading
                          ? AppLanguage.text("正在加载资讯…", en: "Loading articles…")
                          : AppLanguage.text("暂无匹配资讯", en: "No articles"))
@@ -380,25 +413,31 @@ struct DashboardNewsCenterView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView(.vertical, showsIndicators: true) {
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
-                        ForEach(items) { item in
-                            XiaohongshuNewsCard(
-                                item: item,
-                                cover: self.newsService.coverImage(for: item),
-                                isRead: self.newsService.isRead(item),
-                                hasAIBrief: !(self.newsService.aiBriefs[item.id] ?? "").isEmpty,
-                                tokens: self.tokens,
-                                secondaryInk: self.secondaryInk,
-                                mutedInk: self.mutedInk
-                            ) {
-                                withAnimation(DashMotion.travel) {
-                                    self.selectedItemID = item.id
+                    HStack(alignment: .top, spacing: colSpacing) {
+                        ForEach(0..<colCount, id: \.self) { colIdx in
+                            LazyVStack(alignment: .leading, spacing: colSpacing) {
+                                ForEach(columns[colIdx]) { entry in
+                                    XiaohongshuNewsCard(
+                                        item: entry.item,
+                                        cover: self.newsService.coverImage(for: entry.item),
+                                        coverHeight: entry.coverHeight,
+                                        isRead: self.newsService.isRead(entry.item),
+                                        hasAIBrief: !(self.newsService.aiBriefs[entry.item.id] ?? "").isEmpty,
+                                        tokens: self.tokens,
+                                        secondaryInk: self.secondaryInk,
+                                        mutedInk: self.mutedInk
+                                    ) {
+                                        withAnimation(DashMotion.travel) {
+                                            self.selectedItemID = entry.item.id
+                                        }
+                                    }
+                                    .equatable()
                                 }
                             }
-                            .equatable()
+                            .frame(maxWidth: .infinity, alignment: .top)
                         }
                     }
-                    .frame(maxWidth: 1320)
+                    .frame(width: innerW, alignment: .top)
                     .padding(.horizontal, 24)
                     .padding(.vertical, 20)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -446,17 +485,19 @@ struct DashboardNewsCenterView: View {
                         .fill(self.tokens.hairline)
                         .frame(height: 1)
                     
-                    self.aiChatPane(for: item)
+                    self.aiChatPane(for: item, isCenteredCard: false)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else {
-                // Proportional 62 / 38 split with 120fps non-animated live divider drag
+                // Xiaohongshu desktop-inspired centered split card (~60 / 40) when fullscreen
+                let useCenteredCard = !self.isEmbeddedInPane && geo.size.width >= 940
+                let stageWidth = useCenteredCard ? min(1180, geo.size.width - 48) : geo.size.width
                 let minChatWidth: CGFloat = 340
-                let maxChatWidth: CGFloat = max(minChatWidth, min(geo.size.width * 0.52, geo.size.width - 480))
-                let proposedChatWidth = geo.size.width * self.chatWidthFraction
+                let maxChatWidth: CGFloat = max(minChatWidth, min(stageWidth * 0.46, stageWidth - 440))
+                let proposedChatWidth = stageWidth * self.chatWidthFraction
                 let chatWidth = min(maxChatWidth, max(minChatWidth, proposedChatWidth))
                 
-                HStack(spacing: 0) {
+                let splitContent = HStack(spacing: 0) {
                     NewsEditorialArticlePane(
                         item: item,
                         cover: cover,
@@ -477,9 +518,9 @@ struct DashboardNewsCenterView: View {
                     .equatable()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     
-                    self.newsSplitDivider(totalWidth: geo.size.width)
+                    self.newsSplitDivider(totalWidth: stageWidth)
                     
-                    self.aiChatPane(for: item)
+                    self.aiChatPane(for: item, isCenteredCard: useCenteredCard)
                         .frame(width: chatWidth)
                         .frame(maxHeight: .infinity)
                 }
@@ -489,6 +530,29 @@ struct DashboardNewsCenterView: View {
                     }
                 }
                 .coordinateSpace(name: "newsSplitStage")
+                
+                if useCenteredCard {
+                    splitContent
+                        .frame(width: stageWidth)
+                        .frame(maxHeight: .infinity)
+                        .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .strokeBorder(self.tokens.hairline, lineWidth: 0.9)
+                        )
+                        .shadow(
+                            color: Color.black.opacity(self.tokens.isDark ? 0.36 : 0.08),
+                            radius: 22,
+                            x: 0,
+                            y: 8
+                        )
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 16)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                } else {
+                    splitContent
+                }
             }
         }
     }
@@ -529,7 +593,7 @@ struct DashboardNewsCenterView: View {
                     }
                     let startFraction = self.dragStartChatFraction ?? self.chatWidthFraction
                     let deltaFraction = -value.translation.width / max(totalWidth, 1)
-                    self.chatWidthFraction = min(0.52, max(0.30, startFraction + deltaFraction))
+                    self.chatWidthFraction = min(0.46, max(0.34, startFraction + deltaFraction))
                 }
                 .onEnded { _ in
                     self.dragStartChatFraction = nil
@@ -537,440 +601,159 @@ struct DashboardNewsCenterView: View {
         )
         .onTapGesture(count: 2) {
             withAnimation(DashMotion.travel) {
-                self.chatWidthFraction = 0.38
+                self.chatWidthFraction = 0.40
             }
         }
     }
     
     
-    // MARK: - Right Editorial AI Chat Pane + LeiBox Deep Agent Composer
+    // MARK: - Right Unified Companion Chat Pane (Beautiful UI + DissolveThinkingOrbView)
     
-    private func aiChatPane(for item: AIHotNewsItem) -> some View {
+    private func aiChatPane(for item: AIHotNewsItem, isCenteredCard: Bool = false) -> some View {
         let messages = self.newsService.chatMessages(for: item)
         let isStreaming = (self.newsService.streamingChatItemID == item.id)
+        let bui = BeautifulUITokens.resolve(isDark: self.tokens.isDark)
+        let botStore = AIBotStore.shared
+        let botName = botStore.resolvedName(for: .readingCompanion)
+        let botNick = botStore.resolvedNickname(for: .readingCompanion)
+        let botAvatar = botStore.resolvedAvatarImage(for: .readingCompanion, pointSize: 80)
+        let modelOptions = self.cachedModelOptions.isEmpty ? self.unifiedModelOptions() : self.cachedModelOptions
+        let selectedTitle = self.selectedModel?.displayName
+            ?? self.availableModels.first?.displayName
+            ?? AIProvider.openCodeGo.defaultModel
         
-        return ZStack(alignment: .bottom) {
-            VStack(spacing: 0) {
-                // Top-anchored AI Companion Stage (zero empty top void)
-                ScrollViewReader { chatProxy in
-                    ScrollView(.vertical, showsIndicators: true) {
-                        if messages.isEmpty {
-                            VStack(alignment: .leading, spacing: 14) {
-                                Text(AppLanguage.text("陪读讨论", en: "Reading Companion"))
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(self.tokens.primaryInk)
-                                
-                                VStack(spacing: 8) {
-                                    self.editorialStarterRow(
-                                        index: "01",
-                                        title: AppLanguage.text("提炼核心事实与犀利点评", en: "Core facts & sharp critique"),
-                                        disabled: isStreaming
-                                    ) {
-                                        self.isModelPopoverOpen = false
-                                        Task {
-                                            await self.newsService.requestAICommentary(
-                                                for: item,
-                                                effort: self.reasoningEffort,
-                                                selectedModel: self.selectedModel
-                                            )
-                                        }
-                                    }
-                                    
-                                    self.editorialStarterRow(
-                                        index: "02",
-                                        title: AppLanguage.text("对开发者和创作者有什么实际影响？", en: "Practical impact for builders?"),
-                                        disabled: isStreaming
-                                    ) {
-                                        self.isModelPopoverOpen = false
-                                        Task {
-                                            await self.newsService.sendChatFollowUp(
-                                                "结合一线开发者和创作者视角，用清晰 Markdown 拆解这件事有什么直接影响或能立刻用上的机会？",
-                                                for: item,
-                                                displayUserText: AppLanguage.text("对开发者和创作者有什么实际影响？", en: "Practical impact for builders?"),
-                                                effort: self.reasoningEffort,
-                                                selectedModel: self.selectedModel
-                                            )
-                                        }
-                                    }
-                                    
-                                    self.editorialStarterRow(
-                                        index: "03",
-                                        title: AppLanguage.text("挑挑刺：水分、风险或反面观点", en: "Hype, risks, and counterpoints"),
-                                        disabled: isStreaming
-                                    ) {
-                                        self.isModelPopoverOpen = false
-                                        Task {
-                                            await self.newsService.sendChatFollowUp(
-                                                "别光说好话，用结构化 Markdown 帮我挑挑这件事背后的水分、风险或反面观点。",
-                                                for: item,
-                                                displayUserText: AppLanguage.text("挑挑刺：水分、风险或反面观点", en: "Hype, risks, and counterpoints"),
-                                                effort: self.reasoningEffort,
-                                                selectedModel: self.selectedModel
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(.horizontal, 20)
-                            .padding(.top, 20)
-                            .padding(.bottom, 20)
-                            .frame(maxWidth: 740, alignment: .leading)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                        } else {
-                            LazyVStack(alignment: .leading, spacing: 14) {
-                                ForEach(messages) { msg in
-                                    let isTailStreaming = isStreaming && msg.id == messages.last?.id
-                                    NewsChatBubbleView(
-                                        message: msg,
-                                        isStreaming: isTailStreaming,
-                                        isCopied: self.copiedMessageID == msg.id,
-                                        effortTitle: self.reasoningEffort.title,
-                                        tokens: self.tokens,
-                                        secondaryInk: self.secondaryInk,
-                                        mutedInk: self.mutedInk,
-                                        onCopy: {
-                                            self.copyAssistantReply(msg)
-                                        }
-                                    )
-                                    .equatable()
-                                    .id(msg.id)
-                                }
-                            }
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 18)
-                            .frame(maxWidth: 740, alignment: .leading)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                        }
-                        
-                        if let err = self.newsService.chatErrorMessage, !err.isEmpty {
-                            HStack(spacing: 8) {
-                                Image(systemName: "exclamationmark.circle")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(.orange)
-                                
-                                Text(err)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(self.secondaryInk)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                
-                                Spacer(minLength: 4)
-                                
-                                Button(AppLanguage.text("去配置", en: "Settings")) {
-                                    (NSApp.delegate as? AppDelegate)?.showAIPreferences(nil)
-                                }
-                                .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(self.tokens.accentText)
-                                .buttonStyle(.plain)
-                                .pointerStyle(.link)
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 9)
-                            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .strokeBorder(Color.orange.opacity(0.32), lineWidth: 0.8)
-                            )
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 12)
-                            .frame(maxWidth: 740)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                        }
-                    }
-                    .onTapGesture {
-                        if self.isModelPopoverOpen {
-                            withAnimation(DashMotion.quick) {
-                                self.isModelPopoverOpen = false
-                            }
-                        }
-                    }
-                    .onChange(of: messages.last?.text ?? "") { _, _ in
-                        guard let lastID = messages.last?.id else { return }
-                        let now = Date()
-                        guard !isStreaming || now.timeIntervalSince(self.lastAutoScrollAt) >= 0.085 else { return }
-                        self.lastAutoScrollAt = now
-                        chatProxy.scrollTo(lastID, anchor: .bottom)
-                    }
-                }
-                
-                // Isolated LeiBox Deep Agent Composer Dock (keystrokes never dirty reader/messages)
-                NewsDeepAgentComposerView(
-                    item: item,
-                    hasMessages: !messages.isEmpty,
-                    isStreaming: isStreaming,
-                    activeModelTitle: self.selectedModel?.displayName
-                        ?? self.availableModels.first?.displayName
-                        ?? AppLanguage.text("选择模型", en: "Model"),
-                    effort: self.reasoningEffort,
-                    isModelPopoverOpen: self.isModelPopoverOpen,
-                    tokens: self.tokens,
-                    secondaryInk: self.secondaryInk,
-                    mutedInk: self.mutedInk,
-                    onTogglePopover: {
-                        self.reloadAvailableModels()
-                        withAnimation(DashMotion.quick) {
-                            self.isModelPopoverOpen.toggle()
-                        }
-                    },
-                    onQuickCommentary: {
-                        self.isModelPopoverOpen = false
-                        Task {
-                            await self.newsService.requestAICommentary(
-                                for: item,
-                                effort: self.reasoningEffort,
-                                selectedModel: self.selectedModel
-                            )
-                        }
-                    },
-                    onQuickImpact: {
-                        self.isModelPopoverOpen = false
-                        Task {
-                            await self.newsService.sendChatFollowUp(
-                                "结合一线开发者和创作者视角，用清晰 Markdown 拆解这件事有什么直接影响？",
-                                for: item,
-                                displayUserText: AppLanguage.text("对我有什么实际影响？", en: "Practical Impact"),
-                                effort: self.reasoningEffort,
-                                selectedModel: self.selectedModel
-                            )
-                        }
-                    },
-                    onQuickCounterpoint: {
-                        self.isModelPopoverOpen = false
-                        Task {
-                            await self.newsService.sendChatFollowUp(
-                                "别光说好话，用结构化 Markdown 挑挑这件事背后的水分、风险或反面观点。",
-                                for: item,
-                                displayUserText: AppLanguage.text("挑刺：水分与反面视角", en: "Counterpoint"),
-                                effort: self.reasoningEffort,
-                                selectedModel: self.selectedModel
-                            )
-                        }
-                    },
-                    onClearChat: {
-                        self.newsService.clearChat(for: item.id)
-                    },
-                    onSubmitPrompt: { prompt in
-                        guard self.newsService.streamingChatItemID == nil else { return }
-                        self.isModelPopoverOpen = false
-                        Task {
-                            await self.newsService.sendChatFollowUp(
-                                prompt,
-                                for: item,
-                                effort: self.reasoningEffort,
-                                selectedModel: self.selectedModel
-                            )
-                        }
-                    }
-                )
-                .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 16)
-                .frame(maxWidth: 740)
-                .frame(maxWidth: .infinity, alignment: .center)
-            }
-            
-            // Floating Model & Reasoning Effort Popover anchored cleanly above the composer
-            if self.isModelPopoverOpen {
-                Color.black.opacity(0.001)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        withAnimation(DashMotion.quick) {
-                            self.isModelPopoverOpen = false
-                        }
-                    }
-                
-                HStack {
-                    Spacer(minLength: 0)
-                    self.deepAgentModelEffortPopover
-                }
-                .padding(.trailing, 22)
-                .padding(.bottom, 118)
-                .frame(maxWidth: 740)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottomTrailing)))
-                .zIndex(20)
-            }
+        let mappedMessages = messages.map { msg in
+            AgentChatMessageItem(
+                id: msg.id,
+                isUser: (msg.role == .user),
+                text: msg.text
+            )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(self.tokens.canvasTop)
-    }
-    
-    
-    /// Floating Deep Agent Composer popover (`模型` + `推理强度` starry slider) matching `deep_agent_composer.png`.
-    private var deepAgentModelEffortPopover: some View {
-        let uniqueGateways = Set(self.availableModels.map(\.endpointID)).count
         
-        return VStack(alignment: .leading, spacing: 0) {
-            // Section 1: 模型
-            VStack(alignment: .leading, spacing: 6) {
-                Text(AppLanguage.text("模型", en: "Model"))
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(self.mutedInk)
-                    .padding(.horizontal, 6)
-                
-                if self.availableModels.isEmpty {
-                    Button {
-                        self.isModelPopoverOpen = false
-                        (NSApp.delegate as? AppDelegate)?.showAIPreferences(nil)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "plus.circle")
-                                .font(.system(size: 12))
-                            Text(AppLanguage.text("前往「API 网关」配置模型…", en: "Configure API Gateway…"))
-                                .font(.system(size: 12, weight: .medium))
-                            Spacer()
+        return VStack(spacing: 0) {
+            AgentChatHeaderBar(
+                avatarImage: botAvatar,
+                name: botName,
+                nickname: botNick,
+                accent: Color(hexString: AIBotID.readingCompanion.accentHex),
+                tokens: bui,
+                trailingActions: {
+                    if !messages.isEmpty && !isStreaming {
+                        Button {
+                            self.newsService.clearChat(for: item.id)
+                        } label: {
+                            Text(AppLanguage.text("清空", en: "Clear"))
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(bui.ink2)
+                                .padding(.horizontal, 8)
+                                .frame(height: 24)
+                                .background(bui.field, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                         }
-                        .foregroundStyle(self.tokens.accentText)
-                        .padding(.horizontal, 10)
-                        .frame(height: 34)
-                        .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                    }
+                    
+                    Button {
+                        (NSApp.delegate as? AppDelegate)?.openBotSettings(selecting: .readingCompanion)
+                    } label: {
+                        Text(AppLanguage.text("设置", en: "Settings"))
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(bui.ink2)
+                            .padding(.horizontal, 8)
+                            .frame(height: 24)
+                            .background(bui.field, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
                     .buttonStyle(.plain)
                     .pointerStyle(.link)
-                } else {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        VStack(spacing: 2) {
-                            ForEach(self.availableModels) { option in
-                                let isSelected = (self.selectedModel?.id == option.id)
-                                Button {
-                                    self.selectedModel = option
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        VStack(alignment: .leading, spacing: 1) {
-                                            Text(option.modelID)
-                                                .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
-                                                .foregroundStyle(isSelected ? self.tokens.primaryInk : self.secondaryInk)
-                                                .lineLimit(1)
-                                            if uniqueGateways > 1 {
-                                                Text(option.endpointName)
-                                                    .font(.system(size: 10))
-                                                    .foregroundStyle(self.mutedInk)
-                                                    .lineLimit(1)
-                                            }
-                                        }
-                                        Spacer(minLength: 4)
-                                        if isSelected {
-                                            Image(systemName: "checkmark")
-                                                .font(.system(size: 11, weight: .semibold))
-                                                .foregroundStyle(self.tokens.primaryInk.opacity(0.85))
-                                        }
-                                    }
-                                    .padding(.horizontal, 10)
-                                    .frame(minHeight: uniqueGateways > 1 ? 36 : 32)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                            .fill(isSelected ? self.tokens.insetHover : Color.clear)
-                                    )
-                                    .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                                }
-                                .buttonStyle(.plain)
-                                .pointerStyle(.link)
-                            }
-                        }
-                    }
-                    .frame(maxHeight: 164)
                 }
-            }
-            .padding(12)
+            )
             
             Rectangle()
-                .fill(self.tokens.hairline)
-                .frame(height: 0.75)
-                .padding(.horizontal, 12)
+                .fill(bui.line)
+                .frame(height: 1)
             
-            // Section 2: 推理强度 (LeiBox Starry Sky Jelly Slider)
-            VStack(alignment: .leading, spacing: 10) {
-                Text(AppLanguage.text("推理强度", en: "Reasoning Effort"))
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(self.mutedInk)
-                    .padding(.horizontal, 2)
-                
-                LeiBoxReasoningEffortSlider(
-                    effort: self.$reasoningEffort,
-                    accent: self.tokens.accent,
-                    isDark: self.tokens.isDark
-                )
-            }
-            .padding(14)
+            AgentChatTranscriptSurface(
+                messages: mappedMessages,
+                isStreaming: isStreaming,
+                streamingDraft: nil,
+                errorMessage: self.newsService.chatErrorMessage,
+                placeholder: "@\(botNick)",
+                availableModels: modelOptions,
+                selectedModelTitle: selectedTitle,
+                orbColor: bui.ink,
+                tokens: bui,
+                onSelectModel: { option in
+                    if let matched = self.availableModels.first(where: { $0.modelID == option.modelID && ($0.endpointID == option.endpointID || option.endpointID == nil) }) {
+                        self.selectedModel = matched
+                    } else if let epID = option.endpointID {
+                        self.selectedModel = NewsChatModelOption(endpointID: epID, endpointName: "OpenCode Go", modelID: option.modelID)
+                    }
+                    var cfg = botStore.config(for: .readingCompanion)
+                    cfg.endpointID = option.endpointID
+                    cfg.modelOverride = option.modelID
+                    botStore.updateConfig(cfg, for: .readingCompanion)
+                },
+                onOpenSettings: {
+                    (NSApp.delegate as? AppDelegate)?.showAIPreferences(nil)
+                },
+                onSend: { prompt in
+                    guard self.newsService.streamingChatItemID == nil else { return }
+                    Task {
+                        await self.newsService.sendChatFollowUp(
+                            prompt,
+                            for: item,
+                            effort: self.reasoningEffort,
+                            selectedModel: self.selectedModel
+                        )
+                    }
+                }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 268)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(self.tokens.card)
-                .shadow(
-                    color: Color.black.opacity(self.tokens.isDark ? 0.48 : 0.14),
-                    radius: 24,
-                    x: 0,
-                    y: 8
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(self.tokens.hairline, lineWidth: 0.85)
-        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(isCenteredCard ? bui.surface : bui.page)
+    }
+    
+    
+    private func unifiedModelOptions() -> [AgentModelOption] {
+        var seen: Set<String> = []
+        var list: [AgentModelOption] = []
+        for item in self.availableModels {
+            guard seen.insert(item.modelID).inserted else { continue }
+            list.append(AgentModelOption(
+                id: item.id,
+                title: item.modelID,
+                endpointID: item.endpointID,
+                modelID: item.modelID
+            ))
+        }
+        let openCode = AIBotStore.shared.openCodeGoSelectableModels()
+        for modelID in openCode.models where seen.insert(modelID).inserted {
+            list.append(AgentModelOption(
+                endpointID: openCode.profile?.id,
+                modelID: modelID
+            ))
+        }
+        return list
     }
     
     
     private func reloadAvailableModels() {
         let models = AIHotNewsService.availableChatModels()
         self.availableModels = models
+        self.cachedModelOptions = self.unifiedModelOptions()
+        let botOverride = AIBotStore.shared.config(for: .readingCompanion)
+            .modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !botOverride.isEmpty,
+           let matched = models.first(where: { $0.modelID == botOverride })
+        {
+            self.selectedModel = matched
+            return
+        }
         if let current = self.selectedModel, models.contains(current) {
             return
         }
         self.selectedModel = models.first
-    }
-    
-    
-    private func editorialStarterRow(
-        index: String,
-        title: String,
-        disabled: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 11) {
-                Text(index)
-                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(self.tokens.accentText)
-                    .frame(width: 22, alignment: .leading)
-                
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(self.tokens.primaryInk.opacity(0.90))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(self.mutedInk.opacity(0.75))
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-        .disabled(disabled)
-    }
-    
-    
-    private func copyAssistantReply(_ message: NewsChatMessage) {
-        let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        self.copiedMessageID = message.id
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.8))
-            if self.copiedMessageID == message.id {
-                self.copiedMessageID = nil
-            }
-        }
     }
     
     
@@ -1284,252 +1067,6 @@ private struct NewsEditorialArticlePane: View, Equatable {
 }
 
 
-// MARK: - Isolated Equatable Chat Bubble & Composer Views
-
-private struct NewsChatBubbleView: View, Equatable {
-    
-    let message: NewsChatMessage
-    let isStreaming: Bool
-    let isCopied: Bool
-    let effortTitle: String
-    let tokens: StudioColorTokens
-    let secondaryInk: Color
-    let mutedInk: Color
-    let onCopy: () -> Void
-    
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.message.id == rhs.message.id
-            && lhs.message.text == rhs.message.text
-            && lhs.isStreaming == rhs.isStreaming
-            && lhs.isCopied == rhs.isCopied
-            && lhs.effortTitle == rhs.effortTitle
-            && lhs.tokens.isDark == rhs.tokens.isDark
-    }
-    
-    var body: some View {
-        if self.message.role == .user {
-            HStack {
-                Spacer(minLength: 40)
-                Text(self.message.text)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(self.tokens.primaryInk)
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 9)
-                    .background(
-                        self.tokens.accent.opacity(self.tokens.isDark ? 0.22 : 0.11),
-                        in: RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .strokeBorder(self.tokens.accent.opacity(0.22), lineWidth: 0.75)
-                    )
-                    .textSelection(.enabled)
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 10) {
-                if self.message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && self.isStreaming {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text(AppLanguage.text("正在思考（\(self.effortTitle)）…", en: "Thinking (\(self.effortTitle))…"))
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(self.mutedInk)
-                    }
-                } else {
-                    NewsMarkdownContentView(
-                        markdown: self.message.text,
-                        isStreaming: self.isStreaming,
-                        tokens: self.tokens,
-                        secondaryInk: self.secondaryInk,
-                        mutedInk: self.mutedInk
-                    )
-                    
-                    if !self.isStreaming {
-                        HStack {
-                            Spacer(minLength: 0)
-                            
-                            Button(action: self.onCopy) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: self.isCopied ? "checkmark" : "doc.on.doc")
-                                        .font(.system(size: 10, weight: .semibold))
-                                    Text(self.isCopied
-                                         ? AppLanguage.text("已复制", en: "Copied")
-                                         : AppLanguage.text("复制", en: "Copy"))
-                                        .font(.system(size: 11, weight: .medium))
-                                }
-                                .foregroundStyle(self.isCopied ? self.tokens.accentText : self.mutedInk)
-                                .padding(.horizontal, 8)
-                                .frame(height: 22)
-                                .background(self.tokens.inset, in: Capsule())
-                                .contentShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                        }
-                    }
-                }
-            }
-            .padding(15)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(self.tokens.hairline, lineWidth: 0.75)
-            )
-        }
-    }
-}
-
-
-private struct NewsDeepAgentComposerView: View {
-    
-    let item: AIHotNewsItem
-    let hasMessages: Bool
-    let isStreaming: Bool
-    let activeModelTitle: String
-    let effort: NewsReasoningEffort
-    let isModelPopoverOpen: Bool
-    let tokens: StudioColorTokens
-    let secondaryInk: Color
-    let mutedInk: Color
-    let onTogglePopover: () -> Void
-    let onQuickCommentary: () -> Void
-    let onQuickImpact: () -> Void
-    let onQuickCounterpoint: () -> Void
-    let onClearChat: () -> Void
-    let onSubmitPrompt: (String) -> Void
-    
-    @State private var draftText: String = ""
-    
-    
-    private var canSend: Bool {
-        !self.isStreaming && !self.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-    
-    
-    var body: some View {
-        let cardRadius: CGFloat = 20
-        return VStack(alignment: .leading, spacing: 0) {
-            TextField(AppLanguage.text("尽管问…", en: "Ask anything…"), text: self.$draftText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13.5))
-                .foregroundStyle(self.tokens.primaryInk)
-                .lineLimit(1...5)
-                .onSubmit {
-                    self.submit()
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 12)
-            
-            HStack(spacing: 8) {
-                Menu {
-                    Button(AppLanguage.text("提炼核心事实与犀利点评", en: "Summarize & Critique"), action: self.onQuickCommentary)
-                    Button(AppLanguage.text("对我有什么实际影响？", en: "Practical Impact"), action: self.onQuickImpact)
-                    Button(AppLanguage.text("挑刺：水分与反面视角", en: "Counterpoint"), action: self.onQuickCounterpoint)
-                    if self.hasMessages {
-                        Divider()
-                        Button(AppLanguage.text("清空当前对话", en: "Clear Chat"), role: .destructive, action: self.onClearChat)
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(self.secondaryInk)
-                        .frame(width: 28, height: 28)
-                        .background(self.tokens.inset, in: Circle())
-                        .contentShape(Circle())
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .disabled(self.isStreaming)
-                .help(AppLanguage.text("快捷指令", en: "Quick Prompts"))
-                
-                Spacer(minLength: 4)
-                
-                Button(action: self.onTogglePopover) {
-                    HStack(spacing: 5) {
-                        Text(self.activeModelTitle)
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(self.tokens.primaryInk.opacity(0.86))
-                            .lineLimit(1)
-                            .frame(maxWidth: 210)
-                        
-                        Text("·")
-                            .foregroundStyle(self.mutedInk)
-                        
-                        Text(self.effort.title)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(self.tokens.accentText)
-                            .fixedSize(horizontal: true, vertical: false)
-                        
-                        Image(systemName: self.isModelPopoverOpen ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 8.5, weight: .semibold))
-                            .foregroundStyle(self.mutedInk)
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
-                    .background(
-                        Capsule()
-                            .fill(self.isModelPopoverOpen ? self.tokens.insetHover : self.tokens.inset)
-                    )
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(self.isModelPopoverOpen ? self.tokens.accent.opacity(0.45) : self.tokens.hairline, lineWidth: 0.75)
-                    )
-                    .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                
-                Button(action: self.submit) {
-                    Image(systemName: self.isStreaming ? "hourglass" : "arrow.up")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(self.canSend ? Color.white : self.mutedInk)
-                        .frame(width: 28, height: 28)
-                        .background(
-                            self.canSend
-                                ? (self.tokens.isDark ? self.tokens.accent : Color(red: 0.14, green: 0.15, blue: 0.18))
-                                : self.tokens.inset,
-                            in: Circle()
-                        )
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .disabled(!self.canSend)
-            }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 11)
-        }
-        .background(
-            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
-                .fill(self.tokens.card)
-                .shadow(
-                    color: Color.black.opacity(self.tokens.isDark ? 0.34 : 0.08),
-                    radius: 14,
-                    x: 0,
-                    y: 4
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
-                .strokeBorder(self.tokens.hairline, lineWidth: 0.85)
-        )
-        .onChange(of: self.item.id) { _, _ in
-            self.draftText = ""
-        }
-    }
-    
-    
-    private func submit() {
-        let prompt = self.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty, !self.isStreaming else { return }
-        self.draftText = ""
-        self.onSubmitPrompt(prompt)
-    }
-}
-
-
 // MARK: - LeiBox Reasoning Effort Slider (leibox.pantoria.cn/docs/animations/reasoning-effort-slider)
 
 /// Faithful three-stop thinking slider (`Simple -> Balanced -> Deep`) with:
@@ -1546,6 +1083,8 @@ struct LeiBoxReasoningEffortSlider: View {
     @State private var isDragging = false
     @State private var jellyVelocity: CGFloat = 0
     @State private var lastDragX: CGFloat?
+    @State private var activityGate = AppActivityRenderGate.shared
+    @State private var isWindowVisible = true
     
     private struct StarSeed {
         let x: CGFloat
@@ -1602,7 +1141,10 @@ struct LeiBoxReasoningEffortSlider: View {
                     .allowsHitTesting(false)
                     
                     // Deep-night -> celestial-blue flowing star field active fill
-                    TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: AnimationConstants.isReducedMotionEnabled)) { timeline in
+                    let starfieldPaused = AnimationConstants.isReducedMotionEnabled
+                        || !self.activityGate.isAppActive
+                        || !self.isWindowVisible
+                    TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: starfieldPaused)) { timeline in
                         let t = timeline.date.timeIntervalSinceReferenceDate
                         let speedBoost: CGFloat = CGFloat(1 + self.effort.rawValue) * 0.55
                         Canvas(opaque: false, rendersAsynchronously: true) { ctx, size in
@@ -1720,6 +1262,7 @@ struct LeiBoxReasoningEffortSlider: View {
             }
             .padding(.horizontal, 2)
         }
+        .observeWindowRenderActivity(self.$isWindowVisible)
         .onAppear {
             self.normalizedProgress = CGFloat(self.effort.rawValue) * 0.5
         }
@@ -1977,11 +1520,28 @@ struct NewsMarkdownContentView: View {
     
     
     var body: some View {
-        let blocks = NewsMarkdownParser.parse(self.markdown)
+        let blocks = MarkdownRenderCache.blocks(for: self.markdown)
         
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { idx, block in
-                self.renderBlock(block, key: "md-\(idx)")
+                let key = "md-\(idx)"
+                NewsMarkdownBlockRow(
+                    block: block,
+                    tokens: self.tokens,
+                    secondaryInk: self.secondaryInk,
+                    mutedInk: self.mutedInk,
+                    isCopied: self.copiedCodeKey == key,
+                    onCopyCode: { code in
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(code, forType: .string)
+                        self.copiedCodeKey = key
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .seconds(1.5))
+                            if self.copiedCodeKey == key { self.copiedCodeKey = nil }
+                        }
+                    }
+                )
+                .equatable()
             }
             
             if self.isStreaming {
@@ -1990,11 +1550,26 @@ struct NewsMarkdownContentView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
+
+
+private struct NewsMarkdownBlockRow: View, Equatable {
+    
+    let block: NewsMarkdownBlock
+    let tokens: StudioColorTokens
+    let secondaryInk: Color
+    let mutedInk: Color
+    let isCopied: Bool
+    let onCopyCode: (String) -> Void
     
     
-    @ViewBuilder
-    private func renderBlock(_ block: NewsMarkdownBlock, key: String) -> some View {
-        switch block {
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.block == rhs.block && lhs.tokens == rhs.tokens && lhs.isCopied == rhs.isCopied
+    }
+    
+    
+    var body: some View {
+        switch self.block {
             case .heading(let level, let text):
                 self.inlineMarkdownText(text)
                     .font(.system(size: level == 1 ? 16 : (level == 2 ? 14.5 : 13.5), weight: .semibold))
@@ -2069,7 +1644,6 @@ struct NewsMarkdownContentView: View {
                 .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 
             case .codeBlock(let language, let code):
-                let isCopied = (self.copiedCodeKey == key)
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
                         Text(language.isEmpty ? "code" : language)
@@ -2079,21 +1653,15 @@ struct NewsMarkdownContentView: View {
                         Spacer()
                         
                         Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(code, forType: .string)
-                            self.copiedCodeKey = key
-                            Task { @MainActor in
-                                try? await Task.sleep(for: .seconds(1.5))
-                                if self.copiedCodeKey == key { self.copiedCodeKey = nil }
-                            }
+                            self.onCopyCode(code)
                         } label: {
                             HStack(spacing: 3) {
-                                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                                Image(systemName: self.isCopied ? "checkmark" : "doc.on.doc")
                                     .font(.system(size: 9.5, weight: .semibold))
-                                Text(isCopied ? AppLanguage.text("已复制", en: "Copied") : AppLanguage.text("复制代码", en: "Copy"))
+                                Text(self.isCopied ? AppLanguage.text("已复制", en: "Copied") : AppLanguage.text("复制代码", en: "Copy"))
                                     .font(.system(size: 10.5, weight: .medium))
                             }
-                            .foregroundStyle(isCopied ? self.tokens.accentText : self.mutedInk)
+                            .foregroundStyle(self.isCopied ? self.tokens.accentText : self.mutedInk)
                         }
                         .buttonStyle(.plain)
                         .pointerStyle(.link)
@@ -2169,10 +1737,7 @@ struct NewsMarkdownContentView: View {
     
     
     private func inlineMarkdownText(_ raw: String) -> Text {
-        let options = AttributedString.MarkdownParsingOptions(
-            interpretedSyntax: .inlineOnlyPreservingWhitespace
-        )
-        if let attr = try? AttributedString(markdown: raw, options: options) {
+        if let attr = MarkdownRenderCache.attributedInline(for: raw) {
             return Text(attr)
         }
         return Text(raw)
@@ -2207,6 +1772,7 @@ private struct XiaohongshuNewsCard: View, Equatable {
     
     let item: AIHotNewsItem
     let cover: NSImage?
+    let coverHeight: CGFloat
     let isRead: Bool
     let hasAIBrief: Bool
     let tokens: StudioColorTokens
@@ -2220,14 +1786,28 @@ private struct XiaohongshuNewsCard: View, Equatable {
         lhs.item.id == rhs.item.id
             && lhs.item.title == rhs.item.title
             && lhs.cover === rhs.cover
+            && abs(lhs.coverHeight - rhs.coverHeight) < 0.5
             && lhs.isRead == rhs.isRead
             && lhs.hasAIBrief == rhs.hasAIBrief
             && lhs.tokens.isDark == rhs.tokens.isDark
     }
     
     
+    private var accentColor: Color {
+        let seed = abs(self.item.id.hashValue)
+        return switch seed % 4 {
+            case 0: self.tokens.accent
+            case 1: self.tokens.secondaryAccent
+            case 2: Color(red: 0.212, green: 0.478, blue: 0.612)
+            default: self.tokens.heat3
+        }
+    }
+    
+    
     var body: some View {
         let publisher = self.item.displayPublisherLabel
+        let sourceLabel = publisher.isEmpty ? self.item.resolvedCategory.label : publisher
+        let initialChar = String(sourceLabel.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1)).uppercased()
         let summarySnippet = self.item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         
         Button(action: self.onTap) {
@@ -2235,7 +1815,7 @@ private struct XiaohongshuNewsCard: View, Equatable {
                 ZStack(alignment: .topLeading) {
                     if let cover = self.cover {
                         Color.clear
-                            .frame(height: 148)
+                            .frame(height: self.coverHeight)
                             .overlay {
                                 Image(nsImage: cover)
                                     .resizable()
@@ -2246,7 +1826,7 @@ private struct XiaohongshuNewsCard: View, Equatable {
                             .clipped()
                     } else {
                         self.editorialCoverTile(summarySnippet: summarySnippet)
-                            .frame(height: 148)
+                            .frame(height: self.coverHeight)
                     }
                     
                     HStack {
@@ -2283,10 +1863,19 @@ private struct XiaohongshuNewsCard: View, Equatable {
                         .lineLimit(2)
                         .lineSpacing(3)
                         .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, minHeight: 38, alignment: .topLeading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                     
                     HStack(spacing: 6) {
-                        Text(publisher.isEmpty ? self.item.resolvedCategory.label : publisher)
+                        ZStack {
+                            Circle()
+                                .fill(self.accentColor.opacity(self.tokens.isDark ? 0.28 : 0.14))
+                            Text(initialChar.isEmpty ? "N" : initialChar)
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundStyle(self.accentColor)
+                        }
+                        .frame(width: 18, height: 18)
+                        
+                        Text(sourceLabel)
                             .font(.system(size: 11, weight: .regular))
                             .foregroundStyle(self.mutedInk)
                             .lineLimit(1)
@@ -2300,7 +1889,8 @@ private struct XiaohongshuNewsCard: View, Equatable {
                         }
                     }
                 }
-                .padding(12)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 10)
             }
             .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -2326,29 +1916,34 @@ private struct XiaohongshuNewsCard: View, Equatable {
     
     
     private func editorialCoverTile(summarySnippet: String) -> some View {
-        let seed = abs(self.item.id.hashValue)
-        let accent: Color = switch seed % 4 {
-            case 0: self.tokens.accent
-            case 1: self.tokens.secondaryAccent
-            case 2: Color(red: 0.212, green: 0.478, blue: 0.612)
-            default: self.tokens.heat3
-        }
-        return ZStack(alignment: .bottomLeading) {
+        let accent = self.accentColor
+        let headline = summarySnippet.isEmpty ? self.item.title : summarySnippet
+        return ZStack(alignment: .topLeading) {
             LinearGradient(
-                colors: [accent.opacity(self.tokens.isDark ? 0.30 : 0.18), self.tokens.inset],
+                colors: [accent.opacity(self.tokens.isDark ? 0.28 : 0.14), self.tokens.inset],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
             
-            if !summarySnippet.isEmpty {
-                Text(summarySnippet)
-                    .font(.system(size: 11.5, weight: .regular))
-                    .foregroundStyle(self.secondaryInk)
-                    .lineLimit(3)
-                    .lineSpacing(2.5)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 10)
+            VStack(alignment: .leading, spacing: 6) {
+                Spacer(minLength: 24)
+                
+                Text("“")
+                    .font(.system(size: 28, weight: .bold, design: .serif))
+                    .foregroundStyle(accent.opacity(0.36))
+                    .frame(height: 18, alignment: .topLeading)
+                
+                Text(headline)
+                    .font(.system(size: summarySnippet.isEmpty ? 14 : 12.5, weight: summarySnippet.isEmpty ? .semibold : .medium))
+                    .foregroundStyle(self.tokens.primaryInk.opacity(0.84))
+                    .lineLimit(5)
+                    .lineSpacing(4)
+                    .multilineTextAlignment(.leading)
+                
+                Spacer(minLength: 4)
             }
+            .padding(.horizontal, 13)
+            .padding(.bottom, 10)
         }
     }
 }

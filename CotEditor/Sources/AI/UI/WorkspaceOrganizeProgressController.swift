@@ -285,25 +285,36 @@ private struct WorkspaceOrganizeProgressView: View {
     var onRetry: () -> Void
     var onOpenLog: () -> Void
     
+    @Environment(\.colorScheme) private var colorScheme
+    
     var body: some View {
+        let tokens = BeautifulUITokens.resolve(isDark: self.colorScheme == .dark)
         
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Image(systemName: self.state.errorMessage != nil
-                      ? "exclamationmark.triangle.fill"
-                      : (self.state.isFinished ? "checkmark.seal.fill" : "sparkles"))
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(self.state.errorMessage != nil
-                                     ? AnyShapeStyle(.orange)
-                                     : (self.state.isFinished ? AnyShapeStyle(.green) : AnyShapeStyle(Color.accentColor)))
-                    .frame(width: 28, height: 28)
+            HStack(spacing: 12) {
+                if self.state.isFinished {
+                    DissolveThinkingOrbView(
+                        state: self.state.errorMessage != nil ? .error : .done,
+                        size: 30,
+                        dots: 96,
+                        interactive: false,
+                        color: self.state.errorMessage != nil ? tokens.red : tokens.green
+                    )
+                } else {
+                    ThinkingOrbsParticleView(
+                        mode: .working,
+                        size: 30,
+                        color: tokens.accent
+                    )
+                }
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(self.state.statusHeadline)
-                        .font(.headline)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(tokens.ink)
                     Text("共 \(self.state.totalDocumentCount) 份非空文档 · \(self.state.endpointDescription)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(tokens.ink2)
                         .lineLimit(1)
                 }
                 
@@ -313,40 +324,48 @@ private struct WorkspaceOrganizeProgressView: View {
             VStack(alignment: .leading, spacing: 6) {
                 ProgressView(value: self.state.progress)
                     .progressViewStyle(.linear)
-                    .tint(self.state.errorMessage != nil ? .orange : (self.state.isFinished ? .green : .accentColor))
+                    .tint(self.state.errorMessage != nil ? tokens.orange : (self.state.isFinished ? tokens.green : tokens.accent))
                 
                 HStack {
-                    Text("\(Int((self.state.progress * 100).rounded()))%")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    if !self.state.isFinished {
+                        BeautifulUIPixelLoader(
+                            label: "\(Int((self.state.progress * 100).rounded()))%",
+                            variant: .drive,
+                            showTimer: false
+                        )
+                    } else {
+                        Text("\(Int((self.state.progress * 100).rounded()))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(tokens.ink2)
+                    }
                     
                     if self.state.streamedCharacters > 0 {
                         Text("· 已接收模型方案 \(self.state.streamedCharacters) 字")
                             .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(tokens.ink2)
                     }
                     
                     Spacer()
                     
                     Text("已用时 \(self.state.elapsedSeconds)s")
                         .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(tokens.ink3)
                 }
             }
             
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(self.state.steps) { step in
                     HStack(alignment: .center, spacing: 10) {
-                        self.stepIcon(for: step.status)
-                            .frame(width: 16, height: 16)
+                        self.stepDot(for: step.status, tokens: tokens)
+                            .frame(width: 12, height: 12)
                         
                         VStack(alignment: .leading, spacing: 1) {
                             Text(step.title)
                                 .font(.callout.weight(step.status == .active ? .semibold : .regular))
-                                .foregroundStyle(step.status == .pending ? .secondary : .primary)
+                                .foregroundStyle(step.status == .pending ? tokens.ink3 : tokens.ink)
                             Text(step.detail)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(tokens.ink2)
                                 .lineLimit(1)
                         }
                         Spacer()
@@ -354,17 +373,18 @@ private struct WorkspaceOrganizeProgressView: View {
                 }
             }
             .padding(12)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.quaternary.opacity(0.45)))
+            .background(tokens.inset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tokens.line, lineWidth: 0.75))
             
             if let summary = self.state.summaryMessage {
                 Text(summary)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(tokens.ink2)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let errorMessage = self.state.errorMessage {
                 Text(errorMessage)
                     .font(.callout)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(tokens.red)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -399,27 +419,29 @@ private struct WorkspaceOrganizeProgressView: View {
         }
         .padding(20)
         .frame(width: 500)
+        .background(tokens.page)
     }
     
     
     @ViewBuilder
-    private func stepIcon(for status: WorkspaceOrganizeProgressState.StepStatus) -> some View {
+    private func stepDot(for status: WorkspaceOrganizeProgressState.StepStatus, tokens: BeautifulUITokens) -> some View {
         switch status {
             case .pending:
-                Image(systemName: "circle")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.tertiary)
+                Circle()
+                    .strokeBorder(tokens.lineStrong, lineWidth: 1.2)
+                    .frame(width: 8, height: 8)
             case .active:
-                ProgressView()
-                    .controlSize(.small)
+                Circle()
+                    .fill(tokens.accent)
+                    .frame(width: 8, height: 8)
             case .completed:
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.green)
+                Circle()
+                    .fill(tokens.green)
+                    .frame(width: 8, height: 8)
             case .failed:
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.orange)
+                Circle()
+                    .fill(tokens.orange)
+                    .frame(width: 8, height: 8)
         }
     }
 }

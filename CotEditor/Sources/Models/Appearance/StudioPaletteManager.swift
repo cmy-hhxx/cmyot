@@ -182,6 +182,9 @@ final class StudioPaletteManager {
     private(set) var revision: Int = 0
     
     private let database: CotLocalDatabase
+    @ObservationIgnored private var cachedTokensRevision: Int = -1
+    @ObservationIgnored private var cachedTokensByKey: [String: StudioColorTokens] = [:]
+    @ObservationIgnored private var cachedChromeEntry: (revision: Int, theme: Theme?, isDark: Bool, palette: WindowChromePalette)?
     
     
     init(database: CotLocalDatabase = .shared) {
@@ -365,14 +368,23 @@ final class StudioPaletteManager {
     
     
     func tokens(isDark: Bool, id: StudioPaletteID? = nil) -> StudioColorTokens {
-        let _ = self.revision
+        let rev = self.revision
+        if self.cachedTokensRevision != rev {
+            self.cachedTokensRevision = rev
+            self.cachedTokensByKey.removeAll(keepingCapacity: true)
+        }
         let resolvedID = id ?? self.selectedID
+        let cacheKey = "\(resolvedID.rawValue)|\(isDark)"
+        if let hit = self.cachedTokensByKey[cacheKey] {
+            return hit
+        }
         let triad = self.triad(for: resolvedID)
         
         let lightPaperNS = Self.nsColor(hex: triad.lightPaperHex)
         let darkInkNS = Self.nsColor(hex: triad.darkInkHex)
         let accentNS = Self.nsColor(hex: triad.accentHex)
         
+        let built: StudioColorTokens
         if isDark {
             let canvasTopNS = darkInkNS
             let canvasBottomNS = Self.blend(darkInkNS, with: .white, ratio: 0.03)
@@ -388,7 +400,7 @@ final class StudioPaletteManager {
                 ? Self.nsColor(hex: "#121212")
                 : NSColor.white
             
-            return StudioColorTokens(
+            built = StudioColorTokens(
                 isDark: true,
                 canvasTop: Color(nsColor: canvasTopNS),
                 canvasBottom: Color(nsColor: canvasBottomNS),
@@ -438,7 +450,7 @@ final class StudioPaletteManager {
                 ? darkInkNS
                 : NSColor.white
             
-            return StudioColorTokens(
+            built = StudioColorTokens(
                 isDark: false,
                 canvasTop: Color(nsColor: canvasTopNS),
                 canvasBottom: Color(nsColor: canvasBottomNS),
@@ -466,6 +478,8 @@ final class StudioPaletteManager {
                 heat4: Color(nsColor: accentNS)
             )
         }
+        self.cachedTokensByKey[cacheKey] = built
+        return built
     }
     
     
@@ -578,9 +592,15 @@ final class StudioPaletteManager {
     func applyPaletteToEditorTheme(preferDark: Bool, updateDocumentAppearance: Bool = true) {
         let lightName = Self.themeName(for: self.selectedID, preferDark: false)
         let darkName = Self.themeName(for: self.selectedID, preferDark: true)
+        let lightTheme = self.buildTheme(for: self.selectedID, preferDark: false)
+        let darkTheme = self.buildTheme(for: self.selectedID, preferDark: true)
         
-        try? ThemeManager.shared.save(setting: self.buildTheme(for: self.selectedID, preferDark: false), name: lightName)
-        try? ThemeManager.shared.save(setting: self.buildTheme(for: self.selectedID, preferDark: true), name: darkName)
+        if !ThemeManager.shared.settingNames.contains(lightName) || (try? ThemeManager.shared.setting(name: lightName)) != lightTheme {
+            try? ThemeManager.shared.save(setting: lightTheme, name: lightName)
+        }
+        if !ThemeManager.shared.settingNames.contains(darkName) || (try? ThemeManager.shared.setting(name: darkName)) != darkTheme {
+            try? ThemeManager.shared.save(setting: darkTheme, name: darkName)
+        }
         
         UserDefaults.standard[.theme] = preferDark ? darkName : lightName
         UserDefaults.standard[.pinsThemeAppearance] = false
@@ -604,7 +624,14 @@ final class StudioPaletteManager {
     /// Resolves a unified, theme-aware window chrome palette so the tab bar, titlebar, status bar,
     /// and toolbar pills harmonize with the active editor theme and Studio Palette without clashing.
     func chromePalette(for theme: Theme?, isDark appearanceIsDark: Bool) -> WindowChromePalette {
-        let _ = self.revision
+        let rev = self.revision
+        if let cached = self.cachedChromeEntry,
+           cached.revision == rev,
+           cached.isDark == appearanceIsDark,
+           cached.theme == theme
+        {
+            return cached.palette
+        }
         let triad = self.triad()
         let isDark = theme?.isDarkTheme ?? appearanceIsDark
         
@@ -623,6 +650,7 @@ final class StudioPaletteManager {
             ?? (theme?.text.color ?? fallbackText)
         let rawAccent = Self.nsColor(hex: triad.accentHex)
         
+        let built: WindowChromePalette
         if isDark {
             let bgLum = Self.relativeLuminance(editorBg)
             let tabBarBg = bgLum < 0.08
@@ -638,7 +666,7 @@ final class StudioPaletteManager {
             let pillFill = Self.blend(editorBg, with: .white, ratio: 0.14)
             let pillHover = Self.blend(editorBg, with: .white, ratio: 0.20)
             
-            return WindowChromePalette(
+            built = WindowChromePalette(
                 isDark: true,
                 titlebarBackground: tabBarBg,
                 tabBarBackground: tabBarBg,
@@ -668,7 +696,7 @@ final class StudioPaletteManager {
             let pillFill = Self.blend(editorBg, with: themeText, ratio: 0.08)
             let pillHover = Self.blend(editorBg, with: themeText, ratio: 0.13)
             
-            return WindowChromePalette(
+            built = WindowChromePalette(
                 isDark: false,
                 titlebarBackground: tabBarBg,
                 tabBarBackground: tabBarBg,
@@ -687,6 +715,8 @@ final class StudioPaletteManager {
                 toolbarPillText: activeText
             )
         }
+        self.cachedChromeEntry = (rev, theme, appearanceIsDark, built)
+        return built
     }
     
     

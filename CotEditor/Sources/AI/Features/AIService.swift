@@ -371,10 +371,40 @@ import Observation
         
         // Deliver every chunk before the request returns. A detached task here used to let a
         // late chunk land after the final result, which flipped finished UI back to "running".
+        // Coalesce rapid SSE updates (>= 35ms) to cut MainActor hops during fast streaming.
+        final class PartialThrottleState: @unchecked Sendable {
+            private let lock = NSLock()
+            private var lastEmitTime: CFAbsoluteTime = 0
+            private var latestPending: String?
+            
+            func submit(_ text: String) -> String? {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                let now = CFAbsoluteTimeGetCurrent()
+                if now - self.lastEmitTime >= 0.035 {
+                    self.lastEmitTime = now
+                    self.latestPending = nil
+                    return text
+                }
+                self.latestPending = text
+                return nil
+            }
+            
+            func drainPending() -> String? {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                let pending = self.latestPending
+                self.latestPending = nil
+                return pending
+            }
+        }
+        
+        let throttleState = onPartial != nil ? PartialThrottleState() : nil
         let nonisolatedPartial: (@Sendable (String) async -> Void)? = onPartial.map { callback in
             { @Sendable partial in
+                guard let emit = throttleState?.submit(partial) else { return }
                 await MainActor.run {
-                    callback(partial)
+                    callback(emit)
                 }
             }
         }
@@ -387,6 +417,9 @@ import Observation
                 messages,
                 onPartial: nonisolatedPartial
             )
+            if let pending = throttleState?.drainPending(), let onPartial {
+                onPartial(pending)
+            }
             if let analyticsFeature {
                 let elapsed = start.duration(to: clock.now)
                 let latencyMs = max(1, Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))

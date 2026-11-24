@@ -77,6 +77,37 @@ final class CotMemoryStore {
     }
     
     
+    func reloadMemoriesAndJournal() {
+        self.memories = self.database.fetchKYCMemories()
+        self.journal = self.database.fetchMemoryJournal(limit: 40)
+        self.revision &+= 1
+    }
+    
+    
+    func reloadStocks() {
+        self.stocks = self.database.fetchWatchlistStocks()
+        self.revision &+= 1
+    }
+    
+    
+    func reloadPodcasts() {
+        self.podcasts = self.database.fetchStoredPodcasts()
+        self.revision &+= 1
+    }
+    
+    
+    func reloadFeeds() {
+        self.feeds = self.database.fetchFollowedFeeds()
+        self.revision &+= 1
+    }
+    
+    
+    func reloadCreators() {
+        self.creators = self.database.fetchFollowedCreators()
+        self.revision &+= 1
+    }
+    
+    
     // MARK: - KYC Memory Operations
     
     func upsertMemory(
@@ -101,70 +132,72 @@ final class CotMemoryStore {
             isPinned: isPinned,
             actorBot: actorBot
         )
-        self.reloadFromDatabase()
+        self.reloadMemoriesAndJournal()
         if self.database === CotLocalDatabase.shared {
-            _ = try? PiKernelManager.shared.syncWorkspace()
+            PiKernelManager.shared.scheduleWorkspaceSync()
         }
     }
     
     
     func togglePinned(id: String, isPinned: Bool) {
         self.database.toggleKYCMemoryPinned(id: id, isPinned: isPinned)
-        self.reloadFromDatabase()
+        self.reloadMemoriesAndJournal()
     }
     
     
     func deleteMemory(idOrKey: String) {
         self.database.deleteKYCMemory(idOrKey: idOrKey)
-        self.reloadFromDatabase()
+        self.reloadMemoriesAndJournal()
         if self.database === CotLocalDatabase.shared {
-            _ = try? PiKernelManager.shared.syncWorkspace()
+            PiKernelManager.shared.scheduleWorkspaceSync()
         }
     }
     
     
     /// Synchronizes the 6-hour `UserPersonalityAnalyzer` snapshot into structured KYC records.
     func syncPersonalityProfile(_ profile: UserPersonalityProfile) {
-        for tag in profile.tags.prefix(5) {
-            self.database.upsertKYCMemory(
-                dimension: .writingStyle,
-                factKey: "persona_tag_\(tag.label)",
-                title: tag.label,
-                detail: tag.explanation,
-                confidence: 0.78,
-                source: "persona_bot",
-                evidenceRef: profile.modelUsed,
-                isPinned: nil,
-                actorBot: "PersonaBot"
-            )
+        self.database.withTransaction {
+            for tag in profile.tags.prefix(5) {
+                self.database.upsertKYCMemory(
+                    dimension: .writingStyle,
+                    factKey: "persona_tag_\(tag.label)",
+                    title: tag.label,
+                    detail: tag.explanation,
+                    confidence: 0.78,
+                    source: "persona_bot",
+                    evidenceRef: profile.modelUsed,
+                    isPinned: nil,
+                    actorBot: "PersonaBot"
+                )
+            }
+            if !profile.conceptTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.database.upsertKYCMemory(
+                    dimension: .cognition,
+                    factKey: "persona_concept_summary",
+                    title: profile.conceptTitle,
+                    detail: profile.conceptSummary,
+                    confidence: 0.82,
+                    source: "persona_bot",
+                    evidenceRef: profile.modelUsed,
+                    isPinned: nil,
+                    actorBot: "PersonaBot"
+                )
+            }
+            for (idx, note) in profile.writingStyleNotes.prefix(3).enumerated() {
+                self.database.upsertKYCMemory(
+                    dimension: .writingStyle,
+                    factKey: "style_note_\(idx)",
+                    title: String(note.prefix(24)),
+                    detail: note,
+                    confidence: 0.76,
+                    source: "persona_bot",
+                    evidenceRef: nil,
+                    isPinned: nil,
+                    actorBot: "PersonaBot"
+                )
+            }
         }
-        if !profile.conceptTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            self.database.upsertKYCMemory(
-                dimension: .cognition,
-                factKey: "persona_concept_summary",
-                title: profile.conceptTitle,
-                detail: profile.conceptSummary,
-                confidence: 0.82,
-                source: "persona_bot",
-                evidenceRef: profile.modelUsed,
-                isPinned: nil,
-                actorBot: "PersonaBot"
-            )
-        }
-        for (idx, note) in profile.writingStyleNotes.prefix(3).enumerated() {
-            self.database.upsertKYCMemory(
-                dimension: .writingStyle,
-                factKey: "style_note_\(idx)",
-                title: String(note.prefix(24)),
-                detail: note,
-                confidence: 0.76,
-                source: "persona_bot",
-                evidenceRef: nil,
-                isPinned: nil,
-                actorBot: "PersonaBot"
-            )
-        }
-        self.reloadFromDatabase()
+        self.reloadMemoriesAndJournal()
     }
     
     
@@ -172,13 +205,13 @@ final class CotMemoryStore {
     
     func addOrUpdateStock(_ stock: WatchlistStockRecord) {
         self.database.upsertWatchlistStock(stock)
-        self.reloadFromDatabase()
+        self.reloadStocks()
     }
     
     
     func removeStock(instrumentIDOrSymbol: String) {
         self.database.deleteWatchlistStock(instrumentIDOrSymbol: instrumentIDOrSymbol)
-        self.reloadFromDatabase()
+        self.reloadStocks()
     }
     
     
@@ -209,13 +242,13 @@ final class CotMemoryStore {
             updatedAt: Date()
         )
         self.database.upsertFollowedFeed(record)
-        self.reloadFromDatabase()
+        self.reloadFeeds()
     }
     
     
     func removeFeed(id: String) {
         self.database.deleteFollowedFeed(id: id)
-        self.reloadFromDatabase()
+        self.reloadFeeds()
     }
     
     
@@ -248,19 +281,19 @@ final class CotMemoryStore {
             updatedAt: Date()
         )
         self.database.upsertFollowedCreator(record)
-        self.reloadFromDatabase()
+        self.reloadCreators()
     }
     
     
     func removeCreator(id: String) {
         self.database.deleteFollowedCreator(id: id)
-        self.reloadFromDatabase()
+        self.reloadCreators()
     }
     
     
     func removePodcast(id: String) {
         self.database.deleteStoredPodcast(id: id)
-        self.reloadFromDatabase()
+        self.reloadPodcasts()
     }
     
     

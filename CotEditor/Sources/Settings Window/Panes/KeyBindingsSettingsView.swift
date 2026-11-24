@@ -60,7 +60,7 @@ struct KeyBindingsSettingsView: View {
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.secondary)
                     
-                    TextField(AppLanguage.text("搜索命令或快捷键…", en: "Search commands or shortcuts…"), text: self.$searchText)
+                    TextField(AppLanguage.text("搜索命令或快捷键", en: "Search commands or shortcuts"), text: self.$searchText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12.5))
                         .focused(self.$isSearchFocused)
@@ -147,7 +147,7 @@ struct KeyBindingsSettingsView: View {
                                         Text(menuTitle)
                                             .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
                                             .foregroundStyle(isSelected ? onAccent : Color.primary.opacity(0.88))
-                                            .lineLimit(1)
+                                            .fixedSize(horizontal: false, vertical: true)
                                         Spacer(minLength: 2)
                                         if hasModified {
                                             Circle()
@@ -156,7 +156,8 @@ struct KeyBindingsSettingsView: View {
                                         }
                                     }
                                     .padding(.horizontal, 10)
-                                    .frame(height: 32)
+                                    .padding(.vertical, 6)
+                                    .frame(minHeight: 32)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .background(
                                         RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -279,8 +280,7 @@ struct KeyBindingsSettingsView: View {
                             .font(.system(size: 11))
                         Text(error.localizedDescription)
                             .font(.system(size: 11.5, weight: .medium))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .foregroundStyle(.red)
                     .padding(.horizontal, 8)
@@ -290,7 +290,7 @@ struct KeyBindingsSettingsView: View {
                     Text(AppLanguage.text("直接按下组合键 · Esc 取消 · Delete 清除", en: "Press shortcut · Esc to cancel · Delete to clear"))
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(accent)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 
                 Spacer(minLength: 6)
@@ -383,13 +383,13 @@ private struct KeyBindingCommandRowView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 
                 Text(KeyBindingModel.localizedCommandTitle(self.row.commandTitle))
                     .font(.system(size: 12.5, weight: (isModified || isRecording) ? .semibold : .regular))
                     .foregroundStyle(isRecording ? self.accent : .primary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
                 
                 Spacer(minLength: 4)
             }
@@ -445,23 +445,24 @@ private struct KeyBindingCommandRowView: View {
                         Circle()
                             .fill(self.accent)
                             .frame(width: 6, height: 6)
-                        Text(AppLanguage.text("按下快捷键…", en: "Type keys…"))
+                        Text(AppLanguage.text("按下快捷键", en: "Type keys"))
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(self.accent)
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
                     } else if let symbol = currentShortcut?.symbol, !symbol.isEmpty {
                         Text(symbol)
                             .font(.system(size: 12, weight: .medium, design: .monospaced))
                             .foregroundStyle(isModified ? self.accent : .primary)
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
                     } else {
                         Text(AppLanguage.text("点击设置", en: "Set Shortcut"))
                             .font(.system(size: 11, weight: .regular))
                             .foregroundStyle(.secondary.opacity(self.isHovered ? 0.90 : 0.60))
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .frame(width: 122, height: 28)
+                .padding(.horizontal, 8)
+                .frame(minWidth: 122, minHeight: 28)
                 .background(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .fill(
@@ -489,7 +490,8 @@ private struct KeyBindingCommandRowView: View {
             .pointerStyle(.link)
         }
         .padding(.horizontal, 12)
-        .frame(height: 38)
+        .padding(.vertical, 4)
+        .frame(minHeight: 38)
         .background(
             isRecording
                 ? self.accent.opacity(self.colorScheme == .dark ? 0.09 : 0.05)

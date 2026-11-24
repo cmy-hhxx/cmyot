@@ -24,6 +24,7 @@
 //
 
 import AppKit
+import SwiftUI
 import WebKit
 
 /// The sheet that shows an AI answer and lets the user apply it.
@@ -59,7 +60,7 @@ final class AIResultPanelController: NSWindowController {
     private var hasFinished = false
     
     private let subtitleLabel = NSTextField(labelWithString: "")
-    private let spinner = NSProgressIndicator()
+    private let orbHost = NSHostingView(rootView: ThinkingOrbsParticleView(mode: .composing, size: 20, paused: true))
     private let textView = NSTextView()
     private let scrollView = NSScrollView()
     private let cardView = AIResultCardView()
@@ -116,8 +117,8 @@ final class AIResultPanelController: NSWindowController {
         
         self.hasFinished = false
         self.subtitleLabel.stringValue = Self.serviceDescription
-        self.spinner.startAnimation(nil)
-        self.spinner.isHidden = false
+        self.orbHost.rootView = ThinkingOrbsParticleView(mode: .composing, size: 20, paused: false)
+        self.orbHost.isHidden = false
         self.setText(Self.placeholder(String(localized: "ai.result.generating",
                                              defaultValue: "Generating…",
                                              table: "AI")))
@@ -193,8 +194,8 @@ final class AIResultPanelController: NSWindowController {
             ? AIDocumentTextCleaner.clean(result)
             : result
         let raw = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.spinner.stopAnimation(nil)
-        self.spinner.isHidden = true
+        self.orbHost.rootView = ThinkingOrbsParticleView(mode: .composing, size: 20, paused: true)
+        self.orbHost.isHidden = true
         
         // If the AI returned a fenced ```html block, render it in the interactive chart WebView
         if let extractedHTML = Self.extractHTMLBlock(from: raw) {
@@ -230,8 +231,8 @@ final class AIResultPanelController: NSWindowController {
         )
         
         self.answer = ""
-        self.spinner.stopAnimation(nil)
-        self.spinner.isHidden = true
+        self.orbHost.rootView = ThinkingOrbsParticleView(mode: .composing, size: 20, paused: true)
+        self.orbHost.isHidden = true
         self.setText(Self.failureMessage(title: self.action.title, error: error))
         self.updateButtons(canApply: false)
     }
@@ -261,9 +262,9 @@ final class AIResultPanelController: NSWindowController {
         self.subtitleLabel.textColor = .secondaryLabelColor
         self.subtitleLabel.lineBreakMode = .byTruncatingMiddle
         
-        self.spinner.style = .spinning
-        self.spinner.controlSize = .small
-        self.spinner.isHidden = true
+        self.orbHost.translatesAutoresizingMaskIntoConstraints = false
+        self.orbHost.isHidden = true
+        self.orbHost.setContentHuggingPriority(.required, for: .horizontal)
         
         self.cardView.translatesAutoresizingMaskIntoConstraints = false
         
@@ -300,7 +301,7 @@ final class AIResultPanelController: NSWindowController {
         titleStack.alignment = .leading
         titleStack.spacing = 2
         
-        let header = NSStackView(views: [titleStack, NSView(), self.spinner])
+        let header = NSStackView(views: [titleStack, NSView(), self.orbHost])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 8
@@ -367,6 +368,8 @@ final class AIResultPanelController: NSWindowController {
         contentView.addSubview(buttons)
         
         NSLayoutConstraint.activate([
+            self.orbHost.widthAnchor.constraint(equalToConstant: 20),
+            self.orbHost.heightAnchor.constraint(equalToConstant: 20),
             header.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
             header.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             header.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
@@ -610,11 +613,11 @@ final class AIResultCardView: NSView {
         guard let layer else { return }
         
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer.cornerRadius = 10
+            layer.cornerRadius = 12
             layer.cornerCurve = .continuous
             layer.backgroundColor = NSColor.textBackgroundColor.cgColor
             layer.borderWidth = 1
-            layer.borderColor = NSColor.separatorColor.cgColor
+            layer.borderColor = NSColor.separatorColor.withAlphaComponent(0.55).cgColor
         }
     }
 }

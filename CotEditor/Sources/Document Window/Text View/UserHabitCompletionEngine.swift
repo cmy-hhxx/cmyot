@@ -330,9 +330,27 @@ import Foundation
         siblingTexts: [String] = []
     ) -> String? {
         
+        return self.predictNextPhrase(
+            in: text as NSString,
+            caretLocation: caretLocation,
+            precomputedLineContext: nil,
+            syntaxWords: syntaxWords,
+            siblingTextsProvider: { siblingTexts.map { $0 as NSString } }
+        )
+    }
+    
+    
+    /// Zero-copy `NSString` overload that avoids bridging multi-megabyte documents and evaluates sibling tabs lazily.
+    func predictNextPhrase(
+        in nsText: NSString,
+        caretLocation: Int,
+        precomputedLineContext: (linePrefix: String, lineSuffix: String)? = nil,
+        syntaxWords: [String] = [],
+        siblingTextsProvider: () -> [NSString] = { [] }
+    ) -> String? {
+        
         self.scheduleWarmUpFromDatabaseIfNeeded()
         
-        let nsText = text as NSString
         guard caretLocation > 0, caretLocation <= nsText.length else { return nil }
         
         // Do not suggest inline ghost text inside the middle of an existing word or identifier.
@@ -343,16 +361,24 @@ import Foundation
             }
         }
         
-        let lineRange = nsText.lineRange(for: NSRange(location: max(0, caretLocation - 1), length: 0))
-        let prefixLength = caretLocation - lineRange.location
-        guard prefixLength >= 2 else { return nil }
-        
-        let rawLinePrefix = nsText.substring(with: NSRange(location: lineRange.location, length: prefixLength))
-        let lineEnd = NSMaxRange(lineRange)
-        let rawLineSuffix = (caretLocation < lineEnd)
-            ? nsText.substring(with: NSRange(location: caretLocation, length: lineEnd - caretLocation))
-            : ""
-        let lineSuffix = rawLineSuffix.trimmingCharacters(in: .newlines)
+        let rawLinePrefix: String
+        let lineSuffix: String
+        if let precomputedLineContext {
+            guard precomputedLineContext.linePrefix.utf16.count >= 2 else { return nil }
+            rawLinePrefix = precomputedLineContext.linePrefix
+            lineSuffix = precomputedLineContext.lineSuffix
+        } else {
+            let lineRange = nsText.lineRange(for: NSRange(location: max(0, caretLocation - 1), length: 0))
+            let prefixLength = caretLocation - lineRange.location
+            guard prefixLength >= 2 else { return nil }
+            
+            rawLinePrefix = nsText.substring(with: NSRange(location: lineRange.location, length: prefixLength))
+            let lineEnd = NSMaxRange(lineRange)
+            let rawLineSuffix = (caretLocation < lineEnd)
+                ? nsText.substring(with: NSRange(location: caretLocation, length: lineEnd - caretLocation))
+                : ""
+            lineSuffix = rawLineSuffix.trimmingCharacters(in: .newlines)
+        }
         let window = String(rawLinePrefix.suffix(56))
         
         // 1. Exact or partial match against high-confidence built-in workflow habits
@@ -374,7 +400,7 @@ import Foundation
             in: nsText,
             caretLocation: caretLocation,
             linePrefix: window,
-            siblingTexts: siblingTexts
+            siblingTextsProvider: siblingTextsProvider
         ),
            let sanitized = Self.trimOverlapWithLineSuffix(docContextMatch, lineSuffix: lineSuffix)
         {
@@ -672,7 +698,7 @@ import Foundation
         in nsText: NSString,
         caretLocation: Int,
         linePrefix: String,
-        siblingTexts: [String]
+        siblingTextsProvider: () -> [NSString]
     ) -> String? {
         
         let cleanPrefix = self.trimTrailingClausePunctuation(linePrefix)
@@ -718,8 +744,11 @@ import Foundation
             scan(haystack: searchSpace, weight: 2)
         }
         
-        for sibling in siblingTexts.prefix(5) where sibling.count >= anchor.count + 2 {
-            let slice = String(sibling.prefix(4_000)) as NSString
+        for siblingNS in siblingTextsProvider().prefix(5) where siblingNS.length >= anchor.count + 2 {
+            let clampedLen = min(4_000, siblingNS.length)
+            let slice: NSString = (clampedLen == siblingNS.length)
+                ? siblingNS
+                : siblingNS.substring(with: NSRange(location: 0, length: clampedLen)) as NSString
             scan(haystack: slice, weight: 1)
         }
         

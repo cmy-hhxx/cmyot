@@ -3076,35 +3076,32 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             .compactMap { ($0.windowController as? DocumentWindowController)?.documentViewController }
         guard !docWindowVCs.isEmpty else { return }
         
-        var windowLayouts: [PersistedWindowLayout] = []
+        var docsToSync: [Document] = []
         var flatItems: [PersistedPaneTabItem] = []
         
         for winVC in docWindowVCs {
-            var paneCounter = 0
-            let rootNode = winVC.captureLayoutNode(from: winVC, paneCounter: &paneCounter)
-            let focusedIndex = winVC.focusedChild.flatMap { winVC.editorViewControllers.firstIndex(of: $0) } ?? 0
-            let frameString = winVC.view.window.map { NSStringFromRect($0.frame) }
-            windowLayouts.append(PersistedWindowLayout(
-                root: rootNode,
-                focusedPaneIndex: focusedIndex,
-                windowFrame: frameString
-            ))
-            
             for (paneIdx, pane) in winVC.editorViewControllers.enumerated() {
                 for tab in pane.tabs {
                     let doc = tab.document
-                    let content = doc.textStorage.string
-                    guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || doc.fileURL != nil || tab.boardState != nil else { continue }
-                    let highlightsData = try? JSONEncoder().encode(doc.textHighlights)
-                    let highlightsJSON = highlightsData.flatMap { String(data: $0, encoding: .utf8) }
+                    let path = doc.fileURL?.path(percentEncoded: false)
+                    let isDirty = doc.isDocumentEdited || doc.hasUncommittedChanges
+                    guard tab.boardState != nil
+                        || path != nil
+                        || !doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    else { continue }
+                    
+                    if tab.boardState == nil, (path == nil || isDirty) {
+                        docsToSync.append(doc)
+                    }
+                    
                     flatItems.append(PersistedPaneTabItem(
                         title: doc.displayName,
-                        filePath: doc.fileURL?.path(percentEncoded: false),
+                        filePath: path,
                         syntax: doc.syntaxName,
-                        content: content,
+                        content: "",
                         isPinned: tab.isPinned,
                         paneIndex: paneIdx,
-                        highlightsJSON: highlightsJSON,
+                        highlightsJSON: nil,
                         databaseID: doc.databaseDocumentID,
                         boardState: tab.boardState
                     ))
@@ -3113,16 +3110,16 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         }
         
         guard !flatItems.isEmpty else { return }
-        let session = PersistedWorkspaceSession(windows: windowLayouts)
-        if let sessionData = try? JSONEncoder().encode(session),
-           let sessionJSON = String(data: sessionData, encoding: .utf8)
-        {
-            CotLocalDatabase.shared.set(sessionJSON, forKey: CotLocalDatabase.ConfigKey.windowLayoutTree)
-        }
-        if let flatData = try? JSONEncoder().encode(flatItems),
-           let flatJSON = String(data: flatData, encoding: .utf8)
-        {
-            CotLocalDatabase.shared.set(flatJSON, forKey: CotLocalDatabase.ConfigKey.activePaneTabsSession)
+        CotLocalDatabase.shared.withTransaction {
+            for doc in docsToSync {
+                doc.syncToLocalDatabase(force: true)
+            }
+            CotLocalDatabase.shared.removeConfig(forKey: CotLocalDatabase.ConfigKey.windowLayoutTree)
+            if let flatData = try? JSONEncoder().encode(flatItems),
+               let flatJSON = String(data: flatData, encoding: .utf8)
+            {
+                CotLocalDatabase.shared.set(flatJSON, forKey: CotLocalDatabase.ConfigKey.activePaneTabsSession)
+            }
         }
     }
     
@@ -3418,11 +3415,16 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         }
         doc.displayName = item.title
         doc.setSyntax(name: item.syntax)
-        if !item.content.isEmpty {
-            doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: item.content)
+        let dbFallback: StoredDocumentRecord? = (item.content.isEmpty && item.boardState == nil)
+            ? CotLocalDatabase.shared.fetchDocumentRecord(id: item.databaseID, filePath: item.filePath)
+            : nil
+        let resolvedContent = !item.content.isEmpty ? item.content : (dbFallback?.content ?? "")
+        if !resolvedContent.isEmpty {
+            doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: resolvedContent)
             doc.updateChangeCount(.changeCleared)
         }
-        if let highlightsJSON = item.highlightsJSON,
+        let resolvedHighlightsJSON = item.highlightsJSON ?? dbFallback?.highlightsJSON
+        if let highlightsJSON = resolvedHighlightsJSON,
            let highlightsData = highlightsJSON.data(using: .utf8),
            let decoded = try? JSONDecoder().decode([TextHighlight].self, from: highlightsData),
            !decoded.isEmpty

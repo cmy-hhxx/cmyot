@@ -585,17 +585,22 @@ struct Round33FeatureTests {
     }
     
     
-    // MARK: 13. Hero Banner Fluted Prism Uniform Luminance (No Glaring Pure-White Voids)
+    // MARK: 13. Hero Banner Fluted Prism Coordinated Whitespace & Lower Typography Contrast
     
-    @Test func uniformBannerFlutedPrismEliminatesPureWhitePatchesAcrossFullWidth() throws {
+    @Test func uniformBannerFlutedPrismBalancesAiryWhitespaceAndDeepLowerBand() throws {
         let width = 180
         let height = 48
-        let palettes: [FlutedGlassPalette] = [.cobaltBlue, .pineEmerald, .amberGold, .nebulaViolet]
+        let palettes: [(palette: FlutedGlassPalette, maxLowerLuma: Double)] = [
+            (.cobaltBlue, 0.42),
+            (.pineEmerald, 0.42),
+            (.nebulaViolet, 0.42),
+            (.amberGold, 0.52),
+        ]
         
-        for palette in palettes {
+        for entry in palettes {
             let image = try #require(BlueFlutedGlassRenderer.renderFrame(
                 time: 4.5,
-                palette: palette,
+                palette: entry.palette,
                 width: width,
                 height: height,
                 ribCount: 66.0,
@@ -603,9 +608,11 @@ struct Round33FeatureTests {
             ))
             let rep = NSBitmapImageRep(cgImage: image)
             
-            var blownOutWhitePixels = 0
-            var thirdLumaSums = [0.0, 0.0, 0.0]
-            var thirdCounts = [0, 0, 0]
+            var upperAiryPixels = 0
+            var totalAiryPixels = 0
+            var maxLowerLuma = 0.0
+            let upperCutoffY = Int(Double(height) * 0.50)
+            let lowerStartY = Int(Double(height) * 0.56)
             
             for y in 0..<height {
                 for x in 0..<width {
@@ -613,20 +620,104 @@ struct Round33FeatureTests {
                     let r = Double(color.redComponent)
                     let g = Double(color.greenComponent)
                     let b = Double(color.blueComponent)
-                    if r > 0.92 && g > 0.92 && b > 0.92 {
-                        blownOutWhitePixels += 1
-                    }
                     let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
-                    let third = min(2, (x * 3) / width)
-                    thirdLumaSums[third] += luma
-                    thirdCounts[third] += 1
+                    if luma > 0.65 {
+                        totalAiryPixels += 1
+                        if y < upperCutoffY {
+                            upperAiryPixels += 1
+                        }
+                    }
+                    if y >= lowerStartY {
+                        maxLowerLuma = max(maxLowerLuma, luma)
+                    }
                 }
             }
             
-            #expect(blownOutWhitePixels == 0)
-            let means = zip(thirdLumaSums, thirdCounts).map { $0 / Double(max(1, $1)) }
-            let spread = (means.max() ?? 0) - (means.min() ?? 0)
-            #expect(spread < 0.16)
+            let airyRatio = Double(totalAiryPixels) / Double(width * height)
+            #expect(upperAiryPixels > 0, "Expected airy fluted-glass breathing space in upper hero band")
+            #expect(airyRatio < 0.42, "Airy light area (\(airyRatio)) should remain balanced")
+            #expect(maxLowerLuma < entry.maxLowerLuma, "Lower text band luma \(maxLowerLuma) too bright for crisp white text")
+        }
+    }
+    
+    
+    // MARK: 13B. Predicted Action Sanitizer Strips All Brackets & Condenses Concisely
+    
+    @Test func predictedActionSanitizerStripsAllBracketsAndCondenses() {
+        let cases: [(raw: String, expectedContains: String)] = [
+            ("（2）推进接口联调（需先对齐字段和错误码定义）", "推进接口联调"),
+            ("[高优] 补全【灰度发布】回滚单测(明天上线前)", "补全回滚单测"),
+            ("1. 趁热把「架构设计」与《需求评审》收个尾，顺便把所有边界单测补齐", "把架构设计与收个尾"),
+        ]
+        let brackets = CharacterSet(charactersIn: "()（）[]【】「」『』《》〈〉")
+        
+        for item in cases {
+            let cleaned = AnalyticsManager.sanitizePredictedActionText(
+                item.raw,
+                knownTitles: [],
+                maxLength: 20
+            )
+            #expect(cleaned.count >= 4 && cleaned.count <= 20)
+            #expect(cleaned.rangeOfCharacter(from: brackets) == nil)
+            #expect(AnalyticsManager.isCompleteDashboardSentence(cleaned))
+        }
+        
+        let exactShort = AnalyticsManager.sanitizePredictedActionText(
+            "完成灰度发布与回滚验证清单。",
+            knownTitles: [],
+            maxLength: 20
+        )
+        #expect(exactShort == "完成灰度发布与回滚验证清单。")
+    }
+    
+    
+    // MARK: 13C. Dashboard & News Center Mount Cleanly Across Light/Dark Modes
+    
+    @Test func dashboardAndNewsCenterMountCleanlyInLightAndDarkAppearances() throws {
+        let intrinsicH = HeatmapGridLayout.intrinsicHeight(forWidth: 560, weekCount: 52)
+        #expect(intrinsicH >= 84 && intrinsicH <= 120)
+        
+        let appearances: [NSAppearance.Name] = [.aqua, .darkAqua]
+        for appearanceName in appearances {
+            let dashView = AnalyticsDashboardView(isEmbeddedInSettings: false, onDismiss: {})
+            let dashHost = NSHostingController(rootView: dashView)
+            dashHost.sizingOptions = []
+            
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1220, height: 820),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: appearanceName)
+            defer { window.close() }
+            window.contentViewController = dashHost
+            window.setContentSize(NSSize(width: 1220, height: 820))
+            
+            let dashContent = try #require(window.contentView)
+            dashContent.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.12))
+            dashContent.layoutSubtreeIfNeeded()
+            #expect(abs(dashContent.bounds.width - 1220) <= 2)
+            #expect(abs(dashContent.bounds.height - 820) <= 2)
+            
+            let newsView = DashboardNewsCenterView(
+                newsService: AIHotNewsService.shared,
+                tokens: DashPalette(appearanceName == .darkAqua ? .dark : .light).tokens,
+                initialSelectedID: nil,
+                onClose: {}
+            )
+            let newsHost = NSHostingController(rootView: newsView)
+            newsHost.sizingOptions = []
+            window.contentViewController = newsHost
+            window.setContentSize(NSSize(width: 1220, height: 820))
+            
+            let newsContent = try #require(window.contentView)
+            newsContent.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.12))
+            newsContent.layoutSubtreeIfNeeded()
+            #expect(abs(newsContent.bounds.width - 1220) <= 2)
         }
     }
     
@@ -665,5 +756,697 @@ struct Round33FeatureTests {
         #expect(analytics.revision == baselineRev + 1)
         #expect(analytics.todayStats.typedChars == baselineTyped + 25)
         #expect(analytics.todayStats.localHits == baselineHits + 1)
+    }
+    
+    
+    // MARK: 15. Streamlined OpenCode Go Catalog, 1:1 Bitmap Bot Avatars, & Multi-Level Preference Tree
+    
+    @Test func openCodeGoCatalogMatchesCuratedModels() {
+        #expect(AIProvider.openCodeGo.defaultModel == "deepseek-v4.1-flash")
+        let models = AIProvider.openCodeGo.recommendedModels
+        #expect(models.contains("deepseek-v4.1-flash"))
+        #expect(models.contains("glm-5.3"))
+        #expect(models.contains("claude-sonnet-4-5"))
+        #expect(models.contains("gpt-5.2"))
+        #expect(models.contains("gemini-2.5-pro"))
+        #expect(!models.contains("kimi-k2.5"))
+        #expect(!models.contains("minimax-m2.5"))
+        #expect(AIProvider.openCodeGoModelGroups.count == 4)
+        
+        let profile = AIProvider.openCodeGo.makeProfile()
+        #expect(profile.baseURL == "https://opencode.ai/zen/go/v1")
+        #expect(profile.model == "deepseek-v4.1-flash")
+    }
+    
+    
+    @Test func botSquareAvatarsRenderAs1To1BitmapImages() throws {
+        let characters: [AIGijinkaCharacter] = [.deepseek, .claude, .gpt, .gemini, .glm]
+        for character in characters {
+            let art = try #require(character.artworks.first)
+            let square = try #require(AIGijinkaImageLoader.shared.squareAvatar(for: art, pointSize: 122))
+            #expect(abs(square.size.width - 122) <= 0.5)
+            #expect(abs(square.size.height - 122) <= 0.5)
+            let hasBitmap = square.representations.contains { $0 is NSBitmapImageRep }
+            #expect(hasBitmap, "Expected pre-rasterized NSBitmapImageRep for \(art.id)")
+        }
+    }
+    
+    
+    @Test func preferenceHierarchyBuildsFourLevelsWithoutReadOnlyText() throws {
+        let now = Date()
+        let memories = [
+            UserKYCMemoryRecord(
+                id: "m1",
+                dimension: .writingStyle,
+                factKey: "direct_tone",
+                title: "直白干练",
+                detail: "优先输出清晰要点",
+                confidence: 0.92,
+                source: "user_explicit",
+                evidenceRef: nil,
+                isPinned: true,
+                isArchived: false,
+                reinforcementCount: 4,
+                createdAt: now,
+                updatedAt: now
+            ),
+            UserKYCMemoryRecord(
+                id: "m2",
+                dimension: .cognition,
+                factKey: "systems_thinking",
+                title: "结构化拆解",
+                detail: "先确定主干层次再细化模块",
+                confidence: 0.88,
+                source: "persona_bot",
+                evidenceRef: "deepseek-v4.1-flash",
+                isPinned: false,
+                isArchived: false,
+                reinforcementCount: 2,
+                createdAt: now,
+                updatedAt: now
+            ),
+        ]
+        let stocks = [
+            MarketInstrument(
+                namespace: .hongKong,
+                symbol: "HSTECH",
+                name: "恒生科技指数",
+                eastmoneySecID: "124.HSTECH",
+                tencentCode: "hkHSTECH"
+            ).toRecord(sortOrder: 0, thesisNote: "持续追踪港股科技权重表现", addedBy: "user")
+        ]
+        let domains = MemoryStarMapSettingsView.buildPreferenceDomains(
+            memories: memories,
+            stocks: stocks,
+            podcasts: [],
+            feeds: [],
+            creators: []
+        )
+        #expect(domains.count == 3)
+        #expect(domains.reduce(0) { $0 + $1.totalItemCount } == 3)
+        
+        for domain in domains {
+            #expect(!domain.title.contains("只读"))
+            #expect(!domain.title.contains("Read-Only"))
+            for cat in domain.categories {
+                for item in cat.items {
+                    #expect(!item.title.contains("只读"))
+                    #expect(item.hasExpandableDetail)
+                    #expect(!item.attributes.isEmpty)
+                    for attr in item.attributes {
+                        #expect(!attr.label.contains("只读"))
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    @Test func sidebarSettingsWindowMountsOpenCodeGoSquareBotsAndPreferences() throws {
+        #expect(SidebarSettingsItem.memory.title == AppLanguage.text("偏好记忆", en: "Preferences"))
+        #expect(!SidebarSettingsItem.memory.title.contains("与"))
+        #expect(NSImage(systemSymbolName: SidebarSettingsItem.memory.symbolName, accessibilityDescription: nil) != nil)
+        
+        let controller = SidebarSettingsWindowController()
+        let window = try #require(controller.window)
+        defer { window.close() }
+        
+        for tab: SidebarSettingsItem in [.models, .bots, .memory] {
+            controller.openItem(tab)
+            let contentView = try #require(window.contentView)
+            contentView.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.08))
+            contentView.layoutSubtreeIfNeeded()
+            #expect(abs(contentView.bounds.width - 780) <= 1)
+            #expect(abs(contentView.bounds.height - 560) <= 1)
+        }
+    }
+    
+    
+    // MARK: 7. Document & Weekly Star-Map, Relations, Full-Text Search & Highlighting
+    
+    @Test func starMapFullTextMultiKeywordSearchFindsDeepBodyMatchesAndSnippets() {
+        let padding = String(repeating: "这是一段常规的项目推进记录文本，用来填充文章前置内容以超出两千字符限制。", count: 140)
+        let deepContent = padding + "\n\n核心进展：本周在 星图拓扑 引擎中接入 棱纹玻璃 渲染管线并完成性能优化。"
+        
+        let terms = StarMapSearchEngine.parseTerms("  星图拓扑   棱纹玻璃 ")
+        #expect(terms == ["星图拓扑", "棱纹玻璃"])
+        
+        let deepEval = StarMapSearchEngine.evaluate(
+            queryTerms: terms,
+            title: "技术架构方案",
+            category: "架构设计",
+            secondaryMeta: "architecture/design.md",
+            content: deepContent
+        )
+        #expect(deepEval.isMatch)
+        #expect(deepEval.totalHits >= 2)
+        #expect(deepEval.score > 0)
+        #expect(deepEval.snippet != nil)
+        #expect(deepEval.snippet?.contains("星图拓扑") == true)
+        
+        let missingTermEval = StarMapSearchEngine.evaluate(
+            queryTerms: StarMapSearchEngine.parseTerms("星图拓扑 不存在的锚点词"),
+            title: "技术架构方案",
+            category: "架构设计",
+            secondaryMeta: "architecture/design.md",
+            content: deepContent
+        )
+        #expect(!missingTermEval.isMatch)
+        
+        let titleEval = StarMapSearchEngine.evaluate(
+            queryTerms: terms,
+            title: "星图拓扑 与 棱纹玻璃",
+            category: "架构设计",
+            secondaryMeta: "",
+            content: "正文概要"
+        )
+        #expect(titleEval.isMatch)
+        #expect(titleEval.score > deepEval.score)
+    }
+    
+    
+    @Test func starMapRelationEngineDiscoversTitleMentionsAndSharedTopicEdges() {
+        let docs: [StarMapRelationEngine.CorpusDocument] = [
+            .init(
+                id: "d1",
+                title: "星图架构设计",
+                group: "架构",
+                folderPath: "/workspace/arch",
+                content: "# 总体方案\n本文引用了 文档中心 以及 OpenCode 网关协议，采用 语义拓扑 索引。",
+                sortTimestamp: 300
+            ),
+            .init(
+                id: "d2",
+                title: "文档中心",
+                group: "模块",
+                folderPath: "/workspace/ui",
+                content: "# 文档中心\n提供 语义拓扑 可视化与 空格预览 能力。",
+                sortTimestamp: 200
+            ),
+            .init(
+                id: "d3",
+                title: "研发周报",
+                group: "周报",
+                folderPath: "/workspace/weekly",
+                content: "完成了 文档中心 与 OpenCode 网关协议 的对接，增强了 语义拓扑 检索。",
+                sortTimestamp: 100
+            ),
+            .init(
+                id: "d4",
+                title: "生活随笔",
+                group: "日记",
+                folderPath: "/personal/life",
+                content: "今天天气晴朗，去公园散步。",
+                sortTimestamp: 50
+            ),
+        ]
+        
+        let edges = StarMapRelationEngine.buildRelations(for: docs, maxEdgesPerNode: 3)
+        #expect(!edges.isEmpty)
+        
+        let linksD1AndD2 = edges.contains {
+            ($0.sourceID == "d1" && $0.targetID == "d2") || ($0.sourceID == "d2" && $0.targetID == "d1")
+        }
+        let linksD3AndD2 = edges.contains {
+            ($0.sourceID == "d3" && $0.targetID == "d2") || ($0.sourceID == "d2" && $0.targetID == "d3")
+        }
+        #expect(linksD1AndD2)
+        #expect(linksD3AndD2)
+        #expect(!edges.contains { $0.sourceID == "d4" || $0.targetID == "d4" })
+        #expect(edges.allSatisfy { !$0.reason.isEmpty && $0.strength > 0 })
+        
+        var degreeByNode: [String: Int] = [:]
+        for edge in edges {
+            degreeByNode[edge.sourceID, default: 0] += 1
+            degreeByNode[edge.targetID, default: 0] += 1
+        }
+        #expect(degreeByNode.values.allSatisfy { $0 <= 3 })
+    }
+    
+    
+    @Test func documentAndWeeklyCentersBuildStarMapAndHighlightMatches() {
+        let db = CotLocalDatabase.shared
+        let id1 = "__test_sm_w1"
+        let id2 = "__test_sm_w2"
+        defer {
+            db.deleteWeeklyReport(id: id1)
+            db.deleteWeeklyReport(id: id2)
+        }
+        
+        let longLead = String(repeating: "本周开展日常代码评审与稳定性治理。", count: 140)
+        db.saveWeeklyReport(
+            id: id1,
+            periodLabel: "20261116-1122",
+            yearMonth: "202611",
+            title: "第47周 星图引擎周报",
+            content: longLead + "\n\n重点突破：完成 星图关系连线 与 Deepseek 多词检索整合。",
+            sourcePath: nil,
+            isEnhanced: false,
+            createdAt: Date(timeIntervalSinceNow: -3600),
+            reloadAfter: true
+        )
+        db.saveWeeklyReport(
+            id: id2,
+            periodLabel: "20261109-1115",
+            yearMonth: "202611",
+            title: "第46周 原型验证",
+            content: "前期回顾：为 第47周 星图引擎周报 准备了 星图关系连线 数据结构与测试样本。",
+            sourcePath: nil,
+            isEnhanced: false,
+            createdAt: Date(timeIntervalSinceNow: -7200),
+            reloadAfter: true
+        )
+        
+        let reportState = WeeklyReportCenterState()
+        reportState.rebuildGroups()
+        
+        let hasPairRelation = reportState.relations.contains {
+            ($0.sourceID == id1 && $0.targetID == id2) || ($0.sourceID == id2 && $0.targetID == id1)
+        }
+        #expect(hasPairRelation)
+        
+        reportState.searchText = "星图关系连线 Deepseek"
+        #expect(reportState.searchHits.contains(where: { $0.id == id1 }))
+        #expect((reportState.searchMatchesByID[id1]?.totalHits ?? 0) >= 2)
+        // 1-hop neighbor should remain visible in displayedRows to preserve relation arcs
+        #expect(reportState.displayedRows.contains(where: { $0.id == id2 }))
+        
+        let tokens = DashPalette.editorialTokens(isDark: false)
+        let reportClusters = reportState.buildStarMapClusters(tokens: tokens)
+        let leaf1 = reportClusters.flatMap(\.leaves).first(where: { $0.id == id1 })
+        #expect(leaf1?.isHighlighted == true)
+        #expect(leaf1?.statusBadge?.contains("命中") == true)
+        
+        let reportHost = NSHostingView(rootView: WeeklyReportCenterView(state: reportState))
+        reportHost.frame = NSRect(x: 0, y: 0, width: 1120, height: 720)
+        reportHost.layoutSubtreeIfNeeded()
+        #expect(reportHost.bounds.width == 1120)
+        
+        let docState = DocumentCenterState()
+        docState.refresh()
+        let docClusters = docState.buildStarMapClusters(tokens: tokens)
+        #expect(docClusters.allSatisfy { !$0.title.isEmpty })
+        docState.searchText = "测试"
+        let docHost = NSHostingView(rootView: DocumentCenterView(state: docState))
+        docHost.frame = NSRect(x: 0, y: 0, width: 1120, height: 720)
+        docHost.layoutSubtreeIfNeeded()
+        #expect(docHost.bounds.width == 1120)
+    }
+    
+    
+    // MARK: 8. Unified Beautiful UI + LeiBox Orbs, Simplified Bot Config & OpenCode Go Models
+    
+    @Test func agentUIComponentLibraryRendersOrbsAndUnifiedChatSurface() throws {
+        let light = BeautifulUITokens.resolve(isDark: false)
+        let dark = BeautifulUITokens.resolve(isDark: true)
+        #expect(light != dark)
+        
+        for orbState in AgentOrbState.allCases {
+            let orbHost = NSHostingView(rootView: DissolveThinkingOrbView(state: orbState, size: 52, paused: true))
+            orbHost.frame = NSRect(x: 0, y: 0, width: 52, height: 52)
+            orbHost.layoutSubtreeIfNeeded()
+            #expect(orbHost.bounds.size == NSSize(width: 52, height: 52))
+        }
+        
+        for particleMode in ThinkingOrbsMode.allCases {
+            let particleHost = NSHostingView(rootView: ThinkingOrbsParticleView(mode: particleMode, size: 28, paused: true))
+            particleHost.frame = NSRect(x: 0, y: 0, width: 28, height: 28)
+            particleHost.layoutSubtreeIfNeeded()
+            #expect(particleHost.bounds.size == NSSize(width: 28, height: 28))
+        }
+        
+        let loaderTrace = VStack(spacing: 12) {
+            BeautifulUIPixelLoader(label: "Working", variant: .drive, showTimer: true)
+            BeautifulUIThinkingTrace(
+                isWorking: true,
+                activeLabel: "Thinking",
+                doneLabel: "Done",
+                mode: .working,
+                steps: [
+                    BeautifulUIThinkingStep(primary: "Inspecting workspace", secondary: "2 files", isCompleted: true),
+                    BeautifulUIThinkingStep(primary: "Streaming response", isCompleted: false),
+                ]
+            )
+        }
+        let traceHost = NSHostingView(rootView: loaderTrace)
+        traceHost.frame = NSRect(x: 0, y: 0, width: 420, height: 220)
+        traceHost.layoutSubtreeIfNeeded()
+        #expect(traceHost.bounds.width == 420)
+        
+        let models = [AgentModelOption(modelID: "deepseek-v4.1-flash"), AgentModelOption(modelID: "glm-5.3")]
+        let emptySurface = AgentChatTranscriptSurface(
+            messages: [],
+            isStreaming: false,
+            streamingDraft: nil,
+            errorMessage: nil,
+            placeholder: "Hello",
+            availableModels: models,
+            selectedModelTitle: "deepseek-v4.1-flash",
+            orbColor: light.ink,
+            tokens: light,
+            onSend: { _ in }
+        )
+        let emptyHost = NSHostingView(rootView: emptySurface)
+        emptyHost.frame = NSRect(x: 0, y: 0, width: 480, height: 420)
+        emptyHost.layoutSubtreeIfNeeded()
+        #expect(emptyHost.bounds.height == 420)
+        
+        let populatedSurface = AgentChatTranscriptSurface(
+            messages: [
+                AgentChatMessageItem(id: "u1", isUser: true, text: "帮我总结这段修改"),
+                AgentChatMessageItem(
+                    id: "a1",
+                    isUser: false,
+                    text: "## 总结\n已完成 **Beautiful UI** 与粒子系统接入。",
+                    toolChips: [AgentToolChipItem(id: "t1", label: "读取工作区")]
+                ),
+            ],
+            isStreaming: false,
+            streamingDraft: nil,
+            errorMessage: nil,
+            placeholder: "@总管",
+            availableModels: models,
+            selectedModelTitle: "glm-5.3",
+            orbColor: dark.ink,
+            tokens: dark,
+            onSend: { _ in }
+        )
+        let popHost = NSHostingView(rootView: populatedSurface)
+        popHost.frame = NSRect(x: 0, y: 0, width: 480, height: 420)
+        popHost.layoutSubtreeIfNeeded()
+        #expect(popHost.bounds.width == 480)
+    }
+    
+    
+    @Test func botSimplifiedIdentityAndOpenCodeGoModelSelectionPersistCleanly() throws {
+        #expect(AIBotID.allCases.count == 12)
+        #expect(AIBotID.allCases.first == .butler)
+        #expect(AIBotID.allCases.contains(.readingCompanion))
+        
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot-bot-identity-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "bots.sqlite3"))
+        let store = AIBotStore(database: db)
+        
+        var cfg = store.config(for: .readingCompanion)
+        cfg.customName = "夜读助手"
+        cfg.customNickname = "夜读"
+        cfg.modelOverride = "glm-5.3"
+        store.updateConfig(cfg, for: .readingCompanion)
+        
+        let reloadedStore = AIBotStore(database: db)
+        #expect(reloadedStore.resolvedName(for: .readingCompanion) == "夜读助手")
+        #expect(reloadedStore.resolvedNickname(for: .readingCompanion) == "夜读")
+        #expect(reloadedStore.config(for: .readingCompanion).modelOverride == "glm-5.3")
+        
+        let testImage = NSImage(size: NSSize(width: 64, height: 64))
+        testImage.lockFocus()
+        NSColor.systemBlue.setFill()
+        NSRect(x: 0, y: 0, width: 64, height: 64).fill()
+        testImage.unlockFocus()
+        let tiffData = try #require(testImage.tiffRepresentation)
+        let rep = try #require(NSBitmapImageRep(data: tiffData))
+        let pngData = try #require(rep.representation(using: .png, properties: [:]))
+        
+        reloadedStore.setCustomAvatarData(pngData, for: .readingCompanion)
+        #expect(reloadedStore.customAvatarImage(for: .readingCompanion) != nil)
+        #expect(reloadedStore.resolvedAvatarImage(for: .readingCompanion, pointSize: 80) != nil)
+        
+        let catalog = reloadedStore.openCodeGoSelectableModels()
+        #expect(catalog.models.contains("deepseek-v4.1-flash"))
+        #expect(catalog.models.contains("glm-5.3"))
+        #expect(catalog.models.contains("claude-sonnet-4-5"))
+        #expect(catalog.models.contains("gpt-5.2"))
+        #expect(catalog.models.contains("gemini-2.5-pro"))
+        
+        reloadedStore.resetBotToDefaults(.readingCompanion)
+        #expect(reloadedStore.resolvedName(for: .readingCompanion) == AIBotID.readingCompanion.displayName)
+        #expect(reloadedStore.customAvatarImage(for: .readingCompanion) == nil)
+    }
+    
+    
+    @Test func butlerAndNewsCompanionMountUnifiedChatWithoutStarterClutter() throws {
+        let butlerHost = NSHostingView(rootView: ButlerCommandHubView(hostWindow: nil, onDismiss: {}))
+        butlerHost.frame = NSRect(x: 0, y: 0, width: 492, height: 560)
+        butlerHost.layoutSubtreeIfNeeded()
+        #expect(butlerHost.bounds.width == 492)
+        #expect(butlerHost.bounds.height == 560)
+        
+        let settingsState = SidebarSettingsState()
+        settingsState.pendingBotID = .readingCompanion
+        let botsHost = NSHostingView(rootView: AIBotsSettingsView(settingsState: settingsState))
+        botsHost.frame = NSRect(x: 0, y: 0, width: 527, height: 480)
+        botsHost.layoutSubtreeIfNeeded()
+        #expect(botsHost.bounds.width == 527)
+        
+        let gatewayHost = NSHostingView(rootView: AIModelsSettingsView())
+        gatewayHost.frame = NSRect(x: 0, y: 0, width: 527, height: 480)
+        gatewayHost.layoutSubtreeIfNeeded()
+        #expect(gatewayHost.bounds.width == 527)
+        
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot-news-unified-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "news.sqlite3"))
+        let newsService = AIHotNewsService(database: db, cacheRootDirectory: tempDir.appending(path: "cache"))
+        let newsView = DashboardNewsCenterView(
+            newsService: newsService,
+            tokens: DashPalette.editorialTokens(isDark: false),
+            initialSelectedID: nil,
+            onClose: {}
+        )
+        let newsHost = NSHostingView(rootView: newsView)
+        newsHost.frame = NSRect(x: 0, y: 0, width: 1200, height: 760)
+        newsHost.layoutSubtreeIfNeeded()
+        #expect(newsHost.bounds.width == 1200)
+    }
+    
+    
+    // MARK: 7. Backend Database, Granular Memory Store, Pi Kernel & Render Cache Optimizations
+    
+    @Test func databaseTransactionsFetchRecordAndBoundedUsageEvents() throws {
+        struct ForcedRollback: Error {}
+        
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot-r33-db-opt-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "opt.sqlite3"))
+        let docPath = tempDir.appending(path: "note.md").path(percentEncoded: false)
+        
+        db.withTransaction {
+            db.withTransaction {
+                db.saveDocument(
+                    id: "doc:opt-1",
+                    title: "Optimization Note",
+                    filePath: docPath,
+                    syntax: "Markdown",
+                    content: "SQLite WAL and single-row lookup"
+                )
+            }
+        }
+        
+        let byID = try #require(db.fetchDocumentRecord(id: "doc:opt-1", filePath: nil))
+        #expect(byID.title == "Optimization Note")
+        let byPath = try #require(db.fetchDocumentRecord(id: nil, filePath: docPath))
+        #expect(byPath.id == "doc:opt-1")
+        
+        do {
+            try db.withTransaction {
+                db.saveDocument(
+                    id: "doc:rolled-back",
+                    title: "Should Rollback",
+                    filePath: nil,
+                    syntax: "Markdown",
+                    content: "transient"
+                )
+                throw ForcedRollback()
+            }
+            Issue.record("Expected nested transaction error")
+        } catch is ForcedRollback {
+        }
+        #expect(db.fetchDocumentRecord(id: "doc:rolled-back", filePath: nil) == nil)
+        
+        let now = Date()
+        for idx in 0..<5 {
+            db.insertAIUsageEvent(AIUsageEvent(
+                dateKey: "2026-11-20",
+                timestamp: now.addingTimeInterval(Double(idx)),
+                feature: "chat",
+                model: "glm-5.3",
+                provider: "OpenCode Go",
+                inputTokens: 100 + idx,
+                outputTokens: 50 + idx,
+                latencyMs: 120,
+                success: true
+            ))
+        }
+        db.insertAIUsageEvent(AIUsageEvent(
+            dateKey: "2026-10-01",
+            timestamp: now.addingTimeInterval(-3_000_000),
+            feature: "summarize",
+            model: "deepseek-v4.1-flash",
+            provider: "OpenCode Go",
+            inputTokens: 40,
+            outputTokens: 20,
+            latencyMs: 80,
+            success: true
+        ))
+        
+        #expect(db.fetchAIUsageEvents(sinceDateKey: "2026-11-01", limit: 3).count == 3)
+        let octEvents = db.fetchAIUsageEvents(forDateKey: "2026-10-01")
+        #expect(octEvents.count == 1)
+        #expect(octEvents.first?.model == "deepseek-v4.1-flash")
+    }
+    
+    
+    @Test func memoryStoreGranularReloadsAndPiKernelWriteIfChangedIdempotency() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot-r33-mem-pi-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "granular.sqlite3"))
+        let store = CotMemoryStore(database: db)
+        let now = Date()
+        
+        db.upsertKYCMemory(
+            id: "kyc:opt",
+            dimension: .writingStyle,
+            factKey: "concise_output",
+            title: "偏好简洁输出",
+            detail: "直接给结论",
+            confidence: 0.9,
+            source: "test",
+            evidenceRef: nil,
+            isPinned: true
+        )
+        store.reloadMemoriesAndJournal()
+        #expect(store.memories.contains(where: { $0.id == "kyc:opt" }))
+        
+        let stock = MarketInstrument(
+            namespace: .hongKong,
+            symbol: "00700",
+            name: "腾讯控股",
+            eastmoneySecID: "116.00700",
+            tencentCode: "hk00700"
+        ).toRecord(sortOrder: 99, thesisNote: "test", addedBy: "user")
+        db.upsertWatchlistStock(stock)
+        store.reloadStocks()
+        #expect(store.stocks.contains(where: { $0.symbol == "00700" }))
+        
+        let podcast = StoredPodcastRecord(
+            id: "pod:opt-1",
+            itemKind: "episode",
+            platform: "apple",
+            title: "Performance Engineering",
+            showName: "Systems Pod",
+            sourceURL: "https://example.com/pod",
+            audioURL: "https://example.com/pod.mp3",
+            artworkURL: "",
+            durationSec: 1200,
+            playbackPositionSec: 42,
+            isSaved: true,
+            topicTag: "engineering",
+            notes: "",
+            lastPlayedAt: now,
+            createdAt: now,
+            updatedAt: now
+        )
+        db.upsertStoredPodcast(podcast)
+        store.reloadPodcasts()
+        #expect(store.podcasts.contains(where: { $0.id == "pod:opt-1" }))
+        
+        // PiKernel syncWorkspace writeIfChanged idempotency
+        let piDir = tempDir.appending(path: "PiKernel", directoryHint: .isDirectory)
+        let kernel = PiKernelManager(customAgentDirectoryURL: piDir, database: db)
+        let botStore = AIBotStore(database: db)
+        let gw = AIProvider.openCodeGo.makeProfile()
+        
+        let summary1 = try kernel.syncWorkspace(endpoints: [gw], botStore: botStore, keyLookup: { _ in "sk-opt" })
+        let modelsURL = piDir.appending(path: "models.json")
+        let sentinelDate = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: sentinelDate], ofItemAtPath: modelsURL.path)
+        
+        let summary2 = try kernel.syncWorkspace(endpoints: [gw], botStore: botStore, keyLookup: { _ in "sk-opt" })
+        #expect(summary2.modelCount == summary1.modelCount)
+        let attrsAfterUnchangedSync = try FileManager.default.attributesOfItem(atPath: modelsURL.path)
+        #expect(attrsAfterUnchangedSync[.modificationDate] as? Date == sentinelDate)
+        
+        // Changing a model override invalidates cache & updates models.json
+        var modifiedCfg = botStore.config(for: .summarize)
+        modifiedCfg.modelOverride = "custom-fast-model"
+        botStore.updateConfig(modifiedCfg, for: .summarize)
+        _ = try kernel.syncWorkspace(endpoints: [gw], botStore: botStore, keyLookup: { _ in "sk-opt" })
+        let attrsAfterChange = try FileManager.default.attributesOfItem(atPath: modelsURL.path)
+        #expect(attrsAfterChange[.modificationDate] as? Date != sentinelDate)
+    }
+    
+    
+    @Test func markdownRenderCacheAndNewsBlockSanitization() {
+        let md = """
+        # Headline
+        
+        Paragraph with **bold** and `code`.
+        """
+        let first = MarkdownRenderCache.blocks(for: md)
+        let second = MarkdownRenderCache.blocks(for: md)
+        #expect(first == second)
+        #expect(first.count == 2)
+        #expect(MarkdownRenderCache.attributedInline(for: "**bold** text") != nil)
+        
+        let rawNewsBlocks: [NewsArticleBlock] = [
+            .heading(level: 2, text: "Main Section"),
+            .paragraph("Body content that stays."),
+            .heading(level: 3, text: "延伸阅读"),
+            .heading(level: 3, text: "Empty Trailing Section"),
+        ]
+        let cleaned = AIHotNewsService.sanitizedArticleBlocks(rawNewsBlocks)
+        #expect(cleaned.count == 2)
+    }
+    
+    
+    @Test func starMapRelationEngineKeyTermCacheAndDeterminism() {
+        let titleA = "SQLite WAL Architecture"
+        let contentA = "Using WAL journaling with busy_timeout and partial indexes speeds up reads."
+        let termsA1 = StarMapRelationEngine.extractKeyTerms(title: titleA, content: contentA)
+        let termsA2 = StarMapRelationEngine.extractKeyTerms(title: titleA, content: contentA)
+        #expect(termsA1 == termsA2)
+        #expect(termsA1.contains("SQLite"))
+        
+        let editedTerms = StarMapRelationEngine.extractKeyTerms(
+            title: titleA,
+            content: "Completely different topic about CoreAnimation Metal shader pausing."
+        )
+        #expect(editedTerms != termsA1)
+        
+        let docs = [
+            StarMapRelationEngine.CorpusDocument(
+                id: "d1",
+                title: "Doc One",
+                group: "Perf",
+                folderPath: nil,
+                content: "Metal framebuffer pipeline caching reduces GPU power.",
+                sortTimestamp: 100
+            ),
+            StarMapRelationEngine.CorpusDocument(
+                id: "d2",
+                title: "Doc Two",
+                group: "Perf",
+                folderPath: nil,
+                content: "Doc One notes show Metal framebuffer pipeline caching gains.",
+                sortTimestamp: 200
+            ),
+        ]
+        let edges1 = StarMapRelationEngine.buildRelations(for: docs)
+        let edges2 = StarMapRelationEngine.buildRelations(for: docs)
+        #expect(edges1 == edges2)
+        #expect(!edges1.isEmpty)
     }
 }

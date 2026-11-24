@@ -59,7 +59,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .effects: AppLanguage.text("动效", en: "Motion")
             case .models: AppLanguage.text("API 网关", en: "API Gateway")
             case .bots: AppLanguage.text("Bots", en: "Bots")
-            case .memory: AppLanguage.text("记忆星图", en: "Memory")
+            case .memory: AppLanguage.text("偏好记忆", en: "Preferences")
             case .keyBindings: AppLanguage.text("快捷键", en: "Shortcuts")
             case .pass: AppLanguage.text("通行证", en: "Pass")
         }
@@ -77,7 +77,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .effects: "wand.and.stars"
             case .models: "network"
             case .bots: "sparkles"
-            case .memory: "point.3.connected.trianglepath.dotted"
+            case .memory: "list.bullet.indent"
             case .keyBindings: "keyboard.fill"
             case .pass: "lanyardcard.fill"
         }
@@ -314,7 +314,7 @@ private struct SidebarSettingsRootView: View {
                             Text(dbStatusMessage)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                                .fixedSize(horizontal: false, vertical: true)
                                 .transition(.opacity)
                         }
                     }
@@ -397,12 +397,12 @@ private struct SidebarSettingsRootView: View {
                 Text(item.title)
                     .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? onAccent : Color.primary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
                 
                 Spacer()
             }
             .padding(.horizontal, 8)
-            .frame(height: 32)
+            .frame(minHeight: 32)
             .background {
                 if isSelected {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -615,13 +615,14 @@ private struct SettingsItemRow<Control: View>: View {
             Text(self.label)
                 .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(.primary)
-                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
             
             Spacer(minLength: 12)
             
             self.control()
         }
         .padding(.horizontal, 14)
+        .padding(.vertical, 6)
         .frame(minHeight: SettingsDesignTokens.rowHeight)
     }
 }
@@ -658,6 +659,7 @@ private struct SidebarGeneralSettingsPane: View {
     @State private var isCreatingUser = false
     @State private var newUserName = ""
     @State private var newUserAvatarData: Data?
+    @State private var newUserAvatarImage: NSImage?
     @State private var copyCurrentAIConfig = true
     @State private var confirmDeleteID: String?
     @State private var editingActiveName = ""
@@ -795,7 +797,7 @@ private struct SidebarGeneralSettingsPane: View {
                                         lastActiveAt: Date()
                                     ),
                                     size: 30,
-                                    customImage: self.newUserAvatarData.flatMap { NSImage(data: $0) }
+                                    customImage: self.newUserAvatarImage
                                 )
                             }
                             .buttonStyle(.plain)
@@ -992,9 +994,11 @@ private struct SidebarGeneralSettingsPane: View {
                     SettingsRowDivider()
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Bundle ID · \(Bundle.main.bundleIdentifier ?? "local.cmy.Cot")")
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                         Text(AppLanguage.text("数据目录 · \(CotLocalDatabase.shared.databaseURL.deletingLastPathComponent().path)", en: "Database · \(CotLocalDatabase.shared.databaseURL.path)"))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                     }
                     .font(.system(size: 11.5, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -1027,6 +1031,7 @@ private struct SidebarGeneralSettingsPane: View {
         )
         self.newUserName = ""
         self.newUserAvatarData = nil
+        self.newUserAvatarImage = nil
         self.isCreatingUser = false
     }
     
@@ -1039,13 +1044,15 @@ private struct SidebarGeneralSettingsPane: View {
         panel.begin { response in
             guard response == .OK, let url = panel.url,
                   let image = NSImage(contentsOf: url),
-                  let data = UserProfileManager.processedAvatarPNGData(from: image)
+                  let data = UserProfileManager.processedAvatarPNGData(from: image),
+                  let processed = NSImage(data: data)
             else { return }
             Task { @MainActor in
                 if forActive {
                     self.profileManager.updateProfile(id: self.profileManager.activeProfile.id, avatarData: .some(data))
                 } else {
                     self.newUserAvatarData = data
+                    self.newUserAvatarImage = processed
                 }
             }
         }
@@ -1266,7 +1273,8 @@ private struct SidebarAppIconSettingsPane: View {
                                         Text(source.displayName)
                                             .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                                             .foregroundStyle(isSelected ? .primary : .secondary)
-                                            .lineLimit(1)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .multilineTextAlignment(.center)
                                     }
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 7)
@@ -1548,7 +1556,7 @@ private struct SidebarWallpaperSettingsPane: View {
                                     .frame(width: 8, height: 8)
                                 Text(selectedItem.title)
                                     .font(.system(size: 13, weight: .medium))
-                                    .lineLimit(1)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                             
                             Spacer()
@@ -1952,7 +1960,7 @@ private struct SidebarWallpaperSettingsPane: View {
                 Text(item.title)
                     .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? .primary : .secondary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .contentShape(Rectangle())
         }
@@ -2016,6 +2024,38 @@ private struct SidebarWallpaperSettingsPane: View {
 
 // MARK: - 2. 字体 (Zero-Popup Inline Font Picker)
 
+@MainActor
+private enum SidebarArchivedFontCache {
+    
+    private static var lastStandard: (data: Data, font: NSFont)?
+    private static var lastMonospaced: (data: Data, font: NSFont)?
+    static let allFamilies: [String] = NSFontManager.shared.availableFontFamilies
+    static let monospacedFamilies: [String] = {
+        let manager = NSFontManager.shared
+        return allFamilies.filter { fam in
+            guard let font = NSFont(name: fam, size: 12) else { return false }
+            return font.isFixedPitch || manager.traits(of: font).contains(.fixedPitchFontMask)
+        }
+    }()
+    
+    static func decodeStandard(_ data: Data?) -> NSFont {
+        guard let data else { return FontType.standard.systemFont() }
+        if let cached = self.lastStandard, cached.data == data { return cached.font }
+        let resolved = NSFont(archivedData: data) ?? FontType.standard.systemFont()
+        self.lastStandard = (data, resolved)
+        return resolved
+    }
+    
+    static func decodeMonospaced(_ data: Data?) -> NSFont {
+        guard let data else { return FontType.monospaced.systemFont() }
+        if let cached = self.lastMonospaced, cached.data == data { return cached.font }
+        let resolved = NSFont(archivedData: data) ?? FontType.monospaced.systemFont()
+        self.lastMonospaced = (data, resolved)
+        return resolved
+    }
+}
+
+
 private struct SidebarTypographySettingsPane: View {
     
     @AppStorage(.font) private var fontData
@@ -2030,17 +2070,18 @@ private struct SidebarTypographySettingsPane: View {
     
     @State private var isChoosingStandardFont = false
     @State private var isChoosingMonospacedFont = false
-    
+
+
     private var standardFont: Binding<NSFont> {
         Binding(
-            get: { self.fontData.flatMap(NSFont.init(archivedData:)) ?? FontType.standard.systemFont() },
+            get: { SidebarArchivedFontCache.decodeStandard(self.fontData) },
             set: { self.fontData = (try? $0.archivedData) ?? self.fontData }
         )
     }
     
     private var monospacedFont: Binding<NSFont> {
         Binding(
-            get: { self.monospacedFontData.flatMap(NSFont.init(archivedData:)) ?? FontType.monospaced.systemFont() },
+            get: { SidebarArchivedFontCache.decodeMonospaced(self.monospacedFontData) },
             set: { self.monospacedFontData = (try? $0.archivedData) ?? self.monospacedFontData }
         )
     }
@@ -2166,17 +2207,9 @@ private struct InlineFontFamilySelector: View {
     }
     
     private var filteredFamilies: [String] {
-        let manager = NSFontManager.shared
-        let all = manager.availableFontFamilies
-        let pool: [String]
-        if self.showAllFamilies {
-            pool = all
-        } else {
-            pool = all.filter { fam in
-                guard let font = NSFont(name: fam, size: 12) else { return false }
-                return font.isFixedPitch || manager.traits(of: font).contains(.fixedPitchFontMask)
-            }
-        }
+        let pool = self.showAllFamilies
+            ? SidebarArchivedFontCache.allFamilies
+            : SidebarArchivedFontCache.monospacedFamilies
         let q = self.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return pool }
         return pool.filter { $0.localizedCaseInsensitiveContains(q) }
@@ -2187,7 +2220,7 @@ private struct InlineFontFamilySelector: View {
         
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                TextField(AppLanguage.text("搜索字体族…", en: "Search fonts…"), text: self.$searchQuery)
+                TextField(AppLanguage.text("搜索字体族", en: "Search fonts"), text: self.$searchQuery)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12))
                 
@@ -2212,7 +2245,7 @@ private struct InlineFontFamilySelector: View {
                                 Text(family)
                                     .font(.custom(family, size: 12.5))
                                     .foregroundStyle(.primary)
-                                    .lineLimit(1)
+                                    .fixedSize(horizontal: false, vertical: true)
                                 Spacer()
                                 if isSelected {
                                     Image(systemName: "checkmark")
@@ -2221,7 +2254,8 @@ private struct InlineFontFamilySelector: View {
                                 }
                             }
                             .padding(.horizontal, 8)
-                            .frame(height: 24)
+                            .padding(.vertical, 3)
+                            .frame(minHeight: 24)
                             .background(
                                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                                     .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
@@ -2344,7 +2378,7 @@ private struct SidebarAppearanceSettingsPane: View {
                     Text(preset.displayName)
                         .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
                         .foregroundStyle(.primary)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                     
                     Spacer(minLength: 4)
                     
@@ -2691,8 +2725,6 @@ private struct SidebarFormatSettingsPane: View {
 // MARK: - 6. 动效
 
 private struct SidebarEffectsSettingsPane: View {
-    
-    @State private var analytics = AnalyticsManager.shared
     
     @State private var typewriterEnabled = true
     @State private var typewriterStyle: TypingEffectPreset = .powerMode

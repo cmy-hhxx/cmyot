@@ -238,18 +238,21 @@ extension Logger {
         
         AnalyticsManager.shared.flushPendingStats()
         
-        // Snapshot every open document and window pane/tab session into CotLocalDatabase before termination
-        for window in NSApp.windows {
-            if let docVC = (window.windowController as? DocumentWindowController)?.documentViewController {
-                docVC.savePaneTabsSessionToDatabase()
+        CotLocalDatabase.shared.withTransaction {
+            // Snapshot every open document and window pane/tab session into CotLocalDatabase once before termination
+            if let primaryDocVC = NSApp.windows.lazy
+                .compactMap({ ($0.windowController as? DocumentWindowController)?.documentViewController })
+                .first
+            {
+                primaryDocVC.savePaneTabsSessionToDatabase()
             }
+            for case let document as Document in NSDocumentController.shared.documents {
+                document.syncToLocalDatabase(force: true)
+            }
+            CotLocalDatabase.shared.syncAIEndpointsToDatabase()
+            CotLocalDatabase.shared.syncUserProfileToDatabase()
+            CotLocalDatabase.shared.syncUserPreferencesToDatabase()
         }
-        for case let document as Document in NSDocumentController.shared.documents {
-            document.syncToLocalDatabase(force: true)
-        }
-        CotLocalDatabase.shared.syncAIEndpointsToDatabase()
-        CotLocalDatabase.shared.syncUserProfileToDatabase()
-        CotLocalDatabase.shared.syncUserPreferencesToDatabase()
         CotLocalDatabase.shared.checkpointDatabase()
         
         if self.needsRelaunch {

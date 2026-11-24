@@ -997,6 +997,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    /// Zero-copy `NSString` view of the underlying `NSTextStorage` backing store when available.
+    private var backingNSString: NSString {
+        self.textStorage?.mutableString ?? (self.string as NSString)
+    }
+    
+    
     /// Computes an adaptive caret rect aligned with an inline image card when the insertion point sits directly before/after it.
     private func inlineImageCaretFrame(for location: Int) -> NSRect? {
         
@@ -1006,7 +1012,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             let textContainer = self.textContainer
         else { return nil }
         
-        let nsString = self.string as NSString
+        let nsString = self.backingNSString
         guard nsString.length > 0 else { return nil }
         
         let clampedLoc = min(max(0, location), nsString.length)
@@ -1363,7 +1369,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         // enter multi-cursor editing
         let insertionRanges = self.insertionRanges
         if insertionRanges.count > 1 {
-            let typedCount = plainString.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }.count
+            let typedCount = Self.visibleTypedScalarCount(in: plainString)
             if typedCount > 0 {
                 AnalyticsManager.shared.recordTypedCharacters(typedCount * insertionRanges.count)
             }
@@ -1445,7 +1451,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         super.insertText(plainString, replacementRange: replacementRange)
         self.isUpdatingGhostSuggestion = false
         
-        let typedCount = plainString.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }.count
+        let typedCount = Self.visibleTypedScalarCount(in: plainString)
         if typedCount > 0 {
             AnalyticsManager.shared.recordTypedCharacters(typedCount)
         }
@@ -2223,7 +2229,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             if PiKernelManager.shared.isAvailable {
                 let piSubmenu = NSMenu()
                 piSubmenu.autoenablesItems = false
-                for botID in AIBotID.allCases where botID != .ghost && botID != .persona {
+                for botID in AIBotID.allCases where botID != .ghost && botID != .persona && botID != .readingCompanion {
                     guard AIBotStore.shared.config(for: botID).isEnabled else { continue }
                     let botItem = makeItem(
                         title: "\(botID.displayName)  \(botID.handle)",
@@ -2672,7 +2678,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             let rawVisibleCharRange = self.range(for: scanRect, withoutAdditionalLayout: true)
         else { return }
         
-        let nsString = self.string as NSString
+        let nsString = self.backingNSString
         guard nsString.length > 0 else { return }
         
         let visibleCharRange = NSIntersectionRange(rawVisibleCharRange, NSRange(location: 0, length: nsString.length))
@@ -4504,10 +4510,19 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    private static func visibleTypedScalarCount(in string: String) -> Int {
+        var count = 0
+        for scalar in string.unicodeScalars where !CharacterSet.controlCharacters.contains(scalar) {
+            count += 1
+        }
+        return count
+    }
+    
+    
     /// Extracts the current line's prefix and suffix around `caretLocation`.
     private func currentLineContext(at caretLocation: Int) -> (linePrefix: String, lineSuffix: String) {
         
-        let nsText = self.string as NSString
+        let nsText = self.backingNSString
         guard nsText.length > 0 else { return ("", "") }
         let clampedCaret = max(0, min(caretLocation, nsText.length))
         let safeIndex = min(clampedCaret, max(0, nsText.length - 1))
@@ -4620,18 +4635,24 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return
         }
         
-        let siblingTexts: [String] = NSDocumentController.shared.documents
-            .compactMap { $0 as? Document }
-            .filter { $0.textStorage !== self.textStorage }
-            .prefix(5)
-            .map { String($0.textStorage.string.prefix(3_000)) }
-        
+        let nsText = self.backingNSString
         let syntaxWords = self.cachedSyntaxCompletionTexts
         if let localCandidate = UserHabitPredictor.shared.predictNextPhrase(
-            in: self.string,
+            in: nsText,
             caretLocation: caretLocation,
+            precomputedLineContext: (linePrefix, lineSuffix),
             syntaxWords: syntaxWords,
-            siblingTexts: siblingTexts
+            siblingTextsProvider: { [weak self] in
+                guard let self else { return [] }
+                return NSDocumentController.shared.documents
+                    .compactMap { $0 as? Document }
+                    .filter { $0.textStorage !== self.textStorage }
+                    .prefix(5)
+                    .map { doc in
+                        let siblingNS = doc.textStorage.mutableString as NSString
+                        return siblingNS.substring(with: NSRange(location: 0, length: min(3_000, siblingNS.length))) as NSString
+                    }
+            }
         ), !localCandidate.isEmpty {
             AINextTokenPredictor.shared.cancel()
             self.showGhostCandidate(localCandidate, animateEntrance: animateEntrance, isFromAI: false)
@@ -4643,15 +4664,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return
         }
         
-        let nsText = self.string as NSString
-        let safeCaret = min(caretLocation, max(0, nsText.length - 1))
         if nsText.length > 0 {
-            let lineRange = nsText.lineRange(for: NSRange(location: safeCaret, length: 0))
-            let linePrefix = nsText.substring(with: NSRange(location: lineRange.location, length: max(0, caretLocation - lineRange.location)))
-            let lineEnd = NSMaxRange(lineRange)
-            let lineSuffix = (caretLocation < lineEnd)
-                ? nsText.substring(with: NSRange(location: caretLocation, length: lineEnd - caretLocation)).trimmingCharacters(in: .newlines)
-                : ""
             switch AINextTokenPredictor.shared.lookupCache(linePrefix: linePrefix, lineSuffix: lineSuffix) {
                 case .hit(let cachedAI) where !cachedAI.isEmpty:
                     self.showGhostCandidate(cachedAI, animateEntrance: animateEntrance, isFromAI: false)
@@ -4676,7 +4689,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             AINextTokenPredictor.shared.schedulePrediction(
                 for: self,
                 syntaxName: doc?.syntaxName ?? SyntaxName.none,
-                documentTitle: doc?.displayName ?? ""
+                documentTitle: doc?.displayName ?? "",
+                precomputedLineContext: (linePrefix, lineSuffix),
+                skipCacheLookup: true
             )
         }
     }
@@ -5452,7 +5467,7 @@ extension EditorTextView {
     private func snappedLocationOutsideInlineImageToken(_ location: Int, previousLocation: Int) -> Int? {
         
         guard (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true else { return nil }
-        let nsString = self.string as NSString
+        let nsString = self.backingNSString
         guard location > 0, location < nsString.length else { return nil }
         
         let lineRange = nsString.lineRange(for: NSRange(location: location, length: 0))
@@ -5475,7 +5490,7 @@ extension EditorTextView {
     func resolvedInlineImageTokenRangeForDeletion(backward: Bool) -> NSRange? {
         
         guard (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true else { return nil }
-        let nsString = self.string as NSString
+        let nsString = self.backingNSString
         let loc = self.selectedRange.location
         guard loc >= 0, loc <= nsString.length else { return nil }
         

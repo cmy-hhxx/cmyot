@@ -191,7 +191,16 @@ final class AppIconManager {
     var spec: AppIconSpec {
         didSet {
             guard self.spec != oldValue else { return }
-            self.persistSpec()
+            if self.database === CotLocalDatabase.shared,
+               !Self.isRunningUnitTests,
+               self.spec.source == oldValue.source
+            {
+                self.scheduleDebouncedPersistSpec()
+            } else {
+                self.persistDebounceTask?.cancel()
+                self.persistDebounceTask = nil
+                self.persistSpecImmediately()
+            }
             self.refreshPreview()
         }
     }
@@ -204,6 +213,15 @@ final class AppIconManager {
     private let storageDirectory: URL
     private var applyTask: Task<Void, Never>?
     private var dockApplyTask: Task<Void, Never>?
+    @ObservationIgnored private var persistDebounceTask: Task<Void, Never>?
+    @ObservationIgnored private var cachedCustomImage: NSImage?
+    
+    
+    isolated deinit {
+        self.persistDebounceTask?.cancel()
+        self.applyTask?.cancel()
+        self.dockApplyTask?.cancel()
+    }
     
     
     init(
@@ -260,7 +278,14 @@ final class AppIconManager {
                 return nil
                 
             case .customImage:
-                return NSImage(contentsOf: self.customImageURL) ?? self.sourceImage(for: .preset537)
+                if let cached = self.cachedCustomImage {
+                    return cached
+                }
+                if let loaded = NSImage(contentsOf: self.customImageURL) {
+                    self.cachedCustomImage = loaded
+                    return loaded
+                }
+                return self.sourceImage(for: .preset537)
         }
     }
     
@@ -275,6 +300,7 @@ final class AppIconManager {
         do {
             try FileManager.default.createDirectory(at: self.storageDirectory, withIntermediateDirectories: true)
             try png.write(to: self.customImageURL, options: .atomic)
+            self.cachedCustomImage = NSImage(data: png)
             self.customImageVersion &+= 1
             self.spec.source = .customImage
             self.applyIconToSystemAndDock()
@@ -307,7 +333,11 @@ final class AppIconManager {
     
     /// Applies the user's saved icon customization on app launch without rewriting default disk icon unnecessarily.
     func applySavedAppIconOnLaunch() {
-        let image = self.renderIcon(size: 1024)
+        let image = self.cachedLaunchRenderedIcon() ?? {
+            let rendered = self.renderIcon(size: 1024)
+            self.saveLaunchRenderedIconCache(rendered)
+            return rendered
+        }()
         NSApp.applicationIconImage = image
         guard !Self.isRunningUnitTests else { return }
         if self.spec != .default {
@@ -321,6 +351,7 @@ final class AppIconManager {
         self.dockApplyTask?.cancel()
         self.refreshPreview()
         let fullIcon = self.renderIcon(size: 1024)
+        self.saveLaunchRenderedIconCache(fullIcon)
         NSApp.applicationIconImage = fullIcon
         guard !Self.isRunningUnitTests else { return }
         self.scheduleBundleIconSync(image: fullIcon)
@@ -565,7 +596,65 @@ final class AppIconManager {
     }
     
     
-    private func persistSpec() {
+    private var launchCacheImageURL: URL {
+        self.storageDirectory.appending(path: "launch-icon-1024.png")
+    }
+    
+    
+    private var launchCacheMetaURL: URL {
+        self.storageDirectory.appending(path: "launch-icon-meta.json")
+    }
+    
+    
+    private func launchCacheFingerprint() -> String? {
+        guard let specData = try? JSONEncoder().encode(self.spec),
+              let specJSON = String(data: specData, encoding: .utf8)
+        else { return nil }
+        var customMod: TimeInterval = 0
+        if self.spec.source == .customImage,
+           let attrs = try? FileManager.default.attributesOfItem(atPath: self.customImageURL.path),
+           let modDate = attrs[.modificationDate] as? Date
+        {
+            customMod = modDate.timeIntervalSince1970
+        }
+        return "\(specJSON)|\(customMod)"
+    }
+    
+    
+    private func cachedLaunchRenderedIcon() -> NSImage? {
+        guard let expected = self.launchCacheFingerprint(),
+              let metaData = try? Data(contentsOf: self.launchCacheMetaURL),
+              let saved = String(data: metaData, encoding: .utf8),
+              saved == expected,
+              let img = NSImage(contentsOf: self.launchCacheImageURL)
+        else { return nil }
+        return img
+    }
+    
+    
+    private func saveLaunchRenderedIconCache(_ image: NSImage) {
+        guard let fingerprint = self.launchCacheFingerprint(),
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:])
+        else { return }
+        try? FileManager.default.createDirectory(at: self.storageDirectory, withIntermediateDirectories: true)
+        try? png.write(to: self.launchCacheImageURL, options: .atomic)
+        try? Data(fingerprint.utf8).write(to: self.launchCacheMetaURL, options: .atomic)
+    }
+    
+    
+    private func scheduleDebouncedPersistSpec() {
+        self.persistDebounceTask?.cancel()
+        self.persistDebounceTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            self?.persistSpecImmediately()
+        }
+    }
+    
+    
+    private func persistSpecImmediately() {
         if let data = try? JSONEncoder().encode(self.spec),
            let json = String(data: data, encoding: .utf8)
         {
@@ -586,6 +675,7 @@ final class AppIconManager {
             try? await Task.sleep(for: .milliseconds(160))
             guard !Task.isCancelled, let self else { return }
             let fullIcon = self.renderIcon(size: 1024)
+            self.saveLaunchRenderedIconCache(fullIcon)
             NSApp.applicationIconImage = fullIcon
             guard !Self.isRunningUnitTests else { return }
             self.scheduleBundleIconSync(image: fullIcon)

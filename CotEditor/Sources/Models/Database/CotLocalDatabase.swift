@@ -237,8 +237,33 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     /// All historical and generated weekly reports stored in the database (newest first).
     private(set) var weeklyReports: [StoredWeeklyReport] = []
     
-    /// All configuration key-value pairs stored in the database.
-    private(set) var configEntries: [DatabaseConfigEntry] = []
+    /// All configuration key-value pairs stored in the database (constructed lazily on demand).
+    var configEntries: [DatabaseConfigEntry] {
+        _ = self.configRevision
+        if let cached = self.cachedConfigEntries {
+            return cached
+        }
+        let entries = self.configMap
+            .map { key, value in
+                DatabaseConfigEntry(
+                    key: key,
+                    value: value,
+                    updatedAt: Date(timeIntervalSince1970: self.configTimestamps[key] ?? 0)
+                )
+            }
+            .sorted { $0.key < $1.key }
+        self.cachedConfigEntries = entries
+        return entries
+    }
+    
+    /// Current number of persisted key-value config entries without sorting or allocating records.
+    var configCount: Int {
+        _ = self.configRevision
+        return self.configMap.count
+    }
+    
+    /// Monotonically incremented whenever any config entry changes.
+    private(set) var configRevision: Int = 0
     
     /// The file URL of the active SQLite database.
     private(set) var databaseURL: URL
@@ -252,7 +277,10 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     private var userDefaultsSyncTask: Task<Void, Never>?
     private var isApplyingSyncedDefaults = false
     @ObservationIgnored private var configMap: [String: String] = [:]
+    @ObservationIgnored private var configTimestamps: [String: TimeInterval] = [:]
+    @ObservationIgnored private var cachedConfigEntries: [DatabaseConfigEntry]?
     @ObservationIgnored private var hasLoadedConfigMap = false
+    @ObservationIgnored private var transactionDepth = 0
     
     
     static var isRunningUnitTests: Bool {
@@ -283,16 +311,21 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         
         self.openDatabase()
         self.createTablesIfNeeded()
-        self.seedDefaultConfigsIfNeeded()
-        self.migrateLegacyPromptsIfNeeded()
-        self.migrateTypewriterV2IfNeeded()
-        self.purgeEnhancedAndNormalizeWeeklyReports()
-        self.reloadAll()
+        self.withTransaction {
+            self.seedDefaultConfigsIfNeeded()
+            self.reloadConfigs()
+            self.migrateLegacyPromptsIfNeeded()
+            self.migrateTypewriterV2IfNeeded()
+        }
         
         if customURL == nil {
             self.seedDefaultWeeklyReportsIfNeeded()
-            self.purgeEnhancedAndNormalizeWeeklyReports()
-            self.reloadWeeklyReports()
+        }
+        self.purgeEnhancedAndNormalizeWeeklyReports(reloadAfter: false)
+        self.reloadAll()
+        
+        if customURL == nil {
+            self.pruneHistoricalTablesOnLaunchIfNeeded()
             self.observeUserDefaultsForSync()
         }
     }
@@ -365,13 +398,9 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         
         if self.hasLoadedConfigMap {
             self.configMap[key] = value
-            let entry = DatabaseConfigEntry(key: key, value: value, updatedAt: Date(timeIntervalSince1970: now))
-            if let idx = self.configEntries.firstIndex(where: { $0.key == key }) {
-                self.configEntries[idx] = entry
-            } else {
-                let insertIdx = self.configEntries.firstIndex(where: { $0.key > key }) ?? self.configEntries.endIndex
-                self.configEntries.insert(entry, at: insertIdx)
-            }
+            self.configTimestamps[key] = now
+            self.cachedConfigEntries = nil
+            self.configRevision &+= 1
         } else {
             self.reloadConfigs()
         }
@@ -388,6 +417,10 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     /// Removes a configuration key from the database.
     func removeConfig(forKey key: String) {
         
+        if self.hasLoadedConfigMap, self.configMap[key] == nil {
+            return
+        }
+        
         let sql = "DELETE FROM configs WHERE key = ?;"
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
@@ -401,7 +434,9 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         
         if self.hasLoadedConfigMap {
             self.configMap.removeValue(forKey: key)
-            self.configEntries.removeAll { $0.key == key }
+            self.configTimestamps.removeValue(forKey: key)
+            self.cachedConfigEntries = nil
+            self.configRevision &+= 1
         } else {
             self.reloadConfigs()
         }
@@ -561,6 +596,71 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     }
     
     
+    /// Fetches one stored non-deleted document record by ID or canonical file path without loading all rows.
+    func fetchDocumentRecord(id: String?, filePath: String?) -> StoredDocumentRecord? {
+        
+        let trimmedID = id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmedPath = filePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedID.isEmpty || !trimmedPath.isEmpty else { return nil }
+        
+        let lookupIDs: (raw: String, clean: String, prefixed: String)? = trimmedID.isEmpty ? nil : {
+            let clean = trimmedID.hasPrefix("doc:") ? String(trimmedID.dropFirst(4)) : trimmedID
+            return (trimmedID, clean, "doc:\(clean)")
+        }()
+        
+        let sql: String
+        if lookupIDs != nil, !trimmedPath.isEmpty {
+            sql = """
+            SELECT id, title, file_path, syntax, content, highlights_json, updated_at, COALESCE(group_name, ''), COALESCE(deleted_at, 0), COALESCE(created_at, updated_at)
+            FROM documents
+            WHERE deleted_at IS NULL AND (id = ? OR id = ? OR id = ? OR file_path = ? OR id = ?)
+            ORDER BY updated_at DESC
+            LIMIT 1;
+            """
+        } else if lookupIDs != nil {
+            sql = """
+            SELECT id, title, file_path, syntax, content, highlights_json, updated_at, COALESCE(group_name, ''), COALESCE(deleted_at, 0), COALESCE(created_at, updated_at)
+            FROM documents
+            WHERE deleted_at IS NULL AND (id = ? OR id = ? OR id = ?)
+            ORDER BY updated_at DESC
+            LIMIT 1;
+            """
+        } else {
+            sql = """
+            SELECT id, title, file_path, syntax, content, highlights_json, updated_at, COALESCE(group_name, ''), COALESCE(deleted_at, 0), COALESCE(created_at, updated_at)
+            FROM documents
+            WHERE deleted_at IS NULL AND (file_path = ? OR id = ?)
+            ORDER BY updated_at DESC
+            LIMIT 1;
+            """
+        }
+        
+        var stmt: OpaquePointer?
+        var record: StoredDocumentRecord?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            if let lookupIDs, !trimmedPath.isEmpty {
+                sqlite3_bind_text(stmt, 1, lookupIDs.raw, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 2, lookupIDs.clean, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 3, lookupIDs.prefixed, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 4, trimmedPath, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 5, trimmedPath, -1, self.transientDestructor)
+            } else if let lookupIDs {
+                sqlite3_bind_text(stmt, 1, lookupIDs.raw, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 2, lookupIDs.clean, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 3, lookupIDs.prefixed, -1, self.transientDestructor)
+            } else {
+                sqlite3_bind_text(stmt, 1, trimmedPath, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 2, trimmedPath, -1, self.transientDestructor)
+            }
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                record = Self.decodeStoredDocumentRow(stmt)
+            }
+        }
+        sqlite3_finalize(stmt)
+        return record
+    }
+    
+    
     // MARK: Document Group API
     
     /// Creates a persistent Document Center group if it doesn't already exist.
@@ -575,7 +675,10 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
             groups.append(trimmed)
             self.saveStoredGroupList(groups)
         }
-        self.reloadDocuments()
+        if !self.documentGroups.contains(trimmed) {
+            self.documentGroups.append(trimmed)
+            self.documentsRevision &+= 1
+        }
         return trimmed
     }
     
@@ -643,7 +746,8 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         groupName: String,
         fallbackTitle: String = "",
         fallbackSyntax: String = "Plain Text",
-        fallbackContent: String = ""
+        fallbackContent: String = "",
+        reloadAfter: Bool = true
     ) {
         let trimmedGroup = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
         let targetGroup = (trimmedGroup == "未分组") ? "" : trimmedGroup
@@ -695,7 +799,9 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
             return
         }
         
-        self.reloadDocuments()
+        if reloadAfter {
+            self.reloadDocuments()
+        }
     }
     
     
@@ -838,7 +944,8 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         oldFilePath: String? = nil,
         newID: String,
         newTitle: String,
-        newFilePath: String?
+        newFilePath: String?,
+        reloadAfter: Bool = true
     ) {
         
         let cleanOldID = oldID.hasPrefix("doc:") ? String(oldID.dropFirst(4)) : oldID
@@ -912,7 +1019,9 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
             sqlite3_finalize(stmt)
         }
         
-        self.reloadDocuments()
+        if reloadAfter {
+            self.reloadDocuments()
+        }
     }
     
     
@@ -1007,11 +1116,71 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     }
     
     
-    /// Imports all Markdown weekly reports from a `.zip` archive into `weekly_reports`.
-    ///
-    /// - Returns: The number of weekly reports imported or updated.
-    @discardableResult
-    func importWeeklyReports(fromZipURL zipURL: URL) throws -> Int {
+    /// Lightweight value payload for parsing weekly reports off `@MainActor`.
+    nonisolated struct PreparedWeeklyReportPayload: Sendable {
+        let id: String
+        let periodLabel: String
+        let yearMonth: String
+        let title: String
+        let content: String
+        let sourcePath: String?
+        let isEnhanced: Bool
+        let modifiedAt: Date?
+    }
+    
+    
+    /// Parses weekly report files / folders / `.zip` archives on any queue before writing to SQLite.
+    nonisolated static func prepareWeeklyReportPayloads(
+        fromURLs urls: [URL],
+        knownUpdatedAtBySourcePath: [String: Date] = [:]
+    ) throws -> [PreparedWeeklyReportPayload] {
+        
+        var payloads: [PreparedWeeklyReportPayload] = []
+        let fm = FileManager.default
+        
+        for url in urls {
+            if url.pathExtension.lowercased() == "zip" {
+                payloads.append(contentsOf: try Self.prepareWeeklyReportPayloads(fromZipURL: url))
+                continue
+            }
+            
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                if let enumerator = fm.enumerator(
+                    at: url,
+                    includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
+                ) {
+                    var files: [URL] = []
+                    for case let fileURL as URL in enumerator {
+                        let name = fileURL.lastPathComponent
+                        let lower = name.lowercased()
+                        if !name.hasPrefix("._"),
+                           !lower.contains("_enhanced"),
+                           !name.contains("增强版"),
+                           ["md", "txt", "markdown"].contains(fileURL.pathExtension.lowercased())
+                        {
+                            files.append(fileURL)
+                        }
+                    }
+                    payloads.append(contentsOf: Self.prepareWeeklyReportFiles(
+                        files,
+                        baseFolder: url,
+                        knownUpdatedAtBySourcePath: knownUpdatedAtBySourcePath
+                    ))
+                }
+            } else {
+                payloads.append(contentsOf: Self.prepareWeeklyReportFiles(
+                    [url],
+                    baseFolder: url.deletingLastPathComponent(),
+                    knownUpdatedAtBySourcePath: knownUpdatedAtBySourcePath
+                ))
+            }
+        }
+        return payloads
+    }
+    
+    
+    private nonisolated static func prepareWeeklyReportPayloads(fromZipURL zipURL: URL) throws -> [PreparedWeeklyReportPayload] {
         
         guard FileManager.default.fileExists(atPath: zipURL.path) else {
             throw CocoaError(.fileNoSuchFile)
@@ -1037,39 +1206,40 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
             .filter { path in
                 let lower = path.lowercased()
                 return !path.isEmpty
+                    && !path.contains("..")
                     && !path.hasPrefix("__MACOSX/")
                     && !URL(filePath: path).lastPathComponent.hasPrefix("._")
                     && !lower.contains("_enhanced")
                     && !path.contains("增强版")
                     && lower.hasSuffix(".md")
             }
+        guard !entryPaths.isEmpty else { return [] }
         
-        var importedCount = 0
-        self.executeSQL("BEGIN TRANSACTION;")
-        defer {
-            self.executeSQL("COMMIT;")
-            self.purgeEnhancedAndNormalizeWeeklyReports()
-            self.reloadWeeklyReports()
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appending(path: "cot_zip_\(UUID().uuidString)", directoryHint: .isDirectory)
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempDir) }
+        
+        let extractProcess = Process()
+        extractProcess.executableURL = URL(filePath: "/usr/bin/unzip")
+        extractProcess.arguments = ["-qq", "-o", zipURL.path, "-d", tempDir.path]
+        extractProcess.standardOutput = Pipe()
+        extractProcess.standardError = Pipe()
+        try extractProcess.run()
+        extractProcess.waitUntilExit()
+        guard extractProcess.terminationStatus == 0 else {
+            throw CocoaError(.fileReadCorruptFile)
         }
         
+        var payloads: [PreparedWeeklyReportPayload] = []
+        payloads.reserveCapacity(entryPaths.count)
         for entryPath in entryPaths {
-            let catProcess = Process()
-            catProcess.executableURL = URL(filePath: "/usr/bin/unzip")
-            catProcess.arguments = ["-p", zipURL.path, entryPath]
-            let catPipe = Pipe()
-            catProcess.standardOutput = catPipe
-            catProcess.standardError = Pipe()
-            try catProcess.run()
-            let contentData = catPipe.fileHandleForReading.readDataToEndOfFile()
-            catProcess.waitUntilExit()
-            
-            guard catProcess.terminationStatus == 0,
-                  let content = String(data: contentData, encoding: .utf8),
+            let extractedURL = tempDir.appending(path: entryPath)
+            guard let content = try? String(contentsOf: extractedURL, encoding: .utf8),
                   !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { continue }
-            
             let parsed = Self.parseWeeklyReportMetadata(relativePath: entryPath, content: content)
-            self.saveWeeklyReport(
+            payloads.append(PreparedWeeklyReportPayload(
                 id: parsed.id,
                 periodLabel: parsed.periodLabel,
                 yearMonth: parsed.yearMonth,
@@ -1077,65 +1247,34 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
                 content: content,
                 sourcePath: entryPath,
                 isEnhanced: parsed.isEnhanced,
-                reloadAfter: false
-            )
-            importedCount += 1
+                modifiedAt: nil
+            ))
         }
-        
-        return importedCount
+        return payloads
     }
     
     
-    /// Imports weekly report `.md` / `.txt` files or directories (or `.zip`) selected by the user.
-    @discardableResult
-    func importWeeklyReports(fromURLs urls: [URL]) throws -> Int {
-        
-        var total = 0
-        for url in urls {
-            if url.pathExtension.lowercased() == "zip" {
-                total += try self.importWeeklyReports(fromZipURL: url)
-                continue
-            }
-            
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                if let enumerator = FileManager.default.enumerator(at: url, includingPropertiesForKeys: nil) {
-                    var files: [URL] = []
-                    for case let fileURL as URL in enumerator {
-                        let name = fileURL.lastPathComponent
-                        let lower = name.lowercased()
-                        if !name.hasPrefix("._"),
-                           !lower.contains("_enhanced"),
-                           !name.contains("增强版"),
-                           ["md", "txt", "markdown"].contains(fileURL.pathExtension.lowercased())
-                        {
-                            files.append(fileURL)
-                        }
-                    }
-                    total += self.importWeeklyReportFiles(files, baseFolder: url)
-                }
-            } else {
-                total += self.importWeeklyReportFiles([url], baseFolder: url.deletingLastPathComponent())
-            }
-        }
-        return total
-    }
-    
-    
-    private func importWeeklyReportFiles(_ urls: [URL], baseFolder: URL) -> Int {
-        
-        var count = 0
-        self.executeSQL("BEGIN TRANSACTION;")
-        defer {
-            self.executeSQL("COMMIT;")
-            self.purgeEnhancedAndNormalizeWeeklyReports()
-            self.reloadWeeklyReports()
-        }
+    private nonisolated static func prepareWeeklyReportFiles(
+        _ urls: [URL],
+        baseFolder: URL,
+        knownUpdatedAtBySourcePath: [String: Date]
+    ) -> [PreparedWeeklyReportPayload] {
         
         let basePath = baseFolder.path
+        var payloads: [PreparedWeeklyReportPayload] = []
+        payloads.reserveCapacity(urls.count)
+        
         for fileURL in urls {
             let name = fileURL.lastPathComponent
             if name.lowercased().contains("_enhanced") || name.contains("增强版") {
+                continue
+            }
+            let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey])
+            let modDate = values?.contentModificationDate
+            if let modDate,
+               let knownUpdatedAt = knownUpdatedAtBySourcePath[fileURL.path],
+               knownUpdatedAt.timeIntervalSince(modDate) > 2.0
+            {
                 continue
             }
             guard let content = try? String(contentsOf: fileURL, encoding: .utf8),
@@ -1146,7 +1285,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
                 ? String(fileURL.path.dropFirst(basePath.count + 1))
                 : fileURL.lastPathComponent
             let parsed = Self.parseWeeklyReportMetadata(relativePath: relPath, content: content)
-            self.saveWeeklyReport(
+            payloads.append(PreparedWeeklyReportPayload(
                 id: parsed.id,
                 periodLabel: parsed.periodLabel,
                 yearMonth: parsed.yearMonth,
@@ -1154,11 +1293,68 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
                 content: content,
                 sourcePath: fileURL.path,
                 isEnhanced: parsed.isEnhanced,
-                reloadAfter: false
-            )
-            count += 1
+                modifiedAt: modDate
+            ))
         }
-        return count
+        return payloads
+    }
+    
+    
+    /// Batch-persists pre-parsed weekly report payloads inside one SQLite transaction.
+    @discardableResult
+    func applyPreparedWeeklyReports(_ payloads: [PreparedWeeklyReportPayload]) -> Int {
+        
+        guard !payloads.isEmpty else { return 0 }
+        self.withTransaction {
+            for payload in payloads {
+                self.saveWeeklyReport(
+                    id: payload.id,
+                    periodLabel: payload.periodLabel,
+                    yearMonth: payload.yearMonth,
+                    title: payload.title,
+                    content: payload.content,
+                    sourcePath: payload.sourcePath,
+                    isEnhanced: payload.isEnhanced,
+                    reloadAfter: false
+                )
+            }
+        }
+        self.purgeEnhancedAndNormalizeWeeklyReports(reloadAfter: false)
+        self.reloadWeeklyReports()
+        return payloads.count
+    }
+    
+    
+    /// Imports all Markdown weekly reports from a `.zip` archive into `weekly_reports`.
+    ///
+    /// - Returns: The number of weekly reports imported or updated.
+    @discardableResult
+    func importWeeklyReports(fromZipURL zipURL: URL) throws -> Int {
+        
+        let payloads = try Self.prepareWeeklyReportPayloads(fromZipURL: zipURL)
+        return self.applyPreparedWeeklyReports(payloads)
+    }
+    
+    
+    /// Imports weekly report `.md` / `.txt` files or directories (or `.zip`) selected by the user.
+    @discardableResult
+    func importWeeklyReports(fromURLs urls: [URL]) throws -> Int {
+        
+        let knownDates = self.weeklyReportsKnownUpdatedAtBySourcePath()
+        let payloads = try Self.prepareWeeklyReportPayloads(fromURLs: urls, knownUpdatedAtBySourcePath: knownDates)
+        return self.applyPreparedWeeklyReports(payloads)
+    }
+    
+    
+    func weeklyReportsKnownUpdatedAtBySourcePath() -> [String: Date] {
+        var map: [String: Date] = [:]
+        map.reserveCapacity(self.weeklyReports.count)
+        for report in self.weeklyReports {
+            if let sourcePath = report.sourcePath, !sourcePath.isEmpty {
+                map[sourcePath] = report.updatedAt
+            }
+        }
+        return map
     }
     
     
@@ -1377,7 +1573,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     }
     
     
-    static func parseWeeklyReportMetadata(relativePath: String, content: String) -> (id: String, periodLabel: String, yearMonth: String, title: String, isEnhanced: Bool) {
+    nonisolated static func parseWeeklyReportMetadata(relativePath: String, content: String) -> (id: String, periodLabel: String, yearMonth: String, title: String, isEnhanced: Bool) {
         
         let cleanPath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let url = URL(filePath: cleanPath)
@@ -1429,55 +1625,55 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     
     
     /// Removes all enhanced (`增强版` / `_enhanced`) weekly reports and normalizes remaining report titles/periods.
-    func purgeEnhancedAndNormalizeWeeklyReports() {
+    func purgeEnhancedAndNormalizeWeeklyReports(reloadAfter: Bool = true) {
         
-        self.executeSQL("""
-        DELETE FROM weekly_reports
-        WHERE is_enhanced != 0
-           OR lower(id) LIKE '%_enhanced%'
-           OR lower(COALESCE(source_path, '')) LIKE '%_enhanced%'
-           OR period_label LIKE '%增强版%'
-           OR title LIKE '%增强版%';
-        """)
-        
-        self.reloadWeeklyReports()
-        let author = self.weeklyReportAuthor
-        var needsReload = false
-        for report in self.weeklyReports {
-            var normalizedPeriod = report.periodLabel
-                .replacingOccurrences(of: "（增强版）", with: "")
-                .replacingOccurrences(of: "(增强版)", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let match = normalizedPeriod.range(of: #"20\d{6}-\d{4}"#, options: .regularExpression) {
-                normalizedPeriod = String(normalizedPeriod[match])
-            } else if let match = report.title.range(of: #"20\d{6}-\d{4}"#, options: .regularExpression) {
-                normalizedPeriod = String(report.title[match])
-            }
+        self.withTransaction {
+            self.executeSQL("""
+            DELETE FROM weekly_reports
+            WHERE is_enhanced != 0
+               OR lower(id) LIKE '%_enhanced%'
+               OR lower(COALESCE(source_path, '')) LIKE '%_enhanced%'
+               OR period_label LIKE '%增强版%'
+               OR title LIKE '%增强版%';
+            """)
             
-            var normalizedTitle = report.title
-                .replacingOccurrences(of: "（增强版）", with: "")
-                .replacingOccurrences(of: "(增强版)", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if normalizedPeriod.range(of: #"^20\d{6}-\d{4}$"#, options: .regularExpression) != nil {
-                normalizedTitle = "\(author)-周报-\(normalizedPeriod)"
-            }
-            
-            if normalizedPeriod != report.periodLabel || normalizedTitle != report.title || report.isEnhanced {
-                self.saveWeeklyReport(
-                    id: report.id,
-                    periodLabel: normalizedPeriod,
-                    yearMonth: report.yearMonth,
-                    title: normalizedTitle,
-                    content: report.content,
-                    sourcePath: report.sourcePath,
-                    isEnhanced: false,
-                    createdAt: report.createdAt,
-                    reloadAfter: false
-                )
-                needsReload = true
+            self.reloadWeeklyReports(postNotification: false)
+            let author = self.weeklyReportAuthor
+            for report in self.weeklyReports {
+                var normalizedPeriod = report.periodLabel
+                    .replacingOccurrences(of: "（增强版）", with: "")
+                    .replacingOccurrences(of: "(增强版)", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let match = normalizedPeriod.range(of: #"20\d{6}-\d{4}"#, options: .regularExpression) {
+                    normalizedPeriod = String(normalizedPeriod[match])
+                } else if let match = report.title.range(of: #"20\d{6}-\d{4}"#, options: .regularExpression) {
+                    normalizedPeriod = String(report.title[match])
+                }
+                
+                var normalizedTitle = report.title
+                    .replacingOccurrences(of: "（增强版）", with: "")
+                    .replacingOccurrences(of: "(增强版)", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if normalizedPeriod.range(of: #"^20\d{6}-\d{4}$"#, options: .regularExpression) != nil {
+                    normalizedTitle = "\(author)-周报-\(normalizedPeriod)"
+                }
+                
+                if normalizedPeriod != report.periodLabel || normalizedTitle != report.title || report.isEnhanced {
+                    self.saveWeeklyReport(
+                        id: report.id,
+                        periodLabel: normalizedPeriod,
+                        yearMonth: report.yearMonth,
+                        title: normalizedTitle,
+                        content: report.content,
+                        sourcePath: report.sourcePath,
+                        isEnhanced: false,
+                        createdAt: report.createdAt,
+                        reloadAfter: false
+                    )
+                }
             }
         }
-        if needsReload {
+        if reloadAfter {
             self.reloadWeeklyReports()
         }
     }
@@ -1568,10 +1764,13 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         self.databaseURL = newURL
         self.openDatabase()
         self.createTablesIfNeeded()
-        self.seedDefaultConfigsIfNeeded(defaultAuthorName: defaultAuthorName)
-        self.migrateLegacyPromptsIfNeeded()
-        self.migrateTypewriterV2IfNeeded()
-        self.purgeEnhancedAndNormalizeWeeklyReports()
+        self.withTransaction {
+            self.seedDefaultConfigsIfNeeded(defaultAuthorName: defaultAuthorName)
+            self.reloadConfigs()
+            self.migrateLegacyPromptsIfNeeded()
+            self.migrateTypewriterV2IfNeeded()
+        }
+        self.purgeEnhancedAndNormalizeWeeklyReports(reloadAfter: false)
         self.reloadAll()
         
         if self === Self.shared {
@@ -1805,11 +2004,11 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         defaults.set(dailyCap, forKey: ConfigKey.aiNextTokenDailyCap)
         defaults.set(self.string(forKey: ConfigKey.aiNextTokenDailyStatsJSON, default: ""), forKey: ConfigKey.aiNextTokenDailyStatsJSON)
         
-        if let rawCursorEnabled = self.queryConfigValue(forKey: ConfigKey.usesCustomCursorColor) {
+        if let rawCursorEnabled = (self.hasLoadedConfigMap ? self.configMap[ConfigKey.usesCustomCursorColor] : self.queryConfigValue(forKey: ConfigKey.usesCustomCursorColor)) {
             let enabled = ["1", "true", "yes", "on"].contains(rawCursorEnabled.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
             defaults.set(enabled, forKey: DefaultKeys.usesCustomCursorColor.rawValue)
         }
-        if let hex = self.queryConfigValue(forKey: ConfigKey.customCursorColorHex), !hex.isEmpty {
+        if let hex = (self.hasLoadedConfigMap ? self.configMap[ConfigKey.customCursorColorHex] : self.queryConfigValue(forKey: ConfigKey.customCursorColorHex)), !hex.isEmpty {
             defaults.set(hex, forKey: DefaultKeys.customCursorColorHex.rawValue)
         }
     }
@@ -1827,22 +2026,66 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     
     // MARK: Private SQLite Helpers
     
+    /// Executes `body` inside a single immediate SQLite transaction (safe under nested calls).
+    func withTransaction<T>(_ body: () throws -> T) rethrows -> T {
+        
+        guard self.db != nil else {
+            return try body()
+        }
+        let isOutermost = (self.transactionDepth == 0)
+        self.transactionDepth += 1
+        if isOutermost {
+            self.executeSQL("BEGIN IMMEDIATE TRANSACTION;")
+        }
+        do {
+            let result = try body()
+            self.transactionDepth -= 1
+            if isOutermost {
+                self.executeSQL("COMMIT;")
+            }
+            return result
+        } catch {
+            self.transactionDepth -= 1
+            if isOutermost {
+                self.executeSQL("ROLLBACK;")
+            }
+            throw error
+        }
+    }
+    
+    
     private func openDatabase() {
         
         if sqlite3_open(self.databaseURL.path, &self.db) != SQLITE_OK {
             self.db = nil
+            return
         }
+        self.executeSQL("""
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA busy_timeout = 5000;
+        PRAGMA temp_store = MEMORY;
+        PRAGMA cache_size = -8000;
+        PRAGMA mmap_size = 67108864;
+        """)
     }
     
     
     private func closeDatabase() {
         
         if let db = self.db {
+            if self.transactionDepth == 0 {
+                sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE);", nil, nil, nil)
+            }
             sqlite3_close(db)
             self.db = nil
         }
+        self.transactionDepth = 0
         self.configMap.removeAll()
+        self.configTimestamps.removeAll()
+        self.cachedConfigEntries = nil
         self.hasLoadedConfigMap = false
+        self.configRevision &+= 1
     }
     
     
@@ -1913,6 +2156,9 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
             success INTEGER NOT NULL DEFAULT 1
         );
         CREATE INDEX IF NOT EXISTS idx_ai_usage_date_key ON ai_usage_events(date_key);
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_date_ts ON ai_usage_events(date_key, timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_ts ON ai_usage_events(timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_weekly_reports_sort ON weekly_reports(year_month DESC, period_label DESC, updated_at DESC);
         CREATE TABLE IF NOT EXISTS daily_ai_digests (
             date_key TEXT PRIMARY KEY,
             summary TEXT NOT NULL,
@@ -1939,11 +2185,16 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         CREATE INDEX IF NOT EXISTS idx_reminders_due_day ON user_reminders(due_day_key);
         """
         self.executeSQL(sql)
-        self.ensureDocumentsGroupColumnExists()
-        self.ensureDocumentsDeletedAtColumnExists()
-        self.ensureDocumentsCreatedAtColumnExists()
+        self.ensureDocumentsExtendedColumnsExist()
+        self.executeSQL("""
+        CREATE INDEX IF NOT EXISTS idx_documents_active_updated ON documents(deleted_at, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_documents_trash_deleted ON documents(deleted_at DESC) WHERE deleted_at IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_documents_file_path ON documents(file_path) WHERE file_path IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_documents_group_name ON documents(group_name) WHERE group_name != '';
+        """)
         self.ensureDailyStatsExtendedColumnsExist()
         self.ensureRemindersExtendedColumnsExist()
+        self.executeSQL("CREATE INDEX IF NOT EXISTS idx_reminders_sort ON user_reminders(is_completed ASC, is_pinned DESC, due_date DESC);")
         self.createStructuredAssetTablesIfNeeded()
     }
     
@@ -1993,66 +2244,27 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     }
     
     
-    private func ensureDocumentsCreatedAtColumnExists() {
+    private func ensureDocumentsExtendedColumnsExist() {
         
+        var existing: Set<String> = []
         var stmt: OpaquePointer?
-        var hasCreatedColumn = false
         if sqlite3_prepare_v2(self.db, "PRAGMA table_info(documents);", -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
-                if let nameCStr = sqlite3_column_text(stmt, 1),
-                   String(cString: nameCStr) == "created_at"
-                {
-                    hasCreatedColumn = true
-                    break
+                if let nameCStr = sqlite3_column_text(stmt, 1) {
+                    existing.insert(String(cString: nameCStr))
                 }
             }
         }
         sqlite3_finalize(stmt)
-        if !hasCreatedColumn {
-            self.executeSQL("ALTER TABLE documents ADD COLUMN created_at REAL;")
-            self.executeSQL("UPDATE documents SET created_at = updated_at WHERE created_at IS NULL;")
+        if !existing.contains("group_name") {
+            self.executeSQL("ALTER TABLE documents ADD COLUMN group_name TEXT NOT NULL DEFAULT '';")
         }
-    }
-    
-    
-    private func ensureDocumentsDeletedAtColumnExists() {
-        
-        var stmt: OpaquePointer?
-        var hasDeletedColumn = false
-        if sqlite3_prepare_v2(self.db, "PRAGMA table_info(documents);", -1, &stmt, nil) == SQLITE_OK {
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                if let nameCStr = sqlite3_column_text(stmt, 1),
-                   String(cString: nameCStr) == "deleted_at"
-                {
-                    hasDeletedColumn = true
-                    break
-                }
-            }
-        }
-        sqlite3_finalize(stmt)
-        if !hasDeletedColumn {
+        if !existing.contains("deleted_at") {
             self.executeSQL("ALTER TABLE documents ADD COLUMN deleted_at REAL;")
         }
-    }
-    
-    
-    private func ensureDocumentsGroupColumnExists() {
-        
-        var stmt: OpaquePointer?
-        var hasGroupColumn = false
-        if sqlite3_prepare_v2(self.db, "PRAGMA table_info(documents);", -1, &stmt, nil) == SQLITE_OK {
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                if let nameCStr = sqlite3_column_text(stmt, 1),
-                   String(cString: nameCStr) == "group_name"
-                {
-                    hasGroupColumn = true
-                    break
-                }
-            }
-        }
-        sqlite3_finalize(stmt)
-        if !hasGroupColumn {
-            self.executeSQL("ALTER TABLE documents ADD COLUMN group_name TEXT NOT NULL DEFAULT '';")
+        if !existing.contains("created_at") {
+            self.executeSQL("ALTER TABLE documents ADD COLUMN created_at REAL;")
+            self.executeSQL("UPDATE documents SET created_at = updated_at WHERE created_at IS NULL;")
         }
     }
     
@@ -2084,17 +2296,18 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         
         let now = Date().timeIntervalSince1970
         let sql = "INSERT OR IGNORE INTO configs (key, value, updated_at) VALUES (?, ?, ?);"
-        
-        for (key, value) in defaults {
-            var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            for (key, value) in defaults {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
                 sqlite3_bind_text(stmt, 1, key, -1, self.transientDestructor)
                 sqlite3_bind_text(stmt, 2, value, -1, self.transientDestructor)
                 sqlite3_bind_double(stmt, 3, now)
                 sqlite3_step(stmt)
             }
-            sqlite3_finalize(stmt)
         }
+        sqlite3_finalize(stmt)
     }
     
     
@@ -2106,7 +2319,10 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     private func migrateLegacyPromptsIfNeeded() {
         
         for action in AIAction.allCases {
-            guard let existing = self.queryConfigValue(forKey: action.databaseConfigKey) else { continue }
+            let existing = self.hasLoadedConfigMap
+                ? self.configMap[action.databaseConfigKey]
+                : self.queryConfigValue(forKey: action.databaseConfigKey)
+            guard let existing else { continue }
             let trimmedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
             if action.legacyDefaultSystemPrompts.contains(where: {
                 $0.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedExisting
@@ -2120,7 +2336,10 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     /// Enables the upgraded visual-only typing effects once for existing profiles.
     private func migrateTypewriterV2IfNeeded() {
         
-        guard self.queryConfigValue(forKey: ConfigKey.typewriterEffectV2Migrated) == nil else { return }
+        let migrated = self.hasLoadedConfigMap
+            ? self.configMap[ConfigKey.typewriterEffectV2Migrated]
+            : self.queryConfigValue(forKey: ConfigKey.typewriterEffectV2Migrated)
+        guard migrated == nil else { return }
         self.set("true", forKey: ConfigKey.typewriterEffectEnabled)
         self.set("true", forKey: ConfigKey.typewriterEffectV2Migrated)
     }
@@ -2130,10 +2349,46 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         
         guard !Self.isRunningUnitTests else { return }
         guard self.databaseURL.lastPathComponent == "cot_user_data.sqlite3" else { return }
-        guard self.weeklyReports.isEmpty else { return }
+        var hasReports = false
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, "SELECT 1 FROM weekly_reports LIMIT 1;", -1, &stmt, nil) == SQLITE_OK {
+            hasReports = (sqlite3_step(stmt) == SQLITE_ROW)
+        }
+        sqlite3_finalize(stmt)
+        guard !hasReports else { return }
         let zipURL = URL(filePath: Self.defaultWeeklyReportsZipPath)
         guard FileManager.default.fileExists(atPath: zipURL.path) else { return }
         _ = try? self.importWeeklyReports(fromZipURL: zipURL)
+    }
+    
+    
+    private func pruneHistoricalTablesOnLaunchIfNeeded() {
+        
+        guard !Self.isRunningUnitTests else { return }
+        let now = Date().timeIntervalSince1970
+        let queueCutoff = now - 7 * 86400
+        let usageCutoff = now - 420 * 86400
+        
+        self.withTransaction {
+            var qStmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, "DELETE FROM agent_command_queue WHERE status != 'pending' AND COALESCE(executed_at, created_at) < ?;", -1, &qStmt, nil) == SQLITE_OK {
+                sqlite3_bind_double(qStmt, 1, queueCutoff)
+                sqlite3_step(qStmt)
+            }
+            sqlite3_finalize(qStmt)
+            
+            var uStmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, "DELETE FROM ai_usage_events WHERE timestamp < ?;", -1, &uStmt, nil) == SQLITE_OK {
+                sqlite3_bind_double(uStmt, 1, usageCutoff)
+                sqlite3_step(uStmt)
+            }
+            sqlite3_finalize(uStmt)
+            
+            self.executeSQL("""
+            DELETE FROM user_memory_journal
+            WHERE id NOT IN (SELECT id FROM user_memory_journal ORDER BY id DESC LIMIT 500);
+            """)
+        }
     }
     
     
@@ -2182,7 +2437,8 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         
         let sql = "SELECT key, value, updated_at FROM configs ORDER BY key ASC;"
         var stmt: OpaquePointer?
-        var items: [DatabaseConfigEntry] = []
+        var map: [String: String] = [:]
+        var timestamps: [String: TimeInterval] = [:]
         
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
@@ -2190,72 +2446,98 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
                     let keyCStr = sqlite3_column_text(stmt, 0),
                     let valCStr = sqlite3_column_text(stmt, 1)
                 else { continue }
-                let ts = sqlite3_column_double(stmt, 2)
-                items.append(DatabaseConfigEntry(
-                    key: String(cString: keyCStr),
-                    value: String(cString: valCStr),
-                    updatedAt: Date(timeIntervalSince1970: ts)
-                ))
+                let key = String(cString: keyCStr)
+                map[key] = String(cString: valCStr)
+                timestamps[key] = sqlite3_column_double(stmt, 2)
             }
         }
         sqlite3_finalize(stmt)
-        self.configEntries = items
-        self.configMap = Dictionary(uniqueKeysWithValues: items.map { ($0.key, $0.value) })
+        self.configMap = map
+        self.configTimestamps = timestamps
+        self.cachedConfigEntries = nil
         self.hasLoadedConfigMap = true
+        self.configRevision &+= 1
     }
     
     
-    private func reloadDocuments() {
+    private static func decodeStoredDocumentRow(_ stmt: OpaquePointer?) -> StoredDocumentRecord? {
         
-        let sql = """
+        guard
+            let stmt,
+            let idCStr = sqlite3_column_text(stmt, 0),
+            let titleCStr = sqlite3_column_text(stmt, 1),
+            let syntaxCStr = sqlite3_column_text(stmt, 3),
+            let contentCStr = sqlite3_column_text(stmt, 4),
+            let highlightsCStr = sqlite3_column_text(stmt, 5)
+        else { return nil }
+        
+        let filePath: String? = if let pathCStr = sqlite3_column_text(stmt, 2) {
+            String(cString: pathCStr)
+        } else {
+            nil
+        }
+        let ts = sqlite3_column_double(stmt, 6)
+        let groupName: String = if let grpCStr = sqlite3_column_text(stmt, 7) {
+            String(cString: grpCStr).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            ""
+        }
+        let deletedTS = sqlite3_column_double(stmt, 8)
+        let createdTS = sqlite3_column_double(stmt, 9)
+        
+        return StoredDocumentRecord(
+            id: String(cString: idCStr),
+            title: String(cString: titleCStr),
+            filePath: filePath,
+            syntax: String(cString: syntaxCStr),
+            content: String(cString: contentCStr),
+            highlightsJSON: String(cString: highlightsCStr),
+            updatedAt: Date(timeIntervalSince1970: ts),
+            groupName: groupName,
+            deletedAt: deletedTS > 0 ? Date(timeIntervalSince1970: deletedTS) : nil,
+            createdAt: createdTS > 0 ? Date(timeIntervalSince1970: createdTS) : nil
+        )
+    }
+    
+    
+    func reloadDocuments() {
+        
+        let activeSQL = """
         SELECT id, title, file_path, syntax, content, highlights_json, updated_at, COALESCE(group_name, ''), COALESCE(deleted_at, 0), COALESCE(created_at, updated_at)
         FROM documents
-        ORDER BY updated_at DESC;
+        WHERE deleted_at IS NULL
+        ORDER BY updated_at DESC
+        LIMIT 200;
         """
-        var stmt: OpaquePointer?
-        var items: [StoredDocumentRecord] = []
-        
-        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                guard
-                    let idCStr = sqlite3_column_text(stmt, 0),
-                    let titleCStr = sqlite3_column_text(stmt, 1),
-                    let syntaxCStr = sqlite3_column_text(stmt, 3),
-                    let contentCStr = sqlite3_column_text(stmt, 4),
-                    let highlightsCStr = sqlite3_column_text(stmt, 5)
-                else { continue }
-                
-                let filePath: String? = if let pathCStr = sqlite3_column_text(stmt, 2) {
-                    String(cString: pathCStr)
-                } else {
-                    nil
+        var activeItems: [StoredDocumentRecord] = []
+        var activeStmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, activeSQL, -1, &activeStmt, nil) == SQLITE_OK {
+            while sqlite3_step(activeStmt) == SQLITE_ROW {
+                if let rec = Self.decodeStoredDocumentRow(activeStmt) {
+                    activeItems.append(rec)
                 }
-                let ts = sqlite3_column_double(stmt, 6)
-                let groupName: String = if let grpCStr = sqlite3_column_text(stmt, 7) {
-                    String(cString: grpCStr).trimmingCharacters(in: .whitespacesAndNewlines)
-                } else {
-                    ""
-                }
-                let deletedTS = sqlite3_column_double(stmt, 8)
-                let createdTS = sqlite3_column_double(stmt, 9)
-                
-                items.append(StoredDocumentRecord(
-                    id: String(cString: idCStr),
-                    title: String(cString: titleCStr),
-                    filePath: filePath,
-                    syntax: String(cString: syntaxCStr),
-                    content: String(cString: contentCStr),
-                    highlightsJSON: String(cString: highlightsCStr),
-                    updatedAt: Date(timeIntervalSince1970: ts),
-                    groupName: groupName,
-                    deletedAt: deletedTS > 0 ? Date(timeIntervalSince1970: deletedTS) : nil,
-                    createdAt: createdTS > 0 ? Date(timeIntervalSince1970: createdTS) : nil
-                ))
             }
         }
-        sqlite3_finalize(stmt)
-        let activeItems = Array(items.lazy.filter { $0.deletedAt == nil }.prefix(200))
-        let trashItems = Array(items.lazy.filter { $0.deletedAt != nil }.prefix(200))
+        sqlite3_finalize(activeStmt)
+        
+        let trashSQL = """
+        SELECT id, title, file_path, syntax, content, highlights_json, updated_at, COALESCE(group_name, ''), COALESCE(deleted_at, 0), COALESCE(created_at, updated_at)
+        FROM documents
+        WHERE deleted_at IS NOT NULL
+        ORDER BY deleted_at DESC
+        LIMIT 200;
+        """
+        var trashItems: [StoredDocumentRecord] = []
+        var trashStmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, trashSQL, -1, &trashStmt, nil) == SQLITE_OK {
+            while sqlite3_step(trashStmt) == SQLITE_ROW {
+                if let rec = Self.decodeStoredDocumentRow(trashStmt) {
+                    trashItems.append(rec)
+                }
+            }
+        }
+        sqlite3_finalize(trashStmt)
+        
         self.documents = activeItems
         self.trashedDocuments = trashItems
         self.documentsRevision &+= 1
@@ -2281,7 +2563,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     }
     
     
-    func reloadWeeklyReports() {
+    func reloadWeeklyReports(postNotification: Bool = true) {
         
         let sql = """
         SELECT id, period_label, year_month, title, content, source_path, is_enhanced, created_at, updated_at
@@ -2325,7 +2607,9 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         }
         sqlite3_finalize(stmt)
         self.weeklyReports = items
-        NotificationCenter.default.post(name: Self.weeklyReportsDidChangeNotification, object: self)
+        if postNotification {
+            NotificationCenter.default.post(name: Self.weeklyReportsDidChangeNotification, object: self)
+        }
     }
     
     
@@ -2345,10 +2629,17 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         localHits: Int = 0,
         localAcceptedChars: Int = 0,
         singleAcceptChars: Int = 0,
-        hourBucket: Int? = nil
+        hourBucket: Int? = nil,
+        precomputedHourlyBuckets: [Int]? = nil
     ) {
         let now = Date().timeIntervalSince1970
         let updatedHourlyJSON: String? = {
+            if let precomputedHourlyBuckets, precomputedHourlyBuckets.count == 24 {
+                guard let data = try? JSONEncoder().encode(precomputedHourlyBuckets),
+                      let json = String(data: data, encoding: .utf8)
+                else { return nil }
+                return json
+            }
             guard typedChars > 0, let hour = hourBucket, (0..<24).contains(hour) else { return nil }
             var buckets = self.queryHourlyBuckets(forDateKey: dateKey)
             buckets[hour] += typedChars
@@ -2569,42 +2860,76 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     }
     
     
-    /// Fetches recorded AI usage events from `sinceDateKey` inclusive, newest first.
-    func fetchAIUsageEvents(sinceDateKey: String) -> [AIUsageEvent] {
+    /// Fetches recorded AI usage events from `sinceDateKey` inclusive, newest first (optionally bounded).
+    func fetchAIUsageEvents(sinceDateKey: String, limit: Int? = nil) -> [AIUsageEvent] {
         
+        let limitClause = limit.map { " LIMIT \($0)" } ?? ""
         let sql = """
         SELECT id, date_key, timestamp, feature, model, provider, input_tokens, output_tokens, latency_ms, success
         FROM ai_usage_events
         WHERE date_key >= ?
-        ORDER BY timestamp DESC;
+        ORDER BY timestamp DESC\(limitClause);
         """
         var stmt: OpaquePointer?
         var items: [AIUsageEvent] = []
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
             sqlite3_bind_text(stmt, 1, sinceDateKey, -1, self.transientDestructor)
             while sqlite3_step(stmt) == SQLITE_ROW {
-                guard
-                    let keyCStr = sqlite3_column_text(stmt, 1),
-                    let featureCStr = sqlite3_column_text(stmt, 3),
-                    let modelCStr = sqlite3_column_text(stmt, 4),
-                    let providerCStr = sqlite3_column_text(stmt, 5)
-                else { continue }
-                items.append(AIUsageEvent(
-                    id: sqlite3_column_int64(stmt, 0),
-                    dateKey: String(cString: keyCStr),
-                    timestamp: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2)),
-                    feature: String(cString: featureCStr),
-                    model: String(cString: modelCStr),
-                    provider: String(cString: providerCStr),
-                    inputTokens: Int(sqlite3_column_int64(stmt, 6)),
-                    outputTokens: Int(sqlite3_column_int64(stmt, 7)),
-                    latencyMs: Int(sqlite3_column_int64(stmt, 8)),
-                    success: sqlite3_column_int(stmt, 9) != 0
-                ))
+                if let event = Self.decodeAIUsageEventRow(stmt) {
+                    items.append(event)
+                }
             }
         }
         sqlite3_finalize(stmt)
         return items
+    }
+    
+    
+    /// Fetches all AI usage events recorded on a single day `yyyy-MM-dd` (newest first).
+    func fetchAIUsageEvents(forDateKey dateKey: String) -> [AIUsageEvent] {
+        
+        let sql = """
+        SELECT id, date_key, timestamp, feature, model, provider, input_tokens, output_tokens, latency_ms, success
+        FROM ai_usage_events
+        WHERE date_key = ?
+        ORDER BY timestamp DESC;
+        """
+        var stmt: OpaquePointer?
+        var items: [AIUsageEvent] = []
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, dateKey, -1, self.transientDestructor)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let event = Self.decodeAIUsageEventRow(stmt) {
+                    items.append(event)
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        return items
+    }
+    
+    
+    private static func decodeAIUsageEventRow(_ stmt: OpaquePointer?) -> AIUsageEvent? {
+        
+        guard
+            let stmt,
+            let keyCStr = sqlite3_column_text(stmt, 1),
+            let featureCStr = sqlite3_column_text(stmt, 3),
+            let modelCStr = sqlite3_column_text(stmt, 4),
+            let providerCStr = sqlite3_column_text(stmt, 5)
+        else { return nil }
+        return AIUsageEvent(
+            id: sqlite3_column_int64(stmt, 0),
+            dateKey: String(cString: keyCStr),
+            timestamp: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2)),
+            feature: String(cString: featureCStr),
+            model: String(cString: modelCStr),
+            provider: String(cString: providerCStr),
+            inputTokens: Int(sqlite3_column_int64(stmt, 6)),
+            outputTokens: Int(sqlite3_column_int64(stmt, 7)),
+            latencyMs: Int(sqlite3_column_int64(stmt, 8)),
+            success: sqlite3_column_int(stmt, 9) != 0
+        )
     }
     
     

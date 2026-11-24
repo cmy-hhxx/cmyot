@@ -180,9 +180,13 @@ import UniformTypeIdentifiers
     }
     var isGeneratorActive: Bool = false
     var collapsedMonths: Set<String> = []
+    var collapsedClusterIDs: Set<String> = []
     var groups: [YearMonthGroup] = []
     var flatReports: [StoredWeeklyReport] = []
     var displayedRows: [ReportRowItem] = []
+    var relations: [StarMapRelationEdge] = []
+    var searchHits: [StarMapSearchHit] = []
+    var searchMatchesByID: [String: StarMapSearchEngine.MatchEvaluation] = [:]
     
     // Generator fields
     var authorName: String = CotLocalDatabase.shared.weeklyReportAuthor
@@ -193,22 +197,140 @@ import UniformTypeIdentifiers
     var isGenerating: Bool = false
     var generationError: String?
     
-    private var allRowItems: [ReportRowItem] = []
+    private(set) var allRowItems: [ReportRowItem] = []
+    @ObservationIgnored private var cachedRelationsCorpusKey: String = ""
     
     func rebuildGroups() {
-        
         let allReports = CotLocalDatabase.shared.weeklyReports
         let currentWeek = AIService.currentWeekPeriodLabel()
-        let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let filtered = if query.isEmpty {
-            allReports
+        
+        // 1. Discover cross-report topic, title-mention, and consecutive-week relationships across full corpus.
+        let corpusKey = allReports.map {
+            "\($0.id)|\($0.updatedAt.timeIntervalSince1970)|\($0.content.count)|\($0.title)|\($0.periodLabel)"
+        }.joined(separator: ";")
+        
+        let builtRelations: [StarMapRelationEdge]
+        if corpusKey == self.cachedRelationsCorpusKey {
+            builtRelations = self.relations
         } else {
-            allReports.filter { report in
-                report.title.lowercased().contains(query)
-                    || report.periodLabel.lowercased().contains(query)
-                    || report.yearMonth.lowercased().contains(query)
-                    || report.content.prefix(2_000).lowercased().contains(query)
+            let corpusDocs = allReports.map { report in
+                StarMapRelationEngine.CorpusDocument(
+                    id: report.id,
+                    title: "\(report.periodLabel) \(report.title)",
+                    group: Self.formatYearMonthTitle(report.yearMonth),
+                    folderPath: report.yearMonth,
+                    content: report.content,
+                    sortTimestamp: report.updatedAt.timeIntervalSince1970
+                )
             }
+            var computed = StarMapRelationEngine.buildRelations(for: corpusDocs, maxEdgesPerNode: 3)
+            
+            var existingPairs = Set<String>()
+            var incidentDegree: [String: Int] = [:]
+            for edge in computed {
+                let key = edge.sourceID < edge.targetID
+                    ? "\(edge.sourceID)|\(edge.targetID)"
+                    : "\(edge.targetID)|\(edge.sourceID)"
+                existingPairs.insert(key)
+                incidentDegree[edge.sourceID, default: 0] += 1
+                incidentDegree[edge.targetID, default: 0] += 1
+            }
+            
+            let chronoReports = allReports.sorted { lhs, rhs in
+                if lhs.periodLabel != rhs.periodLabel {
+                    return lhs.periodLabel < rhs.periodLabel
+                }
+                return lhs.updatedAt < rhs.updatedAt
+            }
+            if chronoReports.count >= 2 {
+                for idx in 0..<(chronoReports.count - 1) {
+                    let a = chronoReports[idx].id
+                    let b = chronoReports[idx + 1].id
+                    let key = a < b ? "\(a)|\(b)" : "\(b)|\(a)"
+                    guard !existingPairs.contains(key) else { continue }
+                    guard incidentDegree[a, default: 0] < 3 || incidentDegree[b, default: 0] < 3 else { continue }
+                    existingPairs.insert(key)
+                    incidentDegree[a, default: 0] += 1
+                    incidentDegree[b, default: 0] += 1
+                    computed.append(
+                        StarMapRelationEdge(
+                            sourceID: a,
+                            targetID: b,
+                            strength: 0.44,
+                            reason: "相邻周次"
+                        )
+                    )
+                }
+            }
+            self.cachedRelationsCorpusKey = corpusKey
+            self.relations = computed
+            builtRelations = computed
+        }
+        
+        // 2. Full-text multi-keyword search with 1-hop relation neighbor retention.
+        let terms = StarMapSearchEngine.parseTerms(self.searchText)
+        let filtered: [StoredWeeklyReport]
+        if terms.isEmpty {
+            self.searchMatchesByID = [:]
+            self.searchHits = []
+            filtered = allReports
+        } else {
+            var matchesByID: [String: StarMapSearchEngine.MatchEvaluation] = [:]
+            var scoredHits: [(hit: StarMapSearchHit, updatedAt: TimeInterval)] = []
+            
+            for report in allReports {
+                let monthTitle = Self.formatYearMonthTitle(report.yearMonth)
+                let meta = [report.periodLabel, Self.readablePeriodRange(report.periodLabel)]
+                    .compactMap { $0 }
+                    .joined(separator: " ")
+                let evaluation = StarMapSearchEngine.evaluate(
+                    queryTerms: terms,
+                    title: report.title,
+                    category: monthTitle,
+                    secondaryMeta: meta,
+                    content: report.content
+                )
+                guard evaluation.isMatch else { continue }
+                matchesByID[report.id] = evaluation
+                let rangeDesc = Self.readablePeriodRange(report.periodLabel)
+                let metaLine = (rangeDesc.map { "\($0) · " } ?? "\(report.periodLabel) · ")
+                    + DocumentCenterState.compactChars(report.content.count)
+                scoredHits.append((
+                    hit: StarMapSearchHit(
+                        id: report.id,
+                        title: report.title,
+                        categoryLabel: monthTitle,
+                        metaLabel: metaLine,
+                        totalHits: evaluation.totalHits,
+                        score: evaluation.score,
+                        snippet: evaluation.snippet
+                    ),
+                    updatedAt: report.updatedAt.timeIntervalSince1970
+                ))
+            }
+            
+            scoredHits.sort { lhs, rhs in
+                if lhs.hit.score != rhs.hit.score {
+                    return lhs.hit.score > rhs.hit.score
+                }
+                if lhs.hit.totalHits != rhs.hit.totalHits {
+                    return lhs.hit.totalHits > rhs.hit.totalHits
+                }
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            self.searchMatchesByID = matchesByID
+            self.searchHits = scoredHits.map(\.hit)
+            
+            let directIDs = Set(matchesByID.keys)
+            var visibleIDs = directIDs
+            for edge in builtRelations {
+                if directIDs.contains(edge.sourceID) {
+                    visibleIDs.insert(edge.targetID)
+                } else if directIDs.contains(edge.targetID) {
+                    visibleIDs.insert(edge.sourceID)
+                }
+            }
+            filtered = allReports.filter { visibleIDs.contains($0.id) }
         }
         
         let dict = Dictionary(grouping: filtered, by: \.yearMonth)
@@ -257,10 +379,87 @@ import UniformTypeIdentifiers
         }
         self.displayedRows = visible
         
+        if !self.searchHits.isEmpty {
+            if let selectedReportID,
+               self.searchMatchesByID[selectedReportID] != nil,
+               visible.contains(where: { $0.id == selectedReportID }) {
+                return
+            }
+            if let topHit = self.searchHits.first(where: { hit in visible.contains(where: { $0.id == hit.id }) }) {
+                self.selectedReportID = topHit.id
+                return
+            }
+        }
+        
         if let selectedReportID, visible.contains(where: { $0.id == selectedReportID }) {
             return
         }
         self.selectedReportID = visible.first?.id ?? self.allRowItems.first?.id
+    }
+    
+    
+    func relatedRows(for reportID: String, in pool: [ReportRowItem]) -> [(row: ReportRowItem, reason: String)] {
+        let byID = Dictionary(uniqueKeysWithValues: pool.map { ($0.id, $0) })
+        var collected: [(row: ReportRowItem, reason: String, strength: Double)] = []
+        var seen: Set<String> = [reportID]
+        for edge in self.relations {
+            let neighborID: String?
+            if edge.sourceID == reportID {
+                neighborID = edge.targetID
+            } else if edge.targetID == reportID {
+                neighborID = edge.sourceID
+            } else {
+                neighborID = nil
+            }
+            guard let nid = neighborID, !seen.contains(nid), let neighbor = byID[nid] else { continue }
+            seen.insert(nid)
+            collected.append((neighbor, edge.reason, edge.strength))
+        }
+        return collected
+            .sorted { $0.strength > $1.strength }
+            .prefix(4)
+            .map { ($0.row, $0.reason) }
+    }
+    
+    
+    func buildStarMapClusters(tokens: StudioColorTokens) -> [StarMapClusterNode] {
+        let paletteHexes = ["#2563EB", "#7C3AED", "#0D9488", "#D97706", "#059669", "#4F46E5", "#E11D48"]
+        let isSearching = !StarMapSearchEngine.parseTerms(self.searchText).isEmpty
+        let groupedByMonth = Dictionary(grouping: self.displayedRows, by: \.yearMonth)
+        
+        var clusters: [StarMapClusterNode] = []
+        for (idx, group) in self.groups.enumerated() {
+            guard let monthRows = groupedByMonth[group.month], !monthRows.isEmpty else { continue }
+            let accent = Color(hexString: paletteHexes[idx % paletteHexes.count])
+            let leaves: [StarMapLeafNode] = monthRows.prefix(40).map { row in
+                let eval = self.searchMatchesByID[row.id]
+                let badge = eval.map { "命中 \($0.totalHits) 处" } ?? (row.isCurrentWeek ? "本周" : nil)
+                let baseMeta = row.rangeDesc ?? row.periodLabel
+                let metaLine = "\(baseMeta) · \(row.compactCharCount)"
+                let weight = min(1.0, max(0.35, Double(max(120, row.report.content.count)) / 4000.0))
+                return StarMapLeafNode(
+                    id: row.id,
+                    clusterID: group.month,
+                    title: row.title,
+                    metaLine: metaLine,
+                    statusBadge: badge,
+                    dotColor: eval != nil ? accent : (row.isCurrentWeek ? tokens.accent : accent.opacity(0.86)),
+                    weight: weight,
+                    isHighlighted: eval != nil
+                )
+            }
+            clusters.append(
+                StarMapClusterNode(
+                    id: group.month,
+                    title: group.displayTitle,
+                    countText: "\(monthRows.count) 篇",
+                    accent: accent,
+                    isCollapsed: !isSearching && self.collapsedClusterIDs.contains(group.month),
+                    leaves: leaves
+                )
+            )
+        }
+        return clusters
     }
     
     
@@ -315,69 +514,7 @@ import UniformTypeIdentifiers
 }
 
 
-// MARK: - Structured 3-Column Weekly Report Center
-
-private struct WeeklyReportRowView: View, Equatable {
-    
-    let row: WeeklyReportCenterState.ReportRowItem
-    let isSelected: Bool
-    let tokens: StudioColorTokens
-    
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row == rhs.row
-            && lhs.isSelected == rhs.isSelected
-            && lhs.tokens == rhs.tokens
-    }
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(self.row.isCurrentWeek ? self.tokens.accent : self.tokens.primaryInk.opacity(0.24))
-                    .frame(width: 6, height: 6)
-                
-                Text(self.row.periodLabel)
-                    .font(.system(size: 13, weight: self.isSelected ? .semibold : .medium, design: .rounded).monospacedDigit())
-                    .foregroundStyle(self.tokens.primaryInk.opacity(self.isSelected ? 1.0 : 0.90))
-                    .lineLimit(1)
-                
-                if self.row.isCurrentWeek {
-                    Text("本周")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(self.tokens.accentText)
-                        .padding(.horizontal, 5.5)
-                        .frame(height: 16)
-                        .background(self.tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                }
-                
-                Spacer(minLength: 0)
-            }
-            
-            HStack(spacing: 5) {
-                let meta = (self.row.rangeDesc.map { "\($0) · " } ?? "") + self.row.compactCharCount
-                Text(meta)
-                    .font(.system(size: 11, weight: .regular, design: .rounded).monospacedDigit())
-                    .foregroundStyle(self.tokens.primaryInk.opacity(0.46))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.leading, 13)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(self.isSelected ? self.tokens.accent.opacity(self.tokens.isDark ? 0.20 : 0.12) : Color.clear)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(self.isSelected ? self.tokens.accent.opacity(0.35) : Color.clear, lineWidth: 0.75)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-    }
-}
-
+// MARK: - Full-Canvas Star-Map Weekly Report Center
 
 struct WeeklyReportCenterView: View {
     
@@ -388,6 +525,11 @@ struct WeeklyReportCenterView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.registerWorkspaceCenterEscPop) private var registerEscPop
     @State private var db = CotLocalDatabase.shared
+    @State private var quickLookReportID: String?
+    @State private var focusedClusterID: String?
+    @State private var panRequestToken: Int = 0
+    @State private var isSearchHUDCollapsed: Bool = false
+    @FocusState private var isSearchFocused: Bool
     @State private var isEditing = false
     @State private var editingReportID: String?
     @State private var editingDraft = ""
@@ -402,8 +544,16 @@ struct WeeklyReportCenterView: View {
     
     var body: some View {
         let rows = self.state.displayedRows
+        let navList = self.keyboardNavigationItems(rows: rows)
         let activeRow = self.selectedRow(in: rows)
         let tokens = DashPalette.editorialTokens(isDark: self.colorScheme == .dark)
+        let searchTerms = StarMapSearchEngine.parseTerms(self.state.searchText)
+        let isSearching = !searchTerms.isEmpty
+        let clusters = self.state.buildStarMapClusters(tokens: tokens)
+        let visibleIDs = Set(rows.map(\.id))
+        let visibleRelations = self.state.relations.filter {
+            visibleIDs.contains($0.sourceID) && visibleIDs.contains($0.targetID)
+        }
         
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
@@ -413,26 +563,343 @@ struct WeeklyReportCenterView: View {
                     .fill(tokens.hairline)
                     .frame(height: 1)
                 
-                HStack(spacing: 0) {
-                    self.monthSidebar(tokens: tokens)
-                        .frame(width: 176)
+                ZStack {
+                    if clusters.isEmpty {
+                        self.emptyStarMapState(tokens: tokens)
+                    } else {
+                        ConstellationStarMapView(
+                            hubTitle: self.state.selectedMonth.map(WeeklyReportCenterState.formatYearMonthTitle) ?? "周报星图",
+                            hubSubtitle: isSearching ? "命中 \(self.state.searchHits.count) 篇" : "\(rows.count) 篇周报",
+                            clusters: clusters,
+                            relations: visibleRelations,
+                            selectedLeafID: activeRow?.id,
+                            focusedClusterID: self.focusedClusterID,
+                            searchQuery: self.state.searchText,
+                            panRequestToken: self.panRequestToken,
+                            onSelectLeaf: { leafID in
+                                self.unfocusSearchField()
+                                self.isRenamingSelected = false
+                                if self.editingReportID != leafID {
+                                    self.isEditing = false
+                                }
+                                self.state.selectedReportID = leafID
+                            },
+                            onDoubleClickLeaf: { leafID in
+                                self.unfocusSearchField()
+                                if let match = rows.first(where: { $0.id == leafID }) {
+                                    self.open(report: match.report)
+                                }
+                            },
+                            onToggleCluster: { clusterID in
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+                                    if self.state.collapsedClusterIDs.contains(clusterID) {
+                                        self.state.collapsedClusterIDs.remove(clusterID)
+                                    } else {
+                                        self.state.collapsedClusterIDs.insert(clusterID)
+                                    }
+                                    self.focusedClusterID = self.focusedClusterID == clusterID ? nil : clusterID
+                                }
+                            },
+                            clusterContextMenu: { cluster in
+                                Button(self.focusedClusterID == cluster.id ? "取消月度聚焦" : "聚焦此月星团") {
+                                    withAnimation(.easeOut(duration: 0.16)) {
+                                        self.focusedClusterID = self.focusedClusterID == cluster.id ? nil : cluster.id
+                                    }
+                                }
+                                Button(self.state.selectedMonth == cluster.id ? "显示全部月份" : "仅查看「\(cluster.title)」") {
+                                    self.state.selectedMonth = self.state.selectedMonth == cluster.id ? nil : cluster.id
+                                }
+                                Button(cluster.isCollapsed ? "展开此月" : "折叠此月") {
+                                    if self.state.collapsedClusterIDs.contains(cluster.id) {
+                                        self.state.collapsedClusterIDs.remove(cluster.id)
+                                    } else {
+                                        self.state.collapsedClusterIDs.insert(cluster.id)
+                                    }
+                                }
+                            },
+                            leafContextMenu: { leaf in
+                                if let target = rows.first(where: { $0.id == leaf.id }) {
+                                    Button("空格预览") {
+                                        self.state.selectedReportID = target.id
+                                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                                            self.quickLookReportID = target.id
+                                        }
+                                    }
+                                    Button("在编辑器打开") {
+                                        self.open(report: target.report)
+                                    }
+                                    Button("编辑") {
+                                        self.state.selectedReportID = target.id
+                                        self.editingReportID = target.id
+                                        self.editingDraft = target.report.content
+                                        self.isEditing = true
+                                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                                            self.quickLookReportID = target.id
+                                        }
+                                    }
+                                    Button("重命名") {
+                                        self.state.selectedReportID = target.id
+                                        self.renameDraft = target.title
+                                        self.isRenamingSelected = true
+                                        DispatchQueue.main.async { self.isRenameFieldFocused = true }
+                                    }
+                                    Divider()
+                                    Button("删除", role: .destructive) {
+                                        self.delete(report: target.report, in: rows)
+                                    }
+                                }
+                            }
+                        )
+                    }
                     
-                    Rectangle()
-                        .fill(tokens.hairline)
-                        .frame(width: 1)
+                    if isSearching && !self.state.searchHits.isEmpty {
+                        StarMapSearchResultsHUD(
+                            hits: self.state.searchHits,
+                            selectedID: activeRow?.id,
+                            isCollapsed: self.isSearchHUDCollapsed,
+                            tokens: tokens,
+                            onToggleCollapse: {
+                                withAnimation(.easeOut(duration: 0.15)) {
+                                    self.isSearchHUDCollapsed.toggle()
+                                }
+                            },
+                            onSelectHit: { hitID in
+                                self.unfocusSearchField()
+                                self.state.selectedReportID = hitID
+                                self.panRequestToken &+= 1
+                            },
+                            onPreviewHit: { hitID in
+                                self.unfocusSearchField()
+                                self.state.selectedReportID = hitID
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                                    self.quickLookReportID = hitID
+                                }
+                            },
+                            onOpenHit: { hitID in
+                                self.unfocusSearchField()
+                                if let match = self.quickLookRow(id: hitID, rows: rows) {
+                                    self.open(report: match.report)
+                                }
+                            }
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(.top, 14)
+                        .padding(.trailing, 16)
+                    }
                     
-                    self.listColumn(rows: rows, activeID: activeRow?.id, tokens: tokens)
-                        .frame(width: 264)
-                    
-                    Rectangle()
-                        .fill(tokens.hairline)
-                        .frame(width: 1)
-                    
-                    self.detailColumn(row: activeRow, allRows: rows, tokens: tokens)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if let activeRow, self.quickLookReportID == nil {
+                        self.bottomSelectionCapsule(row: activeRow, allRows: rows, tokens: tokens)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 16)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(tokens.canvasTop)
+            
+            if let qID = self.quickLookReportID, let qRow = self.quickLookRow(id: qID, rows: rows) {
+                let qReport = qRow.report
+                let curIdx = navList.firstIndex(where: { $0.id == qID })
+                let canPrev = (curIdx ?? 0) > 0
+                let canNext = curIdx.map { $0 + 1 < navList.count } ?? false
+                let related = self.state.relatedRows(for: qReport.id, in: self.state.allRowItems)
+                let qEval = self.state.searchMatchesByID[qReport.id]
+                let editingThisReport = self.isEditing && self.editingReportID == qReport.id
+                
+                StarMapQuickLookOverlay(
+                    title: qReport.title,
+                    subtitle: "\(WeeklyReportCenterState.formatYearMonthTitle(qReport.yearMonth)) · \(qRow.periodLabel)"
+                        + (qRow.rangeDesc.map { " (\($0))" } ?? "")
+                        + " · \(qRow.compactCharCount)",
+                    canStepPrevious: canPrev,
+                    canStepNext: canNext,
+                    onPrevious: {
+                        guard canPrev, let curIdx else { return }
+                        let prev = navList[curIdx - 1]
+                        self.isEditing = false
+                        self.state.selectedReportID = prev.id
+                        self.quickLookReportID = prev.id
+                    },
+                    onNext: {
+                        guard canNext, let curIdx else { return }
+                        let next = navList[curIdx + 1]
+                        self.isEditing = false
+                        self.state.selectedReportID = next.id
+                        self.quickLookReportID = next.id
+                    },
+                    onClose: {
+                        self.isEditing = false
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                            self.quickLookReportID = nil
+                        }
+                    },
+                    headerActions: {
+                        if editingThisReport {
+                            Button {
+                                self.db.saveWeeklyReport(
+                                    id: qReport.id,
+                                    periodLabel: qReport.periodLabel,
+                                    yearMonth: qReport.yearMonth,
+                                    title: qReport.title,
+                                    content: self.editingDraft,
+                                    sourcePath: qReport.sourcePath,
+                                    isEnhanced: qReport.isEnhanced,
+                                    createdAt: qReport.createdAt,
+                                    reloadAfter: true
+                                )
+                                self.state.rebuildGroups()
+                                self.isEditing = false
+                                self.showToast("已保存")
+                            } label: {
+                                Text("保存")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(tokens.onAccentInk)
+                                    .padding(.horizontal, 12)
+                                    .frame(height: 27)
+                                    .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                            
+                            Button {
+                                self.isEditing = false
+                            } label: {
+                                Text("取消")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(tokens.primaryInk.opacity(0.84))
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 27)
+                                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        } else {
+                            if let qEval {
+                                Text("命中 \(qEval.totalHits) 处")
+                                    .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
+                                    .foregroundStyle(tokens.accentText)
+                                    .padding(.horizontal, 8)
+                                    .frame(height: 22)
+                                    .background(tokens.accent.opacity(0.14), in: Capsule())
+                            }
+                            
+                            Button {
+                                self.quickLookReportID = nil
+                                self.open(report: qReport)
+                            } label: {
+                                Text("打开")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(tokens.onAccentInk)
+                                    .padding(.horizontal, 12)
+                                    .frame(height: 27)
+                                    .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                            
+                            Button {
+                                self.editingReportID = qReport.id
+                                self.editingDraft = qReport.content
+                                self.isEditing = true
+                            } label: {
+                                Text("编辑")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(tokens.primaryInk.opacity(0.84))
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 27)
+                                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                            
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(qReport.content, forType: .string)
+                                self.copiedFlag = true
+                                self.showToast("已复制")
+                                Task {
+                                    try? await Task.sleep(for: .seconds(1.5))
+                                    self.copiedFlag = false
+                                }
+                            } label: {
+                                Text(self.copiedFlag ? "已复制" : "复制")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(tokens.primaryInk.opacity(0.84))
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 27)
+                                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                            
+                            Button {
+                                self.delete(report: qReport, in: rows)
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(tokens.primaryInk.opacity(0.65))
+                                    .frame(width: 27, height: 27)
+                                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        }
+                    },
+                    bodyContent: {
+                        VStack(spacing: 0) {
+                            if !related.isEmpty && !editingThisReport {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 6) {
+                                        Label("关联周报", systemImage: "point.topleft.down.curvedto.point.bottomright.up")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(tokens.primaryInk.opacity(0.60))
+                                        
+                                        ForEach(related, id: \.row.id) { rel in
+                                            Button {
+                                                self.state.selectedReportID = rel.row.id
+                                                self.quickLookReportID = rel.row.id
+                                                self.panRequestToken &+= 1
+                                            } label: {
+                                                Text("\(rel.row.title) · \(rel.reason)")
+                                                    .font(.system(size: 11, weight: .medium))
+                                                    .foregroundStyle(tokens.primaryInk.opacity(0.86))
+                                                    .padding(.horizontal, 9)
+                                                    .frame(height: 24)
+                                                    .background(tokens.inset, in: Capsule())
+                                                    .overlay(Capsule().strokeBorder(tokens.hairline, lineWidth: 0.7))
+                                            }
+                                            .buttonStyle(.plain)
+                                            .pointerStyle(.link)
+                                        }
+                                    }
+                                    .padding(.horizontal, 18)
+                                    .padding(.vertical, 9)
+                                }
+                                .background(tokens.canvasBottom.opacity(0.75))
+                                
+                                Rectangle()
+                                    .fill(tokens.hairline)
+                                    .frame(height: 1)
+                            }
+                            
+                            if editingThisReport {
+                                TextEditor(text: self.$editingDraft)
+                                    .font(.system(size: 13))
+                                    .scrollContentBackground(.hidden)
+                                    .padding(18)
+                                    .background(Color(nsColor: .textBackgroundColor))
+                            } else {
+                                CenterPreviewTextView(
+                                    text: qReport.content,
+                                    highlightTerms: searchTerms
+                                )
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            }
+                        }
+                    }
+                )
+            }
             
             if self.state.isGeneratorActive {
                 self.generatorOverlay(tokens: tokens)
@@ -478,7 +945,11 @@ struct WeeklyReportCenterView: View {
     // MARK: Top Bar
     
     private func topBar(tokens: StudioColorTokens) -> some View {
-        HStack(spacing: 10) {
+        let searchTerms = StarMapSearchEngine.parseTerms(self.state.searchText)
+        let currentMonthTitle = self.state.selectedMonth
+            .map(WeeklyReportCenterState.formatYearMonthTitle) ?? "全部月份"
+        
+        return HStack(spacing: 10) {
             if let onDismiss = self.onDismiss {
                 Button(action: onDismiss) {
                     HStack(spacing: 4) {
@@ -501,31 +972,90 @@ struct WeeklyReportCenterView: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(tokens.primaryInk)
             
-            Spacer(minLength: 8)
+            Menu {
+                Button("全部月份（\(self.state.flatReports.count)）") {
+                    self.state.selectedMonth = nil
+                    self.focusedClusterID = nil
+                }
+                if !self.state.groups.isEmpty {
+                    Divider()
+                    ForEach(self.state.groups) { group in
+                        Button("\(group.displayTitle)（\(group.reports.count)）") {
+                            self.state.selectedMonth = group.month
+                            self.focusedClusterID = group.month
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(self.state.selectedMonth == nil ? tokens.primaryInk.opacity(0.60) : tokens.accentText)
+                    Text(currentMonthTitle)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(self.state.selectedMonth == nil ? tokens.primaryInk.opacity(0.84) : tokens.accentText)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(tokens.primaryInk.opacity(0.42))
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(
+                    self.state.selectedMonth == nil ? tokens.inset : tokens.accent.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .pointerStyle(.link)
+            
+            Spacer(minLength: 6)
             
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.42))
-                TextField("搜索周报", text: self.$state.searchText)
+                    .foregroundStyle(searchTerms.isEmpty ? tokens.primaryInk.opacity(0.45) : tokens.accent)
+                
+                TextField("搜索周报全文、项目词、日期（空格多词 · ⌘F）", text: self.$state.searchText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12.5))
-                    .frame(width: 190)
+                    .focused(self.$isSearchFocused)
+                    .onSubmit {
+                        if let first = self.state.searchHits.first {
+                            self.state.selectedReportID = first.id
+                            self.panRequestToken &+= 1
+                        }
+                        self.unfocusSearchField()
+                    }
+                
+                if !searchTerms.isEmpty {
+                    Text("\(self.state.searchHits.count) 篇")
+                        .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(tokens.accentText)
+                        .padding(.horizontal, 6)
+                        .frame(height: 18)
+                        .background(tokens.accent.opacity(0.13), in: Capsule())
+                }
+                
                 if !self.state.searchText.isEmpty {
                     Button {
                         self.state.searchText = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(tokens.primaryInk.opacity(0.40))
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(tokens.primaryInk.opacity(0.42))
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 9)
-            .frame(height: 28)
+            .padding(.horizontal, 10)
+            .frame(minWidth: 230, maxWidth: 320, minHeight: 28, maxHeight: 28)
             .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(tokens.hairline, lineWidth: 0.75))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(searchTerms.isEmpty ? tokens.hairline : tokens.accent.opacity(0.45), lineWidth: 0.85)
+            )
             
             Button {
                 self.runImportPanel()
@@ -588,382 +1118,235 @@ struct WeeklyReportCenterView: View {
     }
     
     
-    // MARK: Column 1 - Structured Month Sidebar
+    // MARK: Empty State & Bottom Selection Capsule
     
-    private func monthSidebar(tokens: StudioColorTokens) -> some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 2) {
-                self.monthSidebarRow(
-                    title: "全部周报",
-                    icon: "calendar",
-                    count: self.state.flatReports.count,
-                    isSelected: self.state.selectedMonth == nil,
-                    tokens: tokens
-                ) {
-                    self.state.selectedMonth = nil
+    private func emptyStarMapState(tokens: StudioColorTokens) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: self.state.searchText.isEmpty ? "sparkles" : "magnifyingglass")
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(tokens.primaryInk.opacity(0.28))
+            
+            Text(self.state.searchText.isEmpty ? "暂无周报节点" : "未找到匹配的周报内容")
+                .font(.system(size: 13.5, weight: .medium))
+                .foregroundStyle(tokens.primaryInk.opacity(0.62))
+            
+            if self.state.searchText.isEmpty {
+                Button("新建本周周报") {
+                    self.createWeeklyReport(weekOffset: 0)
                 }
-                
-                if !self.state.groups.isEmpty {
-                    Rectangle()
-                        .fill(tokens.hairline)
-                        .frame(height: 1)
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 6)
-                    
-                    ForEach(self.state.groups) { group in
-                        self.monthSidebarRow(
-                            title: group.displayTitle,
-                            icon: "folder",
-                            count: group.reports.count,
-                            isSelected: self.state.selectedMonth == group.month,
-                            tokens: tokens
-                        ) {
-                            self.state.selectedMonth = group.month
-                        }
-                    }
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tokens.onAccentInk)
+                .padding(.horizontal, 14)
+                .frame(height: 30)
+                .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+            } else {
+                Button("清除搜索条件") {
+                    self.state.searchText = ""
                 }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(tokens.accentText)
+                .padding(.horizontal, 12)
+                .frame(height: 28)
+                .background(tokens.accent.opacity(0.12), in: Capsule())
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 10)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(tokens.canvasBottom)
     }
     
     
-    private func monthSidebarRow(
-        title: String,
-        icon: String,
-        count: Int,
-        isSelected: Bool,
-        tokens: StudioColorTokens,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 7) {
-                Image(systemName: icon)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(isSelected ? tokens.accentText : tokens.primaryInk.opacity(0.50))
-                    .frame(width: 15)
-                
-                Text(title)
-                    .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? tokens.primaryInk : tokens.primaryInk.opacity(0.82))
-                    .lineLimit(1)
-                
-                Spacer(minLength: 4)
-                
-                Text("\(count)")
-                    .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
-                    .foregroundStyle(isSelected ? tokens.accentText : tokens.primaryInk.opacity(0.42))
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isSelected ? tokens.accent.opacity(tokens.isDark ? 0.20 : 0.12) : Color.clear)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-    }
-    
-    
-    // MARK: Column 2 - Fast Lazy Report List
-    
-    private func listColumn(
-        rows: [WeeklyReportCenterState.ReportRowItem],
-        activeID: String?,
-        tokens: StudioColorTokens
-    ) -> some View {
-        Group {
-            if rows.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "calendar.badge.clock")
-                        .font(.system(size: 22, weight: .light))
-                        .foregroundStyle(tokens.primaryInk.opacity(0.24))
-                    Text(self.state.searchText.isEmpty ? "暂无周报" : "无匹配结果")
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(tokens.primaryInk.opacity(0.45))
-                    if self.state.searchText.isEmpty {
-                        Button("新建本周周报") {
-                            self.createWeeklyReport(weekOffset: 0)
-                        }
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(tokens.onAccentInk)
-                        .padding(.horizontal, 12)
-                        .frame(height: 28)
-                        .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView(.vertical, showsIndicators: true) {
-                    LazyVStack(spacing: 2) {
-                        ForEach(rows) { row in
-                            WeeklyReportRowView(
-                                row: row,
-                                isSelected: activeID == row.id,
-                                tokens: tokens
-                            )
-                            .equatable()
-                            .onTapGesture(count: 2) {
-                                self.state.selectedReportID = row.id
-                                self.open(report: row.report)
-                            }
-                            .onTapGesture(count: 1) {
-                                if self.editingReportID != row.id {
-                                    self.isEditing = false
-                                }
-                                self.isRenamingSelected = false
-                                self.state.selectedReportID = row.id
-                            }
-                            .contextMenu {
-                                Button("在编辑器打开") { self.open(report: row.report) }
-                                Button("编辑") {
-                                    self.state.selectedReportID = row.id
-                                    self.editingReportID = row.id
-                                    self.editingDraft = row.report.content
-                                    self.isEditing = true
-                                }
-                                Button("重命名") {
-                                    self.state.selectedReportID = row.id
-                                    self.renameDraft = row.title
-                                    self.isRenamingSelected = true
-                                    DispatchQueue.main.async { self.isRenameFieldFocused = true }
-                                }
-                                Divider()
-                                Button("删除", role: .destructive) {
-                                    self.delete(report: row.report, in: rows)
-                                }
-                            }
-                        }
-                    }
-                    .padding(6)
-                }
-            }
-        }
-        .background(tokens.canvasTop)
-    }
-    
-    
-    // MARK: Column 3 - Reading & Inline Editing Pane
-    
-    @ViewBuilder
-    private func detailColumn(
-        row: WeeklyReportCenterState.ReportRowItem?,
+    private func bottomSelectionCapsule(
+        row: WeeklyReportCenterState.ReportRowItem,
         allRows: [WeeklyReportCenterState.ReportRowItem],
         tokens: StudioColorTokens
     ) -> some View {
-        if let row {
-            let report = row.report
-            VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    if self.isRenamingSelected {
-                        TextField("周报标题", text: self.$renameDraft)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 14, weight: .semibold))
-                            .focused(self.$isRenameFieldFocused)
-                            .padding(.horizontal, 8)
-                            .frame(height: 28)
-                            .background(tokens.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .frame(maxWidth: 280)
-                            .onSubmit { self.commitReportRename(report) }
-                            .onExitCommand { self.isRenamingSelected = false }
-                        
-                        Button("保存") { self.commitReportRename(report) }
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(tokens.onAccentInk)
-                            .padding(.horizontal, 10)
-                            .frame(height: 26)
-                            .background(tokens.accent, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                        
-                        Button("取消") { self.isRenamingSelected = false }
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(tokens.primaryInk.opacity(0.65))
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                    } else {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(report.title)
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(tokens.primaryInk)
-                                    .lineLimit(1)
-                                if row.isCurrentWeek {
-                                    Text("本周")
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .foregroundStyle(tokens.accentText)
-                                        .padding(.horizontal, 6)
-                                        .frame(height: 17)
-                                        .background(tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                                }
-                            }
-                            let meta = "\(row.periodLabel)" + (row.rangeDesc.map { " · \($0)" } ?? "") + " · \(row.compactCharCount)"
-                            Text(meta)
-                                .font(.system(size: 11, weight: .regular, design: .rounded).monospacedDigit())
-                                .foregroundStyle(tokens.primaryInk.opacity(0.46))
-                                .lineLimit(1)
-                        }
-                    }
-                    
-                    Spacer(minLength: 8)
-                    
-                    if self.isEditing && self.editingReportID == report.id {
-                        Button {
-                            self.db.saveWeeklyReport(
-                                id: report.id,
-                                periodLabel: report.periodLabel,
-                                yearMonth: report.yearMonth,
-                                title: report.title,
-                                content: self.editingDraft,
-                                sourcePath: report.sourcePath,
-                                isEnhanced: report.isEnhanced,
-                                createdAt: report.createdAt,
-                                reloadAfter: true
-                            )
-                            self.state.rebuildGroups()
-                            self.isEditing = false
-                            self.showToast("已保存")
-                        } label: {
-                            Text("保存")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(tokens.onAccentInk)
-                                .padding(.horizontal, 12)
-                                .frame(height: 28)
-                                .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                        
-                        Button {
-                            self.isEditing = false
-                        } label: {
-                            Text("取消")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(tokens.primaryInk.opacity(0.80))
-                                .padding(.horizontal, 10)
-                                .frame(height: 28)
-                                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                    } else {
-                        Button {
-                            self.open(report: report)
-                        } label: {
-                            Text("打开")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(tokens.onAccentInk)
-                                .padding(.horizontal, 12)
-                                .frame(height: 28)
-                                .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                        
-                        Button {
-                            self.editingReportID = report.id
-                            self.editingDraft = report.content
-                            self.isEditing = true
-                        } label: {
-                            Text("编辑")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(tokens.primaryInk.opacity(0.84))
-                                .padding(.horizontal, 10)
-                                .frame(height: 28)
-                                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                        
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(report.content, forType: .string)
-                            self.copiedFlag = true
-                            self.showToast("已复制")
-                            Task {
-                                try? await Task.sleep(for: .seconds(1.5))
-                                self.copiedFlag = false
-                            }
-                        } label: {
-                            Text(self.copiedFlag ? "已复制" : "复制")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(tokens.primaryInk.opacity(0.84))
-                                .padding(.horizontal, 10)
-                                .frame(height: 28)
-                                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                        
-                        Button {
-                            self.renameDraft = report.title
-                            self.isRenamingSelected = true
-                            DispatchQueue.main.async { self.isRenameFieldFocused = true }
-                        } label: {
-                            Text("重命名")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(tokens.primaryInk.opacity(0.84))
-                                .padding(.horizontal, 10)
-                                .frame(height: 28)
-                                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                        
-                        Button {
-                            self.delete(report: report, in: allRows)
-                        } label: {
-                            Image(systemName: "trash")
-                                .font(.system(size: 11.5, weight: .medium))
-                                .foregroundStyle(tokens.primaryInk.opacity(0.62))
-                                .frame(width: 28, height: 28)
-                                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                    }
-                }
-                .padding(.horizontal, 18)
-                .frame(height: 52)
-                .background(tokens.canvasTop)
+        let report = row.report
+        let related = self.state.relatedRows(for: report.id, in: self.state.allRowItems)
+        
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(row.isCurrentWeek ? tokens.accent : tokens.primaryInk.opacity(0.35))
+                    .frame(width: 8, height: 8)
                 
-                Rectangle()
-                    .fill(tokens.hairline)
-                    .frame(height: 1)
-                
-                if self.isEditing && self.editingReportID == report.id {
-                    TextEditor(text: self.$editingDraft)
-                        .font(.system(size: 13))
-                        .scrollContentBackground(.hidden)
-                        .padding(18)
-                        .background(Color(nsColor: .textBackgroundColor))
+                if self.isRenamingSelected {
+                    TextField("周报标题", text: self.$renameDraft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13, weight: .semibold))
+                        .focused(self.$isRenameFieldFocused)
+                        .padding(.horizontal, 8)
+                        .frame(width: 220, height: 26)
+                        .background(tokens.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .onSubmit { self.commitReportRename(report) }
+                        .onExitCommand { self.isRenamingSelected = false }
+                    
+                    Button("保存") { self.commitReportRename(report) }
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(tokens.onAccentInk)
+                        .padding(.horizontal, 10)
+                        .frame(height: 24)
+                        .background(tokens.accent, in: Capsule())
+                        .buttonStyle(.plain)
+                    
+                    Button("取消") { self.isRenamingSelected = false }
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(tokens.primaryInk.opacity(0.68))
+                        .buttonStyle(.plain)
                 } else {
-                    CenterPreviewTextView(text: report.content)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(report.title)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(tokens.primaryInk)
+                                .fixedSize(horizontal: false, vertical: true)
+                            
+                            if row.isCurrentWeek {
+                                Text("本周")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(tokens.accentText)
+                                    .padding(.horizontal, 6)
+                                    .frame(height: 16)
+                                    .background(tokens.positivePillBg, in: Capsule())
+                            }
+                        }
+                        
+                        let meta = "\(WeeklyReportCenterState.formatYearMonthTitle(report.yearMonth)) · \(row.periodLabel)"
+                            + (row.rangeDesc.map { " (\($0))" } ?? "")
+                            + " · \(row.compactCharCount)"
+                        Text(meta)
+                            .font(.system(size: 10.5, weight: .regular, design: .rounded).monospacedDigit())
+                            .foregroundStyle(tokens.primaryInk.opacity(0.56))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                
+                Spacer(minLength: 10)
+                
+                Button {
+                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                        self.quickLookReportID = report.id
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "eye")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text("空格预览")
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .foregroundStyle(tokens.primaryInk)
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .background(tokens.inset, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                
+                Button {
+                    self.editingReportID = report.id
+                    self.editingDraft = report.content
+                    self.isEditing = true
+                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                        self.quickLookReportID = report.id
+                    }
+                } label: {
+                    Text("编辑")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(tokens.primaryInk.opacity(0.84))
+                        .padding(.horizontal, 10)
+                        .frame(height: 26)
+                        .background(tokens.inset, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                
+                Button {
+                    self.open(report: report)
+                } label: {
+                    Text("打开")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(tokens.onAccentInk)
+                        .padding(.horizontal, 11)
+                        .frame(height: 26)
+                        .background(tokens.accent, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                
+                Button {
+                    self.renameDraft = report.title
+                    self.isRenamingSelected = true
+                    DispatchQueue.main.async { self.isRenameFieldFocused = true }
+                } label: {
+                    Text("重命名")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(tokens.primaryInk.opacity(0.84))
+                        .padding(.horizontal, 9)
+                        .frame(height: 26)
+                        .background(tokens.inset, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                
+                Button {
+                    self.delete(report: report, in: allRows)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(tokens.primaryInk.opacity(0.62))
+                        .frame(width: 26, height: 26)
+                        .background(tokens.inset, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+            }
+            
+            if !related.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        Text("关联周报")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(tokens.primaryInk.opacity(0.50))
+                        
+                        ForEach(related, id: \.row.id) { rel in
+                            Button {
+                                if let month = self.state.selectedMonth, month != rel.row.yearMonth {
+                                    self.state.selectedMonth = nil
+                                }
+                                self.state.selectedReportID = rel.row.id
+                                self.panRequestToken &+= 1
+                            } label: {
+                                Text("\(rel.row.title) · \(rel.reason)")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(tokens.primaryInk.opacity(0.84))
+                                    .padding(.horizontal, 8)
+                                    .frame(height: 22)
+                                    .background(tokens.inset, in: Capsule())
+                                    .overlay(Capsule().strokeBorder(tokens.hairline, lineWidth: 0.7))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        }
+                    }
                 }
             }
-            .background(Color(nsColor: .textBackgroundColor))
-        } else {
-            VStack(spacing: 8) {
-                Image(systemName: "doc.text")
-                    .font(.system(size: 26, weight: .light))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.20))
-                Text("未选择周报")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(tokens.primaryInk.opacity(0.42))
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .textBackgroundColor))
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: 760)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(tokens.hairlineStrong, lineWidth: 0.8)
+        )
+        .shadow(color: .black.opacity(tokens.isDark ? 0.28 : 0.10), radius: 14, y: 6)
     }
     
+    
+    // MARK: Selection & Navigation Helpers
     
     private func selectedRow(in rows: [WeeklyReportCenterState.ReportRowItem]) -> WeeklyReportCenterState.ReportRowItem? {
         if let id = self.state.selectedReportID, let match = rows.first(where: { $0.id == id }) {
@@ -973,7 +1356,32 @@ struct WeeklyReportCenterView: View {
     }
     
     
+    private func quickLookRow(id: String, rows: [WeeklyReportCenterState.ReportRowItem]) -> WeeklyReportCenterState.ReportRowItem? {
+        rows.first(where: { $0.id == id }) ?? self.state.allRowItems.first(where: { $0.id == id })
+    }
+    
+    
+    private func keyboardNavigationItems(rows: [WeeklyReportCenterState.ReportRowItem]) -> [WeeklyReportCenterState.ReportRowItem] {
+        if !StarMapSearchEngine.parseTerms(self.state.searchText).isEmpty && !self.state.searchHits.isEmpty {
+            let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+            let hitRows = self.state.searchHits.compactMap { byID[$0.id] }
+            if !hitRows.isEmpty {
+                return hitRows
+            }
+        }
+        return rows
+    }
+    
+    
     // MARK: Keyboard Navigation
+    
+    private func unfocusSearchField() {
+        self.isSearchFocused = false
+        if let tv = NSApp.keyWindow?.firstResponder as? NSTextView, tv.isEditable {
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
+    }
+    
     
     private func handleEscapePop() -> Bool {
         if self.state.isGeneratorActive {
@@ -984,12 +1392,22 @@ struct WeeklyReportCenterView: View {
             self.isEditing = false
             return true
         }
+        if self.quickLookReportID != nil {
+            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                self.quickLookReportID = nil
+            }
+            return true
+        }
         if self.isRenamingSelected {
             self.isRenamingSelected = false
             return true
         }
         if !self.state.searchText.isEmpty {
             self.state.searchText = ""
+            return true
+        }
+        if self.focusedClusterID != nil {
+            self.focusedClusterID = nil
             return true
         }
         return false
@@ -1002,21 +1420,46 @@ struct WeeklyReportCenterView: View {
             if self.state.isGeneratorActive || self.isEditing {
                 return event
             }
-            if let responder = NSApp.keyWindow?.firstResponder, responder is NSTextView {
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags == .command && event.charactersIgnoringModifiers?.lowercased() == "f" {
+                self.quickLookReportID = nil
+                self.isSearchFocused = true
+                return nil
+            }
+            if let tv = (event.window ?? NSApp.keyWindow)?.firstResponder as? NSTextView, tv.isEditable {
+                if event.keyCode == 125 && self.isSearchFocused {
+                    self.unfocusSearchField()
+                    return nil
+                }
                 return event
             }
             let rows = self.state.displayedRows
-            guard !rows.isEmpty else { return event }
+            let navList = self.keyboardNavigationItems(rows: rows)
+            guard !navList.isEmpty else { return event }
             
             switch event.keyCode {
-                case 126: // Up
-                    self.stepSelection(by: -1, in: rows)
+                case 49: // Space -> QuickLook preview
+                    if self.quickLookReportID != nil {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.15)) {
+                            self.quickLookReportID = nil
+                        }
+                        return nil
+                    }
+                    if let active = self.selectedRow(in: navList) {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                            self.quickLookReportID = active.id
+                        }
+                        return nil
+                    }
+                case 123, 126: // Left / Up
+                    self.stepSelection(by: -1, in: navList)
                     return nil
-                case 125: // Down
-                    self.stepSelection(by: 1, in: rows)
+                case 124, 125: // Right / Down
+                    self.stepSelection(by: 1, in: navList)
                     return nil
                 case 36: // Return -> open
-                    if let active = self.selectedRow(in: rows) {
+                    if let active = self.selectedRow(in: navList) {
+                        self.quickLookReportID = nil
                         self.open(report: active.report)
                         return nil
                     }
@@ -1038,9 +1481,14 @@ struct WeeklyReportCenterView: View {
     
     private func stepSelection(by delta: Int, in list: [WeeklyReportCenterState.ReportRowItem]) {
         guard !list.isEmpty else { return }
-        let curIdx = list.firstIndex(where: { $0.id == self.state.selectedReportID }) ?? 0
+        let currentID = self.quickLookReportID ?? self.state.selectedReportID
+        let curIdx = list.firstIndex(where: { $0.id == currentID }) ?? 0
         let nextIdx = (curIdx + delta + list.count) % list.count
-        self.state.selectedReportID = list[nextIdx].id
+        let target = list[nextIdx].id
+        self.state.selectedReportID = target
+        if self.quickLookReportID != nil {
+            self.quickLookReportID = target
+        }
     }
     
     
@@ -1252,6 +1700,8 @@ struct WeeklyReportCenterView: View {
         self.state.rebuildGroups()
         self.state.isGeneratorActive = false
         self.state.selectedReportID = result.report.id
+        self.quickLookReportID = result.report.id
+        self.panRequestToken &+= 1
         self.editingReportID = result.report.id
         self.editingDraft = result.report.content
         self.isEditing = true
@@ -1290,6 +1740,9 @@ struct WeeklyReportCenterView: View {
         self.state.rebuildGroups()
         self.isEditing = false
         self.editingReportID = nil
+        if self.quickLookReportID == report.id {
+            self.quickLookReportID = self.state.selectedReportID
+        }
         self.showToast("已删除")
     }
     
@@ -1318,9 +1771,18 @@ struct WeeklyReportCenterView: View {
         
         let beginHandler: (NSApplication.ModalResponse) -> Void = { response in
             guard response == .OK, !panel.urls.isEmpty else { return }
+            let db = self.db
+            let urls = panel.urls
+            let knownDates = db.weeklyReportsKnownUpdatedAtBySourcePath()
             Task { @MainActor in
                 do {
-                    let count = try self.db.importWeeklyReports(fromURLs: panel.urls)
+                    let payloads = try await Task.detached(priority: .userInitiated) {
+                        try CotLocalDatabase.prepareWeeklyReportPayloads(
+                            fromURLs: urls,
+                            knownUpdatedAtBySourcePath: knownDates
+                        )
+                    }.value
+                    let count = db.applyPreparedWeeklyReports(payloads)
                     self.state.rebuildGroups()
                     self.showToast("已导入 \(count) 篇")
                 } catch {

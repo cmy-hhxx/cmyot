@@ -101,6 +101,8 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     private var unavailableAutoRoutedModels: Set<String> = []
     private var cachedTodayStats: AINextTokenDailyStats?
     private(set) var consecutiveIgnores: Int = 0
+    private var cachedDateKeyValue: String = ""
+    private var cachedDateKeyUptime: TimeInterval = -.greatestFiniteMagnitude
     
     
     private init() {}
@@ -185,13 +187,15 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     
     var todayStats: AINextTokenDailyStats {
         
-        let key = Self.currentDateKey()
+        let key = self.cachedCurrentDateKey()
         if let existing = self.cachedTodayStats, existing.dateKey == key {
             return existing
         }
         
-        let raw = UserDefaults.standard.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON)
-            ?? CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON, default: "")
+        let dbRaw = CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON, default: "")
+        let raw = !dbRaw.isEmpty
+            ? dbRaw
+            : (UserDefaults.standard.string(forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON) ?? "")
         if !raw.isEmpty,
            let data = raw.data(using: .utf8),
            let decoded = try? JSONDecoder().decode(AINextTokenDailyStats.self, from: data),
@@ -629,7 +633,9 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     func schedulePrediction(
         for textView: EditorTextView,
         syntaxName: String = SyntaxName.none,
-        documentTitle: String = ""
+        documentTitle: String = "",
+        precomputedLineContext: (linePrefix: String, lineSuffix: String)? = nil,
+        skipCacheLookup: Bool = false
     ) {
         self.cancel()
         
@@ -652,29 +658,38 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
             return
         }
         
-        let nsText = textView.string as NSString
+        let nsText: NSString = textView.textStorage?.mutableString ?? (textView.string as NSString)
         let expectedRange = textView.selectedRange
         let expectedTextVersion = textView.ghostTextVersion
         let caret = expectedRange.location
         guard caret >= 0, caret <= nsText.length else { return }
         
-        let lineRange = nsText.lineRange(for: NSRange(location: min(caret, max(0, nsText.length - 1)), length: 0))
-        let linePrefix = nsText.substring(with: NSRange(location: lineRange.location, length: max(0, caret - lineRange.location)))
-        let lineEnd = NSMaxRange(lineRange)
-        let lineSuffix = (caret < lineEnd)
-            ? nsText.substring(with: NSRange(location: caret, length: lineEnd - caret)).trimmingCharacters(in: .newlines)
-            : ""
+        let linePrefix: String
+        let lineSuffix: String
+        if let precomputedLineContext {
+            linePrefix = precomputedLineContext.linePrefix
+            lineSuffix = precomputedLineContext.lineSuffix
+        } else {
+            let lineRange = nsText.lineRange(for: NSRange(location: min(caret, max(0, nsText.length - 1)), length: 0))
+            linePrefix = nsText.substring(with: NSRange(location: lineRange.location, length: max(0, caret - lineRange.location)))
+            let lineEnd = NSMaxRange(lineRange)
+            lineSuffix = (caret < lineEnd)
+                ? nsText.substring(with: NSRange(location: caret, length: lineEnd - caret)).trimmingCharacters(in: .newlines)
+                : ""
+        }
         
-        switch self.lookupCache(linePrefix: linePrefix, lineSuffix: lineSuffix) {
-            case .knownEmpty:
-                return
-            case .hit(let cached):
-                self.recordLocalHit()
-                AnalyticsManager.shared.recordLocalCompletionHit()
-                textView.applyAIGhostSuggestion(cached)
-                return
-            case .miss:
-                break
+        if !skipCacheLookup {
+            switch self.lookupCache(linePrefix: linePrefix, lineSuffix: lineSuffix) {
+                case .knownEmpty:
+                    return
+                case .hit(let cached):
+                    self.recordLocalHit()
+                    AnalyticsManager.shared.recordLocalCompletionHit()
+                    textView.applyAIGhostSuggestion(cached)
+                    return
+                case .miss:
+                    break
+            }
         }
         
         let isCode = (syntaxName != SyntaxName.none && syntaxName != "Plain Text")
@@ -1053,7 +1068,7 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     private static func economySiblingModel(for config: AIConfiguration) -> String? {
         
         switch config.provider {
-            case .openCodeGo: return "kimi-k2.5"
+            case .openCodeGo: return "deepseek-v4.1-flash"
             case .deepSeek: return "deepseek-chat"
             case .openAI: return "gpt-4o-mini"
             case .anthropic: return "claude-3-5-haiku-latest"
@@ -1093,6 +1108,18 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
     }
     
     
+    private func cachedCurrentDateKey() -> String {
+        let nowUptime = ProcessInfo.processInfo.systemUptime
+        if !self.cachedDateKeyValue.isEmpty, (nowUptime - self.cachedDateKeyUptime) < 15.0 {
+            return self.cachedDateKeyValue
+        }
+        let fresh = Self.currentDateKey()
+        self.cachedDateKeyValue = fresh
+        self.cachedDateKeyUptime = nowUptime
+        return fresh
+    }
+    
+    
     private static func currentDateKey(date: Date = Date()) -> String {
         
         let components = Calendar.current.dateComponents([.year, .month, .day], from: date)
@@ -1110,7 +1137,6 @@ nonisolated struct ModelRoutingResolution: Equatable, Sendable {
                let json = String(data: data, encoding: .utf8)
             {
                 CotLocalDatabase.shared.set(json, forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON)
-                UserDefaults.standard.set(json, forKey: CotLocalDatabase.ConfigKey.aiNextTokenDailyStatsJSON)
             }
         }
         

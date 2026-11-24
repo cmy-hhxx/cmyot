@@ -96,12 +96,20 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     ]
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "tif", "bmp"]
     
+    private static let filenameDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
+    
     private let lock = NSLock()
     private let imageCache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
         cache.countLimit = 64
+        cache.totalCostLimit = 96 * 1024 * 1024
         return cache
     }()
+    private var missingImageKeys: Set<String> = []
     private var imageSizeCache: [String: NSSize] = [:]
     private var transformsByFolder: [String: [String: InlineImageTransform]] = [:]
     private let persistQueue = DispatchQueue(label: "com.coteditor.inline-image-transforms", qos: .utility)
@@ -155,11 +163,9 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     /// Stores a pasted or dropped `NSImage` for a document and returns the plain-text token to insert.
     func store(image: NSImage, for documentURL: URL?) -> (token: String, fileURL: URL)? {
         
-        guard let pngData = Self.encodePNG(from: image) else { return nil }
+        guard let encoded = Self.encodePNGPayload(from: image) else { return nil }
         
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let stamp = formatter.string(from: Date())
+        let stamp = Self.filenameDateFormatter.string(from: Date())
         let shortID = String(UUID().uuidString.prefix(4)).lowercased()
         let filename = "img-\(stamp)-\(shortID).png"
         
@@ -168,17 +174,17 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
         
         let targetURL = folder.appending(path: filename)
         do {
-            try pngData.write(to: targetURL, options: .atomic)
+            try encoded.data.write(to: targetURL, options: .atomic)
         } catch {
             return nil
         }
         
         let key = self.cacheKey(for: filename, documentURL: documentURL)
         self.lock.withLock {
-            let cachedImage = NSImage(data: pngData) ?? image
-            let logicalSize = Self.naturalImageSize(for: cachedImage)
-            self.imageCache.setObject(cachedImage, forKey: key as NSString)
-            self.imageSizeCache[key] = logicalSize
+            self.missingImageKeys.remove(key)
+            let cost = Self.estimatedByteCost(for: encoded.renderedImage, logicalSize: encoded.logicalSize)
+            self.imageCache.setObject(encoded.renderedImage, forKey: key as NSString, cost: cost)
+            self.imageSizeCache[key] = encoded.logicalSize
         }
         
         return ("⟦🖼 \(filename)⟧", targetURL)
@@ -214,6 +220,11 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
                 try? FileManager.default.copyItem(at: sourceURL, to: destURL)
             }
             
+            let destKey = self.cacheKey(for: token.identifier, documentURL: documentURL)
+            self.lock.withLock {
+                self.missingImageKeys.remove(destKey)
+            }
+            
             let globalTransform = self.transform(for: token.identifier, documentURL: nil)
             if !globalTransform.isIdentity {
                 self.setTransform(globalTransform, for: token.identifier, documentURL: documentURL)
@@ -232,10 +243,13 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
             return []
         }
         
-        return Self.tokenRegex.matches(in: string as String, range: safeRange).compactMap { match in
+        let slice = string.substring(with: safeRange)
+        let nsSlice = slice as NSString
+        return Self.tokenRegex.matches(in: slice, range: NSRange(location: 0, length: nsSlice.length)).compactMap { match in
             guard match.numberOfRanges >= 2 else { return nil }
-            let identifier = string.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespaces)
-            return (match.range, identifier)
+            let identifier = nsSlice.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespaces)
+            let globalRange = NSRange(location: safeRange.location + match.range.location, length: match.range.length)
+            return (globalRange, identifier)
         }
     }
     
@@ -244,21 +258,35 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     func image(for identifier: String, documentURL: URL?) -> NSImage? {
         
         let cacheKey = self.cacheKey(for: identifier, documentURL: documentURL)
-        if let cached = self.lock.withLock({ self.imageCache.object(forKey: cacheKey as NSString) }) {
+        let cachedState: (image: NSImage?, isKnownMissing: Bool) = self.lock.withLock {
+            (self.imageCache.object(forKey: cacheKey as NSString), self.missingImageKeys.contains(cacheKey))
+        }
+        if let cached = cachedState.image {
             return cached
+        }
+        if cachedState.isKnownMissing {
+            return nil
         }
         
         if let url = self.imageURL(for: identifier, documentURL: documentURL),
            let loaded = NSImage(contentsOf: url)
         {
             let logicalSize = Self.naturalImageSize(for: loaded)
+            let cost = Self.estimatedByteCost(for: loaded, logicalSize: logicalSize)
             self.lock.withLock {
-                self.imageCache.setObject(loaded, forKey: cacheKey as NSString)
+                self.missingImageKeys.remove(cacheKey)
+                self.imageCache.setObject(loaded, forKey: cacheKey as NSString, cost: cost)
                 self.imageSizeCache[cacheKey] = logicalSize
             }
             return loaded
         }
         
+        self.lock.withLock {
+            if self.missingImageKeys.count >= 512 {
+                self.missingImageKeys.removeAll(keepingCapacity: true)
+            }
+            self.missingImageKeys.insert(cacheKey)
+        }
         return nil
     }
     
@@ -528,7 +556,7 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     private func cacheKey(for identifier: String, documentURL: URL?) -> String {
         
         if let documentURL {
-            return "\(documentURL.path)::\(identifier)"
+            return "\(documentURL.deletingLastPathComponent().path)::\(identifier)"
         }
         return identifier
     }
@@ -544,7 +572,19 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     }
     
     
-    private static func encodePNG(from image: NSImage) -> Data? {
+    private static func estimatedByteCost(for image: NSImage, logicalSize: NSSize) -> Int {
+        if let rep = image.representations.compactMap({ $0 as? NSBitmapImageRep }).first,
+           rep.pixelsWide > 0, rep.pixelsHigh > 0
+        {
+            return max(1024, rep.pixelsWide * rep.pixelsHigh * 4)
+        }
+        let pxW = max(1, Int(logicalSize.width * 2))
+        let pxH = max(1, Int(logicalSize.height * 2))
+        return max(1024, pxW * pxH * 4)
+    }
+    
+    
+    private static func encodePNGPayload(from image: NSImage) -> (data: Data, renderedImage: NSImage, logicalSize: NSSize)? {
         
         var proposedRect = NSRect(origin: .zero, size: image.size)
         if let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) {
@@ -555,7 +595,9 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
                 bitmap.size = logical
             }
             if let png = bitmap.representation(using: .png, properties: [:]) {
-                return png
+                let cached = NSImage(size: bitmap.size)
+                cached.addRepresentation(bitmap)
+                return (png, cached, bitmap.size)
             }
         }
         
@@ -563,7 +605,8 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
            let bitmap = NSBitmapImageRep(data: tiffData),
            let png = bitmap.representation(using: .png, properties: [:])
         {
-            return png
+            let logical = self.naturalImageSize(for: image)
+            return (png, image, logical)
         }
         
         return nil

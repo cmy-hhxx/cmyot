@@ -1018,14 +1018,18 @@ private struct ToolbarCapsuleTodoTriggerView: View {
     
     @State private var analytics = AnalyticsManager.shared
     @State private var studioPalette = StudioPaletteManager.shared
+    @State private var activityGate = AppActivityRenderGate.shared
+    @State private var isWindowVisible = true
     @State private var isHovered = false
     @Environment(\.colorScheme) private var colorScheme
     
     
     var body: some View {
         let prioritized = ToolbarCapsuleTodoHelper.prioritizedTodos(self.analytics.pinnedTodos)
+        let isPaused = !self.activityGate.isAppActive || !self.isWindowVisible
+        let interval = prioritized.contains(where: \.hasDeadline) ? 1.0 : 30.0
         
-        TimelineView(.periodic(from: .now, by: prioritized.contains(where: \.hasDeadline) ? 1.0 : 30.0)) { context in
+        TimelineView(GatedPeriodicTimelineSchedule(from: .now, by: interval, paused: isPaused)) { context in
             let now = context.date
             let tokens = self.studioPalette.tokens(isDark: self.colorScheme == .dark)
             
@@ -1113,6 +1117,7 @@ private struct ToolbarCapsuleTodoTriggerView: View {
             }
         }
         .frame(height: 28)
+        .observeWindowRenderActivity(self.$isWindowVisible)
     }
     
     
@@ -1158,6 +1163,7 @@ private struct ToolbarCapsuleTodoDropdownView: View {
     @State private var todoDDL: QuickTodoDDL = .hour1
     @State private var hoveredID: String?
     @State private var completingIDs: Set<String> = []
+    @State private var isWindowVisible = true
     @FocusState private var isFieldFocused: Bool
     
     
@@ -1177,8 +1183,10 @@ private struct ToolbarCapsuleTodoDropdownView: View {
     var body: some View {
         let prioritized = ToolbarCapsuleTodoHelper.prioritizedTodos(self.analytics.pinnedTodos)
         let tokens = self.studioPalette.tokens(isDark: self.colorScheme == .dark)
+        let isPaused = !AppActivityRenderGate.shared.isAppActive || !self.isWindowVisible
+        let interval = prioritized.contains(where: \.hasDeadline) ? 1.0 : 30.0
         
-        TimelineView(.periodic(from: .now, by: prioritized.contains(where: \.hasDeadline) ? 1.0 : 30.0)) { context in
+        TimelineView(GatedPeriodicTimelineSchedule(from: .now, by: interval, paused: isPaused)) { context in
             let now = context.date
             
             VStack(alignment: .leading, spacing: 10) {
@@ -1300,6 +1308,7 @@ private struct ToolbarCapsuleTodoDropdownView: View {
             .frame(width: 334)
             .fixedSize(horizontal: false, vertical: true)
         }
+        .observeWindowRenderActivity(self.$isWindowVisible)
     }
     
     
@@ -1956,6 +1965,7 @@ struct UserProfilePopoverView: View {
                 } label: {
                     HStack(spacing: 9) {
                         MiniPopoverSparkMatrix(values: recent5, accent: studioTokens.accentText, emptyColor: self.surfaceFill)
+                            .equatable()
                             .frame(width: 26, height: 18)
                             .padding(5)
                             .background(studioTokens.positivePillBg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -2327,9 +2337,13 @@ struct SoftAvatarAuroraBackdrop: View {
     let isDark: Bool
     var cornerRadius: CGFloat = 14
     
+    @State private var activityGate = AppActivityRenderGate.shared
+    @State private var isWindowVisible = true
+    
     
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
+        let isPaused = AnimationConstants.isReducedMotionEnabled || !self.activityGate.isAppActive || !self.isWindowVisible
         
         shape
             .fill(self.surface)
@@ -2337,7 +2351,7 @@ struct SoftAvatarAuroraBackdrop: View {
                 GeometryReader { geo in
                     let side = max(geo.size.width, geo.size.height) * 1.48
                     
-                    TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: AnimationConstants.isReducedMotionEnabled)) { context in
+                    TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: isPaused)) { context in
                         let t = context.date.timeIntervalSinceReferenceDate
                         let angleA = Angle.degrees(t * 2.2)
                         let angleB = Angle.degrees(-t * 1.6 + 110)
@@ -2408,6 +2422,7 @@ struct SoftAvatarAuroraBackdrop: View {
                 }
             }
             .clipShape(shape)
+            .observeWindowRenderActivity(self.$isWindowVisible)
     }
 }
 
@@ -2509,6 +2524,8 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
     @State private var anchorDate = Date()
     @State private var accumulatedTime: TimeInterval = 0
     @State private var isPaused = false
+    @State private var activityGate = AppActivityRenderGate.shared
+    @State private var isWindowVisible = true
     @Environment(\.colorScheme) private var colorScheme
     
     private let stageWidth: CGFloat = AvatarDanmakuLaneScheduler.stageWidth
@@ -2517,8 +2534,15 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
     
     var body: some View {
         let uniqueTags = UserPersonalityAnalyzer.deduplicatedTags(self.tags, maxCount: 8)
+        let isShockwaveActive = Date().timeIntervalSince(self.shockwaveTimestamp) < 0.9
+        let shouldPause = AnimationConstants.isReducedMotionEnabled
+            || self.isPaused
+            || (uniqueTags.isEmpty && !isShockwaveActive)
+            || !self.activityGate.isAppActive
+            || !self.isWindowVisible
+        let minInterval: TimeInterval? = isShockwaveActive ? nil : (1.0 / 30.0)
         
-        TimelineView(.animation(minimumInterval: nil, paused: AnimationConstants.isReducedMotionEnabled)) { context in
+        TimelineView(.animation(minimumInterval: minInterval, paused: shouldPause)) { context in
             let dt = self.isPaused
                 ? self.accumulatedTime
                 : self.accumulatedTime + max(0, context.date.timeIntervalSince(self.anchorDate))
@@ -2567,6 +2591,7 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
         .onAppear {
             self.anchorDate = Date()
         }
+        .observeWindowRenderActivity(self.$isWindowVisible)
         .onChange(of: self.hoveredTagID) { _, key in
             let shouldPause = (key != nil)
             guard shouldPause != self.isPaused else { return }
@@ -2682,7 +2707,7 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
         let cosmicViolet = Color(red: 0.48, green: 0.36, blue: 0.92)
         let cosmicCyan = Color(red: 0.22, green: 0.76, blue: 0.96)
         
-        Canvas { context, size in
+        Canvas(rendersAsynchronously: true) { context, size in
             let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
             
             // 1. Soft radial aurora around center avatar
@@ -2772,7 +2797,7 @@ private struct AvatarSurroundingDanmakuStage<AvatarContent: View>: View {
 }
 
 
-private struct MiniPopoverSparkMatrix: View {
+private struct MiniPopoverSparkMatrix: View, Equatable {
     
     let values: [Double]
     let accent: Color
@@ -2781,7 +2806,7 @@ private struct MiniPopoverSparkMatrix: View {
     
     var body: some View {
         
-        Canvas { context, size in
+        Canvas(rendersAsynchronously: true) { context, size in
             let cols = max(1, self.values.count)
             let rows = 4
             let gap: CGFloat = 1.6

@@ -219,15 +219,13 @@ struct AIEndpointEditorView: View {
                         .disabled(!self.draft.endpoint.requiresAPIKey)
                         .help(Text("ai.settings.apiKey.caption", tableName: "AI"))
                         
-                        Button {
+                        Button(self.isAPIKeyVisible ? "隐藏" : "显示") {
                             self.isAPIKeyVisible.toggle()
-                        } label: {
-                            Image(systemName: self.isAPIKeyVisible ? "eye.slash" : "eye")
-                                .foregroundStyle(.secondary)
                         }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
                         .buttonStyle(.borderless)
                         .disabled(!self.draft.endpoint.requiresAPIKey)
-                        .help(self.isAPIKeyVisible ? "隐藏 API Key" : "显示 API Key")
                     }
                     .frame(maxWidth: self.isEmbeddedInline ? .infinity : Self.controlWidth)
                 }
@@ -237,17 +235,12 @@ struct AIEndpointEditorView: View {
                         .gridColumnAlignment(.trailing)
                         .frame(minWidth: 76, alignment: .trailing)
                     
-                    HStack(spacing: 6) {
-                        TextField(text: self.$draft.model, prompt: Text("ai.settings.model.custom", tableName: "AI")) {
-                            Text("ai.settings.model.label", tableName: "AI")
-                        }
-                        .textFieldStyle(.roundedBorder)
-                        
+                    HStack(spacing: 8) {
                         Menu {
                             if !self.models.isEmpty {
                                 Section("已从接口获取") {
                                     ForEach(self.models) { model in
-                                        Button(model.name) {
+                                        Button(self.draft.model == model.id ? "✓  \(model.id)" : model.id) {
                                             self.draft.model = model.id
                                             self.draft.rememberModels([model.id])
                                         }
@@ -257,38 +250,47 @@ struct AIEndpointEditorView: View {
                             if !self.draft.availableModelIDs.isEmpty {
                                 Section("常用 / 已保存模型") {
                                     ForEach(self.draft.availableModelIDs, id: \.self) { id in
-                                        Button(id) { self.draft.model = id }
+                                        Button(self.draft.model == id ? "✓  \(id)" : id) {
+                                            self.draft.model = id
+                                        }
                                     }
                                 }
                             }
-                            Section("推荐快捷模型") {
+                            Section("推荐模型") {
                                 ForEach(Self.quickPresetModels, id: \.self) { id in
-                                    Button(id) {
+                                    Button(self.draft.model == id ? "✓  \(id)" : id) {
                                         self.draft.model = id
                                         self.draft.rememberModels([id])
                                     }
                                 }
                             }
                         } label: {
-                            Image(systemName: "chevron.up.chevron.down")
+                            HStack(spacing: 6) {
+                                Text(self.draft.model.isEmpty ? "选择模型" : self.draft.model)
+                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.primary)
+                                Spacer(minLength: 4)
+                                Text("▾")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 9)
+                            .frame(minHeight: 26)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.14), lineWidth: 0.75))
                         }
                         .menuStyle(.borderlessButton)
                         .menuIndicator(.hidden)
-                        .fixedSize()
-                        .help(Text("ai.settings.model.pick", tableName: "AI"))
                         
                         Button {
                             Task { await self.fetchModels() }
                         } label: {
-                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text(self.isFetchingModels ? "刷新中" : "刷新模型")
+                                .font(.system(size: 11))
                         }
-                        .help(Text("ai.settings.model.fetch", tableName: "AI"))
+                        .controlSize(.small)
                         .disabled(self.isFetchingModels || !self.canFetchModels)
-                        
-                        if self.isFetchingModels {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
                     }
                     .frame(maxWidth: self.isEmbeddedInline ? .infinity : Self.controlWidth)
                 }
@@ -345,11 +347,10 @@ struct AIEndpointEditorView: View {
             }
             
             if let testMessage {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: self.testSucceeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(self.testSucceeded ? .green : .red)
-                        .padding(.top, 1)
+                HStack(alignment: .center, spacing: 8) {
+                    Circle()
+                        .fill(self.testSucceeded ? Color.green : Color.red)
+                        .frame(width: 7, height: 7)
                     
                     Text(testMessage)
                         .font(.callout)

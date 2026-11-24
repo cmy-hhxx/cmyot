@@ -380,11 +380,17 @@ nonisolated struct AIGijinkaCharacter: Identifiable, Sendable, Equatable, Hashab
 final class AIGijinkaImageLoader {
     
     static let shared = AIGijinkaImageLoader()
+    private static let maxCachedThumbnails = 48
+    private static let maxCachedSquareAvatars = 48
     
     private(set) var images: [String: NSImage] = [:]
     private var thumbnails: [String: NSImage] = [:]
+    private var thumbnailOrder: [String] = []
+    private var squareAvatars: [String: NSImage] = [:]
+    private var squareAvatarOrder: [String] = []
     private var inFlight: Set<String> = []
     private let cacheDirectory: URL
+    @ObservationIgnored private var memoryPressureSource: DispatchSourceMemoryPressure?
     
     private init() {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
@@ -393,6 +399,29 @@ final class AIGijinkaImageLoader {
             .appending(path: "CotEditor", directoryHint: .isDirectory)
             .appending(path: "BotAvatars", directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: self.cacheDirectory, withIntermediateDirectories: true)
+        
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.purgeInMemoryCaches()
+            }
+        }
+        source.resume()
+        self.memoryPressureSource = source
+    }
+    
+    
+    isolated deinit {
+        self.memoryPressureSource?.cancel()
+    }
+    
+    
+    func purgeInMemoryCaches() {
+        self.images.removeAll()
+        self.thumbnails.removeAll()
+        self.thumbnailOrder.removeAll()
+        self.squareAvatars.removeAll()
+        self.squareAvatarOrder.removeAll()
     }
     
     
@@ -418,7 +447,7 @@ final class AIGijinkaImageLoader {
     }
     
     
-    /// Returns a pre-downsampled cached thumbnail to avoid GPU texture re-rasterization hitches in animated Bot cards/packs.
+    /// Returns a pre-rasterized bitmap thumbnail to eliminate lazy NSCustomImageRep stalls in Bot cards/stacks.
     func thumbnail(for artwork: AIGijinkaArtwork, maxPixelSize: CGFloat = 460) -> NSImage? {
         let bucket = max(64, Int(maxPixelSize.rounded()))
         let cacheKey = "\(artwork.id)@\(bucket)"
@@ -427,23 +456,133 @@ final class AIGijinkaImageLoader {
         }
         guard let source = self.image(for: artwork) else { return nil }
         let srcSize = source.size
+        guard srcSize.width > 1, srcSize.height > 1 else { return nil }
         let maxDim = max(srcSize.width, srcSize.height)
-        guard maxDim > CGFloat(bucket), srcSize.width > 1, srcSize.height > 1 else {
-            self.thumbnails[cacheKey] = source
-            return source
+        let scale = min(1.0, CGFloat(bucket) / maxDim)
+        let pixelW = max(1, Int((srcSize.width * scale).rounded()))
+        let pixelH = max(1, Int((srcSize.height * scale).rounded()))
+        
+        let bitmap = self.rasterize(
+            pixelWidth: pixelW,
+            pixelHeight: pixelH,
+            pointSize: NSSize(width: CGFloat(pixelW), height: CGFloat(pixelH))
+        ) { rect in
+            source.draw(
+                in: rect,
+                from: NSRect(origin: .zero, size: srcSize),
+                operation: .copy,
+                fraction: 1.0
+            )
         }
-        let scale = CGFloat(bucket) / maxDim
-        let targetSize = NSSize(
-            width: max(1, (srcSize.width * scale).rounded()),
-            height: max(1, (srcSize.height * scale).rounded())
-        )
-        let thumb = NSImage(size: targetSize, flipped: false) { rect in
-            NSGraphicsContext.current?.imageInterpolation = .high
-            source.draw(in: rect, from: NSRect(origin: .zero, size: srcSize), operation: .copy, fraction: 1.0)
-            return true
+        guard let bitmap else { return source }
+        self.thumbnails[cacheKey] = bitmap
+        self.thumbnailOrder.removeAll { $0 == cacheKey }
+        self.thumbnailOrder.append(cacheKey)
+        while self.thumbnailOrder.count > Self.maxCachedThumbnails {
+            let evicted = self.thumbnailOrder.removeFirst()
+            self.thumbnails.removeValue(forKey: evicted)
         }
-        self.thumbnails[cacheKey] = thumb
-        return thumb
+        return bitmap
+    }
+    
+    
+    /// Returns a pre-rasterized 1:1 Retina square avatar (head & bust framed for vertical portraits)
+    /// backed by a concrete `NSBitmapImageRep` for 120fps CoreAnimation transforms.
+    func squareAvatar(for artwork: AIGijinkaArtwork, pointSize: CGFloat = 122) -> NSImage? {
+        let sideBucket = max(32, Int(pointSize.rounded()))
+        let cacheKey = "\(artwork.id)@sq\(sideBucket)"
+        if let cached = self.squareAvatars[cacheKey] {
+            return cached
+        }
+        guard let source = self.image(for: artwork) else { return nil }
+        let srcSize = source.size
+        guard srcSize.width > 1, srcSize.height > 1 else { return nil }
+        
+        let aspect = srcSize.width / srcSize.height
+        let cropSide: CGFloat
+        let originX: CGFloat
+        let originY: CGFloat
+        if aspect > 0.92 {
+            // Near-square illustration: center-crop full width/height symmetrically
+            cropSide = min(srcSize.width, srcSize.height)
+            originX = max(0, (srcSize.width - cropSide) * 0.5)
+            originY = max(0, (srcSize.height - cropSide) * 0.5)
+        } else {
+            // Vertical standing portrait: unflipped AppKit coords have y = height at top of head
+            cropSide = min(srcSize.width, srcSize.height * 0.86)
+            switch artwork.cropAnchor {
+                case .center:
+                    originX = max(0, (srcSize.width - cropSide) * 0.5)
+                    originY = max(0, (srcSize.height - cropSide) * 0.5)
+                case .top, .leading:
+                    originX = artwork.cropAnchor == .leading
+                        ? max(0, (srcSize.width - cropSide) * 0.35)
+                        : max(0, (srcSize.width - cropSide) * 0.5)
+                    let topMargin = srcSize.height * 0.02
+                    originY = max(0, srcSize.height - cropSide - topMargin)
+            }
+        }
+        let srcRect = NSRect(x: originX, y: originY, width: cropSide, height: cropSide)
+        let pixelSide = max(64, sideBucket * 2)
+        let targetPoints = NSSize(width: CGFloat(sideBucket), height: CGFloat(sideBucket))
+        
+        let bitmap = self.rasterize(
+            pixelWidth: pixelSide,
+            pixelHeight: pixelSide,
+            pointSize: targetPoints
+        ) { rect in
+            NSColor(calibratedRed: 0.965, green: 0.969, blue: 0.980, alpha: 1.0).setFill()
+            rect.fill()
+            source.draw(
+                in: rect,
+                from: srcRect,
+                operation: .sourceOver,
+                fraction: 1.0
+            )
+        }
+        guard let bitmap else { return source }
+        self.squareAvatars[cacheKey] = bitmap
+        self.squareAvatarOrder.removeAll { $0 == cacheKey }
+        self.squareAvatarOrder.append(cacheKey)
+        while self.squareAvatarOrder.count > Self.maxCachedSquareAvatars {
+            let evicted = self.squareAvatarOrder.removeFirst()
+            self.squareAvatars.removeValue(forKey: evicted)
+        }
+        return bitmap
+    }
+    
+    
+    private func rasterize(
+        pixelWidth: Int,
+        pixelHeight: Int,
+        pointSize: NSSize,
+        draw: (NSRect) -> Void
+    ) -> NSImage? {
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pixelWidth,
+            pixelsHigh: pixelHeight,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 32
+        ),
+              let context = NSGraphicsContext(bitmapImageRep: rep)
+        else { return nil }
+        
+        rep.size = pointSize
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.imageInterpolation = .high
+        draw(NSRect(origin: .zero, size: pointSize))
+        NSGraphicsContext.restoreGraphicsState()
+        
+        let image = NSImage(size: pointSize)
+        image.addRepresentation(rep)
+        return image
     }
     
     
@@ -512,6 +651,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
     case interactiveChart
     case ocrPolish
     case organizeAndMerge
+    case readingCompanion
     case persona
     
     var id: String { self.rawValue }
@@ -543,14 +683,14 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .interactiveChart: .interactiveChart
             case .ocrPolish: .ocrPolish
             case .organizeAndMerge: .organizeAndMerge
-            case .butler, .ghost, .persona: nil
+            case .butler, .ghost, .readingCompanion, .persona: nil
         }
     }
     
     
     var defaultPiToolProfile: PiBotToolProfile {
         switch self {
-            case .ghost, .translate, .summarize, .explain, .weeklyReportItem, .persona:
+            case .ghost, .translate, .summarize, .explain, .weeklyReportItem, .readingCompanion, .persona:
                 .pureChat
             case .weeklyReport, .interactiveChart, .ocrPolish:
                 .workspaceRead
@@ -573,6 +713,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .interactiveChart: "@ChartBot"
             case .ocrPolish: "@OCRBot"
             case .organizeAndMerge: "@TidyBot"
+            case .readingCompanion: "@CompanionBot"
             case .persona: "@PersonaBot"
         }
     }
@@ -591,7 +732,26 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .interactiveChart: "图表画师"
             case .ocrPolish: "识图整理员"
             case .organizeAndMerge: "工作区整理师"
+            case .readingCompanion: "资讯陪读"
             case .persona: "性格观察员"
+        }
+    }
+    
+    
+    var defaultNickname: String {
+        switch self {
+            case .butler: "总管"
+            case .ghost: "续写"
+            case .translate: "翻译"
+            case .summarize: "提炼"
+            case .explain: "解释"
+            case .weeklyReport: "周报"
+            case .weeklyReportItem: "速记"
+            case .interactiveChart: "图表"
+            case .ocrPolish: "识图"
+            case .organizeAndMerge: "整理"
+            case .readingCompanion: "陪读"
+            case .persona: "观察"
         }
     }
     
@@ -609,6 +769,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .interactiveChart: "把表格或杂乱数字变成可交互 HTML 图表"
             case .ocrPolish: "结合本地 OCR 与视觉纠错还原表格代码"
             case .organizeAndMerge: "多窗口零散草稿归类合并并重起正经标题"
+            case .readingCompanion: "紧扣文章内容自由问答的陪读搭子"
             case .persona: "每 6 小时静默感知写作习惯，凝练个性弹幕"
         }
     }
@@ -627,6 +788,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .interactiveChart: "chart.xyaxis.line"
             case .ocrPolish: "doc.text.viewfinder"
             case .organizeAndMerge: "square.stack.3d.up.fill"
+            case .readingCompanion: "book.closed"
             case .persona: "theatermasks.fill"
         }
     }
@@ -644,6 +806,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .interactiveChart: "#EC4899"
             case .ocrPolish: "#8B5CF6"
             case .organizeAndMerge: "#F97316"
+            case .readingCompanion: "#0EA5E9"
             case .persona: "#E11D48"
         }
     }
@@ -654,6 +817,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
         switch self {
             case .butler: "butler"
             case .ghost: "nextToken"
+            case .readingCompanion: "newsChat"
             case .persona: "personalityAnalyze"
             default: self.linkedAction?.analyticsKey ?? self.rawValue
         }
@@ -673,6 +837,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
             case .interactiveChart: "周一: 1800字, 周二: 2400字, 周三: 3100字, 周四: 1500字, 周五: 2700字"
             case .ocrPolish: "CotEditor 7.O  设 置 -> Bots\n网 关 : deepseek-chat  延 迟 210 ms"
             case .organizeAndMerge: "草稿1：周末去买咖啡豆；草稿2：下周先把设置页精简和数据库迁移写完，再测试单副本构建。"
+            case .readingCompanion: "请梳理这篇文章的核心观点与背景脉络。"
             case .persona: "常在深夜写技术总结，喜欢用直白短句和分点，写完代码必先测试再 commit 推送。"
         }
     }
@@ -688,6 +853,8 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
                 return "你是 CotEditor 顶部的总管家私人助手，直接感知工作区、多维 KYC 记忆与本地 SQLite 兴趣资产。回答极简干练、高信噪比，有偏好或编辑器操控诉求时附带 <cot_actions> JSON。"
             case .ghost:
                 return "你是嵌入编辑器光标处的续写幽灵。只接续光标后最自然的半句或短词，不重复前文，不加引号与解释。"
+            case .readingCompanion:
+                return "你是紧扣原文回答问题的资讯陪读搭子，直接给干货与犀利视角。"
             case .persona:
                 return """
                 你是一位敏锐、幽默但不刻薄的私人写作观察员。阅读用户近期写下的文字与习惯，提炼出最贴切的人物概念标题、深入理解与 5~7 个不超过 8 个汉字的个性弹幕标签（如「深夜架构狂」「极简主义者」「说人话专家」）。严格输出 JSON，不添油加醋。
@@ -700,7 +867,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
 
 
 /// Per-bot persisted configuration (enabled toggle, dedicated gateway & model override,
-/// tone/persona, temperature, artwork variant index, and `Pi` tool profile).
+/// tone/persona, temperature, artwork variant index, `Pi` tool profile, and custom name/nickname).
 nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     
     var isEnabled: Bool = true
@@ -710,6 +877,8 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     var temperature: Double? = nil
     var artworkVariantIndex: Int? = nil
     var toolProfile: PiBotToolProfile? = nil
+    var customName: String = ""
+    var customNickname: String = ""
     
     
     init(
@@ -719,7 +888,9 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         customPersona: String = "",
         temperature: Double? = nil,
         artworkVariantIndex: Int? = nil,
-        toolProfile: PiBotToolProfile? = nil
+        toolProfile: PiBotToolProfile? = nil,
+        customName: String = "",
+        customNickname: String = ""
     ) {
         self.isEnabled = isEnabled
         self.endpointID = endpointID
@@ -728,6 +899,8 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         self.temperature = temperature
         self.artworkVariantIndex = artworkVariantIndex
         self.toolProfile = toolProfile
+        self.customName = customName
+        self.customNickname = customNickname
     }
     
     
@@ -737,7 +910,7 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     
     
     enum CodingKeys: String, CodingKey {
-        case isEnabled, endpointID, modelOverride, customPersona, temperature, artworkVariantIndex, toolProfile
+        case isEnabled, endpointID, modelOverride, customPersona, temperature, artworkVariantIndex, toolProfile, customName, customNickname
     }
     
     
@@ -750,11 +923,13 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         self.temperature = try container.decodeIfPresent(Double.self, forKey: .temperature)
         self.artworkVariantIndex = try container.decodeIfPresent(Int.self, forKey: .artworkVariantIndex)
         self.toolProfile = try container.decodeIfPresent(PiBotToolProfile.self, forKey: .toolProfile)
+        self.customName = try container.decodeIfPresent(String.self, forKey: .customName) ?? ""
+        self.customNickname = try container.decodeIfPresent(String.self, forKey: .customNickname) ?? ""
     }
 }
 
 
-/// Manages per-bot settings, prompts, model routing, and `PiKernelManager` synchronization backed by `CotLocalDatabase`.
+/// Manages per-bot settings, prompts, model routing, avatars, and `PiKernelManager` synchronization backed by `CotLocalDatabase`.
 @MainActor @Observable final class AIBotStore {
     
     static let shared = AIBotStore()
@@ -781,6 +956,9 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     ]
     
     private(set) var configs: [String: AIBotConfig] = [:]
+    private(set) var avatarRevision: Int = 0
+    private var customAvatarCache: [AIBotID: NSImage] = [:]
+    private var customAvatarRawStrings: [AIBotID: String] = [:]
     private let database: CotLocalDatabase
     
     
@@ -791,7 +969,14 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     
     
     func reloadFromDatabase() {
-        
+        for botID in Array(self.customAvatarCache.keys) {
+            let key = "ai.bot.\(botID.rawValue).avatar"
+            let latestRaw = self.database.string(forKey: key)
+            if latestRaw != self.customAvatarRawStrings[botID] {
+                self.customAvatarCache.removeValue(forKey: botID)
+                self.customAvatarRawStrings.removeValue(forKey: botID)
+            }
+        }
         let raw = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiBotsConfigJSON)
         guard !raw.isEmpty,
               let data = raw.data(using: .utf8),
@@ -801,6 +986,134 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
             return
         }
         self.configs = decoded
+    }
+    
+    
+    func resolvedName(for botID: AIBotID) -> String {
+        if botID == .butler {
+            let raw = (self.database === CotLocalDatabase.shared)
+                ? CotButlerManager.shared.name
+                : self.database.string(forKey: CotLocalDatabase.ConfigKey.butlerName, default: "曜")
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "曜" : trimmed
+        }
+        let custom = self.config(for: botID).customName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return custom.isEmpty ? botID.displayName : custom
+    }
+    
+    
+    func resolvedNickname(for botID: AIBotID) -> String {
+        if botID == .butler {
+            let raw = (self.database === CotLocalDatabase.shared)
+                ? CotButlerManager.shared.nickname
+                : self.database.string(forKey: CotLocalDatabase.ConfigKey.butlerNickname, default: "总管")
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "总管" : trimmed
+        }
+        let custom = self.config(for: botID).customNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        return custom.isEmpty ? botID.defaultNickname : custom
+    }
+    
+    
+    func customAvatarImage(for botID: AIBotID) -> NSImage? {
+        _ = self.avatarRevision
+        if botID == .butler, self.database === CotLocalDatabase.shared {
+            return CotButlerManager.shared.customAvatarImage
+        }
+        if let cached = self.customAvatarCache[botID] {
+            return cached
+        }
+        let b64 = self.database.string(forKey: "ai.bot.\(botID.rawValue).avatar")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !b64.isEmpty,
+              let data = Data(base64Encoded: b64),
+              let image = NSImage(data: data)
+        else { return nil }
+        self.customAvatarCache[botID] = image
+        return image
+    }
+    
+    
+    func setCustomAvatarData(_ data: Data?, for botID: AIBotID) {
+        if botID == .butler, self.database === CotLocalDatabase.shared {
+            CotButlerManager.shared.setCustomAvatarData(data)
+            self.avatarRevision &+= 1
+            return
+        }
+        let key = "ai.bot.\(botID.rawValue).avatar"
+        if let data,
+           let rawImage = NSImage(data: data),
+           let pngData = UserProfileManager.processedAvatarPNGData(from: rawImage),
+           let processed = NSImage(data: pngData)
+        {
+            let encoded = pngData.base64EncodedString()
+            self.database.set(encoded, forKey: key)
+            self.customAvatarCache[botID] = processed
+            self.customAvatarRawStrings[botID] = encoded
+        } else {
+            self.database.set("", forKey: key)
+            self.customAvatarCache.removeValue(forKey: botID)
+            self.customAvatarRawStrings.removeValue(forKey: botID)
+        }
+        self.avatarRevision &+= 1
+    }
+    
+    
+    func resolvedAvatarImage(for botID: AIBotID, pointSize: CGFloat = 122) -> NSImage? {
+        if let custom = self.customAvatarImage(for: botID) {
+            return custom
+        }
+        let cfg = self.config(for: botID)
+        let endpoint = self.resolvedEndpointProfile(for: botID)
+        let model = cfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        let character = AIGijinkaCharacter.resolve(
+            modelName: model.isEmpty ? endpoint?.displayModel : model,
+            endpointName: endpoint?.displayName,
+            baseURL: endpoint?.baseURL
+        )
+        let artwork = character?.artwork(for: botID, variantOverride: cfg.artworkVariantIndex)
+        return artwork.flatMap { AIGijinkaImageLoader.shared.squareAvatar(for: $0, pointSize: pointSize) }
+    }
+    
+    
+    func openCodeGoSelectableModels(extra: [String] = []) -> (profile: AIEndpointProfile?, models: [String]) {
+        let profiles = AIEndpointStore.profiles
+        let activeID = AIEndpointStore.activeID
+        let profile = profiles.first(where: { $0.id == activeID && $0.provider == .openCodeGo })
+            ?? profiles.first(where: { $0.provider == .openCodeGo })
+            ?? profiles.first(where: { $0.id == activeID })
+            ?? profiles.first
+        
+        var seen: Set<String> = []
+        var result: [String] = []
+        let candidates = (profile?.availableModelIDs ?? []) + extra + AIProvider.openCodeGo.recommendedModels
+        for raw in candidates {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            result.append(trimmed)
+        }
+        return (profile, result)
+    }
+    
+    
+    @discardableResult
+    func refreshOpenCodeGoModels() async throws -> [String] {
+        let target = self.openCodeGoSelectableModels().profile ?? AIProvider.openCodeGo.makeProfile()
+        let apiKey = AIEndpointStore.apiKey(for: target)
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return self.openCodeGoSelectableModels().models
+        }
+        let config = target.configuration(apiKey: apiKey)
+        let fetched = try await AIService.shared.fetchModels(configuration: config)
+        let ids = fetched.map(\.id)
+        var updated = target
+        updated.rememberModels(ids)
+        AIEndpointStore.save(updated, apiKey: apiKey)
+        if AIEndpointStore.activeID == nil {
+            AIEndpointStore.activeID = updated.id
+        }
+        CotLocalDatabase.shared.syncAIEndpointsToDatabase()
+        return self.openCodeGoSelectableModels(extra: ids).models
     }
     
     
@@ -825,6 +1138,8 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         
         var clean = config
         clean.modelOverride = config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        clean.customName = config.customName.trimmingCharacters(in: .whitespacesAndNewlines)
+        clean.customNickname = config.customNickname.trimmingCharacters(in: .whitespacesAndNewlines)
         self.configs[botID.rawValue] = clean
         
         if botID == .ghost {
@@ -880,6 +1195,7 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     func resetBotToDefaults(_ botID: AIBotID) {
         
         self.setSystemPrompt(botID.defaultSystemPrompt, for: botID)
+        self.setCustomAvatarData(nil, for: botID)
         self.updateConfig(AIBotConfig(), for: botID)
     }
     
