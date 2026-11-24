@@ -107,17 +107,24 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         var maxX: CGFloat
         var velMaxX: CGFloat = 0
         var minY: CGFloat
-        var velMinY: CGFloat = 0
         var maxY: CGFloat
-        var velMaxY: CGFloat = 0
         var target: NSRect
         
+        var isSettled: Bool {
+            abs(self.minX - self.target.minX) < 0.15
+                && abs(self.maxX - self.target.maxX) < 0.15
+                && abs(self.velMinX) < 1.5
+                && abs(self.velMaxX) < 1.5
+        }
+        
         var currentRect: NSRect {
-            NSRect(
-                x: min(self.minX, self.maxX),
-                y: min(self.minY, self.maxY),
-                width: max(2, abs(self.maxX - self.minX)),
-                height: max(4, abs(self.maxY - self.minY))
+            let loX = min(self.minX, self.maxX)
+            let hiX = max(self.minX, self.maxX)
+            return NSRect(
+                x: loX,
+                y: self.minY,
+                width: max(2, hiX - loX),
+                height: max(4, self.maxY - self.minY)
             )
         }
         
@@ -208,7 +215,20 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private var isVimVisualActive = false
     private var isPlayingVisualYankPulse = false
     private var visualSelectionColor: NSColor = .controlAccentColor
-    private static let maxVisualBandLayers = 64
+    private static let maxVisualBandLayers = 1
+    
+    /// Current rendered visual-mode row band rectangles (exposed for deterministic layout & motion tests).
+    var activeVisualBandRects: [NSRect] {
+        self.vimVisualStates.map(\.currentRect)
+    }
+    
+    var isShowingVisualYankPulse: Bool {
+        self.isPlayingVisualYankPulse
+    }
+    
+    private var hasUnsettledVisualBands: Bool {
+        self.isVimVisualActive && self.vimVisualStates.contains { !$0.isSettled }
+    }
     
     
     init(textView: EditorTextView) {
@@ -273,7 +293,11 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             return
         }
         self.moveVimCursor(to: rect, color: textView.effectiveCursorColor, animated: animated)
-        if VimState.shared.mode != .visual && !self.isPlayingVisualYankPulse {
+        if VimState.shared.mode == .visual,
+           VimState.shared.visualOwnerID == ObjectIdentifier(textView)
+        {
+            textView.vimEngine.resyncVisualOverlayIfNeeded(animated: false)
+        } else if !self.isPlayingVisualYankPulse {
             self.hideVimVisualSelection(animated: false, withYankPulse: false)
         }
     }
@@ -286,7 +310,9 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         self.fluidCursor = nil
         self.currentTargetRect = nil
         self.trailRects.removeAll()
-        self.hideVimVisualSelection(animated: false, withYankPulse: false)
+        if !self.isPlayingVisualYankPulse {
+            self.hideVimVisualSelection(animated: false, withYankPulse: false)
+        }
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -298,13 +324,18 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     }
     
     
-    /// Syncs elastic rounded selection bands & anchor marker for Vim `v` / `V` Visual mode.
+    /// Syncs seamless rounded selection bands for Vim `v` / `V` Visual mode.
+    ///
+    /// - Important: Bands are matched by **visual line `midY`** (never by array index) and locked to each
+    ///   line fragment's exact `[minY, maxY]`, so moving upward (`k` / `↑`) or downward (`j` / `↓`) keeps
+    ///   all previously selected lines 100% stationary with zero vertical bounce, seam splitting, or convulsion.
     func syncVimVisualSelection(
         range: NSRange,
         anchorLocation: Int?,
         activeLocation: Int?,
         isLinewise: Bool,
-        animated: Bool
+        animated: Bool,
+        isContinuous: Bool = false
     ) {
         guard self.ownsVimCursorDrawing,
               VimState.shared.mode == .visual,
@@ -313,7 +344,9 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
               let textContainer = textView.textContainer,
               let hostLayer = self.ensureClippedHostLayer(for: textView)
         else {
-            self.hideVimVisualSelection(animated: false, withYankPulse: false)
+            if !self.isPlayingVisualYankPulse {
+                self.hideVimVisualSelection(animated: false, withYankPulse: false)
+            }
             return
         }
         
@@ -327,40 +360,54 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         var targetRects: [NSRect] = []
         
         if clampedRange.length > 0 {
-            let glyphRange = layoutManager.glyphRange(forCharacterRange: clampedRange, actualCharacterRange: nil)
             let containerOrigin = textView.textContainerOrigin
-            layoutManager.enumerateEnclosingRects(
-                forGlyphRange: glyphRange,
-                withinSelectedGlyphRange: glyphRange,
-                in: textContainer
-            ) { rect, _ in
-                var adjusted = rect.offsetBy(dx: containerOrigin.x, dy: containerOrigin.y)
-                if isLinewise {
-                    let rawContainerW = textContainer.size.width
-                    let finiteContainerW = (rawContainerW.isFinite && rawContainerW > 0 && rawContainerW <= 100_000)
-                        ? rawContainerW
-                        : (textView.enclosingScrollView?.documentVisibleRect.width ?? textView.bounds.width)
-                    adjusted.size.width = max(adjusted.width, max(16, finiteContainerW - adjusted.minX))
-                } else {
-                    adjusted.size.width = max(adjusted.width, 6)
-                }
-                adjusted = adjusted.insetBy(dx: -1, dy: 0)
-                if adjusted.width > 0, adjusted.height > 0 {
-                    targetRects.append(adjusted)
+            let fullGlyphRange = layoutManager.glyphRange(forCharacterRange: clampedRange, actualCharacterRange: nil)
+            let effectiveGlyphRange: NSRange
+            let visible = textView.visibleRect
+            if visible.width > 0 && visible.height > 0 {
+                let padY = max(320, visible.height * 0.75)
+                let queryInContainer = visible
+                    .insetBy(dx: 0, dy: -padY)
+                    .offsetBy(dx: -containerOrigin.x, dy: -containerOrigin.y)
+                layoutManager.ensureLayout(forBoundingRect: queryInContainer, in: textContainer)
+                let visibleGlyphs = layoutManager.glyphRange(forBoundingRectWithoutAdditionalLayout: queryInContainer, in: textContainer)
+                let clipped = NSIntersectionRange(fullGlyphRange, visibleGlyphs)
+                effectiveGlyphRange = clipped.length > 0 ? clipped : fullGlyphRange
+            } else {
+                layoutManager.ensureLayout(forGlyphRange: fullGlyphRange)
+                effectiveGlyphRange = fullGlyphRange
+            }
+            
+            if effectiveGlyphRange.length > 0 {
+                layoutManager.enumerateEnclosingRects(
+                    forGlyphRange: effectiveGlyphRange,
+                    withinSelectedGlyphRange: fullGlyphRange,
+                    in: textContainer
+                ) { rect, _ in
+                    var adjusted = rect.offsetBy(dx: containerOrigin.x, dy: containerOrigin.y)
+                    if isLinewise {
+                        let rawContainerW = textContainer.size.width
+                        let finiteContainerW = (rawContainerW.isFinite && rawContainerW > 0 && rawContainerW <= 100_000)
+                            ? rawContainerW
+                            : (textView.enclosingScrollView?.documentVisibleRect.width ?? textView.bounds.width)
+                        adjusted.size.width = max(adjusted.width, max(16, finiteContainerW - adjusted.minX))
+                    } else {
+                        adjusted.size.width = max(adjusted.width, 6)
+                    }
+                    adjusted = adjusted.insetBy(dx: -1, dy: 0)
+                    if adjusted.width > 0, adjusted.height > 0 {
+                        targetRects.append(adjusted)
+                    }
                 }
             }
         } else if let anchorLocation, let cursorRect = textView.vimCursorRect(at: anchorLocation) {
             targetRects.append(cursorRect.insetBy(dx: -1, dy: 0))
         }
         
-        if targetRects.count > Self.maxVisualBandLayers {
-            targetRects = Array(targetRects.prefix(Self.maxVisualBandLayers))
-        }
-        
-        let wasActive = self.isVimVisualActive
+        let previousStates = self.vimVisualStates
+        let wasActive = self.isVimVisualActive && !previousStates.isEmpty
         self.isVimVisualActive = !targetRects.isEmpty
         
-        // Keep anchor marker hidden so visual selection stays clean and borderless.
         if let anchorDot = self.vimVisualAnchorDotLayer {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
@@ -368,41 +415,74 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             CATransaction.commit()
         }
         
-        guard animated && textView.window != nil && !targetRects.isEmpty else {
+        let shouldAnimateHorizontally = animated
+            && wasActive
+            && !isContinuous
+            && !AnimationConstants.isReducedMotionEnabled
+            && textView.window != nil
+            && !targetRects.isEmpty
+        
+        guard shouldAnimateHorizontally else {
             self.vimVisualStates = targetRects.map(VisualBandSpringState.init(rect:))
             self.applyVisualBandLayersImmediate()
             return
         }
         
-        // Match existing band spring states by index; newly revealed lines bloom from previous band edge or anchor slit
+        let prevTopMidY = previousStates.first?.target.midY ?? .greatestFiniteMagnitude
+        var usedOldIndices = Set<Int>()
         var updatedStates: [VisualBandSpringState] = []
         updatedStates.reserveCapacity(targetRects.count)
-        let activeFallbackRect = activeLocation.flatMap { textView.vimCursorRect(at: $0) }
         
-        for (idx, target) in targetRects.enumerated() {
-            if idx < self.vimVisualStates.count {
-                var existing = self.vimVisualStates[idx]
-                existing.target = target
-                updatedStates.append(existing)
-            } else {
-                let seedRect: NSRect
-                if !wasActive {
-                    // Subtle bloom from slightly narrower center slit when first entering `v` / `V`
-                    seedRect = target.insetBy(dx: min(target.width * 0.35, 10), dy: 2)
-                } else if let prev = updatedStates.last?.currentRect ?? activeFallbackRect {
-                    let seedWidth = isLinewise ? max(24, target.width * 0.35) : max(6, min(14, target.width))
-                    seedRect = NSRect(x: target.minX, y: prev.midY - target.height * 0.4, width: seedWidth, height: target.height * 0.85)
-                } else {
-                    seedRect = target.insetBy(dx: min(target.width * 0.35, 10), dy: 2)
+        for target in targetRects {
+            let toleranceY = max(4.0, target.height * 0.45)
+            var bestIdx: Int?
+            var bestDeltaY = CGFloat.greatestFiniteMagnitude
+            for (oldIdx, oldState) in previousStates.enumerated() where !usedOldIndices.contains(oldIdx) {
+                let dy = abs(oldState.target.midY - target.midY)
+                if dy <= toleranceY && dy < bestDeltaY {
+                    bestDeltaY = dy
+                    bestIdx = oldIdx
                 }
-                var state = VisualBandSpringState(rect: seedRect)
-                state.target = target
-                updatedStates.append(state)
+            }
+            
+            if let bestIdx {
+                usedOldIndices.insert(bestIdx)
+                var matched = previousStates[bestIdx]
+                // Lock vertical coordinates strictly to the line fragment so adjacent rows never gap or bounce
+                matched.minY = target.minY
+                matched.maxY = target.maxY
+                matched.target = target
+                updatedStates.append(matched)
+            } else if isLinewise {
+                // Linewise (`V`) rows span full width cleanly on entry without partial-width horizontal wipe
+                updatedStates.append(VisualBandSpringState(rect: target))
+            } else {
+                // Newly added characterwise (`v`) row: lock Y immediately flush with neighbor rows,
+                // and do a short critically-damped horizontal sweep along the sweep direction.
+                let isSweepingUpward = target.midY < prevTopMidY - 1.0
+                let span = target.width
+                let seedRect: NSRect
+                if span <= 16 {
+                    seedRect = target
+                } else if isSweepingUpward {
+                    let seedWidth = max(16, span * 0.72)
+                    seedRect = NSRect(x: target.maxX - seedWidth, y: target.minY, width: seedWidth, height: target.height)
+                } else {
+                    let seedWidth = max(16, span * 0.72)
+                    seedRect = NSRect(x: target.minX, y: target.minY, width: seedWidth, height: target.height)
+                }
+                var fresh = VisualBandSpringState(rect: seedRect)
+                fresh.target = target
+                updatedStates.append(fresh)
             }
         }
         
         self.vimVisualStates = updatedStates
-        self.startOrResumeDisplayLink(for: textView)
+        // Commit initial path immediately in the same CATransaction as scroll/selection so scrolling never lags 1 frame
+        self.applyVisualBandLayersImmediate()
+        if self.hasUnsettledVisualBands {
+            self.startOrResumeDisplayLink(for: textView)
+        }
     }
     
     
@@ -1483,7 +1563,9 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
             )
             self.trailRects = Array(repeating: visualRect, count: Self.trailLayerCount)
             self.currentTargetRect = visualRect
-            self.vimDisplayLink?.isPaused = true
+            if !self.hasUnsettledVisualBands {
+                self.vimDisplayLink?.isPaused = true
+            }
             
             CATransaction.begin()
             CATransaction.setDisableActions(true)
@@ -1778,33 +1860,27 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
     private func stepVisualBands(dt: CGFloat) -> Bool {
         
         var allSettled = true
-        let omega: CGFloat = 36.0
-        let zeta: CGFloat = 0.78
+        // Critically damped (`zeta = 1.0`, zero overshoot) fast horizontal glide; Y stays locked to true row bounds.
+        let omega: CGFloat = 58.0
         
         for idx in self.vimVisualStates.indices {
             var s = self.vimVisualStates[idx]
             let t = s.target
-            let (nMinX, vMinX) = Self.stepUnderdampedSpring(pos: s.minX, vel: s.velMinX, target: t.minX, omega: omega, zeta: zeta, dt: dt)
-            let (nMaxX, vMaxX) = Self.stepUnderdampedSpring(pos: s.maxX, vel: s.velMaxX, target: t.maxX, omega: omega, zeta: zeta, dt: dt)
-            let (nMinY, vMinY) = Self.stepUnderdampedSpring(pos: s.minY, vel: s.velMinY, target: t.minY, omega: 40.0, zeta: 0.84, dt: dt)
-            let (nMaxY, vMaxY) = Self.stepUnderdampedSpring(pos: s.maxY, vel: s.velMaxY, target: t.maxY, omega: 40.0, zeta: 0.84, dt: dt)
+            s.minY = t.minY
+            s.maxY = t.maxY
             
-            let err = max(
-                max(abs(nMinX - t.minX), abs(nMaxX - t.maxX)),
-                max(abs(nMinY - t.minY), abs(nMaxY - t.maxY))
-            )
-            let vel = max(max(abs(vMinX), abs(vMaxX)), max(abs(vMinY), abs(vMaxY)))
+            let (nMinX, vMinX) = Self.stepCriticallyDampedSpring(pos: s.minX, vel: s.velMinX, target: t.minX, omega: omega, dt: dt)
+            let (nMaxX, vMaxX) = Self.stepCriticallyDampedSpring(pos: s.maxX, vel: s.velMaxX, target: t.maxX, omega: omega, dt: dt)
             
-            if err < 0.14 && vel < 2.0 {
+            let err = max(abs(nMinX - t.minX), abs(nMaxX - t.maxX))
+            let vel = max(abs(vMinX), abs(vMaxX))
+            
+            if err < 0.15 && vel < 1.5 {
                 s.minX = t.minX; s.velMinX = 0
                 s.maxX = t.maxX; s.velMaxX = 0
-                s.minY = t.minY; s.velMinY = 0
-                s.maxY = t.maxY; s.velMaxY = 0
             } else {
                 s.minX = nMinX; s.velMinX = vMinX
                 s.maxX = nMaxX; s.velMaxX = vMaxX
-                s.minY = nMinY; s.velMinY = vMinY
-                s.maxY = nMaxY; s.velMaxY = vMaxY
                 allSettled = false
             }
             self.vimVisualStates[idx] = s
@@ -1812,6 +1888,22 @@ enum TypingEffectPreset: String, CaseIterable, Identifiable, Sendable {
         
         self.applyVisualBandLayersImmediate()
         return allSettled
+    }
+    
+    
+    private static func stepCriticallyDampedSpring(
+        pos: CGFloat,
+        vel: CGFloat,
+        target: CGFloat,
+        omega: CGFloat,
+        dt: CGFloat
+    ) -> (CGFloat, CGFloat) {
+        let x0 = pos - target
+        let decay = exp(-omega * dt)
+        let c2 = vel + omega * x0
+        let newX = target + (x0 + c2 * dt) * decay
+        let newV = (vel - c2 * omega * dt) * decay
+        return (newX, newV)
     }
     
     

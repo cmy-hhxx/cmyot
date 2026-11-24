@@ -35,9 +35,12 @@ struct DashboardNewsCenterView: View {
     let onClose: () -> Void
     var onOpenExcerptDocument: ((String, String) -> Void)?
     
-    @State private var selectedCategory: NewsFeedCategory = .all
-    @State private var searchText: String = ""
+    @State private var selectedCategory: NewsFeedCategory
+    @State private var searchText: String
     @State private var selectedItemID: String?
+    @State private var gridPage: Int = 1
+    @State private var pageTurnDirection: Int = 1
+    @FocusState private var isSearchFieldFocused: Bool
     @State private var reasoningEffort: NewsReasoningEffort = .balanced
     @State private var availableModels: [NewsChatModelOption] = []
     @State private var cachedModelOptions: [AgentModelOption] = []
@@ -48,7 +51,29 @@ struct DashboardNewsCenterView: View {
     @State private var dragStartChatFraction: CGFloat?
     @State private var isSplitDividerHovering: Bool = false
     @State private var lastAutoScrollAt: Date = .distantPast
-    @Namespace private var topCategoryNamespace
+    
+    init(
+        newsService: AIHotNewsService,
+        tokens: StudioColorTokens,
+        initialSelectedID: String?,
+        isEmbeddedInPane: Bool = false,
+        initialCategory: NewsFeedCategory? = nil,
+        initialSearchQuery: String? = nil,
+        onClose: @escaping () -> Void,
+        onOpenExcerptDocument: ((String, String) -> Void)? = nil
+    ) {
+        self.newsService = newsService
+        self.tokens = tokens
+        self.initialSelectedID = initialSelectedID
+        self.isEmbeddedInPane = isEmbeddedInPane
+        self.initialCategory = initialCategory
+        self.initialSearchQuery = initialSearchQuery
+        self.onClose = onClose
+        self.onOpenExcerptDocument = onOpenExcerptDocument
+        self._selectedCategory = State(initialValue: initialCategory ?? newsService.selectedCategory)
+        self._searchText = State(initialValue: initialSearchQuery ?? "")
+        self._selectedItemID = State(initialValue: initialSelectedID)
+    }
     
     private let bodyFontSize: CGFloat = 15.5
     
@@ -105,31 +130,44 @@ struct DashboardNewsCenterView: View {
             
             if let item = self.selectedItem {
                 self.detailAndChatStage(for: item)
-                    .transition(DashMotion.pageTransition)
+                    .transition(.opacity)
             } else {
                 self.xiaohongshuCardGridStage
-                    .transition(DashMotion.pageTransition)
+                    .transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(self.tokens.canvasTop)
         .onAppear {
-            self.selectedCategory = self.initialCategory ?? self.newsService.selectedCategory
-            if let initialSearchQuery, !initialSearchQuery.isEmpty {
-                self.searchText = initialSearchQuery
-            }
-            self.selectedItemID = self.initialSelectedID
             self.reloadAvailableModels()
             self.syncSelectionSideEffects()
-            self.newsService.preloadFeedResources(limit: 12)
             Task {
                 await self.newsService.refreshIfNeeded()
             }
+        }
+        .onChange(of: self.selectedCategory) { _, _ in
+            self.gridPage = 1
+        }
+        .onChange(of: self.searchText) { _, _ in
+            self.gridPage = 1
         }
         .onChange(of: self.selectedItemID) { _, _ in
             self.isModelPopoverOpen = false
             self.reloadAvailableModels()
             self.syncSelectionSideEffects()
+        }
+        .onKeyPress(.leftArrow) {
+            guard self.selectedItemID == nil, !self.isSearchFieldFocused else { return .ignored }
+            if self.gridPage > 1 {
+                self.turnGridPage(to: self.gridPage - 1)
+                return .handled
+            }
+            return .ignored
+        }
+        .onKeyPress(.rightArrow) {
+            guard self.selectedItemID == nil, !self.isSearchFieldFocused else { return .ignored }
+            self.turnGridPageByDelta(1)
+            return .handled
         }
         .onKeyPress(.escape) {
             if self.isModelPopoverOpen {
@@ -157,7 +195,7 @@ struct DashboardNewsCenterView: View {
             if !self.isEmbeddedInPane || self.selectedItemID != nil {
                 Button {
                     if self.selectedItemID != nil {
-                        withAnimation(DashMotion.travel) {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
                             self.selectedItemID = nil
                         }
                     } else {
@@ -191,23 +229,18 @@ struct DashboardNewsCenterView: View {
                     ForEach(NewsFeedCategory.allCases) { category in
                         let isActive = (self.selectedCategory == category)
                         Button {
-                            withAnimation(DashMotion.travel) {
-                                self.selectedCategory = category
-                                self.newsService.selectedCategory = category
-                            }
+                            self.selectedCategory = category
+                            self.newsService.selectedCategory = category
                         } label: {
                             Text(category == .xSocial ? "X" : category.label)
                                 .font(.system(size: 12, weight: isActive ? .semibold : .regular))
                                 .foregroundStyle(isActive ? self.tokens.onAccentInk : self.secondaryInk)
                                 .padding(.horizontal, 10)
                                 .frame(height: 24)
-                                .background {
-                                    if isActive {
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(self.tokens.accent)
-                                            .matchedGeometryEffect(id: "newsTopCat", in: self.topCategoryNamespace)
-                                    }
-                                }
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(isActive ? self.tokens.accent : Color.clear)
+                                )
                                 .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         }
                         .buttonStyle(.plain)
@@ -239,6 +272,7 @@ struct DashboardNewsCenterView: View {
                         .textFieldStyle(.plain)
                         .font(.system(size: 12.5))
                         .foregroundStyle(self.tokens.primaryInk)
+                        .focused(self.$isSearchFieldFocused)
                         .frame(minWidth: 120, maxWidth: 190)
                     if !self.searchText.isEmpty {
                         Button {
@@ -354,53 +388,111 @@ struct DashboardNewsCenterView: View {
     }
     
     
-    // MARK: - Harmonious Xiaohongshu Waterfall Feed
+    // MARK: - Single-Screen Paginated Editorial Feed (2 Rows per Page · Zero Endless Scrolling)
     
-    private struct WaterfallColumnItem: Identifiable {
-        let item: AIHotNewsItem
-        let coverHeight: CGFloat
-        var id: String { self.item.id }
+    private static let pageTurnCurve = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)
+    private static let cardTextFooterHeight: CGFloat = 82
+    
+    fileprivate static func stableSeed(for id: String) -> UInt64 {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in id.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return hash
     }
     
-    private func waterfallCoverHeight(for item: AIHotNewsItem, cover: NSImage?, cardWidth: CGFloat) -> CGFloat {
-        if let cover, cover.size.width > 0, cover.size.height > 0 {
-            let rawRatio = cover.size.height / cover.size.width
-            let clamped = min(1.33, max(0.85, rawRatio))
-            return (cardWidth * clamped).rounded()
-        }
-        let seed = abs(item.id.hashValue)
-        let ratio = 1.16 + Double(seed % 13) * 0.01
-        return (cardWidth * ratio).rounded()
+    static func waterfallCoverHeight(for item: AIHotNewsItem, cardWidth: CGFloat) -> CGFloat {
+        let bucket = Int(Self.stableSeed(for: item.id) % 5)
+        let ratios: [CGFloat] = [0.96, 1.02, 1.08, 1.14, 1.04]
+        return (cardWidth * ratios[bucket]).rounded()
     }
     
-    private func distributedWaterfallColumns(items: [AIHotNewsItem], colCount: Int, cardWidth: CGFloat) -> [[WaterfallColumnItem]] {
-        var columns = Array(repeating: [WaterfallColumnItem](), count: max(1, colCount))
-        var heights = Array(repeating: CGFloat(0), count: max(1, colCount))
-        
-        for item in items {
-            let cover = self.newsService.coverImage(for: item)
-            let coverH = self.waterfallCoverHeight(for: item, cover: cover, cardWidth: cardWidth)
-            let textEstimate: CGFloat = item.title.count > 16 ? 78 : 60
-            let shortestCol = heights.enumerated().min(by: { $0.element < $1.element })?.offset ?? 0
-            columns[shortestCol].append(WaterfallColumnItem(item: item, coverHeight: coverH))
-            heights[shortestCol] += coverH + textEstimate + 16
+    static func columnsForWidth(_ innerW: CGFloat) -> Int {
+        if innerW >= 1220 { return 5 }
+        if innerW >= 880 { return 4 }
+        if innerW >= 600 { return 3 }
+        return 2
+    }
+    
+    private func turnGridPage(to targetPage: Int, totalPages: Int? = nil) {
+        let clamped = totalPages.map { min(max(1, targetPage), $0) } ?? max(1, targetPage)
+        guard clamped != self.gridPage else { return }
+        self.pageTurnDirection = clamped > self.gridPage ? 1 : -1
+        withAnimation(Self.pageTurnCurve) {
+            self.gridPage = clamped
         }
-        return columns
+    }
+    
+    private func turnGridPageByDelta(_ delta: Int) {
+        let target = self.gridPage + delta
+        guard target >= 1 else { return }
+        self.pageTurnDirection = delta >= 0 ? 1 : -1
+        withAnimation(Self.pageTurnCurve) {
+            self.gridPage = target
+        }
+    }
+    
+    private func prefetchAdjacentPageCovers(items: [AIHotNewsItem], safePage: Int, pageSize: Int) {
+        guard !items.isEmpty, pageSize > 0 else { return }
+        let start = max(0, (safePage - 1) * pageSize)
+        let end = min(items.count, start + pageSize * 2)
+        guard start < end else { return }
+        for item in items[start..<end] {
+            self.newsService.requestCoverLoad(for: item)
+        }
+    }
+    
+    private static func visiblePageNumbers(current: Int, total: Int) -> [Int] {
+        guard total > 1 else { return [1] }
+        if total <= 7 {
+            return Array(1...total)
+        }
+        let windowRadius = 2
+        var lower = max(2, current - windowRadius)
+        var upper = min(total - 1, current + windowRadius)
+        if current <= 3 {
+            upper = min(total - 1, 5)
+        } else if current >= total - 2 {
+            lower = max(2, total - 4)
+        }
+        var result: [Int] = [1]
+        if lower > 2 { result.append(-1) }
+        result.append(contentsOf: lower...upper)
+        if upper < total - 1 { result.append(-2) }
+        result.append(total)
+        return result
     }
     
     private var xiaohongshuCardGridStage: some View {
         let items = self.displayedItems
         return GeometryReader { geo in
-            let innerW = min(1260, max(320, geo.size.width - 48))
-            let colCount: Int = {
-                if innerW >= 1180 { return 5 }
-                if innerW >= 900 { return 4 }
-                if innerW >= 620 { return 3 }
-                return 2
-            }()
+            let innerW = min(1320, max(320, geo.size.width - 48))
+            let colCount = Self.columnsForWidth(innerW)
+            let pageSize = colCount * 2
+            let totalPages = max(1, Int(ceil(Double(items.count) / Double(pageSize))))
+            let safePage = min(max(1, self.gridPage), totalPages)
+            let startIdx = (safePage - 1) * pageSize
+            let endIdx = min(items.count, startIdx + pageSize)
+            let pageItems: [AIHotNewsItem] = (startIdx < endIdx) ? Array(items[startIdx..<endIdx]) : []
+            
             let colSpacing: CGFloat = 16
+            let rowSpacing: CGFloat = 16
+            let topPad: CGFloat = 18
+            let bottomPad: CGFloat = 10
+            let pagerH: CGFloat = totalPages > 1 ? 52 : 12
             let cardWidth = max(120, (innerW - CGFloat(colCount - 1) * colSpacing) / CGFloat(colCount))
-            let columns = self.distributedWaterfallColumns(items: items, colCount: colCount, cardWidth: cardWidth)
+            
+            // Fit 2 rows cleanly inside the viewport height so fullscreen never forces endless scrolling
+            let availTwoRowsH = geo.size.height - pagerH - topPad - bottomPad - rowSpacing
+            let idealCardH = floor(availTwoRowsH * 0.5)
+            let maxRatioCoverH = (cardWidth * 0.86).rounded()
+            let coverHeight = min(max(132, maxRatioCoverH), max(108, idealCardH - Self.cardTextFooterHeight))
+            let row1 = Array(pageItems.prefix(colCount))
+            let row2 = pageItems.count > colCount ? Array(pageItems.dropFirst(colCount)) : []
+            let totalGridH = CGFloat(row2.isEmpty ? 1 : 2) * (coverHeight + Self.cardTextFooterHeight)
+                + (row2.isEmpty ? 0 : rowSpacing)
+            let needsCompactScroll = totalGridH > availTwoRowsH + 12
             
             if items.isEmpty {
                 VStack(spacing: 10) {
@@ -412,38 +504,230 @@ struct DashboardNewsCenterView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView(.vertical, showsIndicators: true) {
-                    HStack(alignment: .top, spacing: colSpacing) {
-                        ForEach(0..<colCount, id: \.self) { colIdx in
-                            LazyVStack(alignment: .leading, spacing: colSpacing) {
-                                ForEach(columns[colIdx]) { entry in
-                                    XiaohongshuNewsCard(
-                                        item: entry.item,
-                                        cover: self.newsService.coverImage(for: entry.item),
-                                        coverHeight: entry.coverHeight,
-                                        isRead: self.newsService.isRead(entry.item),
-                                        hasAIBrief: !(self.newsService.aiBriefs[entry.item.id] ?? "").isEmpty,
-                                        tokens: self.tokens,
-                                        secondaryInk: self.secondaryInk,
-                                        mutedInk: self.mutedInk
-                                    ) {
-                                        withAnimation(DashMotion.travel) {
-                                            self.selectedItemID = entry.item.id
-                                        }
-                                    }
-                                    .equatable()
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .top)
+                VStack(spacing: 0) {
+                    let pageGrid = VStack(alignment: .leading, spacing: rowSpacing) {
+                        self.paginatedCardRow(
+                            rowItems: row1,
+                            colCount: colCount,
+                            colSpacing: colSpacing,
+                            cardWidth: cardWidth,
+                            coverHeight: coverHeight
+                        )
+                        if !row2.isEmpty {
+                            self.paginatedCardRow(
+                                rowItems: row2,
+                                colCount: colCount,
+                                colSpacing: colSpacing,
+                                cardWidth: cardWidth,
+                                coverHeight: coverHeight
+                            )
                         }
                     }
-                    .frame(width: innerW, alignment: .top)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 20)
-                    .frame(maxWidth: .infinity, alignment: .center)
+                    .frame(width: innerW, alignment: .topLeading)
+                    .id("news-page-\(self.selectedCategory.rawValue)-\(safePage)")
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.combined(with: .offset(x: CGFloat(self.pageTurnDirection) * 20)),
+                            removal: .opacity.combined(with: .offset(x: CGFloat(-self.pageTurnDirection) * 16))
+                        )
+                    )
+                    
+                    ZStack {
+                        if needsCompactScroll {
+                            ScrollView(.vertical, showsIndicators: true) {
+                                pageGrid
+                                    .padding(.horizontal, 24)
+                                    .padding(.top, topPad)
+                                    .padding(.bottom, bottomPad)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                            }
+                        } else {
+                            pageGrid
+                                .padding(.horizontal, 24)
+                                .padding(.top, topPad)
+                                .padding(.bottom, bottomPad)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                            
+                            if totalPages > 1 {
+                                NewsGridWheelPagerRepresentable { delta in
+                                    let next = safePage + delta
+                                    guard next >= 1 && next <= totalPages else { return }
+                                    self.turnGridPage(to: next, totalPages: totalPages)
+                                }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                    
+                    if totalPages > 1 {
+                        self.editorialPaginationBar(
+                            safePage: safePage,
+                            totalPages: totalPages,
+                            totalItems: items.count,
+                            innerWidth: innerW
+                        )
+                        .frame(height: pagerH)
+                    }
+                }
+                .onAppear {
+                    if self.gridPage != safePage {
+                        self.gridPage = safePage
+                    }
+                    self.prefetchAdjacentPageCovers(items: items, safePage: safePage, pageSize: pageSize)
+                }
+                .onChange(of: safePage) { _, newPage in
+                    if self.gridPage > totalPages {
+                        self.gridPage = totalPages
+                    }
+                    self.prefetchAdjacentPageCovers(items: items, safePage: newPage, pageSize: pageSize)
+                }
+                .onChange(of: items.count) { _, _ in
+                    if self.gridPage > totalPages {
+                        self.gridPage = totalPages
+                    }
+                    self.prefetchAdjacentPageCovers(items: items, safePage: min(self.gridPage, totalPages), pageSize: pageSize)
                 }
             }
         }
+    }
+    
+    @ViewBuilder
+    private func paginatedCardRow(
+        rowItems: [AIHotNewsItem],
+        colCount: Int,
+        colSpacing: CGFloat,
+        cardWidth: CGFloat,
+        coverHeight: CGFloat
+    ) -> some View {
+        HStack(alignment: .top, spacing: colSpacing) {
+            ForEach(rowItems) { item in
+                XiaohongshuNewsCard(
+                    item: item,
+                    cover: self.newsService.cachedCoverImage(for: item),
+                    coverHeight: coverHeight,
+                    isRead: self.newsService.isRead(item),
+                    hasAIBrief: !(self.newsService.aiBriefs[item.id] ?? "").isEmpty,
+                    tokens: self.tokens,
+                    secondaryInk: self.secondaryInk,
+                    mutedInk: self.mutedInk,
+                    onAppearLoadCover: {
+                        self.newsService.requestCoverLoad(for: item)
+                    }
+                ) {
+                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                        self.selectedItemID = item.id
+                    }
+                }
+                .equatable()
+                .frame(width: cardWidth)
+            }
+            if rowItems.count < colCount {
+                ForEach(0..<(colCount - rowItems.count), id: \.self) { _ in
+                    Color.clear
+                        .frame(width: cardWidth, height: coverHeight + Self.cardTextFooterHeight)
+                }
+            }
+        }
+    }
+    
+    private func editorialPaginationBar(
+        safePage: Int,
+        totalPages: Int,
+        totalItems: Int,
+        innerWidth: CGFloat
+    ) -> some View {
+        let pages = Self.visiblePageNumbers(current: safePage, total: totalPages)
+        
+        return HStack(spacing: 12) {
+            Text(AppLanguage.text("共 \(totalItems) 篇", en: "\(totalItems) items"))
+                .font(.system(size: 11.5, weight: .medium, design: .monospaced).monospacedDigit())
+                .foregroundStyle(self.mutedInk)
+            
+            Spacer(minLength: 8)
+            
+            HStack(spacing: 5) {
+                Button {
+                    self.turnGridPage(to: safePage - 1, totalPages: totalPages)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(AppLanguage.text("上一页", en: "Prev"))
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .foregroundStyle(safePage > 1 ? self.tokens.primaryInk : self.mutedInk.opacity(0.38))
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(self.tokens.hairline, lineWidth: 0.8))
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(safePage <= 1)
+                .pointerStyle(safePage > 1 ? .link : .default)
+                
+                ForEach(pages, id: \.self) { p in
+                    if p < 0 {
+                        Text("…")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(self.mutedInk)
+                            .frame(width: 20, height: 28)
+                    } else {
+                        let isCurrent = (p == safePage)
+                        Button {
+                            self.turnGridPage(to: p, totalPages: totalPages)
+                        } label: {
+                            Text("\(p)")
+                                .font(.system(size: 11.5, weight: isCurrent ? .semibold : .medium, design: .monospaced).monospacedDigit())
+                                .foregroundStyle(isCurrent ? self.tokens.onAccentInk : self.secondaryInk)
+                                .frame(minWidth: 28, minHeight: 28)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(isCurrent ? self.tokens.accent : self.tokens.card)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .strokeBorder(isCurrent ? Color.clear : self.tokens.hairline, lineWidth: 0.8)
+                                )
+                                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                    }
+                }
+                
+                Button {
+                    self.turnGridPage(to: safePage + 1, totalPages: totalPages)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(AppLanguage.text("下一页", en: "Next"))
+                            .font(.system(size: 11.5, weight: .medium))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundStyle(safePage < totalPages ? self.tokens.primaryInk : self.mutedInk.opacity(0.38))
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(self.tokens.hairline, lineWidth: 0.8))
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(safePage >= totalPages)
+                .pointerStyle(safePage < totalPages ? .link : .default)
+            }
+            
+            Spacer(minLength: 8)
+            
+            Text(AppLanguage.text("滚轮 / ← → 翻页", en: "Swipe / ← →"))
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(self.mutedInk.opacity(0.75))
+        }
+        .frame(width: innerWidth)
+        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity)
     }
     
     
@@ -1778,6 +2062,7 @@ private struct XiaohongshuNewsCard: View, Equatable {
     let tokens: StudioColorTokens
     let secondaryInk: Color
     let mutedInk: Color
+    let onAppearLoadCover: () -> Void
     let onTap: () -> Void
     
     @State private var isHovered = false
@@ -1794,8 +2079,8 @@ private struct XiaohongshuNewsCard: View, Equatable {
     
     
     private var accentColor: Color {
-        let seed = abs(self.item.id.hashValue)
-        return switch seed % 4 {
+        let seed = Int(DashboardNewsCenterView.stableSeed(for: self.item.id) % 4)
+        return switch seed {
             case 0: self.tokens.accent
             case 1: self.tokens.secondaryAccent
             case 2: Color(red: 0.212, green: 0.478, blue: 0.612)
@@ -1856,7 +2141,7 @@ private struct XiaohongshuNewsCard: View, Equatable {
                 .frame(maxWidth: .infinity)
                 .clipped()
                 
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 0) {
                     Text(self.item.title)
                         .font(.system(size: 13.5, weight: self.isRead ? .medium : .semibold))
                         .foregroundStyle(self.isRead ? self.secondaryInk : self.tokens.primaryInk)
@@ -1864,6 +2149,8 @@ private struct XiaohongshuNewsCard: View, Equatable {
                         .lineSpacing(3)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
+                    
+                    Spacer(minLength: 4)
                     
                     HStack(spacing: 6) {
                         ZStack {
@@ -1891,22 +2178,24 @@ private struct XiaohongshuNewsCard: View, Equatable {
                 }
                 .padding(.horizontal, 11)
                 .padding(.vertical, 10)
+                .frame(height: 82, alignment: .topLeading)
             }
             .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .strokeBorder(
-                        self.isHovered ? self.tokens.accent.opacity(0.45) : self.tokens.hairline,
-                        lineWidth: self.isHovered ? 1.0 : 0.8
+                        self.isHovered ? self.tokens.accent.opacity(0.48) : self.tokens.hairline,
+                        lineWidth: 1.0
                     )
             )
             .shadow(color: self.tokens.cardShadow, radius: 4, x: 0, y: 2)
-            .offset(y: self.isHovered ? -2 : 0)
-            .animation(DashMotion.quick, value: self.isHovered)
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)
+        .onAppear {
+            self.onAppearLoadCover()
+        }
         .onHover { hovering in
             if hovering != self.isHovered {
                 self.isHovered = hovering
@@ -1945,5 +2234,109 @@ private struct XiaohongshuNewsCard: View, Equatable {
             .padding(.horizontal, 13)
             .padding(.bottom, 10)
         }
+    }
+}
+
+
+// MARK: - Gesture-Locked Single-Page Trackpad / Mouse-Wheel Pager
+
+/// Non-hit-testing NSView that turns **strictly at most 1 page per trackpad swipe or discrete wheel step**
+/// (ignoring post-turn trackpad momentum tails so one flick never overshoots multiple pages).
+private final class NewsGridWheelPagerMonitorView: NSView {
+    
+    var onPageDelta: ((Int) -> Void)?
+    private nonisolated(unsafe) var eventMonitor: Any?
+    private var accumulatedDelta: CGFloat = 0
+    private var consumedInCurrentGesture = false
+    private var lastDiscreteTurnTime: TimeInterval = 0
+    
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+    
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        self.teardownMonitor()
+        guard self.window != nil else { return }
+        
+        self.eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel]) { [weak self] event in
+            guard let self,
+                  let window = self.window,
+                  event.window === window,
+                  !self.isHiddenOrHasHiddenAncestor
+            else { return event }
+            
+            let localPt = self.convert(event.locationInWindow, from: nil)
+            guard self.bounds.contains(localPt) else { return event }
+            
+            // Trackpad gesture lifecycle: allow at most 1 page turn per physical two-finger touch
+            if event.hasPreciseScrollingDeltas {
+                if event.phase == .began {
+                    self.accumulatedDelta = 0
+                    self.consumedInCurrentGesture = false
+                }
+                if !event.momentumPhase.isEmpty {
+                    return nil
+                }
+                if self.consumedInCurrentGesture {
+                    return nil
+                }
+                let dominant = abs(event.scrollingDeltaX) >= abs(event.scrollingDeltaY)
+                    ? event.scrollingDeltaX
+                    : event.scrollingDeltaY
+                self.accumulatedDelta += dominant
+                let threshold: CGFloat = 38.0
+                if abs(self.accumulatedDelta) >= threshold {
+                    let pageStep = self.accumulatedDelta < 0 ? 1 : -1
+                    self.consumedInCurrentGesture = true
+                    self.accumulatedDelta = 0
+                    self.onPageDelta?(pageStep)
+                }
+                if event.phase == .ended || event.phase == .cancelled {
+                    self.accumulatedDelta = 0
+                }
+                return nil
+            } else {
+                // Discrete notched mouse wheel
+                let now = ProcessInfo.processInfo.systemUptime
+                guard now - self.lastDiscreteTurnTime >= 0.24 else { return nil }
+                let raw = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
+                    ? event.scrollingDeltaY
+                    : event.scrollingDeltaX
+                guard abs(raw) > 0.05 else { return event }
+                self.lastDiscreteTurnTime = now
+                self.onPageDelta?(raw < 0 ? 1 : -1)
+                return nil
+            }
+        }
+    }
+    
+    private func teardownMonitor() {
+        if let monitor = self.eventMonitor {
+            NSEvent.removeMonitor(monitor)
+            self.eventMonitor = nil
+        }
+    }
+    
+    deinit {
+        if let monitor = self.eventMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+}
+
+
+private struct NewsGridWheelPagerRepresentable: NSViewRepresentable {
+    
+    let onPageDelta: (Int) -> Void
+    
+    func makeNSView(context: Context) -> NewsGridWheelPagerMonitorView {
+        let v = NewsGridWheelPagerMonitorView()
+        v.onPageDelta = self.onPageDelta
+        return v
+    }
+    
+    func updateNSView(_ nsView: NewsGridWheelPagerMonitorView, context: Context) {
+        nsView.onPageDelta = self.onPageDelta
     }
 }

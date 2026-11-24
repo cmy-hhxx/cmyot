@@ -260,6 +260,79 @@ struct Round18FeatureTests {
     }
     
     
+    @Test func vimVisualUpwardAndDownwardCharacterwiseMovesKeepAnchorRowStationary() throws {
+        let previousVimMode = UserDefaults.standard[.vimMode]
+        let previousMode = VimState.shared.mode
+        let previousActive = VimState.shared.visualActiveLocation
+        let previousOwner = VimState.shared.visualOwnerID
+        defer {
+            UserDefaults.standard[.vimMode] = previousVimMode
+            VimState.shared.mode = previousMode
+            VimState.shared.visualActiveLocation = previousActive
+            VimState.shared.visualOwnerID = previousOwner
+        }
+        
+        UserDefaults.standard[.vimMode] = true
+        VimState.shared.mode = .normal
+        VimState.shared.visualActiveLocation = nil
+        VimState.shared.visualOwnerID = nil
+        
+        let content = [
+            "Line 01: short",
+            "Line 02: medium length line here",
+            "Line 03: very long line for horizontal span verification",
+            "Line 04: anchor line where visual selection starts",
+            "Line 05: trailing line below anchor",
+        ].joined(separator: "\n")
+        
+        let (window, _, textView) = try Self.makeScrollableEditor(content: content, viewportSize: NSSize(width: 560, height: 240))
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        
+        let nsContent = content as NSString
+        let line4Start = nsContent.range(of: "Line 04:").location + 9
+        textView.setSelectedRange(NSRange(location: line4Start, length: 0))
+        
+        let engine = textView.vimEngine
+        #expect(engine.handleKeyDown(try Self.makeKeyEvent(char: "v", keyCode: 9, timestamp: 1.0)))
+        #expect(VimState.shared.mode == .visual)
+        
+        let initialBandY = textView.funEffects.activeVisualBandRects.last?.minY
+        
+        // Move UP 2 lines with `k` (`Line 04` -> `Line 03` -> `Line 02`)
+        #expect(engine.handleKeyDown(try Self.makeKeyEvent(char: "k", keyCode: 40, timestamp: 1.3)))
+        let bandsAfterFirstK = textView.funEffects.activeVisualBandRects
+        #expect(engine.handleKeyDown(try Self.makeKeyEvent(char: "k", keyCode: 40, timestamp: 1.6)))
+        let bandsAfterSecondK = textView.funEffects.activeVisualBandRects
+        
+        if textView.funEffects.ownsVimCursorDrawing, let initialBandY {
+            #expect(bandsAfterFirstK.count == 2)
+            #expect(bandsAfterSecondK.count == 3)
+            // Bottom anchor row (Line 04) must remain locked to its exact vertical row without jumping up!
+            #expect(abs((bandsAfterFirstK.last?.minY ?? -999) - initialBandY) < 0.5)
+            #expect(abs((bandsAfterSecondK.last?.minY ?? -999) - initialBandY) < 0.5)
+            // Adjacent multi-line bands must be vertically flush (zero gap between rows on Frame 0)
+            #expect(abs(bandsAfterSecondK[1].minY - bandsAfterSecondK[0].maxY) <= 1.0)
+            #expect(abs(bandsAfterSecondK[2].minY - bandsAfterSecondK[1].maxY) <= 1.0)
+            // Native sharp selection background must stay suppressed during GPU visual overlay
+            #expect(textView.selectedTextAttributes[.backgroundColor] as? NSColor == .clear)
+        }
+        
+        // Move DOWN 1 line with `j` (`Line 02` -> `Line 03`) and exit cleanly with `Esc`
+        #expect(engine.handleKeyDown(try Self.makeKeyEvent(char: "j", keyCode: 38, timestamp: 1.9)))
+        if textView.funEffects.ownsVimCursorDrawing, let initialBandY {
+            let bandsAfterJ = textView.funEffects.activeVisualBandRects
+            #expect(bandsAfterJ.count == 2)
+            #expect(abs((bandsAfterJ.last?.minY ?? -999) - initialBandY) < 0.5)
+        }
+        
+        #expect(engine.handleKeyDown(try Self.makeKeyEvent(char: "\u{1b}", keyCode: 53, timestamp: 2.2)))
+        #expect(VimState.shared.mode == .normal)
+        #expect(textView.selectedRange().length == 0)
+        #expect(textView.funEffects.activeVisualBandRects.isEmpty)
+    }
+    
+    
     // MARK: 4. Vim Cursor Jump & Stale State Prevention
     
     @Test func vimCursorPreventsErraticJumpsFromStaleCountsMouseClicksAndRapidTaps() throws {

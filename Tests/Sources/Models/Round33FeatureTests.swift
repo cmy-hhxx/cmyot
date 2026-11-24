@@ -1449,4 +1449,411 @@ struct Round33FeatureTests {
         #expect(edges1 == edges2)
         #expect(!edges1.isEmpty)
     }
+    
+    
+    // MARK: 15. Multi-Subscription Gateway, 3:4 Portrait Bots, Structured Star-Map & Stable NEWS Waterfall
+    
+    @Test func collapsibleMultiSubscriptionGatewayAndPortraitBotCardsRenderCleanly() throws {
+        #expect(AIProvider.starterSubscriptions == [.openCodeGo, .deepSeek])
+        #expect(AIProvider.openCodeGo.subscriptionTitle == "OpenCode Go")
+        #expect(AIProvider.deepSeek.subscriptionTitle == "DeepSeek 官方 API")
+        #expect(AIProvider.openAI.subscriptionTitle == "OpenAI 官方 API")
+        #expect(AIProvider.anthropic.subscriptionTitle == "Anthropic 官方 API")
+        
+        // Verify vertical 9:16 character illustration crops isotropically into ~3:4 portrait card without squashing
+        let tallSource = NSImage(size: NSSize(width: 90, height: 160))
+        tallSource.lockFocus()
+        NSColor.systemRed.setFill()
+        NSRect(x: 0, y: 120, width: 90, height: 40).fill() // Top head band in AppKit bottom-left coords
+        NSColor.systemBlue.setFill()
+        NSRect(x: 0, y: 0, width: 90, height: 120).fill()
+        tallSource.unlockFocus()
+        
+        let portrait = try #require(
+            AIGijinkaImageLoader.renderPortraitBitmap(
+                from: tallSource,
+                cropAnchor: .top,
+                pointWidth: 122,
+                pointHeight: 166
+            )
+        )
+        #expect(portrait.size == NSSize(width: 122, height: 166))
+        #expect(portrait.representations.first is NSBitmapImageRep)
+        
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot-bot-portrait-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let savedProfiles = AIEndpointStore.profiles
+        let savedActiveID = AIEndpointStore.activeID
+        if savedProfiles.isEmpty {
+            let seeded = AIProvider.openCodeGo.makeProfile(customName: AIProvider.openCodeGo.subscriptionTitle)
+            AIEndpointStore.profiles = [seeded]
+            AIEndpointStore.activeID = seeded.id
+        }
+        defer {
+            AIEndpointStore.profiles = savedProfiles
+            AIEndpointStore.activeID = savedActiveID
+        }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "bots-portrait.sqlite3"))
+        let store = AIBotStore(database: db)
+        let cardImg = store.resolvedPortraitImage(for: .butler, pointWidth: 126, pointHeight: 170)
+        #expect(cardImg != nil)
+        if let cardImg {
+            #expect(cardImg.size.height > cardImg.size.width)
+        }
+        #expect(!store.selectableGatewayGroups().isEmpty)
+        
+        for mode in BotCollectionLayoutMode.allCases {
+            let botsHost = NSHostingView(
+                rootView: AIBotsSettingsView(settingsState: SidebarSettingsState(), initialLayoutMode: mode)
+            )
+            botsHost.frame = NSRect(x: 0, y: 0, width: 527, height: 500)
+            botsHost.layoutSubtreeIfNeeded()
+            #expect(botsHost.bounds.width == 527)
+        }
+    }
+    
+    
+    @Test func structuredBidirectionalStarMapHasZeroOverlapsAndNewsWaterfallStaysStable() throws {
+        let clusterIDs = ["c0", "c1", "c2", "c3"]
+        var counts: [String: Int] = [:]
+        var leafIDsByCluster: [String: [String]] = [:]
+        for cID in clusterIDs {
+            counts[cID] = 12
+            leafIDsByCluster[cID] = (0..<12).map { "\(cID)-l\($0)" }
+        }
+        
+        let layout = StarMapLayoutEngine.compute(
+            clusterIDs: clusterIDs,
+            leafCountsByCluster: counts,
+            collapsedClusterIDs: [],
+            leafIDsByCluster: leafIDsByCluster
+        )
+        #expect(layout.clusters.count == 4)
+        #expect(layout.leaves.count == 48)
+        // Bidirectional balance: clusters split cleanly across right (+x) and left (-x)
+        let c0Point = try #require(layout.clusters.first(where: { $0.id == "c0" })?.worldPoint)
+        let c1Point = try #require(layout.clusters.first(where: { $0.id == "c1" })?.worldPoint)
+        #expect(c0Point.x > 0)
+        #expect(c1Point.x < 0)
+        
+        // Verify zero pairwise leaf AABB overlap (214 x 50 cards)
+        let positions = layout.leaves.map(\.worldPoint)
+        for i in 0..<positions.count {
+            for j in (i + 1)..<positions.count {
+                let dx = abs(positions[i].x - positions[j].x)
+                let dy = abs(positions[i].y - positions[j].y)
+                let overlaps = (dx < 214) && (dy < 50)
+                #expect(!overlaps)
+            }
+        }
+        
+        // Verify NEWS waterfall cover heights are 100% deterministic & cache holds all 60 feed items without eviction
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot-news-stable-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "news-stable.sqlite3"))
+        let service = AIHotNewsService(database: db, cacheRootDirectory: tempDir.appending(path: "cache"))
+        let sampleItems: [AIHotNewsItem] = (0..<60).map { idx in
+            AIHotNewsItem(
+                id: "news-\(idx)",
+                title: "High Signal AI Systems Update Number \(idx)",
+                source: "HN",
+                urlString: "https://example.com/\(idx)",
+                publishedAt: Date(),
+                heatScore: 100 + idx,
+                tag: nil,
+                coverURLString: nil,
+                category: .ai,
+                summary: "Detailed architectural summary for item \(idx)."
+            )
+        }
+        
+        let dummyCover = NSImage(size: NSSize(width: 320, height: 180))
+        for item in sampleItems {
+            let hBefore = DashboardNewsCenterView.waterfallCoverHeight(for: item, cardWidth: 240)
+            service.storeCoverImage(dummyCover, for: item.id)
+            let hAfter = DashboardNewsCenterView.waterfallCoverHeight(for: item, cardWidth: 240)
+            #expect(hBefore == hAfter)
+        }
+        // All 60 active feed covers stay resident without thrashing eviction
+        #expect(service.coverImages.count == 60)
+    }
+    
+    
+    @Test func gatewayAllowsDeletingAllProfilesWithoutResurrectionAndNewsPagesCleanly() throws {
+        let savedProfiles = AIEndpointStore.profiles
+        let savedActiveID = AIEndpointStore.activeID
+        defer {
+            AIEndpointStore.profiles = savedProfiles
+            AIEndpointStore.activeID = savedActiveID
+        }
+        
+        let p1 = AIProvider.openCodeGo.makeProfile(customName: AIProvider.openCodeGo.subscriptionTitle)
+        let p2 = AIProvider.deepSeek.makeProfile(customName: AIProvider.deepSeek.subscriptionTitle)
+        AIEndpointStore.profiles = [p1, p2]
+        AIEndpointStore.activeID = p1.id
+        
+        // Deleting all configured subscriptions leaves an empty list without legacy resurrection
+        AIEndpointStore.delete(id: p1.id)
+        #expect(AIEndpointStore.profiles.count == 1)
+        #expect(AIEndpointStore.activeID == p2.id)
+        
+        AIEndpointStore.delete(id: p2.id)
+        #expect(AIEndpointStore.profiles.isEmpty)
+        #expect(AIEndpointStore.activeID == nil)
+        AIEndpointStore.migrateLegacyConfigurationIfNeeded()
+        #expect(AIEndpointStore.profiles.isEmpty)
+        
+        // Responsive 2-row fullscreen NEWS pagination column counts
+        #expect(DashboardNewsCenterView.columnsForWidth(520) == 2)
+        #expect(DashboardNewsCenterView.columnsForWidth(720) == 3)
+        #expect(DashboardNewsCenterView.columnsForWidth(1020) == 4)
+        #expect(DashboardNewsCenterView.columnsForWidth(1260) == 5)
+    }
+    
+    
+    // MARK: 14. Timeline Spine + Default Collapsed Star-Map + 03:00 Scheduled AI Organizer
+    
+    @Test func timelineStarMapDefaultsToCollapsedAndMaintainsChronologicalOrder() {
+        let db = CotLocalDatabase.shared
+        let docID1 = "doc:__timeline_test_1"
+        let docID2 = "doc:__timeline_test_2"
+        let repID1 = "__timeline_rep_1"
+        let repID2 = "__timeline_rep_2"
+        defer {
+            db.permanentlyDeleteDocument(id: docID1, filePath: nil)
+            db.permanentlyDeleteDocument(id: docID2, filePath: nil)
+            db.deleteWeeklyReport(id: repID1)
+            db.deleteWeeklyReport(id: repID2)
+        }
+        
+        db.saveDocument(
+            id: docID1,
+            title: "核心网关限流架构设计",
+            filePath: nil,
+            syntax: "Markdown",
+            content: "# 核心网关限流架构设计\n引入令牌桶算法保护核心接口。",
+            groupName: "项目方案"
+        )
+        Thread.sleep(forTimeInterval: 0.02)
+        db.saveDocument(
+            id: docID2,
+            title: "客户端冷启动排查记录",
+            filePath: nil,
+            syntax: "Markdown",
+            content: "# 客户端冷启动排查记录\n定位主线程同步 I/O 耗时。",
+            groupName: "技术笔记"
+        )
+        
+        let tokens = DashPalette.editorialTokens(isDark: false)
+        let docState = DocumentCenterState()
+        docState.refresh()
+        
+        let initialDocClusters = docState.buildStarMapClusters(tokens: tokens)
+        #expect(initialDocClusters.count >= 2)
+        // All clusters must start collapsed by default for maximum visual clarity
+        #expect(initialDocClusters.allSatisfy { $0.isCollapsed })
+        // Every cluster carries a non-empty timeline milestone label, sorted newest-first
+        #expect(initialDocClusters.allSatisfy { ($0.timelineLabel?.isEmpty == false) })
+        for idx in 1..<initialDocClusters.count {
+            #expect(initialDocClusters[idx - 1].sortTimestamp >= initialDocClusters[idx].sortTimestamp)
+        }
+        
+        // Active search query auto-expands matching clusters, and clearing folds them back
+        docState.searchText = "令牌桶算法"
+        let searchedClusters = docState.buildStarMapClusters(tokens: tokens)
+        #expect(searchedClusters.contains(where: { !$0.isCollapsed }))
+        docState.searchText = ""
+        let refoldedClusters = docState.buildStarMapClusters(tokens: tokens)
+        #expect(refoldedClusters.allSatisfy { $0.isCollapsed })
+        
+        // 1-click Expand All / Collapse All
+        docState.expandAllClusters(refoldedClusters.map(\.id))
+        #expect(docState.buildStarMapClusters(tokens: tokens).allSatisfy { !$0.isCollapsed })
+        docState.collapseAllClusters(refoldedClusters.map(\.id))
+        #expect(docState.buildStarMapClusters(tokens: tokens).allSatisfy { $0.isCollapsed })
+        
+        // Weekly Report Center also defaults to collapsed with monthly timeline badges
+        db.saveWeeklyReport(
+            id: repID1,
+            periodLabel: "20261019-1025",
+            yearMonth: "202610",
+            title: "10月第三周研发周报",
+            content: "完成时间轴布局改造与性能压测。",
+            sourcePath: nil,
+            isEnhanced: false,
+            createdAt: Date(timeIntervalSinceNow: -86_400 * 30),
+            reloadAfter: true
+        )
+        db.saveWeeklyReport(
+            id: repID2,
+            periodLabel: "20261116-1122",
+            yearMonth: "202611",
+            title: "11月第三周研发周报",
+            content: "上线默认折叠星图与凌晨自动整理。",
+            sourcePath: nil,
+            isEnhanced: false,
+            createdAt: Date(),
+            reloadAfter: true
+        )
+        
+        let weeklyState = WeeklyReportCenterState()
+        weeklyState.rebuildGroups()
+        let weeklyClusters = weeklyState.buildStarMapClusters(tokens: tokens)
+        #expect(weeklyClusters.count >= 2)
+        #expect(weeklyClusters.allSatisfy { $0.isCollapsed })
+        #expect(weeklyClusters.first?.timelineLabel == "2026 · 11月")
+        
+        // Verify Timeline Spine layout maintains strict top-to-bottom Y order and zero overlaps even when expanded
+        let timelineLayout = StarMapLayoutEngine.compute(
+            clusterIDs: ["c1", "c2", "c3", "c4"],
+            leafCountsByCluster: ["c1": 3, "c2": 4, "c3": 2, "c4": 3],
+            collapsedClusterIDs: [],
+            leafIDsByCluster: [
+                "c1": ["l1", "l2", "l3"],
+                "c2": ["l4", "l5", "l6", "l7"],
+                "c3": ["l8", "l9"],
+                "c4": ["l10", "l11", "l12"],
+            ],
+            usesTimelineSpine: true
+        )
+        #expect(timelineLayout.usesTimelineSpine == true)
+        #expect(timelineLayout.hubPoint.y < timelineLayout.clusters[0].worldPoint.y)
+        for idx in 1..<timelineLayout.clusters.count {
+            #expect(timelineLayout.clusters[idx - 1].worldPoint.y < timelineLayout.clusters[idx].worldPoint.y)
+        }
+        
+        var rects: [CGRect] = [
+            CGRect(
+                x: timelineLayout.hubPoint.x - StarMapLayoutEngine.hubFootprint.width * 0.5,
+                y: timelineLayout.hubPoint.y - StarMapLayoutEngine.hubFootprint.height * 0.5,
+                width: StarMapLayoutEngine.hubFootprint.width,
+                height: StarMapLayoutEngine.hubFootprint.height
+            ),
+        ]
+        for c in timelineLayout.clusters {
+            rects.append(CGRect(
+                x: -StarMapLayoutEngine.milestoneFootprint.width * 0.5,
+                y: c.worldPoint.y - StarMapLayoutEngine.milestoneFootprint.height * 0.5,
+                width: StarMapLayoutEngine.milestoneFootprint.width,
+                height: StarMapLayoutEngine.milestoneFootprint.height
+            ))
+            rects.append(CGRect(
+                x: c.worldPoint.x - StarMapLayoutEngine.clusterFootprint.width * 0.5,
+                y: c.worldPoint.y - StarMapLayoutEngine.clusterFootprint.height * 0.5,
+                width: StarMapLayoutEngine.clusterFootprint.width,
+                height: StarMapLayoutEngine.clusterFootprint.height
+            ))
+        }
+        for l in timelineLayout.leaves {
+            rects.append(CGRect(
+                x: l.worldPoint.x - StarMapLayoutEngine.leafFootprint.width * 0.5,
+                y: l.worldPoint.y - StarMapLayoutEngine.leafFootprint.height * 0.5,
+                width: StarMapLayoutEngine.leafFootprint.width,
+                height: StarMapLayoutEngine.leafFootprint.height
+            ))
+        }
+        var overlaps = 0
+        for i in 0..<rects.count {
+            for j in (i + 1)..<rects.count where rects[i].intersects(rects[j]) {
+                overlaps += 1
+            }
+        }
+        #expect(overlaps == 0)
+    }
+    
+    
+    @Test func scheduledAIDocumentOrganizerTriggersAt3AMAndRunsFourStagePipeline() async throws {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appending(path: "cot_sched_organize_test_\(UUID().uuidString).sqlite3")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        
+        let tempDB = CotLocalDatabase(customURL: tempURL)
+        let tempAnalytics = AnalyticsManager(database: tempDB)
+        let organizer = ScheduledAIDocumentOrganizer(database: tempDB, analytics: tempAnalytics)
+        
+        // 1. Default config: enabled at 03:00 AM
+        #expect(organizer.isEnabled == true)
+        #expect(organizer.scheduledHour == 3)
+        #expect(organizer.scheduledMinute == 0)
+        #expect(organizer.formattedScheduledTime == "03:00")
+        
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone.current
+        let yesterdayHandled = "2026-11-23@03:00"
+        tempDB.set(yesterdayHandled, forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeLastCycleKey)
+        let freshOrganizer = ScheduledAIDocumentOrganizer(database: tempDB, analytics: tempAnalytics)
+        
+        let at0259 = try #require(cal.date(from: DateComponents(year: 2026, month: 11, day: 24, hour: 2, minute: 59)))
+        let at0300 = try #require(cal.date(from: DateComponents(year: 2026, month: 11, day: 24, hour: 3, minute: 0, second: 5)))
+        let at0830Wake = try #require(cal.date(from: DateComponents(year: 2026, month: 11, day: 24, hour: 8, minute: 30)))
+        
+        #expect(freshOrganizer.dueCycleKey(now: at0259, calendar: cal) == nil)
+        #expect(freshOrganizer.dueCycleKey(now: at0300, calendar: cal) == "2026-11-24@03:00")
+        #expect(freshOrganizer.dueCycleKey(now: at0830Wake, calendar: cal) == "2026-11-24@03:00")
+        
+        // Toggling off suppresses scheduled execution
+        freshOrganizer.setEnabled(false, now: at0259)
+        #expect(freshOrganizer.dueCycleKey(now: at0300, calendar: cal) == nil)
+        freshOrganizer.setEnabled(true, now: at0259)
+        
+        // 2. Seed untitled & placeholder-named documents and run the full 4-stage pipeline
+        tempDB.saveDocument(
+            id: "doc:untitled_1",
+            title: "未命名",
+            filePath: nil,
+            syntax: "Markdown",
+            content: "# 支付回调幂等架构设计方案\n\n- [ ] 敲定支付回调重试上限并补齐单元测试\n需要重点验证并发重复通知场景。"
+        )
+        tempDB.saveDocument(
+            id: "doc:draft_111",
+            title: "111",
+            filePath: nil,
+            syntax: "Markdown",
+            content: "# 周一架构评审会议纪要\n\n讨论了时间轴折叠视图以及凌晨定时 AI 整理策略。"
+        )
+        
+        let dueKey = try #require(freshOrganizer.dueCycleKey(now: at0300, calendar: cal))
+        let report = await freshOrganizer.runOrganizePipeline(
+            markCycleKey: dueKey,
+            referenceDate: at0300,
+            allowRemoteAI: false
+        )
+        
+        // Stage 1: Both generic/placeholder titles renamed cleanly from content
+        #expect(report.renamedCount == 2)
+        let titlesAfter = Set(tempDB.documents.map(\.title))
+        #expect(titlesAfter.contains("支付回调幂等架构设计方案"))
+        #expect(titlesAfter.contains("周一架构评审会议纪要"))
+        
+        // Stage 2: Star-Map groups assigned cleanly
+        #expect(report.regroupedCount == 2)
+        #expect(tempDB.documents.allSatisfy { !$0.groupName.isEmpty })
+        
+        // Stage 3 & 4: "干了啥" & "要干啥" refreshed
+        #expect(!tempAnalytics.doneTodayPoints.isEmpty)
+        #expect(!tempAnalytics.actionPredictions.isEmpty)
+        #expect(!freshOrganizer.lastSummary.isEmpty)
+        
+        // Same day's 03:00 cycle will not double-fire
+        #expect(freshOrganizer.dueCycleKey(now: at0830Wake, calendar: cal) == nil)
+        
+        // Custom scheduled time configuration works cleanly
+        freshOrganizer.updateScheduledTime(hour: 4, minute: 30, now: at0259)
+        #expect(freshOrganizer.formattedScheduledTime == "04:30")
+        let at0430 = try #require(cal.date(from: DateComponents(year: 2026, month: 11, day: 24, hour: 4, minute: 30, second: 10)))
+        #expect(freshOrganizer.dueCycleKey(now: at0430, calendar: cal) == "2026-11-24@04:30")
+        
+        // Settings card mounts cleanly
+        let cardHost = NSHostingView(rootView: ScheduledAIOrganizeSettingsCard(isEmbeddedInGroupCard: false))
+        cardHost.frame = NSRect(x: 0, y: 0, width: 520, height: 180)
+        cardHost.layoutSubtreeIfNeeded()
+        #expect(cardHost.bounds.width == 520)
+    }
 }

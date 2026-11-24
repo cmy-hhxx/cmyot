@@ -879,6 +879,11 @@ private struct SidebarGeneralSettingsPane: View {
                 }
             }
             
+            // 1.5 定时 AI 整理文档
+            SettingsGroupCard(title: AppLanguage.text("AI 定时整理", en: "Scheduled AI Organizer")) {
+                ScheduledAIOrganizeSettingsCard(isEmbeddedInGroupCard: true)
+            }
+            
             // 2. 数据备份
             SettingsGroupCard(title: AppLanguage.text("数据备份", en: "Data Backup")) {
                 SettingsItemRow(label: AppLanguage.text("全量数据备份", en: "Full Backup")) {

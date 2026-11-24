@@ -1106,12 +1106,9 @@ struct AnalyticsDashboardView: View {
                     tokens: self.palette.tokens,
                     initialSelectedID: self.activeNewsID,
                     onClose: {
-                        withAnimation(DashMotion.travel) {
-                            self.isNewsWorkspaceOpen = false
-                        }
+                        self.isNewsWorkspaceOpen = false
                     }
                 )
-                .transition(DashMotion.pageTransition)
             } else {
                 let outerPad: CGFloat = self.isEmbeddedInSettings ? 12 : 24
                 let vSpacing: CGFloat = self.isEmbeddedInSettings ? 12 : 16
@@ -1628,7 +1625,6 @@ private struct DashboardNewsColumnCard: View {
     @State private var newsService = AIHotNewsService.shared
     @State private var currentPage: Int = 0
     @State private var scrollPageID: Int? = 0
-    @Namespace private var newsFilterNamespace
     
     
     var body: some View {
@@ -1661,22 +1657,17 @@ private struct DashboardNewsColumnCard: View {
                         ForEach(NewsFeedCategory.allCases) { cat in
                             let active = (self.newsService.selectedCategory == cat)
                             Button {
-                                withAnimation(DashMotion.travel) {
-                                    self.newsService.selectedCategory = cat
-                                }
+                                self.newsService.selectedCategory = cat
                             } label: {
                                 Text(cat == .xSocial ? "X" : cat.label)
                                     .font(.system(size: 11, weight: active ? .medium : .regular))
                                     .foregroundStyle(active ? self.palette.tokens.onAccentInk : self.palette.secondaryInk)
                                     .padding(.horizontal, 7)
                                     .frame(height: 20)
-                                    .background {
-                                        if active {
-                                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                                .fill(self.palette.accentFill)
-                                                .matchedGeometryEffect(id: "newsBentoCatPill", in: self.newsFilterNamespace)
-                                        }
-                                    }
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                            .fill(active ? self.palette.accentFill : Color.clear)
+                                    )
                                     .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                             }
                             .buttonStyle(.plain)
@@ -1744,93 +1735,89 @@ private struct DashboardNewsColumnCard: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
-                    ScrollViewReader { scrollProxy in
-                        VStack(alignment: .leading, spacing: 6) {
-                            ScrollView(.vertical, showsIndicators: true) {
-                                LazyVStack(alignment: .leading, spacing: 10) {
-                                    ForEach(Array(pages.enumerated()), id: \.offset) { pageIdx, pageItems in
-                                        HStack(alignment: .top, spacing: 8) {
-                                            ForEach(pageItems) { item in
-                                                NewsMiniVisualCard(
-                                                    item: item,
-                                                    cover: self.newsService.coverImage(for: item),
-                                                    isRead: self.newsService.isRead(item),
-                                                    coverHeight: coverH,
-                                                    slotHeight: slotH,
-                                                    palette: self.palette
-                                                ) {
-                                                    self.onOpenWorkspace(item.id)
+                    VStack(alignment: .leading, spacing: 6) {
+                        ScrollView(.vertical, showsIndicators: true) {
+                            LazyVStack(alignment: .leading, spacing: 10) {
+                                ForEach(Array(pages.enumerated()), id: \.offset) { pageIdx, pageItems in
+                                    HStack(alignment: .top, spacing: 8) {
+                                        ForEach(pageItems) { item in
+                                            NewsMiniVisualCard(
+                                                item: item,
+                                                cover: self.newsService.cachedCoverImage(for: item),
+                                                isRead: self.newsService.isRead(item),
+                                                coverHeight: coverH,
+                                                slotHeight: slotH,
+                                                palette: self.palette,
+                                                onAppearLoadCover: {
+                                                    self.newsService.requestCoverLoad(for: item)
                                                 }
-                                            }
-                                            if useTwoColumns && pageItems.count < 2 {
-                                                Color.clear
-                                                    .frame(maxWidth: .infinity)
-                                                    .frame(height: slotH)
+                                            ) {
+                                                self.onOpenWorkspace(item.id)
                                             }
                                         }
-                                        .id(pageIdx)
-                                    }
-                                }
-                                .padding(.bottom, 4)
-                                .scrollTargetLayout()
-                            }
-                            .scrollPosition(id: self.$scrollPageID, anchor: .top)
-                            .onChange(of: self.scrollPageID) { _, nextPage in
-                                if let nextPage, nextPage >= 0, nextPage < pages.count, nextPage != self.currentPage {
-                                    self.currentPage = nextPage
-                                }
-                            }
-                            
-                            if hasPager {
-                                HStack(spacing: 8) {
-                                    Text("\(min(self.currentPage + 1, pages.count)) / \(pages.count)")
-                                        .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
-                                        .foregroundStyle(self.palette.mutedInk)
-                                    
-                                    Spacer(minLength: 0)
-                                    
-                                    HStack(spacing: 4) {
-                                        self.newsPageButton(
-                                            systemName: "chevron.left",
-                                            disabled: self.currentPage <= 0
-                                        ) {
-                                            let target = max(0, self.currentPage - 1)
-                                            self.currentPage = target
-                                            self.scrollPageID = target
-                                            withAnimation(DashMotion.travel) {
-                                                scrollProxy.scrollTo(target, anchor: .top)
-                                            }
-                                        }
-                                        
-                                        self.newsPageButton(
-                                            systemName: "chevron.right",
-                                            disabled: self.currentPage >= pages.count - 1
-                                        ) {
-                                            let target = min(pages.count - 1, self.currentPage + 1)
-                                            self.currentPage = target
-                                            self.scrollPageID = target
-                                            withAnimation(DashMotion.travel) {
-                                                scrollProxy.scrollTo(target, anchor: .top)
-                                            }
+                                        if useTwoColumns && pageItems.count < 2 {
+                                            Color.clear
+                                                .frame(maxWidth: .infinity)
+                                                .frame(height: slotH)
                                         }
                                     }
+                                    .id(pageIdx)
                                 }
-                                .frame(height: 20)
+                            }
+                            .padding(.bottom, 4)
+                            .scrollTargetLayout()
+                        }
+                        .scrollPosition(id: self.$scrollPageID, anchor: .top)
+                        .onChange(of: self.scrollPageID) { _, nextPage in
+                            if let nextPage, nextPage >= 0, nextPage < pages.count, nextPage != self.currentPage {
+                                self.currentPage = nextPage
                             }
                         }
-                        .onChange(of: self.newsService.selectedCategory) { _, _ in
-                            self.currentPage = 0
-                            self.scrollPageID = 0
-                            withAnimation(DashMotion.quick) {
-                                scrollProxy.scrollTo(0, anchor: .top)
+                        
+                        if hasPager {
+                            HStack(spacing: 8) {
+                                Text("\(min(self.currentPage + 1, pages.count)) / \(pages.count)")
+                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
+                                    .foregroundStyle(self.palette.mutedInk)
+                                
+                                Spacer(minLength: 0)
+                                
+                                HStack(spacing: 4) {
+                                    self.newsPageButton(
+                                        systemName: "chevron.left",
+                                        disabled: self.currentPage <= 0
+                                    ) {
+                                        let target = max(0, self.currentPage - 1)
+                                        self.currentPage = target
+                                        withAnimation(DashMotion.travel) {
+                                            self.scrollPageID = target
+                                        }
+                                    }
+                                    
+                                    self.newsPageButton(
+                                        systemName: "chevron.right",
+                                        disabled: self.currentPage >= pages.count - 1
+                                    ) {
+                                        let target = min(pages.count - 1, self.currentPage + 1)
+                                        self.currentPage = target
+                                        withAnimation(DashMotion.travel) {
+                                            self.scrollPageID = target
+                                        }
+                                    }
+                                }
                             }
+                            .frame(height: 20)
                         }
-                        .onChange(of: items.count) { _, _ in
-                            let maxPage = max(0, pages.count - 1)
-                            if self.currentPage > maxPage {
-                                self.currentPage = maxPage
-                                self.scrollPageID = maxPage
-                            }
+                    }
+                    .onChange(of: self.newsService.selectedCategory) { _, _ in
+                        self.currentPage = 0
+                        self.scrollPageID = 0
+                    }
+                    .onChange(of: items.count) { _, _ in
+                        let maxPage = max(0, pages.count - 1)
+                        if self.currentPage > maxPage {
+                            self.currentPage = maxPage
+                            self.scrollPageID = maxPage
                         }
                     }
                 }
@@ -1872,6 +1859,7 @@ private struct NewsMiniVisualCard: View {
     let coverHeight: CGFloat
     let slotHeight: CGFloat
     let palette: DashPalette
+    let onAppearLoadCover: () -> Void
     let onTap: () -> Void
     
     @State private var isHovered = false
@@ -1891,12 +1879,10 @@ private struct NewsMiniVisualCard: View {
                                     .resizable()
                                     .interpolation(.medium)
                                     .scaledToFill()
-                                    .scaleEffect(self.isHovered && !DashMotion.isReducedMotion ? 1.05 : 1.0)
                             }
                             .clipped()
                     } else {
                         self.fallbackCover
-                            .scaleEffect(self.isHovered && !DashMotion.isReducedMotion ? 1.03 : 1.0)
                     }
                     
                     if !self.isRead {
@@ -1937,18 +1923,17 @@ private struct NewsMiniVisualCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(self.isHovered ? self.palette.accentFill.opacity(0.38) : self.palette.hairline, lineWidth: 0.75)
+                    .strokeBorder(self.isHovered ? self.palette.accentFill.opacity(0.38) : self.palette.hairline, lineWidth: 0.8)
             )
-            .offset(y: self.isHovered && !DashMotion.isReducedMotion ? -1.5 : 0)
-            .animation(DashMotion.resolve(DashMotion.quick), value: self.isHovered)
         }
         .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.98))
         .pointerStyle(.link)
+        .onAppear {
+            self.onAppearLoadCover()
+        }
         .onHover { hovering in
             if hovering != self.isHovered {
-                withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                    self.isHovered = hovering
-                }
+                self.isHovered = hovering
             }
         }
     }

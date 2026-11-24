@@ -502,6 +502,8 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             case "organizeAndMerge": "整理合并"
             case "dailyDigest": "每日摘要"
             case "personalityAnalyze": "性格弹幕画像"
+            case "documentCenterAgentOrganize": "星图文档整理"
+            case "scheduledNightlyOrganize": "凌晨自动整理"
             default: feature
         }
     }
@@ -3196,12 +3198,32 @@ extension AnalyticsManager {
     
     /// Builds witty, candid local commentary grounded in today's real writing metrics and touched work.
     private func buildLivelyLocalDoneTodayCommentary() -> [String] {
-        let stats = self.todayStats
-        let totalChars = stats.typedChars + stats.aiCompletedChars
-        let hour = Calendar.current.component(.hour, from: Date())
+        let now = Date()
+        let hour = Calendar.current.component(.hour, from: now)
         let calendar = Calendar.current
+        let rawTodayStats = self.todayStats
+        let effectiveStats: DailyWritingStats = {
+            if hour < 6,
+               (rawTodayStats.typedChars + rawTodayStats.aiCompletedChars) == 0,
+               let yesterday = calendar.date(byAdding: .day, value: -1, to: now)
+            {
+                let yKey = Self.dateKey(for: yesterday)
+                if let yStats = self.recentDailyStats.first(where: { $0.dateKey == yKey }),
+                   (yStats.typedChars + yStats.aiCompletedChars + yStats.documentsSaved) > 0
+                {
+                    return yStats
+                }
+            }
+            return rawTodayStats
+        }()
+        let stats = effectiveStats
+        let totalChars = stats.typedChars + stats.aiCompletedChars
         let todayDocs = self.database.documents
-            .filter { !$0.id.hasPrefix("weekly:") && calendar.isDateInToday($0.updatedAt) && Self.isMeaningfulDocumentContent($0.content) }
+            .filter {
+                !$0.id.hasPrefix("weekly:")
+                    && (calendar.isDateInToday($0.updatedAt) || (hour < 6 && now.timeIntervalSince($0.updatedAt) <= 24 * 3600))
+                    && Self.isMeaningfulDocumentContent($0.content)
+            }
         
         var points: [String] = []
         
@@ -3400,13 +3422,28 @@ extension AnalyticsManager {
     
     
     private func collectDoneTodayCorpus() -> (promptText: String, fingerprint: String) {
-        let stats = self.todayStats
-        let hour = Calendar.current.component(.hour, from: Date())
+        let now = Date()
+        let calendar = Calendar.current
+        let hour = calendar.component(.hour, from: now)
+        let rawToday = self.todayStats
+        let stats: DailyWritingStats = {
+            if hour < 6,
+               (rawToday.typedChars + rawToday.aiCompletedChars) == 0,
+               let yesterday = calendar.date(byAdding: .day, value: -1, to: now)
+            {
+                let yKey = Self.dateKey(for: yesterday)
+                if let yStats = self.recentDailyStats.first(where: { $0.dateKey == yKey }),
+                   (yStats.typedChars + yStats.aiCompletedChars + yStats.documentsSaved) > 0
+                {
+                    return yStats
+                }
+            }
+            return rawToday
+        }()
         var parts: [String] = [
             "【今日实况】当前时刻：\(hour)点；手写强度：\(stats.typedChars >= 1500 ? "极高" : stats.typedChars >= 400 ? "中等偏高" : stats.typedChars > 0 ? "轻度" : "几乎没动")；AI调用：\(stats.aiRequests)次；保存：\(stats.documentsSaved)次；新建：\(stats.filesCreated)次；连续创作：\(self.currentWritingStreak)天。"
         ]
         
-        let calendar = Calendar.current
         var snippets: [String] = []
         if self.database === CotLocalDatabase.shared {
             for case let doc as Document in NSDocumentController.shared.documents {
@@ -3417,7 +3454,10 @@ extension AnalyticsManager {
             }
         }
         let todayDocs = self.database.documents
-            .filter { !$0.id.hasPrefix("weekly:") && calendar.isDateInToday($0.updatedAt) }
+            .filter {
+                !$0.id.hasPrefix("weekly:")
+                    && (calendar.isDateInToday($0.updatedAt) || (hour < 6 && now.timeIntervalSince($0.updatedAt) <= 24 * 3600))
+            }
             .sorted { $0.updatedAt > $1.updatedAt }
         for doc in todayDocs {
             guard snippets.count < 4 else { break }

@@ -20,149 +20,720 @@
 //
 
 import AppKit
+import QuartzCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - Wrapping Flow Layout (Zero Truncation)
+// MARK: - API 网关 (可折叠 · 可切换 · 可任意删除 · 零掉帧手风琴)
 
-private struct WrappingFlowLayout: Layout {
+enum GatewayProbeStatus: Equatable {
+    case running
+    case succeeded(String, latencyMs: Int)
+    case failed(String)
+}
+
+
+struct GatewaySlot: Identifiable, Equatable {
+    var profile: AIEndpointProfile
+    var apiKey: String
     
-    var horizontalSpacing: CGFloat = 6
-    var verticalSpacing: CGFloat = 6
+    var id: UUID { self.profile.id }
     
-    
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
-        var currentX: CGFloat = 0
-        var currentY: CGFloat = 0
-        var rowHeight: CGFloat = 0
-        var usedWidth: CGFloat = 0
-        
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if currentX > 0 && currentX + size.width > maxWidth {
-                usedWidth = max(usedWidth, currentX - self.horizontalSpacing)
-                currentX = 0
-                currentY += rowHeight + self.verticalSpacing
-                rowHeight = 0
-            }
-            currentX += size.width + self.horizontalSpacing
-            rowHeight = max(rowHeight, size.height)
-            usedWidth = max(usedWidth, currentX - self.horizontalSpacing)
-        }
-        let totalHeight = subviews.isEmpty ? 0 : currentY + rowHeight
-        return CGSize(width: proposal.width ?? usedWidth, height: totalHeight)
+    var trimmedKey: String {
+        self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
+    var isReady: Bool {
+        !self.profile.endpoint.requiresAPIKey || !self.trimmedKey.isEmpty
+    }
+}
+
+
+/// Isolated Equatable subscription card so expanding/collapsing one card skips re-evaluating sibling rows.
+private struct GatewaySubscriptionCardView: View, Equatable {
     
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var currentX = bounds.minX
-        var currentY = bounds.minY
-        var rowHeight: CGFloat = 0
+    let slot: GatewaySlot
+    let isSelected: Bool
+    let isExpanded: Bool
+    let isRevealingKey: Bool
+    let isFetchingModels: Bool
+    let probe: GatewayProbeStatus?
+    let remoteModelIDs: [String]
+    let isDark: Bool
+    let onSelectActive: () -> Void
+    let onToggleExpand: () -> Void
+    let onRemove: () -> Void
+    let onTest: () -> Void
+    let onRefreshModels: () -> Void
+    let onToggleRevealKey: () -> Void
+    let onChangeName: (String) -> Void
+    let onChangeKey: (String) -> Void
+    let onChangeModel: (String) -> Void
+    let onSelectModelPreset: (String) -> Void
+    let onChangeBaseURL: (String) -> Void
+    let onSwitchProtocol: (AIEndpoint) -> Void
+    
+    @State private var isRowHovered = false
+    @State private var isTrashHovered = false
+    
+    private let labelColumnWidth: CGFloat = 64
+    
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.slot == rhs.slot
+            && lhs.isSelected == rhs.isSelected
+            && lhs.isExpanded == rhs.isExpanded
+            && lhs.isRevealingKey == rhs.isRevealingKey
+            && lhs.isFetchingModels == rhs.isFetchingModels
+            && lhs.probe == rhs.probe
+            && lhs.remoteModelIDs == rhs.remoteModelIDs
+            && lhs.isDark == rhs.isDark
+    }
+    
+    private var cardSurface: Color {
+        self.isDark ? Color.white.opacity(0.055) : Color.white
+    }
+    
+    private var cardBorder: Color {
+        self.isDark ? Color.white.opacity(0.09) : Color.black.opacity(0.07)
+    }
+    
+    private var rowDivider: some View {
+        Rectangle()
+            .fill(self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
+            .frame(height: 0.75)
+            .padding(.horizontal, 14)
+    }
+    
+    private var cardTitle: String {
+        let provider = self.slot.profile.provider
+        let customName = self.slot.profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if provider != .custom && (customName.isEmpty || customName == provider.label) {
+            return provider.subscriptionTitle
+        }
+        return self.slot.profile.displayName
+    }
+    
+    private var currentModelText: String {
+        let trimmed = self.slot.profile.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        let fallback = self.slot.profile.provider.defaultModel
+        return fallback.isEmpty ? AppLanguage.text("选择模型", en: "Select Model") : fallback
+    }
+    
+    private var standardURL: String {
+        let provider = self.slot.profile.provider
+        if provider == .openCodeGo {
+            return self.slot.profile.endpoint == .anthropicMessages
+                ? "https://opencode.ai/zen/go"
+                : "https://opencode.ai/zen/go/v1"
+        }
+        return provider.defaultBaseURL
+    }
+    
+    private var selectableModels: [String] {
+        var seen: Set<String> = []
+        var list: [String] = []
+        let candidates = self.slot.profile.provider.recommendedModels
+            + self.slot.profile.availableModelIDs
+            + self.remoteModelIDs
+        for raw in candidates {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+            list.append(trimmed)
+        }
+        return list
+    }
+    
+    var body: some View {
+        let provider = self.slot.profile.provider
+        let accent = Color(hexString: provider.accentHex)
+        let isReady = self.slot.isReady
         
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if currentX > bounds.minX && currentX + size.width > bounds.maxX {
-                currentX = bounds.minX
-                currentY += rowHeight + self.verticalSpacing
-                rowHeight = 0
+        VStack(alignment: .leading, spacing: 0) {
+            // Header Row: Radio + Title + Summary + Test/Delete/Chevron
+            HStack(spacing: 10) {
+                Button(action: self.onSelectActive) {
+                    ZStack {
+                        if self.isSelected {
+                            Circle()
+                                .fill(Color.accentColor)
+                                .frame(width: 16, height: 16)
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 8.5, weight: .bold))
+                                .foregroundStyle(.white)
+                        } else {
+                            Circle()
+                                .strokeBorder(Color.secondary.opacity(0.45), lineWidth: 1.3)
+                                .frame(width: 16, height: 16)
+                        }
+                    }
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help(self.isSelected
+                      ? AppLanguage.text("当前正在使用此服务", en: "Currently active")
+                      : AppLanguage.text("点击切换为此服务", en: "Set as active gateway"))
+                
+                HStack(spacing: 8) {
+                    Text(self.cardTitle)
+                        .font(.system(size: 13.5, weight: self.isSelected ? .semibold : .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    
+                    Spacer(minLength: 8)
+                    
+                    if !self.isExpanded {
+                        HStack(spacing: 6) {
+                            if isReady {
+                                Circle()
+                                    .fill(Color.green)
+                                    .frame(width: 6, height: 6)
+                            }
+                            Text(self.currentModelText)
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: self.onToggleExpand)
+                .pointerStyle(.link)
+                
+                if self.isExpanded && isReady {
+                    Button(action: self.onTest) {
+                        HStack(spacing: 4) {
+                            if case .running = self.probe {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .scaleEffect(0.7)
+                                    .frame(width: 12, height: 12)
+                            }
+                            Text(AppLanguage.text("测试连接", en: "Test"))
+                                .font(.system(size: 11.5, weight: .medium))
+                        }
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 10)
+                        .frame(height: 25)
+                        .background(
+                            Color.primary.opacity(self.isDark ? 0.10 : 0.06),
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(self.probe == .running)
+                    .pointerStyle(.link)
+                }
+                
+                // Clean 1-click delete button on EVERY subscription (visible on row hover or when expanded)
+                Button(action: self.onRemove) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11.5, weight: .regular))
+                        .foregroundStyle(self.isTrashHovered ? Color.red : Color.secondary.opacity(0.65))
+                        .frame(width: 24, height: 24)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(self.isTrashHovered ? Color.red.opacity(0.10) : Color.clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .opacity((self.isExpanded || self.isRowHovered) ? 1.0 : 0.0)
+                .allowsHitTesting(self.isExpanded || self.isRowHovered)
+                .onHover { hovering in
+                    self.isTrashHovered = hovering
+                }
+                .help(AppLanguage.text("删除此服务", en: "Delete"))
+                
+                Button(action: self.onToggleExpand) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(self.isExpanded ? 90 : 0))
+                        .frame(width: 20, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
             }
-            subview.place(
-                at: CGPoint(x: currentX, y: currentY),
-                anchor: .topLeading,
-                proposal: ProposedViewSize(width: min(size.width, bounds.width), height: size.height)
-            )
-            currentX += size.width + self.horizontalSpacing
-            rowHeight = max(rowHeight, size.height)
+            .padding(.horizontal, 12)
+            
+            if self.isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    self.rowDivider
+                    self.expandedFormBody(provider: provider, accent: accent, isReady: isReady)
+                }
+                // Lock natural vertical height so AppKit NSTextFields never squash/relayout per animation frame
+                .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity)
+            }
+        }
+        .clipped()
+        .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(
+                    self.isSelected ? Color.accentColor.opacity(0.55) : self.cardBorder,
+                    lineWidth: self.isSelected ? 1.15 : 0.85
+                )
+        )
+        .onHover { hovering in
+            if hovering != self.isRowHovered {
+                self.isRowHovered = hovering
+            }
+        }
+        .contextMenu {
+            if !self.isSelected {
+                Button(AppLanguage.text("设为当前默认服务", en: "Set as Default")) {
+                    self.onSelectActive()
+                }
+            }
+            Button(self.isExpanded
+                   ? AppLanguage.text("收起配置", en: "Collapse")
+                   : AppLanguage.text("展开配置", en: "Expand")) {
+                self.onToggleExpand()
+            }
+            Divider()
+            Button(AppLanguage.text("删除此服务", en: "Delete"), role: .destructive) {
+                self.onRemove()
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func expandedFormBody(provider: AIProvider, accent: Color, isReady: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if provider == .custom {
+                HStack(spacing: 12) {
+                    Text(AppLanguage.text("名称", en: "Name"))
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: self.labelColumnWidth, alignment: .leading)
+                    
+                    TextField(
+                        AIProvider.custom.subscriptionTitle,
+                        text: Binding(
+                            get: { self.slot.profile.name },
+                            set: { self.onChangeName($0) }
+                        )
+                    )
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5.5)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 0.85))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                
+                self.rowDivider
+            }
+            
+            if self.slot.profile.endpoint.requiresAPIKey {
+                HStack(spacing: 12) {
+                    Text("API Key")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: self.labelColumnWidth, alignment: .leading)
+                    
+                    HStack(spacing: 8) {
+                        Group {
+                            if self.isRevealingKey {
+                                TextField(
+                                    provider.apiKeyPlaceholder,
+                                    text: Binding(
+                                        get: { self.slot.apiKey },
+                                        set: { self.onChangeKey($0) }
+                                    )
+                                )
+                                .font(.system(size: 12, design: .monospaced))
+                            } else {
+                                SecureField(
+                                    provider.apiKeyPlaceholder,
+                                    text: Binding(
+                                        get: { self.slot.apiKey },
+                                        set: { self.onChangeKey($0) }
+                                    )
+                                )
+                                .font(.system(size: 12))
+                            }
+                        }
+                        .textFieldStyle(.plain)
+                        .onSubmit {
+                            if isReady {
+                                self.onTest()
+                            }
+                        }
+                        
+                        if self.slot.trimmedKey.isEmpty {
+                            Button(AppLanguage.text("粘贴", en: "Paste")) {
+                                if let pasted = NSPasteboard.general.string(forType: .string)?
+                                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                                   !pasted.isEmpty
+                                {
+                                    self.onChangeKey(pasted)
+                                }
+                            }
+                            .controlSize(.mini)
+                        } else {
+                            Button(self.isRevealingKey ? AppLanguage.text("隐藏", en: "Hide") : AppLanguage.text("显示", en: "Show")) {
+                                self.onToggleRevealKey()
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                            
+                            Button(AppLanguage.text("清除", en: "Clear")) {
+                                self.onChangeKey("")
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        }
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5.5)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 0.85))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                
+                self.rowDivider
+            }
+            
+            // Model Row
+            HStack(spacing: 12) {
+                Text(AppLanguage.text("默认模型", en: "Model"))
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: self.labelColumnWidth, alignment: .leading)
+                
+                HStack(spacing: 8) {
+                    if provider == .custom || provider == .ollama {
+                        TextField(
+                            provider == .ollama ? "qwen2.5:7b" : "model-id",
+                            text: Binding(
+                                get: { self.slot.profile.model },
+                                set: { self.onChangeModel($0) }
+                            )
+                        )
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, design: .monospaced))
+                        .padding(.horizontal, 9)
+                        .frame(minHeight: 28)
+                        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 0.85))
+                    }
+                    
+                    let models = self.selectableModels
+                    if provider != .custom || !models.isEmpty {
+                        Menu {
+                            if provider == .openCodeGo {
+                                ForEach(AIProvider.openCodeGoModelGroups) { group in
+                                    Section(group.title) {
+                                        ForEach(group.models, id: \.self) { modelID in
+                                            Button(self.slot.profile.model == modelID ? "✓  \(modelID)" : modelID) {
+                                                self.onSelectModelPreset(modelID)
+                                            }
+                                        }
+                                    }
+                                }
+                                let curatedSet = Set(AIProvider.openCodeGo.recommendedModels)
+                                let extras = self.remoteModelIDs.filter { !curatedSet.contains($0) }
+                                if !extras.isEmpty {
+                                    Section(AppLanguage.text("接口返回模型", en: "Fetched Models")) {
+                                        ForEach(extras.prefix(24), id: \.self) { modelID in
+                                            Button(self.slot.profile.model == modelID ? "✓  \(modelID)" : modelID) {
+                                                self.onSelectModelPreset(modelID)
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                ForEach(models, id: \.self) { modelID in
+                                    Button(self.slot.profile.model == modelID ? "✓  \(modelID)" : modelID) {
+                                        self.onSelectModelPreset(modelID)
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(provider == .custom || provider == .ollama
+                                     ? AppLanguage.text("预设", en: "Presets")
+                                     : self.currentModelText)
+                                    .font(.system(size: 12, weight: .medium, design: provider == .custom || provider == .ollama ? .default : .monospaced))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                if provider != .custom && provider != .ollama {
+                                    Spacer(minLength: 4)
+                                }
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: 28)
+                            .frame(maxWidth: (provider == .custom || provider == .ollama) ? nil : .infinity, alignment: .leading)
+                            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 0.85))
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize(horizontal: provider == .custom || provider == .ollama, vertical: false)
+                        .pointerStyle(.link)
+                    }
+                    
+                    if isReady {
+                        Button(action: self.onRefreshModels) {
+                            HStack(spacing: 4) {
+                                if self.isFetchingModels {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .scaleEffect(0.68)
+                                        .frame(width: 12, height: 12)
+                                } else {
+                                    Image(systemName: "arrow.clockwise")
+                                        .font(.system(size: 10.5, weight: .semibold))
+                                }
+                                Text(self.isFetchingModels
+                                     ? AppLanguage.text("获取中", en: "Fetching")
+                                     : AppLanguage.text("刷新", en: "Refresh"))
+                                    .font(.system(size: 11))
+                            }
+                        }
+                        .controlSize(.small)
+                        .disabled(self.isFetchingModels)
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            
+            self.rowDivider
+            
+            // Endpoint URL Row
+            HStack(alignment: .top, spacing: 12) {
+                Text(AppLanguage.text("接口地址", en: "Endpoint"))
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: self.labelColumnWidth, alignment: .leading)
+                    .padding(.top, 5)
+                
+                VStack(alignment: .leading, spacing: 7) {
+                    let defURL = self.standardURL
+                    let isModified = !defURL.isEmpty && self.slot.profile.resolvedBaseURL != defURL
+                    
+                    HStack(spacing: 8) {
+                        TextField(
+                            defURL.isEmpty ? self.slot.profile.endpoint.defaultBaseURL : defURL,
+                            text: Binding(
+                                get: { self.slot.profile.baseURL },
+                                set: { self.onChangeBaseURL($0) }
+                            )
+                        )
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5.5)
+                        .background(
+                            Color.primary.opacity(self.isDark ? 0.05 : 0.03),
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        )
+                        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 0.75))
+                        
+                        if isModified {
+                            Button(AppLanguage.text("恢复默认", en: "Reset")) {
+                                self.onChangeBaseURL(defURL)
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                    
+                    if provider == .openCodeGo || provider == .custom {
+                        let protocols: [AIEndpoint] = provider == .openCodeGo
+                            ? AIEndpoint.subscriptionProtocols
+                            : AIEndpoint.allCases
+                        HStack(spacing: 6) {
+                            ForEach(protocols, id: \.self) { proto in
+                                let picked = (self.slot.profile.endpoint == proto)
+                                Button {
+                                    self.onSwitchProtocol(proto)
+                                } label: {
+                                    Text(proto.shortProtocolBadge)
+                                        .font(.system(size: 11, weight: picked ? .semibold : .medium))
+                                        .foregroundStyle(picked ? Color.white : Color.secondary)
+                                        .padding(.horizontal, 9)
+                                        .padding(.vertical, 4)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                                .fill(picked ? accent : Color.primary.opacity(self.isDark ? 0.07 : 0.045))
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                                .pointerStyle(.link)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            
+            if let probe = self.probe {
+                self.rowDivider
+                self.probeBanner(probe)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func probeBanner(_ probe: GatewayProbeStatus) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            switch probe {
+                case .running:
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 14, height: 14)
+                    Text(AppLanguage.text("正在测试连接…", en: "Testing connection…"))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                case .succeeded(let reply, let latencyMs):
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 7, height: 7)
+                    Text("连通 · \(latencyMs) ms · \(reply)")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                case .failed(let msg):
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 7, height: 7)
+                    Text(msg)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+            }
+            Spacer(minLength: 0)
         }
     }
 }
 
 
-// MARK: - API 网关 (OpenCode Go 一站式配置 · Pi 内核状态)
-
 struct AIModelsSettingsView: View {
+    
+    private static let starterSeededDefaultsKey = "aiGatewayDidSeedStarterListV2"
     
     @Environment(\.colorScheme) private var colorScheme
     
-    @State private var profile: AIEndpointProfile = AIProvider.openCodeGo.makeProfile()
-    @State private var apiKey: String = ""
-    @State private var isRevealingKey = false
-    @State private var probeStatus: EndpointProbeStatus? = nil
-    @State private var fetchedModels: [AIModel] = []
-    @State private var isFetchingModels = false
-    @State private var didSaveIndicator = false
-    @State private var persistDebounceTask: Task<Void, Never>?
+    @State private var slots: [GatewaySlot]
+    @State private var activeID: UUID?
+    @State private var expandedID: UUID?
+    @State private var revealingKeyIDs: Set<UUID> = []
+    @State private var probeStatuses: [UUID: GatewayProbeStatus] = [:]
+    @State private var fetchedModelsByID: [UUID: [AIModel]] = [:]
+    @State private var fetchingModelIDs: Set<UUID> = []
+    @State private var persistTasks: [UUID: Task<Void, Never>] = [:]
+    @State private var backendSyncTask: Task<Void, Never>?
     
     @State private var piKernel = PiKernelManager.shared
     @State private var kernelEnabled: Bool = PiKernelManager.shared.isKernelEnabled
     
-    private let labelColumnWidth: CGFloat = 68
-    
-    private enum EndpointProbeStatus: Equatable {
-        case running
-        case succeeded(String, latencyMs: Int)
-        case failed(String)
+    init() {
+        let initial = Self.loadGatewayState()
+        self._slots = State(initialValue: initial.slots)
+        self._activeID = State(initialValue: initial.activeID)
+        // Start collapsed when active gateway is already configured so the page opens ultra-clean;
+        // expand only when the active gateway still needs an API key.
+        let initialExpanded: UUID? = {
+            if let activeID = initial.activeID,
+               let activeSlot = initial.slots.first(where: { $0.id == activeID }),
+               !activeSlot.isReady
+            {
+                return activeID
+            }
+            return nil
+        }()
+        self._expandedID = State(initialValue: initialExpanded)
     }
-    
-    
-    private var trimmedKey: String {
-        self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    
-    private var standardOpenCodeGoURL: String {
-        (self.profile.endpoint == .anthropicMessages)
-            ? "https://opencode.ai/zen/go"
-            : "https://opencode.ai/zen/go/v1"
-    }
-    
-    private var isCustomURLModified: Bool {
-        let current = self.profile.resolvedBaseURL
-        return current != "https://opencode.ai/zen/go/v1" && current != "https://opencode.ai/zen/go"
-    }
-    
-    private var currentModelLabel: String {
-        let trimmed = self.profile.model.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? AIProvider.openCodeGo.defaultModel : trimmed
-    }
-    
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            // Section 1: OpenCode Go One-Step Setup
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(AppLanguage.text("OpenCode Go 订阅接入", en: "OpenCode Go Subscription"))
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.leading, 3)
-                        .fixedSize(horizontal: false, vertical: true)
-                    
-                    Spacer(minLength: 8)
-                    
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(self.trimmedKey.isEmpty ? Color.orange : Color.green)
-                            .frame(width: 6, height: 6)
-                        Text(self.trimmedKey.isEmpty
-                             ? AppLanguage.text("待输入 Key", en: "Key Required")
-                             : self.currentModelLabel)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(self.trimmedKey.isEmpty ? Color.orange : Color.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+        let isDark = (self.colorScheme == .dark)
+        
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                if self.slots.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus.circle")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                        Text(AppLanguage.text("列表已清空，点击下方按钮按需添加订阅或官方 API", en: "No API services configured. Add one below."))
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.secondary)
+                        Spacer()
                     }
-                    .padding(.trailing, 3)
+                    .padding(.horizontal, 14)
+                    .frame(height: 44)
+                    .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 0.85))
+                } else {
+                    ForEach(self.slots) { slot in
+                        let slotID = slot.id
+                        GatewaySubscriptionCardView(
+                            slot: slot,
+                            isSelected: self.activeID == slotID,
+                            isExpanded: self.expandedID == slotID,
+                            isRevealingKey: self.revealingKeyIDs.contains(slotID),
+                            isFetchingModels: self.fetchingModelIDs.contains(slotID),
+                            probe: self.probeStatuses[slotID],
+                            remoteModelIDs: self.fetchedModelsByID[slotID]?.map(\.id) ?? [],
+                            isDark: isDark,
+                            onSelectActive: { self.selectActiveSlot(slotID) },
+                            onToggleExpand: { self.toggleExpanded(slotID) },
+                            onRemove: { self.removeSlot(slotID) },
+                            onTest: { Task { await self.testSlot(slotID) } },
+                            onRefreshModels: { Task { await self.fetchRemoteModels(for: slotID, silentError: false) } },
+                            onToggleRevealKey: {
+                                if self.revealingKeyIDs.contains(slotID) {
+                                    self.revealingKeyIDs.remove(slotID)
+                                } else {
+                                    self.revealingKeyIDs.insert(slotID)
+                                }
+                            },
+                            onChangeName: { self.updateName($0, for: slotID) },
+                            onChangeKey: { self.updateAPIKey($0, for: slotID) },
+                            onChangeModel: { self.updateModel($0, for: slotID) },
+                            onSelectModelPreset: { self.selectModel($0, for: slotID) },
+                            onChangeBaseURL: { self.updateBaseURL($0, for: slotID) },
+                            onSwitchProtocol: { self.switchProtocol($0, for: slotID) }
+                        )
+                        .equatable()
+                    }
                 }
                 
-                self.openCodeGoCard
+                self.addSubscriptionBar
+                    .padding(.top, 2)
             }
             
-            // Section 2: Pi 内核开关（极简状态行）
-            VStack(alignment: .leading, spacing: 7) {
+            // Pi Kernel Runtime Toggle
+            VStack(alignment: .leading, spacing: 6) {
                 Text(AppLanguage.text("Pi 内核底座", en: "Pi Kernel Runtime"))
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .padding(.leading, 3)
+                    .padding(.leading, 4)
                 
                 HStack(spacing: 10) {
                     Circle()
@@ -189,444 +760,391 @@ struct AIModelsSettingsView: View {
                 .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
             }
-        }
-        .task {
-            self.reload()
-            if !self.trimmedKey.isEmpty && self.fetchedModels.isEmpty {
-                await self.fetchRemoteModels(silentError: true)
-            }
+            
+            // Scheduled Nightly 03:00 AI Document Organizer
+            ScheduledAIOrganizeSettingsCard(isEmbeddedInGroupCard: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
             self.reload()
         }
+        .onDisappear {
+            self.flushPendingPersistenceImmediately()
+        }
     }
     
     
-    // MARK: - OpenCode Go Setup Card
+    // MARK: - Add Subscription / Official API Menu Bar
     
-    private var openCodeGoCard: some View {
-        let accent = Color(hexString: AIProvider.openCodeGo.accentHex)
-        let hasKey = !self.trimmedKey.isEmpty
+    private var addSubscriptionBar: some View {
+        let existingProviders = Set(self.slots.map { $0.profile.provider })
+        let unaddedPresets = AIProvider.curatedPresets.filter { !existingProviders.contains($0) }
+        let addedPresets = AIProvider.curatedPresets.filter { existingProviders.contains($0) }
         
-        return VStack(alignment: .leading, spacing: 0) {
-            // Card Header
-            HStack(alignment: .center, spacing: 10) {
-                Circle()
-                    .fill(accent)
-                    .frame(width: 9, height: 9)
-                
-                Text("OpenCode Go")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .fixedSize(horizontal: false, vertical: true)
-                
-                Text(hasKey
-                     ? AppLanguage.text("已激活", en: "Active")
-                     : AppLanguage.text("未填 Key", en: "Key Needed"))
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(hasKey ? Color.green : Color.orange)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2.5)
-                    .background((hasKey ? Color.green : Color.orange).opacity(0.14), in: Capsule())
-                
-                if self.didSaveIndicator {
-                    Text(AppLanguage.text("已自动保存", en: "Saved"))
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .transition(.opacity)
+        return HStack(spacing: 8) {
+            Menu {
+                if !unaddedPresets.isEmpty {
+                    Section(AppLanguage.text("官方 API 与订阅服务", en: "Subscriptions & Official APIs")) {
+                        ForEach(unaddedPresets, id: \.self) { provider in
+                            Button(provider.subscriptionTitle) {
+                                self.addProviderSlot(provider)
+                            }
+                        }
+                    }
                 }
                 
-                Spacer(minLength: 8)
-                
-                Button {
-                    Task { await self.testOpenCodeGo() }
-                } label: {
-                    HStack(spacing: 5) {
-                        if case .running = self.probeStatus {
-                            ProgressView()
-                                .controlSize(.small)
-                                .scaleEffect(0.72)
-                                .frame(width: 12, height: 12)
+                if !addedPresets.isEmpty {
+                    Section(AppLanguage.text("再添加一个同品牌配置", en: "Additional Instance")) {
+                        ForEach(addedPresets, id: \.self) { provider in
+                            Button(provider.subscriptionTitle) {
+                                self.addProviderSlot(provider)
+                            }
                         }
-                        Text(AppLanguage.text("测试连接", en: "Test Connection"))
-                            .font(.system(size: 11.5, weight: .medium))
                     }
-                    .foregroundStyle(hasKey ? Color.white : Color.secondary)
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 5)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(hasKey ? accent : Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05))
-                    )
+                }
+                
+                Divider()
+                
+                Button(AIProvider.custom.subscriptionTitle) {
+                    self.addProviderSlot(.custom)
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(AppLanguage.text("添加订阅 / 官方 API", en: "Add Subscription / API"))
+                        .font(.system(size: 12, weight: .medium))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .frame(height: 30)
+                .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 0.8))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .pointerStyle(.link)
+            
+            if self.expandedID != nil {
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        self.expandedID = nil
+                    }
+                } label: {
+                    Text(AppLanguage.text("收起面板", en: "Collapse"))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 8)
+                        .frame(height: 30)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(!hasKey || self.probeStatus == .running)
-                .pointerStyle(hasKey ? .link : .default)
+                .pointerStyle(.link)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
             
-            self.rowDivider
-            
-            // Row 1: Single API Key Input
-            HStack(alignment: .center, spacing: 12) {
-                Text("API Key")
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: self.labelColumnWidth, alignment: .leading)
-                
-                HStack(spacing: 8) {
-                    Group {
-                        if self.isRevealingKey {
-                            TextField(
-                                AppLanguage.text("直接粘贴 OpenCode Go Key，输入即生效", en: "Paste OpenCode Go API Key"),
-                                text: self.apiKeyBinding
-                            )
-                            .font(.system(size: 12, design: .monospaced))
-                        } else {
-                            SecureField(
-                                AppLanguage.text("直接粘贴 OpenCode Go Key，输入即生效", en: "Paste OpenCode Go API Key"),
-                                text: self.apiKeyBinding
-                            )
-                            .font(.system(size: 12))
-                        }
-                    }
-                    .textFieldStyle(.plain)
-                    .onSubmit {
-                        if hasKey {
-                            Task { await self.testOpenCodeGo() }
-                        }
-                    }
-                    
-                    if self.trimmedKey.isEmpty {
-                        Button(AppLanguage.text("粘贴", en: "Paste")) {
-                            if let pasted = NSPasteboard.general.string(forType: .string)?
-                                .trimmingCharacters(in: .whitespacesAndNewlines),
-                               !pasted.isEmpty
-                            {
-                                self.apiKeyBinding.wrappedValue = pasted
-                            }
-                        }
-                        .controlSize(.mini)
-                    } else {
-                        Button(self.isRevealingKey ? AppLanguage.text("隐藏", en: "Hide") : AppLanguage.text("显示", en: "Show")) {
-                            self.isRevealingKey.toggle()
-                        }
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .buttonStyle(.plain)
-                        
-                        Button(AppLanguage.text("清除", en: "Clear")) {
-                            self.apiKeyBinding.wrappedValue = ""
-                        }
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color(nsColor: .textBackgroundColor))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(self.cardBorder, lineWidth: 1)
-                )
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            
-            self.rowDivider
-            
-            // Row 2: Pre-filled URL & Protocol Selector
-            HStack(alignment: .top, spacing: 12) {
-                Text(AppLanguage.text("接口地址", en: "Endpoint"))
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: self.labelColumnWidth, alignment: .leading)
-                    .padding(.top, 5)
-                
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        TextField("https://opencode.ai/zen/go/v1", text: self.baseURLBinding)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .foregroundStyle(.primary)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5.5)
-                            .background(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.05 : 0.03))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .strokeBorder(self.cardBorder, lineWidth: 0.75)
-                            )
-                        
-                        if self.isCustomURLModified {
-                            Button(AppLanguage.text("恢复默认", en: "Reset")) {
-                                self.baseURLBinding.wrappedValue = self.standardOpenCodeGoURL
-                            }
-                            .controlSize(.small)
-                        }
-                    }
-                    
-                    WrappingFlowLayout(horizontalSpacing: 6, verticalSpacing: 6) {
-                        ForEach(AIEndpoint.subscriptionProtocols, id: \.self) { proto in
-                            let selected = (self.profile.endpoint == proto)
-                            Button {
-                                self.switchProtocol(proto)
-                            } label: {
-                                Text(proto.shortProtocolBadge)
-                                    .font(.system(size: 11, weight: selected ? .semibold : .medium))
-                                    .foregroundStyle(selected ? Color.white : Color.secondary)
-                                    .padding(.horizontal, 9)
-                                    .padding(.vertical, 4.5)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(selected ? accent : Color.primary.opacity(self.colorScheme == .dark ? 0.07 : 0.045))
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            
-            self.rowDivider
-            
-            // Row 3: Default Model Pure Selection + Curated Quick-Switch Model Chips
-            HStack(alignment: .top, spacing: 12) {
-                Text(AppLanguage.text("默认模型", en: "Model"))
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: self.labelColumnWidth, alignment: .leading)
-                    .padding(.top, 5)
-                
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 8) {
-                        Menu {
-                            ForEach(AIProvider.openCodeGoModelGroups) { group in
-                                Section(group.title) {
-                                    ForEach(group.models, id: \.self) { modelID in
-                                        Button(self.currentModelLabel == modelID ? "✓  \(modelID)" : modelID) {
-                                            self.selectModel(modelID)
-                                        }
-                                    }
-                                }
-                            }
-                            let curatedSet = Set(AIProvider.openCodeGo.recommendedModels)
-                            let remoteExtras = self.fetchedModels.map(\.id).filter { !curatedSet.contains($0) }
-                            if !remoteExtras.isEmpty {
-                                Section(AppLanguage.text("接口获取模型", en: "Fetched Models")) {
-                                    ForEach(remoteExtras, id: \.self) { modelID in
-                                        Button(self.currentModelLabel == modelID ? "✓  \(modelID)" : modelID) {
-                                            self.selectModel(modelID)
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Text(self.currentModelLabel)
-                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(.primary)
-                                Spacer(minLength: 4)
-                                Text("▾")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.horizontal, 10)
-                            .frame(minHeight: 28)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(Color(nsColor: .textBackgroundColor))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .strokeBorder(self.cardBorder, lineWidth: 1)
-                            )
-                        }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        
-                        if self.profile.model != AIProvider.openCodeGo.defaultModel {
-                            Button(AppLanguage.text("设为默认", en: "Default")) {
-                                self.selectModel(AIProvider.openCodeGo.defaultModel)
-                            }
-                            .controlSize(.small)
-                        }
-                        
-                        if hasKey {
-                            Button {
-                                Task { await self.fetchRemoteModels(silentError: false) }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    if self.isFetchingModels {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                            .scaleEffect(0.7)
-                                            .frame(width: 12, height: 12)
-                                    }
-                                    Text(self.isFetchingModels
-                                         ? AppLanguage.text("刷新中", en: "Fetching")
-                                         : AppLanguage.text("刷新模型", en: "Refresh Models"))
-                                        .font(.system(size: 11))
-                                }
-                            }
-                            .controlSize(.small)
-                            .disabled(self.isFetchingModels)
-                        }
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(AIProvider.openCodeGoModelGroups) { group in
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(group.title)
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .foregroundStyle(.tertiary)
-                                
-                                WrappingFlowLayout(horizontalSpacing: 6, verticalSpacing: 6) {
-                                    ForEach(group.models, id: \.self) { modelID in
-                                        self.modelChip(modelID: modelID, accent: accent)
-                                    }
-                                }
-                            }
-                        }
-                        
-                        let curatedSet = Set(AIProvider.openCodeGo.recommendedModels)
-                        let remoteExtras = self.fetchedModels
-                            .map(\.id)
-                            .filter { !curatedSet.contains($0) }
-                        if !remoteExtras.isEmpty {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(AppLanguage.text("接口获取模型", en: "Fetched Models"))
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .foregroundStyle(.tertiary)
-                                
-                                WrappingFlowLayout(horizontalSpacing: 6, verticalSpacing: 6) {
-                                    ForEach(remoteExtras.prefix(12), id: \.self) { modelID in
-                                        self.modelChip(modelID: modelID, accent: accent)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            
-            if let probeStatus = self.probeStatus {
-                self.rowDivider
-                self.probeBanner(probeStatus)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-            }
+            Spacer()
         }
-        .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
     }
     
     
-    @ViewBuilder
-    private func modelChip(modelID: String, accent: Color) -> some View {
-        let isSelected = (self.profile.model == modelID)
+    // MARK: - Actions & Deferred Persistence (Zero Main-Thread Animation Blocking)
+    
+    private static let accordionCurve = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)
+    
+    private func toggleExpanded(_ id: UUID) {
+        withAnimation(Self.accordionCurve) {
+            self.expandedID = (self.expandedID == id) ? nil : id
+        }
+    }
+    
+    private func selectActiveSlot(_ id: UUID) {
+        guard let idx = self.slots.firstIndex(where: { $0.id == id }) else { return }
+        let needsKey = !self.slots[idx].isReady
+        withAnimation(Self.accordionCurve) {
+            self.activeID = id
+            if needsKey {
+                self.expandedID = id
+            }
+        }
+        AIEndpointStore.activeID = id
+        self.schedulePersist(for: id)
+    }
+    
+    private func addProviderSlot(_ provider: AIProvider) {
+        var created = provider.makeProfile(customName: provider == .custom ? AIProvider.custom.subscriptionTitle : provider.subscriptionTitle)
+        if provider == .custom {
+            created.baseURL = ""
+            created.model = ""
+        }
+        let newSlot = GatewaySlot(profile: created, apiKey: "")
+        withAnimation(Self.accordionCurve) {
+            self.slots.append(newSlot)
+            self.activeID = newSlot.id
+            self.expandedID = newSlot.id
+        }
+        if let idx = self.slots.firstIndex(where: { $0.id == newSlot.id }) {
+            self.persistSlotInMemoryAndStore(at: idx, makeActive: true)
+            self.scheduleBackendSync()
+        }
+    }
+    
+    private func removeSlot(_ id: UUID) {
+        guard let idx = self.slots.firstIndex(where: { $0.id == id }) else { return }
+        self.persistTasks[id]?.cancel()
+        self.persistTasks.removeValue(forKey: id)
+        self.probeStatuses.removeValue(forKey: id)
+        self.revealingKeyIDs.remove(id)
         
-        Button {
-            self.selectModel(modelID)
-        } label: {
-            Text(modelID)
-                .font(.system(size: 11, weight: isSelected ? .semibold : .medium, design: .monospaced))
-                .fixedSize(horizontal: false, vertical: true)
-                .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.86))
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(isSelected ? accent : Color.primary.opacity(self.colorScheme == .dark ? 0.065 : 0.04))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(isSelected ? accent : self.cardBorder, lineWidth: isSelected ? 1.1 : 0.75)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-    }
-    
-    
-    @ViewBuilder
-    private func probeBanner(_ probe: EndpointProbeStatus) -> some View {
-        HStack(alignment: .center, spacing: 8) {
-            switch probe {
-                case .running:
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 14, height: 14)
-                    Text(AppLanguage.text("正在测速连通性", en: "Testing Connection"))
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                case .succeeded(let reply, let latencyMs):
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 7, height: 7)
-                    Text("连通 · \(latencyMs) ms · \(reply)")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                case .failed(let msg):
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 7, height: 7)
-                    Text(msg)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
+        let wasActive = (self.activeID == id)
+        withAnimation(Self.accordionCurve) {
+            self.slots.remove(at: idx)
+            if self.expandedID == id {
+                self.expandedID = nil
             }
-            Spacer(minLength: 0)
+            if wasActive {
+                self.activeID = self.slots.first?.id
+            }
+        }
+        
+        let nextActive = self.activeID
+        Task { @MainActor in
+            AIEndpointStore.delete(id: id)
+            AIEndpointStore.activeID = nextActive
+            self.scheduleBackendSync()
         }
     }
     
-    
-    // MARK: - Bindings & Persistence
-    
-    private var apiKeyBinding: Binding<String> {
-        Binding(
-            get: { self.apiKey },
-            set: { newKey in
-                self.apiKey = newKey
-                self.scheduleDebouncedPersistOpenCodeGo()
-            }
-        )
+    private func updateName(_ newValue: String, for id: UUID) {
+        guard let idx = self.slots.firstIndex(where: { $0.id == id }) else { return }
+        self.slots[idx].profile.name = newValue
+        self.schedulePersist(for: id)
     }
     
-    private var baseURLBinding: Binding<String> {
-        Binding(
-            get: { self.profile.baseURL },
-            set: { newURL in
-                self.profile.baseURL = newURL
-                self.scheduleDebouncedPersistOpenCodeGo()
-            }
-        )
+    private func updateAPIKey(_ newKey: String, for id: UUID) {
+        guard let idx = self.slots.firstIndex(where: { $0.id == id }) else { return }
+        let wasEmpty = self.slots[idx].trimmedKey.isEmpty
+        self.slots[idx].apiKey = newKey
+        let currentActiveReady = self.activeID
+            .flatMap { aid in self.slots.first(where: { $0.id == aid })?.isReady } ?? false
+        if wasEmpty && !newKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !currentActiveReady {
+            self.activeID = id
+        }
+        self.schedulePersist(for: id)
     }
     
+    private func updateBaseURL(_ newURL: String, for id: UUID) {
+        guard let idx = self.slots.firstIndex(where: { $0.id == id }) else { return }
+        self.slots[idx].profile.baseURL = newURL
+        self.schedulePersist(for: id)
+    }
     
-    private var rowDivider: some View {
-        Rectangle()
-            .fill(self.colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
-            .frame(height: 1)
-            .padding(.horizontal, 14)
+    private func updateModel(_ newModel: String, for id: UUID) {
+        guard let idx = self.slots.firstIndex(where: { $0.id == id }) else { return }
+        self.slots[idx].profile.model = newModel
+        self.schedulePersist(for: id)
+    }
+    
+    private func selectModel(_ modelID: String, for id: UUID) {
+        guard let idx = self.slots.firstIndex(where: { $0.id == id }) else { return }
+        self.slots[idx].profile.model = modelID
+        self.slots[idx].profile.rememberModels([modelID])
+        self.persistSlotInMemoryAndStore(at: idx, makeActive: self.activeID == id)
+        self.scheduleBackendSync()
+    }
+    
+    private func switchProtocol(_ newEndpoint: AIEndpoint, for id: UUID) {
+        guard let idx = self.slots.firstIndex(where: { $0.id == id }),
+              self.slots[idx].profile.endpoint != newEndpoint
+        else { return }
+        let prevProvider = self.slots[idx].profile.provider
+        let oldDefault = prevProvider == .openCodeGo
+            ? (self.slots[idx].profile.endpoint == .anthropicMessages ? "https://opencode.ai/zen/go" : "https://opencode.ai/zen/go/v1")
+            : prevProvider.defaultBaseURL
+        self.slots[idx].profile.endpoint = newEndpoint
+        if prevProvider == .openCodeGo {
+            let current = self.slots[idx].profile.resolvedBaseURL
+            if current == oldDefault || current.isEmpty {
+                self.slots[idx].profile.baseURL = (newEndpoint == .anthropicMessages)
+                    ? "https://opencode.ai/zen/go"
+                    : "https://opencode.ai/zen/go/v1"
+            }
+        }
+        self.persistSlotInMemoryAndStore(at: idx, makeActive: self.activeID == id)
+        self.scheduleBackendSync()
+    }
+    
+    private func schedulePersist(for id: UUID) {
+        self.persistTasks[id]?.cancel()
+        self.persistTasks[id] = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled,
+                  let idx = self.slots.firstIndex(where: { $0.id == id })
+            else { return }
+            self.persistSlotInMemoryAndStore(at: idx, makeActive: self.activeID == id)
+            self.scheduleBackendSync()
+        }
+    }
+    
+    private func scheduleBackendSync() {
+        self.backendSyncTask?.cancel()
+        self.backendSyncTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(240))
+            guard !Task.isCancelled else { return }
+            CotLocalDatabase.shared.syncAIEndpointsToDatabase()
+            _ = try? self.piKernel.syncWorkspace()
+        }
+    }
+    
+    private func flushPendingPersistenceImmediately() {
+        let pendingIDs = Array(self.persistTasks.keys)
+        for id in pendingIDs {
+            self.persistTasks[id]?.cancel()
+            self.persistTasks.removeValue(forKey: id)
+            if let idx = self.slots.firstIndex(where: { $0.id == id }) {
+                self.persistSlotInMemoryAndStore(at: idx, makeActive: self.activeID == id)
+            }
+        }
+        if self.backendSyncTask != nil || !pendingIDs.isEmpty {
+            self.backendSyncTask?.cancel()
+            self.backendSyncTask = nil
+            CotLocalDatabase.shared.syncAIEndpointsToDatabase()
+            _ = try? self.piKernel.syncWorkspace()
+        }
+    }
+    
+    private func persistSlotInMemoryAndStore(at index: Int, makeActive: Bool) {
+        guard self.slots.indices.contains(index) else { return }
+        let id = self.slots[index].id
+        self.persistTasks[id]?.cancel()
+        self.persistTasks.removeValue(forKey: id)
+        
+        var updated = self.slots[index].profile
+        let provider = updated.provider
+        if updated.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            updated.name = provider == .custom ? AIProvider.custom.subscriptionTitle : provider.subscriptionTitle
+        }
+        for (k, v) in provider.defaultCustomHeaders where updated.customHeaders[k] == nil {
+            updated.customHeaders[k] = v
+        }
+        let cleanModel = updated.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanModel.isEmpty {
+            updated.rememberModels([cleanModel])
+        }
+        updated.rememberModels(provider.recommendedModels)
+        
+        let trimmedKey = self.slots[index].trimmedKey
+        self.slots[index].profile = updated
+        self.probeStatuses[id] = nil
+        
+        AIEndpointStore.save(updated, apiKey: trimmedKey)
+        if makeActive || AIEndpointStore.activeID == nil {
+            AIEndpointStore.activeID = updated.id
+            self.activeID = updated.id
+        }
+    }
+    
+    private static func loadGatewayState() -> (slots: [GatewaySlot], activeID: UUID?) {
+        AIEndpointStore.migrateLegacyConfigurationIfNeeded()
+        var storedProfiles = AIEndpointStore.profiles
+        
+        // Seed starter presets ONLY ONCE on a brand-new uninitialized store; never resurrect user-deleted items!
+        if !UserDefaults.standard.bool(forKey: Self.starterSeededDefaultsKey) {
+            UserDefaults.standard.set(true, forKey: Self.starterSeededDefaultsKey)
+            if storedProfiles.isEmpty {
+                for starter in AIProvider.starterSubscriptions {
+                    let prof = starter.makeProfile(customName: starter.subscriptionTitle)
+                    AIEndpointStore.save(prof, apiKey: "")
+                }
+                storedProfiles = AIEndpointStore.profiles
+                if let first = storedProfiles.first {
+                    AIEndpointStore.activeID = first.id
+                }
+            }
+        }
+        
+        let builtSlots: [GatewaySlot] = storedProfiles.map { prof in
+            var normalized = prof
+            let provider = normalized.provider
+            for (k, v) in provider.defaultCustomHeaders where normalized.customHeaders[k] == nil {
+                normalized.customHeaders[k] = v
+            }
+            if normalized.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !provider.defaultModel.isEmpty
+            {
+                normalized.model = provider.defaultModel
+            }
+            normalized.rememberModels(provider.recommendedModels)
+            return GatewaySlot(
+                profile: normalized,
+                apiKey: AIEndpointStore.apiKey(for: normalized)
+            )
+        }
+        
+        let resolvedActiveID: UUID? = {
+            if let storedActive = AIEndpointStore.activeID,
+               builtSlots.contains(where: { $0.id == storedActive })
+            {
+                return storedActive
+            }
+            if let readySlot = builtSlots.first(where: \.isReady) {
+                return readySlot.id
+            }
+            return builtSlots.first?.id
+        }()
+        return (builtSlots, resolvedActiveID)
+    }
+    
+    private func reload() {
+        let loaded = Self.loadGatewayState()
+        self.slots = loaded.slots
+        self.activeID = loaded.activeID
+        if let exp = self.expandedID, !loaded.slots.contains(where: { $0.id == exp }) {
+            self.expandedID = nil
+        }
+        self.kernelEnabled = self.piKernel.isKernelEnabled
+    }
+    
+    private func fetchRemoteModels(for id: UUID, silentError: Bool) async {
+        guard let idx = self.slots.firstIndex(where: { $0.id == id }) else { return }
+        let slot = self.slots[idx]
+        self.fetchingModelIDs.insert(id)
+        defer { self.fetchingModelIDs.remove(id) }
+        
+        let config = slot.profile.configuration(apiKey: slot.trimmedKey)
+        do {
+            let models = try await AIService.shared.fetchModels(configuration: config)
+            self.fetchedModelsByID[id] = models
+            if let latestIdx = self.slots.firstIndex(where: { $0.id == id }) {
+                self.slots[latestIdx].profile.rememberModels(models.prefix(24).map(\.id))
+                self.persistSlotInMemoryAndStore(at: latestIdx, makeActive: self.activeID == id)
+                self.scheduleBackendSync()
+            }
+        } catch {
+            if !silentError {
+                self.probeStatuses[id] = .failed("拉取模型失败：\(error.localizedDescription)")
+            }
+        }
+    }
+    
+    private func testSlot(_ id: UUID) async {
+        guard let slot = self.slots.first(where: { $0.id == id }) else { return }
+        self.probeStatuses[id] = .running
+        let clock = ContinuousClock()
+        let start = clock.now
+        do {
+            let reply = try await AIService.shared.testConnection(
+                configuration: slot.profile.configuration(apiKey: slot.trimmedKey)
+            )
+            let elapsed = start.duration(to: clock.now)
+            let ms = max(1, Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))
+            self.probeStatuses[id] = .succeeded(reply, latencyMs: ms)
+        } catch {
+            self.probeStatuses[id] = .failed(error.localizedDescription)
+        }
     }
     
     private var cardSurface: Color {
@@ -636,157 +1154,10 @@ struct AIModelsSettingsView: View {
     private var cardBorder: Color {
         self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.07)
     }
-    
-    
-    private func reload() {
-        AIEndpointStore.migrateLegacyConfigurationIfNeeded()
-        let storedProfiles = AIEndpointStore.profiles
-        let activeID = AIEndpointStore.activeID
-        
-        let existingOpenCodeGo = storedProfiles.first(where: { $0.id == activeID && $0.provider == .openCodeGo })
-            ?? storedProfiles.first(where: { $0.provider == .openCodeGo })
-        
-        if var target = existingOpenCodeGo {
-            var didNormalize = false
-            for (k, v) in AIProvider.openCodeGo.defaultCustomHeaders where target.customHeaders[k] == nil {
-                target.customHeaders[k] = v
-                didNormalize = true
-            }
-            let prevSaved = target.savedModels
-            target.rememberModels(AIProvider.openCodeGo.recommendedModels)
-            if target.savedModels != prevSaved {
-                didNormalize = true
-            }
-            if target.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                target.model = AIProvider.openCodeGo.defaultModel
-                didNormalize = true
-            }
-            let key = AIEndpointStore.apiKey(for: target)
-            if didNormalize || AIEndpointStore.activeID != target.id {
-                AIEndpointStore.save(target, apiKey: key)
-                AIEndpointStore.activeID = target.id
-                CotLocalDatabase.shared.syncAIEndpointsToDatabase()
-                _ = try? self.piKernel.syncWorkspace()
-            }
-            self.profile = target
-            self.apiKey = key
-        } else {
-            let created = AIProvider.openCodeGo.makeProfile()
-            AIEndpointStore.save(created, apiKey: "")
-            AIEndpointStore.activeID = created.id
-            CotLocalDatabase.shared.syncAIEndpointsToDatabase()
-            _ = try? self.piKernel.syncWorkspace()
-            self.profile = created
-            self.apiKey = ""
-        }
-        
-        self.kernelEnabled = self.piKernel.isKernelEnabled
-    }
-    
-    
-    private func scheduleDebouncedPersistOpenCodeGo() {
-        self.persistDebounceTask?.cancel()
-        self.persistDebounceTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(200))
-            guard !Task.isCancelled else { return }
-            self.persistOpenCodeGo()
-        }
-    }
-    
-    
-    private func persistOpenCodeGo() {
-        self.persistDebounceTask?.cancel()
-        self.persistDebounceTask = nil
-        var updated = self.profile
-        if updated.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            updated.name = AIProvider.openCodeGo.label
-        }
-        for (k, v) in AIProvider.openCodeGo.defaultCustomHeaders where updated.customHeaders[k] == nil {
-            updated.customHeaders[k] = v
-        }
-        updated.rememberModels(AIProvider.openCodeGo.recommendedModels + [updated.model])
-        
-        self.profile = updated
-        AIEndpointStore.save(updated, apiKey: self.trimmedKey)
-        AIEndpointStore.activeID = updated.id
-        CotLocalDatabase.shared.syncAIEndpointsToDatabase()
-        _ = try? self.piKernel.syncWorkspace()
-        self.probeStatus = nil
-        
-        withAnimation(.easeOut(duration: 0.14)) {
-            self.didSaveIndicator = true
-        }
-        let targetKeySnapshot = self.trimmedKey
-        let targetModelSnapshot = updated.model
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.4))
-            if self.trimmedKey == targetKeySnapshot && self.profile.model == targetModelSnapshot {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    self.didSaveIndicator = false
-                }
-            }
-        }
-    }
-    
-    
-    private func switchProtocol(_ newEndpoint: AIEndpoint) {
-        guard self.profile.endpoint != newEndpoint else { return }
-        self.profile.endpoint = newEndpoint
-        if !self.isCustomURLModified || self.profile.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            self.profile.baseURL = (newEndpoint == .anthropicMessages)
-                ? "https://opencode.ai/zen/go"
-                : "https://opencode.ai/zen/go/v1"
-        }
-        self.persistOpenCodeGo()
-    }
-    
-    
-    private func selectModel(_ modelID: String) {
-        self.profile.model = modelID
-        self.profile.rememberModels([modelID])
-        self.persistOpenCodeGo()
-    }
-    
-    
-    private func fetchRemoteModels(silentError: Bool) async {
-        self.isFetchingModels = true
-        defer { self.isFetchingModels = false }
-        let config = self.profile.configuration(apiKey: self.trimmedKey)
-        do {
-            let models = try await AIService.shared.fetchModels(configuration: config)
-            self.fetchedModels = models
-            var updated = self.profile
-            updated.rememberModels(models.prefix(24).map(\.id))
-            self.profile = updated
-            AIEndpointStore.save(updated, apiKey: self.trimmedKey)
-            CotLocalDatabase.shared.syncAIEndpointsToDatabase()
-        } catch {
-            if !silentError {
-                self.probeStatus = .failed("拉取模型失败：\(error.localizedDescription)")
-            }
-        }
-    }
-    
-    
-    private func testOpenCodeGo() async {
-        self.probeStatus = .running
-        let clock = ContinuousClock()
-        let start = clock.now
-        do {
-            let reply = try await AIService.shared.testConnection(
-                configuration: self.profile.configuration(apiKey: self.trimmedKey)
-            )
-            let elapsed = start.duration(to: clock.now)
-            let ms = max(1, Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))
-            self.probeStatus = .succeeded(reply, latencyMs: ms)
-        } catch {
-            self.probeStatus = .failed(error.localizedDescription)
-        }
-    }
 }
 
 
-// MARK: - Bots (Pi 内核智能体编队 · 固定宽度零跳动 · 卡片 / 列表 / 叠放视图)
+// MARK: - Bots (3:4 立绘比例 · 120fps 金字塔叠放扇面 · 异步位图预热)
 
 enum BotCollectionLayoutMode: String, CaseIterable, Identifiable {
     case card
@@ -824,7 +1195,7 @@ private struct BotCardSnapshot: Identifiable, Equatable {
     let accentHex: String
     let isEnabled: Bool
     let recentCalls: Int
-    let avatarImage: NSImage?
+    let portraitImage: NSImage?
     
     var id: AIBotID { self.botID }
     
@@ -839,284 +1210,830 @@ private struct BotCardSnapshot: Identifiable, Equatable {
             && lhs.accentHex == rhs.accentHex
             && lhs.isEnabled == rhs.isEnabled
             && lhs.recentCalls == rhs.recentCalls
-            && lhs.avatarImage === rhs.avatarImage
+            && lhs.portraitImage === rhs.portraitImage
     }
 }
 
 
-private struct BotStageNodeView: View, Equatable {
+/// Pure Equatable ~3:4 portrait bitmap surface. Isolated from deck index/offset changes so
+/// CoreAnimation interpolates scale/rotation/offset transforms at 120fps without re-running `body`.
+private struct BotPortraitTileSurface: View, Equatable {
     
-    let snapshot: BotCardSnapshot
-    let index: Int
-    let total: Int
-    let layoutMode: BotCollectionLayoutMode
-    let isHovered: Bool
-    let hoveredIndex: Int?
+    let botID: AIBotID
+    let shortTitle: String
+    let accentHex: String
+    let isEnabled: Bool
+    let portraitImage: NSImage?
+    let width: CGFloat
+    let height: CGFloat
+    let cornerRadius: CGFloat
+    let showPackOverlay: Bool
+    let isPackCenter: Bool
     let isDark: Bool
-    let cardBorder: Color
-    let onInspect: () -> Void
-    let onToggleEnabled: (Bool) -> Void
-    let onHoverChanged: (Bool) -> Void
     
     
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.snapshot == rhs.snapshot
-            && lhs.index == rhs.index
-            && lhs.total == rhs.total
-            && lhs.layoutMode == rhs.layoutMode
-            && lhs.isHovered == rhs.isHovered
-            && lhs.hoveredIndex == rhs.hoveredIndex
+        lhs.botID == rhs.botID
+            && lhs.shortTitle == rhs.shortTitle
+            && lhs.accentHex == rhs.accentHex
+            && lhs.isEnabled == rhs.isEnabled
+            && lhs.portraitImage === rhs.portraitImage
+            && abs(lhs.width - rhs.width) < 0.5
+            && abs(lhs.height - rhs.height) < 0.5
+            && lhs.showPackOverlay == rhs.showPackOverlay
+            && lhs.isPackCenter == rhs.isPackCenter
             && lhs.isDark == rhs.isDark
     }
     
     
-    private static let fixedStageWidth: CGFloat = 527
-    private static let galleryColumns = 4
-    private static let galleryGap: CGFloat = 13
-    private static let galleryAvatarSide: CGFloat = 122
-    private static let galleryRowStride: CGFloat = 180
-    private static let packAvatarSide: CGFloat = 110
-    
-    
     var body: some View {
-        let accent = Color(hexString: self.snapshot.accentHex)
+        let accent = Color(hexString: self.accentHex)
         
-        let itemWidth: CGFloat
-        let itemHeight: CGFloat
-        let artSide: CGFloat
-        let artCorner: CGFloat
-        let posX: CGFloat
-        let posY: CGFloat
-        let rotation: Double
-        let packScale: CGFloat
-        
-        switch self.layoutMode {
-            case .list:
-                artSide = 46
-                artCorner = 11
-                itemWidth = Self.fixedStageWidth
-                itemHeight = 52
-                posX = 0
-                posY = CGFloat(self.index) * 64.0
-                rotation = 0
-                packScale = 1.0
-            case .card:
-                artSide = Self.galleryAvatarSide
-                artCorner = 22
-                itemWidth = artSide
-                itemHeight = artSide + 52
-                let col = self.index % Self.galleryColumns
-                let row = self.index / Self.galleryColumns
-                posX = CGFloat(col) * (artSide + Self.galleryGap)
-                posY = CGFloat(row) * Self.galleryRowStride
-                rotation = 0
-                packScale = 1.0
-            case .pack:
-                artSide = Self.packAvatarSide
-                artCorner = 20
-                itemWidth = artSide
-                itemHeight = artSide
-                let maxDeckSpan = Self.fixedStageWidth - artSide - 56
-                let spread = self.total > 1 ? min(39.0, maxDeckSpan / CGFloat(self.total - 1)) : 0
-                let mid = Double(self.total - 1) * 0.5
-                let offsetIndex = Double(self.index) - mid
-                var fanShift: CGFloat = 0
-                if let hIdx = self.hoveredIndex, hIdx != self.index {
-                    fanShift = self.index < hIdx ? -11.0 : 11.0
-                }
-                posX = (Self.fixedStageWidth - artSide) * 0.5 + CGFloat(offsetIndex) * spread + fanShift
-                posY = 44.0 + abs(CGFloat(offsetIndex)) * 2.4 - (self.isHovered ? 12.0 : 0.0)
-                rotation = self.isHovered ? 0.0 : offsetIndex * 2.4
-                packScale = self.isHovered ? 1.06 : 1.0
-        }
-        
-        return ZStack(alignment: .topLeading) {
-            // 1:1 Square Avatar Frame across all 3 views (zero drawingGroup, pure pre-rasterized bitmap)
-            ZStack {
-                if let avatar = self.snapshot.avatarImage {
-                    Image(nsImage: avatar)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFill()
-                        .opacity(self.snapshot.isEnabled ? 1.0 : 0.45)
-                } else {
-                    LinearGradient(
-                        colors: [
-                            accent.opacity(self.isDark ? 0.22 : 0.14),
-                            self.isDark
-                                ? Color(red: 0.14, green: 0.14, blue: 0.17)
-                                : Color(red: 0.96, green: 0.96, blue: 0.98),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    Text(String(self.snapshot.shortTitle.prefix(1)))
-                        .font(.system(size: min(artSide * 0.36, 28), weight: .semibold))
-                        .foregroundStyle(accent)
-                        .opacity(self.snapshot.isEnabled ? 1.0 : 0.45)
-                }
-                
-                if self.layoutMode == .pack {
-                    VStack(spacing: 0) {
-                        Spacer()
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(self.snapshot.isEnabled ? accent : Color.white.opacity(0.45))
-                                .frame(width: 5, height: 5)
-                            Text(self.snapshot.shortTitle)
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(Color.white)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(
-                            LinearGradient(
-                                colors: [Color.black.opacity(0.0), Color.black.opacity(0.72)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                    }
-                    .allowsHitTesting(false)
-                }
-            }
-            .frame(width: artSide, height: artSide)
-            .clipShape(RoundedRectangle(cornerRadius: artCorner, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: artCorner, style: .continuous)
-                    .strokeBorder(
-                        self.isHovered
-                            ? accent.opacity(0.85)
-                            : (self.layoutMode == .pack
-                               ? Color.white.opacity(self.isDark ? 0.20 : 0.78)
-                               : self.cardBorder),
-                        lineWidth: self.isHovered ? 1.6 : 0.9
-                    )
-            )
-            .scaleEffect(packScale)
-            .rotationEffect(.degrees(rotation))
-            .contentShape(RoundedRectangle(cornerRadius: artCorner, style: .continuous))
-            .onTapGesture(perform: self.onInspect)
+        ZStack(alignment: .top) {
+            Color(red: 0.965, green: 0.969, blue: 0.980)
             
-            // List view metadata right of 1:1 square avatar
-            if self.layoutMode == .list {
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Text(self.snapshot.displayTitle)
-                                .font(.system(size: 13.5, weight: .semibold))
-                                .foregroundStyle(self.snapshot.isEnabled ? .primary : .secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            if let personaBadge = self.snapshot.personaBadge {
-                                Text(personaBadge)
-                                    .font(.system(size: 10.5, weight: .medium))
-                                    .foregroundStyle(accent)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 1.5)
-                                    .background(accent.opacity(self.isDark ? 0.16 : 0.10), in: Capsule())
-                            }
-                        }
-                        
-                        HStack(spacing: 6) {
-                            Text(self.snapshot.modelLabel)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.tertiary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            if self.snapshot.recentCalls > 0 {
-                                Text("· \(self.snapshot.recentCalls) 次")
-                                    .font(.system(size: 11).monospacedDigit())
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-                    
-                    Spacer(minLength: 6)
-                    
-                    Toggle("", isOn: Binding(
-                        get: { self.snapshot.isEnabled },
-                        set: { self.onToggleEnabled($0) }
-                    ))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    
-                    Button(action: self.onInspect) {
-                        Text(AppLanguage.text("配置", en: "Edit"))
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(self.isHovered ? accent : Color(nsColor: .tertiaryLabelColor))
-                            .padding(.horizontal, 8)
-                            .frame(height: 24)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.leading, artSide + 12)
-                .frame(width: itemWidth, height: artSide, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture(perform: self.onInspect)
+            if let portrait = self.portraitImage {
+                Image(nsImage: portrait)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFill()
+                    .frame(width: self.width, height: self.height, alignment: .top)
+                    .opacity(self.isEnabled ? 1.0 : 0.48)
+            } else {
+                LinearGradient(
+                    colors: [
+                        accent.opacity(self.isDark ? 0.22 : 0.14),
+                        self.isDark
+                            ? Color(red: 0.15, green: 0.15, blue: 0.18)
+                            : Color(red: 0.95, green: 0.96, blue: 0.98),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                Text(String(self.shortTitle.prefix(1)))
+                    .font(.system(size: min(self.width * 0.34, 28), weight: .semibold))
+                    .foregroundStyle(accent)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(self.isEnabled ? 1.0 : 0.48)
             }
             
-            // Gallery square avatar caption underneath (zero ellipsis)
-            if self.layoutMode == .card {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
-                        Text(self.snapshot.shortTitle)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(self.snapshot.isEnabled ? .primary : .secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        
-                        Spacer(minLength: 2)
-                        
+            if self.showPackOverlay {
+                VStack(spacing: 0) {
+                    Spacer()
+                    HStack(spacing: 5) {
                         Circle()
-                            .fill(self.snapshot.isEnabled ? accent : Color.primary.opacity(0.18))
-                            .frame(width: 6, height: 6)
+                            .fill(self.isEnabled ? accent : Color.white.opacity(0.45))
+                            .frame(width: 5.5, height: 5.5)
+                        Text(self.shortTitle)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.white)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
                     }
-                    
-                    Text(self.snapshot.subtitle)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.black.opacity(0.0), Color.black.opacity(0.68)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
                 }
-                .frame(width: artSide, alignment: .leading)
-                .offset(y: artSide + 6)
-                .onTapGesture(perform: self.onInspect)
+                .allowsHitTesting(false)
             }
         }
-        .frame(width: itemWidth, height: itemHeight, alignment: .topLeading)
-        .offset(x: posX, y: posY)
-        .zIndex(Double(self.index) + (self.isHovered && self.layoutMode == .pack ? 50 : 0))
-        .onHover { hovering in
-            guard self.layoutMode != .pack else { return }
-            self.onHoverChanged(hovering)
+        .frame(width: self.width, height: self.height)
+        .clipShape(RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
+                .strokeBorder(
+                    self.isPackCenter
+                        ? accent.opacity(0.85)
+                        : (self.showPackOverlay
+                           ? Color.white.opacity(self.isDark ? 0.22 : 0.85)
+                           : (self.isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.08))),
+                    lineWidth: self.isPackCenter ? 1.5 : 0.85
+                )
+        )
+    }
+}
+
+
+// MARK: - 120Hz Hardware-Clipped CoreAnimation CoverFlow Stage (零 SwiftUI 重绘 · 预烘焙纹理 · 静态 shadowPath)
+
+private final class PackBakedCardTextureCache {
+    
+    static let shared = PackBakedCardTextureCache()
+    private var cache: [String: CGImage] = [:]
+    
+    func texture(
+        for snap: BotCardSnapshot,
+        width: CGFloat,
+        height: CGFloat,
+        cornerRadius: CGFloat,
+        isDark: Bool
+    ) -> CGImage? {
+        let imgToken = snap.portraitImage.map { String(UInt(bitPattern: ObjectIdentifier($0))) } ?? "nil"
+        let key = "\(snap.botID.rawValue)|\(snap.shortTitle)|\(snap.accentHex)|\(snap.isEnabled)|\(isDark)|\(Int(width))x\(Int(height))|\(imgToken)"
+        if let hit = self.cache[key] {
+            return hit
         }
-        .pointerStyle(.link)
-        .help("\(self.snapshot.displayTitle) · \(self.snapshot.modelLabel)")
+        guard let baked = Self.renderCardFace(
+            snap: snap,
+            width: width,
+            height: height,
+            cornerRadius: cornerRadius,
+            isDark: isDark
+        ) else {
+            return nil
+        }
+        if self.cache.count > 48 {
+            self.cache.removeAll(keepingCapacity: true)
+        }
+        self.cache[key] = baked
+        return baked
+    }
+    
+    private static func renderCardFace(
+        snap: BotCardSnapshot,
+        width: CGFloat,
+        height: CGFloat,
+        cornerRadius: CGFloat,
+        isDark: Bool
+    ) -> CGImage? {
+        let scale: CGFloat = 2.0
+        let pxW = max(1, Int((width * scale).rounded()))
+        let pxH = max(1, Int((height * scale).rounded()))
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: pxW,
+            height: pxH,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else {
+            return nil
+        }
+        
+        let nsCtx = NSGraphicsContext(cgContext: ctx, flipped: false)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = nsCtx
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        
+        ctx.scaleBy(x: scale, y: scale)
+        let rect = NSRect(x: 0, y: 0, width: width, height: height)
+        let clipPath = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
+        clipPath.addClip()
+        
+        let accentNS = NSColor(Color(hexString: snap.accentHex))
+        
+        // 1. Base surface
+        let bg = isDark
+            ? NSColor(srgbRed: 0.14, green: 0.145, blue: 0.17, alpha: 1.0)
+            : NSColor(srgbRed: 0.965, green: 0.969, blue: 0.980, alpha: 1.0)
+        bg.setFill()
+        rect.fill()
+        
+        // 2. Portrait bitmap (or monogram fallback)
+        if let portrait = snap.portraitImage {
+            portrait.draw(
+                in: rect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: snap.isEnabled ? 1.0 : 0.48
+            )
+        } else {
+            let topTint = accentNS.withAlphaComponent(isDark ? 0.24 : 0.16)
+            if let grad = NSGradient(starting: bg, ending: topTint) {
+                grad.draw(in: rect, angle: 90)
+            }
+            let initial = String(snap.shortTitle.prefix(1)) as NSString
+            let font = NSFont.systemFont(ofSize: 28, weight: .semibold)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: accentNS.withAlphaComponent(snap.isEnabled ? 1.0 : 0.48),
+            ]
+            let sz = initial.size(withAttributes: attrs)
+            initial.draw(
+                at: NSPoint(x: (width - sz.width) * 0.5, y: (height - sz.height) * 0.5),
+                withAttributes: attrs
+            )
+        }
+        
+        // 3. Bottom scrim gradient (y = 0 is bottom in unflipped NSGraphicsContext)
+        let scrimHeight: CGFloat = 44
+        let scrimRect = NSRect(x: 0, y: 0, width: width, height: scrimHeight)
+        if let scrim = NSGradient(
+            starting: NSColor.black.withAlphaComponent(0.72),
+            ending: NSColor.black.withAlphaComponent(0.0)
+        ) {
+            scrim.draw(in: scrimRect, angle: 90)
+        }
+        
+        // 4. Status dot + short title at bottom-left
+        let dotSize: CGFloat = 5.5
+        let dotRect = NSRect(x: 9.5, y: 10.5, width: dotSize, height: dotSize)
+        let dotColor = snap.isEnabled ? accentNS : NSColor.white.withAlphaComponent(0.45)
+        dotColor.setFill()
+        NSBezierPath(ovalIn: dotRect).fill()
+        
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        let titleAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph,
+        ]
+        let titleX: CGFloat = 19.5
+        let titleRect = NSRect(x: titleX, y: 5.5, width: max(10, width - titleX - 8), height: 16)
+        (snap.shortTitle as NSString).draw(in: titleRect, withAttributes: titleAttrs)
+        
+        // 5. Crisp inner hairline border
+        let borderPath = NSBezierPath(
+            roundedRect: rect.insetBy(dx: 0.5, dy: 0.5),
+            xRadius: max(1, cornerRadius - 0.5),
+            yRadius: max(1, cornerRadius - 0.5)
+        )
+        borderPath.lineWidth = 1.0
+        let borderColor = isDark
+            ? NSColor.white.withAlphaComponent(0.20)
+            : NSColor.white.withAlphaComponent(0.88)
+        borderColor.setStroke()
+        borderPath.stroke()
+        
+        return ctx.makeImage()
+    }
+}
+
+
+private final class PackCoreAnimationStageNSView: NSView {
+    
+    private final class CardLayerSlot {
+        let container = CALayer()
+        let face = CALayer()
+        let focusRing = CALayer()
+        var currentCenter: CGPoint = .zero
+        var currentScale: CGFloat = 1.0
+        var currentRotation: CGFloat = 0.0
+        var isVisibleOnStage: Bool = false
+    }
+    
+    var snapshots: [BotCardSnapshot] = []
+    var cardWidth: CGFloat = 126
+    var cardHeight: CGFloat = 170
+    var cardCornerRadius: CGFloat = 15
+    var isDark: Bool = false
+    var onActiveIndexChanged: ((Int) -> Void)?
+    var onInspectBot: ((AIBotID) -> Void)?
+    
+    private var slots: [CardLayerSlot] = []
+    private var lastAppliedStateSignature: String = ""
+    
+    // Continuous deck position in [0, count - 1] (with rubber-banding at ends)
+    private var position: CGFloat = 0
+    private var reportedIndex: Int = 0
+    
+    // 120Hz ProMotion CADisplayLink critically-damped spring state
+    private var displayLink: CADisplayLink?
+    private var springTarget: CGFloat = 0
+    private var springVelocity: CGFloat = 0
+    private var lastFrameTimestamp: CFTimeInterval = 0
+    
+    // Direct gesture tracking
+    private var isTrackpadDragging = false
+    private var lastScrollSampleTime: CFTimeInterval = 0
+    private var smoothedScrollVelocity: CGFloat = 0 // in cards/sec
+    
+    private var mouseDownPoint: CGPoint?
+    private var mouseDragStartPosition: CGFloat = 0
+    private var isMouseDragging = false
+    private var lastMouseSampleTime: CFTimeInterval = 0
+    private var lastMouseX: CGFloat = 0
+    private var mouseVelocity: CGFloat = 0 // in cards/sec
+    
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        self.wantsLayer = true
+        self.layerContentsRedrawPolicy = .never
+        if let root = self.layer {
+            root.masksToBounds = true
+            root.cornerRadius = 14
+            root.cornerCurve = .continuous
+            root.borderWidth = 0.75
+        }
+    }
+    
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        self.addCursorRect(self.bounds, cursor: .pointingHand)
+    }
+    
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if self.window == nil {
+            self.stopSpring()
+        } else {
+            self.window?.invalidateCursorRects(for: self)
+        }
+    }
+    
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        self.applyPositionsImmediately()
+    }
+    
+    func configure(
+        snapshots: [BotCardSnapshot],
+        targetIndex: Int,
+        stepToken: Int,
+        lastHandledStepToken: inout Int,
+        cardWidth: CGFloat,
+        cardHeight: CGFloat,
+        isDark: Bool
+    ) {
+        self.cardWidth = cardWidth
+        self.cardHeight = cardHeight
+        self.isDark = isDark
+        self.snapshots = snapshots
+        
+        if let root = self.layer {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            root.backgroundColor = isDark
+                ? NSColor.white.withAlphaComponent(0.032).cgColor
+                : NSColor.black.withAlphaComponent(0.024).cgColor
+            root.borderColor = isDark
+                ? NSColor.white.withAlphaComponent(0.09).cgColor
+                : NSColor.black.withAlphaComponent(0.07).cgColor
+            CATransaction.commit()
+        }
+        
+        let maxIdx = max(0, snapshots.count - 1)
+        let clampedTarget = min(maxIdx, max(0, targetIndex))
+        
+        // Rebuild or refresh static card textures only when snapshot content/theme actually changed
+        let sig = "\(isDark)|\(Int(cardWidth))x\(Int(cardHeight))|" + snapshots.map {
+            let pTok = $0.portraitImage.map { String(UInt(bitPattern: ObjectIdentifier($0))) } ?? "0"
+            return "\($0.botID.rawValue):\($0.shortTitle):\($0.accentHex):\($0.isEnabled):\(pTok)"
+        }.joined(separator: ",")
+        
+        if sig != self.lastAppliedStateSignature {
+            let isFirstMount = self.lastAppliedStateSignature.isEmpty
+            self.lastAppliedStateSignature = sig
+            self.rebuildCardLayers()
+            if isFirstMount {
+                self.position = CGFloat(clampedTarget)
+                self.springTarget = self.position
+                self.reportedIndex = clampedTarget
+            }
+            self.applyPositionsImmediately()
+        }
+        
+        if stepToken != lastHandledStepToken {
+            lastHandledStepToken = stepToken
+            self.reportedIndex = clampedTarget
+            self.animateToIndex(clampedTarget, initialVelocity: 0)
+        }
+    }
+    
+    private func rebuildCardLayers() {
+        guard let root = self.layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        
+        while self.slots.count > self.snapshots.count {
+            let removed = self.slots.removeLast()
+            removed.container.removeFromSuperlayer()
+        }
+        while self.slots.count < self.snapshots.count {
+            let slot = CardLayerSlot()
+            slot.container.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            slot.container.shadowColor = NSColor.black.cgColor
+            slot.container.shadowRadius = 6.5
+            slot.container.shadowOffset = CGSize(width: 0, height: -3)
+            
+            slot.face.contentsGravity = .resizeAspectFill
+            slot.face.contentsScale = 2.0
+            slot.container.addSublayer(slot.face)
+            
+            slot.focusRing.cornerCurve = .continuous
+            slot.focusRing.borderWidth = 1.75
+            slot.focusRing.backgroundColor = nil
+            slot.container.addSublayer(slot.focusRing)
+            
+            root.addSublayer(slot.container)
+            self.slots.append(slot)
+        }
+        
+        let cardBounds = CGRect(x: 0, y: 0, width: self.cardWidth, height: self.cardHeight)
+        let shadowCGPath = CGPath(
+            roundedRect: cardBounds,
+            cornerWidth: self.cardCornerRadius,
+            cornerHeight: self.cardCornerRadius,
+            transform: nil
+        )
+        
+        for (idx, snap) in self.snapshots.enumerated() {
+            let slot = self.slots[idx]
+            slot.container.bounds = cardBounds
+            slot.container.shadowPath = shadowCGPath
+            slot.container.shadowOpacity = self.isDark ? 0.34 : 0.13
+            
+            slot.face.frame = cardBounds
+            slot.face.contents = PackBakedCardTextureCache.shared.texture(
+                for: snap,
+                width: self.cardWidth,
+                height: self.cardHeight,
+                cornerRadius: self.cardCornerRadius,
+                isDark: self.isDark
+            )
+            
+            slot.focusRing.frame = cardBounds
+            slot.focusRing.cornerRadius = self.cardCornerRadius
+            slot.focusRing.borderColor = NSColor(Color(hexString: snap.accentHex)).cgColor
+        }
+    }
+    
+    // MARK: Fan Curve & Zero-Allocation Layer Transform Commit
+    
+    private static func rubberBanded(_ raw: CGFloat, maxIndex: CGFloat) -> CGFloat {
+        if raw < 0 {
+            return raw * 0.25
+        } else if raw > maxIndex {
+            return maxIndex + (raw - maxIndex) * 0.25
+        }
+        return raw
+    }
+    
+    private func applyPositionsImmediately() {
+        guard !self.slots.isEmpty, self.bounds.width > 10 else { return }
+        let stageCenterX = self.bounds.width * 0.5
+        let stageCenterY = self.bounds.height * 0.5 + 3.0
+        
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (idx, slot) in self.slots.enumerated() {
+            let delta = CGFloat(idx) - self.position
+            let absDelta = abs(delta)
+            
+            // Strictly cull cards beyond ±3.45 so at most 7 layers are ever visible and all stay well inside 527pt!
+            if absDelta > 3.45 {
+                if !slot.container.isHidden {
+                    slot.container.isHidden = true
+                }
+                slot.isVisibleOnStage = false
+                continue
+            }
+            if slot.container.isHidden {
+                slot.container.isHidden = false
+            }
+            slot.isVisibleOnStage = true
+            
+            // Contained smooth CoverFlow fan: at ±3, outer edge stays ~49pt INSIDE both left & right borders of 527pt stage!
+            let offsetX = CGFloat(tanh(Double(delta) * 0.45)) * 194.0
+            let dropY = min(15.0, delta * delta * 1.75)
+            let scale = max(0.70, 1.0 - absDelta * 0.095)
+            // Unflipped coords (+Y up): negative Z angle tilts right cards clockwise and left cards counter-clockwise
+            let rotationRad = -CGFloat(tanh(Double(delta) * 0.58)) * (5.8 * .pi / 180.0)
+            let opacity: Float = absDelta <= 2.65
+                ? 1.0
+                : Float(max(0.0, (3.45 - absDelta) / 0.80))
+            let focusOpacity = Float(max(0.0, 1.0 - absDelta * 1.45))
+            
+            let center = CGPoint(x: stageCenterX + offsetX, y: stageCenterY - dropY)
+            slot.currentCenter = center
+            slot.currentScale = scale
+            slot.currentRotation = rotationRad
+            
+            var transform = CATransform3DIdentity
+            transform = CATransform3DScale(transform, scale, scale, 1.0)
+            transform = CATransform3DRotate(transform, rotationRad, 0, 0, 1)
+            
+            slot.container.position = center
+            slot.container.transform = transform
+            slot.container.opacity = opacity
+            slot.container.zPosition = 200.0 - absDelta * 20.0
+            slot.focusRing.opacity = focusOpacity
+        }
+        CATransaction.commit()
+    }
+    
+    private func notifyNearestIndexIfChanged() {
+        guard !self.snapshots.isEmpty else { return }
+        let maxIdx = max(0, self.snapshots.count - 1)
+        let nearest = min(maxIdx, max(0, Int(self.position.rounded())))
+        if nearest != self.reportedIndex {
+            self.reportedIndex = nearest
+            self.onActiveIndexChanged?(nearest)
+        }
+    }
+    
+    // MARK: 120Hz ProMotion Critically-Damped Spring
+    
+    private func animateToIndex(_ index: Int, initialVelocity: CGFloat) {
+        let maxIdx = max(0, self.snapshots.count - 1)
+        let clamped = CGFloat(min(maxIdx, max(0, index)))
+        self.springTarget = clamped
+        self.springVelocity = initialVelocity
+        
+        if abs(self.position - clamped) < 0.001 && abs(initialVelocity) < 0.01 {
+            self.position = clamped
+            self.applyPositionsImmediately()
+            self.notifyNearestIndexIfChanged()
+            self.stopSpring()
+            return
+        }
+        
+        if self.displayLink == nil {
+            self.lastFrameTimestamp = CACurrentMediaTime()
+            let link = self.displayLink(target: self, selector: #selector(self.stepSpring(_:)))
+            if #available(macOS 14.0, *) {
+                link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+            }
+            link.add(to: .main, forMode: .common)
+            self.displayLink = link
+        }
+    }
+    
+    private func stopSpring() {
+        self.displayLink?.invalidate()
+        self.displayLink = nil
+        self.springVelocity = 0
+    }
+    
+    @objc private func stepSpring(_ link: CADisplayLink) {
+        let now = link.timestamp > 0 ? link.timestamp : CACurrentMediaTime()
+        let rawDT = now - self.lastFrameTimestamp
+        self.lastFrameTimestamp = now
+        let dt = CGFloat(min(1.0 / 30.0, max(1.0 / 240.0, rawDT)))
+        
+        // Exact analytical critically-damped spring (omega = 21 rad/s -> crisp ~0.22s settle with zero overshoot)
+        let omega: CGFloat = 21.0
+        let x0 = self.position - self.springTarget
+        let v0 = self.springVelocity
+        let expTerm = CGFloat(exp(Double(-omega * dt)))
+        let c2 = v0 + omega * x0
+        let xNext = (x0 + c2 * dt) * expTerm
+        let vNext = (v0 - omega * c2 * dt) * expTerm
+        
+        if abs(xNext) < 0.0015 && abs(vNext) < 0.015 {
+            self.position = self.springTarget
+            self.springVelocity = 0
+            self.applyPositionsImmediately()
+            self.notifyNearestIndexIfChanged()
+            self.stopSpring()
+        } else {
+            self.position = self.springTarget + xNext
+            self.springVelocity = vNext
+            self.applyPositionsImmediately()
+            self.notifyNearestIndexIfChanged()
+        }
+    }
+    
+    // MARK: Trackpad Two-Finger Swipe & Mouse Wheel
+    
+    override func scrollWheel(with event: NSEvent) {
+        guard !self.snapshots.isEmpty else {
+            super.scrollWheel(with: event)
+            return
+        }
+        
+        let dx = event.scrollingDeltaX
+        let dy = event.scrollingDeltaY
+        
+        // Pass vertical scrolling straight through to the parent Settings ScrollView
+        if !self.isTrackpadDragging && abs(dy) > abs(dx) * 1.15 {
+            self.nextResponder?.scrollWheel(with: event)
+            return
+        }
+        
+        let maxIdx = CGFloat(max(0, self.snapshots.count - 1))
+        
+        if event.hasPreciseScrollingDeltas {
+            if event.phase == .mayBegin {
+                self.stopSpring()
+                return
+            }
+            if event.phase == .began || event.phase == .changed {
+                if !self.isTrackpadDragging {
+                    self.isTrackpadDragging = true
+                    self.stopSpring()
+                    self.smoothedScrollVelocity = 0
+                    self.lastScrollSampleTime = CACurrentMediaTime()
+                }
+                let now = CACurrentMediaTime()
+                let dt = max(0.004, now - self.lastScrollSampleTime)
+                self.lastScrollSampleTime = now
+                
+                let deltaCards = -dx / 84.0
+                let instVel = deltaCards / CGFloat(dt)
+                self.smoothedScrollVelocity = self.smoothedScrollVelocity * 0.55 + instVel * 0.45
+                
+                let unclamped = self.position + deltaCards
+                self.position = Self.rubberBanded(unclamped, maxIndex: maxIdx)
+                self.applyPositionsImmediately()
+                self.notifyNearestIndexIfChanged()
+                return
+            }
+            if event.phase == .ended || event.phase == .cancelled {
+                guard self.isTrackpadDragging else { return }
+                self.isTrackpadDragging = false
+                let v = min(14.0, max(-14.0, self.smoothedScrollVelocity))
+                let projected = self.position + v * 0.14
+                let targetIdx = min(Int(maxIdx), max(0, Int(projected.rounded())))
+                self.animateToIndex(targetIdx, initialVelocity: v * 0.55)
+                return
+            }
+            // Ignore trailing momentumPhase events after our 120Hz spring has already taken control
+            if !event.momentumPhase.isEmpty {
+                return
+            }
+        } else if abs(dx) > 0.05 {
+            // Discrete notched mouse horizontal scroll wheel
+            let baseIdx = Int((self.displayLink != nil ? self.springTarget : self.position).rounded())
+            let step = dx > 0 ? -1 : 1
+            let nextIdx = min(Int(maxIdx), max(0, baseIdx + step))
+            self.animateToIndex(nextIdx, initialVelocity: 0)
+        } else {
+            self.nextResponder?.scrollWheel(with: event)
+        }
+    }
+    
+    // MARK: Mouse Click & 1:1 Drag
+    
+    override func mouseDown(with event: NSEvent) {
+        let pt = self.convert(event.locationInWindow, from: nil)
+        self.mouseDownPoint = pt
+        self.mouseDragStartPosition = self.position
+        self.isMouseDragging = false
+        self.mouseVelocity = 0
+        self.lastMouseX = pt.x
+        self.lastMouseSampleTime = CACurrentMediaTime()
+        self.stopSpring()
+    }
+    
+    override func mouseDragged(with event: NSEvent) {
+        guard let startPt = self.mouseDownPoint, !self.snapshots.isEmpty else { return }
+        let pt = self.convert(event.locationInWindow, from: nil)
+        let totalDX = pt.x - startPt.x
+        if !self.isMouseDragging && abs(totalDX) > 4 {
+            self.isMouseDragging = true
+        }
+        guard self.isMouseDragging else { return }
+        
+        let now = CACurrentMediaTime()
+        let dt = max(0.004, now - self.lastMouseSampleTime)
+        let stepDX = pt.x - self.lastMouseX
+        self.lastMouseSampleTime = now
+        self.lastMouseX = pt.x
+        
+        let instVel = (-stepDX / 84.0) / CGFloat(dt)
+        self.mouseVelocity = self.mouseVelocity * 0.55 + instVel * 0.45
+        
+        let maxIdx = CGFloat(max(0, self.snapshots.count - 1))
+        let raw = self.mouseDragStartPosition - (totalDX / 84.0)
+        self.position = Self.rubberBanded(raw, maxIndex: maxIdx)
+        self.applyPositionsImmediately()
+        self.notifyNearestIndexIfChanged()
+    }
+    
+    override func mouseUp(with event: NSEvent) {
+        defer {
+            self.mouseDownPoint = nil
+            self.isMouseDragging = false
+        }
+        guard !self.snapshots.isEmpty else { return }
+        let maxIdx = max(0, self.snapshots.count - 1)
+        
+        if self.isMouseDragging {
+            let v = min(14.0, max(-14.0, self.mouseVelocity))
+            let projected = self.position + v * 0.14
+            let targetIdx = min(maxIdx, max(0, Int(projected.rounded())))
+            self.animateToIndex(targetIdx, initialVelocity: v * 0.55)
+            return
+        }
+        
+        // Tap hit-testing in front-to-back z-order (smallest |delta| first)
+        let pt = self.convert(event.locationInWindow, from: nil)
+        let hitIndices = self.slots.indices
+            .filter { self.slots[$0].isVisibleOnStage }
+            .sorted { abs(CGFloat($0) - self.position) < abs(CGFloat($1) - self.position) }
+        
+        for idx in hitIndices {
+            let slot = self.slots[idx]
+            let dx = pt.x - slot.currentCenter.x
+            let dy = pt.y - slot.currentCenter.y
+            let cosA = cos(-slot.currentRotation)
+            let sinA = sin(-slot.currentRotation)
+            let localX = (dx * cosA - dy * sinA) / max(0.2, slot.currentScale)
+            let localY = (dx * sinA + dy * cosA) / max(0.2, slot.currentScale)
+            if abs(localX) <= self.cardWidth * 0.5 && abs(localY) <= self.cardHeight * 0.5 {
+                if abs(CGFloat(idx) - self.position) > 0.32 {
+                    self.animateToIndex(idx, initialVelocity: 0)
+                } else {
+                    self.onInspectBot?(self.snapshots[idx].botID)
+                }
+                return
+            }
+        }
+        
+        // Ensure settled if tapped on empty margin after catching a spring
+        let nearest = min(maxIdx, max(0, Int(self.position.rounded())))
+        self.animateToIndex(nearest, initialVelocity: 0)
+    }
+}
+
+
+private struct PackCoreAnimationDeckView: NSViewRepresentable {
+    
+    let snapshots: [BotCardSnapshot]
+    let activeIndex: Int
+    let externalStepToken: Int
+    let cardWidth: CGFloat
+    let cardHeight: CGFloat
+    let isDark: Bool
+    let onActiveIndexChanged: (Int) -> Void
+    let onInspectBot: (AIBotID) -> Void
+    
+    final class Coordinator {
+        var lastHandledStepToken: Int = 0
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+    
+    func makeNSView(context: Context) -> PackCoreAnimationStageNSView {
+        let view = PackCoreAnimationStageNSView()
+        view.onActiveIndexChanged = self.onActiveIndexChanged
+        view.onInspectBot = self.onInspectBot
+        view.configure(
+            snapshots: self.snapshots,
+            targetIndex: self.activeIndex,
+            stepToken: self.externalStepToken,
+            lastHandledStepToken: &context.coordinator.lastHandledStepToken,
+            cardWidth: self.cardWidth,
+            cardHeight: self.cardHeight,
+            isDark: self.isDark
+        )
+        return view
+    }
+    
+    func updateNSView(_ nsView: PackCoreAnimationStageNSView, context: Context) {
+        nsView.onActiveIndexChanged = self.onActiveIndexChanged
+        nsView.onInspectBot = self.onInspectBot
+        nsView.configure(
+            snapshots: self.snapshots,
+            targetIndex: self.activeIndex,
+            stepToken: self.externalStepToken,
+            lastHandledStepToken: &context.coordinator.lastHandledStepToken,
+            cardWidth: self.cardWidth,
+            cardHeight: self.cardHeight,
+            isDark: self.isDark
+        )
     }
 }
 
 
 struct AIBotsSettingsView: View {
     
-    /// Exact deterministic content width (`780 - 204 sidebar - 1 divider - 48 padding = 527pt`)
-    /// so entering the Agents pane matches all other panes flush edge-to-edge with zero geometry jump.
+    /// Exact deterministic content width (`780 - 204 sidebar - 1 divider - 48 padding = 527pt`).
     private static let fixedStageWidth: CGFloat = 527
+    private static let galleryColumns = 4
+    private static let galleryGap: CGFloat = 13
+    private static let galleryCardWidth: CGFloat = 122
+    private static let galleryCardHeight: CGFloat = 166
+    private static let galleryRowStride: CGFloat = 214
+    private static let packCardWidth: CGFloat = 126
+    private static let packCardHeight: CGFloat = 170
+    private static let packStageHeight: CGFloat = 224
     
     var settingsState: SidebarSettingsState? = nil
+    var initialLayoutMode: BotCollectionLayoutMode = .card
     
     @Environment(\.colorScheme) private var colorScheme
     
     @State private var botStore = AIBotStore.shared
-    @State private var butlerManager = CotButlerManager.shared
     @State private var analytics = AnalyticsManager.shared
-    @State private var imageLoader = AIGijinkaImageLoader.shared
     @State private var piKernel = PiKernelManager.shared
     @State private var layoutMode: BotCollectionLayoutMode = .card
+    @State private var didApplyInitialMode = false
     @State private var inspectingBot: AIBotID?
     @State private var allEndpoints: [AIEndpointProfile] = []
     @State private var activeEndpoint: AIEndpointProfile?
-    @State private var hoveredBotID: AIBotID?
+    @State private var packActiveIndex: Int = 0
+    @State private var packExternalStepToken: Int = 0
     @State private var snapshots: [BotCardSnapshot] = []
+    @State private var prewarmTask: Task<Void, Never>?
     
     @Namespace private var modePillNamespace
     
@@ -1133,14 +2050,23 @@ struct AIBotsSettingsView: View {
         }
         .frame(width: Self.fixedStageWidth, alignment: .topLeading)
         .onAppear {
-            self.reload()
+            if !self.didApplyInitialMode {
+                self.didApplyInitialMode = true
+                self.layoutMode = self.initialLayoutMode
+            }
+            self.reload(cachedImagesOnly: true)
             self.consumePendingBotSelection()
+            self.startAsyncPortraitPrewarm()
+        }
+        .onDisappear {
+            self.prewarmTask?.cancel()
         }
         .onChange(of: self.settingsState?.pendingBotID) { _, _ in
             self.consumePendingBotSelection()
         }
         .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
-            self.reload()
+            self.reload(cachedImagesOnly: true)
+            self.startAsyncPortraitPrewarm()
         }
     }
     
@@ -1171,7 +2097,6 @@ struct AIBotsSettingsView: View {
     }
     
     
-    /// Resolves the Bot visual persona strictly from the model & gateway selected for `botID`.
     private func resolvedCharacter(for botID: AIBotID, config: AIBotConfig) -> AIGijinkaCharacter? {
         let endpoint = self.resolvedEndpoint(for: config)
         let overrideModel = config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1186,32 +2111,31 @@ struct AIBotsSettingsView: View {
             modelName: endpoint?.displayModel,
             endpointName: endpoint?.displayName,
             baseURL: endpoint?.baseURL
-        )
+        ) ?? .claude
     }
     
     
-    private func rebuildSnapshots() {
+    private func rebuildSnapshots(cachedImagesOnly: Bool) {
         let featureCounts = Dictionary(
             self.analytics.featureDistribution(days: 30).map { ($0.feature, $0.requests) },
             uniquingKeysWith: { first, _ in first }
         )
         
         var nextSnapshots: [BotCardSnapshot] = []
-        var artworksToPrefetch: [AIGijinkaArtwork] = []
+        nextSnapshots.reserveCapacity(AIBotID.allCases.count)
         
         for botID in AIBotID.allCases {
             let config = self.botStore.config(for: botID)
             let endpoint = self.resolvedEndpoint(for: config)
             let character = self.resolvedCharacter(for: botID, config: config)
-            let artwork = character?.artwork(for: botID, variantOverride: config.artworkVariantIndex)
-            if let artwork {
-                artworksToPrefetch.append(artwork)
-            }
-            
-            let avatarImage = self.botStore.resolvedAvatarImage(for: botID, pointSize: 122)
+            let portrait = self.botStore.resolvedPortraitImage(
+                for: botID,
+                pointWidth: Self.packCardWidth,
+                pointHeight: Self.packCardHeight,
+                cachedOnly: cachedImagesOnly
+            )
             let resolvedName = self.botStore.resolvedName(for: botID)
             let resolvedNickname = self.botStore.resolvedNickname(for: botID)
-            
             let effectiveModel = config.modelOverride.isEmpty
                 ? (endpoint?.displayModel ?? AppLanguage.text("未选择模型", en: "No Model"))
                 : config.modelOverride
@@ -1226,43 +2150,103 @@ struct AIBotsSettingsView: View {
                 accentHex: character?.accentHex ?? botID.accentHex,
                 isEnabled: config.isEnabled,
                 recentCalls: featureCounts[botID.analyticsFeatureKey] ?? 0,
-                avatarImage: avatarImage
+                portraitImage: portrait
             ))
         }
-        self.imageLoader.prefetch(artworksToPrefetch)
         self.snapshots = nextSnapshots
     }
     
     
-    // MARK: Morphing Gallery / List / Pack Stage
+    /// Pre-decodes uncached Retina ~3:4 portrait bitmaps off the main thread so opening Bots never stutters.
+    private func startAsyncPortraitPrewarm() {
+        self.prewarmTask?.cancel()
+        let missingWork: [(artwork: AIGijinkaArtwork, source: NSImage)] = AIBotID.allCases.compactMap { botID in
+            guard self.botStore.customAvatarImage(for: botID) == nil else { return nil }
+            let cfg = self.botStore.config(for: botID)
+            guard let character = self.resolvedCharacter(for: botID, config: cfg) else { return nil }
+            let artwork = character.artwork(for: botID, variantOverride: cfg.artworkVariantIndex)
+            if AIGijinkaImageLoader.shared.cachedPortraitCard(
+                for: artwork,
+                pointWidth: Self.packCardWidth,
+                pointHeight: Self.packCardHeight
+            ) != nil {
+                return nil
+            }
+            guard let src = AIGijinkaImageLoader.shared.image(for: artwork) else { return nil }
+            return (artwork, src)
+        }
+        guard !missingWork.isEmpty else {
+            if self.snapshots.contains(where: { $0.portraitImage == nil }) {
+                self.rebuildSnapshots(cachedImagesOnly: false)
+            }
+            return
+        }
+        
+        let targetW = Self.packCardWidth
+        let targetH = Self.packCardHeight
+        self.prewarmTask = Task {
+            let rendered: [(AIGijinkaArtwork, NSImage)] = await Task.detached(priority: .userInitiated) {
+                var out: [(AIGijinkaArtwork, NSImage)] = []
+                var seen = Set<String>()
+                for entry in missingWork where seen.insert(entry.artwork.id).inserted {
+                    if Task.isCancelled { break }
+                    if let bmp = AIGijinkaImageLoader.renderPortraitBitmap(
+                        from: entry.source,
+                        cropAnchor: entry.artwork.cropAnchor,
+                        pointWidth: targetW,
+                        pointHeight: targetH
+                    ) {
+                        out.append((entry.artwork, bmp))
+                    }
+                }
+                return out
+            }.value
+            guard !Task.isCancelled else { return }
+            for (art, bmp) in rendered {
+                AIGijinkaImageLoader.shared.storePortraitCard(bmp, for: art, pointWidth: targetW, pointHeight: targetH)
+            }
+            self.rebuildSnapshots(cachedImagesOnly: false)
+            let isDark = (self.colorScheme == .dark)
+            for snap in self.snapshots {
+                _ = PackBakedCardTextureCache.shared.texture(
+                    for: snap,
+                    width: Self.packCardWidth,
+                    height: Self.packCardHeight,
+                    cornerRadius: 15,
+                    isDark: isDark
+                )
+            }
+        }
+    }
+    
+    
+    // MARK: - Morphing Gallery / List / Stack Stage
     
     @ViewBuilder
     private var morphingCollectionView: some View {
-        let bots = AIBotID.allCases
-        let cols = 4
-        let rowsCount = Int(ceil(Double(bots.count) / Double(cols)))
-        let galleryRowStride: CGFloat = 180
+        let count = max(1, self.snapshots.count)
+        let maxIndex = max(0, count - 1)
+        let liveNearestIndex = min(maxIndex, max(0, self.packActiveIndex))
+        let rowsCount = Int(ceil(Double(count) / Double(Self.galleryColumns)))
         let stageHeight: CGFloat = switch self.layoutMode {
-            case .list: CGFloat(bots.count) * 64.0
-            case .card: CGFloat(rowsCount) * galleryRowStride
-            case .pack: 274.0
+            case .list: CGFloat(count) * 66.0
+            case .card: CGFloat(rowsCount) * Self.galleryRowStride
+            case .pack: Self.packStageHeight + 70.0
         }
         let enabledCount = self.snapshots.filter(\.isEnabled).count
-        let hoveredIndex = self.hoveredBotID.flatMap { id in bots.firstIndex(of: id) }
-        let focusedPackSnap = self.snapshots.first(where: { $0.botID == self.hoveredBotID }) ?? self.snapshots.first
+        let focusedPackSnap: BotCardSnapshot? = self.snapshots.indices.contains(liveNearestIndex)
+            ? self.snapshots[liveNearestIndex]
+            : self.snapshots.first
         let isDark = (self.colorScheme == .dark)
         
         VStack(alignment: .leading, spacing: 14) {
-            // Segmented Layout Switcher with shared sliding capsule (clean typography, zero decorative icons)
+            // Segmented Layout Switcher
             HStack(spacing: 4) {
                 ForEach(BotCollectionLayoutMode.allCases) { mode in
                     let isSelected = (self.layoutMode == mode)
                     Button {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.28)) {
+                        withAnimation(.easeOut(duration: 0.16)) {
                             self.layoutMode = mode
-                            if mode == .pack, self.hoveredBotID == nil {
-                                self.hoveredBotID = bots.first
-                            }
                         }
                     } label: {
                         Text(mode.title)
@@ -1285,7 +2269,7 @@ struct AIBotsSettingsView: View {
                 
                 Spacer()
                 
-                Text("\(enabledCount)/\(bots.count) \(AppLanguage.text("已启用", en: "Active"))")
+                Text("\(enabledCount)/\(self.snapshots.count) \(AppLanguage.text("已启用", en: "Active"))")
                     .font(.system(size: 11.5, weight: .medium).monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -1294,142 +2278,53 @@ struct AIBotsSettingsView: View {
                 .fill(self.cardBorder)
                 .frame(height: 1)
                 .opacity(self.layoutMode == .card ? 0.0 : 1.0)
-                .animation(.easeOut(duration: 0.18), value: self.layoutMode)
             
-            // Unified Identity-Preserving Morph Stage
-            ZStack(alignment: .topLeading) {
-                if self.layoutMode == .pack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(isDark ? Color.white.opacity(0.03) : Color.black.opacity(0.022))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(self.cardBorder, lineWidth: 0.75)
-                        )
-                        .frame(width: Self.fixedStageWidth, height: 190)
-                        .allowsHitTesting(false)
-                }
-                
-                ForEach(Array(self.snapshots.enumerated()), id: \.element.id) { index, snap in
-                    let botID = snap.botID
-                    BotStageNodeView(
-                        snapshot: snap,
-                        index: index,
-                        total: self.snapshots.count,
-                        layoutMode: self.layoutMode,
-                        isHovered: self.hoveredBotID == botID,
-                        hoveredIndex: self.layoutMode == .pack ? hoveredIndex : nil,
+            // Stage
+            if self.layoutMode == .pack {
+                VStack(spacing: 10) {
+                    PackCoreAnimationDeckView(
+                        snapshots: self.snapshots,
+                        activeIndex: liveNearestIndex,
+                        externalStepToken: self.packExternalStepToken,
+                        cardWidth: Self.packCardWidth,
+                        cardHeight: Self.packCardHeight,
                         isDark: isDark,
-                        cardBorder: self.cardBorder,
-                        onInspect: {
-                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
-                                self.inspectingBot = botID
+                        onActiveIndexChanged: { nextIndex in
+                            if self.packActiveIndex != nextIndex {
+                                self.packActiveIndex = nextIndex
                             }
                         },
-                        onToggleEnabled: { enabled in
-                            var updated = self.botStore.config(for: botID)
-                            updated.isEnabled = enabled
-                            self.botStore.updateConfig(updated, for: botID)
-                            self.rebuildSnapshots()
-                        },
-                        onHoverChanged: { hovering in
-                            guard self.layoutMode != .pack else { return }
-                            if hovering {
-                                if self.hoveredBotID != botID {
-                                    self.hoveredBotID = botID
-                                }
-                            } else if self.hoveredBotID == botID {
-                                self.hoveredBotID = nil
+                        onInspectBot: { botID in
+                            withAnimation(.easeOut(duration: 0.16)) {
+                                self.inspectingBot = botID
                             }
                         }
                     )
-                    .equatable()
-                }
-                
-                if self.layoutMode == .pack, let focusedSnap = focusedPackSnap {
-                    let focusedAccent = Color(hexString: focusedSnap.accentHex)
+                    .frame(width: Self.fixedStageWidth, height: Self.packStageHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     
-                    HStack(spacing: 12) {
-                        Circle()
-                            .fill(focusedSnap.isEnabled ? focusedAccent : Color.secondary.opacity(0.35))
-                            .frame(width: 8, height: 8)
-                        
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(focusedSnap.displayTitle)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(.primary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                if let personaBadge = focusedSnap.personaBadge {
-                                    Text(personaBadge)
-                                        .font(.system(size: 10.5, weight: .medium))
-                                        .foregroundStyle(focusedAccent)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 1.5)
-                                        .background(focusedAccent.opacity(0.14), in: Capsule())
-                                }
-                            }
-                            Text(focusedSnap.modelLabel)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        
-                        Spacer(minLength: 8)
-                        
-                        Button {
-                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
-                                self.inspectingBot = focusedSnap.botID
-                            }
-                        } label: {
-                            Text(AppLanguage.text("进入配置", en: "Configure"))
-                                .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(.primary)
-                                .padding(.horizontal, 12)
-                                .frame(height: 28)
-                                .background(Color.primary.opacity(isDark ? 0.10 : 0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
+                    if let focusedSnap = focusedPackSnap {
+                        self.packBottomDockBar(
+                            focusedSnap: focusedSnap,
+                            activeIndex: liveNearestIndex,
+                            total: count,
+                            isDark: isDark
+                        )
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .frame(width: Self.fixedStageWidth, alignment: .leading)
-                    .frame(minHeight: 62)
-                    .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
-                    .offset(y: 204)
                 }
-            }
-            .frame(width: Self.fixedStageWidth, height: stageHeight, alignment: .topLeading)
-            .onContinuousHover(coordinateSpace: .local) { phase in
-                guard self.layoutMode == .pack else { return }
-                switch phase {
-                    case .active(let loc):
-                        guard loc.y <= 198, !bots.isEmpty else { return }
-                        let total = bots.count
-                        let bestIdx = (0..<total).min { lhs, rhs in
-                            abs(loc.x - self.packRestCenterX(index: lhs, total: total))
-                                < abs(loc.x - self.packRestCenterX(index: rhs, total: total))
-                        } ?? 0
-                        let currentIdx = self.hoveredBotID.flatMap { bots.firstIndex(of: $0) }
-                        let resolvedIdx: Int
-                        if let currentIdx, currentIdx != bestIdx {
-                            let currentDist = abs(loc.x - self.packRestCenterX(index: currentIdx, total: total))
-                            let bestDist = abs(loc.x - self.packRestCenterX(index: bestIdx, total: total))
-                            resolvedIdx = (bestDist + 8.0 < currentDist) ? bestIdx : currentIdx
-                        } else {
-                            resolvedIdx = bestIdx
-                        }
-                        let nextBot = bots[resolvedIdx]
-                        if self.hoveredBotID != nextBot {
-                            withAnimation(.spring(response: 0.20, dampingFraction: 0.88)) {
-                                self.hoveredBotID = nextBot
-                            }
-                        }
-                    case .ended:
-                        break
+                .frame(width: Self.fixedStageWidth, height: stageHeight, alignment: .topLeading)
+                .clipped()
+            } else {
+                ZStack(alignment: .topLeading) {
+                    ForEach(Array(self.snapshots.enumerated()), id: \.element.id) { index, snap in
+                        self.stageNode(
+                            snap: snap,
+                            index: index,
+                            isDark: isDark
+                        )
+                    }
                 }
+                .frame(width: Self.fixedStageWidth, height: stageHeight, alignment: .topLeading)
             }
             
             HStack(spacing: 6) {
@@ -1439,7 +2334,6 @@ struct AIBotsSettingsView: View {
                 Text(self.piKernel.statusSummary)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
             }
             .padding(.top, 2)
@@ -1447,27 +2341,260 @@ struct AIBotsSettingsView: View {
     }
     
     
-    private func packRestCenterX(index: Int, total: Int) -> CGFloat {
-        let artSide: CGFloat = 110
-        let maxDeckSpan = Self.fixedStageWidth - artSide - 56
-        let spread = total > 1 ? min(39.0, maxDeckSpan / CGFloat(total - 1)) : 0
-        let mid = Double(total - 1) * 0.5
-        let offsetIndex = Double(index) - mid
-        return Self.fixedStageWidth * 0.5 + CGFloat(offsetIndex) * spread
+    @ViewBuilder
+    private func stageNode(
+        snap: BotCardSnapshot,
+        index: Int,
+        isDark: Bool
+    ) -> some View {
+        let botID = snap.botID
+        let accent = Color(hexString: snap.accentHex)
+        
+        let artW: CGFloat = self.layoutMode == .list ? 42 : Self.galleryCardWidth
+        let artH: CGFloat = self.layoutMode == .list ? 56 : Self.galleryCardHeight
+        let artCorner: CGFloat = self.layoutMode == .list ? 9 : 15
+        let itemW: CGFloat = self.layoutMode == .list ? Self.fixedStageWidth : artW
+        let itemH: CGFloat = self.layoutMode == .list ? 56 : (artH + 40)
+        let posX: CGFloat = self.layoutMode == .list ? 0 : CGFloat(index % Self.galleryColumns) * (artW + Self.galleryGap)
+        let posY: CGFloat = self.layoutMode == .list ? CGFloat(index) * 66.0 : CGFloat(index / Self.galleryColumns) * Self.galleryRowStride
+        
+        ZStack(alignment: .topLeading) {
+            BotPortraitTileSurface(
+                botID: botID,
+                shortTitle: snap.shortTitle,
+                accentHex: snap.accentHex,
+                isEnabled: snap.isEnabled,
+                portraitImage: snap.portraitImage,
+                width: artW,
+                height: artH,
+                cornerRadius: artCorner,
+                showPackOverlay: false,
+                isPackCenter: false,
+                isDark: isDark
+            )
+            .equatable()
+            .contentShape(RoundedRectangle(cornerRadius: artCorner, style: .continuous))
+            .onTapGesture {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    self.inspectingBot = botID
+                }
+            }
+            
+            if self.layoutMode == .list {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(snap.displayTitle)
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .foregroundStyle(snap.isEnabled ? .primary : .secondary)
+                            if let personaBadge = snap.personaBadge {
+                                Text(personaBadge)
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundStyle(accent)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1.5)
+                                    .background(accent.opacity(isDark ? 0.16 : 0.10), in: Capsule())
+                            }
+                        }
+                        
+                        HStack(spacing: 6) {
+                            Text(snap.modelLabel)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                            if snap.recentCalls > 0 {
+                                Text("· \(snap.recentCalls) 次")
+                                    .font(.system(size: 11).monospacedDigit())
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    
+                    Spacer(minLength: 6)
+                    
+                    Toggle("", isOn: Binding(
+                        get: { snap.isEnabled },
+                        set: { enabled in
+                            var updated = self.botStore.config(for: botID)
+                            updated.isEnabled = enabled
+                            self.botStore.updateConfig(updated, for: botID)
+                            self.rebuildSnapshots(cachedImagesOnly: false)
+                        }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    
+                    Button {
+                        withAnimation(.snappy(duration: 0.22, extraBounce: 0)) {
+                            self.inspectingBot = botID
+                        }
+                    } label: {
+                        Text(AppLanguage.text("配置", en: "Edit"))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .frame(height: 24)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.leading, artW + 12)
+                .frame(width: itemW, height: artH, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.snappy(duration: 0.22, extraBounce: 0)) {
+                        self.inspectingBot = botID
+                    }
+                }
+            }
+            
+            if self.layoutMode == .card {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text(snap.shortTitle)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(snap.isEnabled ? .primary : .secondary)
+                            .lineLimit(1)
+                        
+                        Spacer(minLength: 2)
+                        
+                        Circle()
+                            .fill(snap.isEnabled ? accent : Color.primary.opacity(0.18))
+                            .frame(width: 6, height: 6)
+                    }
+                    
+                    Text(snap.subtitle)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(width: artW, alignment: .leading)
+                .offset(y: artH + 6)
+                .onTapGesture {
+                    withAnimation(.snappy(duration: 0.22, extraBounce: 0)) {
+                        self.inspectingBot = botID
+                    }
+                }
+            }
+        }
+        .frame(width: itemW, height: itemH, alignment: .topLeading)
+        .offset(x: posX, y: posY)
+        .zIndex(Double(index))
+        .pointerStyle(.link)
     }
     
     
-    // MARK: Simplified Inline Bot Inspector (Avatar · Name · Nickname · Selectable OpenCode Go Model)
+    private func packBottomDockBar(
+        focusedSnap: BotCardSnapshot,
+        activeIndex: Int,
+        total: Int,
+        isDark: Bool
+    ) -> some View {
+        let focusedAccent = Color(hexString: focusedSnap.accentHex)
+        
+        return HStack(spacing: 10) {
+            Circle()
+                .fill(focusedSnap.isEnabled ? focusedAccent : Color.secondary.opacity(0.35))
+                .frame(width: 8, height: 8)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(focusedSnap.displayTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    if let personaBadge = focusedSnap.personaBadge {
+                        Text(personaBadge)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(focusedAccent)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1.5)
+                            .background(focusedAccent.opacity(0.14), in: Capsule())
+                    }
+                }
+                Text(focusedSnap.modelLabel)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            
+            Spacer(minLength: 6)
+            
+            HStack(spacing: 4) {
+                Button {
+                    guard activeIndex > 0 else { return }
+                    self.packActiveIndex = activeIndex - 1
+                    self.packExternalStepToken &+= 1
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .frame(width: 26, height: 26)
+                        .background(Color.primary.opacity(isDark ? 0.08 : 0.045), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(activeIndex <= 0)
+                .opacity(activeIndex <= 0 ? 0.35 : 1.0)
+                .pointerStyle(activeIndex <= 0 ? .default : .link)
+                
+                Text("\(activeIndex + 1)/\(total)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 34)
+                
+                Button {
+                    guard activeIndex + 1 < total else { return }
+                    self.packActiveIndex = activeIndex + 1
+                    self.packExternalStepToken &+= 1
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .frame(width: 26, height: 26)
+                        .background(Color.primary.opacity(isDark ? 0.08 : 0.045), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(activeIndex + 1 >= total)
+                .opacity(activeIndex + 1 >= total ? 0.35 : 1.0)
+                .pointerStyle(activeIndex + 1 >= total ? .default : .link)
+            }
+            
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    self.inspectingBot = focusedSnap.botID
+                }
+            } label: {
+                Text(AppLanguage.text("进入配置", en: "Configure"))
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 11)
+                    .frame(height: 28)
+                    .background(Color.primary.opacity(isDark ? 0.10 : 0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(minHeight: 58, alignment: .leading)
+        .frame(width: Self.fixedStageWidth)
+        .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
+    }
+    
+    
+    // MARK: - Inline Bot Inspector
     
     @ViewBuilder
     private func inlineInspector(for botID: AIBotID) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Button {
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                    withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
                         self.inspectingBot = nil
                     }
-                    self.reload()
+                    self.reload(cachedImagesOnly: false)
+                    self.startAsyncPortraitPrewarm()
                 } label: {
                     Text(AppLanguage.text("← 返回 Bots", en: "← Back to Bots"))
                         .font(.system(size: 12.5, weight: .medium))
@@ -1488,7 +2615,7 @@ struct AIBotsSettingsView: View {
                 cardSurface: self.cardSurface,
                 cardBorder: self.cardBorder,
                 onEndpointsUpdated: {
-                    self.reload()
+                    self.reload(cachedImagesOnly: false)
                 }
             )
         }
@@ -1504,18 +2631,18 @@ struct AIBotsSettingsView: View {
     }
     
     
-    private func reload() {
+    private func reload(cachedImagesOnly: Bool) {
         let profiles = AIEndpointStore.profiles
         self.allEndpoints = profiles
         let activeID = AIEndpointStore.activeID ?? profiles.first?.id
         self.activeEndpoint = profiles.first(where: { $0.id == activeID })
         self.botStore.reloadFromDatabase()
-        self.rebuildSnapshots()
+        self.rebuildSnapshots(cachedImagesOnly: cachedImagesOnly)
     }
 }
 
 
-// MARK: - Simplified Inline Bot Inspector
+// MARK: - Inline Bot Inspector (Supports All Configured Subscriptions)
 
 private struct AIBotInlineInspectorView: View {
     
@@ -1529,16 +2656,25 @@ private struct AIBotInlineInspectorView: View {
     @State private var config: AIBotConfig = AIBotConfig()
     @State private var customNameDraft: String = ""
     @State private var customNicknameDraft: String = ""
-    @State private var openCodeGoModels: [String] = []
+    @State private var gatewayGroups: [AIBotStore.SelectableGatewayGroup] = []
     @State private var isRefreshingModels = false
     
     
-    private var resolvedOpenCodeGoProfile: AIEndpointProfile? {
-        self.botStore.openCodeGoSelectableModels().profile
+    private var activeGatewayGroup: AIBotStore.SelectableGatewayGroup? {
+        self.gatewayGroups.first(where: \.isActive) ?? self.gatewayGroups.first
+    }
+    
+    private var targetGatewayProfile: AIEndpointProfile? {
+        if let epID = self.config.endpointID,
+           let matched = self.gatewayGroups.first(where: { $0.profile.id == epID })?.profile
+        {
+            return matched
+        }
+        return self.activeGatewayGroup?.profile
     }
     
     private var resolvedCharacter: AIGijinkaCharacter? {
-        let endpoint = self.resolvedOpenCodeGoProfile
+        let endpoint = self.targetGatewayProfile
         let overrideModel = self.config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
         return AIGijinkaCharacter.resolve(
             modelName: overrideModel.isEmpty ? endpoint?.displayModel : overrideModel,
@@ -1549,46 +2685,57 @@ private struct AIBotInlineInspectorView: View {
     
     
     var body: some View {
-        let endpoint = self.resolvedOpenCodeGoProfile
+        let activeGroup = self.activeGatewayGroup
         let character = self.resolvedCharacter
         let artwork = character?.artwork(for: self.botID, variantOverride: self.config.artworkVariantIndex)
         let accent = Color(hexString: character?.accentHex ?? self.botID.accentHex)
-        let portrait = self.botStore.resolvedAvatarImage(for: self.botID, pointSize: 80)
+        let portrait = self.botStore.resolvedPortraitImage(for: self.botID, pointWidth: 78, pointHeight: 104)
         let shownName = self.botID == .butler
             ? (self.butlerManager.name.isEmpty ? "曜" : self.butlerManager.name)
             : (self.customNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? self.botID.displayName : self.customNameDraft)
         let shownNick = self.botID == .butler
             ? (self.butlerManager.nickname.isEmpty ? "总管" : self.butlerManager.nickname)
             : (self.customNicknameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? self.botID.defaultNickname : self.customNicknameDraft)
-        let defaultModel = endpoint?.displayModel ?? AIProvider.openCodeGo.defaultModel
-        let selectedModelLabel = self.config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? AppLanguage.text("跟随 OpenCode Go 默认 (\(defaultModel))", en: "Default (\(defaultModel))")
-            : self.config.modelOverride
+        let defaultModel = activeGroup?.profile.displayModel ?? AIProvider.openCodeGo.defaultModel
+        let activeGatewayTitle = activeGroup?.title ?? "API 网关"
+        let selectedModelLabel: String = {
+            let trimmedOverride = self.config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedOverride.isEmpty {
+                return AppLanguage.text("跟随当前默认 (\(defaultModel))", en: "Default (\(defaultModel))")
+            }
+            if let epID = self.config.endpointID,
+               let group = self.gatewayGroups.first(where: { $0.profile.id == epID }),
+               self.gatewayGroups.count > 1
+            {
+                return "\(group.title) · \(trimmedOverride)"
+            }
+            return trimmedOverride
+        }()
         let hasCustomAvatar = self.botStore.customAvatarImage(for: self.botID) != nil
         
         VStack(alignment: .leading, spacing: 14) {
-            // Identity Header
+            // Identity Header with ~3:4 Vertical Portrait Frame
             HStack(spacing: 14) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(accent.opacity(0.14))
+                    Color(red: 0.965, green: 0.969, blue: 0.980)
                     if let portrait {
                         Image(nsImage: portrait)
                             .resizable()
                             .interpolation(.high)
                             .scaledToFill()
-                            .opacity(self.config.isEnabled ? 1.0 : 0.45)
+                            .frame(width: 78, height: 104, alignment: .top)
+                            .opacity(self.config.isEnabled ? 1.0 : 0.48)
                     } else {
                         Text(String(shownName.prefix(1)))
                             .font(.system(size: 24, weight: .semibold))
                             .foregroundStyle(accent)
                     }
                 }
-                .frame(width: 76, height: 76)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .frame(width: 78, height: 104)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(accent.opacity(0.32), lineWidth: 0.75)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(accent.opacity(0.32), lineWidth: 0.85)
                 )
                 
                 VStack(alignment: .leading, spacing: 4) {
@@ -1617,7 +2764,7 @@ private struct AIBotInlineInspectorView: View {
             
             Divider()
             
-            // Row 1: 头像（上传头像 / 切换预设形象）
+            // Row 1: Avatar
             HStack(spacing: 10) {
                 Text(AppLanguage.text("头像", en: "Avatar"))
                     .font(.system(size: 12.5, weight: .medium))
@@ -1674,7 +2821,7 @@ private struct AIBotInlineInspectorView: View {
                 Spacer(minLength: 0)
             }
             
-            // Row 2: 名称
+            // Row 2: Name
             HStack(spacing: 10) {
                 Text(AppLanguage.text("名称", en: "Name"))
                     .font(.system(size: 12.5, weight: .medium))
@@ -1696,7 +2843,7 @@ private struct AIBotInlineInspectorView: View {
                 }
             }
             
-            // Row 3: 昵称
+            // Row 3: Nickname
             HStack(spacing: 10) {
                 Text(AppLanguage.text("昵称", en: "Nickname"))
                     .font(.system(size: 12.5, weight: .medium))
@@ -1718,7 +2865,7 @@ private struct AIBotInlineInspectorView: View {
                 }
             }
             
-            // Row 4: 纯选择 OpenCode Go 模型（无手动输入 Custom ID）
+            // Row 4: Model Selection across Configured Subscriptions
             HStack(spacing: 10) {
                 Text(AppLanguage.text("模型", en: "Model"))
                     .font(.system(size: 12.5, weight: .medium))
@@ -1737,30 +2884,33 @@ private struct AIBotInlineInspectorView: View {
                         self.saveBotConfig()
                     } label: {
                         Text(isFollowingDefault
-                             ? "✓  跟随 OpenCode Go 默认 (\(defaultModel))"
-                             : "跟随 OpenCode Go 默认 (\(defaultModel))")
+                             ? "✓  跟随 \(activeGatewayTitle) 默认 (\(defaultModel))"
+                             : "跟随 \(activeGatewayTitle) 默认 (\(defaultModel))")
                     }
                     
-                    if !self.openCodeGoModels.isEmpty {
-                        Divider()
-                        Section("OpenCode Go 可选模型") {
-                            ForEach(self.openCodeGoModels, id: \.self) { modelID in
-                                let picked = (self.config.modelOverride == modelID)
-                                Button(picked ? "✓  \(modelID)" : modelID) {
-                                    let previousBrand = self.resolvedCharacter?.id
-                                    self.config.endpointID = endpoint?.id
-                                    self.config.modelOverride = modelID
-                                    if self.resolvedCharacter?.id != previousBrand {
-                                        self.config.artworkVariantIndex = nil
+                    ForEach(self.gatewayGroups) { group in
+                        if !group.models.isEmpty {
+                            Divider()
+                            Section(group.isActive ? "\(group.title)（当前）" : group.title) {
+                                ForEach(group.models, id: \.self) { modelID in
+                                    let picked = (self.config.modelOverride == modelID
+                                                  && (self.config.endpointID == group.profile.id || (self.config.endpointID == nil && group.isActive)))
+                                    Button(picked ? "✓  \(modelID)" : modelID) {
+                                        let previousBrand = self.resolvedCharacter?.id
+                                        self.config.endpointID = group.profile.id
+                                        self.config.modelOverride = modelID
+                                        if self.resolvedCharacter?.id != previousBrand {
+                                            self.config.artworkVariantIndex = nil
+                                        }
+                                        self.saveBotConfig()
                                     }
-                                    self.saveBotConfig()
                                 }
                             }
                         }
                     }
                     
                     Divider()
-                    Button(self.isRefreshingModels ? "正在刷新模型…" : "刷新 OpenCode Go 模型列表") {
+                    Button(self.isRefreshingModels ? "正在刷新模型…" : "刷新模型列表") {
                         Task { await self.refreshModels() }
                     }
                     .disabled(self.isRefreshingModels)
@@ -1769,10 +2919,10 @@ private struct AIBotInlineInspectorView: View {
                         Text(selectedModelLabel)
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
+                            .lineLimit(1)
                         Spacer(minLength: 4)
-                        Text("▾")
-                            .font(.system(size: 10.5, weight: .semibold))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9.5, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 10)
@@ -1829,11 +2979,6 @@ private struct AIBotInlineInspectorView: View {
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
         .task(id: self.botID) {
             self.loadInitialState()
-            if let ep = self.resolvedOpenCodeGoProfile,
-               !AIEndpointStore.apiKey(for: ep).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
-                await self.refreshModels()
-            }
         }
     }
     
@@ -1859,7 +3004,7 @@ private struct AIBotInlineInspectorView: View {
         self.config = loaded
         self.customNameDraft = loaded.customName
         self.customNicknameDraft = loaded.customNickname
-        self.openCodeGoModels = self.botStore.openCodeGoSelectableModels().models
+        self.gatewayGroups = self.botStore.selectableGatewayGroups()
     }
     
     
@@ -1871,11 +3016,8 @@ private struct AIBotInlineInspectorView: View {
     private func refreshModels() async {
         self.isRefreshingModels = true
         defer { self.isRefreshingModels = false }
-        if let models = try? await self.botStore.refreshOpenCodeGoModels() {
-            self.openCodeGoModels = models
-            self.onEndpointsUpdated()
-        } else {
-            self.openCodeGoModels = self.botStore.openCodeGoSelectableModels().models
-        }
+        _ = try? await self.botStore.refreshGatewayModels(for: self.targetGatewayProfile)
+        self.gatewayGroups = self.botStore.selectableGatewayGroups()
+        self.onEndpointsUpdated()
     }
 }

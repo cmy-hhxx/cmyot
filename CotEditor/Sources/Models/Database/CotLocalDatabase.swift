@@ -211,6 +211,11 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let butlerActiveSessionID = "butler.activeSessionID"
         static let butlerCustomAvatarBase64 = "butler.customAvatarBase64"
         static let watchlistSeededV1 = "market.watchlistSeededV1"
+        static let aiScheduledOrganizeEnabled = "ai.scheduledOrganize.enabled"
+        static let aiScheduledOrganizeHour = "ai.scheduledOrganize.hour"
+        static let aiScheduledOrganizeMinute = "ai.scheduledOrganize.minute"
+        static let aiScheduledOrganizeLastCycleKey = "ai.scheduledOrganize.lastCycleKey"
+        static let aiScheduledOrganizeLastSummary = "ai.scheduledOrganize.lastSummary"
     }
     
     static let weeklyReportsDidChangeNotification = Notification.Name("CotLocalDatabaseWeeklyReportsDidChange")
@@ -979,7 +984,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
                 sqlite3_finalize(delStmt)
             }
             
-            let updateSQL = "UPDATE documents SET id = ?, title = ?, file_path = ?, group_name = ?, updated_at = ? WHERE id = ?;"
+            let updateSQL = "UPDATE documents SET id = ?, title = ?, file_path = ?, group_name = COALESCE(NULLIF(?, ''), group_name), updated_at = ? WHERE id = ?;"
             var stmt: OpaquePointer?
             if sqlite3_prepare_v2(self.db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
                 sqlite3_bind_text(stmt, 1, newID, -1, self.transientDestructor)

@@ -84,10 +84,37 @@ nonisolated enum AIProvider: String, CaseIterable, Sendable, Codable {
         .moonshot, .zhipu, .miniMax, .qwen, .volcengine, .siliconFlow, .aiHubMix, .ollama,
     ]
     
+    /// Built-in starter subscription slots presented out of the box in the collapsible API Gateway list.
+    static let starterSubscriptions: [AIProvider] = [
+        .openCodeGo, .deepSeek,
+    ]
+    
     
     /// Whether this preset is highlighted as the flagship recommendation.
     var isFeatured: Bool {
         self == .openCodeGo
+    }
+    
+    
+    /// Clean, self-descriptive title used on collapsible subscription / official API cards.
+    var subscriptionTitle: String {
+        switch self {
+            case .openCodeGo: "OpenCode Go"
+            case .deepSeek: AppLanguage.text("DeepSeek 官方 API", en: "DeepSeek Official API")
+            case .openAI: AppLanguage.text("OpenAI 官方 API", en: "OpenAI Official API")
+            case .anthropic: AppLanguage.text("Anthropic 官方 API", en: "Anthropic Official API")
+            case .google: "Google Gemini"
+            case .openRouter: "OpenRouter"
+            case .moonshot: "Kimi (Moonshot)"
+            case .zhipu: "智谱 GLM"
+            case .miniMax: "MiniMax"
+            case .qwen: AppLanguage.text("通义千问 (百炼)", en: "Qwen (DashScope)")
+            case .volcengine: "火山方舟"
+            case .siliconFlow: "硅基流动"
+            case .aiHubMix: "AiHubMix"
+            case .ollama: AppLanguage.text("Ollama 本地", en: "Ollama (Local)")
+            case .custom: AppLanguage.text("自定义网关", en: "Custom Gateway")
+        }
     }
     
     

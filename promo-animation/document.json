@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "projectType": "standard",
+  "revision": 0,
+  "settings": {
+    "width": 1920,
+    "height": 1080,
+    "duration": 15,
+    "fps": 30
+  },
+  "audio": [],
+  "title": "promo-animation"
+}

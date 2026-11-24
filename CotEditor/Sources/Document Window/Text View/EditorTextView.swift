@@ -577,6 +577,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                         if self?.activeGhostSuggestion != nil || self?.funEffects.isShowingGhostThinking == true {
                             self?.clearGhostSuggestion(animated: false, cancelAI: false)
                         }
+                        if self?.isPerformingVimCursorMove == false {
+                            self?.vimEngine.resyncVisualOverlayIfNeeded(animated: false)
+                        }
                         if self?.isCommandKeyHeld == true {
                             self?.refreshCommandLinkUnderlines(hoveredRange: self?.hoveredCommandLinkRange)
                         }
@@ -884,6 +887,14 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    /// `true` when GPU-composited Vim visual selection bands own selection rendering for this text view.
+    var usesElasticVimVisualOverlay: Bool {
+        self.funEffects.ownsVimCursorDrawing
+            && VimState.shared.mode == .visual
+            && VimState.shared.visualOwnerID == ObjectIdentifier(self)
+    }
+    
+    
     /// Suppresses AppKit's native 1–2pt insertion line & internal `NSTextInsertionIndicator`
     /// while our GPU Vim cursor owns rendering so no thin vertical caret line lingers after moves.
     func syncNativeCaretVisibility() {
@@ -900,15 +911,22 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             }
         }
         
-        // Suppress AppKit's static sharp-cornered selection fill while our GPU spring Visual bands render
-        let useElasticVisualOverlay = hideNative
-            && VimState.shared.mode == .visual
-            && VimState.shared.visualOwnerID == ObjectIdentifier(self)
+        // Suppress AppKit's static sharp-cornered selection fill while our GPU Visual bands render
+        let useElasticVisualOverlay = self.usesElasticVimVisualOverlay
         let desiredSelectionBg: NSColor = useElasticVisualOverlay
             ? .clear
             : (self.theme?.selectionColor ?? NSColor.selectedTextBackgroundColor)
         if self.selectedTextAttributes[.backgroundColor] as? NSColor != desiredSelectionBg {
             self.selectedTextAttributes[.backgroundColor] = desiredSelectionBg
+            self.needsUpdateLineHighlight = true
+            for rect in self.lineHighlightRects {
+                let band = NSRect(x: self.visibleRect.minX, y: rect.minY - 6, width: self.visibleRect.width, height: rect.height + 12)
+                self.setNeedsDisplay(band, avoidAdditionalLayout: true)
+            }
+            if !useElasticVisualOverlay, let curRect = self.vimCursorRect(at: self.selectedRange().location) {
+                let band = NSRect(x: self.visibleRect.minX, y: curRect.minY - 6, width: self.visibleRect.width, height: curRect.height + 12)
+                self.setNeedsDisplay(band, avoidAdditionalLayout: true)
+            }
         }
     }
     
@@ -1838,8 +1856,18 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             NotesTextColorPaletteController.shared.dismiss(animated: true)
         }
         if selectedRanges != previousSelectedRanges, previousHadSelection || !hasEmptySelection {
-            if UserDefaults.standard[.vimMode], VimState.shared.mode == .visual {
-                self.setNeedsDisplay(self.visibleRect, avoidAdditionalLayout: true)
+            if self.usesElasticVimVisualOverlay {
+                // GPU CAShapeLayer renders the Visual selection; only clear the prior single-line
+                // highlight when first entering Visual mode (zero full-viewport CPU redraws on j/k!).
+                if !previousHadSelection {
+                    for rect in previousLineRects {
+                        let band = NSRect(x: self.visibleRect.minX,
+                                          y: rect.minY - 6,
+                                          width: self.visibleRect.width,
+                                          height: rect.height + 12)
+                        self.setNeedsDisplay(band, avoidAdditionalLayout: true)
+                    }
+                }
             } else {
                 for rect in previousLineRects {
                     let band = NSRect(x: self.visibleRect.minX,
@@ -1888,8 +1916,9 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 self.highlightMatchingSymbol(candidates: SymbolPair.braces)
             }
             
-            // update instance highlights
-            if self.highlightsSelectionInstance {
+            // update instance highlights (skip while actively sweeping a Vim visual selection)
+            let isVimVisual = UserDefaults.standard[.vimMode] && VimState.shared.mode == .visual
+            if self.highlightsSelectionInstance, !isVimVisual {
                 let delay: Duration = .seconds(self.selectionInstanceHighlightDelay)
                 self.instanceHighlightTask?.cancel()
                 self.instanceHighlightTask = Task { [weak self] in
@@ -2484,7 +2513,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let range = NSIntersectionRange(rawRange, NSRange(location: 0, length: storageLength))
         guard range.location != NSNotFound else { return }
         
-        if self.highlightsCurrentLines {
+        if self.highlightsCurrentLines, !self.usesElasticVimVisualOverlay {
             self.drawCurrentLine(range: range, in: rect)
         }
         

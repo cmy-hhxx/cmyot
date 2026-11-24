@@ -206,6 +206,7 @@ extension Logger {
         NSApp.registerServicesMenuSendTypes([.fileURL], returnTypes: [])
         NSTouchBar.isAutomaticCustomizeTouchBarMenuItemEnabled = true
         AnalyticsManager.shared.startBackgroundDigestScheduler()
+        ScheduledAIDocumentOrganizer.shared.startScheduler()
         AppIconManager.shared.applySavedAppIconOnLaunch()
         
         #if DEBUG

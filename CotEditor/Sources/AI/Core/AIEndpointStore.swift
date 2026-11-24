@@ -186,7 +186,7 @@ nonisolated enum AIEndpointStore {
     /// from the places that only need the configuration.
     static func migrateLegacyConfigurationIfNeeded() {
         
-        guard self.profiles.isEmpty else {
+        guard UserDefaults.standard[.aiProfiles] == nil, self.profiles.isEmpty else {
             self.cacheLock.lock()
             self.didCheckLegacyMigration = true
             self.cacheLock.unlock()

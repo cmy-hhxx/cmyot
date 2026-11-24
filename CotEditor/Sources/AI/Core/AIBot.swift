@@ -382,12 +382,15 @@ final class AIGijinkaImageLoader {
     static let shared = AIGijinkaImageLoader()
     private static let maxCachedThumbnails = 48
     private static let maxCachedSquareAvatars = 48
+    private static let maxCachedPortraitCards = 48
     
     private(set) var images: [String: NSImage] = [:]
     private var thumbnails: [String: NSImage] = [:]
     private var thumbnailOrder: [String] = []
     private var squareAvatars: [String: NSImage] = [:]
     private var squareAvatarOrder: [String] = []
+    private var portraitCards: [String: NSImage] = [:]
+    private var portraitCardOrder: [String] = []
     private var inFlight: Set<String> = []
     private let cacheDirectory: URL
     @ObservationIgnored private var memoryPressureSource: DispatchSourceMemoryPressure?
@@ -422,6 +425,8 @@ final class AIGijinkaImageLoader {
         self.thumbnailOrder.removeAll()
         self.squareAvatars.removeAll()
         self.squareAvatarOrder.removeAll()
+        self.portraitCards.removeAll()
+        self.portraitCardOrder.removeAll()
     }
     
     
@@ -549,6 +554,139 @@ final class AIGijinkaImageLoader {
             self.squareAvatars.removeValue(forKey: evicted)
         }
         return bitmap
+    }
+    
+    
+    /// Returns an already-cached 3:4 Retina portrait card without blocking the caller if uncached.
+    func cachedPortraitCard(
+        for artwork: AIGijinkaArtwork,
+        pointWidth: CGFloat = 122,
+        pointHeight: CGFloat = 166
+    ) -> NSImage? {
+        let wBucket = max(36, Int(pointWidth.rounded()))
+        let hBucket = max(48, Int(pointHeight.rounded()))
+        return self.portraitCards["\(artwork.id)@pt\(wBucket)x\(hBucket)"]
+    }
+    
+    
+    /// Stores a background-rasterized portrait card in the bounded LRU cache.
+    func storePortraitCard(
+        _ image: NSImage,
+        for artwork: AIGijinkaArtwork,
+        pointWidth: CGFloat = 122,
+        pointHeight: CGFloat = 166
+    ) {
+        let wBucket = max(36, Int(pointWidth.rounded()))
+        let hBucket = max(48, Int(pointHeight.rounded()))
+        let cacheKey = "\(artwork.id)@pt\(wBucket)x\(hBucket)"
+        self.portraitCards[cacheKey] = image
+        self.portraitCardOrder.removeAll { $0 == cacheKey }
+        self.portraitCardOrder.append(cacheKey)
+        while self.portraitCardOrder.count > Self.maxCachedPortraitCards {
+            let evicted = self.portraitCardOrder.removeFirst()
+            self.portraitCards.removeValue(forKey: evicted)
+        }
+    }
+    
+    
+    /// Returns a pre-rasterized ~3:4 Retina vertical character card cropped isotropically in `CGImage`
+    /// pixel coordinates (zero horizontal/vertical stretching, zero top head/hair clipping).
+    func portraitCard(
+        for artwork: AIGijinkaArtwork,
+        pointWidth: CGFloat = 122,
+        pointHeight: CGFloat = 166
+    ) -> NSImage? {
+        if let cached = self.cachedPortraitCard(for: artwork, pointWidth: pointWidth, pointHeight: pointHeight) {
+            return cached
+        }
+        guard let source = self.image(for: artwork) else { return nil }
+        guard let bitmap = Self.renderPortraitBitmap(
+            from: source,
+            cropAnchor: artwork.cropAnchor,
+            pointWidth: pointWidth,
+            pointHeight: pointHeight
+        ) else {
+            return source
+        }
+        self.storePortraitCard(bitmap, for: artwork, pointWidth: pointWidth, pointHeight: pointHeight)
+        return bitmap
+    }
+    
+    
+    /// Thread-safe, pure `CGImage`/`CGContext` isotropic crop & Retina downsampler for ~3:4 character cards.
+    nonisolated static func renderPortraitBitmap(
+        from source: NSImage,
+        cropAnchor: AIGijinkaCropAnchor = .top,
+        pointWidth: CGFloat = 122,
+        pointHeight: CGFloat = 166
+    ) -> NSImage? {
+        guard let cg = source.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              cg.width > 2,
+              cg.height > 2
+        else { return nil }
+        
+        let pxW = CGFloat(cg.width)
+        let pxH = CGFloat(cg.height)
+        let wPts = max(36, pointWidth.rounded())
+        let hPts = max(48, pointHeight.rounded())
+        let targetAspect = wPts / hPts
+        let srcAspect = pxW / pxH
+        
+        let cropW: CGFloat
+        let cropH: CGFloat
+        let cropX: CGFloat
+        let cropY: CGFloat
+        
+        // Note: CGImage.cropping(to:) uses top-left pixel origin (y = 0 is top of character head).
+        if srcAspect >= targetAspect {
+            cropH = pxH
+            cropW = min(pxW, (pxH * targetAspect).rounded())
+            switch cropAnchor {
+                case .leading:
+                    cropX = max(0, ((pxW - cropW) * 0.35).rounded())
+                case .top, .center:
+                    cropX = max(0, ((pxW - cropW) * 0.5).rounded())
+            }
+            cropY = 0
+        } else {
+            cropW = pxW
+            cropH = min(pxH, (pxW / targetAspect).rounded())
+            cropX = 0
+            switch cropAnchor {
+                case .center:
+                    cropY = max(0, ((pxH - cropH) * 0.42).rounded())
+                case .top, .leading:
+                    cropY = 0
+            }
+        }
+        
+        let cropRect = CGRect(x: cropX, y: cropY, width: max(1, cropW), height: max(1, cropH)).integral
+        let croppedCG = cg.cropping(to: cropRect) ?? cg
+        
+        let outPxW = max(72, Int(wPts * 2))
+        let outPxH = max(96, Int(hPts * 2))
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: outPxW,
+            height: outPxH,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        
+        ctx.interpolationQuality = .high
+        ctx.setFillColor(red: 0.965, green: 0.969, blue: 0.980, alpha: 1.0)
+        ctx.fill(CGRect(x: 0, y: 0, width: outPxW, height: outPxH))
+        ctx.draw(croppedCG, in: CGRect(x: 0, y: 0, width: outPxW, height: outPxH))
+        
+        guard let outCG = ctx.makeImage() else { return nil }
+        let rep = NSBitmapImageRep(cgImage: outCG)
+        rep.size = NSSize(width: wPts, height: hPts)
+        let outImage = NSImage(size: NSSize(width: wPts, height: hPts))
+        outImage.addRepresentation(rep)
+        return outImage
     }
     
     
@@ -1073,6 +1211,117 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         )
         let artwork = character?.artwork(for: botID, variantOverride: cfg.artworkVariantIndex)
         return artwork.flatMap { AIGijinkaImageLoader.shared.squareAvatar(for: $0, pointSize: pointSize) }
+    }
+    
+    
+    /// Resolves the vertical ~3:4 portrait card image for `botID` (used across Gallery, Pack, List, and Inspector).
+    func resolvedPortraitImage(
+        for botID: AIBotID,
+        pointWidth: CGFloat = 122,
+        pointHeight: CGFloat = 166,
+        cachedOnly: Bool = false
+    ) -> NSImage? {
+        if let custom = self.customAvatarImage(for: botID) {
+            return AIGijinkaImageLoader.renderPortraitBitmap(
+                from: custom,
+                cropAnchor: .center,
+                pointWidth: pointWidth,
+                pointHeight: pointHeight
+            ) ?? custom
+        }
+        let cfg = self.config(for: botID)
+        let endpoint = self.resolvedEndpointProfile(for: botID)
+        let model = cfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        let character = AIGijinkaCharacter.resolve(
+            modelName: model.isEmpty ? endpoint?.displayModel : model,
+            endpointName: endpoint?.displayName,
+            baseURL: endpoint?.baseURL
+        ) ?? .claude
+        let artwork = character.artwork(for: botID, variantOverride: cfg.artworkVariantIndex)
+        if cachedOnly {
+            return AIGijinkaImageLoader.shared.cachedPortraitCard(
+                for: artwork,
+                pointWidth: pointWidth,
+                pointHeight: pointHeight
+            )
+        }
+        return AIGijinkaImageLoader.shared.portraitCard(
+            for: artwork,
+            pointWidth: pointWidth,
+            pointHeight: pointHeight
+        )
+    }
+    
+    
+    struct SelectableGatewayGroup: Identifiable, Sendable {
+        let profile: AIEndpointProfile
+        let title: String
+        let models: [String]
+        let isActive: Bool
+        var id: UUID { self.profile.id }
+    }
+    
+    
+    /// Returns all configured API gateways (active gateway first) together with their curated & saved models.
+    func selectableGatewayGroups() -> [SelectableGatewayGroup] {
+        var profiles = AIEndpointStore.profiles
+        if profiles.isEmpty {
+            profiles = [AIProvider.openCodeGo.makeProfile()]
+        }
+        let activeID = AIEndpointStore.activeID ?? profiles.first?.id
+        let ordered = profiles.sorted { lhs, rhs in
+            if lhs.id == activeID { return true }
+            if rhs.id == activeID { return false }
+            return false
+        }
+        return ordered.map { profile in
+            var seen: Set<String> = []
+            var models: [String] = []
+            let candidates = profile.availableModelIDs + profile.provider.recommendedModels
+            for raw in candidates {
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
+                models.append(trimmed)
+            }
+            let provider = profile.provider
+            let customName = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title: String = if provider != .custom && (customName.isEmpty || customName == provider.label) {
+                provider.subscriptionTitle
+            } else {
+                profile.displayName
+            }
+            return SelectableGatewayGroup(
+                profile: profile,
+                title: title,
+                models: models,
+                isActive: profile.id == activeID
+            )
+        }
+    }
+    
+    
+    /// Refreshes remote `/models` for a specific gateway profile (or the active gateway if omitted).
+    @discardableResult
+    func refreshGatewayModels(for targetProfile: AIEndpointProfile? = nil) async throws -> [String] {
+        let target = targetProfile
+            ?? AIEndpointStore.activeProfile
+            ?? self.openCodeGoSelectableModels().profile
+            ?? AIProvider.openCodeGo.makeProfile()
+        let apiKey = AIEndpointStore.apiKey(for: target)
+        guard !target.endpoint.requiresAPIKey || !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return target.availableModelIDs + target.provider.recommendedModels
+        }
+        let config = target.configuration(apiKey: apiKey)
+        let fetched = try await AIService.shared.fetchModels(configuration: config)
+        let ids = fetched.map(\.id)
+        var updated = target
+        updated.rememberModels(ids)
+        AIEndpointStore.save(updated, apiKey: apiKey)
+        if AIEndpointStore.activeID == nil {
+            AIEndpointStore.activeID = updated.id
+        }
+        CotLocalDatabase.shared.syncAIEndpointsToDatabase()
+        return updated.availableModelIDs
     }
     
     

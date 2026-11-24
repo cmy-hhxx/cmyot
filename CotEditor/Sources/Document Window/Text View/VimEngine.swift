@@ -620,8 +620,11 @@ final class VimEngine {
                 self.visualLinewise = false
                 VimState.shared.visualActiveLocation = location
                 VimState.shared.visualOwnerID = ObjectIdentifier(textView)
-                self.enter(mode: .visual)
-                self.updateVisualSelection(to: location)
+                VimState.shared.mode = .visual
+                self.resetPreferredColumn()
+                self.resetPending(keepCount: false)
+                self.updateVisualSelection(to: location, animated: false)
+                self.updateStatus()
             case "V":
                 let location = min(textView.selectedRange().location, max(0, (textView.string as NSString).length))
                 let lineRange = self.lineRange(at: location) ?? NSRange(location: location, length: 0)
@@ -630,8 +633,11 @@ final class VimEngine {
                 self.visualLinewise = true
                 VimState.shared.visualActiveLocation = active
                 VimState.shared.visualOwnerID = ObjectIdentifier(textView)
-                self.enter(mode: .visual)
-                self.updateVisualSelection(to: active)
+                VimState.shared.mode = .visual
+                self.resetPreferredColumn()
+                self.resetPending(keepCount: false)
+                self.updateVisualSelection(to: active, animated: false)
+                self.updateStatus()
                 
             case "i":
                 if self.guardEditable() { self.enter(mode: .insert) }
@@ -751,9 +757,8 @@ final class VimEngine {
             case "o", "O":
                 if let anchor = self.visualAnchor, let active = VimState.shared.visualActiveLocation {
                     self.visualAnchor = active
-                    VimState.shared.visualActiveLocation = anchor
-                    self.scrollLocationToVisible(anchor, in: textView)
-                    self.refreshCursor()
+                    self.resetPreferredColumn()
+                    self.updateVisualSelection(to: anchor)
                 }
             case "r":
                 if self.guardEditable() {
@@ -2451,6 +2456,20 @@ final class VimEngine {
     
     private func endVisual(collapseTo target: Int? = nil) {
         
+        if let textView = self.textView {
+            let editorTextView = textView as? EditorTextView
+            if let target {
+                let length = (textView.string as NSString).length
+                let clamped = max(0, min(target, length))
+                editorTextView?.isPerformingVimCursorMove = true
+                textView.setSelectedRange(NSRange(location: clamped, length: 0))
+                editorTextView?.isPerformingVimCursorMove = false
+            }
+            if let editorTextView, !editorTextView.funEffects.isShowingVisualYankPulse {
+                editorTextView.funEffects.hideVimVisualSelection(animated: false, withYankPulse: false)
+            }
+        }
+        
         self.visualAnchor = nil
         self.visualLinewise = false
         VimState.shared.visualActiveLocation = nil
@@ -2462,6 +2481,25 @@ final class VimEngine {
         if let target {
             self.setCursor(target)
         }
+    }
+    
+    
+    /// Re-syncs the GPU visual selection path without animation when the viewport scrolls or resizes.
+    func resyncVisualOverlayIfNeeded(animated: Bool = false) {
+        guard VimState.shared.mode == .visual,
+              let editorTextView = self.textView as? EditorTextView,
+              VimState.shared.visualOwnerID == ObjectIdentifier(editorTextView),
+              let anchor = self.visualAnchor,
+              let active = VimState.shared.visualActiveLocation
+        else { return }
+        editorTextView.funEffects.syncVimVisualSelection(
+            range: editorTextView.selectedRange(),
+            anchorLocation: anchor,
+            activeLocation: active,
+            isLinewise: self.visualLinewise,
+            animated: animated,
+            isContinuous: true
+        )
     }
     
     
@@ -2650,14 +2688,9 @@ final class VimEngine {
             }
             let marginY = min(24, visible.height * 0.15)
             if let probeRect = editorTextView.vimCursorRect(at: clamped) {
-                if !visible.contains(probeRect) {
-                    editorTextView.scrollRangeToVisible(targetRange)
-                }
-                let currentVisible = editorTextView.visibleRect
-                let settledRect = editorTextView.vimCursorRect(at: clamped) ?? probeRect
-                let comfortable = currentVisible.insetBy(dx: 0, dy: marginY)
-                if !comfortable.contains(settledRect) {
-                    let padded = settledRect.insetBy(dx: -8, dy: -marginY).intersection(editorTextView.bounds)
+                let comfortable = visible.insetBy(dx: 0, dy: marginY)
+                if !comfortable.contains(probeRect) {
+                    let padded = probeRect.insetBy(dx: -8, dy: -marginY).intersection(editorTextView.bounds)
                     if !padded.isEmpty {
                         editorTextView.scrollToVisible(padded)
                     } else {
@@ -2673,7 +2706,7 @@ final class VimEngine {
     }
     
     
-    private func updateVisualSelection(to location: Int) {
+    private func updateVisualSelection(to location: Int, animated: Bool = true) {
         
         guard let textView, let anchor = self.visualAnchor else { return }
         let string = textView.string as NSString
@@ -2703,31 +2736,43 @@ final class VimEngine {
         
         VimState.shared.visualActiveLocation = clamped
         VimState.shared.visualOwnerID = ObjectIdentifier(textView)
+        // Suppress AppKit native selection fill BEFORE mutating selectedRange so frame 0 never flashes
+        editorTextView?.syncNativeCaretVisibility()
+        
         textView.setSelectedRange(selectionRange)
         self.scrollLocationToVisible(clamped, in: textView)
-        textView.setNeedsDisplay(textView.visibleRect, avoidAdditionalLayout: true)
         
         if let editorTextView {
             if editorTextView.funEffects.ownsVimCursorDrawing,
                let newRect = editorTextView.vimCursorRect(at: clamped)
             {
-                editorTextView.syncNativeCaretVisibility()
-                editorTextView.funEffects.animateVimCursorTransition(
-                    from: oldRect,
-                    to: newRect,
-                    color: editorTextView.effectiveCursorColor,
-                    isContinuous: self.lastMoveWasContinuous
-                )
+                if animated {
+                    editorTextView.funEffects.animateVimCursorTransition(
+                        from: oldRect,
+                        to: newRect,
+                        color: editorTextView.effectiveCursorColor,
+                        isContinuous: self.lastMoveWasContinuous
+                    )
+                } else {
+                    editorTextView.funEffects.moveVimCursor(
+                        to: newRect,
+                        color: editorTextView.effectiveCursorColor,
+                        animated: false
+                    )
+                }
                 editorTextView.funEffects.syncVimVisualSelection(
                     range: selectionRange,
                     anchorLocation: clampedAnchor,
                     activeLocation: clamped,
                     isLinewise: self.visualLinewise,
-                    animated: true
+                    animated: animated,
+                    isContinuous: self.lastMoveWasContinuous
                 )
             } else {
                 self.refreshCursor()
             }
+        } else {
+            textView.setNeedsDisplay(textView.visibleRect, avoidAdditionalLayout: true)
         }
     }
     

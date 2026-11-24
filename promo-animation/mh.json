@@ -1,0 +1,10 @@
+{
+  "version": 3,
+  "projectType": "standard",
+  "runtimeVersion": 1,
+  "entry": "src/scene.js",
+  "width": 1920,
+  "height": 1080,
+  "duration": 15,
+  "fps": 30
+}

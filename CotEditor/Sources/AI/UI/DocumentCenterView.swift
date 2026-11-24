@@ -169,7 +169,7 @@ struct CenterPreviewTextView: NSViewRepresentable {
 }
 
 
-// MARK: - Pure Radial Cluster Math Engine (Retained for Layout Tests)
+// MARK: - Structured Bidirectional Tree Layout Engine (整齐左右分栏 · 零交叉 · O(N) 确定性布局)
 
 nonisolated enum StarMapLayoutEngine {
     
@@ -188,292 +188,252 @@ nonisolated enum StarMapLayoutEngine {
     }
     
     struct LayoutResult: Equatable {
+        let hubPoint: CGPoint
+        let usesTimelineSpine: Bool
         let clusters: [PositionedCluster]
         let leaves: [PositionedLeaf]
         let bounds: CGRect
+        
+        init(
+            hubPoint: CGPoint = .zero,
+            usesTimelineSpine: Bool = false,
+            clusters: [PositionedCluster],
+            leaves: [PositionedLeaf],
+            bounds: CGRect
+        ) {
+            self.hubPoint = hubPoint
+            self.usesTimelineSpine = usesTimelineSpine
+            self.clusters = clusters
+            self.leaves = leaves
+            self.bounds = bounds
+        }
     }
     
     
     static let hubFootprint = CGSize(width: 156, height: 68)
+    static let milestoneFootprint = CGSize(width: 104, height: 24)
     static let clusterFootprint = CGSize(width: 164, height: 44)
     static let leafFootprint = CGSize(width: 196, height: 56)
+    
+    private static let rowsPerSubcolumn = 8
+    private static let rowStep: CGFloat = 66 // 56pt card + 10pt gap
+    private static let clusterVerticalGap: CGFloat = 32
+    private static let timelineMilestoneStep: CGFloat = 48
+    private static let clusterCenterX: CGFloat = 236 // Hub half(78) + corridor(76) + Cluster half(82)
+    private static let firstLeafColumnX: CGFloat = 468 // Cluster outer(318) + spine corridor(52) + Leaf half(98)
+    private static let subcolumnStrideX: CGFloat = 232 // 196pt card + 36pt spine corridor
     
     
     static func compute(
         clusterIDs: [String],
         leafCountsByCluster: [String: Int],
         collapsedClusterIDs: Set<String>,
-        leafIDsByCluster: [String: [String]]
+        leafIDsByCluster: [String: [String]],
+        usesTimelineSpine: Bool = false
     ) -> LayoutResult {
         guard !clusterIDs.isEmpty else {
-            return LayoutResult(clusters: [], leaves: [], bounds: CGRect(x: -180, y: -140, width: 360, height: 280))
+            return LayoutResult(
+                hubPoint: .zero,
+                usesTimelineSpine: usesTimelineSpine,
+                clusters: [],
+                leaves: [],
+                bounds: CGRect(x: -180, y: -140, width: 360, height: 280)
+            )
         }
         
-        var positionedClusters: [PositionedCluster] = []
-        var positionedLeaves: [PositionedLeaf] = []
+        struct ClusterSpec {
+            let index: Int
+            let id: String
+            let leaves: [String]
+            let blockHeight: CGFloat
+        }
         
-        if clusterIDs.count == 1, let onlyID = clusterIDs.first {
-            let leaves = leafIDsByCluster[onlyID] ?? []
-            let isCollapsed = collapsedClusterIDs.contains(onlyID)
-            let clusterPt = CGPoint(x: 0, y: -120)
-            positionedClusters.append(PositionedCluster(id: onlyID, worldPoint: clusterPt, angle: -.pi * 0.5))
-            
-            if !isCollapsed {
-                let ringCapacities = [8, 14, 22, 32]
-                let ringRadii: [CGFloat] = [235, 390, 545, 700]
-                var cursor = 0
-                for (ringIdx, cap) in ringCapacities.enumerated() where cursor < leaves.count {
-                    let count = min(cap, leaves.count - cursor)
-                    let radius = ringRadii[ringIdx]
-                    let step = (2.0 * .pi) / Double(max(1, count))
-                    let phaseOffset = -Double.pi * 0.5 + (ringIdx.isMultiple(of: 2) ? 0.0 : step * 0.5)
-                    for i in 0..<count {
-                        let leafID = leaves[cursor]
-                        cursor += 1
-                        let a = phaseOffset + Double(i) * step
-                        let pt = CGPoint(
-                            x: CGFloat(cos(a)) * radius * 1.28,
-                            y: CGFloat(sin(a)) * radius * 0.86
-                        )
-                        positionedLeaves.append(PositionedLeaf(
-                            id: leafID,
-                            clusterID: onlyID,
-                            worldPoint: pt,
-                            parentPoint: .zero,
-                            angle: a
-                        ))
-                    }
+        let specs: [ClusterSpec] = clusterIDs.enumerated().map { idx, cid in
+            let isCollapsed = collapsedClusterIDs.contains(cid)
+            let rawLeaves = isCollapsed ? [] : (leafIDsByCluster[cid] ?? [])
+            let visibleRows = min(Self.rowsPerSubcolumn, rawLeaves.count)
+            let leavesHeight = visibleRows > 0
+                ? CGFloat(visibleRows) * Self.rowStep - (Self.rowStep - Self.leafFootprint.height)
+                : 0
+            let blockH = max(Self.clusterFootprint.height, leavesHeight)
+            return ClusterSpec(index: idx, id: cid, leaves: rawLeaves, blockHeight: blockH)
+        }
+        
+        func buildClusterLeaves(for spec: ClusterSpec, side: CGFloat, blockMidY: CGFloat, clusterPt: CGPoint) -> [PositionedLeaf] {
+            guard !spec.leaves.isEmpty else { return [] }
+            var clusterLeaves: [PositionedLeaf] = []
+            let subcolCount = Int(ceil(Double(spec.leaves.count) / Double(Self.rowsPerSubcolumn)))
+            for colIdx in 0..<subcolCount {
+                let start = colIdx * Self.rowsPerSubcolumn
+                let end = min(spec.leaves.count, start + Self.rowsPerSubcolumn)
+                let slice = spec.leaves[start..<end]
+                let colX = side * (Self.firstLeafColumnX + CGFloat(colIdx) * Self.subcolumnStrideX)
+                let parentAnchor: CGPoint = colIdx == 0
+                    ? clusterPt
+                    : CGPoint(x: side * (Self.firstLeafColumnX + CGFloat(colIdx - 1) * Self.subcolumnStrideX), y: blockMidY)
+                let startY = blockMidY - CGFloat(slice.count - 1) * Self.rowStep * 0.5
+                for (rowOffset, leafID) in slice.enumerated() {
+                    let pt = CGPoint(x: colX, y: startY + CGFloat(rowOffset) * Self.rowStep)
+                    clusterLeaves.append(PositionedLeaf(
+                        id: leafID,
+                        clusterID: spec.id,
+                        worldPoint: pt,
+                        parentPoint: parentAnchor,
+                        angle: atan2(Double(pt.y), Double(pt.x))
+                    ))
                 }
             }
-        } else {
-            let weights: [Double] = clusterIDs.map { cid in
-                let collapsed = collapsedClusterIDs.contains(cid)
-                let visibleCount = collapsed ? 0 : (leafCountsByCluster[cid] ?? 0)
-                return max(2.8, Double(min(visibleCount, 14)) + 2.2)
-            }
-            let totalWeight = max(1.0, weights.reduce(0, +))
-            let clusterBaseR: CGFloat = min(290, max(195, 165 + CGFloat(clusterIDs.count) * 18))
+            return clusterLeaves
+        }
+        
+        if usesTimelineSpine {
+            // Chronological Top-to-Bottom Timeline Spine down X = 0, alternating Left (-1) / Right (+1)
+            let rawHubY: CGFloat = 0
+            let firstZoneTop: CGFloat = Self.hubFootprint.height * 0.5 + 36
+            var leftBottomY: CGFloat = firstZoneTop
+            var rightBottomY: CGFloat = firstZoneTop
+            var prevMilestoneY: CGFloat?
             
-            var cursorAngle = -Double.pi * 0.5
-            for (idx, cid) in clusterIDs.enumerated() {
-                let span = (weights[idx] / totalWeight) * (2.0 * .pi)
-                let midAngle = cursorAngle + span * 0.5
-                let clusterPt = CGPoint(
-                    x: CGFloat(cos(midAngle)) * clusterBaseR * 1.24,
-                    y: CGFloat(sin(midAngle)) * clusterBaseR * 0.86
+            var rawClusters: [PositionedCluster] = []
+            var rawLeaves: [PositionedLeaf] = []
+            rawClusters.reserveCapacity(specs.count)
+            
+            for (idx, spec) in specs.enumerated() {
+                let side: CGFloat = (idx % 2 == 0) ? -1.0 : 1.0
+                let sideAvailTop = (side < 0) ? leftBottomY : rightBottomY
+                let minCenterForSide = sideAvailTop + spec.blockHeight * 0.5
+                let minCenterForSpine = prevMilestoneY.map { $0 + Self.timelineMilestoneStep }
+                    ?? (firstZoneTop + Self.clusterFootprint.height * 0.5)
+                let blockMidY = max(minCenterForSide, minCenterForSpine)
+                let cPt = CGPoint(x: side * Self.clusterCenterX, y: blockMidY)
+                
+                rawClusters.append(PositionedCluster(
+                    id: spec.id,
+                    worldPoint: cPt,
+                    angle: atan2(Double(cPt.y), Double(cPt.x))
+                ))
+                rawLeaves.append(contentsOf: buildClusterLeaves(for: spec, side: side, blockMidY: blockMidY, clusterPt: cPt))
+                
+                prevMilestoneY = blockMidY
+                let nextBottom = blockMidY + spec.blockHeight * 0.5 + Self.clusterVerticalGap
+                if side < 0 {
+                    leftBottomY = nextBottom
+                } else {
+                    rightBottomY = nextBottom
+                }
+            }
+            
+            let rawTopY = rawHubY - Self.hubFootprint.height * 0.5
+            let rawBottomY = max(leftBottomY, rightBottomY) - Self.clusterVerticalGap
+            let shiftY = -(rawTopY + rawBottomY) * 0.5
+            
+            let hubPoint = CGPoint(x: 0, y: rawHubY + shiftY)
+            let shiftedClusters = rawClusters.map { c in
+                let pt = CGPoint(x: c.worldPoint.x, y: c.worldPoint.y + shiftY)
+                return PositionedCluster(id: c.id, worldPoint: pt, angle: atan2(Double(pt.y), Double(pt.x)))
+            }
+            let shiftedLeaves = rawLeaves.map { l in
+                let pt = CGPoint(x: l.worldPoint.x, y: l.worldPoint.y + shiftY)
+                let parentPt = CGPoint(x: l.parentPoint.x, y: l.parentPoint.y + shiftY)
+                return PositionedLeaf(id: l.id, clusterID: l.clusterID, worldPoint: pt, parentPoint: parentPt, angle: atan2(Double(pt.y), Double(pt.x)))
+            }
+            
+            var minX: CGFloat = -Self.hubFootprint.width * 0.5 - 30
+            var maxX: CGFloat = Self.hubFootprint.width * 0.5 + 30
+            var minY: CGFloat = hubPoint.y - Self.hubFootprint.height * 0.5 - 28
+            var maxY: CGFloat = hubPoint.y + Self.hubFootprint.height * 0.5 + 28
+            
+            func includeTimeline(_ pt: CGPoint, size: CGSize) {
+                minX = min(minX, pt.x - size.width * 0.5 - 28)
+                maxX = max(maxX, pt.x + size.width * 0.5 + 28)
+                minY = min(minY, pt.y - size.height * 0.5 - 28)
+                maxY = max(maxY, pt.y + size.height * 0.5 + 28)
+            }
+            for c in shiftedClusters {
+                includeTimeline(c.worldPoint, size: Self.clusterFootprint)
+                includeTimeline(CGPoint(x: 0, y: c.worldPoint.y), size: Self.milestoneFootprint)
+            }
+            for l in shiftedLeaves {
+                includeTimeline(l.worldPoint, size: Self.leafFootprint)
+            }
+            return LayoutResult(
+                hubPoint: hubPoint,
+                usesTimelineSpine: true,
+                clusters: shiftedClusters,
+                leaves: shiftedLeaves,
+                bounds: CGRect(x: minX, y: minY, width: max(380, maxX - minX), height: max(260, maxY - minY))
+            )
+        }
+        
+        // Balance clusters cleanly across Right (+1) and Left (-1) columns
+        var rightSpecs: [ClusterSpec] = []
+        var leftSpecs: [ClusterSpec] = []
+        var rightHeight: CGFloat = 0
+        var leftHeight: CGFloat = 0
+        
+        for spec in specs {
+            if rightSpecs.isEmpty || (specs.count > 1 && rightHeight <= leftHeight) {
+                rightHeight += (rightSpecs.isEmpty ? 0 : Self.clusterVerticalGap) + spec.blockHeight
+                rightSpecs.append(spec)
+            } else {
+                leftHeight += (leftSpecs.isEmpty ? 0 : Self.clusterVerticalGap) + spec.blockHeight
+                leftSpecs.append(spec)
+            }
+        }
+        
+        var positionedClustersByIndex: [Int: PositionedCluster] = [:]
+        var positionedLeavesByCluster: [Int: [PositionedLeaf]] = [:]
+        
+        func placeSide(_ sideSpecs: [ClusterSpec], side: CGFloat, totalHeight: CGFloat) {
+            var cursorY = -totalHeight * 0.5
+            for spec in sideSpecs {
+                let blockMidY = cursorY + spec.blockHeight * 0.5
+                let cPt = CGPoint(x: side * Self.clusterCenterX, y: blockMidY)
+                let cAngle = atan2(Double(cPt.y), Double(cPt.x))
+                positionedClustersByIndex[spec.index] = PositionedCluster(
+                    id: spec.id,
+                    worldPoint: cPt,
+                    angle: cAngle
                 )
-                positionedClusters.append(PositionedCluster(id: cid, worldPoint: clusterPt, angle: midAngle))
-                
-                let isCollapsed = collapsedClusterIDs.contains(cid)
-                let leaves = isCollapsed ? [] : (leafIDsByCluster[cid] ?? [])
-                if !leaves.isEmpty {
-                    let usableSpan = max(0.36, span * 0.86)
-                    let startA = midAngle - usableSpan * 0.5
-                    let innerMax = 5
-                    let midMax = 9
-                    let innerLeaves = Array(leaves.prefix(innerMax))
-                    let midLeaves = leaves.count > innerMax ? Array(leaves.dropFirst(innerMax).prefix(midMax)) : []
-                    let outerLeaves = leaves.count > (innerMax + midMax) ? Array(leaves.dropFirst(innerMax + midMax)) : []
-                    
-                    func appendRing(_ ringLeaves: [String], baseRadius: CGFloat, staggerAmt: CGFloat) {
-                        for (rIdx, leafID) in ringLeaves.enumerated() {
-                            let frac = ringLeaves.count == 1 ? 0.5 : Double(rIdx) / Double(ringLeaves.count - 1)
-                            let a = startA + frac * usableSpan
-                            let stagger: CGFloat = rIdx.isMultiple(of: 2) ? 0 : staggerAmt
-                            let r = baseRadius + stagger
-                            let pt = CGPoint(
-                                x: CGFloat(cos(a)) * r * 1.26,
-                                y: CGFloat(sin(a)) * r * 0.88
-                            )
-                            positionedLeaves.append(PositionedLeaf(
-                                id: leafID,
-                                clusterID: cid,
-                                worldPoint: pt,
-                                parentPoint: clusterPt,
-                                angle: a
-                            ))
-                        }
-                    }
-                    
-                    appendRing(innerLeaves, baseRadius: clusterBaseR + 175, staggerAmt: 34)
-                    if !midLeaves.isEmpty {
-                        appendRing(midLeaves, baseRadius: clusterBaseR + 320, staggerAmt: 34)
-                    }
-                    if !outerLeaves.isEmpty {
-                        appendRing(outerLeaves, baseRadius: clusterBaseR + 465, staggerAmt: 34)
-                    }
-                }
-                
-                cursorAngle += span
+                positionedLeavesByCluster[spec.index] = buildClusterLeaves(for: spec, side: side, blockMidY: blockMidY, clusterPt: cPt)
+                cursorY += spec.blockHeight + Self.clusterVerticalGap
             }
         }
         
-        // Deterministic AABB collision resolution across Hub, Clusters, and Leaves -> guaranteed zero overlap
-        Self.resolveOverlaps(clusters: &positionedClusters, leaves: &positionedLeaves)
-        
-        // Keep leaf parentPoint synced with resolved cluster positions
-        if positionedClusters.count > 1 {
-            let clusterPosMap = Dictionary(uniqueKeysWithValues: positionedClusters.map { ($0.id, $0.worldPoint) })
-            for i in positionedLeaves.indices {
-                if let cPt = clusterPosMap[positionedLeaves[i].clusterID] {
-                    positionedLeaves[i] = PositionedLeaf(
-                        id: positionedLeaves[i].id,
-                        clusterID: positionedLeaves[i].clusterID,
-                        worldPoint: positionedLeaves[i].worldPoint,
-                        parentPoint: cPt,
-                        angle: positionedLeaves[i].angle
-                    )
-                }
-            }
+        placeSide(rightSpecs, side: 1.0, totalHeight: rightHeight)
+        if !leftSpecs.isEmpty {
+            placeSide(leftSpecs, side: -1.0, totalHeight: leftHeight)
         }
+        
+        let orderedClusters = (0..<specs.count).compactMap { positionedClustersByIndex[$0] }
+        let orderedLeaves = (0..<specs.count).flatMap { positionedLeavesByCluster[$0] ?? [] }
         
         var minX: CGFloat = -Self.hubFootprint.width * 0.5 - 30
         var maxX: CGFloat = Self.hubFootprint.width * 0.5 + 30
-        var minY: CGFloat = -Self.hubFootprint.height * 0.5 - 30
-        var maxY: CGFloat = Self.hubFootprint.height * 0.5 + 30
+        var minY: CGFloat = -150
+        var maxY: CGFloat = 150
         
         func include(_ pt: CGPoint, size: CGSize) {
-            minX = min(minX, pt.x - size.width * 0.5 - 24)
-            maxX = max(maxX, pt.x + size.width * 0.5 + 24)
-            minY = min(minY, pt.y - size.height * 0.5 - 24)
-            maxY = max(maxY, pt.y + size.height * 0.5 + 24)
+            minX = min(minX, pt.x - size.width * 0.5 - 28)
+            maxX = max(maxX, pt.x + size.width * 0.5 + 28)
+            minY = min(minY, pt.y - size.height * 0.5 - 28)
+            maxY = max(maxY, pt.y + size.height * 0.5 + 28)
         }
         
-        for c in positionedClusters {
+        for c in orderedClusters {
             include(c.worldPoint, size: Self.clusterFootprint)
         }
-        for l in positionedLeaves {
+        for l in orderedLeaves {
             include(l.worldPoint, size: Self.leafFootprint)
         }
         
         return LayoutResult(
-            clusters: positionedClusters,
-            leaves: positionedLeaves,
-            bounds: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+            hubPoint: .zero,
+            usesTimelineSpine: false,
+            clusters: orderedClusters,
+            leaves: orderedLeaves,
+            bounds: CGRect(x: minX, y: minY, width: max(380, maxX - minX), height: max(300, maxY - minY))
         )
-    }
-    
-    
-    /// Deterministically resolves all bounding-box overlaps among Hub (pinned), Cluster nodes, and Leaf cards.
-    private static func resolveOverlaps(
-        clusters: inout [PositionedCluster],
-        leaves: inout [PositionedLeaf]
-    ) {
-        struct BoxNode {
-            var center: CGPoint
-            let halfW: CGFloat
-            let halfH: CGFloat
-            let fixed: Bool
-            let isCluster: Bool
-            let sourceIndex: Int
-        }
-        
-        let pad: CGFloat = 14
-        var nodes: [BoxNode] = [
-            BoxNode(
-                center: .zero,
-                halfW: Self.hubFootprint.width * 0.5 + pad * 0.5,
-                halfH: Self.hubFootprint.height * 0.5 + pad * 0.5,
-                fixed: true,
-                isCluster: false,
-                sourceIndex: -1
-            ),
-        ]
-        
-        for (idx, c) in clusters.enumerated() {
-            nodes.append(BoxNode(
-                center: c.worldPoint,
-                halfW: Self.clusterFootprint.width * 0.5 + pad * 0.5,
-                halfH: Self.clusterFootprint.height * 0.5 + pad * 0.5,
-                fixed: false,
-                isCluster: true,
-                sourceIndex: idx
-            ))
-        }
-        
-        for (idx, l) in leaves.enumerated() {
-            nodes.append(BoxNode(
-                center: l.worldPoint,
-                halfW: Self.leafFootprint.width * 0.5 + pad * 0.5,
-                halfH: Self.leafFootprint.height * 0.5 + pad * 0.5,
-                fixed: false,
-                isCluster: false,
-                sourceIndex: idx
-            ))
-        }
-        
-        let count = nodes.count
-        guard count > 1 else { return }
-        
-        for _ in 0..<44 {
-            var movedAny = false
-            for i in 0..<count {
-                for j in (i + 1)..<count {
-                    let a = nodes[i]
-                    let b = nodes[j]
-                    let dx = b.center.x - a.center.x
-                    let dy = b.center.y - a.center.y
-                    let overlapX = (a.halfW + b.halfW) - abs(dx)
-                    let overlapY = (a.halfH + b.halfH) - abs(dy)
-                    guard overlapX > 0.5 && overlapY > 0.5 else { continue }
-                    
-                    movedAny = true
-                    // Push along the axis of minimum penetration (with deterministic radial tie-break)
-                    let pushX: CGFloat
-                    let pushY: CGFloat
-                    if overlapX < overlapY * 1.15 {
-                        let signX: CGFloat = dx >= 0 ? (dx == 0 ? (b.center.x >= 0 ? 1 : -1) : 1) : -1
-                        pushX = signX * (overlapX + 2.0)
-                        pushY = 0
-                    } else {
-                        let signY: CGFloat = dy >= 0 ? (dy == 0 ? (b.center.y >= 0 ? 1 : -1) : 1) : -1
-                        pushX = 0
-                        pushY = signY * (overlapY + 2.0)
-                    }
-                    
-                    if a.fixed {
-                        nodes[j].center.x += pushX
-                        nodes[j].center.y += pushY
-                    } else if b.fixed {
-                        nodes[i].center.x -= pushX
-                        nodes[i].center.y -= pushY
-                    } else if a.isCluster && !b.isCluster {
-                        // Prefer pushing leaf outward rather than displacing its parent cluster
-                        nodes[i].center.x -= pushX * 0.22
-                        nodes[i].center.y -= pushY * 0.22
-                        nodes[j].center.x += pushX * 0.78
-                        nodes[j].center.y += pushY * 0.78
-                    } else if !a.isCluster && b.isCluster {
-                        nodes[i].center.x -= pushX * 0.78
-                        nodes[i].center.y -= pushY * 0.78
-                        nodes[j].center.x += pushX * 0.22
-                        nodes[j].center.y += pushY * 0.22
-                    } else {
-                        nodes[i].center.x -= pushX * 0.5
-                        nodes[i].center.y -= pushY * 0.5
-                        nodes[j].center.x += pushX * 0.5
-                        nodes[j].center.y += pushY * 0.5
-                    }
-                }
-            }
-            if !movedAny { break }
-        }
-        
-        for node in nodes where !node.fixed {
-            if node.isCluster {
-                let c = clusters[node.sourceIndex]
-                clusters[node.sourceIndex] = PositionedCluster(id: c.id, worldPoint: node.center, angle: c.angle)
-            } else {
-                let l = leaves[node.sourceIndex]
-                leaves[node.sourceIndex] = PositionedLeaf(
-                    id: l.id,
-                    clusterID: l.clusterID,
-                    worldPoint: node.center,
-                    parentPoint: l.parentPoint,
-                    angle: l.angle
-                )
-            }
-        }
     }
 }
 
@@ -815,15 +775,19 @@ nonisolated enum StarMapRelationEngine {
         maxEdgesPerNode: Int = 3
     ) -> [StarMapRelationEdge] {
         guard docs.count >= 2 else { return [] }
-        let cappedDocs = Array(docs.prefix(90))
+        let cappedDocs = Array(docs.prefix(64))
         
-        var termsByDoc: [String: Set<String>] = [:]
         var lowerTermsByDoc: [String: [String: String]] = [:] // lowercased -> display casing
         var docFreq: [String: Int] = [:]
+        var cleanTitles: [String] = []
+        var cleanTitleLowers: [String] = []
+        var bodyLowers: [String] = []
+        cleanTitles.reserveCapacity(cappedDocs.count)
+        cleanTitleLowers.reserveCapacity(cappedDocs.count)
+        bodyLowers.reserveCapacity(cappedDocs.count)
         
         for doc in cappedDocs {
             let extracted = Self.extractKeyTerms(title: doc.title, content: doc.content)
-            termsByDoc[doc.id] = extracted
             var lowerMap: [String: String] = [:]
             for t in extracted {
                 let lower = t.lowercased()
@@ -835,42 +799,51 @@ nonisolated enum StarMapRelationEngine {
             for lower in lowerMap.keys {
                 docFreq[lower, default: 0] += 1
             }
+            let cTitle = Self.normalizedCleanTitle(doc.title)
+            cleanTitles.append(cTitle)
+            cleanTitleLowers.append(cTitle.lowercased())
+            bodyLowers.append(doc.content.prefix(2_400).lowercased())
         }
         
         let maxAllowedDF = max(2, Int(ceil(Double(cappedDocs.count) * 0.6)))
-        let discriminativeLowerTerms = Set(docFreq.compactMap { pair -> String? in
-            (pair.value >= 2 && pair.value <= maxAllowedDF) ? pair.key : nil
-        })
+        let discriminativeByIndex: [Set<String>] = cappedDocs.map { doc in
+            let map = lowerTermsByDoc[doc.id] ?? [:]
+            return Set(map.keys).intersection(
+                docFreq.compactMap { ($0.value >= 2 && $0.value <= maxAllowedDF) ? $0.key : nil }
+            )
+        }
         
         var candidates: [StarMapRelationEdge] = []
         
         for i in 0..<(cappedDocs.count - 1) {
             let a = cappedDocs[i]
-            let aTitleClean = Self.normalizedCleanTitle(a.title)
+            let aTitleClean = cleanTitles[i]
+            let aTitleLower = cleanTitleLowers[i]
             let aLowerMap = lowerTermsByDoc[a.id] ?? [:]
-            let aDiscriminative = Set(aLowerMap.keys).intersection(discriminativeLowerTerms)
-            let aBodyLower = a.content.prefix(8_000).lowercased()
+            let aDiscriminative = discriminativeByIndex[i]
+            let aBodyLower = bodyLowers[i]
             
             for j in (i + 1)..<cappedDocs.count {
                 let b = cappedDocs[j]
-                let bTitleClean = Self.normalizedCleanTitle(b.title)
-                let bBodyLower = b.content.prefix(8_000).lowercased()
+                let bTitleClean = cleanTitles[j]
+                let bTitleLower = cleanTitleLowers[j]
+                let bBodyLower = bodyLowers[j]
                 
                 var bestStrength = 0.0
                 var bestReason = ""
                 
                 // 1. Explicit title cross-mention
-                if bTitleClean.count >= 3 && aBodyLower.contains(bTitleClean.lowercased()) {
+                if bTitleClean.count >= 3 && aBodyLower.contains(bTitleLower) {
                     bestStrength = 0.86
                     bestReason = "提及「\(String(bTitleClean.prefix(12)))」"
-                } else if aTitleClean.count >= 3 && bBodyLower.contains(aTitleClean.lowercased()) {
+                } else if aTitleClean.count >= 3 && bBodyLower.contains(aTitleLower) {
                     bestStrength = 0.86
                     bestReason = "提及「\(String(aTitleClean.prefix(12)))」"
                 }
                 
                 // 2. Shared discriminative keywords / concepts
                 let bLowerMap = lowerTermsByDoc[b.id] ?? [:]
-                let bDiscriminative = Set(bLowerMap.keys).intersection(discriminativeLowerTerms)
+                let bDiscriminative = discriminativeByIndex[j]
                 let sharedLowers = aDiscriminative.intersection(bDiscriminative)
                 
                 if !sharedLowers.isEmpty {
@@ -978,13 +951,24 @@ nonisolated enum DocumentCenterAgentOrganizer {
     }
     
     
-    /// Checks whether a document title is generic / untitled and safe for Agent title cleanup.
+    /// Checks whether a document title is generic / placeholder and safe for Agent title cleanup.
     static func isGenericUntitled(_ title: String, hasFilePath: Bool) -> Bool {
         if hasFilePath { return false }
         let clean = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if clean.isEmpty { return true }
-        let prefixes = ["untitled", "未命名", "新建文档", "无标题", "note ", "draft "]
-        return prefixes.contains { clean == $0.trimmingCharacters(in: .whitespaces) || clean.hasPrefix($0) }
+        if clean.isEmpty || clean.count == 1 { return true }
+        let prefixes = [
+            "untitled", "未命名", "新建文档", "无标题", "note ", "draft ",
+            "草稿", "临时", "新建", "随便写", "备忘", "test", "tmp", "temp",
+        ]
+        if prefixes.contains(where: { clean == $0.trimmingCharacters(in: .whitespaces) || clean.hasPrefix($0) }) {
+            return true
+        }
+        // Pure digits / timestamps like "111", "222", "20261124", "11-24"
+        let strippedPunct = clean.replacingOccurrences(of: #"[\d\-_/\.\s:]+"#, with: "", options: .regularExpression)
+        if strippedPunct.isEmpty {
+            return true
+        }
+        return false
     }
     
     
@@ -1075,7 +1059,11 @@ nonisolated enum DocumentCenterAgentOrganizer {
     
     
     @MainActor
-    static func generatePlan(items: [InputItem], existingGroups: [String]) async -> (plan: Plan, usedAI: Bool) {
+    static func generatePlan(
+        items: [InputItem],
+        existingGroups: [String],
+        analyticsFeature: String = "documentCenterAgentOrganize"
+    ) async -> (plan: Plan, usedAI: Bool) {
         guard !items.isEmpty else {
             return (Plan(assignments: []), false)
         }
@@ -1095,10 +1083,10 @@ nonisolated enum DocumentCenterAgentOrganizer {
             
             let existingLine = existingGroups.isEmpty ? "无" : existingGroups.joined(separator: "、")
             let systemPrompt = """
-            你是文档中心智能整理 Agent。请将用户的全部文档归类到清晰、精炼的分组中（2-6字中文分组名，总数控制在 3-7 个，优先复用合理的已有分组）。
+            你是文档中心智能整理 Agent。请将用户的全部文档归类到清晰、精炼的分组中（2-6字中文分组名，总数控制在 3-7 个，优先复用合理的已有分组），并为未命名或含糊草稿标题提炼准确标题。
             规则：
             1. 仅返回严格合法的 JSON，不要输出任何额外解释或 Markdown 之外的文字。
-            2. JSON 格式：{"assignments":[{"id":"原id","group":"分组名","suggestedTitle":"仅当untitled=true且能从内容提炼清晰标题时填写，否则为null"}]}
+            2. JSON 格式：{"assignments":[{"id":"原id","group":"分组名","suggestedTitle":"仅当untitled=true且能从正文提炼4-18字清晰标题时填写，否则为null"}]}
             3. 每个输入文档的 id 都必须出现在 assignments 中。
             """
             let userPrompt = """
@@ -1110,7 +1098,7 @@ nonisolated enum DocumentCenterAgentOrganizer {
             do {
                 let raw = try await AIService.shared.chat(
                     [.system(systemPrompt), .user(userPrompt)],
-                    analyticsFeature: "documentCenterAgentOrganize"
+                    analyticsFeature: analyticsFeature
                 )
                 if let parsed = Self.parsePlan(from: raw, validIDs: validIDs) {
                     return (parsed, true)
@@ -1135,6 +1123,33 @@ nonisolated enum DocumentCenterAgentOrganizer {
         case group(String)
         case ungrouped
         case trash
+    }
+    
+    enum TimeHorizon: String, CaseIterable, Equatable {
+        case all = "全部时间"
+        case today = "今天"
+        case last7Days = "近7天"
+        case last30Days = "近30天"
+        case older = "更早"
+        
+        func matches(_ date: Date, now: Date = Date()) -> Bool {
+            let cal = Calendar.current
+            switch self {
+                case .all:
+                    return true
+                case .today:
+                    return cal.isDate(date, inSameDayAs: now)
+                case .last7Days:
+                    let cutoff = cal.date(byAdding: .day, value: -7, to: now) ?? now.addingTimeInterval(-7 * 86_400)
+                    return date >= cutoff
+                case .last30Days:
+                    let cutoff = cal.date(byAdding: .day, value: -30, to: now) ?? now.addingTimeInterval(-30 * 86_400)
+                    return date >= cutoff
+                case .older:
+                    let cutoff = cal.date(byAdding: .day, value: -30, to: now) ?? now.addingTimeInterval(-30 * 86_400)
+                    return date < cutoff
+            }
+        }
     }
     
     struct OrganizeUndoEntry {
@@ -1195,6 +1210,14 @@ nonisolated enum DocumentCenterAgentOrganizer {
     var groupSections: [DocumentGroupSection] = []
     var collapsedGroups: Set<String> = []
     var collapsedClusterIDs: Set<String> = []
+    var defaultCollapseAll: Bool = true
+    var timeHorizon: TimeHorizon = .all {
+        didSet {
+            if oldValue != self.timeHorizon {
+                self.recomputeDisplayedItems()
+            }
+        }
+    }
     var relations: [StarMapRelationEdge] = []
     var searchHits: [StarMapSearchHit] = []
     var searchMatchesByID: [String: StarMapSearchEngine.MatchEvaluation] = [:]
@@ -1245,12 +1268,79 @@ nonisolated enum DocumentCenterAgentOrganizer {
     
     private var liveDocsByID: [String: Document] = [:]
     @ObservationIgnored private var cachedRelationsCorpusKey: String = ""
+    @ObservationIgnored private var initializedClusterIDs: Set<String> = []
     
     private static let shortDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "M/d"
         return f
     }()
+    
+    private static let timelineHourMinuteFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+    
+    private static let timelineMonthDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "M月d日"
+        return f
+    }()
+    
+    private static let timelineYearMonthDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy/M/d"
+        return f
+    }()
+    
+    static func timelineMilestoneText(for date: Date, now: Date = Date()) -> String {
+        let cal = Calendar.current
+        if cal.isDate(date, inSameDayAs: now) {
+            return "今天 \(Self.timelineHourMinuteFormatter.string(from: date))"
+        }
+        if let yesterday = cal.date(byAdding: .day, value: -1, to: now),
+           cal.isDate(date, inSameDayAs: yesterday)
+        {
+            return "昨天 \(Self.timelineHourMinuteFormatter.string(from: date))"
+        }
+        if cal.component(.year, from: date) == cal.component(.year, from: now) {
+            return Self.timelineMonthDayFormatter.string(from: date)
+        }
+        return Self.timelineYearMonthDayFormatter.string(from: date)
+    }
+    
+    func registerClustersForDefaultCollapse(_ ids: [String]) {
+        for cid in ids where self.initializedClusterIDs.insert(cid).inserted {
+            if self.defaultCollapseAll {
+                self.collapsedClusterIDs.insert(cid)
+            }
+        }
+    }
+    
+    func setClusterExpanded(_ cid: String, expanded: Bool) {
+        self.initializedClusterIDs.insert(cid)
+        if expanded {
+            self.collapsedClusterIDs.remove(cid)
+        } else {
+            self.collapsedClusterIDs.insert(cid)
+        }
+    }
+    
+    func expandAllClusters(_ ids: [String]) {
+        for cid in ids {
+            self.initializedClusterIDs.insert(cid)
+            self.collapsedClusterIDs.remove(cid)
+        }
+    }
+    
+    func collapseAllClusters(_ ids: [String]) {
+        for cid in ids {
+            self.initializedClusterIDs.insert(cid)
+            self.collapsedClusterIDs.insert(cid)
+        }
+    }
     
     func liveDocument(for id: String) -> Document? {
         self.liveDocsByID[id]
@@ -1442,6 +1532,8 @@ nonisolated enum DocumentCenterAgentOrganizer {
     
     func buildStarMapClusters(tokens: StudioColorTokens) -> [StarMapClusterNode] {
         let paletteHexes = ["#2563EB", "#7C3AED", "#0D9488", "#D97706", "#059669", "#4F46E5", "#E11D48"]
+        let isSearching = !StarMapSearchEngine.parseTerms(self.searchText).isEmpty
+        let now = Date()
         
         if self.showingTrash || self.sidebarFilter == .trash {
             let leaves = self.displayedItems.prefix(40).map { item in
@@ -1459,14 +1551,18 @@ nonisolated enum DocumentCenterAgentOrganizer {
                 )
             }
             guard !leaves.isEmpty else { return [] }
+            self.registerClustersForDefaultCollapse(["trash"])
+            let latestTrashDate = self.displayedItems.map(\.updatedAt).max() ?? now
             return [
                 StarMapClusterNode(
                     id: "trash",
                     title: "废纸篓",
                     countText: "\(self.displayedItems.count)",
                     accent: Color.red.opacity(0.82),
-                    isCollapsed: self.collapsedClusterIDs.contains("trash"),
-                    leaves: leaves
+                    isCollapsed: !isSearching && self.collapsedClusterIDs.contains("trash"),
+                    leaves: leaves,
+                    timelineLabel: Self.timelineMilestoneText(for: latestTrashDate, now: now),
+                    sortTimestamp: latestTrashDate.timeIntervalSince1970
                 ),
             ]
         }
@@ -1490,7 +1586,10 @@ nonisolated enum DocumentCenterAgentOrganizer {
         }
         
         func makeLeaves(from items: [ManagedDocumentItem], clusterID: String, color: Color) -> [StarMapLeafNode] {
-            items.prefix(40).map { item in
+            let orderedItems = isSearching
+                ? items
+                : items.sorted { $0.updatedAt > $1.updatedAt }
+            return orderedItems.prefix(40).map { item in
                 let hitEval = self.searchMatchesByID[item.id]
                 let badge: String? = if let hitEval {
                     "命中 \(hitEval.totalHits) 处"
@@ -1514,40 +1613,51 @@ nonisolated enum DocumentCenterAgentOrganizer {
             }
         }
         
-        var clusters: [StarMapClusterNode] = []
+        struct CandidateCluster {
+            let id: String
+            let title: String
+            let accent: Color
+            let bucket: [ManagedDocumentItem]
+            let latestDate: Date
+        }
+        
+        var candidates: [CandidateCluster] = []
         for (idx, groupName) in orderedGroups.enumerated() {
             let bucket = groupedBuckets[groupName] ?? []
             guard !bucket.isEmpty else { continue }
             let cid = "group:\(groupName)"
             let accent = Color(hexString: paletteHexes[idx % paletteHexes.count])
-            clusters.append(
-                StarMapClusterNode(
-                    id: cid,
-                    title: groupName,
-                    countText: "\(bucket.count)",
-                    accent: accent,
-                    isCollapsed: self.collapsedClusterIDs.contains(cid),
-                    leaves: makeLeaves(from: bucket, clusterID: cid, color: accent)
-                )
-            )
+            let latest = bucket.map(\.updatedAt).max() ?? .distantPast
+            candidates.append(CandidateCluster(id: cid, title: groupName, accent: accent, bucket: bucket, latestDate: latest))
         }
-        
         if !ungrouped.isEmpty {
             let cid = "__ungrouped__"
-            let accent = tokens.accent
-            clusters.append(
-                StarMapClusterNode(
-                    id: cid,
-                    title: "未分组",
-                    countText: "\(ungrouped.count)",
-                    accent: accent,
-                    isCollapsed: self.collapsedClusterIDs.contains(cid),
-                    leaves: makeLeaves(from: ungrouped, clusterID: cid, color: accent)
-                )
-            )
+            let latest = ungrouped.map(\.updatedAt).max() ?? .distantPast
+            candidates.append(CandidateCluster(id: cid, title: "未分组", accent: tokens.accent, bucket: ungrouped, latestDate: latest))
         }
         
-        return clusters
+        // Sort clusters newest-active first along the top-to-bottom Timeline Spine
+        candidates.sort { lhs, rhs in
+            if lhs.latestDate != rhs.latestDate {
+                return lhs.latestDate > rhs.latestDate
+            }
+            return lhs.id < rhs.id
+        }
+        
+        self.registerClustersForDefaultCollapse(candidates.map(\.id))
+        
+        return candidates.map { cand in
+            StarMapClusterNode(
+                id: cand.id,
+                title: cand.title,
+                countText: "\(cand.bucket.count)",
+                accent: cand.accent,
+                isCollapsed: !isSearching && self.collapsedClusterIDs.contains(cand.id),
+                leaves: makeLeaves(from: cand.bucket, clusterID: cand.id, color: cand.accent),
+                timelineLabel: Self.timelineMilestoneText(for: cand.latestDate, now: now),
+                sortTimestamp: cand.latestDate.timeIntervalSince1970
+            )
+        }
     }
     
     
@@ -1599,7 +1709,8 @@ nonisolated enum DocumentCenterAgentOrganizer {
             return
         }
         
-        let baseScope: [ManagedDocumentItem] = switch self.sidebarFilter {
+        let now = Date()
+        let rawScope: [ManagedDocumentItem] = switch self.sidebarFilter {
             case .all:
                 self.items
             case .openNow:
@@ -1611,6 +1722,9 @@ nonisolated enum DocumentCenterAgentOrganizer {
             case .trash:
                 []
         }
+        let baseScope: [ManagedDocumentItem] = (self.timeHorizon == .all)
+            ? rawScope
+            : rawScope.filter { self.timeHorizon.matches($0.updatedAt, now: now) }
         
         var evalByID: [String: StarMapSearchEngine.MatchEvaluation] = [:]
         var hits: [StarMapSearchHit] = []
@@ -1699,6 +1813,7 @@ nonisolated enum DocumentCenterAgentOrganizer {
             sections.append(DocumentGroupSection(name: "未分组", items: ungrouped, isUngrouped: true))
         }
         self.groupSections = sections
+        self.registerClustersForDefaultCollapse(sections.map(\.id))
         
         if let topHitID = sortedHits.first?.id, terms.isEmpty == false {
             if let selectedID, evalByID[selectedID] != nil {
@@ -1786,6 +1901,28 @@ struct StarMapClusterNode: Identifiable, Equatable {
     let accent: Color
     let isCollapsed: Bool
     let leaves: [StarMapLeafNode]
+    let timelineLabel: String?
+    let sortTimestamp: TimeInterval
+    
+    init(
+        id: String,
+        title: String,
+        countText: String,
+        accent: Color,
+        isCollapsed: Bool,
+        leaves: [StarMapLeafNode],
+        timelineLabel: String? = nil,
+        sortTimestamp: TimeInterval = 0
+    ) {
+        self.id = id
+        self.title = title
+        self.countText = countText
+        self.accent = accent
+        self.isCollapsed = isCollapsed
+        self.leaves = leaves
+        self.timelineLabel = timelineLabel
+        self.sortTimestamp = sortTimestamp
+    }
 }
 
 
@@ -1801,7 +1938,91 @@ struct StarMapLeafNode: Identifiable, Equatable {
 }
 
 
-/// Reusable, GPU-accelerated, zero-overlap Star-Map canvas shared by Document Center & Weekly Report Center.
+/// Lightweight AppKit trackpad pan & pinch/⌘-scroll zoom bridge that never blocks inner ScrollViews (QuickLook / Search HUD).
+private final class StarMapTrackpadEventMonitorNSView: NSView {
+    
+    var onPan: ((CGFloat, CGFloat) -> Void)?
+    var onZoom: ((CGFloat) -> Void)?
+    private var eventMonitor: Any?
+    
+    
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        self.teardownMonitor()
+        guard self.window != nil else { return }
+        self.eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify]) { [weak self] event in
+            guard let self,
+                  let window = self.window,
+                  event.window === window,
+                  !self.isHiddenOrHasHiddenAncestor
+            else { return event }
+            
+            let localPt = self.convert(event.locationInWindow, from: nil)
+            guard self.bounds.contains(localPt) else { return event }
+            
+            // Let inner scroll views (QuickLook text preview or Search Hits list) handle their own scrolling
+            if let hitView = window.contentView?.hitTest(event.locationInWindow),
+               hitView.enclosingScrollView != nil
+            {
+                return event
+            }
+            
+            if event.type == .magnify {
+                self.onZoom?(1.0 + event.magnification)
+                return nil
+            } else if event.type == .scrollWheel {
+                if event.modifierFlags.contains(.command) {
+                    let delta = event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 0.004 : 0.02)
+                    self.onZoom?(1.0 + delta)
+                } else {
+                    let mul: CGFloat = event.hasPreciseScrollingDeltas ? 1.0 : 12.0
+                    self.onPan?(event.scrollingDeltaX * mul, event.scrollingDeltaY * mul)
+                }
+                return nil
+            }
+            return event
+        }
+    }
+    
+    
+    private func teardownMonitor() {
+        if let monitor = self.eventMonitor {
+            NSEvent.removeMonitor(monitor)
+            self.eventMonitor = nil
+        }
+    }
+    
+    
+    deinit {
+        if let monitor = self.eventMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+}
+
+
+private struct StarMapTrackpadPanZoomRepresentable: NSViewRepresentable {
+    
+    let onPan: (CGFloat, CGFloat) -> Void
+    let onZoom: (CGFloat) -> Void
+    
+    
+    func makeNSView(context: Context) -> StarMapTrackpadEventMonitorNSView {
+        let v = StarMapTrackpadEventMonitorNSView()
+        v.onPan = self.onPan
+        v.onZoom = self.onZoom
+        return v
+    }
+    
+    
+    func updateNSView(_ nsView: StarMapTrackpadEventMonitorNSView, context: Context) {
+        nsView.onPan = self.onPan
+        nsView.onZoom = self.onZoom
+    }
+}
+
+
+/// Reusable, GPU-accelerated, zero-overlap Structured Tree Star-Map canvas shared by Document Center & Weekly Report Center.
 struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     
     let hubTitle: String
@@ -1853,10 +2074,8 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     @State private var dragStartPan: CGSize?
     @State private var zoomScale: CGFloat = 1.0
     @State private var pinchBaseZoom: CGFloat?
-    @State private var hoveredLeafID: String?
-    @State private var hoveredClusterID: String?
     @State private var hasAutoFitted = false
-    @State private var cachedLayoutKey: String = ""
+    @State private var cachedClustersSnapshot: [StarMapClusterNode] = []
     @State private var cachedLayout = StarMapLayoutEngine.LayoutResult(
         clusters: [],
         leaves: [],
@@ -1864,20 +2083,13 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     )
     
     
-    private var layoutSignature: String {
-        self.clusters.map { c in
-            let ids = c.leaves.prefix(40).map(\.id).joined(separator: ",")
-            return "\(c.id):\(c.isCollapsed ? 1 : 0):\(ids)"
-        }.joined(separator: "|")
-    }
-    
-    
-    private func computeFreshLayout() -> StarMapLayoutEngine.LayoutResult {
-        let clusterIDs = self.clusters.map(\.id)
+    private static func computeLayout(for clusters: [StarMapClusterNode]) -> StarMapLayoutEngine.LayoutResult {
+        let clusterIDs = clusters.map(\.id)
+        let usesTimeline = clusters.contains(where: { $0.timelineLabel != nil })
         var counts: [String: Int] = [:]
         var collapsed = Set<String>()
         var leafIDsByCluster: [String: [String]] = [:]
-        for cluster in self.clusters {
+        for cluster in clusters {
             let cappedLeaves = Array(cluster.leaves.prefix(40))
             counts[cluster.id] = cappedLeaves.count
             leafIDsByCluster[cluster.id] = cappedLeaves.map(\.id)
@@ -1889,7 +2101,8 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
             clusterIDs: clusterIDs,
             leafCountsByCluster: counts,
             collapsedClusterIDs: collapsed,
-            leafIDsByCluster: leafIDsByCluster
+            leafIDsByCluster: leafIDsByCluster,
+            usesTimelineSpine: usesTimeline
         )
     }
     
@@ -1897,17 +2110,18 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     var body: some View {
         let isDark = (self.colorScheme == .dark)
         let tokens = DashPalette.editorialTokens(isDark: isDark)
-        let currentSig = self.layoutSignature
-        let layout = (self.cachedLayoutKey == currentSig) ? self.cachedLayout : self.computeFreshLayout()
-        let worldPad: CGFloat = 220
-        let worldW = max(900, layout.bounds.width + worldPad * 2)
-        let worldH = max(680, layout.bounds.height + worldPad * 2)
+        let layout = (self.cachedClustersSnapshot == self.clusters && (!self.cachedLayout.clusters.isEmpty || self.clusters.isEmpty))
+            ? self.cachedLayout
+            : Self.computeLayout(for: self.clusters)
+        let worldPad: CGFloat = 160
+        let worldW = max(840, layout.bounds.width + worldPad * 2)
+        let worldH = max(620, layout.bounds.height + worldPad * 2)
         
         GeometryReader { geo in
-            let viewportCenter = CGPoint(x: geo.size.width * 0.5, y: geo.size.height * 0.5 + 14)
+            let viewportCenter = CGPoint(x: geo.size.width * 0.5, y: geo.size.height * 0.5 + 8)
             
             ZStack {
-                // Static GPU-cached architectural backdrop (never redraws during pan/zoom!)
+                // 1. Static GPU-cached architectural backdrop
                 StarMapStaticBackdropView(
                     canvasColor: tokens.canvasTop,
                     dotColor: tokens.architecturalDot,
@@ -1917,7 +2131,36 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
                 
-                // Single unified GPU-transformed World Layer: Equatable subview isolated from pan/zoom state
+                // 2. Two-finger trackpad scroll & pinch zoom catcher
+                StarMapTrackpadPanZoomRepresentable(
+                    onPan: { dx, dy in
+                        self.panOffset.width += dx
+                        self.panOffset.height += dy
+                    },
+                    onZoom: { factor in
+                        let next = min(1.80, max(0.38, self.zoomScale * factor))
+                        if abs(next - self.zoomScale) > 0.001 {
+                            self.zoomScale = next
+                        }
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                
+                // 3. Viewport-sized crisp vector tree & focused relation connectors (1/10th VRAM of world Canvas!)
+                StarMapViewportConnectorsCanvas(
+                    clusters: self.clusters,
+                    relations: self.relations,
+                    layout: layout,
+                    selectedLeafID: self.selectedLeafID,
+                    focusedClusterID: self.focusedClusterID,
+                    viewportCenter: viewportCenter,
+                    panOffset: self.panOffset,
+                    zoomScale: self.zoomScale,
+                    tokens: tokens
+                )
+                .allowsHitTesting(false)
+                
+                // 4. Pure Equatable Node Cards Stage (zero Canvas inside, zero hover state churn!)
                 StarMapWorldStageView(
                     hubTitle: self.hubTitle,
                     hubSubtitle: self.hubSubtitle,
@@ -1926,22 +2169,10 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                     layout: layout,
                     selectedLeafID: self.selectedLeafID,
                     focusedClusterID: self.focusedClusterID,
-                    hoveredLeafID: self.hoveredLeafID,
-                    hoveredClusterID: self.hoveredClusterID,
                     isDark: isDark,
                     tokens: tokens,
                     worldW: worldW,
                     worldH: worldH,
-                    onHoverCluster: { next in
-                        if next != self.hoveredClusterID {
-                            self.hoveredClusterID = next
-                        }
-                    },
-                    onHoverLeaf: { next in
-                        if next != self.hoveredLeafID {
-                            self.hoveredLeafID = next
-                        }
-                    },
                     onSelectLeaf: self.onSelectLeaf,
                     onDoubleClickLeaf: self.onDoubleClickLeaf,
                     onToggleCluster: self.onToggleCluster,
@@ -1953,14 +2184,14 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 .scaleEffect(self.zoomScale, anchor: .center)
                 .position(x: viewportCenter.x + self.panOffset.width, y: viewportCenter.y + self.panOffset.height)
                 
-                // 6. Minimal Zoom Controls (Bottom-Right)
+                // 5. Minimal Zoom Controls (Bottom-Right)
                 VStack {
                     Spacer()
                     HStack {
                         Spacer()
                         HStack(spacing: 2) {
                             Button {
-                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                                withAnimation(.snappy(duration: 0.18, extraBounce: 0)) {
                                     self.zoomScale = max(0.38, self.zoomScale - 0.15)
                                 }
                             } label: {
@@ -1982,10 +2213,10 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                             }
                             .buttonStyle(.plain)
                             .pointerStyle(.link)
-                            .help("重置视角以适配全部星图")
+                            .help("重置视角以适配全部节点")
                             
                             Button {
-                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                                withAnimation(.snappy(duration: 0.18, extraBounce: 0)) {
                                     self.zoomScale = min(1.80, self.zoomScale + 0.15)
                                 }
                             } label: {
@@ -2010,7 +2241,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
             }
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 3)
+                DragGesture(minimumDistance: 4)
                     .onChanged { value in
                         if self.dragStartPan == nil {
                             self.dragStartPan = self.panOffset
@@ -2033,7 +2264,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                             self.pinchBaseZoom = self.zoomScale
                         }
                         if let base = self.pinchBaseZoom {
-                            self.zoomScale = min(1.85, max(0.36, base * value))
+                            self.zoomScale = min(1.80, max(0.38, base * value))
                         }
                     }
                     .onEnded { _ in
@@ -2042,16 +2273,16 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
             )
             .onAppear {
                 self.cachedLayout = layout
-                self.cachedLayoutKey = currentSig
+                self.cachedClustersSnapshot = self.clusters
                 if !self.hasAutoFitted && geo.size.width > 100 {
                     self.hasAutoFitted = true
                     self.fitViewport(bounds: layout.bounds, size: geo.size, animated: false)
                 }
             }
-            .onChange(of: currentSig) { _, newSig in
-                let refreshed = self.computeFreshLayout()
+            .onChange(of: self.clusters) { _, nextClusters in
+                let refreshed = Self.computeLayout(for: nextClusters)
                 self.cachedLayout = refreshed
-                self.cachedLayoutKey = newSig
+                self.cachedClustersSnapshot = nextClusters
             }
             .onChange(of: geo.size) { _, newSize in
                 if !self.hasAutoFitted && newSize.width > 100 {
@@ -2060,23 +2291,16 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 }
             }
             .onChange(of: self.searchQuery) { _, _ in
-                let sig = self.layoutSignature
-                let refreshed: StarMapLayoutEngine.LayoutResult
-                if self.cachedLayoutKey == sig {
-                    refreshed = self.cachedLayout
-                } else {
-                    refreshed = self.computeFreshLayout()
-                    self.cachedLayout = refreshed
-                    self.cachedLayoutKey = sig
-                }
+                let refreshed = Self.computeLayout(for: self.clusters)
+                self.cachedLayout = refreshed
+                self.cachedClustersSnapshot = self.clusters
                 self.fitViewport(bounds: refreshed.bounds, size: geo.size, animated: true)
             }
             .onChange(of: self.panRequestToken) { _, _ in
                 guard let selectedLeafID = self.selectedLeafID, geo.size.width > 100 else { return }
-                let activeLayout = (self.cachedLayoutKey == self.layoutSignature) ? self.cachedLayout : self.computeFreshLayout()
-                if let lPos = activeLayout.leaves.first(where: { $0.id == selectedLeafID }) {
-                    let targetZoom: CGFloat = max(self.zoomScale, 0.82)
-                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.28)) {
+                if let lPos = layout.leaves.first(where: { $0.id == selectedLeafID }) {
+                    let targetZoom: CGFloat = max(self.zoomScale, 0.84)
+                    withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
                         self.zoomScale = targetZoom
                         self.panOffset = CGSize(
                             width: -lPos.worldPoint.x * targetZoom * 0.72,
@@ -2087,10 +2311,9 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
             }
             .onChange(of: self.focusedClusterID) { _, nextCID in
                 guard geo.size.width > 100 else { return }
-                let activeLayout = (self.cachedLayoutKey == self.layoutSignature) ? self.cachedLayout : self.computeFreshLayout()
-                if let nextCID, let cPos = activeLayout.clusters.first(where: { $0.id == nextCID }) {
+                if let nextCID, let cPos = layout.clusters.first(where: { $0.id == nextCID }) {
                     let targetZoom: CGFloat = max(self.zoomScale, 0.88)
-                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.28)) {
+                    withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
                         self.zoomScale = targetZoom
                         self.panOffset = CGSize(
                             width: -cPos.worldPoint.x * targetZoom * 0.72,
@@ -2098,39 +2321,247 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                         )
                     }
                 } else {
-                    self.fitViewport(bounds: activeLayout.bounds, size: geo.size, animated: true)
+                    self.fitViewport(bounds: layout.bounds, size: geo.size, animated: true)
                 }
             }
         }
     }
     
     
-    private static func relationCurveControl(from p0: CGPoint, to p1: CGPoint) -> CGPoint {
-        let mid = CGPoint(x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5)
-        let dx = p1.x - p0.x
-        let dy = p1.y - p0.y
-        return CGPoint(x: mid.x - dy * 0.14, y: mid.y + dx * 0.14)
-    }
-    
-    
     private func fitViewport(bounds: CGRect, size: CGSize, animated: Bool) {
-        let usableW = max(240, size.width - 110)
-        let usableH = max(200, size.height - 176)
+        let usableW = max(240, size.width - 96)
+        let usableH = max(200, size.height - 156)
         let fitX = usableW / max(240, bounds.width)
         let fitY = usableH / max(180, bounds.height)
-        let targetZoom = min(1.04, max(0.42, min(fitX, fitY)))
+        let targetZoom = min(1.02, max(0.42, min(fitX, fitY)))
         let targetPan = CGSize(
             width: -bounds.midX * targetZoom,
             height: -bounds.midY * targetZoom
         )
         if animated {
-            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.28)) {
+            withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
                 self.zoomScale = targetZoom
                 self.panOffset = targetPan
             }
         } else {
             self.zoomScale = targetZoom
             self.panOffset = targetPan
+        }
+    }
+}
+
+
+/// Crisp viewport-sized Canvas drawing clean edge-docked horizontal S-trunks, vertical spine buses,
+/// and at most 2 focused relation arcs (zero crossing over cards, zero background dashed spiderwebs).
+private struct StarMapViewportConnectorsCanvas: View {
+    
+    let clusters: [StarMapClusterNode]
+    let relations: [StarMapRelationEdge]
+    let layout: StarMapLayoutEngine.LayoutResult
+    let selectedLeafID: String?
+    let focusedClusterID: String?
+    let viewportCenter: CGPoint
+    let panOffset: CGSize
+    let zoomScale: CGFloat
+    let tokens: StudioColorTokens
+    
+    
+    @inline(__always)
+    private func toScreen(_ worldPt: CGPoint) -> CGPoint {
+        CGPoint(
+            x: self.viewportCenter.x + self.panOffset.width + worldPt.x * self.zoomScale,
+            y: self.viewportCenter.y + self.panOffset.height + worldPt.y * self.zoomScale
+        )
+    }
+    
+    
+    var body: some View {
+        let clusterAccentByID: [String: Color] = Dictionary(uniqueKeysWithValues: self.clusters.map { ($0.id, $0.accent) })
+        let leafPosByID: [String: StarMapLayoutEngine.PositionedLeaf] = Dictionary(
+            uniqueKeysWithValues: self.layout.leaves.map { ($0.id, $0) }
+        )
+        let selectedClusterID: String? = self.focusedClusterID
+            ?? self.selectedLeafID.flatMap { leafPosByID[$0]?.clusterID }
+        
+        Canvas(opaque: false, rendersAsynchronously: true) { context, canvasSize in
+            let viewportBounds = CGRect(origin: .zero, size: canvasSize).insetBy(dx: -160, dy: -160)
+            
+            // 1. Hub -> Cluster connectors (Vertical Chronological Timeline Spine when timeline is active, or horizontal S-curves otherwise)
+            let hubHalfW: CGFloat = (StarMapLayoutEngine.hubFootprint.width - 12) * 0.5
+            let hubHalfH: CGFloat = (StarMapLayoutEngine.hubFootprint.height - 14) * 0.5
+            let milestoneHalfW: CGFloat = (StarMapLayoutEngine.milestoneFootprint.width - 6) * 0.5
+            let clusterHalfW: CGFloat = (StarMapLayoutEngine.clusterFootprint.width - 8) * 0.5
+            let leafHalfW: CGFloat = (StarMapLayoutEngine.leafFootprint.width - 8) * 0.5
+            
+            if self.layout.usesTimelineSpine, let lastCluster = self.layout.clusters.last {
+                let spineStart = self.toScreen(CGPoint(x: 0, y: self.layout.hubPoint.y + hubHalfH))
+                let spineEnd = self.toScreen(CGPoint(x: 0, y: lastCluster.worldPoint.y + 22))
+                var spinePath = Path()
+                spinePath.move(to: spineStart)
+                spinePath.addLine(to: spineEnd)
+                // Subtle downward timeline arrow cap
+                spinePath.move(to: CGPoint(x: spineEnd.x - 3.5, y: spineEnd.y - 4))
+                spinePath.addLine(to: spineEnd)
+                spinePath.addLine(to: CGPoint(x: spineEnd.x + 3.5, y: spineEnd.y - 4))
+                context.stroke(
+                    spinePath,
+                    with: .color(self.tokens.primaryInk.opacity(0.20)),
+                    style: StrokeStyle(lineWidth: 1.35, lineCap: .round, lineJoin: .round)
+                )
+                
+                for cPos in self.layout.clusters {
+                    let side: CGFloat = cPos.worldPoint.x >= 0 ? 1.0 : -1.0
+                    let p0 = self.toScreen(CGPoint(x: side * milestoneHalfW, y: cPos.worldPoint.y))
+                    let p1 = self.toScreen(CGPoint(x: cPos.worldPoint.x - side * clusterHalfW, y: cPos.worldPoint.y))
+                    guard viewportBounds.contains(p0) || viewportBounds.contains(p1) else { continue }
+                    
+                    let accent = clusterAccentByID[cPos.id] ?? self.tokens.accent
+                    let isActive = (selectedClusterID == nil || selectedClusterID == cPos.id)
+                    
+                    var branch = Path()
+                    branch.move(to: p0)
+                    branch.addLine(to: p1)
+                    context.stroke(
+                        branch,
+                        with: .color(accent.opacity(isActive ? 0.56 : 0.20)),
+                        style: StrokeStyle(lineWidth: (selectedClusterID == cPos.id) ? 1.75 : 1.2, lineCap: .round)
+                    )
+                }
+            } else {
+                for cPos in self.layout.clusters {
+                    let side: CGFloat = cPos.worldPoint.x >= 0 ? 1.0 : -1.0
+                    let p0 = self.toScreen(CGPoint(x: self.layout.hubPoint.x + side * hubHalfW, y: self.layout.hubPoint.y))
+                    let p1 = self.toScreen(CGPoint(x: cPos.worldPoint.x - side * clusterHalfW, y: cPos.worldPoint.y))
+                    guard viewportBounds.contains(p0) || viewportBounds.contains(p1) else { continue }
+                    
+                    let accent = clusterAccentByID[cPos.id] ?? self.tokens.accent
+                    let isActive = (selectedClusterID == nil || selectedClusterID == cPos.id)
+                    let midX = (p0.x + p1.x) * 0.5
+                    
+                    var trunk = Path()
+                    trunk.move(to: p0)
+                    trunk.addCurve(
+                        to: p1,
+                        control1: CGPoint(x: midX, y: p0.y),
+                        control2: CGPoint(x: midX, y: p1.y)
+                    )
+                    context.stroke(
+                        trunk,
+                        with: .color(accent.opacity(isActive ? 0.52 : 0.20)),
+                        style: StrokeStyle(lineWidth: (selectedClusterID == cPos.id) ? 1.7 : 1.2, lineCap: .round)
+                    )
+                }
+            }
+            
+            // 2. Cluster -> Leaf clean orthogonal bus spines (zero diagonal lines slicing through cards!)
+            struct ColumnKey: Hashable {
+                let clusterID: String
+                let quantizedX: Int
+            }
+            var groupedColumns: [ColumnKey: [StarMapLayoutEngine.PositionedLeaf]] = [:]
+            for leaf in self.layout.leaves {
+                let key = ColumnKey(clusterID: leaf.clusterID, quantizedX: Int(leaf.worldPoint.x.rounded()))
+                groupedColumns[key, default: []].append(leaf)
+            }
+            
+            for (key, colLeaves) in groupedColumns where !colLeaves.isEmpty {
+                let first = colLeaves[0]
+                let colWorldX = first.worldPoint.x
+                let side: CGFloat = colWorldX >= 0 ? 1.0 : -1.0
+                let parentWorld = first.parentPoint
+                let isSubcolumnContinuation = abs(parentWorld.x) > 350
+                let parentOuterWorldX = parentWorld.x + side * (isSubcolumnContinuation ? leafHalfW : clusterHalfW)
+                let leafInnerWorldX = colWorldX - side * leafHalfW
+                let spineWorldX = (parentOuterWorldX + leafInnerWorldX) * 0.5
+                
+                let accent = clusterAccentByID[key.clusterID] ?? self.tokens.accent
+                let isClusterActive = (selectedClusterID == nil || selectedClusterID == key.clusterID)
+                let baseColor = accent.opacity(isClusterActive ? 0.36 : 0.14)
+                
+                let parentOutScreen = self.toScreen(CGPoint(x: parentOuterWorldX, y: parentWorld.y))
+                let spineScreenX = self.toScreen(CGPoint(x: spineWorldX, y: parentWorld.y)).x
+                let leafInScreenX = self.toScreen(CGPoint(x: leafInnerWorldX, y: parentWorld.y)).x
+                
+                var minY = parentOutScreen.y
+                var maxY = parentOutScreen.y
+                for l in colLeaves {
+                    let sy = self.toScreen(l.worldPoint).y
+                    minY = min(minY, sy)
+                    maxY = max(maxY, sy)
+                }
+                
+                let colBounds = CGRect(
+                    x: min(parentOutScreen.x, leafInScreenX) - 20,
+                    y: minY - 20,
+                    width: abs(leafInScreenX - parentOutScreen.x) + 40,
+                    height: (maxY - minY) + 40
+                )
+                guard viewportBounds.intersects(colBounds) else { continue }
+                
+                var bus = Path()
+                // Stem from parent outer border to vertical spine
+                bus.move(to: parentOutScreen)
+                bus.addLine(to: CGPoint(x: spineScreenX, y: parentOutScreen.y))
+                // Vertical bus spine
+                if maxY - minY > 0.5 {
+                    bus.move(to: CGPoint(x: spineScreenX, y: minY))
+                    bus.addLine(to: CGPoint(x: spineScreenX, y: maxY))
+                }
+                // Crisp horizontal ticks into each leaf card's inner edge
+                for l in colLeaves {
+                    let sy = self.toScreen(l.worldPoint).y
+                    bus.move(to: CGPoint(x: spineScreenX, y: sy))
+                    bus.addLine(to: CGPoint(x: leafInScreenX, y: sy))
+                }
+                context.stroke(
+                    bus,
+                    with: .color(baseColor),
+                    style: StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round)
+                )
+                
+                // Highlight selected leaf's exact branch path
+                if let selID = self.selectedLeafID,
+                   let selLeaf = colLeaves.first(where: { $0.id == selID })
+                {
+                    let selY = self.toScreen(selLeaf.worldPoint).y
+                    var highlight = Path()
+                    highlight.move(to: parentOutScreen)
+                    highlight.addLine(to: CGPoint(x: spineScreenX, y: parentOutScreen.y))
+                    highlight.addLine(to: CGPoint(x: spineScreenX, y: selY))
+                    highlight.addLine(to: CGPoint(x: leafInScreenX, y: selY))
+                    context.stroke(
+                        highlight,
+                        with: .color(accent.opacity(0.90)),
+                        style: StrokeStyle(lineWidth: 1.85, lineCap: .round, lineJoin: .round)
+                    )
+                }
+            }
+            
+            // 3. Focused Cross-Node Semantic Arcs (ONLY for selected leaf, max 2 clean curves — zero idle clutter!)
+            if let selID = self.selectedLeafID {
+                let incident = self.relations
+                    .filter { $0.sourceID == selID || $0.targetID == selID }
+                    .prefix(2)
+                for edge in incident {
+                    guard let a = leafPosByID[edge.sourceID],
+                          let b = leafPosByID[edge.targetID]
+                    else { continue }
+                    let p0 = self.toScreen(a.worldPoint)
+                    let p1 = self.toScreen(b.worldPoint)
+                    let dx = p1.x - p0.x
+                    let dy = p1.y - p0.y
+                    let mid = CGPoint(x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5)
+                    let ctrl = CGPoint(x: mid.x - dy * 0.12, y: mid.y + dx * 0.12 - 24)
+                    var arc = Path()
+                    arc.move(to: p0)
+                    arc.addQuadCurve(to: p1, control: ctrl)
+                    context.stroke(
+                        arc,
+                        with: .color(self.tokens.accent.opacity(0.65)),
+                        style: StrokeStyle(lineWidth: 1.4, lineCap: .round, dash: [5, 4])
+                    )
+                }
+            }
         }
     }
 }
@@ -2145,14 +2576,10 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
     let layout: StarMapLayoutEngine.LayoutResult
     let selectedLeafID: String?
     let focusedClusterID: String?
-    let hoveredLeafID: String?
-    let hoveredClusterID: String?
     let isDark: Bool
     let tokens: StudioColorTokens
     let worldW: CGFloat
     let worldH: CGFloat
-    let onHoverCluster: (String?) -> Void
-    let onHoverLeaf: (String?) -> Void
     let onSelectLeaf: (String) -> Void
     let onDoubleClickLeaf: (String) -> Void
     let onToggleCluster: (String) -> Void
@@ -2168,19 +2595,9 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
             && lhs.layout == rhs.layout
             && lhs.selectedLeafID == rhs.selectedLeafID
             && lhs.focusedClusterID == rhs.focusedClusterID
-            && lhs.hoveredLeafID == rhs.hoveredLeafID
-            && lhs.hoveredClusterID == rhs.hoveredClusterID
             && lhs.isDark == rhs.isDark
             && lhs.worldW == rhs.worldW
             && lhs.worldH == rhs.worldH
-    }
-    
-    
-    private static func relationCurveControl(from p0: CGPoint, to p1: CGPoint) -> CGPoint {
-        let mid = CGPoint(x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5)
-        let dx = p1.x - p0.x
-        let dy = p1.y - p0.y
-        return CGPoint(x: mid.x - dy * 0.14, y: mid.y + dx * 0.14)
     }
     
     
@@ -2198,242 +2615,89 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
             }
             return map
         }()
-        let activeLeafID: String? = self.hoveredLeafID ?? self.selectedLeafID
-        let relatedNeighbors: [String: String] = {
-            guard let activeLeafID else { return [:] }
-            var map: [String: String] = [:]
-            for edge in self.relations {
-                if edge.sourceID == activeLeafID {
-                    map[edge.targetID] = edge.reason
-                } else if edge.targetID == activeLeafID {
-                    map[edge.sourceID] = edge.reason
-                }
+        let relatedIDs: Set<String> = {
+            guard let selID = self.selectedLeafID else { return [] }
+            var ids = Set<String>()
+            for edge in self.relations.filter({ $0.sourceID == selID || $0.targetID == selID }).prefix(2) {
+                ids.insert(edge.sourceID == selID ? edge.targetID : edge.sourceID)
             }
-            return map
-        }()
-        let activeFocusClusterID: String? = self.hoveredClusterID
-            ?? self.hoveredLeafID.flatMap { leafMap[$0]?.clusterID }
-            ?? self.focusedClusterID
-            ?? self.selectedLeafID.flatMap { leafMap[$0]?.clusterID }
-        let leafWorldPosMap: [String: CGPoint] = Dictionary(
-            uniqueKeysWithValues: self.layout.leaves.map {
-                ($0.id, CGPoint(x: originX + $0.worldPoint.x, y: originY + $0.worldPoint.y))
-            }
-        )
-        let activeRelationMidpoints: [(id: String, point: CGPoint, reason: String)] = {
-            guard let activeLeafID else { return [] }
-            var badges: [(id: String, point: CGPoint, reason: String)] = []
-            for edge in self.relations {
-                guard edge.sourceID == activeLeafID || edge.targetID == activeLeafID,
-                      let p0 = leafWorldPosMap[edge.sourceID],
-                      let p1 = leafWorldPosMap[edge.targetID]
-                else { continue }
-                let ctrl = Self.relationCurveControl(from: p0, to: p1)
-                let mid = CGPoint(
-                    x: 0.25 * p0.x + 0.5 * ctrl.x + 0.25 * p1.x,
-                    y: 0.25 * p0.y + 0.5 * ctrl.y + 0.25 * p1.y
-                )
-                badges.append((edge.id, mid, edge.reason))
-                if badges.count >= 4 { break }
-            }
-            return badges
+            return ids
         }()
         
         ZStack {
-            // 1. Orbital Rings + Trunk/Leaf Branches + Semantic Cross-Node Relationship Arcs
-            Canvas(opaque: false, colorMode: .nonLinear, rendersAsynchronously: true) { context, _ in
-                let hubPt = CGPoint(x: originX, y: originY)
-                
-                for (idx, rWorld) in [210.0, 410.0, 610.0].enumerated() {
-                    let rx = CGFloat(rWorld) * 1.24
-                    let ry = CGFloat(rWorld) * 0.87
-                    let ellipseRect = CGRect(x: hubPt.x - rx, y: hubPt.y - ry, width: rx * 2, height: ry * 2)
-                    context.stroke(
-                        Path(ellipseIn: ellipseRect),
-                        with: .color(tokens.hairline.opacity(idx == 0 ? 0.85 : 0.45)),
-                        style: StrokeStyle(lineWidth: 0.9, dash: idx == 0 ? [] : [4, 6])
-                    )
-                }
-                
-                if self.layout.clusters.count > 1 {
-                    for cPos in self.layout.clusters {
-                        let cPt = CGPoint(x: originX + cPos.worldPoint.x, y: originY + cPos.worldPoint.y)
-                        let accent = clusterMap[cPos.id]?.accent ?? tokens.accent
-                        let isFocused = (activeFocusClusterID == cPos.id)
-                        let alpha: Double = isFocused ? 0.72 : (activeFocusClusterID == nil ? 0.34 : 0.14)
-                        
-                        let mid = CGPoint(x: (hubPt.x + cPt.x) * 0.5, y: (hubPt.y + cPt.y) * 0.5)
-                        let ctrl = CGPoint(
-                            x: mid.x - (cPt.y - hubPt.y) * 0.08,
-                            y: mid.y + (cPt.x - hubPt.x) * 0.08
-                        )
-                        var trunk = Path()
-                        trunk.move(to: hubPt)
-                        trunk.addQuadCurve(to: cPt, control: ctrl)
-                        context.stroke(
-                            trunk,
-                            with: .color(accent.opacity(alpha)),
-                            style: StrokeStyle(lineWidth: isFocused ? 2.2 : 1.3, lineCap: .round)
-                        )
-                    }
-                }
-                
-                for lPos in self.layout.leaves {
-                    let parentPt = CGPoint(x: originX + lPos.parentPoint.x, y: originY + lPos.parentPoint.y)
-                    let leafPt = CGPoint(x: originX + lPos.worldPoint.x, y: originY + lPos.worldPoint.y)
-                    let leaf = leafMap[lPos.id]
-                    let isSelected = (self.selectedLeafID == lPos.id)
-                    let isHovered = (self.hoveredLeafID == lPos.id)
-                    let isRelated = (relatedNeighbors[lPos.id] != nil)
-                    let isClusterFocused = (activeFocusClusterID == lPos.clusterID)
-                    let branchColor = leaf?.dotColor ?? tokens.accent
-                    let alpha: Double = (isSelected || isHovered || isRelated)
-                        ? 0.85
-                        : (isClusterFocused ? 0.42 : (activeFocusClusterID == nil ? 0.24 : 0.10))
-                    
-                    let mid = CGPoint(x: (parentPt.x + leafPt.x) * 0.5, y: (parentPt.y + leafPt.y) * 0.5)
-                    let ctrl = CGPoint(
-                        x: mid.x - (leafPt.y - parentPt.y) * 0.06,
-                        y: mid.y + (leafPt.x - parentPt.x) * 0.06
-                    )
-                    var curve = Path()
-                    curve.move(to: parentPt)
-                    curve.addQuadCurve(to: leafPt, control: ctrl)
-                    context.stroke(
-                        curve,
-                        with: .color(branchColor.opacity(alpha)),
-                        style: StrokeStyle(lineWidth: (isSelected || isHovered) ? 2.0 : 1.0, lineCap: .round)
-                    )
-                }
-                
-                // Cross-node semantic & structural relationship arcs
-                for edge in self.relations {
-                    guard let p0 = leafWorldPosMap[edge.sourceID],
-                          let p1 = leafWorldPosMap[edge.targetID]
-                    else { continue }
-                    let isIncident = (activeLeafID == edge.sourceID || activeLeafID == edge.targetID)
-                    let ctrl = Self.relationCurveControl(from: p0, to: p1)
-                    var relPath = Path()
-                    relPath.move(to: p0)
-                    relPath.addQuadCurve(to: p1, control: ctrl)
-                    
-                    if isIncident {
-                        context.stroke(
-                            relPath,
-                            with: .color(tokens.accent.opacity(0.86)),
-                            style: StrokeStyle(lineWidth: 2.2, lineCap: .round)
-                        )
-                    } else {
-                        let idleAlpha = (activeLeafID == nil) ? 0.24 : 0.07
-                        context.stroke(
-                            relPath,
-                            with: .color(tokens.accent.opacity(idleAlpha)),
-                            style: StrokeStyle(lineWidth: 1.05, lineCap: .round, dash: [4, 5])
-                        )
-                    }
-                }
-            }
-            .frame(width: self.worldW, height: self.worldH)
-            .allowsHitTesting(false)
-            
-            // 2. Center Hub Core Node
+            // 1. Center / Timeline Crown Hub Node
             VStack(spacing: 3) {
-                Text(self.hubTitle)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(tokens.primaryInk)
-                    .lineLimit(1)
-                Text(self.hubSubtitle)
+                HStack(spacing: 4) {
+                    if self.layout.usesTimelineSpine {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(tokens.accent)
+                    }
+                    Text(self.hubTitle)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(tokens.primaryInk)
+                        .lineLimit(1)
+                }
+                Text(self.layout.usesTimelineSpine ? "时间轴 · \(self.hubSubtitle)" : self.hubSubtitle)
                     .font(.system(size: 10.5, weight: .medium, design: .rounded).monospacedDigit())
                     .foregroundStyle(tokens.primaryInk.opacity(0.55))
                     .lineLimit(1)
             }
             .frame(width: StarMapLayoutEngine.hubFootprint.width - 12, height: StarMapLayoutEngine.hubFootprint.height - 14)
-            .background(tokens.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(tokens.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(tokens.accent.opacity(0.55), lineWidth: 1.3)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(tokens.accent.opacity(0.55), lineWidth: 1.2)
             )
-            .shadow(color: tokens.cardShadow, radius: 10, y: 3)
-            .position(x: originX, y: originY)
+            .position(x: originX + self.layout.hubPoint.x, y: originY + self.layout.hubPoint.y)
             
-            // 3. Tier-1 Cluster Nodes (Groups / Months)
-            if self.layout.clusters.count > 1 {
+            // 1b. Chronological Timeline Milestones along X = 0 Spine
+            if self.layout.usesTimelineSpine {
                 ForEach(self.layout.clusters) { cPos in
-                    if let cluster = clusterMap[cPos.id] {
-                        let isFocused = (activeFocusClusterID == cluster.id)
-                        let isHovered = (self.hoveredClusterID == cluster.id)
-                        let dimmed = (activeFocusClusterID != nil && !isFocused && relatedNeighbors.isEmpty)
-                        
-                        Button {
-                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) {
-                                self.onToggleCluster(cluster.id)
-                            }
-                        } label: {
-                            HStack(spacing: 6) {
-                                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                    .fill(cluster.accent)
-                                    .frame(width: 3.5, height: 15)
-                                
-                                Text(cluster.title)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(tokens.primaryInk)
-                                    .lineLimit(1)
-                                
-                                Spacer(minLength: 2)
-                                
-                                Text(cluster.countText)
-                                    .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
-                                    .foregroundStyle(cluster.accent)
-                                    .padding(.horizontal, 6)
-                                    .frame(height: 18)
-                                    .background(cluster.accent.opacity(self.isDark ? 0.18 : 0.11), in: Capsule())
-                                
-                                Image(systemName: cluster.isCollapsed ? "chevron.right" : "chevron.down")
-                                    .font(.system(size: 8.5, weight: .bold))
-                                    .foregroundStyle(tokens.primaryInk.opacity(0.45))
-                            }
-                            .padding(.horizontal, 10)
-                            .frame(width: StarMapLayoutEngine.clusterFootprint.width - 8, height: StarMapLayoutEngine.clusterFootprint.height - 8)
-                            .background(tokens.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .strokeBorder(
-                                        (isFocused || isHovered) ? cluster.accent.opacity(0.75) : tokens.hairlineStrong,
-                                        lineWidth: (isFocused || isHovered) ? 1.3 : 0.85
-                                    )
-                            )
-                            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                        .opacity(dimmed ? 0.55 : 1.0)
-                        .scaleEffect(isHovered ? 1.04 : 1.0)
-                        .position(x: originX + cPos.worldPoint.x, y: originY + cPos.worldPoint.y)
-                        .onHover { hovering in
-                            let next = hovering ? cluster.id : (self.hoveredClusterID == cluster.id ? nil : self.hoveredClusterID)
-                            self.onHoverCluster(next)
-                        }
-                        .contextMenu {
-                            self.clusterContextMenu(cluster)
-                        }
+                    if let cluster = clusterMap[cPos.id], let timeLabel = cluster.timelineLabel {
+                        StarMapTimelineMilestoneView(
+                            label: timeLabel,
+                            accent: cluster.accent,
+                            isFocused: self.focusedClusterID == cluster.id,
+                            isDark: self.isDark,
+                            tokens: tokens,
+                            onTap: { self.onToggleCluster(cluster.id) }
+                        )
+                        .equatable()
+                        .position(x: originX, y: originY + cPos.worldPoint.y)
                     }
                 }
             }
             
-            // 4. Tier-2 Structured Leaf Cards (Equatable per-node leaves)
+            // 2. Tier-1 Cluster Nodes (Groups / Months)
+            ForEach(self.layout.clusters) { cPos in
+                if let cluster = clusterMap[cPos.id] {
+                    StarMapClusterPillView(
+                        cluster: cluster,
+                        isFocused: self.focusedClusterID == cluster.id,
+                        isDark: self.isDark,
+                        tokens: tokens,
+                        onToggle: { self.onToggleCluster(cluster.id) }
+                    )
+                    .equatable()
+                    .position(x: originX + cPos.worldPoint.x, y: originY + cPos.worldPoint.y)
+                    .contextMenu {
+                        self.clusterContextMenu(cluster)
+                    }
+                }
+            }
+            
+            // 3. Tier-2 Structured Leaf Cards
             ForEach(self.layout.leaves) { lPos in
                 if let leaf = leafMap[lPos.id] {
                     let isSelected = (self.selectedLeafID == leaf.id)
-                    let isHovered = (self.hoveredLeafID == leaf.id)
-                    let isRelated = (relatedNeighbors[leaf.id] != nil)
-                    let isClusterFocused = (activeFocusClusterID == leaf.clusterID)
-                    let dimmed = (activeFocusClusterID != nil && !isClusterFocused && !isSelected && !isRelated)
+                    let isRelated = relatedIDs.contains(leaf.id)
+                    let dimmed = (self.focusedClusterID != nil && self.focusedClusterID != leaf.clusterID && !isSelected && !isRelated)
                     
                     StarMapLeafCardView(
                         leaf: leaf,
                         tokens: tokens,
                         isSelected: isSelected,
-                        isHovered: isHovered,
                         isRelated: isRelated,
                         dimmed: dimmed,
                         isDark: self.isDark
@@ -2441,10 +2705,6 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
                     .equatable()
                     .position(x: originX + lPos.worldPoint.x, y: originY + lPos.worldPoint.y)
                     .pointerStyle(.link)
-                    .onHover { hovering in
-                        let next = hovering ? leaf.id : (self.hoveredLeafID == leaf.id ? nil : self.hoveredLeafID)
-                        self.onHoverLeaf(next)
-                    }
                     .onTapGesture(count: 2) {
                         self.onSelectLeaf(leaf.id)
                         self.onDoubleClickLeaf(leaf.id)
@@ -2457,19 +2717,124 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
                     }
                 }
             }
-            
-            // 5. Relationship Reason Pills anchored on Active Semantic Arcs
-            ForEach(activeRelationMidpoints, id: \.id) { badge in
-                Text(badge.reason)
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(tokens.accentText)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2.5)
-                    .background(tokens.card, in: Capsule())
-                    .overlay(Capsule().strokeBorder(tokens.accent.opacity(0.55), lineWidth: 0.85))
-                    .shadow(color: Color.black.opacity(self.isDark ? 0.35 : 0.08), radius: 4, y: 1.5)
-                    .position(badge.point)
-                    .allowsHitTesting(false)
+        }
+    }
+}
+
+
+private struct StarMapTimelineMilestoneView: View, Equatable {
+    
+    let label: String
+    let accent: Color
+    let isFocused: Bool
+    let isDark: Bool
+    let tokens: StudioColorTokens
+    let onTap: () -> Void
+    
+    @State private var isHovered = false
+    
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.label == rhs.label
+            && lhs.accent == rhs.accent
+            && lhs.isFocused == rhs.isFocused
+            && lhs.isDark == rhs.isDark
+    }
+    
+    var body: some View {
+        Button(action: self.onTap) {
+            HStack(spacing: 4.5) {
+                Circle()
+                    .fill(self.accent)
+                    .frame(width: 5.5, height: 5.5)
+                
+                Text(self.label)
+                    .font(.system(size: 9.5, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(self.isFocused ? self.accent : self.tokens.primaryInk.opacity(0.76))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 7)
+            .frame(width: StarMapLayoutEngine.milestoneFootprint.width - 6, height: StarMapLayoutEngine.milestoneFootprint.height - 2)
+            .background(self.tokens.card, in: Capsule())
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        (self.isFocused || self.isHovered) ? self.accent.opacity(0.75) : self.tokens.hairlineStrong,
+                        lineWidth: (self.isFocused || self.isHovered) ? 1.2 : 0.75
+                    )
+            )
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { hovering in
+            if hovering != self.isHovered {
+                self.isHovered = hovering
+            }
+        }
+    }
+}
+
+
+private struct StarMapClusterPillView: View, Equatable {
+    
+    let cluster: StarMapClusterNode
+    let isFocused: Bool
+    let isDark: Bool
+    let tokens: StudioColorTokens
+    let onToggle: () -> Void
+    
+    @State private var isHovered = false
+    
+    
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.cluster == rhs.cluster
+            && lhs.isFocused == rhs.isFocused
+            && lhs.isDark == rhs.isDark
+    }
+    
+    
+    var body: some View {
+        Button(action: self.onToggle) {
+            HStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(self.cluster.accent)
+                    .frame(width: 3.5, height: 15)
+                
+                Text(self.cluster.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(self.tokens.primaryInk)
+                    .lineLimit(1)
+                
+                Spacer(minLength: 2)
+                
+                Text(self.cluster.countText)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(self.cluster.accent)
+                    .padding(.horizontal, 6)
+                    .frame(height: 18)
+                    .background(self.cluster.accent.opacity(self.isDark ? 0.18 : 0.11), in: Capsule())
+                
+                Image(systemName: self.cluster.isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundStyle(self.tokens.primaryInk.opacity(0.45))
+            }
+            .padding(.horizontal, 10)
+            .frame(width: StarMapLayoutEngine.clusterFootprint.width - 8, height: StarMapLayoutEngine.clusterFootprint.height - 8)
+            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(
+                        (self.isFocused || self.isHovered) ? self.cluster.accent.opacity(0.78) : self.tokens.hairlineStrong,
+                        lineWidth: (self.isFocused || self.isHovered) ? 1.3 : 0.85
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { hovering in
+            if hovering != self.isHovered {
+                self.isHovered = hovering
             }
         }
     }
@@ -2481,16 +2846,16 @@ private struct StarMapLeafCardView: View, Equatable {
     let leaf: StarMapLeafNode
     let tokens: StudioColorTokens
     let isSelected: Bool
-    let isHovered: Bool
     let isRelated: Bool
     let dimmed: Bool
     let isDark: Bool
+    
+    @State private var isHovered = false
     
     
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.leaf == rhs.leaf
             && lhs.isSelected == rhs.isSelected
-            && lhs.isHovered == rhs.isHovered
             && lhs.isRelated == rhs.isRelated
             && lhs.dimmed == rhs.dimmed
             && lhs.isDark == rhs.isDark
@@ -2502,11 +2867,11 @@ private struct StarMapLeafCardView: View, Equatable {
             HStack(spacing: 6) {
                 Circle()
                     .fill(self.isRelated ? self.tokens.accent : self.leaf.dotColor)
-                    .frame(width: (self.isSelected || self.isRelated) ? 7.5 : 6, height: (self.isSelected || self.isRelated) ? 7.5 : 6)
+                    .frame(width: self.isSelected ? 7 : 6, height: self.isSelected ? 7 : 6)
                 
                 Text(self.leaf.title)
-                    .font(.system(size: 12, weight: (self.isSelected || self.isRelated) ? .semibold : .medium))
-                    .foregroundStyle(self.tokens.primaryInk.opacity(self.isSelected || self.isRelated ? 1.0 : 0.90))
+                    .font(.system(size: 12, weight: self.isSelected ? .semibold : .medium))
+                    .foregroundStyle(self.tokens.primaryInk.opacity(self.isSelected ? 1.0 : 0.90))
                     .lineLimit(1)
                 
                 Spacer(minLength: 0)
@@ -2536,27 +2901,26 @@ private struct StarMapLeafCardView: View, Equatable {
         .frame(width: StarMapLayoutEngine.leafFootprint.width - 8, height: StarMapLayoutEngine.leafFootprint.height - 6, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(self.tokens.card.opacity(self.isSelected || self.isHovered || self.isRelated ? 1.0 : (self.isDark ? 0.92 : 0.98)))
+                .fill(self.tokens.card)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(
                     self.isSelected
-                        ? self.leaf.dotColor.opacity(0.92)
+                        ? self.leaf.dotColor.opacity(0.95)
                         : (self.isRelated
-                           ? self.tokens.accent.opacity(0.74)
+                           ? self.tokens.accent.opacity(0.68)
                            : (self.isHovered ? self.leaf.dotColor.opacity(0.55) : self.tokens.hairline)),
-                    lineWidth: (self.isSelected || self.isRelated) ? 1.6 : 0.85
+                    lineWidth: self.isSelected ? 1.6 : (self.isRelated ? 1.2 : 0.85)
                 )
         )
-        .shadow(
-            color: self.isSelected ? self.leaf.dotColor.opacity(0.24) : Color.clear,
-            radius: self.isSelected ? 10 : 0,
-            y: self.isSelected ? 3 : 0
-        )
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .opacity(self.dimmed ? 0.40 : 1.0)
-        .scaleEffect(self.isSelected ? 1.05 : (self.isHovered || self.isRelated ? 1.02 : 1.0))
+        .opacity(self.dimmed ? 0.45 : 1.0)
+        .onHover { hovering in
+            if hovering != self.isHovered {
+                self.isHovered = hovering
+            }
+        }
     }
 }
 
@@ -2891,6 +3255,8 @@ struct DocumentCenterView: View {
     @State private var groupRenameDraft = ""
     @FocusState private var isGroupRenameFocused: Bool
     @State private var copiedFlag = false
+    @State private var searchDraft = ""
+    @State private var searchDebounceTask: Task<Void, Never>?
     @State private var toastMessage: String?
     @State private var toastTask: Task<Void, Never>?
     @State private var organizeTask: Task<Void, Never>?
@@ -2913,7 +3279,7 @@ struct DocumentCenterView: View {
         
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
-                self.topBar(tokens: tokens)
+                self.topBar(tokens: tokens, clusters: clusters)
                 
                 Rectangle()
                     .fill(tokens.hairline)
@@ -2960,12 +3326,15 @@ struct DocumentCenterView: View {
                                 }
                             },
                             onToggleCluster: { clusterID in
-                                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                                    if self.focusedClusterID == clusterID {
-                                        self.focusedClusterID = nil
-                                    } else {
-                                        self.focusedClusterID = clusterID
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
+                                    if self.state.collapsedClusterIDs.contains(clusterID) {
                                         self.state.collapsedClusterIDs.remove(clusterID)
+                                        self.focusedClusterID = clusterID
+                                    } else {
+                                        self.state.collapsedClusterIDs.insert(clusterID)
+                                        if self.focusedClusterID == clusterID {
+                                            self.focusedClusterID = nil
+                                        }
                                     }
                                 }
                             },
@@ -3155,11 +3524,13 @@ struct DocumentCenterView: View {
         }
         .onAppear {
             self.state.refresh()
+            self.searchDraft = self.state.searchText
             self.installKeyboardMonitor()
             self.registerEscPop? { self.handleEscapePop() }
         }
         .onDisappear {
             self.removeKeyboardMonitor()
+            self.searchDebounceTask?.cancel()
             self.organizeTask?.cancel()
             self.registerEscPop?(nil)
         }
@@ -3169,7 +3540,33 @@ struct DocumentCenterView: View {
         .onChange(of: self.db.trashedDocuments.count) { _, _ in
             self.state.refresh()
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: ScheduledAIDocumentOrganizer.didCompleteOrganizeNotification)
+                .receive(on: RunLoop.main)
+        ) { _ in
+            self.state.refresh()
+        }
+        .onChange(of: self.searchDraft) { _, newValue in
+            self.searchDebounceTask?.cancel()
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                if !self.state.searchText.isEmpty {
+                    self.state.searchText = ""
+                }
+                return
+            }
+            self.searchDebounceTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(110))
+                guard !Task.isCancelled else { return }
+                if self.state.searchText != newValue {
+                    self.state.searchText = newValue
+                }
+            }
+        }
         .onChange(of: self.state.searchText) { _, newValue in
+            if self.searchDraft != newValue {
+                self.searchDraft = newValue
+            }
             if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 self.isSearchHUDCollapsed = false
             }
@@ -3179,7 +3576,7 @@ struct DocumentCenterView: View {
     
     // MARK: Top Bar
     
-    private func topBar(tokens: StudioColorTokens) -> some View {
+    private func topBar(tokens: StudioColorTokens, clusters: [StarMapClusterNode]) -> some View {
         let groupNames: [String] = {
             var ordered = self.db.documentGroups
             for key in self.state.groupCounts.keys.sorted() where !ordered.contains(key) {
@@ -3187,6 +3584,7 @@ struct DocumentCenterView: View {
             }
             return ordered
         }()
+        let allCollapsed = clusters.isEmpty || clusters.allSatisfy(\.isCollapsed)
         
         return HStack(spacing: 8) {
             if let onDismiss = self.onDismiss {
@@ -3284,6 +3682,71 @@ struct DocumentCenterView: View {
                 .pointerStyle(.link)
             }
             
+            // Timeline Horizon Filter + Expand/Collapse All
+            Menu {
+                ForEach(DocumentCenterState.TimeHorizon.allCases, id: \.self) { horizon in
+                    Button {
+                        self.state.timeHorizon = horizon
+                    } label: {
+                        if self.state.timeHorizon == horizon {
+                            Label(horizon.rawValue, systemImage: "checkmark")
+                        } else {
+                            Text(horizon.rawValue)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(self.state.timeHorizon == .all ? tokens.primaryInk.opacity(0.60) : tokens.accentText)
+                    Text(self.state.timeHorizon.rawValue)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(self.state.timeHorizon == .all ? tokens.primaryInk.opacity(0.84) : tokens.accentText)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .foregroundStyle(tokens.primaryInk.opacity(0.45))
+                }
+                .padding(.horizontal, 9)
+                .frame(height: 28)
+                .background(
+                    self.state.timeHorizon == .all ? tokens.inset : tokens.accent.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .pointerStyle(.link)
+            
+            if !clusters.isEmpty {
+                Button {
+                    let ids = clusters.map(\.id)
+                    withAnimation(.snappy(duration: 0.22, extraBounce: 0)) {
+                        if allCollapsed {
+                            self.state.expandAllClusters(ids)
+                        } else {
+                            self.focusedClusterID = nil
+                            self.state.collapseAllClusters(ids)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: allCollapsed ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+                            .font(.system(size: 9.5, weight: .semibold))
+                        Text(allCollapsed ? "展开全部" : "全部折叠")
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .foregroundStyle(tokens.primaryInk.opacity(0.80))
+                    .padding(.horizontal, 9)
+                    .frame(height: 28)
+                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+            }
+            
             Spacer(minLength: 6)
             
             // Full-Text Multi-Keyword Search Field
@@ -3291,19 +3754,23 @@ struct DocumentCenterView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(self.isSearchFocused ? tokens.accent : tokens.primaryInk.opacity(0.45))
-                TextField("搜索标题与全文关键词（空格多词 · ⌘F）", text: self.$state.searchText)
+                TextField("搜索标题与全文关键词（空格多词 · ⌘F）", text: self.$searchDraft)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
                     .focused(self.$isSearchFocused)
                     .frame(minWidth: 210, maxWidth: 270)
                     .onSubmit {
+                        self.searchDebounceTask?.cancel()
+                        if self.state.searchText != self.searchDraft {
+                            self.state.searchText = self.searchDraft
+                        }
                         self.unfocusSearchField()
                         if let firstHit = self.state.searchHits.first {
                             self.state.selectedID = firstHit.id
                             self.panRequestToken &+= 1
                         }
                     }
-                if !self.state.searchText.isEmpty {
+                if !self.searchDraft.isEmpty {
                     Text("\(self.state.searchHits.count) 篇")
                         .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
                         .foregroundStyle(tokens.accentText)
@@ -3312,6 +3779,8 @@ struct DocumentCenterView: View {
                         .background(tokens.positivePillBg, in: Capsule())
                     
                     Button {
+                        self.searchDebounceTask?.cancel()
+                        self.searchDraft = ""
                         self.state.searchText = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
@@ -3705,12 +4174,12 @@ struct DocumentCenterView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .frame(maxWidth: 660)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(tokens.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(tokens.hairlineStrong, lineWidth: 0.9)
         )
-        .shadow(color: Color.black.opacity(self.colorScheme == .dark ? 0.38 : 0.12), radius: 16, y: 6)
+        .shadow(color: tokens.cardShadow, radius: 10, y: 4)
         .padding(.horizontal, 24)
     }
     
@@ -3722,8 +4191,15 @@ struct DocumentCenterView: View {
         cluster: StarMapClusterNode,
         allItems: [DocumentCenterState.ManagedDocumentItem]
     ) -> some View {
-        Button("聚焦此分组") {
+        Button(self.focusedClusterID == cluster.id ? "取消分组聚焦" : "聚焦此分组") {
             self.focusedClusterID = (self.focusedClusterID == cluster.id) ? nil : cluster.id
+        }
+        Button(cluster.isCollapsed ? "展开此分组" : "折叠此分组") {
+            if self.state.collapsedClusterIDs.contains(cluster.id) {
+                self.state.collapsedClusterIDs.remove(cluster.id)
+            } else {
+                self.state.collapsedClusterIDs.insert(cluster.id)
+            }
         }
         if cluster.id.hasPrefix("group:") {
             let groupName = String(cluster.id.dropFirst(6))
@@ -4210,6 +4686,7 @@ struct DocumentCenterView: View {
             self.pendingAssignAfterGroupCreate = nil
             self.move(item: pending, toGroup: created)
         } else {
+            self.state.setClusterExpanded("group:\(created)", expanded: true)
             self.state.refresh()
             self.focusedClusterID = "group:\(created)"
             self.showToast("已新建分组「\(created)」")
@@ -4312,6 +4789,558 @@ struct DocumentCenterView: View {
             guard !Task.isCancelled else { return }
             withAnimation(.easeIn(duration: 0.16)) {
                 self.toastMessage = nil
+            }
+        }
+    }
+}
+
+
+// MARK: - Scheduled Nightly AI Document Organizer (凌晨 3 点自动重命名 · 星图整理 · 总结干了啥 · 预测要干啥)
+
+@MainActor @Observable final class ScheduledAIDocumentOrganizer {
+    
+    struct OrganizeReport: Sendable, Equatable {
+        let renamedCount: Int
+        let regroupedCount: Int
+        let groupCount: Int
+        let relationCount: Int
+        let doneTodayCount: Int
+        let predictionCount: Int
+        let usedAI: Bool
+        let summaryText: String
+    }
+    
+    static let shared = ScheduledAIDocumentOrganizer()
+    static let didCompleteOrganizeNotification = Notification.Name("ScheduledAIDocumentOrganizerDidComplete")
+    
+    private let database: CotLocalDatabase
+    private let analytics: AnalyticsManager
+    private var schedulerTask: Task<Void, Never>?
+    private var wakeObserver: NSObjectProtocol?
+    
+    private var suppressAutoSlotStamp = false
+    
+    var isEnabled: Bool {
+        didSet {
+            guard oldValue != self.isEnabled else { return }
+            self.database.set(self.isEnabled ? "1" : "0", forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeEnabled)
+            if self.isEnabled && !self.suppressAutoSlotStamp {
+                self.markPassedSlotAsHandledIfNeeded(now: Date())
+            }
+        }
+    }
+    
+    func setEnabled(_ enabled: Bool, now: Date = Date()) {
+        self.suppressAutoSlotStamp = true
+        self.isEnabled = enabled
+        self.suppressAutoSlotStamp = false
+        if enabled {
+            self.markPassedSlotAsHandledIfNeeded(now: now)
+        }
+    }
+    
+    private(set) var scheduledHour: Int
+    private(set) var scheduledMinute: Int
+    private(set) var lastCycleKey: String
+    private(set) var lastSummary: String
+    private(set) var isRunning: Bool = false
+    
+    private static var isRunningUnitTests: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return NSClassFromString("XCTestCase") != nil
+            || env["XCTestConfigurationFilePath"] != nil
+            || env["XCTestBundlePath"] != nil
+    }
+    
+    private static let summaryStampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "M/d HH:mm"
+        return f
+    }()
+    
+    init(database: CotLocalDatabase = .shared, analytics: AnalyticsManager = .shared) {
+        self.database = database
+        self.analytics = analytics
+        
+        let rawEnabled = database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeEnabled)
+        // Default ON at 03:00 AM unless user explicitly toggled it off ("0")
+        self.isEnabled = (rawEnabled != "0")
+        
+        let rawHour = Int(database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeHour))
+        let rawMinute = Int(database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeMinute))
+        self.scheduledHour = min(23, max(0, rawHour ?? 3))
+        self.scheduledMinute = min(59, max(0, rawMinute ?? 0))
+        self.lastCycleKey = database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeLastCycleKey)
+        self.lastSummary = database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeLastSummary)
+        
+        if rawEnabled.isEmpty {
+            database.set("1", forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeEnabled)
+            database.set("\(self.scheduledHour)", forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeHour)
+            database.set("\(self.scheduledMinute)", forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeMinute)
+            // Avoid an immediate midday run on very first install; wait cleanly for the next 03:00 slot.
+            self.markPassedSlotAsHandledIfNeeded(now: Date())
+        }
+    }
+    
+    var formattedScheduledTime: String {
+        String(format: "%02d:%02d", self.scheduledHour, self.scheduledMinute)
+    }
+    
+    var scheduledDateBindingValue: Date {
+        get {
+            Calendar.current.date(bySettingHour: self.scheduledHour, minute: self.scheduledMinute, second: 0, of: Date()) ?? Date()
+        }
+        set {
+            let comps = Calendar.current.dateComponents([.hour, .minute], from: newValue)
+            self.updateScheduledTime(hour: comps.hour ?? 3, minute: comps.minute ?? 0)
+        }
+    }
+    
+    func updateScheduledTime(hour: Int, minute: Int, now: Date = Date()) {
+        let clampedH = min(23, max(0, hour))
+        let clampedM = min(59, max(0, minute))
+        guard clampedH != self.scheduledHour || clampedM != self.scheduledMinute else { return }
+        self.scheduledHour = clampedH
+        self.scheduledMinute = clampedM
+        self.database.set("\(clampedH)", forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeHour)
+        self.database.set("\(clampedM)", forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeMinute)
+        self.markPassedSlotAsHandledIfNeeded(now: now)
+    }
+    
+    /// Marks an already-passed slot earlier today (>90s ago) as handled when the user edits schedule settings interactively,
+    /// so the job runs at the next upcoming scheduled time instead of firing mid-configuration.
+    private func markPassedSlotAsHandledIfNeeded(now: Date, calendar: Calendar = .current) {
+        guard let todayTarget = calendar.date(bySettingHour: self.scheduledHour, minute: self.scheduledMinute, second: 0, of: now) else { return }
+        if now.timeIntervalSince(todayTarget) > 90 {
+            let key = Self.cycleKey(for: todayTarget, hour: self.scheduledHour, minute: self.scheduledMinute, calendar: calendar)
+            self.lastCycleKey = key
+            self.database.set(key, forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeLastCycleKey)
+        }
+    }
+    
+    static func cycleKey(for slotDate: Date, hour: Int, minute: Int, calendar: Calendar = .current) -> String {
+        let comps = calendar.dateComponents([.year, .month, .day], from: slotDate)
+        return String(format: "%04d-%02d-%02d@%02d:%02d", comps.year ?? 0, comps.month ?? 0, comps.day ?? 0, hour, minute)
+    }
+    
+    /// Returns the cycle key if the scheduled time is currently due (or within a 12-hour sleep-wake catch-up window)
+    /// and has not yet been executed for that cycle.
+    func dueCycleKey(now: Date = Date(), calendar: Calendar = .current) -> String? {
+        guard self.isEnabled else { return nil }
+        guard let todayTarget = calendar.date(bySettingHour: self.scheduledHour, minute: self.scheduledMinute, second: 0, of: now) else {
+            return nil
+        }
+        let latestTarget: Date
+        if now >= todayTarget {
+            latestTarget = todayTarget
+        } else if let yesterdayTarget = calendar.date(byAdding: .day, value: -1, to: todayTarget) {
+            latestTarget = yesterdayTarget
+        } else {
+            return nil
+        }
+        
+        let lag = now.timeIntervalSince(latestTarget)
+        guard lag >= 0, lag <= 12 * 3600 else { return nil }
+        
+        let key = Self.cycleKey(for: latestTarget, hour: self.scheduledHour, minute: self.scheduledMinute, calendar: calendar)
+        guard key != self.lastCycleKey else { return nil }
+        return key
+    }
+    
+    func startScheduler() {
+        guard !Self.isRunningUnitTests, self.schedulerTask == nil else { return }
+        
+        self.wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(8))
+                await self?.evaluateScheduleAndRunIfNeeded()
+            }
+        }
+        
+        self.schedulerTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            while !Task.isCancelled {
+                await self?.evaluateScheduleAndRunIfNeeded()
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
+    }
+    
+    func stopScheduler() {
+        self.schedulerTask?.cancel()
+        self.schedulerTask = nil
+        if let wakeObserver = self.wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+            self.wakeObserver = nil
+        }
+    }
+    
+    func evaluateScheduleAndRunIfNeeded(now: Date = Date()) async {
+        guard !self.isRunning, let cycleKey = self.dueCycleKey(now: now) else { return }
+        _ = await self.runOrganizePipeline(markCycleKey: cycleKey, referenceDate: now)
+    }
+    
+    /// Executes all 4 stages:
+    /// 1) Rename generic/draft titles, 2) Organize Star-Map groups & relation edges,
+    /// 3) Synthesize "干了啥", 4) Predict "要干啥".
+    @discardableResult
+    func runOrganizePipeline(
+        markCycleKey: String? = nil,
+        referenceDate: Date = Date(),
+        allowRemoteAI: Bool = true
+    ) async -> OrganizeReport {
+        if self.isRunning {
+            return OrganizeReport(
+                renamedCount: 0,
+                regroupedCount: 0,
+                groupCount: self.database.documentGroups.count,
+                relationCount: 0,
+                doneTodayCount: self.analytics.doneTodayPoints.count,
+                predictionCount: self.analytics.actionPredictions.count,
+                usedAI: false,
+                summaryText: self.lastSummary
+            )
+        }
+        
+        self.isRunning = true
+        defer { self.isRunning = false }
+        
+        struct CandidateDoc {
+            let canonicalID: String
+            let dbRecordID: String
+            let title: String
+            let filePath: String?
+            let syntax: String
+            let content: String
+            let currentGroup: String
+            let updatedAt: Date
+            let liveDoc: Document?
+        }
+        
+        var candidates: [CandidateDoc] = []
+        var seenCanonical = Set<String>()
+        let trashedKeys = Set(
+            self.database.trashedDocuments.map {
+                DocumentCenterState.canonicalKey(filePath: $0.filePath, rawID: $0.id)
+            }
+        )
+        
+        if self.database === CotLocalDatabase.shared {
+            var dbLookup: [String: StoredDocumentRecord] = [:]
+            for rec in self.database.documents {
+                let k = DocumentCenterState.canonicalKey(filePath: rec.filePath, rawID: rec.id)
+                if dbLookup[k] == nil { dbLookup[k] = rec }
+            }
+            for case let doc as Document in NSDocumentController.shared.documents where !doc.databaseDocumentID.hasPrefix("weekly:") {
+                let filePath = doc.fileURL?.standardizedFileURL.path(percentEncoded: false)
+                let content = doc.textStorage.string
+                if filePath == nil, content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    continue
+                }
+                let canonical = DocumentCenterState.canonicalKey(filePath: filePath, rawID: doc.databaseDocumentID)
+                guard !trashedKeys.contains(canonical), seenCanonical.insert(canonical).inserted else { continue }
+                let existing = dbLookup[canonical]
+                let fallbackID = filePath ?? (doc.databaseDocumentID.hasPrefix("doc:") ? doc.databaseDocumentID : "doc:\(doc.databaseDocumentID)")
+                candidates.append(CandidateDoc(
+                    canonicalID: canonical,
+                    dbRecordID: existing?.id ?? fallbackID,
+                    title: doc.displayName,
+                    filePath: filePath,
+                    syntax: doc.syntaxName,
+                    content: content,
+                    currentGroup: existing?.groupName ?? "",
+                    updatedAt: existing?.updatedAt ?? referenceDate,
+                    liveDoc: doc
+                ))
+            }
+        }
+        
+        for rec in self.database.documents where !rec.id.hasPrefix("weekly:") {
+            let canonical = DocumentCenterState.canonicalKey(filePath: rec.filePath, rawID: rec.id)
+            guard !trashedKeys.contains(canonical), seenCanonical.insert(canonical).inserted else { continue }
+            candidates.append(CandidateDoc(
+                canonicalID: canonical,
+                dbRecordID: rec.id,
+                title: rec.title,
+                filePath: rec.filePath,
+                syntax: rec.syntax,
+                content: rec.content,
+                currentGroup: rec.groupName,
+                updatedAt: rec.updatedAt,
+                liveDoc: nil
+            ))
+        }
+        
+        // Stage 1 & 2: Rename Titles + Organize Star-Map Groups & Semantic Relations
+        var renamedCount = 0
+        var regroupedCount = 0
+        var usedAI = false
+        
+        if !candidates.isEmpty {
+            let inputs = candidates.map { item in
+                DocumentCenterAgentOrganizer.InputItem(
+                    id: item.canonicalID,
+                    title: item.title,
+                    syntax: item.syntax,
+                    currentGroup: item.currentGroup,
+                    excerpt: String(item.content.prefix(360)),
+                    isUntitled: DocumentCenterAgentOrganizer.isGenericUntitled(item.title, hasFilePath: item.filePath != nil)
+                )
+            }
+            let byID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.canonicalID, $0) })
+            let planOutcome: (plan: DocumentCenterAgentOrganizer.Plan, usedAI: Bool)
+            if allowRemoteAI {
+                planOutcome = await DocumentCenterAgentOrganizer.generatePlan(
+                    items: inputs,
+                    existingGroups: self.database.documentGroups,
+                    analyticsFeature: "scheduledNightlyOrganize"
+                )
+            } else {
+                planOutcome = (
+                    DocumentCenterAgentOrganizer.buildLocalFallbackPlan(
+                        items: inputs,
+                        existingGroups: self.database.documentGroups
+                    ),
+                    false
+                )
+            }
+            usedAI = planOutcome.usedAI
+            
+            self.database.withTransaction {
+                for assignment in planOutcome.plan.assignments {
+                    guard let item = byID[assignment.id] else { continue }
+                    let targetGroup = assignment.group
+                    let wantsRename: String? = {
+                        guard let suggested = assignment.suggestedTitle,
+                              !suggested.isEmpty,
+                              suggested != item.title,
+                              DocumentCenterAgentOrganizer.isGenericUntitled(item.title, hasFilePath: item.filePath != nil)
+                        else { return nil }
+                        return suggested
+                    }()
+                    
+                    let groupChanged = (targetGroup != item.currentGroup)
+                    guard groupChanged || wantsRename != nil else { continue }
+                    
+                    if groupChanged {
+                        self.database.assignDocumentGroup(
+                            id: item.dbRecordID,
+                            filePath: item.filePath,
+                            groupName: targetGroup,
+                            fallbackTitle: wantsRename ?? item.title,
+                            fallbackSyntax: item.syntax,
+                            fallbackContent: item.content,
+                            reloadAfter: false
+                        )
+                        regroupedCount += 1
+                    }
+                    
+                    if let newTitle = wantsRename {
+                        if let liveDoc = item.liveDoc {
+                            _ = try? WorkspaceOrganizer.renameDocument(liveDoc, to: newTitle, reloadAfter: false)
+                        } else if item.filePath == nil {
+                            self.database.renameDocument(
+                                oldID: item.dbRecordID,
+                                oldFilePath: nil,
+                                newID: item.dbRecordID,
+                                newTitle: newTitle,
+                                newFilePath: nil,
+                                reloadAfter: false
+                            )
+                        }
+                        renamedCount += 1
+                    }
+                }
+            }
+            
+            if renamedCount > 0 || regroupedCount > 0 {
+                self.database.reloadDocuments()
+            }
+        }
+        
+        // Refresh semantic relation graph cache for clean Star-Map connections
+        let updatedDocs = self.database.documents.filter { !$0.id.hasPrefix("weekly:") }
+        let relationEdges = StarMapRelationEngine.buildRelations(
+            for: updatedDocs.map { rec in
+                let folder = rec.filePath.map { URL(filePath: $0).deletingLastPathComponent().path(percentEncoded: false) }
+                return StarMapRelationEngine.CorpusDocument(
+                    id: DocumentCenterState.canonicalKey(filePath: rec.filePath, rawID: rec.id),
+                    title: rec.title,
+                    group: rec.groupName,
+                    folderPath: folder,
+                    content: rec.content,
+                    sortTimestamp: rec.updatedAt.timeIntervalSince1970
+                )
+            }
+        )
+        
+        // Stage 3: Synthesize "干了啥" (Daily Digest + Lively Commentary)
+        if allowRemoteAI {
+            await self.analytics.refreshDailyDigest(force: true)
+            await self.analytics.refreshDoneTodayCommentary(force: true)
+            // Stage 4: Predict "要干啥" (Next Concrete Actions)
+            await self.analytics.refreshActionPredictions(force: true)
+        } else {
+            self.analytics.loadDoneTodayCommentaryFromDatabase()
+            self.analytics.loadActionPredictionsFromDatabase()
+        }
+        
+        let activeGroups = Set(updatedDocs.map(\.groupName).filter { !$0.isEmpty })
+        let stamp = Self.summaryStampFormatter.string(from: referenceDate)
+        var summaryParts: [String] = ["\(stamp) 已完成"]
+        if renamedCount > 0 {
+            summaryParts.append("重命名 \(renamedCount) 篇")
+        }
+        summaryParts.append("星图 \(max(1, activeGroups.count)) 组")
+        summaryParts.append("已更新干了啥与预测")
+        let summary = summaryParts.joined(separator: " · ")
+        
+        if let cycleKey = markCycleKey {
+            self.lastCycleKey = cycleKey
+            self.database.set(cycleKey, forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeLastCycleKey)
+        }
+        self.lastSummary = summary
+        self.database.set(summary, forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeLastSummary)
+        
+        NotificationCenter.default.post(name: Self.didCompleteOrganizeNotification, object: self)
+        
+        return OrganizeReport(
+            renamedCount: renamedCount,
+            regroupedCount: regroupedCount,
+            groupCount: activeGroups.count,
+            relationCount: relationEdges.count,
+            doneTodayCount: self.analytics.doneTodayPoints.count,
+            predictionCount: self.analytics.actionPredictions.count,
+            usedAI: usedAI || self.analytics.doneTodayFromAI || self.analytics.actionPredictionsFromAI,
+            summaryText: summary
+        )
+    }
+}
+
+
+// MARK: - Reusable Settings Card for Nightly AI Document Organizer
+
+struct ScheduledAIOrganizeSettingsCard: View {
+    
+    var isEmbeddedInGroupCard: Bool = false
+    
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var organizer = ScheduledAIDocumentOrganizer.shared
+    
+    private var isDark: Bool { self.colorScheme == .dark }
+    
+    private var cardSurface: Color {
+        self.isDark ? Color.white.opacity(0.055) : Color.white
+    }
+    
+    private var cardBorder: Color {
+        self.isDark ? Color.white.opacity(0.09) : Color.black.opacity(0.07)
+    }
+    
+    var body: some View {
+        if self.isEmbeddedInGroupCard {
+            self.rowsContent
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(AppLanguage.text("定时 AI 整理文档", en: "Scheduled AI Organizer"))
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 4)
+                
+                self.rowsContent
+                    .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
+            }
+        }
+    }
+    
+    private var rowsContent: some View {
+        @Bindable var bindableOrganizer = self.organizer
+        let timeBinding = Binding<Date>(
+            get: { self.organizer.scheduledDateBindingValue },
+            set: { self.organizer.scheduledDateBindingValue = $0 }
+        )
+        
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(AppLanguage.text("定时自动整理文档", en: "Auto-Organize Documents"))
+                        .font(.system(size: 13, weight: .medium))
+                    Text(AppLanguage.text("重命名标题 · 梳理星图 · 总结干了啥与预测要干啥", en: "Rename titles, organize map, summarize progress & predict next actions"))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                }
+                
+                Spacer()
+                
+                Toggle("", isOn: $bindableOrganizer.isEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            
+            if self.organizer.isEnabled {
+                Rectangle()
+                    .fill(self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
+                    .frame(height: 0.75)
+                    .padding(.horizontal, 14)
+                
+                HStack(spacing: 10) {
+                    Text(AppLanguage.text("每天定时时间", en: "Daily Time"))
+                        .font(.system(size: 13))
+                    
+                    Spacer()
+                    
+                    DatePicker("", selection: timeBinding, displayedComponents: .hourAndMinute)
+                        .labelsHidden()
+                        .datePickerStyle(.stepperField)
+                        .controlSize(.small)
+                        .frame(width: 88)
+                    
+                    if self.organizer.isRunning {
+                        HStack(spacing: 5) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(AppLanguage.text("整理中…", en: "Running…"))
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Button(AppLanguage.text("立即执行", en: "Run Now")) {
+                            Task {
+                                _ = await self.organizer.runOrganizePipeline()
+                            }
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                
+                if !self.organizer.lastSummary.isEmpty {
+                    Rectangle()
+                        .fill(self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
+                        .frame(height: 0.75)
+                        .padding(.horizontal, 14)
+                    
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color.green.opacity(0.85))
+                            .frame(width: 6, height: 6)
+                        Text(self.organizer.lastSummary)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 7)
+                }
             }
         }
     }

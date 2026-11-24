@@ -612,8 +612,8 @@ final class AIHotNewsService {
     private let coverCacheDirectory: URL
     private let articleCacheDirectory: URL
     
-    private static let maxCachedCovers = 36
-    private static let maxCachedArticles = 24
+    private static let maxCachedCovers = 128
+    private static let maxCachedArticles = 48
     private static let bookmarksDefaultsKey = "cot.news.bookmarkedItemsJSON"
     private static let readIDsDefaultsKey = "cot.news.readIDs"
     private static let notesDefaultsKey = "cot.news.personalNotes"
@@ -716,34 +716,36 @@ final class AIHotNewsService {
     
     
     func trimCachesForMemoryPressure() {
-        let visibleIDs = Set(self.currentPageItems.map(\.id))
-        for key in Array(self.coverImages.keys) where !visibleIDs.contains(key) {
+        let activeFeedIDs = Set(self.items.map(\.id))
+        for key in Array(self.coverImages.keys) where !activeFeedIDs.contains(key) {
             self.coverImages.removeValue(forKey: key)
             self.checkedDiskCoverIDs.remove(key)
         }
-        self.coverAccessOrder.removeAll { !visibleIDs.contains($0) }
+        self.coverAccessOrder.removeAll { !activeFeedIDs.contains($0) }
         self.articleContents.removeAll()
         self.articleAccessOrder.removeAll()
         self.checkedDiskArticleIDs.removeAll()
     }
     
     
-    private func storeCoverImage(_ image: NSImage, for itemID: String) {
+    func storeCoverImage(_ image: NSImage, for itemID: String) {
         self.coverImages[itemID] = image
         self.coverAccessOrder.removeAll { $0 == itemID }
         self.coverAccessOrder.append(itemID)
         if self.coverAccessOrder.count > Self.maxCachedCovers {
-            let visibleIDs = Set(self.currentPageItems.map(\.id))
+            let activeFeedIDs = Set(self.items.map(\.id))
             var idx = 0
             while self.coverAccessOrder.count > Self.maxCachedCovers && idx < self.coverAccessOrder.count {
                 let candidate = self.coverAccessOrder[idx]
-                if visibleIDs.contains(candidate) && self.coverAccessOrder.count > visibleIDs.count {
+                if activeFeedIDs.contains(candidate) && self.coverAccessOrder.count > activeFeedIDs.count {
                     idx += 1
                     continue
                 }
                 self.coverAccessOrder.remove(at: idx)
                 self.coverImages.removeValue(forKey: candidate)
-                self.checkedDiskCoverIDs.remove(candidate)
+                if !activeFeedIDs.contains(candidate) {
+                    self.checkedDiskCoverIDs.remove(candidate)
+                }
             }
         }
     }
@@ -1321,31 +1323,42 @@ final class AIHotNewsService {
     }
     
     
+    func cachedCoverImage(for item: AIHotNewsItem) -> NSImage? {
+        self.coverImages[item.id]
+    }
+    
+    
+    func requestCoverLoad(for item: AIHotNewsItem) {
+        guard self.coverImages[item.id] == nil,
+              !self.checkedDiskCoverIDs.contains(item.id),
+              !self.inFlightCoverIDs.contains(item.id),
+              !self.resolvedNoCoverIDs.contains(item.id)
+        else { return }
+        
+        self.checkedDiskCoverIDs.insert(item.id)
+        let itemID = item.id
+        let diskURL = self.diskCoverURL(for: item)
+        let legacyURL = self.legacyDiskCoverURL(for: item)
+        Task.detached(priority: .utility) { [weak self] in
+            let diskImage = Self.downsampledThumbnail(fromFileAt: diskURL, maxPixelSize: Self.retinaCoverMaxPixelSize)
+                ?? Self.downsampledThumbnail(fromFileAt: legacyURL, maxPixelSize: Self.retinaCoverMaxPixelSize)
+            await MainActor.run {
+                guard let self else { return }
+                if let diskImage {
+                    self.storeCoverImage(diskImage, for: itemID)
+                } else {
+                    self.triggerCoverLoadIfNeeded(for: item)
+                }
+            }
+        }
+    }
+    
+    
     func coverImage(for item: AIHotNewsItem) -> NSImage? {
         if let cached = self.coverImages[item.id] {
             return cached
         }
-        if !self.checkedDiskCoverIDs.contains(item.id),
-           !self.inFlightCoverIDs.contains(item.id),
-           !self.resolvedNoCoverIDs.contains(item.id)
-        {
-            self.checkedDiskCoverIDs.insert(item.id)
-            let itemID = item.id
-            let diskURL = self.diskCoverURL(for: item)
-            let legacyURL = self.legacyDiskCoverURL(for: item)
-            Task.detached(priority: .utility) { [weak self] in
-                let diskImage = Self.downsampledThumbnail(fromFileAt: diskURL, maxPixelSize: Self.retinaCoverMaxPixelSize)
-                    ?? Self.downsampledThumbnail(fromFileAt: legacyURL, maxPixelSize: Self.retinaCoverMaxPixelSize)
-                await MainActor.run {
-                    guard let self else { return }
-                    if let diskImage {
-                        self.storeCoverImage(diskImage, for: itemID)
-                    } else {
-                        self.triggerCoverLoadIfNeeded(for: item)
-                    }
-                }
-            }
-        }
+        self.requestCoverLoad(for: item)
         return nil
     }
     
@@ -1396,7 +1409,8 @@ final class AIHotNewsService {
                 let failedCover: Bool
             }
             
-            var didEnrichItems = false
+            var pendingSummaries: [String: String] = [:]
+            var pendingCoverURLs: [String: String] = [:]
             let batchSize = 4
             for batchStart in stride(from: 0, to: snapshotItems.count, by: batchSize) {
                 if Task.isCancelled { return }
@@ -1412,7 +1426,10 @@ final class AIHotNewsService {
                     let needsFullArticle = absIdx < 6 && !hasFullBlocks && !self.fetchedDetailIDs.contains(item.id)
                     let needsExcerpt = !needsFullArticle && (existingSummaryLen < 40) && !self.fetchedDetailIDs.contains(item.id)
                     if needsCover || needsExcerpt || needsFullArticle {
-                        if needsCover { self.inFlightCoverIDs.insert(item.id) }
+                        if needsCover {
+                            self.inFlightCoverIDs.insert(item.id)
+                            self.checkedDiskCoverIDs.insert(item.id)
+                        }
                         if needsExcerpt || needsFullArticle { self.fetchedDetailIDs.insert(item.id) }
                         workQueue.append(PreloadWork(
                             item: item,
@@ -1540,23 +1557,33 @@ final class AIHotNewsService {
                     if let art = outcome.articleContent {
                         self.storeArticleContent(art, for: outcome.id)
                     }
-                    if let idx = self.items.firstIndex(where: { $0.id == outcome.id }) {
-                        if let sum = outcome.resolvedSummary, !sum.isEmpty,
-                           (self.items[idx].summary ?? "").count < 40
-                        {
-                            self.items[idx].summary = sum
-                            didEnrichItems = true
-                        }
-                        if let coverStr = outcome.resolvedCoverURL, self.items[idx].coverURLString == nil {
-                            self.items[idx].coverURLString = coverStr
-                            didEnrichItems = true
-                        }
+                    if let sum = outcome.resolvedSummary, !sum.isEmpty {
+                        pendingSummaries[outcome.id] = sum
+                    }
+                    if let coverStr = outcome.resolvedCoverURL, !coverStr.isEmpty {
+                        pendingCoverURLs[outcome.id] = coverStr
                     }
                 }
             }
             
-            if didEnrichItems && !self.items.isEmpty {
-                self.saveCachedItems(self.items)
+            if !pendingSummaries.isEmpty || !pendingCoverURLs.isEmpty {
+                var updated = self.items
+                var didMutate = false
+                for idx in updated.indices {
+                    let id = updated[idx].id
+                    if let sum = pendingSummaries[id], (updated[idx].summary ?? "").count < 40 {
+                        updated[idx].summary = sum
+                        didMutate = true
+                    }
+                    if let coverStr = pendingCoverURLs[id], updated[idx].coverURLString == nil {
+                        updated[idx].coverURLString = coverStr
+                        didMutate = true
+                    }
+                }
+                if didMutate && !updated.isEmpty {
+                    self.items = updated
+                    self.saveCachedItems(updated)
+                }
             }
         }
     }
@@ -1645,8 +1672,32 @@ final class AIHotNewsService {
         }
         
         if !mergedItems.isEmpty {
-            self.items = mergedItems
-            self.selectedCategory = .all
+            let existingByID = Dictionary(uniqueKeysWithValues: self.items.map { ($0.id, $0) })
+            for idx in mergedItems.indices {
+                if let prior = existingByID[mergedItems[idx].id] {
+                    if mergedItems[idx].coverURLString == nil, let priorCover = prior.coverURLString {
+                        mergedItems[idx].coverURLString = priorCover
+                    }
+                    let newSumLen = mergedItems[idx].summary?.trimmingCharacters(in: .whitespacesAndNewlines).count ?? 0
+                    let priorSumLen = prior.summary?.trimmingCharacters(in: .whitespacesAndNewlines).count ?? 0
+                    if newSumLen < 40 && priorSumLen > newSumLen {
+                        mergedItems[idx].summary = prior.summary
+                    }
+                    if (mergedItems[idx].contentBlocks?.isEmpty ?? true), let priorBlocks = prior.contentBlocks, !priorBlocks.isEmpty {
+                        mergedItems[idx].contentBlocks = priorBlocks
+                    }
+                }
+            }
+            
+            let sameOrderAndIDs = (self.items.map(\.id) == mergedItems.map(\.id))
+            if force || !sameOrderAndIDs {
+                self.items = mergedItems
+            }
+            if self.selectedCategory != .all,
+               !mergedItems.contains(where: { $0.resolvedCategory == self.selectedCategory })
+            {
+                self.selectedCategory = .all
+            }
             if force {
                 self.currentPage = 1
                 self.resolvedNoCoverIDs.removeAll()

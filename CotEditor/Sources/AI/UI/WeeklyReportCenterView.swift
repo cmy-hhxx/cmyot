@@ -163,10 +163,45 @@ import UniformTypeIdentifiers
         }
     }
     
+    enum TimeHorizon: String, CaseIterable, Equatable {
+        case all = "全部时间"
+        case recent3Months = "近3个月"
+        case thisYear = "今年"
+        case earlier = "往年归档"
+        
+        func matches(yearMonth: String, now: Date = Date()) -> Bool {
+            guard yearMonth.count == 6,
+                  let year = Int(yearMonth.prefix(4)),
+                  let month = Int(yearMonth.suffix(2))
+            else { return true }
+            let cal = Calendar.current
+            let curYear = cal.component(.year, from: now)
+            let curMonth = cal.component(.month, from: now)
+            let monthsDelta = (curYear - year) * 12 + (curMonth - month)
+            switch self {
+                case .all:
+                    return true
+                case .recent3Months:
+                    return monthsDelta <= 2
+                case .thisYear:
+                    return year == curYear
+                case .earlier:
+                    return year < curYear
+            }
+        }
+    }
+    
     var selectedReportID: String?
     var selectedMonth: String? = nil {
         didSet {
             if oldValue != self.selectedMonth {
+                self.recomputeDisplayedRows()
+            }
+        }
+    }
+    var timeHorizon: TimeHorizon = .all {
+        didSet {
+            if oldValue != self.timeHorizon {
                 self.recomputeDisplayedRows()
             }
         }
@@ -181,6 +216,7 @@ import UniformTypeIdentifiers
     var isGeneratorActive: Bool = false
     var collapsedMonths: Set<String> = []
     var collapsedClusterIDs: Set<String> = []
+    var defaultCollapseAll: Bool = true
     var groups: [YearMonthGroup] = []
     var flatReports: [StoredWeeklyReport] = []
     var displayedRows: [ReportRowItem] = []
@@ -199,6 +235,29 @@ import UniformTypeIdentifiers
     
     private(set) var allRowItems: [ReportRowItem] = []
     @ObservationIgnored private var cachedRelationsCorpusKey: String = ""
+    @ObservationIgnored private var initializedClusterIDs: Set<String> = []
+    
+    func registerClustersForDefaultCollapse(_ ids: [String]) {
+        for cid in ids where self.initializedClusterIDs.insert(cid).inserted {
+            if self.defaultCollapseAll {
+                self.collapsedClusterIDs.insert(cid)
+            }
+        }
+    }
+    
+    func expandAllClusters(_ ids: [String]) {
+        for cid in ids {
+            self.initializedClusterIDs.insert(cid)
+            self.collapsedClusterIDs.remove(cid)
+        }
+    }
+    
+    func collapseAllClusters(_ ids: [String]) {
+        for cid in ids {
+            self.initializedClusterIDs.insert(cid)
+            self.collapsedClusterIDs.insert(cid)
+        }
+    }
     
     func rebuildGroups() {
         let allReports = CotLocalDatabase.shared.weeklyReports
@@ -223,45 +282,7 @@ import UniformTypeIdentifiers
                     sortTimestamp: report.updatedAt.timeIntervalSince1970
                 )
             }
-            var computed = StarMapRelationEngine.buildRelations(for: corpusDocs, maxEdgesPerNode: 3)
-            
-            var existingPairs = Set<String>()
-            var incidentDegree: [String: Int] = [:]
-            for edge in computed {
-                let key = edge.sourceID < edge.targetID
-                    ? "\(edge.sourceID)|\(edge.targetID)"
-                    : "\(edge.targetID)|\(edge.sourceID)"
-                existingPairs.insert(key)
-                incidentDegree[edge.sourceID, default: 0] += 1
-                incidentDegree[edge.targetID, default: 0] += 1
-            }
-            
-            let chronoReports = allReports.sorted { lhs, rhs in
-                if lhs.periodLabel != rhs.periodLabel {
-                    return lhs.periodLabel < rhs.periodLabel
-                }
-                return lhs.updatedAt < rhs.updatedAt
-            }
-            if chronoReports.count >= 2 {
-                for idx in 0..<(chronoReports.count - 1) {
-                    let a = chronoReports[idx].id
-                    let b = chronoReports[idx + 1].id
-                    let key = a < b ? "\(a)|\(b)" : "\(b)|\(a)"
-                    guard !existingPairs.contains(key) else { continue }
-                    guard incidentDegree[a, default: 0] < 3 || incidentDegree[b, default: 0] < 3 else { continue }
-                    existingPairs.insert(key)
-                    incidentDegree[a, default: 0] += 1
-                    incidentDegree[b, default: 0] += 1
-                    computed.append(
-                        StarMapRelationEdge(
-                            sourceID: a,
-                            targetID: b,
-                            strength: 0.44,
-                            reason: "相邻周次"
-                        )
-                    )
-                }
-            }
+            let computed = StarMapRelationEngine.buildRelations(for: corpusDocs, maxEdgesPerNode: 3)
             self.cachedRelationsCorpusKey = corpusKey
             self.relations = computed
             builtRelations = computed
@@ -348,6 +369,7 @@ import UniformTypeIdentifiers
             )
         }
         self.groups = builtGroups
+        self.registerClustersForDefaultCollapse(builtGroups.map(\.month))
         let flat = builtGroups.flatMap(\.reports)
         self.flatReports = flat
         self.allRowItems = flat.map { report in
@@ -371,12 +393,16 @@ import UniformTypeIdentifiers
     
     
     private func recomputeDisplayedRows() {
-        let visible: [ReportRowItem]
+        let now = Date()
+        let monthFiltered: [ReportRowItem]
         if let month = self.selectedMonth {
-            visible = self.allRowItems.filter { $0.yearMonth == month }
+            monthFiltered = self.allRowItems.filter { $0.yearMonth == month }
         } else {
-            visible = self.allRowItems
+            monthFiltered = self.allRowItems
         }
+        let visible: [ReportRowItem] = (self.timeHorizon == .all || self.selectedMonth != nil)
+            ? monthFiltered
+            : monthFiltered.filter { self.timeHorizon.matches(yearMonth: $0.yearMonth, now: now) }
         self.displayedRows = visible
         
         if !self.searchHits.isEmpty {
@@ -426,11 +452,14 @@ import UniformTypeIdentifiers
         let paletteHexes = ["#2563EB", "#7C3AED", "#0D9488", "#D97706", "#059669", "#4F46E5", "#E11D48"]
         let isSearching = !StarMapSearchEngine.parseTerms(self.searchText).isEmpty
         let groupedByMonth = Dictionary(grouping: self.displayedRows, by: \.yearMonth)
+        self.registerClustersForDefaultCollapse(self.groups.map(\.month))
         
         var clusters: [StarMapClusterNode] = []
         for (idx, group) in self.groups.enumerated() {
             guard let monthRows = groupedByMonth[group.month], !monthRows.isEmpty else { continue }
             let accent = Color(hexString: paletteHexes[idx % paletteHexes.count])
+            let latestTimestamp = monthRows.map(\.report.updatedAt.timeIntervalSince1970).max() ?? 0
+            let timelineBadge = Self.formatTimelineBadge(group.month)
             let leaves: [StarMapLeafNode] = monthRows.prefix(40).map { row in
                 let eval = self.searchMatchesByID[row.id]
                 let badge = eval.map { "命中 \($0.totalHits) 处" } ?? (row.isCurrentWeek ? "本周" : nil)
@@ -455,11 +484,22 @@ import UniformTypeIdentifiers
                     countText: "\(monthRows.count) 篇",
                     accent: accent,
                     isCollapsed: !isSearching && self.collapsedClusterIDs.contains(group.month),
-                    leaves: leaves
+                    leaves: leaves,
+                    timelineLabel: timelineBadge,
+                    sortTimestamp: latestTimestamp
                 )
             )
         }
         return clusters
+    }
+    
+    
+    static func formatTimelineBadge(_ yearMonth: String) -> String {
+        guard yearMonth.count == 6,
+              let year = Int(yearMonth.prefix(4)),
+              let month = Int(yearMonth.suffix(2))
+        else { return yearMonth }
+        return String(format: "%04d · %02d月", year, month)
     }
     
     
@@ -537,6 +577,8 @@ struct WeeklyReportCenterView: View {
     @State private var renameDraft = ""
     @FocusState private var isRenameFieldFocused: Bool
     @State private var copiedFlag = false
+    @State private var searchDraft = ""
+    @State private var searchDebounceTask: Task<Void, Never>?
     @State private var toastMessage: String?
     @State private var toastTask: Task<Void, Never>?
     @State private var keyMonitor: Any?
@@ -557,7 +599,7 @@ struct WeeklyReportCenterView: View {
         
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
-                self.topBar(tokens: tokens)
+                self.topBar(tokens: tokens, clusters: clusters)
                 
                 Rectangle()
                     .fill(tokens.hairline)
@@ -925,13 +967,47 @@ struct WeeklyReportCenterView: View {
         }
         .onAppear {
             self.state.rebuildGroups()
-            self.state.refreshOpenSources()
+            self.searchDraft = self.state.searchText
+            if self.state.isGeneratorActive {
+                self.state.refreshOpenSources()
+            }
             self.installKeyboardMonitor()
             self.registerEscPop? { self.handleEscapePop() }
         }
         .onDisappear {
             self.removeKeyboardMonitor()
+            self.searchDebounceTask?.cancel()
             self.registerEscPop?(nil)
+        }
+        .onChange(of: self.state.isGeneratorActive) { _, isActive in
+            if isActive {
+                self.state.refreshOpenSources()
+            }
+        }
+        .onChange(of: self.searchDraft) { _, newValue in
+            self.searchDebounceTask?.cancel()
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                if !self.state.searchText.isEmpty {
+                    self.state.searchText = ""
+                }
+                return
+            }
+            self.searchDebounceTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(110))
+                guard !Task.isCancelled else { return }
+                if self.state.searchText != newValue {
+                    self.state.searchText = newValue
+                }
+            }
+        }
+        .onChange(of: self.state.searchText) { _, newValue in
+            if self.searchDraft != newValue {
+                self.searchDraft = newValue
+            }
+            if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.isSearchHUDCollapsed = false
+            }
         }
         .onReceive(
             NotificationCenter.default.publisher(for: CotLocalDatabase.weeklyReportsDidChangeNotification)
@@ -944,10 +1020,11 @@ struct WeeklyReportCenterView: View {
     
     // MARK: Top Bar
     
-    private func topBar(tokens: StudioColorTokens) -> some View {
+    private func topBar(tokens: StudioColorTokens, clusters: [StarMapClusterNode]) -> some View {
         let searchTerms = StarMapSearchEngine.parseTerms(self.state.searchText)
         let currentMonthTitle = self.state.selectedMonth
             .map(WeeklyReportCenterState.formatYearMonthTitle) ?? "全部月份"
+        let allCollapsed = clusters.isEmpty || clusters.allSatisfy(\.isCollapsed)
         
         return HStack(spacing: 10) {
             if let onDismiss = self.onDismiss {
@@ -1010,6 +1087,71 @@ struct WeeklyReportCenterView: View {
             .fixedSize()
             .pointerStyle(.link)
             
+            Menu {
+                ForEach(WeeklyReportCenterState.TimeHorizon.allCases, id: \.self) { horizon in
+                    Button {
+                        self.state.selectedMonth = nil
+                        self.state.timeHorizon = horizon
+                    } label: {
+                        if self.state.timeHorizon == horizon && self.state.selectedMonth == nil {
+                            Label(horizon.rawValue, systemImage: "checkmark")
+                        } else {
+                            Text(horizon.rawValue)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(self.state.timeHorizon == .all ? tokens.primaryInk.opacity(0.60) : tokens.accentText)
+                    Text(self.state.timeHorizon.rawValue)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(self.state.timeHorizon == .all ? tokens.primaryInk.opacity(0.84) : tokens.accentText)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .foregroundStyle(tokens.primaryInk.opacity(0.42))
+                }
+                .padding(.horizontal, 9)
+                .frame(height: 28)
+                .background(
+                    self.state.timeHorizon == .all ? tokens.inset : tokens.accent.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .pointerStyle(.link)
+            
+            if !clusters.isEmpty {
+                Button {
+                    let ids = clusters.map(\.id)
+                    withAnimation(.snappy(duration: 0.22, extraBounce: 0)) {
+                        if allCollapsed {
+                            self.state.expandAllClusters(ids)
+                        } else {
+                            self.focusedClusterID = nil
+                            self.state.collapseAllClusters(ids)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: allCollapsed ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+                            .font(.system(size: 9.5, weight: .semibold))
+                        Text(allCollapsed ? "展开全部" : "全部折叠")
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .foregroundStyle(tokens.primaryInk.opacity(0.80))
+                    .padding(.horizontal, 9)
+                    .frame(height: 28)
+                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+            }
+            
             Spacer(minLength: 6)
             
             HStack(spacing: 6) {
@@ -1017,11 +1159,15 @@ struct WeeklyReportCenterView: View {
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(searchTerms.isEmpty ? tokens.primaryInk.opacity(0.45) : tokens.accent)
                 
-                TextField("搜索周报全文、项目词、日期（空格多词 · ⌘F）", text: self.$state.searchText)
+                TextField("搜索周报全文、项目词、日期（空格多词 · ⌘F）", text: self.$searchDraft)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12.5))
                     .focused(self.$isSearchFocused)
                     .onSubmit {
+                        self.searchDebounceTask?.cancel()
+                        if self.state.searchText != self.searchDraft {
+                            self.state.searchText = self.searchDraft
+                        }
                         if let first = self.state.searchHits.first {
                             self.state.selectedReportID = first.id
                             self.panRequestToken &+= 1
@@ -1038,8 +1184,10 @@ struct WeeklyReportCenterView: View {
                         .background(tokens.accent.opacity(0.13), in: Capsule())
                 }
                 
-                if !self.state.searchText.isEmpty {
+                if !self.searchDraft.isEmpty {
                     Button {
+                        self.searchDebounceTask?.cancel()
+                        self.searchDraft = ""
                         self.state.searchText = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
@@ -1337,12 +1485,12 @@ struct WeeklyReportCenterView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .frame(maxWidth: 760)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(tokens.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(tokens.hairlineStrong, lineWidth: 0.8)
         )
-        .shadow(color: .black.opacity(tokens.isDark ? 0.28 : 0.10), radius: 14, y: 6)
+        .shadow(color: tokens.cardShadow, radius: 10, y: 4)
     }
     
     
