@@ -809,7 +809,10 @@ struct ButlerCommandHubView: View {
     
     private func buildCallbacks() -> BeautifulAgentWebActionCallbacks {
         var cb = BeautifulAgentWebActionCallbacks()
-        cb.onSendRich = { prompt, quote, attachedDocs, delegatedBotID in
+        // Keep the shared send handler outside `cb` so `cb.onSend` does not capture
+        // the mutable `cb` struct by reference box (which creates a retain cycle and
+        // causes infinite recursion in SwiftUI's AG::LayoutDescriptor::compare_heap_objects).
+        let handleSendRich: (String, String, [ButlerDocumentAttachment], String?) -> Void = { prompt, quote, attachedDocs, delegatedBotID in
             let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed == "/new" {
                 self.butler.startNewSession(workspacePath: self.butler.activeWorkspacePath)
@@ -851,8 +854,9 @@ struct ButlerCommandHubView: View {
                 )
             }
         }
+        cb.onSendRich = handleSendRich
         cb.onSend = { prompt, quote in
-            cb.onSendRich?(prompt, quote, [], nil)
+            handleSendRich(prompt, quote, [], nil)
         }
         cb.onAbort = {
             self.butler.abortStreaming()

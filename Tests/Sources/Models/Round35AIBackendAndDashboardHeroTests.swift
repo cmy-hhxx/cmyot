@@ -652,4 +652,54 @@ struct Round35AIBackendAndDashboardHeroTests {
         )
         #expect(tiny.needsVerticalScroll == true)
     }
+    
+    
+    // MARK: 9. ButlerCommandHubView Multi-Pass SwiftUI Layout (No Closure Box Cycle)
+    
+    @Test func butlerCommandHubViewRelayoutsWithoutAttributeGraphRecursionCrash() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        var pinned = false
+        let pinnedBinding = Binding<Bool>(
+            get: { pinned },
+            set: { pinned = $0 }
+        )
+        let makeRoot: (Bool) -> AnyView = { isDocked in
+            AnyView(
+                ButlerCommandHubView(
+                    hostWindow: window,
+                    isDockedPane: isDocked,
+                    isPinnedPanel: pinnedBinding,
+                    onDismiss: {}
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            )
+        }
+        
+        let hosting = NSHostingController(rootView: makeRoot(false))
+        hosting.sizingOptions = []
+        window.contentView = hosting.view
+        defer {
+            window.contentView = nil
+            window.close()
+        }
+        
+        window.layoutIfNeeded()
+        // Trigger multiple AttributeGraph comparisons across PlatformViewChild updates,
+        // including consecutive updates with identical `state` so AttributeGraph walks past
+        // `BeautifulAgentHostStatePayload` into `BeautifulAgentWebActionCallbacks`.
+        // A self-referential capture of `cb` in `buildCallbacks()` overflows the stack here.
+        for isDocked in [false, true, true, false] {
+            hosting.rootView = makeRoot(isDocked)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            window.layoutIfNeeded()
+        }
+        
+        #expect(hosting.view.superview != nil || window.contentView === hosting.view)
+    }
 }
