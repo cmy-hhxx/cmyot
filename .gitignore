@@ -12,3 +12,7 @@ default.profraw
 .build
 .swiftpm
 Packages/*/Package.resolved
+
+# WebUI build dependencies
+WebUI/*/node_modules/
+WebUI/*/dist/

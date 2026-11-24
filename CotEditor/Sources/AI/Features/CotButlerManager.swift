@@ -23,13 +23,30 @@ import AppKit
 import Foundation
 import Observation
 
-/// Chief Butler Bot manager: multi-session persisted conversations, custom avatar/name/nickname,
-/// multi-bot preference governance, multi-angle KYC memory evolution, and workspace takeover.
+/// Structured persisted metadata stored inside `ButlerChatMessage.actionsJSON`.
+///
+/// Backward-compatible with legacy `[AppliedActionReceipt]` JSON arrays.
+nonisolated struct ButlerMessageMetadata: Codable, Sendable, Equatable {
+    var receipts: [AppliedActionReceipt] = []
+    var thinking: String? = nil
+    var thinkingDurationMs: Int? = nil
+    var steps: [BeautifulAgentThinkingStep] = []
+    var toolChips: [String] = []
+    var quoteContext: String? = nil
+    var followUps: [String] = []
+    var errorMessage: String? = nil
+}
+
+
+/// Chief Butler Bot manager: persistent warm Pi RPC kernel with native CotEditor tools,
+/// multi-session persisted conversations, custom avatar/name/nickname, multi-bot governance,
+/// multi-angle KYC memory evolution, and real-time workspace takeover.
 @MainActor @Observable
 final class CotButlerManager {
     
     static let shared = CotButlerManager()
     static let identityDidChangeNotification = Notification.Name("CotButlerManagerIdentityDidChange")
+    static let openHubRequestedNotification = Notification.Name("CotButlerManagerOpenHubRequested")
     
     var name: String {
         didSet {
@@ -72,12 +89,24 @@ final class CotButlerManager {
     private(set) var activeSessionID: String = ""
     private(set) var messages: [ButlerChatMessage] = []
     private(set) var isStreaming: Bool = false
+    private(set) var streamingMessageID: String?
     private(set) var streamingDraft: String = ""
+    private(set) var streamingThinking: String = ""
+    private(set) var streamingSteps: [BeautifulAgentThinkingStep] = []
+    private(set) var streamingStatusLabel: String = ""
+    private(set) var streamingStartedAt: Date?
+    private(set) var lastErrorMessage: String?
+    
+    /// Pending draft/quote handoff injected from Editor selection, Result Panel, or NEWS center.
+    var pendingDraftText: String?
+    var pendingQuoteExcerpt: String?
     
     private let database: CotLocalDatabase
     private let memoryStore: CotMemoryStore
     private var dbObserver: (any NSObjectProtocol)?
     private var isSyncingIdentity = false
+    @ObservationIgnored private var activeTurnTask: Task<Void, Never>?
+    @ObservationIgnored private var streamPatchListeners: [UUID: @MainActor (BeautifulAgentStreamPatchPayload) -> Void] = [:]
     
     
     init(
@@ -120,6 +149,73 @@ final class CotButlerManager {
         if let dbObserver {
             NotificationCenter.default.removeObserver(dbObserver)
         }
+        self.activeTurnTask?.cancel()
+    }
+    
+    
+    // MARK: - Stream Patch Subscription (Zero-Lag WebView Sync)
+    
+    @discardableResult
+    func addStreamPatchListener(_ listener: @escaping @MainActor (BeautifulAgentStreamPatchPayload) -> Void) -> UUID {
+        let id = UUID()
+        self.streamPatchListeners[id] = listener
+        return id
+    }
+    
+    
+    func removeStreamPatchListener(_ id: UUID) {
+        self.streamPatchListeners.removeValue(forKey: id)
+    }
+    
+    
+    private func emitStreamPatch() {
+        guard let msgID = self.streamingMessageID else { return }
+        let elapsedMs = self.streamingStartedAt.map { max(0, Int(Date().timeIntervalSince($0) * 1000)) } ?? 0
+        let patch = BeautifulAgentStreamPatchPayload(
+            messageId: msgID,
+            text: self.streamingDraft,
+            thinking: self.streamingThinking.isEmpty ? nil : self.streamingThinking,
+            thinkingDurationMs: elapsedMs,
+            steps: self.streamingSteps,
+            statusLabel: self.streamingStatusLabel.isEmpty ? nil : self.streamingStatusLabel
+        )
+        for listener in self.streamPatchListeners.values {
+            listener(patch)
+        }
+    }
+    
+    
+    // MARK: - Cross-Editor Handoff Entrypoint
+    
+    /// Requests opening the Butler Hub (or focusing an existing docked Butler split pane) with optional draft/quote.
+    func requestOpenHub(
+        draft: String? = nil,
+        quote: String? = nil,
+        autoSend: Bool = false,
+        startFreshSession: Bool = false
+    ) {
+        if startFreshSession {
+            self.startNewSession()
+        }
+        self.pendingDraftText = draft
+        self.pendingQuoteExcerpt = quote
+        NotificationCenter.default.post(
+            name: Self.openHubRequestedNotification,
+            object: self,
+            userInfo: [
+                "draft": draft ?? "",
+                "quote": quote ?? "",
+                "autoSend": autoSend,
+            ]
+        )
+    }
+    
+    
+    func consumePendingDraftAndQuote() -> (draft: String?, quote: String?) {
+        let pair = (self.pendingDraftText, self.pendingQuoteExcerpt)
+        self.pendingDraftText = nil
+        self.pendingQuoteExcerpt = nil
+        return pair
     }
     
     
@@ -198,6 +294,19 @@ final class CotButlerManager {
     }
     
     
+    func resolvedAvatarDataURL(pointSize: CGFloat = 64) -> String? {
+        let image = AIBotStore.shared.resolvedAvatarImage(for: .butler, pointSize: pointSize)
+            ?? self.customAvatarImage
+            ?? AIGijinkaImageLoader.shared.thumbnail(for: self.resolvedArtwork(), maxPixelSize: pointSize)
+        guard let image,
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:])
+        else { return nil }
+        return "data:image/png;base64,\(png.base64EncodedString())"
+    }
+    
+    
     private static func decodeAvatarImage(from base64: String) -> NSImage? {
         let trimmed = base64.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let data = Data(base64Encoded: trimmed) else { return nil }
@@ -228,7 +337,7 @@ final class CotButlerManager {
     
     
     func startNewSession() {
-        // Reuse an empty active session rather than cluttering history with empty rows
+        self.lastErrorMessage = nil
         if let active = self.sessions.first(where: { $0.id == self.activeSessionID }),
            self.messages.isEmpty,
            active.messageCount == 0
@@ -240,6 +349,9 @@ final class CotButlerManager {
         self.database.set(created.id, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
         self.sessions = self.database.fetchButlerSessions()
         self.messages = []
+        if self.database === CotLocalDatabase.shared {
+            PiKernelManager.shared.resetRPCSession(channel: .butler)
+        }
     }
     
     
@@ -247,6 +359,7 @@ final class CotButlerManager {
         guard self.activeSessionID != sessionID,
               self.sessions.contains(where: { $0.id == sessionID })
         else { return }
+        self.lastErrorMessage = nil
         self.activeSessionID = sessionID
         self.database.set(sessionID, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
         self.messages = self.database.fetchButlerMessages(sessionID: sessionID)
@@ -279,14 +392,21 @@ final class CotButlerManager {
             self.database.set(self.activeSessionID, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
         }
         self.messages = self.database.fetchButlerMessages(sessionID: self.activeSessionID)
+        if self.database === CotLocalDatabase.shared {
+            PiKernelManager.shared.resetRPCSession(channel: .butler)
+        }
     }
     
     
     func clearCurrentSession() {
         guard !self.activeSessionID.isEmpty else { return }
+        self.lastErrorMessage = nil
         self.database.clearButlerMessages(sessionID: self.activeSessionID)
         self.messages = []
         self.sessions = self.database.fetchButlerSessions()
+        if self.database === CotLocalDatabase.shared {
+            PiKernelManager.shared.resetRPCSession(channel: .butler)
+        }
     }
     
     
@@ -314,9 +434,32 @@ final class CotButlerManager {
     }
     
     
-    // MARK: - Conversation & Takeover Execution
+    // MARK: - Conversation & Takeover Execution (Warm Pi RPC + Native Fallback)
     
-    func sendMessage(_ rawText: String) async {
+    func abortStreaming() {
+        guard self.isStreaming else { return }
+        self.activeTurnTask?.cancel()
+        if self.database === CotLocalDatabase.shared {
+            PiKernelManager.shared.abortRPCTurn(channel: .butler)
+        }
+    }
+    
+    
+    func retryLastMessage() {
+        guard !self.isStreaming else { return }
+        guard let lastUser = self.messages.last(where: { $0.role == "user" }) else { return }
+        let meta = Self.decodeMetadata(from: lastUser.actionsJSON)
+        Task {
+            await self.sendMessage(lastUser.content, quote: meta.quoteContext)
+        }
+    }
+    
+    
+    func sendMessage(
+        _ rawText: String,
+        quote: String? = nil,
+        contextSources: [String] = []
+    ) async {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !self.isStreaming else { return }
         
@@ -324,18 +467,24 @@ final class CotButlerManager {
             self.bootstrapSessionsAndMessages()
         }
         let targetSessionID = self.activeSessionID
+        let cleanQuote = quote?.trimmingCharacters(in: .whitespacesAndNewlines)
         
+        // Refresh live workspace snapshot before every turn so Pi tools read the freshest editor state
+        _ = CotAgentCoordinator.shared.captureWorkspaceSnapshot()
+        
+        let userMeta = ButlerMessageMetadata(quoteContext: (cleanQuote?.isEmpty == false) ? cleanQuote : nil)
         let userMsg = ButlerChatMessage(
             id: UUID().uuidString,
             sessionID: targetSessionID,
             role: "user",
             content: text,
-            actionsJSON: "[]",
+            actionsJSON: Self.encodeMetadata(userMeta),
             createdAt: Date()
         )
         self.database.appendButlerMessage(userMsg)
         self.messages.append(userMsg)
         self.sessions = self.database.fetchButlerSessions()
+        self.lastErrorMessage = nil
         
         let resolvedConfig = AIBotStore.shared.resolvedConfiguration(for: .butler)
         guard resolvedConfig.isUsable else {
@@ -343,25 +492,162 @@ final class CotButlerManager {
             return
         }
         
+        let streamID = "stream-\(UUID().uuidString)"
         self.isStreaming = true
+        self.streamingMessageID = streamID
         self.streamingDraft = ""
+        self.streamingThinking = ""
+        self.streamingSteps = []
+        self.streamingStatusLabel = AppLanguage.text("正在思考…", en: "Thinking...")
+        self.streamingStartedAt = Date()
+        
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performTurn(
+                userText: text,
+                quote: cleanQuote,
+                contextSources: contextSources,
+                sessionID: targetSessionID,
+                resolvedConfig: resolvedConfig
+            )
+        }
+        self.activeTurnTask = task
+        await task.value
+        self.activeTurnTask = nil
+    }
+    
+    
+    private func performTurn(
+        userText: String,
+        quote: String?,
+        contextSources: [String],
+        sessionID: String,
+        resolvedConfig: AIConfiguration
+    ) async {
         defer {
             self.isStreaming = false
+            self.streamingMessageID = nil
             self.streamingDraft = ""
+            self.streamingThinking = ""
+            self.streamingSteps = []
+            self.streamingStatusLabel = ""
+            self.streamingStartedAt = nil
+        }
+        
+        let augmentedUserPrompt = self.buildTurnUserPrompt(
+            userText: userText,
+            quote: quote,
+            contextSources: contextSources
+        )
+        let priorHistory = self.buildPriorHistoryContext(excludingLastUserMessage: true)
+        
+        // 1. Primary path: Warm Persistent Pi RPC Kernel with native Cot tools
+        if self.database === CotLocalDatabase.shared,
+           PiKernelManager.shared.canRunRPC,
+           let endpointProfile = AIBotStore.shared.resolvedEndpointProfile(for: .butler)
+        {
+            let piSystemPrompt = self.buildButlerSystemPrompt(
+                resolvedConfig: resolvedConfig,
+                userMessage: userText,
+                piToolsAvailable: true
+            )
+            let workingDir = CotAgentCoordinator.shared.activeWorkingDirectoryURL()
+            
+            do {
+                let result = try await PiKernelManager.shared.runRPCTurn(
+                    channel: .butler,
+                    logicalSessionKey: sessionID,
+                    systemPrompt: piSystemPrompt,
+                    userPrompt: augmentedUserPrompt,
+                    priorHistoryContext: priorHistory,
+                    endpointProfile: endpointProfile,
+                    configuration: resolvedConfig,
+                    workingDirectory: workingDir
+                ) { [weak self] event in
+                    self?.handlePiStreamEvent(event)
+                }
+                
+                // Drain any editor_action queued by Pi right before finalizing
+                await CotAgentCoordinator.shared.drainCommandQueueNow()
+                
+                let extracted = Self.extractActions(from: result.text)
+                let legacyReceipts = extracted.actions.isEmpty
+                    ? []
+                    : await CotAgentCoordinator.shared.execute(extracted.actions)
+                
+                let replyText: String = {
+                    if !extracted.cleanText.isEmpty {
+                        return extracted.cleanText
+                    }
+                    if result.aborted {
+                        return AppLanguage.text("已停止生成。", en: "Generation stopped.")
+                    }
+                    if !legacyReceipts.isEmpty {
+                        return legacyReceipts.map(\.summary).joined(separator: " · ")
+                    }
+                    return AppLanguage.text("已处理完毕。", en: "Done.")
+                }()
+                
+                let toolChips = result.toolNames.map { PiToolDisplayMeta.label(for: $0) }
+                let meta = ButlerMessageMetadata(
+                    receipts: legacyReceipts,
+                    thinking: result.thinking.isEmpty ? nil : result.thinking,
+                    thinkingDurationMs: result.thinkingDurationMs,
+                    steps: result.steps,
+                    toolChips: toolChips,
+                    followUps: Self.suggestFollowUps(userText: userText, toolNames: result.toolNames)
+                )
+                
+                self.appendAssistantMessage(replyText, metadata: meta, sessionID: sessionID)
+                return
+            } catch is CancellationError {
+                let partial = Self.stripActionEnvelope(self.streamingDraft)
+                let final = partial.isEmpty ? AppLanguage.text("已停止生成。", en: "Stopped.") : partial
+                let meta = ButlerMessageMetadata(
+                    thinking: self.streamingThinking.isEmpty ? nil : self.streamingThinking,
+                    steps: self.streamingSteps
+                )
+                self.appendAssistantMessage(final, metadata: meta, sessionID: sessionID)
+                return
+            } catch {
+                // If user manually aborted, do not silently fall back
+                if Task.isCancelled { return }
+                // Reset streaming state cleanly before falling back to Swift Tool Assist + Direct SSE
+                self.streamingDraft = ""
+                self.streamingThinking = ""
+                self.streamingSteps = []
+                self.streamingStatusLabel = AppLanguage.text("正在检索实时数据…", en: "Fetching live data...")
+                self.emitStreamPatch()
+            }
+        }
+        
+        // 2. Resilient fallback path: Native Swift tool lookup (real quotes + news) + direct SSE streaming
+        let enriched = await CotSwiftToolFallback.enrichIfNeeded(for: userText)
+        if !enriched.steps.isEmpty {
+            self.streamingSteps = enriched.steps
+            self.streamingStatusLabel = AppLanguage.text("正在整理回复…", en: "Composing reply...")
+            self.emitStreamPatch()
         }
         
         let systemPrompt = self.buildButlerSystemPrompt(
             resolvedConfig: resolvedConfig,
-            userMessage: text
+            userMessage: userText,
+            piToolsAvailable: false
         )
         var aiMessages: [AIMessage] = [.system(systemPrompt)]
-        for turn in self.messages.suffix(12) {
+        let recent = Array(self.messages.dropLast().suffix(10))
+        for turn in recent {
             if turn.role == "assistant" {
                 aiMessages.append(AIMessage(role: .assistant, text: turn.content))
             } else {
                 aiMessages.append(.user(turn.content))
             }
         }
+        var finalTurnUserText = augmentedUserPrompt
+        if !enriched.injectedDataBlock.isEmpty {
+            finalTurnUserText += "\n\n<live_fetched_data>\n\(enriched.injectedDataBlock)\n</live_fetched_data>\n请直接基于以上实时查询到的数据回复用户，给出关键数字与清晰解读。"
+        }
+        aiMessages.append(.user(finalTurnUserText))
         
         var lastDraftFlushAt: Date = .distantPast
         do {
@@ -370,47 +656,225 @@ final class CotButlerManager {
                 configuration: resolvedConfig,
                 analyticsFeature: "butler"
             ) { [weak self] partial in
+                guard let self else { return }
                 let now = Date()
-                guard now.timeIntervalSince(lastDraftFlushAt) >= 0.06 else { return }
+                guard now.timeIntervalSince(lastDraftFlushAt) >= 0.04 else { return }
                 lastDraftFlushAt = now
-                self?.streamingDraft = Self.stripActionEnvelope(partial)
+                self.streamingDraft = Self.stripActionEnvelope(partial)
+                self.emitStreamPatch()
             }
             
             let extracted = Self.extractActions(from: fullRaw)
             let receipts = await CotAgentCoordinator.shared.execute(extracted.actions)
-            let receiptsJSON = (try? String(data: JSONEncoder().encode(receipts), encoding: .utf8)) ?? "[]"
             let replyText = extracted.cleanText.isEmpty
                 ? (receipts.isEmpty ? "已处理。" : receipts.map(\.summary).joined(separator: " · "))
                 : extracted.cleanText
-            
-            let assistantMsg = ButlerChatMessage(
-                id: UUID().uuidString,
-                sessionID: targetSessionID,
-                role: "assistant",
-                content: replyText,
-                actionsJSON: receiptsJSON,
-                createdAt: Date()
-            )
-            self.database.appendButlerMessage(assistantMsg)
-            if self.activeSessionID == targetSessionID {
-                self.messages.append(assistantMsg)
+            let elapsedMs = self.streamingStartedAt.map { max(1, Int(Date().timeIntervalSince($0) * 1000)) } ?? 0
+            let toolNames: [String] = enriched.steps.map { step in
+                if step.id.hasPrefix("fallback-quote-") { return "lookup_stock_quote" }
+                if step.id == "fallback-news" { return "search_news" }
+                return step.label
             }
-            self.sessions = self.database.fetchButlerSessions()
+            let meta = ButlerMessageMetadata(
+                receipts: receipts,
+                thinkingDurationMs: enriched.steps.isEmpty ? nil : elapsedMs,
+                steps: enriched.steps,
+                toolChips: enriched.steps.map(\.label),
+                followUps: Self.suggestFollowUps(userText: userText, toolNames: toolNames)
+            )
+            self.appendAssistantMessage(replyText, metadata: meta, sessionID: sessionID)
+        } catch is CancellationError {
+            let partial = Self.stripActionEnvelope(self.streamingDraft)
+            if !partial.isEmpty {
+                self.appendAssistantMessage(partial, metadata: ButlerMessageMetadata(steps: self.streamingSteps), sessionID: sessionID)
+            }
         } catch {
-            let errMsg = ButlerChatMessage(
-                id: UUID().uuidString,
-                sessionID: targetSessionID,
-                role: "assistant",
-                content: error.localizedDescription,
-                actionsJSON: "[]",
-                createdAt: Date()
-            )
-            self.database.appendButlerMessage(errMsg)
-            if self.activeSessionID == targetSessionID {
-                self.messages.append(errMsg)
-            }
-            self.sessions = self.database.fetchButlerSessions()
+            self.lastErrorMessage = error.localizedDescription
+            let meta = ButlerMessageMetadata(errorMessage: error.localizedDescription)
+            self.appendAssistantMessage(error.localizedDescription, metadata: meta, sessionID: sessionID)
         }
+    }
+    
+    
+    private func handlePiStreamEvent(_ event: PiAgentStreamEvent) {
+        switch event {
+            case .status(let label):
+                self.streamingStatusLabel = label
+                self.emitStreamPatch()
+                
+            case .thinkingDelta(let thinking):
+                self.streamingThinking = thinking
+                self.streamingStatusLabel = AppLanguage.text("正在深度思考…", en: "Thinking deeply...")
+                let previewLines = thinking
+                    .components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .suffix(3)
+                    .map { String($0.prefix(140)) }
+                if let idx = self.streamingSteps.firstIndex(where: { $0.id == "think-live" }) {
+                    self.streamingSteps[idx].detail = previewLines.isEmpty ? nil : previewLines
+                } else {
+                    self.streamingSteps.append(BeautifulAgentThinkingStep(
+                        id: "think-live",
+                        label: AppLanguage.text("推理思考", en: "Reasoning"),
+                        chip: nil,
+                        status: "running",
+                        mono: false,
+                        detail: previewLines.isEmpty ? nil : previewLines,
+                        durationMs: nil
+                    ))
+                }
+                self.emitStreamPatch()
+                
+            case .thinkingEnd(let thinking):
+                self.streamingThinking = thinking
+                for idx in self.streamingSteps.indices where self.streamingSteps[idx].id == "think-live" && self.streamingSteps[idx].status == "running" {
+                    self.streamingSteps[idx].status = "done"
+                }
+                self.emitStreamPatch()
+                
+            case .toolStart(let id, let name, let label, let detail):
+                for idx in self.streamingSteps.indices where self.streamingSteps[idx].id == "think-live" && self.streamingSteps[idx].status == "running" {
+                    self.streamingSteps[idx].status = "done"
+                }
+                self.streamingStatusLabel = detail.map { "\(label)：\($0)" } ?? label
+                self.streamingSteps.append(BeautifulAgentThinkingStep(
+                    id: id,
+                    label: label,
+                    chip: detail ?? name,
+                    status: "running",
+                    mono: ["bash", "grep", "read", "edit", "write"].contains(name),
+                    detail: nil,
+                    durationMs: nil
+                ))
+                self.emitStreamPatch()
+                
+            case .toolUpdate(let id, let preview):
+                if let idx = self.streamingSteps.firstIndex(where: { $0.id == id }) {
+                    let lines = Array(preview.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.prefix(4))
+                    self.streamingSteps[idx].detail = lines.isEmpty ? nil : lines
+                    self.emitStreamPatch()
+                }
+                
+            case .toolEnd(let id, _, let isError, let durationMs, let preview):
+                if let idx = self.streamingSteps.firstIndex(where: { $0.id == id }) {
+                    self.streamingSteps[idx].status = isError ? "error" : "done"
+                    self.streamingSteps[idx].durationMs = durationMs
+                    if let preview {
+                        let lines = Array(preview.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.prefix(4))
+                        self.streamingSteps[idx].detail = lines.isEmpty ? nil : lines
+                    }
+                }
+                self.streamingStatusLabel = AppLanguage.text("正在整合结果…", en: "Synthesizing answer...")
+                self.emitStreamPatch()
+                
+            case .textDelta(let text), .textEnd(let text):
+                self.streamingDraft = Self.stripActionEnvelope(text)
+                self.emitStreamPatch()
+                
+            case .error(let msg):
+                self.lastErrorMessage = msg
+                
+            case .settled:
+                break
+        }
+    }
+    
+    
+    private func appendAssistantMessage(_ text: String, metadata: ButlerMessageMetadata, sessionID: String) {
+        let assistantMsg = ButlerChatMessage(
+            id: UUID().uuidString,
+            sessionID: sessionID,
+            role: "assistant",
+            content: text,
+            actionsJSON: Self.encodeMetadata(metadata),
+            createdAt: Date()
+        )
+        self.database.appendButlerMessage(assistantMsg)
+        if self.activeSessionID == sessionID {
+            self.messages.append(assistantMsg)
+        }
+        self.sessions = self.database.fetchButlerSessions()
+    }
+    
+    
+    private func buildTurnUserPrompt(userText: String, quote: String?, contextSources: [String]) -> String {
+        var sections: [String] = []
+        if let quote, !quote.isEmpty {
+            sections.append("<quoted_excerpt>\n\(quote)\n</quoted_excerpt>")
+        }
+        if !contextSources.isEmpty {
+            let snap = CotAgentCoordinator.shared.lastWorkspaceSnapshot ?? CotAgentCoordinator.shared.captureWorkspaceSnapshot()
+            for source in contextSources {
+                switch source {
+                    case "doc":
+                        if let title = snap.activeDocumentTitle, let excerpt = snap.activeDocumentExcerpt {
+                            sections.append("<attached_active_document title=\"\(title)\">\n\(excerpt)\n</attached_active_document>")
+                        }
+                    case "selection":
+                        if let sel = snap.activeDocumentSelection {
+                            sections.append("<attached_selection>\n\(sel)\n</attached_selection>")
+                        }
+                    case "watchlist":
+                        let stocks = CotMarketService.shared.watchlist.prefix(12)
+                            .map { "\($0.name)(\($0.symbol))" }.joined(separator: ", ")
+                        if !stocks.isEmpty {
+                            sections.append("<attached_watchlist>\(stocks)</attached_watchlist>")
+                        }
+                    case "news":
+                        let items = AIHotNewsService.shared.items.prefix(8)
+                            .map { "- [\($0.resolvedCategory.label)] \($0.title)" }.joined(separator: "\n")
+                        if !items.isEmpty {
+                            sections.append("<attached_latest_news>\n\(items)\n</attached_latest_news>")
+                        }
+                    default:
+                        break
+                }
+            }
+        }
+        sections.append(userText)
+        return sections.joined(separator: "\n\n")
+    }
+    
+    
+    private func buildPriorHistoryContext(excludingLastUserMessage: Bool) -> String? {
+        let slice = excludingLastUserMessage ? self.messages.dropLast() : self.messages[...]
+        let recent = Array(slice.suffix(10))
+        guard !recent.isEmpty else { return nil }
+        return recent.map { msg in
+            let speaker = msg.role == "user" ? "用户" : self.name
+            return "[\(speaker)]: \(String(msg.content.prefix(700)))"
+        }.joined(separator: "\n\n")
+    }
+    
+    
+    private static func suggestFollowUps(userText: String, toolNames: [String]) -> [String] {
+        if toolNames.contains("lookup_stock_quote") {
+            return [
+                AppLanguage.text("顺便在右侧打开看盘 K 线", en: "Open Market K-Line"),
+                AppLanguage.text("查一下相关最新新闻与公告", en: "Check latest news"),
+                AppLanguage.text("加入我的自选股清单", en: "Add to watchlist"),
+            ]
+        }
+        if toolNames.contains("search_news") || toolNames.contains("web_search") {
+            return [
+                AppLanguage.text("把这些要点整理成新笔记", en: "Save as Markdown note"),
+                AppLanguage.text("帮我深挖背后的影响与风险", en: "Analyze deeper impact"),
+            ]
+        }
+        if toolNames.contains("read_document") || toolNames.contains("search_documents") {
+            return [
+                AppLanguage.text("提炼行动清单并插入编辑器", en: "Insert action items"),
+                AppLanguage.text("帮我润色或重写重点段落", en: "Polish key paragraphs"),
+            ]
+        }
+        if userText.count > 24 {
+            return [
+                AppLanguage.text("展开具体细节", en: "Expand details"),
+                AppLanguage.text("整理成笔记保存", en: "Save as note"),
+            ]
+        }
+        return []
     }
     
     
@@ -445,24 +909,10 @@ final class CotButlerManager {
         }
         
         let receipts = await CotAgentCoordinator.shared.execute(actions)
-        let receiptsJSON = (try? String(data: JSONEncoder().encode(receipts), encoding: .utf8)) ?? "[]"
         let reply = receipts.isEmpty
             ? AppLanguage.text("请先在设置中为总管接入 API 订阅", en: "Configure API gateway for Butler in Settings")
             : receipts.map(\.summary).joined(separator: " · ")
-        
-        let assistantMsg = ButlerChatMessage(
-            id: UUID().uuidString,
-            sessionID: sessionID,
-            role: "assistant",
-            content: reply,
-            actionsJSON: receiptsJSON,
-            createdAt: Date()
-        )
-        self.database.appendButlerMessage(assistantMsg)
-        if self.activeSessionID == sessionID {
-            self.messages.append(assistantMsg)
-        }
-        self.sessions = self.database.fetchButlerSessions()
+        self.appendAssistantMessage(reply, metadata: ButlerMessageMetadata(receipts: receipts), sessionID: sessionID)
     }
     
     
@@ -478,7 +928,8 @@ final class CotButlerManager {
     func buildButlerSystemPrompt(
         resolvedConfig: AIConfiguration? = nil,
         userMessage: String = "",
-        now: Date = Date()
+        now: Date = Date(),
+        piToolsAvailable: Bool = false
     ) -> String {
         let workspaceSummary = CotAgentCoordinator.shared.workspaceContextSummary()
         let kyc = self.memoryStore.compiledKYCContext()
@@ -511,35 +962,42 @@ final class CotButlerManager {
         }
         
         lines.append("""
-        
-        ## 说话方式（非常重要）
-        - 用自然、顺耳、好懂的日常中文聊天，像一个靠谱又好相处的个人助理；不要端着、不要装酷冷漠，也不要油腻客套。
+        ## 说话方式与核心铁律（非常重要）
+        - 用自然、顺耳、好懂的日常中文聊天，像一个靠谱、能真正办事的个人总管；不要端着、不要敷衍。
+        - **绝对禁止光说不做、空口画饼！** 绝不能回复「好的，我这就去帮你查」「这就打开看盘看看」却不给出真实查询结果。每次回复都必须交付具体信息或实际结果。
         - 问什么答什么，直截了当：
           - 用户问现在几点、今天星期几，直接根据上面的「当前本地时间」回答。
-          - 用户打招呼（如 hi / 你好 / 在吗），自然打个招呼并顺手问有什么可以帮忙的即可。
-          - 用户问你是什么模型，直接说你当前使用的模型名称即可，不要主动扯出其他助手或一堆配置。
-        - 严禁在给用户看的回复里说内部技术黑话：绝对不要出现「工作区」「编队」「KYC」「SQLite」「数据库」「兴趣资产」「时间戳」「状态栏」「Action」「JSON」「<cot_actions>」以及英文内部ID（如 `ghost`、`butler`、`ocrPolish`、`weeklyReportItem`）。如果确实需要提到其他功能，请用通俗中文名称（如「续写幽灵」「双语翻译官」「周报搭子」）。
-        - 简单问题一两句答清楚，复杂问题再条理清晰地展开。
-
-        ## 帮用户执行操作（仅在需要时使用）
-        - 只有当用户明确表达了需要你执行操作（例如：打开看盘/播客/资讯、新建文档、给你改名字、记住某个偏好或禁忌、关注股票/博客/X 账号、调整某个助手的开关/风格/模型）时，才在回复末尾附带 `<cot_actions>[...]</cot_actions>` JSON 数组，系统会自动执行。
-        - 普通闲聊、问答、查时间、问模型时，不要输出 `<cot_actions>`，也不要向用户提及这个标签。
-
-        可用操作格式（仅放在 `<cot_actions>[...]</cot_actions>` 中）：
-        - `{"type":"convert_tab","board":"market|podcast|news|document","query":"可选关键词"}`
-        - `{"type":"open_board","board":"market|podcast|news","query":"可选关键词","splitRight":true}`
-        - `{"type":"open_document","title":"标题","content":"Markdown内容","splitRight":false}`
-        - `{"type":"rename_butler","name":"新名字","nickname":"新昵称"}`
-        - `{"type":"update_global_persona","prompt":"同步给全部助手的新风格"}`
-        - `{"type":"update_bot","botID":"butler|ghost|translate|summarize|explain|weeklyReport|weeklyReportItem|interactiveChart|ocrPolish|organizeAndMerge|readingCompanion|persona","isEnabled":true,"persona":"可选自定义风格","modelOverride":"可选模型"}`
-        - `{"type":"upsert_memory","dimension":"identity|cognition|writingStyle|goals|finance|informationDiet|workflow|taboos","key":"英文唯一键","title":"简短要点","detail":"补充说明","isPinned":false}`
-        - `{"type":"delete_memory","keyOrID":"id或key"}`
-        - `{"type":"watch_stock","query":"如 恒生科技 / 00700 / NVDA","thesis":"关注理由"}`
-        - `{"type":"unwatch_stock","symbolOrID":"代码或id"}`
-        - `{"type":"follow_feed","title":"博客名称","siteURL":"https://...","feedURL":"可选RSS","category":"可选分类"}`
-        - `{"type":"follow_creator","platform":"x","handle":"@username","displayName":"显示名","why":"关注原因"}`
-        - `{"type":"play_podcast","query":"搜索关键词或播客链接"}`
+          - 用户问你是什么模型，直接说当前模型名称，不要主动扯出其他助手配置。
+        - 严禁在给用户看的回复里暴露内部技术黑话或标签：不要出现「SQLite」「数据库」「KYC」「Action」「JSON」「<cot_actions>」「Pi RPC」及英文内部 ID（如 `ghost`、`butler`、`ocrPolish`）。需要提到助手时一律用中文名（如「续写幽灵」「双语翻译官」「周报搭子」）。
+        - 排版干净利落：适合用短段落、要点列表或 Markdown 表格呈现数据（尤其是行情报价与对比）。
         """)
+        
+        if piToolsAvailable {
+            lines.append("""
+            ## 你拥有的真实工具（优先直接调用，用事实说话）
+            1. `lookup_stock_quote(query, period?)` — **查询 A股/港股/美股/指数的实时最新价、涨跌幅、今开最高最低与近期 K 线**。用户问任何股票现状（如「三安光电啥情况」「英伟达今天怎么样」），必须先调用本工具拿到实时行情再回答！如用户希望顺便看图，可再配合调用 `editor_action(type:"open_board", board:"market", query:...)`。
+            2. `search_news(query?, category?, limit?)` — 检索 CotEditor 本地 NEWS 热点缓存与最新科技/财经资讯。
+            3. `web_search(query, limit?)` & `web_fetch(url)` — 全网实时检索最新事件、财报、公告与技术文档，并可抓取网页正文精读。
+            4. `get_workspace_context()` — 读取用户当前打开的标签页、正在编辑的文档正文与选中文本。
+            5. `search_documents(query?, limit?)` & `read_document(idOrTitle)` — 搜索并阅读用户的本地笔记与历史周报。
+            6. `read_memory()` — 读取用户已保存的长期记忆画像、股票自选池、关注信息源与创作者。
+            7. `editor_action(type, ...)` — 即时控制 CotEditor 界面与记忆：
+               - `open_board` / `convert_tab` (`board: "market"|"podcast"|"news"|"butler"|"document"`, `query`, `splitRight`)
+               - `open_document` (`title`, `content`, `splitRight`)
+               - `insert_to_editor` (`text`, `replaceSelection`)
+               - `watch_stock` / `unwatch_stock`
+               - `upsert_memory` / `delete_memory`
+               - `rename_butler` / `update_bot` / `update_global_persona` / `play_podcast` / `follow_feed` / `follow_creator`
+            8. 你还具备本地文件阅读与命令行能力，用户要求分析本地项目/代码/日志时可直接动手。
+            - **原则**：凡是能通过工具查到真实信息的问题，先调用工具，拿到结果后再整理成清晰回答；无需输出 `<cot_actions>`。
+            """)
+        } else {
+            lines.append("""
+            ## 帮用户执行操作（仅在需要时使用）
+            - 当用户明确需要操作编辑器（打开看盘/播客/资讯、新建文档、插入文本、改名、记住偏好、加自选股等）时，在回复末尾附带 `<cot_actions>[...]</cot_actions>` JSON 数组，系统会自动执行。
+            - 可用操作：`open_board`、`convert_tab`、`open_document`、`insert_to_editor`、`rename_butler`、`update_global_persona`、`update_bot`、`upsert_memory`、`delete_memory`、`watch_stock`、`unwatch_stock`、`follow_feed`、`follow_creator`、`play_podcast`。
+            """)
+        }
         
         if !globalPersona.isEmpty {
             lines.append("## 用户的全局回复偏好\n\(globalPersona)")
@@ -565,7 +1023,7 @@ final class CotButlerManager {
     }
     
     
-    // MARK: - Action Tag Extraction
+    // MARK: - Action Tag Extraction & Metadata Coding
     
     static func stripActionEnvelope(_ raw: String) -> String {
         if let open = raw.range(of: "<cot_actions>") {
@@ -596,11 +1054,39 @@ final class CotButlerManager {
     }
     
     
+    static func encodeMetadata(_ meta: ButlerMessageMetadata) -> String {
+        if meta.thinking == nil,
+           meta.thinkingDurationMs == nil,
+           meta.steps.isEmpty,
+           meta.toolChips.isEmpty,
+           meta.quoteContext == nil,
+           meta.followUps.isEmpty,
+           meta.errorMessage == nil
+        {
+            return (try? String(data: JSONEncoder().encode(meta.receipts), encoding: .utf8)) ?? "[]"
+        }
+        return (try? String(data: JSONEncoder().encode(meta), encoding: .utf8)) ?? "[]"
+    }
+    
+    
+    static func decodeMetadata(from json: String) -> ButlerMessageMetadata {
+        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else {
+            return ButlerMessageMetadata()
+        }
+        if trimmed.hasPrefix("{"),
+           let decoded = try? JSONDecoder().decode(ButlerMessageMetadata.self, from: data)
+        {
+            return decoded
+        }
+        if let receipts = try? JSONDecoder().decode([AppliedActionReceipt].self, from: data) {
+            return ButlerMessageMetadata(receipts: receipts)
+        }
+        return ButlerMessageMetadata()
+    }
+    
+    
     static func decodeReceipts(from json: String) -> [AppliedActionReceipt] {
-        guard !json.isEmpty,
-              let data = json.data(using: .utf8),
-              let receipts = try? JSONDecoder().decode([AppliedActionReceipt].self, from: data)
-        else { return [] }
-        return receipts
+        Self.decodeMetadata(from: json).receipts
     }
 }

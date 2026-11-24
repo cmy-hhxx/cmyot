@@ -397,6 +397,13 @@ nonisolated struct NewsChatMessage: Identifiable, Codable, Hashable, Sendable {
     var id: String = UUID().uuidString
     var role: Role
     var text: String
+    var thinking: String? = nil
+    var thinkingDurationMs: Int? = nil
+    var steps: [BeautifulAgentThinkingStep]? = nil
+    var toolChips: [String]? = nil
+    var followUps: [String]? = nil
+    var quoteContext: String? = nil
+    var isError: Bool = false
     var createdAt: Date = Date()
 }
 
@@ -597,7 +604,11 @@ final class AIHotNewsService {
     private(set) var briefErrorMessage: String? = nil
     private(set) var chatHistories: [String: [NewsChatMessage]] = [:]
     private(set) var streamingChatItemID: String? = nil
+    private(set) var streamingChatMessageID: String? = nil
+    private(set) var streamingChatStatusLabel: String = ""
     private(set) var chatErrorMessage: String? = nil
+    @ObservationIgnored private var activeChatTask: Task<Void, Never>?
+    @ObservationIgnored private var chatStreamPatchListeners: [UUID: @MainActor (String, BeautifulAgentStreamPatchPayload) -> Void] = [:]
     
     @ObservationIgnored private var checkedDiskCoverIDs: Set<String> = []
     @ObservationIgnored private var checkedDiskArticleIDs: Set<String> = []
@@ -841,10 +852,10 @@ final class AIHotNewsService {
     
     func resolvedArticleBlocks(for item: AIHotNewsItem) -> [NewsArticleBlock] {
         if let loaded = self.articleContents[item.id]?.blocks, !loaded.isEmpty {
-            return loaded
+            return Self.sanitizedArticleBlocks(loaded, title: item.title)
         }
         if let embedded = item.contentBlocks, !embedded.isEmpty {
-            return Self.sanitizedArticleBlocks(embedded)
+            return Self.sanitizedArticleBlocks(embedded, title: item.title)
         }
         if !self.checkedDiskArticleIDs.contains(item.id) {
             self.checkedDiskArticleIDs.insert(item.id)
@@ -864,13 +875,46 @@ final class AIHotNewsService {
     }
     
     
-    /// Strips empty/orphan headings (such as trailing "所属事件", "相关事件", "延伸阅读") that have no body content underneath.
-    nonisolated static func sanitizedArticleBlocks(_ blocks: [NewsArticleBlock]) -> [NewsArticleBlock] {
+    /// Detects synthetic auto-generated OG text/scorecard banners (such as `aihot.news` dark scorecards)
+    /// that repeat the article headline and clutter the editorial detail reader.
+    nonisolated static func isSyntheticOGCardURL(_ urlString: String?) -> Bool {
+        guard let raw = urlString?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return false
+        }
+        let lower = raw.lowercased()
+        if let host = URL(string: raw)?.host?.lowercased() {
+            if host == "aihot.news" || host.hasSuffix(".aihot.news") || host == "ai.hot" || host.hasSuffix(".ai.hot") {
+                return true
+            }
+        }
+        let syntheticMarkers = [
+            "aihot.news", "/api/og", "/og-image", "/og_image", "og-card", "og_card",
+            "share-card", "share_card", "opengraph-image", "social-card",
+        ]
+        return syntheticMarkers.contains { lower.contains($0) }
+    }
+    
+    
+    /// Strips empty/orphan headings (such as trailing "所属事件", "相关事件", "延伸阅读")
+    /// and removes leading headings/paragraphs that duplicate the article `title`.
+    nonisolated static func sanitizedArticleBlocks(_ blocks: [NewsArticleBlock], title: String? = nil) -> [NewsArticleBlock] {
         let boilerplateHeadings: Set<String> = [
             "所属事件", "相关事件", "相关阅读", "延伸阅读", "相关推荐", "更多阅读", "原文链接",
         ]
+        let normalizedTitle = Self.normalizedComparisonText(title ?? "")
         var cleaned: [NewsArticleBlock] = []
         for (idx, block) in blocks.enumerated() {
+            if cleaned.isEmpty, !normalizedTitle.isEmpty {
+                switch block {
+                    case .heading(_, let text), .paragraph(let text):
+                        let normBlock = Self.normalizedComparisonText(text)
+                        if !normBlock.isEmpty && Self.isDuplicateTitle(normBlock, normalizedTitle) {
+                            continue
+                        }
+                    default:
+                        break
+                }
+            }
             if case .heading(_, let text) = block {
                 let norm = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if norm.isEmpty || boilerplateHeadings.contains(norm) {
@@ -889,6 +933,24 @@ final class AIHotNewsService {
             cleaned.removeLast()
         }
         return cleaned
+    }
+    
+    
+    private nonisolated static func normalizedComparisonText(_ text: String) -> String {
+        text.lowercased()
+            .replacingOccurrences(of: #"[\s\p{P}\p{S}]+"#, with: "", options: .regularExpression)
+    }
+    
+    
+    private nonisolated static func isDuplicateTitle(_ candidate: String, _ title: String) -> Bool {
+        if candidate == title { return true }
+        let shorter = min(candidate.count, title.count)
+        let longer = max(candidate.count, title.count)
+        guard shorter >= 6, longer > 0 else { return false }
+        if (candidate.contains(title) || title.contains(candidate)), Double(shorter) / Double(longer) >= 0.80 {
+            return true
+        }
+        return false
     }
     
     
@@ -1033,6 +1095,99 @@ final class AIHotNewsService {
     func clearChat(for itemID: String) {
         self.chatHistories[itemID] = []
         self.chatErrorMessage = nil
+        if self.database === CotLocalDatabase.shared {
+            PiKernelManager.shared.resetRPCSession(channel: .news)
+        }
+    }
+    
+    
+    @discardableResult
+    func addChatStreamPatchListener(
+        _ listener: @escaping @MainActor (String, BeautifulAgentStreamPatchPayload) -> Void
+    ) -> UUID {
+        let id = UUID()
+        self.chatStreamPatchListeners[id] = listener
+        return id
+    }
+    
+    
+    func removeChatStreamPatchListener(_ id: UUID) {
+        self.chatStreamPatchListeners.removeValue(forKey: id)
+    }
+    
+    
+    private func emitChatStreamPatch(itemID: String, patch: BeautifulAgentStreamPatchPayload) {
+        for listener in self.chatStreamPatchListeners.values {
+            listener(itemID, patch)
+        }
+    }
+    
+    
+    func abortChat() {
+        guard self.streamingChatItemID != nil else { return }
+        self.activeChatTask?.cancel()
+        if self.database === CotLocalDatabase.shared {
+            PiKernelManager.shared.abortRPCTurn(channel: .news)
+        }
+    }
+    
+    
+    func retryLastChat(
+        for item: AIHotNewsItem,
+        effort: NewsReasoningEffort = .balanced,
+        selectedModel: NewsChatModelOption? = nil
+    ) {
+        guard self.streamingChatItemID == nil else { return }
+        let history = self.chatMessages(for: item)
+        guard let lastUser = history.last(where: { $0.role == .user }) else { return }
+        Task {
+            await self.sendChatFollowUp(
+                lastUser.text,
+                for: item,
+                quote: lastUser.quoteContext,
+                effort: effort,
+                selectedModel: selectedModel
+            )
+        }
+    }
+    
+    
+    /// Builds a clean Markdown study note combining the article content and AI chat insights.
+    func buildMarkdownStudyNote(for item: AIHotNewsItem) -> String {
+        var lines: [String] = []
+        lines.append("# \(item.title)")
+        lines.append("")
+        var meta: [String] = [item.resolvedCategory.label]
+        if !item.displayPublisherLabel.isEmpty { meta.append(item.displayPublisherLabel) }
+        if !item.urlString.isEmpty { meta.append("[原文链接](\(item.urlString))") }
+        lines.append("> \(meta.joined(separator: " · "))")
+        lines.append("")
+        
+        let messages = self.chatMessages(for: item).filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if !messages.isEmpty {
+            lines.append("## AI 解读与思考")
+            lines.append("")
+            for msg in messages {
+                if msg.role == .user {
+                    lines.append("**问**：\(msg.text)")
+                } else {
+                    lines.append(msg.text)
+                }
+                lines.append("")
+            }
+        }
+        
+        let blocks = self.resolvedArticleBlocks(for: item)
+        if !blocks.isEmpty {
+            lines.append("## 原文摘录")
+            lines.append("")
+            lines.append(blocks.map(\.markdownText).joined(separator: "\n\n"))
+        } else if let summary = item.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+            lines.append("## 摘要")
+            lines.append("")
+            lines.append(summary)
+        }
+        return lines.joined(separator: "\n")
     }
     
     
@@ -1108,11 +1263,13 @@ final class AIHotNewsService {
     }
     
     
-    /// Appends a user follow-up question and streams the AI reply with a smooth typewriter cadence.
+    /// Appends a user follow-up question and streams the AI reply via warm Pi RPC (`channel: .news`, with live stock/web tools)
+    /// or falls back seamlessly to direct SSE streaming.
     func sendChatFollowUp(
         _ question: String,
         for item: AIHotNewsItem,
         displayUserText: String? = nil,
+        quote: String? = nil,
         saveAsBrief: Bool = false,
         effort: NewsReasoningEffort = .balanced,
         selectedModel: NewsChatModelOption? = nil
@@ -1129,50 +1286,61 @@ final class AIHotNewsService {
         
         self.chatErrorMessage = nil
         let itemID = item.id
+        let cleanQuote = quote?.trimmingCharacters(in: .whitespacesAndNewlines)
         var history = self.chatMessages(for: item)
         
-        let userMsg = NewsChatMessage(role: .user, text: displayUserText ?? trimmed)
+        let userMsg = NewsChatMessage(
+            role: .user,
+            text: displayUserText ?? trimmed,
+            quoteContext: (cleanQuote?.isEmpty == false) ? cleanQuote : nil
+        )
         let assistantID = UUID().uuidString
         let placeholderAssistant = NewsChatMessage(id: assistantID, role: .assistant, text: "")
         history.append(userMsg)
         history.append(placeholderAssistant)
         self.chatHistories[itemID] = history
         self.streamingChatItemID = itemID
+        self.streamingChatMessageID = assistantID
+        self.streamingChatStatusLabel = AppLanguage.text("正在思考…", en: "Thinking...")
         
-        // Smooth ~30fps typewriter reveal state without per-tick Array(targetBuffer) copies
-        var targetBuffer = ""
-        var shownOffset = 0
-        var streamDone = false
-        
-        let typewriterTask = Task { @MainActor [weak self] in
-            while let self {
-                let totalCount = targetBuffer.count
-                if shownOffset < totalCount {
-                    let backlog = totalCount - shownOffset
-                    let step: Int = if streamDone {
-                        max(6, min(28, (backlog + 2) / 3))
-                    } else if backlog > 48 {
-                        10
-                    } else if backlog > 18 {
-                        5
-                    } else {
-                        3
-                    }
-                    shownOffset = min(totalCount, shownOffset + step)
-                    self.updateAssistantMessage(id: assistantID, itemID: itemID, text: String(targetBuffer.prefix(shownOffset)))
-                } else if streamDone {
-                    break
-                }
-                try? await Task.sleep(for: .milliseconds(50))
-                if Task.isCancelled { break }
-            }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performNewsChatTurn(
+                question: trimmed,
+                quote: cleanQuote,
+                item: item,
+                assistantID: assistantID,
+                priorHistory: Array(history.dropLast(2).suffix(10)),
+                saveAsBrief: saveAsBrief,
+                effort: effort,
+                selectedModel: selectedModel,
+                resolvedConfig: resolvedConfig
+            )
         }
-        
+        self.activeChatTask = task
+        await task.value
+        self.activeChatTask = nil
+    }
+    
+    
+    private func performNewsChatTurn(
+        question: String,
+        quote: String?,
+        item: AIHotNewsItem,
+        assistantID: String,
+        priorHistory: [NewsChatMessage],
+        saveAsBrief: Bool,
+        effort: NewsReasoningEffort,
+        selectedModel: NewsChatModelOption?,
+        resolvedConfig: AIConfiguration
+    ) async {
+        let itemID = item.id
+        let startedAt = Date()
         defer {
-            streamDone = true
-            typewriterTask.cancel()
             if self.streamingChatItemID == itemID {
                 self.streamingChatItemID = nil
+                self.streamingChatMessageID = nil
+                self.streamingChatStatusLabel = ""
             }
         }
         
@@ -1180,9 +1348,165 @@ final class AIHotNewsService {
         let blocks = self.resolvedArticleBlocks(for: item)
         let fullBody = blocks.map(\.markdownText).joined(separator: "\n\n")
         let bodyContext = !fullBody.isEmpty
-            ? String(fullBody.prefix(4000))
+            ? String(fullBody.prefix(4800))
             : (item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
         
+        let promptWithQuote: String = if let quote, !quote.isEmpty {
+            """
+            <selected_article_excerpt>
+            \(quote)
+            </selected_article_excerpt>
+
+            针对上面这段摘录，我的问题是：
+            \(question)
+            """
+        } else {
+            question
+        }
+        
+        let resolvedEndpointProfile: AIEndpointProfile? = {
+            if let selectedModel,
+               let profile = AIEndpointStore.profiles.first(where: { $0.id == selectedModel.endpointID })
+            {
+                return profile
+            }
+            return AIBotStore.shared.resolvedEndpointProfile(for: .readingCompanion)
+        }()
+        
+        // 1. Primary path: Warm Persistent Pi RPC (`channel: .news`, Cot tools enabled, no builtin shell/fs)
+        if self.database === CotLocalDatabase.shared,
+           PiKernelManager.shared.canRunRPC,
+           let endpointProfile = resolvedEndpointProfile
+        {
+            let piSystemContext = """
+            你是一位视野敏锐、说人话的科技与金融资讯精读搭子。请紧扣下面这篇资讯原文回答用户的点评、总结和追问。
+            \(effort.styleDirective)
+            要求：
+            - 使用干净的 Markdown 排版（小标题、加粗、要点列表、引用或表格），直奔主题、观点犀利、禁止废话客套。
+            - 你拥有实时外部工具：
+              - 当文章涉及上市公司/芯片/AI 龙头且用户关心股价或市场影响时，可直接调用 `lookup_stock_quote` 查真实最新行情与近期走势！
+              - 当需要补充背景、查事实核查或最新进展时，可调用 `web_search` / `search_news`。
+              - 当用户要求把结论保存成笔记时，可调用 `editor_action(type:"open_document", title:..., content:...)`。
+            - 不要向用户暴露内部工具名或技术黑话。
+
+            标题：\(item.title)
+            分类：\(item.resolvedCategory.label)\(sourceNote.isEmpty ? "" : " · \(sourceNote)")
+            链接：\(item.urlString)
+            \(bodyContext.isEmpty ? "" : "正文内容：\n\(bodyContext)")
+            """
+            
+            let priorSummary: String? = priorHistory.isEmpty ? nil : priorHistory.compactMap { turn -> String? in
+                let c = turn.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !c.isEmpty else { return nil }
+                return "[\(turn.role == .user ? "用户" : "助手")]: \(String(c.prefix(600)))"
+            }.joined(separator: "\n\n")
+            
+            var liveSteps: [BeautifulAgentThinkingStep] = []
+            var liveThinking = ""
+            var liveText = ""
+            
+            do {
+                let result = try await PiKernelManager.shared.runRPCTurn(
+                    channel: .news,
+                    logicalSessionKey: "news-\(itemID)",
+                    systemPrompt: piSystemContext,
+                    userPrompt: promptWithQuote,
+                    priorHistoryContext: priorSummary,
+                    endpointProfile: endpointProfile,
+                    configuration: resolvedConfig,
+                    thinkingLevel: effort.apiValue
+                ) { [weak self] event in
+                    guard let self else { return }
+                    let elapsedMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+                    switch event {
+                        case .status(let label):
+                            self.streamingChatStatusLabel = label
+                        case .thinkingDelta(let thinking):
+                            liveThinking = thinking
+                            self.streamingChatStatusLabel = AppLanguage.text("正在深度分析…", en: "Analyzing...")
+                            let previewLines = thinking.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.suffix(3).map { String($0.prefix(140)) }
+                            if let i = liveSteps.firstIndex(where: { $0.id == "news-think" }) {
+                                liveSteps[i].detail = previewLines.isEmpty ? nil : previewLines
+                            } else {
+                                liveSteps.append(BeautifulAgentThinkingStep(id: "news-think", label: AppLanguage.text("深度推理", en: "Reasoning"), status: "running", detail: previewLines.isEmpty ? nil : previewLines))
+                            }
+                        case .thinkingEnd(let thinking):
+                            liveThinking = thinking
+                            for i in liveSteps.indices where liveSteps[i].id == "news-think" { liveSteps[i].status = "done" }
+                        case .toolStart(let id, let name, let label, let detail):
+                            for i in liveSteps.indices where liveSteps[i].id == "news-think" { liveSteps[i].status = "done" }
+                            self.streamingChatStatusLabel = detail.map { "\(label)：\($0)" } ?? label
+                            liveSteps.append(BeautifulAgentThinkingStep(id: id, label: label, chip: detail ?? name, status: "running"))
+                        case .toolUpdate(let id, let preview):
+                            if let i = liveSteps.firstIndex(where: { $0.id == id }) {
+                                liveSteps[i].detail = Array(preview.components(separatedBy: .newlines).filter { !$0.isEmpty }.prefix(4))
+                            }
+                        case .toolEnd(let id, _, let isError, let durationMs, let preview):
+                            if let i = liveSteps.firstIndex(where: { $0.id == id }) {
+                                liveSteps[i].status = isError ? "error" : "done"
+                                liveSteps[i].durationMs = durationMs
+                                if let preview {
+                                    liveSteps[i].detail = Array(preview.components(separatedBy: .newlines).filter { !$0.isEmpty }.prefix(4))
+                                }
+                            }
+                            self.streamingChatStatusLabel = AppLanguage.text("正在整理回复…", en: "Composing...")
+                        case .textDelta(let text), .textEnd(let text):
+                            liveText = text
+                        case .error(let msg):
+                            self.chatErrorMessage = msg
+                        case .settled:
+                            break
+                    }
+                    self.emitChatStreamPatch(
+                        itemID: itemID,
+                        patch: BeautifulAgentStreamPatchPayload(
+                            messageId: assistantID,
+                            text: liveText,
+                            thinking: liveThinking.isEmpty ? nil : liveThinking,
+                            thinkingDurationMs: elapsedMs,
+                            steps: liveSteps.isEmpty ? nil : liveSteps,
+                            statusLabel: self.streamingChatStatusLabel.isEmpty ? nil : self.streamingChatStatusLabel
+                        )
+                    )
+                }
+                
+                await CotAgentCoordinator.shared.drainCommandQueueNow()
+                let finalText = result.text.isEmpty && result.aborted
+                    ? AppLanguage.text("已停止生成。", en: "Generation stopped.")
+                    : result.text
+                let toolChips = result.toolNames.map { PiToolDisplayMeta.label(for: $0) }
+                let followUps = Self.newsFollowUpSuggestions(for: item, toolNames: result.toolNames)
+                self.updateAssistantMessage(
+                    id: assistantID,
+                    itemID: itemID,
+                    text: finalText,
+                    thinking: result.thinking.isEmpty ? nil : result.thinking,
+                    thinkingDurationMs: result.thinkingDurationMs,
+                    steps: result.steps.isEmpty ? nil : result.steps,
+                    toolChips: toolChips.isEmpty ? nil : toolChips,
+                    followUps: followUps
+                )
+                if saveAsBrief, !finalText.isEmpty {
+                    self.setAIBrief(finalText, for: itemID)
+                }
+                return
+            } catch is CancellationError {
+                let partial = liveText.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.updateAssistantMessage(
+                    id: assistantID,
+                    itemID: itemID,
+                    text: partial.isEmpty ? AppLanguage.text("已停止生成。", en: "Stopped.") : partial,
+                    thinking: liveThinking.isEmpty ? nil : liveThinking,
+                    steps: liveSteps.isEmpty ? nil : liveSteps
+                )
+                return
+            } catch {
+                if Task.isCancelled { return }
+                // Fall through cleanly to direct SSE
+            }
+        }
+        
+        // 2. Fallback path: direct SSE streaming into BeautifulAgentWebView
         let systemContext = """
         你是一位视野敏锐、说人话的科技与资讯分析助手。请紧扣下面这篇资讯原文回答用户的点评、总结和追问。
         \(effort.styleDirective)
@@ -1195,56 +1519,97 @@ final class AIHotNewsService {
         """
         
         var wireMessages: [AIMessage] = [.system(systemContext)]
-        let priorTurns = history.dropLast(2).suffix(10)
-        for turn in priorTurns {
+        for turn in priorHistory {
             let cleanText = turn.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cleanText.isEmpty else { continue }
             wireMessages.append(turn.role == .user ? .user(cleanText) : AIMessage(role: .assistant, text: cleanText))
         }
-        wireMessages.append(.user(trimmed))
+        wireMessages.append(.user(promptWithQuote))
         
+        var lastEmitUptime: TimeInterval = 0
+        var latestPartial = ""
         do {
             let output = try await AIService.shared.chat(
                 wireMessages,
                 configuration: resolvedConfig,
                 analyticsFeature: "newsChat"
-            ) { partial in
-                if partial.count >= targetBuffer.count {
-                    targetBuffer = partial
-                }
+            ) { [weak self] partial in
+                guard let self else { return }
+                latestPartial = partial
+                let now = ProcessInfo.processInfo.systemUptime
+                guard now - lastEmitUptime >= 0.03 else { return }
+                lastEmitUptime = now
+                self.emitChatStreamPatch(
+                    itemID: itemID,
+                    patch: BeautifulAgentStreamPatchPayload(
+                        messageId: assistantID,
+                        text: partial,
+                        thinking: nil,
+                        thinkingDurationMs: max(0, Int(Date().timeIntervalSince(startedAt) * 1000)),
+                        steps: nil,
+                        statusLabel: nil
+                    )
+                )
             }
             let finalClean = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            targetBuffer = finalClean
-            streamDone = true
-            // Let the typewriter gracefully finish the final few characters (~0.35s max)
-            let deadline = Date().addingTimeInterval(0.35)
-            while shownOffset < finalClean.count && Date() < deadline {
-                try? await Task.sleep(for: .milliseconds(50))
-            }
-            typewriterTask.cancel()
-            self.updateAssistantMessage(id: assistantID, itemID: itemID, text: finalClean)
+            self.updateAssistantMessage(
+                id: assistantID,
+                itemID: itemID,
+                text: finalClean,
+                followUps: Self.newsFollowUpSuggestions(for: item, toolNames: [])
+            )
             if saveAsBrief, !finalClean.isEmpty {
                 self.setAIBrief(finalClean, for: itemID)
             }
-        } catch {
-            typewriterTask.cancel()
-            self.chatErrorMessage = error.localizedDescription
-            if var list = self.chatHistories[itemID],
-               let idx = list.lastIndex(where: { $0.id == assistantID }),
-               list[idx].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
-                list.remove(at: idx)
-                self.chatHistories[itemID] = list
+        } catch is CancellationError {
+            let partial = latestPartial.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !partial.isEmpty {
+                self.updateAssistantMessage(id: assistantID, itemID: itemID, text: partial)
             }
+        } catch {
+            self.chatErrorMessage = error.localizedDescription
+            self.updateAssistantMessage(
+                id: assistantID,
+                itemID: itemID,
+                text: error.localizedDescription,
+                isError: true
+            )
         }
     }
     
     
-    private func updateAssistantMessage(id: String, itemID: String, text: String) {
+    private static func newsFollowUpSuggestions(for item: AIHotNewsItem, toolNames: [String]) -> [String] {
+        var result: [String] = []
+        if !toolNames.contains("lookup_stock_quote") {
+            result.append(AppLanguage.text("查一下相关公司最新股价与市场反应", en: "Check related stock quotes"))
+        }
+        result.append(AppLanguage.text("反面视角：这件事有哪些被忽视的风险？", en: "What are the counter-arguments & risks?"))
+        result.append(AppLanguage.text("整理成结构化 Markdown 笔记打开", en: "Save as structured Markdown note"))
+        return Array(result.prefix(3))
+    }
+    
+    
+    private func updateAssistantMessage(
+        id: String,
+        itemID: String,
+        text: String,
+        thinking: String? = nil,
+        thinkingDurationMs: Int? = nil,
+        steps: [BeautifulAgentThinkingStep]? = nil,
+        toolChips: [String]? = nil,
+        followUps: [String]? = nil,
+        isError: Bool = false
+    ) {
         guard var list = self.chatHistories[itemID],
               let idx = list.lastIndex(where: { $0.id == id })
         else { return }
         list[idx].text = text
+        if let thinking { list[idx].thinking = thinking }
+        if let thinkingDurationMs { list[idx].thinkingDurationMs = thinkingDurationMs }
+        if let steps { list[idx].steps = steps }
+        if let toolChips { list[idx].toolChips = toolChips }
+        if let followUps { list[idx].followUps = followUps }
+        list[idx].isError = isError
         self.chatHistories[itemID] = list
     }
     

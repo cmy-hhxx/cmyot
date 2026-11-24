@@ -1,0 +1,27 @@
+{
+  "name": "cot-beautiful-agent-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && cp dist/index.html ../../CotEditor/Resources/BeautifulAgentUI.html",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "glimm": "^0.3.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "shadow-plugin": "^2.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.8",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.5.0",
+    "tailwindcss": "^4.1.8",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vite-plugin-singlefile": "^2.2.0"
+  }
+}

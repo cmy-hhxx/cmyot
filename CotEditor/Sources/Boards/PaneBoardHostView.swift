@@ -114,6 +114,13 @@ struct PaneBoardHostView: View {
                         onClose: self.onRevertToDocument,
                         onOpenExcerptDocument: self.onOpenNote
                     )
+                case .butler:
+                    ButlerCommandHubView(
+                        hostWindow: nil,
+                        isDockedPane: true,
+                        initialSeedPrompt: self.model.state.query,
+                        onDismiss: self.onRevertToDocument
+                    )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -34,6 +34,8 @@ nonisolated struct CotAgentAction: Codable, Sendable, Equatable {
     var splitRight: Bool? = nil
     var title: String? = nil
     var content: String? = nil
+    var text: String? = nil
+    var replaceSelection: Bool? = nil
     var name: String? = nil
     var nickname: String? = nil
     var prompt: String? = nil
@@ -97,6 +99,7 @@ nonisolated struct LiveWorkspaceSnapshot: Codable, Sendable, Equatable {
     var windows: [WindowSummary]
     var activeDocumentTitle: String?
     var activeDocumentExcerpt: String?
+    var activeDocumentSelection: String? = nil
     var activePodcastTitle: String?
     var activeMarketInstrument: String?
 }
@@ -187,13 +190,20 @@ final class CotAgentCoordinator {
         
         let frontDocVC = Self.activeDocumentViewController()
         let activeTab = frontDocVC?.focusedEditorViewController?.selectedTab
+        let activeSelection: String? = {
+            guard activeTab?.isBoard != true,
+                  let sel = frontDocVC?.focusedTextView?.selectedString.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !sel.isEmpty
+            else { return nil }
+            return String(sel.prefix(1500))
+        }()
         let activeExcerpt = activeTab.flatMap { tab -> String? in
             guard !tab.isBoard else { return nil }
             let ns = tab.document.textStorage.mutableString as NSString
             guard ns.length > 0 else { return nil }
-            let range = ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(ns.length, 1500)))
+            let range = ns.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(ns.length, 3200)))
             let text = ns.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? nil : String(text.prefix(1200))
+            return text.isEmpty ? nil : String(text.prefix(2800))
         }
         
         let butlerName = self.database.string(forKey: CotLocalDatabase.ConfigKey.butlerName, default: "曜")
@@ -206,6 +216,7 @@ final class CotAgentCoordinator {
             windows: windows,
             activeDocumentTitle: activeTab?.title,
             activeDocumentExcerpt: activeExcerpt,
+            activeDocumentSelection: activeSelection,
             activePodcastTitle: CotPodcastService.shared.currentEpisode?.title,
             activeMarketInstrument: CotMarketService.shared.selectedInstrumentName
         )
@@ -226,8 +237,11 @@ final class CotAgentCoordinator {
         if let title = snap.activeDocumentTitle {
             lines.append("正在编辑的文档：\(title)")
         }
+        if let selection = snap.activeDocumentSelection, !selection.isEmpty {
+            lines.append("当前选中文本：\n\(String(selection.prefix(800)))")
+        }
         if let excerpt = snap.activeDocumentExcerpt, !excerpt.isEmpty {
-            lines.append("当前文档摘录：\n\(String(excerpt.prefix(800)))")
+            lines.append("当前文档摘录：\n\(String(excerpt.prefix(1200)))")
         }
         let openTitles = snap.windows.flatMap(\.panes).flatMap(\.tabs).map { tab in
             if let kind = tab.boardKind {
@@ -313,6 +327,17 @@ final class CotAgentCoordinator {
                         splitRight: action.splitRight == true
                     )
                     return AppliedActionReceipt(symbolName: "doc.text", summary: title.isEmpty ? "新建文档" : title)
+                }
+                return nil
+                
+            case "insert_to_editor":
+                let payloadText = (action.text ?? action.content ?? "").trimmingCharacters(in: .newlines)
+                guard !payloadText.isEmpty else { return nil }
+                if self.insertTextIntoActiveEditor(payloadText, replacingSelection: action.replaceSelection == true) {
+                    return AppliedActionReceipt(
+                        symbolName: "text.insert",
+                        summary: AppLanguage.text("已插入到当前编辑器", en: "Inserted into Editor")
+                    )
                 }
                 return nil
                 
@@ -541,6 +566,80 @@ final class CotAgentCoordinator {
                 self.database.markAgentCommandExecuted(id: cmd.id, status: "ignored", resultNote: "invalid_payload")
             }
         }
+    }
+    
+    
+    // MARK: - Direct Editor Helpers (Used by Butler, NEWS AI, and Editor Handoffs)
+    
+    /// Inserts `text` into the currently focused document editor (undoable).
+    /// If the focused tab is a board, falls back to the first non-board text pane or opens a new document tab.
+    @discardableResult
+    func insertTextIntoActiveEditor(_ text: String, replacingSelection: Bool = false) -> Bool {
+        guard !text.isEmpty, let docVC = Self.activeDocumentViewController() else { return false }
+        let targetPane: EditorViewController? = {
+            if let focused = docVC.focusedEditorViewController, !focused.selectedTab.isBoard {
+                return focused
+            }
+            return docVC.editorViewControllers.first(where: { !$0.selectedTab.isBoard })
+        }()
+        if let pane = targetPane, let textView = pane.textView, textView.isEditable {
+            let selRange = textView.selectedRange()
+            let replacementRange: NSRange = if replacingSelection {
+                selRange
+            } else {
+                NSRange(location: selRange.upperBound, length: 0)
+            }
+            let prefix = (!replacingSelection && replacementRange.location > 0) ? "\n" : ""
+            textView.insertText(prefix + text, replacementRange: replacementRange)
+            docVC.view.window?.makeFirstResponderDiscardingMarkedText(textView)
+            return true
+        }
+        // No editable text pane open — open a fresh Markdown note in a split tab
+        docVC.openNewDocumentTab(title: AppLanguage.text("AI 笔记", en: "AI Note"), content: text, splitRight: true)
+        return true
+    }
+    
+    
+    /// Opens a fresh Markdown document tab with the given title and content.
+    @discardableResult
+    func openNewMarkdownDocument(title: String, content: String, splitRight: Bool = false) -> Bool {
+        guard let docVC = Self.activeDocumentViewController() else { return false }
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        docVC.openNewDocumentTab(
+            title: cleanTitle.isEmpty ? AppLanguage.text("笔记", en: "Note") : cleanTitle,
+            content: content,
+            splitRight: splitRight
+        )
+        return true
+    }
+    
+    
+    /// Opens a board tab (such as `.butler`, `.market`, `.news`, `.podcast`) inside the active window.
+    @discardableResult
+    func openBoard(_ kind: PaneBoardKind, query: String? = nil, splitRight: Bool = true) -> Bool {
+        guard let docVC = Self.activeDocumentViewController(),
+              let pane = docVC.focusedEditorViewController ?? docVC.editorViewControllers.first
+        else { return false }
+        docVC.openNewBoardTab(kind, in: pane, explicitQuery: query, splitRight: splitRight)
+        return true
+    }
+    
+    
+    /// Returns the working directory of the currently focused file document, if available.
+    func activeWorkingDirectoryURL() -> URL? {
+        guard let docVC = Self.activeDocumentViewController() else { return nil }
+        return docVC.focusedDocument.fileURL?.deletingLastPathComponent()
+    }
+    
+    
+    /// Returns the current editor selection snippet, if any.
+    func activeSelectionSnippet() -> String? {
+        guard let docVC = Self.activeDocumentViewController(),
+              docVC.focusedEditorViewController?.selectedTab.isBoard != true,
+              let sel = docVC.focusedTextView?.selectedString.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sel.isEmpty
+        else { return nil }
+        return String(sel.prefix(2000))
     }
     
     

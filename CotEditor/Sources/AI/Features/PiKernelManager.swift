@@ -125,6 +125,8 @@ final class PiKernelManager {
     @ObservationIgnored private var workspaceSyncTask: Task<Void, Never>?
     @ObservationIgnored private var writtenFileCache: [String: Data] = [:]
     @ObservationIgnored private var ensuredDirectoryPaths: Set<String> = []
+    @ObservationIgnored private var terminationObserver: (any NSObjectProtocol)?
+    private(set) var workspaceConfigStamp: String = "initial"
     private static let extraBinsLock = NSLock()
     private nonisolated(unsafe) static var cachedNodeRuntimeBins: (expiresAt: TimeInterval, bins: [String])?
     
@@ -175,6 +177,15 @@ final class PiKernelManager {
             self.piBinaryPath = Self.discoverPiBinary(customOverride: database.string(forKey: Self.customBinaryConfigKey))
         } else {
             self.piBinaryPath = nil
+            self.terminationObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.willTerminateNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                Task.detached(priority: .userInitiated) {
+                    await PiRPCRuntime.shared.shutdownAll()
+                }
+            }
             Task { @MainActor [weak self] in
                 await self?.refreshEnvironment()
             }
@@ -463,8 +474,12 @@ final class PiKernelManager {
         try self.ensureDirectory(self.agentDirectoryURL, fileManager: fm)
         let agentsDir = self.agentDirectoryURL.appending(path: "agents", directoryHint: .isDirectory)
         let sessionsDir = self.agentDirectoryURL.appending(path: "sessions", directoryHint: .isDirectory)
+        let extensionsDir = self.agentDirectoryURL.appending(path: "extensions", directoryHint: .isDirectory)
+        let runtimeDir = self.agentDirectoryURL.appending(path: "runtime", directoryHint: .isDirectory)
         try self.ensureDirectory(agentsDir, fileManager: fm)
         try self.ensureDirectory(sessionsDir, fileManager: fm)
+        try self.ensureDirectory(extensionsDir, fileManager: fm)
+        try self.ensureDirectory(runtimeDir, fileManager: fm)
         
         // Collect extra model overrides referenced by individual Bots
         var extraModelsByEndpoint: [UUID: Set<String>] = [:]
@@ -497,7 +512,7 @@ final class PiKernelManager {
             for rawModel in candidates {
                 let mid = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !mid.isEmpty, seenModelIDs.insert(mid).inserted else { continue }
-                modelEntries.append([
+                var modelEntry: [String: Any] = [
                     "id": mid,
                     "name": mid,
                     "reasoning": Self.isReasoningModelID(mid),
@@ -510,7 +525,14 @@ final class PiKernelManager {
                         "cacheRead": 0,
                         "cacheWrite": 0,
                     ],
-                ])
+                ]
+                var perModelCfg = profile.configuration(apiKey: "")
+                perModelCfg.model = mid
+                let perModelWireEndpoint = perModelCfg.wireConfiguration.endpoint
+                if perModelWireEndpoint != wireEndpoint {
+                    modelEntry["api"] = Self.piAPIType(for: perModelWireEndpoint)
+                }
+                modelEntries.append(modelEntry)
                 totalModels += 1
             }
             
@@ -522,6 +544,19 @@ final class PiKernelManager {
             ]
             if wireEndpoint == .openAIChatCompletions || wireEndpoint == .openAIResponses {
                 providerObj["authHeader"] = true
+            }
+            var sanitizedHeaders: [String: String] = [:]
+            for (rawKey, rawValue) in profile.customHeaders {
+                let k = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                let v = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !k.isEmpty, !v.isEmpty else { continue }
+                sanitizedHeaders[k] = v
+            }
+            if profile.provider == .openCodeGo, sanitizedHeaders["x-opencode-session"] == nil {
+                sanitizedHeaders["x-opencode-session"] = "coteditor-go-session"
+            }
+            if !sanitizedHeaders.isEmpty {
+                providerObj["headers"] = sanitizedHeaders
             }
             providersDict[pid] = providerObj
             
@@ -537,6 +572,7 @@ final class PiKernelManager {
         }
         
         var didWriteAnyFile = false
+        var didWriteRuntimeConfig = false
         let modelsPayload: [String: Any] = [
             "$schema": "https://pi.dev/schemas/models.schema.json",
             "providers": providersDict,
@@ -544,6 +580,7 @@ final class PiKernelManager {
         let modelsData = try JSONSerialization.data(withJSONObject: modelsPayload, options: [.prettyPrinted, .sortedKeys])
         if try self.writeIfChanged(modelsData, to: self.agentDirectoryURL.appending(path: "models.json"), fileManager: fm) {
             didWriteAnyFile = true
+            didWriteRuntimeConfig = true
         }
         
         // Write auth.json with strict owner-only 0o600 permissions
@@ -551,6 +588,17 @@ final class PiKernelManager {
         let authData = try JSONSerialization.data(withJSONObject: authDict, options: [.prettyPrinted, .sortedKeys])
         if try self.writeIfChanged(authData, to: authURL, permissions: 0o600, fileManager: fm) {
             didWriteAnyFile = true
+            didWriteRuntimeConfig = true
+        }
+        
+        // Write native CotEditor Pi extension (`extensions/cot-tools.ts`) for live quotes, news, search, DB & UI control
+        let cotToolsURL = extensionsDir.appending(path: PiCotToolsExtension.filename)
+        if try self.writeIfChanged(Data(PiCotToolsExtension.source.utf8), to: cotToolsURL, fileManager: fm) {
+            didWriteAnyFile = true
+            didWriteRuntimeConfig = true
+        }
+        if didWriteRuntimeConfig || self.workspaceConfigStamp == "initial" {
+            self.workspaceConfigStamp = UUID().uuidString
         }
         
         // Write Pi 1.6+ schema-compliant settings.json (quiet startup, no slow auto-retry loops during headless runs)
@@ -665,16 +713,22 @@ final class PiKernelManager {
     }
     
     
-    /// Stateful accumulator for Pi 1.6+ delta-only JSONL event streams (`--mode json`).
+    /// Stateful accumulator for Pi 1.6+ delta-only JSONL event streams (`--mode json` / `--mode rpc`).
     nonisolated struct JSONLStreamState: Sendable {
         var textBlocks: [Int: String] = [:]
+        var thinkingBlocks: [Int: String] = [:]
         var finalAssistantText: String?
         var errorMessage: String?
         var activeToolName: String?
+        var completedTools: [String] = []
         var isSettled: Bool = false
         
         var streamedText: String {
             self.textBlocks.keys.sorted().compactMap { self.textBlocks[$0] }.joined()
+        }
+        
+        var streamedThinking: String {
+            self.thinkingBlocks.keys.sorted().compactMap { self.thinkingBlocks[$0] }.joined()
         }
         
         var resolvedOutput: String {
@@ -690,6 +744,14 @@ final class PiKernelManager {
                     {
                         let idx = assistantEvent["contentIndex"] as? Int ?? 0
                         switch subType {
+                            case "thinking_delta":
+                                if let delta = assistantEvent["delta"] as? String, !delta.isEmpty {
+                                    self.thinkingBlocks[idx, default: ""] += delta
+                                }
+                            case "thinking_end":
+                                if let content = assistantEvent["content"] as? String {
+                                    self.thinkingBlocks[idx] = content
+                                }
                             case "text_delta":
                                 if let delta = assistantEvent["delta"] as? String, !delta.isEmpty {
                                     self.textBlocks[idx, default: ""] += delta
@@ -718,6 +780,14 @@ final class PiKernelManager {
                         self.activeToolName = toolName
                         if self.streamedText.isEmpty {
                             return (nil, "▸ Pi Agent 正在执行工具 `\(toolName)`…\n")
+                        }
+                    }
+                    
+                case "tool_execution_end":
+                    if let toolName = json["toolName"] as? String, !toolName.isEmpty {
+                        self.completedTools.append(toolName)
+                        if self.activeToolName == toolName {
+                            self.activeToolName = nil
                         }
                     }
                     
@@ -924,6 +994,86 @@ final class PiKernelManager {
     }
     
     
+    // MARK: Warm Persistent RPC Runtime (Butler & NEWS AI)
+    
+    /// Whether the warm persistent Pi RPC kernel can execute turns right now.
+    var canRunRPC: Bool {
+        self.isKernelEnabled && self.isAvailable
+    }
+    
+    
+    /// Runs a streaming conversation turn on a warm persistent `pi --mode rpc` daemon
+    /// loaded with CotEditor's native `extensions/cot-tools.ts`.
+    func runRPCTurn(
+        channel: PiAgentChannel,
+        logicalSessionKey: String,
+        systemPrompt: String,
+        userPrompt: String,
+        priorHistoryContext: String? = nil,
+        endpointProfile: AIEndpointProfile,
+        configuration: AIConfiguration,
+        thinkingLevel: String? = nil,
+        workingDirectory: URL? = nil,
+        onEvent: @escaping @MainActor @Sendable (PiAgentStreamEvent) -> Void
+    ) async throws -> PiAgentRunResult {
+        if self.piBinaryPath == nil {
+            self.piBinaryPath = Self.discoverPiBinary(customOverride: self.database.string(forKey: Self.customBinaryConfigKey))
+        }
+        guard let binaryPath = self.piBinaryPath, FileManager.default.isExecutableFile(atPath: binaryPath) else {
+            throw AIError.http(status: 503, message: AppLanguage.text("未找到 pi 可执行文件", en: "pi executable not found"))
+        }
+        
+        _ = try? self.syncWorkspace()
+        
+        let providerID = Self.providerID(for: endpointProfile)
+        let modelID = configuration.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveThinking = thinkingLevel ?? configuration.reasoningEffort
+        let dbPath = self.database.databaseURL.path(percentEncoded: false)
+        
+        let trackedBot: AIBotID = channel == .butler ? .butler : .readingCompanion
+        self.activeBotRuns.insert(trackedBot)
+        defer { self.activeBotRuns.remove(trackedBot) }
+        
+        let request = PiRPCTurnRequest(
+            channel: channel,
+            binaryPath: binaryPath,
+            agentDirectoryURL: self.agentDirectoryURL,
+            databasePath: dbPath,
+            workspaceConfigStamp: self.workspaceConfigStamp,
+            workingDirectoryURL: workingDirectory,
+            logicalSessionKey: logicalSessionKey,
+            providerID: providerID,
+            modelID: modelID,
+            thinkingLevel: effectiveThinking,
+            systemPrompt: systemPrompt,
+            userPrompt: userPrompt,
+            priorHistoryContext: priorHistoryContext
+        )
+        return try await PiRPCRuntime.shared.runTurn(request, onEvent: onEvent)
+    }
+    
+    
+    func abortRPCTurn(channel: PiAgentChannel) {
+        Task {
+            await PiRPCRuntime.shared.abort(channel: channel)
+        }
+    }
+    
+    
+    func resetRPCSession(channel: PiAgentChannel) {
+        Task {
+            await PiRPCRuntime.shared.resetSession(channel: channel)
+        }
+    }
+    
+    
+    func shutdownRPCDaemons() {
+        Task {
+            await PiRPCRuntime.shared.shutdownAll()
+        }
+    }
+    
+    
     // MARK: Interactive Terminal Launch
     
     /// Builds a clean shell command to launch `botID` interactively inside CotEditor's built-in Terminal
@@ -943,6 +1093,10 @@ final class PiKernelManager {
             ?? endpoints.first
         
         let agentDir = self.agentDirectoryURL.path(percentEncoded: false)
+        let dbPath = self.database.databaseURL.path(percentEncoded: false)
+        let cotToolsFile = self.agentDirectoryURL
+            .appending(path: "extensions/\(PiCotToolsExtension.filename)")
+            .path(percentEncoded: false)
         let botPromptFile = self.agentDirectoryURL
             .appending(path: "agents/\(botID.rawValue)/SYSTEM.md")
             .path(percentEncoded: false)
@@ -956,8 +1110,10 @@ final class PiKernelManager {
             parts.append("cd \(Self.shellQuote(workingDirectory.path(percentEncoded: false))) &&")
         }
         parts.append("PI_CODING_AGENT_DIR=\(Self.shellQuote(agentDir))")
+        parts.append("COT_DB_PATH=\(Self.shellQuote(dbPath))")
         parts.append("PI_SKIP_VERSION_CHECK=1")
         parts.append(Self.shellQuote(binaryPath))
+        parts.append("-e \(Self.shellQuote(cotToolsFile))")
         
         if let targetEndpoint {
             let pid = Self.providerID(for: targetEndpoint)

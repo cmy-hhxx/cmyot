@@ -48,10 +48,14 @@ struct DashboardNewsCenterView: View {
     @State private var selectedModel: NewsChatModelOption?
     @State private var isModelPopoverOpen: Bool = false
     @State private var copiedMessageID: String?
-    @State private var chatWidthFraction: CGFloat = 0.40
+    @State private var chatWidthFraction: CGFloat = 0.42
     @State private var dragStartChatFraction: CGFloat?
     @State private var isSplitDividerHovering: Bool = false
     @State private var lastAutoScrollAt: Date = .distantPast
+    @State private var newsChatWebController = BeautifulAgentWebController()
+    @State private var newsChatStreamListenerID: UUID? = nil
+    @State private var newsQuotedExcerpt: String? = nil
+    @State private var piKernel = PiKernelManager.shared
     
     init(
         newsService: AIHotNewsService,
@@ -142,8 +146,22 @@ struct DashboardNewsCenterView: View {
         .onAppear {
             self.reloadAvailableModels()
             self.syncSelectionSideEffects()
+            if self.newsChatStreamListenerID == nil {
+                let webCtrl = self.newsChatWebController
+                self.newsChatStreamListenerID = self.newsService.addChatStreamPatchListener { itemID, patch in
+                    if self.selectedItemID == itemID {
+                        webCtrl.pushStreamPatch(patch)
+                    }
+                }
+            }
             Task {
                 await self.newsService.refreshIfNeeded()
+            }
+        }
+        .onDisappear {
+            if let id = self.newsChatStreamListenerID {
+                self.newsService.removeChatStreamPatchListener(id)
+                self.newsChatStreamListenerID = nil
             }
         }
         .onChange(of: self.selectedCategory) { _, _ in
@@ -154,6 +172,7 @@ struct DashboardNewsCenterView: View {
         }
         .onChange(of: self.selectedItemID) { _, _ in
             self.isModelPopoverOpen = false
+            self.newsQuotedExcerpt = nil
             self.reloadAvailableModels()
             self.syncSelectionSideEffects()
         }
@@ -338,18 +357,81 @@ struct DashboardNewsCenterView: View {
                         .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
                 )
                 
+                if let item = self.selectedItem {
+                    Button {
+                        let noteContent = self.newsService.buildMarkdownStudyNote(for: item)
+                        if let handler = self.onOpenExcerptDocument {
+                            handler(String(item.title.prefix(28)), noteContent)
+                        } else {
+                            CotAgentCoordinator.shared.openNewMarkdownDocument(
+                                title: String(item.title.prefix(28)),
+                                content: noteContent,
+                                splitRight: true
+                            )
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "doc.text.badge.plus")
+                                .font(.system(size: 11, weight: .medium))
+                            Text(AppLanguage.text("存为笔记", en: "Save Note"))
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundStyle(self.secondaryInk)
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    
+                    Button {
+                        let summary = self.newsService.resolvedArticleBlocks(for: item)
+                            .prefix(4)
+                            .map(\.markdownText)
+                            .joined(separator: "\n")
+                        let quotePayload = "《\(item.title)》\n\(item.urlString)\n\(String(summary.prefix(600)))"
+                        CotButlerManager.shared.requestOpenHub(
+                            draft: AppLanguage.text("结合我的背景和市场情况，帮我深入分析一下这篇文章：", en: "Analyze this article in depth:"),
+                            quote: quotePayload
+                        )
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 11, weight: .medium))
+                            Text(AppLanguage.text("转交总管", en: "Ask Butler"))
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundStyle(self.secondaryInk)
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                }
+                
                 if let url = self.selectedItem?.url {
                     Button {
                         NSWorkspace.shared.open(url)
                     } label: {
                         HStack(spacing: 5) {
-                            Text(AppLanguage.text("浏览器打开原文", en: "Open Original"))
+                            Text(AppLanguage.text("原文", en: "Original"))
                                 .font(.system(size: 12, weight: .medium))
                             Image(systemName: "arrow.up.right")
                                 .font(.system(size: 10.5, weight: .semibold))
                         }
                         .foregroundStyle(self.secondaryInk)
-                        .padding(.horizontal, 11)
+                        .padding(.horizontal, 10)
                         .frame(height: 30)
                         .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .overlay(
@@ -742,7 +824,18 @@ struct DashboardNewsCenterView: View {
         let isLoadingArticle = self.newsService.loadingArticleIDs.contains(item.id)
             || (blocks.isEmpty && summaryText.isEmpty && !self.newsService.hasFinishedDetailFetch(for: item.id))
         let neighbors = self.adjacentItems
-        let cover = self.newsService.coverImage(for: item)
+        // Suppress synthetic auto-generated OG score-card banners (e.g. aihot.news dark headline cards) inside detail reader
+        let readerCover: NSImage? = AIHotNewsService.isSyntheticOGCardURL(item.coverURLString)
+            ? nil
+            : self.newsService.coverImage(for: item)
+        let bui = BeautifulUITokens.resolve(isDark: self.tokens.isDark)
+        let quoteHandler: (String) -> Void = { snippet in
+            let clean = snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else { return }
+            self.newsQuotedExcerpt = String(clean.prefix(500))
+            self.newsChatWebController.injectDraft("", quote: self.newsQuotedExcerpt)
+            self.newsChatWebController.focusComposer()
+        }
         
         return GeometryReader { geo in
             let isCompact = geo.size.width < 840
@@ -750,62 +843,66 @@ struct DashboardNewsCenterView: View {
                 VStack(spacing: 0) {
                     NewsEditorialArticlePane(
                         item: item,
-                        cover: cover,
+                        cover: readerCover,
                         blocks: blocks,
                         isLoadingArticle: isLoadingArticle,
                         previousItem: neighbors.previous,
                         nextItem: neighbors.next,
                         bodyFontSize: self.bodyFontSize,
                         tokens: self.tokens,
+                        bui: bui,
                         secondaryInk: self.secondaryInk,
                         mutedInk: self.mutedInk,
                         onSelectItem: { nextID in
                             withAnimation(DashMotion.quick) {
                                 self.selectedItemID = nextID
                             }
-                        }
+                        },
+                        onQuoteToAI: quoteHandler
                     )
                     .equatable()
-                    .frame(height: max(220, geo.size.height * 0.52))
+                    .frame(height: max(220, geo.size.height * 0.50))
                     
                     Rectangle()
-                        .fill(self.tokens.hairline)
+                        .fill(bui.line)
                         .frame(height: 1)
                     
                     self.aiChatPane(for: item, isCenteredCard: false)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else {
-                // Xiaohongshu desktop-inspired centered split card (~60 / 40) when fullscreen
+                // Harmonized split stage (~56 / 44) sharing Beautiful UI surface tokens seamlessly
                 let useCenteredCard = !self.isEmbeddedInPane && geo.size.width >= 940
-                let stageWidth = useCenteredCard ? min(1180, geo.size.width - 48) : geo.size.width
-                let minChatWidth: CGFloat = 340
-                let maxChatWidth: CGFloat = max(minChatWidth, min(stageWidth * 0.46, stageWidth - 440))
+                let stageWidth = useCenteredCard ? min(1240, geo.size.width - 44) : geo.size.width
+                let minChatWidth: CGFloat = 360
+                let maxChatWidth: CGFloat = max(minChatWidth, min(stageWidth * 0.48, stageWidth - 440))
                 let proposedChatWidth = stageWidth * self.chatWidthFraction
                 let chatWidth = min(maxChatWidth, max(minChatWidth, proposedChatWidth))
                 
                 let splitContent = HStack(spacing: 0) {
                     NewsEditorialArticlePane(
                         item: item,
-                        cover: cover,
+                        cover: readerCover,
                         blocks: blocks,
                         isLoadingArticle: isLoadingArticle,
                         previousItem: neighbors.previous,
                         nextItem: neighbors.next,
                         bodyFontSize: self.bodyFontSize,
                         tokens: self.tokens,
+                        bui: bui,
                         secondaryInk: self.secondaryInk,
                         mutedInk: self.mutedInk,
                         onSelectItem: { nextID in
                             withAnimation(DashMotion.quick) {
                                 self.selectedItemID = nextID
                             }
-                        }
+                        },
+                        onQuoteToAI: quoteHandler
                     )
                     .equatable()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     
-                    self.newsSplitDivider(totalWidth: stageWidth)
+                    self.newsSplitDivider(totalWidth: stageWidth, bui: bui)
                     
                     self.aiChatPane(for: item, isCenteredCard: useCenteredCard)
                         .frame(width: chatWidth)
@@ -822,20 +919,20 @@ struct DashboardNewsCenterView: View {
                     splitContent
                         .frame(width: stageWidth)
                         .frame(maxHeight: .infinity)
-                        .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .background(bui.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .strokeBorder(self.tokens.hairline, lineWidth: 0.9)
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .strokeBorder(bui.line, lineWidth: 1)
                         )
                         .shadow(
-                            color: Color.black.opacity(self.tokens.isDark ? 0.36 : 0.08),
-                            radius: 22,
+                            color: Color.black.opacity(self.tokens.isDark ? 0.36 : 0.06),
+                            radius: 20,
                             x: 0,
                             y: 8
                         )
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 16)
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 14)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 } else {
                     splitContent
@@ -844,18 +941,14 @@ struct DashboardNewsCenterView: View {
         }
     }
     
-    private func newsSplitDivider(totalWidth: CGFloat) -> some View {
+    private func newsSplitDivider(totalWidth: CGFloat, bui: BeautifulUITokens) -> some View {
         let isActive = self.isSplitDividerHovering || self.dragStartChatFraction != nil
         return ZStack {
             Rectangle()
-                .fill(isActive ? self.tokens.accentText.opacity(0.45) : self.tokens.hairline)
+                .fill(isActive ? bui.accent.opacity(0.55) : bui.line)
                 .frame(width: isActive ? 2 : 1)
-            
-            Capsule()
-                .fill(self.secondaryInk.opacity(isActive ? 0.50 : 0.0))
-                .frame(width: 3, height: 28)
         }
-        .frame(width: 8)
+        .frame(width: 6)
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
         .onHover { hovering in
@@ -880,7 +973,7 @@ struct DashboardNewsCenterView: View {
                     }
                     let startFraction = self.dragStartChatFraction ?? self.chatWidthFraction
                     let deltaFraction = -value.translation.width / max(totalWidth, 1)
-                    self.chatWidthFraction = min(0.46, max(0.34, startFraction + deltaFraction))
+                    self.chatWidthFraction = min(0.48, max(0.34, startFraction + deltaFraction))
                 }
                 .onEnded { _ in
                     self.dragStartChatFraction = nil
@@ -888,117 +981,239 @@ struct DashboardNewsCenterView: View {
         )
         .onTapGesture(count: 2) {
             withAnimation(DashMotion.travel) {
-                self.chatWidthFraction = 0.40
+                self.chatWidthFraction = 0.42
             }
         }
     }
     
     
-    // MARK: - Right Unified Companion Chat Pane (Beautiful UI + DissolveThinkingOrbView)
+    // MARK: - Right Unified Beautiful UI NEWS AI Companion (Pi 1.6+ RPC Kernel)
     
     private func aiChatPane(for item: AIHotNewsItem, isCenteredCard: Bool = false) -> some View {
+        let bui = BeautifulUITokens.resolve(isDark: self.tokens.isDark)
+        let hostState = self.buildNewsAgentHostState(for: item)
+        let callbacks = self.buildNewsAgentCallbacks(for: item)
+        
+        return BeautifulAgentWebView(
+            state: hostState,
+            controller: self.newsChatWebController,
+            callbacks: callbacks
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(isCenteredCard ? bui.surface : bui.page)
+    }
+    
+    
+    private func buildNewsAgentHostState(for item: AIHotNewsItem) -> BeautifulAgentHostStatePayload {
         let messages = self.newsService.chatMessages(for: item)
         let isStreaming = (self.newsService.streamingChatItemID == item.id)
-        let bui = BeautifulUITokens.resolve(isDark: self.tokens.isDark)
+        let streamingMsgID = isStreaming ? self.newsService.streamingChatMessageID : nil
         let botStore = AIBotStore.shared
         let botName = botStore.resolvedName(for: .readingCompanion)
         let botNick = botStore.resolvedNickname(for: .readingCompanion)
-        let botAvatar = botStore.resolvedAvatarImage(for: .readingCompanion, pointSize: 80)
+        let botAvatar = botStore.resolvedAvatarImage(for: .readingCompanion, pointSize: 72)
+        let avatarDataURL = BeautifulAgentUIBundle.avatarDataURL(from: botAvatar)
         let modelOptions = self.cachedModelOptions.isEmpty ? self.unifiedModelOptions() : self.cachedModelOptions
         let selectedTitle = self.selectedModel?.displayName
             ?? self.availableModels.first?.displayName
             ?? AIProvider.openCodeGo.defaultModel
         
-        let mappedMessages = messages.map { msg in
-            AgentChatMessageItem(
+        let mappedMessages: [BeautifulAgentMessagePayload] = messages.map { msg in
+            let isActiveStream = (msg.id == streamingMsgID)
+            let chips = msg.toolChips?.map {
+                BeautifulAgentToolReceipt(id: "nc-\(msg.id)-\($0)", label: $0, detail: nil, status: "done")
+            }
+            return BeautifulAgentMessagePayload(
                 id: msg.id,
-                isUser: (msg.role == .user),
-                text: msg.text
+                role: msg.role == .user ? "user" : "assistant",
+                text: msg.text,
+                thinking: msg.thinking,
+                thinkingDurationMs: msg.thinkingDurationMs,
+                steps: msg.steps,
+                toolChips: chips,
+                followUps: msg.followUps,
+                isStreaming: isActiveStream,
+                isError: msg.isError,
+                quoteContext: msg.quoteContext,
+                createdAt: msg.createdAt.timeIntervalSince1970 * 1000
             )
         }
         
-        return VStack(spacing: 0) {
-            AgentChatHeaderBar(
-                avatarImage: botAvatar,
-                name: botName,
-                nickname: botNick,
-                accent: Color(hexString: AIBotID.readingCompanion.accentHex),
-                tokens: bui,
-                trailingActions: {
-                    if !messages.isEmpty && !isStreaming {
-                        Button {
-                            self.newsService.clearChat(for: item.id)
-                        } label: {
-                            Text(AppLanguage.text("清空", en: "Clear"))
-                                .font(.system(size: 11.5, weight: .medium))
-                                .foregroundStyle(bui.ink2)
-                                .padding(.horizontal, 8)
-                                .frame(height: 24)
-                                .background(bui.field, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                    }
-                    
-                    Button {
-                        (NSApp.delegate as? AppDelegate)?.openBotSettings(selecting: .readingCompanion)
-                    } label: {
-                        Text(AppLanguage.text("设置", en: "Settings"))
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(bui.ink2)
-                            .padding(.horizontal, 8)
-                            .frame(height: 24)
-                            .background(bui.field, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                }
+        let mappedModels: [BeautifulAgentModelPayload] = modelOptions.map { opt in
+            let lower = opt.modelID.lowercased()
+            let isFlagship = lower.contains("opus") || lower.contains("gpt-5") || lower.contains("glm-5") || lower.contains("deepseek-v4") || lower.contains("gemini-2.5-pro")
+            let tag: String? = if lower.contains("flash") || lower.contains("haiku") || lower.contains("mini") {
+                AppLanguage.text("快推", en: "Fast")
+            } else if lower.contains("opus") || lower.contains("pro") || lower.contains("reasoner") {
+                AppLanguage.text("深度", en: "Deep")
+            } else {
+                nil
+            }
+            return BeautifulAgentModelPayload(
+                id: opt.id,
+                modelID: opt.modelID,
+                title: opt.title,
+                endpointID: opt.endpointID?.uuidString,
+                tag: tag,
+                isFlagship: isFlagship
             )
-            
-            Rectangle()
-                .fill(bui.line)
-                .frame(height: 1)
-            
-            AgentChatTranscriptSurface(
-                messages: mappedMessages,
-                isStreaming: isStreaming,
-                streamingDraft: nil,
-                errorMessage: self.newsService.chatErrorMessage,
-                placeholder: "@\(botNick)",
-                availableModels: modelOptions,
-                selectedModelTitle: selectedTitle,
-                orbColor: bui.ink,
-                tokens: bui,
-                onSelectModel: { option in
-                    if let matched = self.availableModels.first(where: { $0.modelID == option.modelID && ($0.endpointID == option.endpointID || option.endpointID == nil) }) {
-                        self.selectedModel = matched
-                    } else if let epID = option.endpointID {
-                        self.selectedModel = NewsChatModelOption(endpointID: epID, endpointName: "OpenCode Go", modelID: option.modelID)
-                    }
-                    var cfg = botStore.config(for: .readingCompanion)
-                    cfg.endpointID = option.endpointID
-                    cfg.modelOverride = option.modelID
-                    botStore.updateConfig(cfg, for: .readingCompanion)
-                },
-                onOpenSettings: {
-                    (NSApp.delegate as? AppDelegate)?.showAIPreferences(nil)
-                },
-                onSend: { prompt in
-                    guard self.newsService.streamingChatItemID == nil else { return }
-                    Task {
-                        await self.newsService.sendChatFollowUp(
-                            prompt,
-                            for: item,
-                            effort: self.reasoningEffort,
-                            selectedModel: self.selectedModel
-                        )
-                    }
-                }
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(isCenteredCard ? bui.surface : bui.page)
+        
+        let effortRaw: String = switch self.reasoningEffort {
+            case .simple: "simple"
+            case .balanced: "balanced"
+            case .deep: "deep"
+        }
+        
+        let suggestions: [BeautifulAgentSuggestionPayload] = [
+            .init(
+                id: "n-tldr",
+                label: AppLanguage.text("一分钟核心精读", en: "1-min core takeaways"),
+                prompt: AppLanguage.text("请用一分钟能看完的结构化要点提炼这篇文章的核心事实、关键数字与结论。", en: "Extract the key facts, numbers, and conclusion in concise bullets."),
+                icon: "spark"
+            ),
+            .init(
+                id: "n-sharp",
+                label: AppLanguage.text("犀利点评与深层逻辑", en: "Sharp critique & logic"),
+                prompt: AppLanguage.text("你怎么看这件事？请给出犀利点评、背后的利益/技术逻辑以及对行业的中长期影响。", en: "Give sharp commentary on the deeper technical and industry logic behind this story."),
+                icon: "bolt"
+            ),
+            .init(
+                id: "n-stock",
+                label: AppLanguage.text("查关联股票与市场影响", en: "Check related stocks"),
+                prompt: AppLanguage.text("请识别这篇文章涉及的关键上市公司或产业链龙头，调用行情工具查询它们的最新实时股价与近期走势，并分析潜在市场影响。", en: "Identify related public companies, look up their live stock quotes, and analyze potential market impact."),
+                icon: "market"
+            ),
+            .init(
+                id: "n-risk",
+                label: AppLanguage.text("反面视角与潜在风险", en: "Counter-view & risks"),
+                prompt: AppLanguage.text("跳出新闻本身的立场，从反面视角指出这件事被忽视的风险、局限或潜在反转可能。", en: "Provide a contrarian perspective highlighting overlooked risks and limitations."),
+                icon: "shield"
+            ),
+        ]
+        
+        let slashCommands: [BeautifulAgentSlashCommandPayload] = [
+            .init(key: "tldr", name: "/tldr", desc: AppLanguage.text("提炼核心事实与关键数字", en: "Quick key takeaways"), insertText: AppLanguage.text("用 3-5 条要点提炼这篇文章最核心的事实与数字", en: "Summarize the core facts in 3-5 bullets")),
+            .init(key: "stock", name: "/stock", desc: AppLanguage.text("查文中涉及公司的实时股价", en: "Lookup related stock quotes"), insertText: AppLanguage.text("查一下文中涉及公司的最新股价和近期走势，并分析市场影响", en: "Lookup live quotes for companies mentioned")),
+            .init(key: "note", name: "/note", desc: AppLanguage.text("生成结构化阅读笔记并新建文档", en: "Create structured study note"), insertText: AppLanguage.text("请把这篇文章和核心观点整理成结构化 Markdown 阅读笔记，并直接新建一篇文档保存", en: "Create a structured Markdown note for this article")),
+        ]
+        
+        let sourceNote = item.displayPublisherLabel.isEmpty ? item.resolvedCategory.label : item.displayPublisherLabel
+        
+        return BeautifulAgentHostStatePayload(
+            mode: "news",
+            isDark: self.tokens.isDark,
+            locale: AppLanguage.current == .simplifiedChinese ? "zh" : "en",
+            botName: botName,
+            botNickname: botNick,
+            botAvatarDataURL: avatarDataURL,
+            piAvailable: self.piKernel.canRunRPC,
+            piStatusLabel: self.piKernel.statusSummary,
+            isPinnedPanel: false,
+            isDockedPane: true,
+            showSidebar: false,
+            sessions: [],
+            activeSessionID: item.id,
+            messages: mappedMessages,
+            isStreaming: isStreaming,
+            streamingStatusLabel: isStreaming && !self.newsService.streamingChatStatusLabel.isEmpty
+                ? self.newsService.streamingChatStatusLabel
+                : nil,
+            errorMessage: self.newsService.chatErrorMessage,
+            placeholder: AppLanguage.text("针对这篇资讯追问，点左侧段落可「引用提问」…", en: "Ask about this article, or quote any paragraph..."),
+            greetingName: nil,
+            greetingSubtitle: self.piKernel.canRunRPC
+                ? AppLanguage.text("可直接精读、犀利点评、实时查关联股价或存为笔记", en: "Summarize, critique, look up live stock quotes, or save notes")
+                : AppLanguage.text("点击下方快捷问题，或直接输入你想了解的角度", en: "Pick a prompt below or ask anything about this article"),
+            articleTitle: item.title,
+            articleSource: sourceNote,
+            quotedExcerpt: self.newsQuotedExcerpt,
+            availableModels: mappedModels,
+            selectedModelID: selectedTitle,
+            selectedModelTitle: selectedTitle,
+            effort: effortRaw,
+            suggestions: suggestions,
+            contextSources: [],
+            slashCommands: slashCommands
+        )
+    }
+    
+    
+    private func buildNewsAgentCallbacks(for item: AIHotNewsItem) -> BeautifulAgentWebActionCallbacks {
+        let botStore = AIBotStore.shared
+        var cb = BeautifulAgentWebActionCallbacks()
+        cb.onSend = { prompt, quote in
+            guard self.newsService.streamingChatItemID == nil else { return }
+            let effectiveQuote = quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? self.newsQuotedExcerpt
+                : quote
+            self.newsQuotedExcerpt = nil
+            Task {
+                await self.newsService.sendChatFollowUp(
+                    prompt,
+                    for: item,
+                    quote: effectiveQuote,
+                    effort: self.reasoningEffort,
+                    selectedModel: self.selectedModel
+                )
+            }
+        }
+        cb.onAbort = {
+            self.newsService.abortChat()
+        }
+        cb.onRetry = {
+            self.newsService.retryLastChat(
+                for: item,
+                effort: self.reasoningEffort,
+                selectedModel: self.selectedModel
+            )
+        }
+        cb.onClearChat = {
+            self.newsService.clearChat(for: item.id)
+        }
+        cb.onClearQuote = {
+            self.newsQuotedExcerpt = nil
+        }
+        cb.onSelectModel = { model in
+            let epUUID = model.endpointID.flatMap(UUID.init(uuidString:))
+            if let matched = self.availableModels.first(where: { $0.modelID == model.modelID && ($0.endpointID == epUUID || epUUID == nil) }) {
+                self.selectedModel = matched
+            } else if let epUUID {
+                self.selectedModel = NewsChatModelOption(endpointID: epUUID, endpointName: "Gateway", modelID: model.modelID)
+            }
+            var cfg = botStore.config(for: .readingCompanion)
+            cfg.endpointID = epUUID
+            cfg.modelOverride = model.modelID
+            botStore.updateConfig(cfg, for: .readingCompanion)
+            _ = try? PiKernelManager.shared.syncWorkspace()
+        }
+        cb.onSelectEffort = { raw in
+            switch raw {
+                case "simple": self.reasoningEffort = .simple
+                case "deep": self.reasoningEffort = .deep
+                default: self.reasoningEffort = .balanced
+            }
+        }
+        cb.onInsertToEditor = { text in
+            CotAgentCoordinator.shared.insertTextIntoActiveEditor(text)
+        }
+        cb.onOpenNewDocument = { text in
+            let title = String(item.title.prefix(24))
+            let docContent = "# \(item.title)\n\n> [原文链接](\(item.urlString))\n\n\(text)"
+            if let handler = self.onOpenExcerptDocument {
+                handler(title, docContent)
+            } else {
+                CotAgentCoordinator.shared.openNewMarkdownDocument(title: title, content: docContent, splitRight: true)
+            }
+        }
+        cb.onOpenSettings = { target in
+            if target == "ai" {
+                (NSApp.delegate as? AppDelegate)?.showAIPreferences(nil)
+            } else {
+                (NSApp.delegate as? AppDelegate)?.openBotSettings(selecting: .readingCompanion)
+            }
+        }
+        return cb
     }
     
     
@@ -1081,9 +1296,13 @@ private struct NewsEditorialArticlePane: View, Equatable {
     let nextItem: AIHotNewsItem?
     let bodyFontSize: CGFloat
     let tokens: StudioColorTokens
+    let bui: BeautifulUITokens
     let secondaryInk: Color
     let mutedInk: Color
     let onSelectItem: (String) -> Void
+    let onQuoteToAI: (String) -> Void
+    
+    @State private var hoveredBlockIndex: Int? = nil
     
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.item.id == rhs.item.id
@@ -1100,28 +1319,28 @@ private struct NewsEditorialArticlePane: View, Equatable {
         let summaryText = self.item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         
         return ScrollViewReader { readerProxy in
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 20) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .center, spacing: 8) {
                         Text(self.item.resolvedCategory.label)
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(self.tokens.accentText)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(self.bui.accentInk)
                             .padding(.horizontal, 8)
                             .frame(height: 22)
-                            .background(self.tokens.positivePillBg, in: Capsule())
+                            .background(self.bui.accent.opacity(0.12), in: Capsule())
                         
                         if !publisher.isEmpty {
                             Text(publisher)
                                 .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(self.secondaryInk)
+                                .foregroundStyle(self.bui.ink2)
                         }
                         
                         if let date = self.item.publishedAt {
                             Text("·")
-                                .foregroundStyle(self.mutedInk)
+                                .foregroundStyle(self.bui.ink3)
                             Text(DashboardNewsCenterView.relativeTimeString(from: date))
-                                .font(.system(size: 12, design: .monospaced).monospacedDigit())
-                                .foregroundStyle(self.mutedInk)
+                                .font(.system(size: 11.5, design: .monospaced).monospacedDigit())
+                                .foregroundStyle(self.bui.ink3)
                         }
                         
                         Spacer(minLength: 0)
@@ -1130,7 +1349,7 @@ private struct NewsEditorialArticlePane: View, Equatable {
                     
                     Text(self.item.title)
                         .font(.system(size: 24, weight: .bold))
-                        .foregroundStyle(self.tokens.primaryInk)
+                        .foregroundStyle(self.bui.ink)
                         .lineSpacing(6)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1141,30 +1360,30 @@ private struct NewsEditorialArticlePane: View, Equatable {
                             .interpolation(.medium)
                             .antialiased(true)
                             .aspectRatio(contentMode: .fit)
-                            .frame(maxWidth: .infinity, maxHeight: 300)
+                            .frame(maxWidth: .infinity, maxHeight: 280)
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
+                                    .strokeBorder(self.bui.line, lineWidth: 0.8)
                             )
                     }
                     
                     if !self.blocks.isEmpty {
-                        VStack(alignment: .leading, spacing: 16) {
-                            ForEach(Array(self.blocks.enumerated()), id: \.offset) { _, block in
-                                self.articleBlockView(block)
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(Array(self.blocks.enumerated()), id: \.offset) { idx, block in
+                                self.articleBlockView(block, index: idx)
                             }
                         }
                     } else if !summaryText.isEmpty {
                         VStack(alignment: .leading, spacing: 14) {
                             Text(summaryText)
                                 .font(.system(size: self.bodyFontSize, weight: .regular))
-                                .foregroundStyle(self.tokens.primaryInk.opacity(0.92))
+                                .foregroundStyle(self.bui.ink.opacity(0.92))
                                 .lineSpacing(8)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(16)
-                                .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .background(self.bui.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                             
                             if self.isLoadingArticle {
                                 self.loadingPlaceholder
@@ -1182,10 +1401,10 @@ private struct NewsEditorialArticlePane: View, Equatable {
                                 Image(systemName: "arrow.up.right")
                                     .font(.system(size: 11, weight: .semibold))
                             }
-                            .foregroundStyle(self.tokens.accentText)
+                            .foregroundStyle(self.bui.accentInk)
                             .padding(.horizontal, 14)
                             .frame(height: 36)
-                            .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .background(self.bui.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
                         .buttonStyle(.plain)
                         .pointerStyle(.link)
@@ -1193,7 +1412,7 @@ private struct NewsEditorialArticlePane: View, Equatable {
                     
                     if self.previousItem != nil || self.nextItem != nil {
                         Rectangle()
-                            .fill(self.tokens.hairline)
+                            .fill(self.bui.line)
                             .frame(height: 1)
                             .padding(.top, 8)
                         
@@ -1218,13 +1437,14 @@ private struct NewsEditorialArticlePane: View, Equatable {
                         }
                     }
                 }
-                .padding(.horizontal, 38)
-                .padding(.vertical, 30)
+                .padding(.horizontal, 40)
+                .padding(.vertical, 32)
                 .frame(maxWidth: 700, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .center)
             }
-            .background(self.tokens.card)
+            .background(self.bui.surface)
             .onChange(of: self.item.id) { _, _ in
+                self.hoveredBlockIndex = nil
                 readerProxy.scrollTo("article-top", anchor: .top)
             }
         }
@@ -1232,53 +1452,83 @@ private struct NewsEditorialArticlePane: View, Equatable {
     
     
     @ViewBuilder
-    private func articleBlockView(_ block: NewsArticleBlock) -> some View {
+    private func articleBlockView(_ block: NewsArticleBlock, index: Int) -> some View {
+        let isHovered = (self.hoveredBlockIndex == index)
         switch block {
             case .heading(let level, let text):
                 Text(text)
                     .font(.system(size: self.bodyFontSize + (level <= 2 ? 2.5 : 1.0), weight: .semibold))
-                    .foregroundStyle(self.tokens.primaryInk)
-                    .padding(.top, 4)
+                    .foregroundStyle(self.bui.ink)
+                    .padding(.top, 6)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 
             case .paragraph(let text):
-                Text(text)
-                    .font(.system(size: self.bodyFontSize, weight: .regular))
-                    .foregroundStyle(self.tokens.primaryInk.opacity(0.90))
-                    .lineSpacing(8)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                
-            case .quote(let text):
-                HStack(alignment: .top, spacing: 12) {
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(self.tokens.accent)
-                        .frame(width: 3)
-                    
+                ZStack(alignment: .topTrailing) {
                     Text(text)
-                        .font(.system(size: 14, weight: .regular))
-                        .foregroundStyle(self.secondaryInk)
-                        .lineSpacing(6)
+                        .font(.system(size: self.bodyFontSize, weight: .regular))
+                        .foregroundStyle(self.bui.ink.opacity(0.90))
+                        .lineSpacing(8)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(isHovered ? self.bui.inset.opacity(0.75) : Color.clear)
+                        )
+                    
+                    if isHovered && text.count >= 12 {
+                        self.quoteToAIButton(text: text)
+                            .padding(.top, 4)
+                            .padding(.trailing, 6)
+                    }
                 }
-                .padding(14)
-                .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .padding(.horizontal, -8)
+                .onHover { hovering in
+                    self.hoveredBlockIndex = hovering ? index : (self.hoveredBlockIndex == index ? nil : self.hoveredBlockIndex)
+                }
+                
+            case .quote(let text):
+                ZStack(alignment: .topTrailing) {
+                    HStack(alignment: .top, spacing: 12) {
+                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                            .fill(self.bui.accent)
+                            .frame(width: 3)
+                        
+                        Text(text)
+                            .font(.system(size: 14, weight: .regular))
+                            .foregroundStyle(self.bui.ink2)
+                            .lineSpacing(6.5)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(14)
+                    .background(self.bui.inset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    
+                    if isHovered && text.count >= 12 {
+                        self.quoteToAIButton(text: text)
+                            .padding(.top, 8)
+                            .padding(.trailing, 8)
+                    }
+                }
+                .onHover { hovering in
+                    self.hoveredBlockIndex = hovering ? index : (self.hoveredBlockIndex == index ? nil : self.hoveredBlockIndex)
+                }
                 
             case .code(let code):
-                ScrollView(.horizontal, showsIndicators: true) {
+                ScrollView(.horizontal, showsIndicators: false) {
                     Text(code)
                         .font(.system(size: 12.5, weight: .regular, design: .monospaced))
-                        .foregroundStyle(self.tokens.primaryInk)
+                        .foregroundStyle(self.bui.ink)
                         .textSelection(.enabled)
                         .padding(12)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(self.bui.inset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(self.bui.line, lineWidth: 0.8)
                 )
                 
             case .list(let items):
@@ -1286,13 +1536,13 @@ private struct NewsEditorialArticlePane: View, Equatable {
                     ForEach(Array(items.enumerated()), id: \.offset) { _, line in
                         HStack(alignment: .top, spacing: 10) {
                             Circle()
-                                .fill(self.mutedInk)
+                                .fill(self.bui.ink3)
                                 .frame(width: 4.5, height: 4.5)
                                 .padding(.top, 8)
                             
                             Text(line)
                                 .font(.system(size: self.bodyFontSize, weight: .regular))
-                                .foregroundStyle(self.tokens.primaryInk.opacity(0.90))
+                                .foregroundStyle(self.bui.ink.opacity(0.90))
                                 .lineSpacing(7)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1301,6 +1551,29 @@ private struct NewsEditorialArticlePane: View, Equatable {
                 }
                 .padding(.leading, 4)
         }
+    }
+    
+    
+    private func quoteToAIButton(text: String) -> some View {
+        Button {
+            self.onQuoteToAI(text)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "text.quote")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(AppLanguage.text("问 AI", en: "Ask AI"))
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(self.bui.accentInk)
+            .padding(.horizontal, 8)
+            .frame(height: 22)
+            .background(self.bui.surface, in: Capsule())
+            .overlay(Capsule().strokeBorder(self.bui.lineStrong, lineWidth: 0.8))
+            .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 1)
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .transition(.opacity)
     }
     
     

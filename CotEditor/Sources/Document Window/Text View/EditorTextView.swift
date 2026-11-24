@@ -2160,6 +2160,16 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             menu.addItem(.separator())
             menu.addItem(.sectionHeader(title: AppLanguage.text("Bots · 选区润色", en: "Bots · Selection")))
             
+            menu.addItem(makeItem(
+                title: hasSelection
+                    ? AppLanguage.text("问总管（带入选中内容）", en: "Ask Butler with Selection")
+                    : AppLanguage.text("问总管（结合当前文档）", en: "Ask Butler about Document"),
+                symbol: "sparkles",
+                action: #selector(DocumentViewController.askButlerWithSelection(_:)),
+                target: documentViewController,
+                enabled: true
+            ))
+            
             let primaryBotActions: [(action: AIAction, symbol: String, selector: Selector)] = [
                 (.translate, "character.bubble", #selector(DocumentViewController.translateSelection(_:))),
                 (.summarize, "text.alignleft", #selector(DocumentViewController.summarizeSelection(_:))),

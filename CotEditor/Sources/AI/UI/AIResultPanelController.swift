@@ -46,6 +46,9 @@ final class AIResultPanelController: NSWindowController {
     /// Called with the answer when the user chooses to insert it at the caret.
     var onInsert: ((String) -> Void)?
     
+    /// Called with the answer when the user chooses to hand off the result to the Butler Hub for multi-turn follow-up.
+    var onContinueInButler: ((String) -> Void)?
+    
     
     // MARK: Private Properties
     
@@ -71,6 +74,7 @@ final class AIResultPanelController: NSWindowController {
     private let insertButton = NSButton(title: "", target: nil, action: nil)
     private let copyButton = NSButton(title: "", target: nil, action: nil)
     private let saveReportButton = NSButton(title: "", target: nil, action: nil)
+    private let continueButlerButton = NSButton(title: "", target: nil, action: nil)
     private let cancelButton = NSButton(title: "", target: nil, action: nil)
     
     
@@ -116,6 +120,7 @@ final class AIResultPanelController: NSWindowController {
         guard let window else { return }
         
         self.hasFinished = false
+        self.continueButlerButton.isHidden = (self.onContinueInButler == nil)
         self.subtitleLabel.stringValue = Self.serviceDescription
         self.orbHost.rootView = ThinkingOrbsParticleView(mode: .composing, size: 20, paused: false)
         self.orbHost.isHidden = false
@@ -334,6 +339,11 @@ final class AIResultPanelController: NSWindowController {
                              tooltip: "保存这篇周报到顶部「周报」菜单的历史库中",
                              action: #selector(saveToWeeklyReports(_:)))
         self.saveReportButton.isHidden = (self.action != .weeklyReport)
+        self.configureButton(self.continueButlerButton,
+                             title: AppLanguage.text("转交总管继续聊", en: "Continue in Butler"),
+                             tooltip: AppLanguage.text("带着当前结果进入总管多轮对话继续修改或深挖", en: "Continue discussing and refining this result in Butler"),
+                             action: #selector(continueInButler(_:)))
+        self.continueButlerButton.isHidden = (self.onContinueInButler == nil)
         self.configureButton(self.cancelButton,
                              title: String(localized: "ai.result.cancel",
                                            defaultValue: "Cancel", table: "AI"),
@@ -341,9 +351,9 @@ final class AIResultPanelController: NSWindowController {
                              action: #selector(cancel(_:)), keyEquivalent: "\u{1b}")
         
         // macOS reads a button row from the escape hatch to the commit, and keeps it against
-        // the trailing edge: 取消 · 存入周报库 · 拷贝 · 插入 · 替换选中.
-        let buttons = NSStackView(views: [self.cancelButton, self.saveReportButton, self.copyButton,
-                                          self.insertButton, self.replaceButton])
+        // the trailing edge: 转交总管继续聊 · 取消 · 存入周报库 · 拷贝 · 插入 · 替换选中.
+        let buttons = NSStackView(views: [self.continueButlerButton, self.cancelButton, self.saveReportButton,
+                                          self.copyButton, self.insertButton, self.replaceButton])
         buttons.orientation = .horizontal
         buttons.spacing = 10
         buttons.translatesAutoresizingMaskIntoConstraints = false
@@ -494,6 +504,7 @@ final class AIResultPanelController: NSWindowController {
         self.insertButton.isEnabled = canApply
         self.copyButton.isEnabled = canApply
         self.saveReportButton.isEnabled = canApply
+        self.continueButlerButton.isEnabled = canApply
     }
     
     
@@ -552,6 +563,18 @@ final class AIResultPanelController: NSWindowController {
         CotLocalDatabase.shared.saveGeneratedWeeklyReport(content: trimmed)
         self.saveReportButton.title = "已存入周报库 ✓"
         self.saveReportButton.isEnabled = false
+    }
+    
+    
+    @objc private func continueInButler(_ sender: Any?) {
+        let currentAnswer = self.answer
+        let handler = self.onContinueInButler
+        self.dismiss()
+        if let handler {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                handler(currentAnswer)
+            }
+        }
     }
     
     

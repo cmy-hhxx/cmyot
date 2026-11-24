@@ -23,7 +23,7 @@ import AppKit
 import Defaults
 import SwiftUI
 
-// MARK: - Top Toolbar Capsule Button + Anchored Floating Panel
+// MARK: - Top Toolbar Capsule Button + Resizable Pinnable Floating Panel
 
 @MainActor
 final class ToolbarButlerBotButtonView: NSView {
@@ -37,7 +37,9 @@ final class ToolbarButlerBotButtonView: NSView {
     private let clickButton = NSButton()
     private var panel: ButlerFloatingPanel?
     private var panelHosting: NSHostingController<AnyView>?
+    private var isPinnedPanel: Bool = false
     private var identityObserver: (any NSObjectProtocol)?
+    private var openHubObserver: (any NSObjectProtocol)?
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
     private var keyMonitor: Any?
@@ -86,6 +88,35 @@ final class ToolbarButlerBotButtonView: NSView {
                 self?.invalidateIntrinsicContentSize()
             }
         }
+        self.openHubObserver = NotificationCenter.default.addObserver(
+            forName: CotButlerManager.openHubRequestedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let self, let hostWindow = self.window else { return }
+                let isTargetWindow = hostWindow.isMainWindow
+                    || hostWindow.isKeyWindow
+                    || (NSApp.mainWindow == nil && NSApp.orderedWindows.first(where: { $0.windowController is DocumentWindowController }) === hostWindow)
+                guard isTargetWindow else { return }
+                
+                if self.panel?.isVisible != true {
+                    self.showFloatingPanel()
+                } else {
+                    self.panel?.makeKeyAndOrderFront(nil)
+                }
+                
+                let autoSend = (notification.userInfo?["autoSend"] as? Bool) == true
+                let draft = (notification.userInfo?["draft"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let quote = (notification.userInfo?["quote"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if autoSend, !draft.isEmpty {
+                    _ = CotButlerManager.shared.consumePendingDraftAndQuote()
+                    Task {
+                        await CotButlerManager.shared.sendMessage(draft, quote: quote.isEmpty ? nil : quote)
+                    }
+                }
+            }
+        }
     }
     
     
@@ -98,6 +129,9 @@ final class ToolbarButlerBotButtonView: NSView {
     isolated deinit {
         if let identityObserver {
             NotificationCenter.default.removeObserver(identityObserver)
+        }
+        if let openHubObserver {
+            NotificationCenter.default.removeObserver(openHubObserver)
         }
         self.closeFloatingPanel()
     }
@@ -131,8 +165,22 @@ final class ToolbarButlerBotButtonView: NSView {
         self.closeFloatingPanel()
         _ = CotAgentCoordinator.shared.captureWorkspaceSnapshot()
         
+        let pinnedBinding = Binding<Bool>(
+            get: { [weak self] in self?.isPinnedPanel ?? false },
+            set: { [weak self] newValue in
+                self?.isPinnedPanel = newValue
+                self?.panel?.level = newValue ? .floating : .popUpMenu
+            }
+        )
+        
         let rootView = ButlerCommandHubView(
             hostWindow: hostWindow,
+            isDockedPane: false,
+            isPinnedPanel: pinnedBinding,
+            onDockToPane: { [weak self] in
+                self?.closeFloatingPanel()
+                CotAgentCoordinator.shared.openBoard(.butler, splitRight: true)
+            },
             onDismiss: { [weak self] in
                 self?.closeFloatingPanel()
             }
@@ -143,19 +191,22 @@ final class ToolbarButlerBotButtonView: NSView {
         vfx.material = .popover
         vfx.blendingMode = .behindWindow
         vfx.state = .active
-        vfx.maskImage = UserAvatarToolbarButtonView.makeRoundedMaskImage(cornerRadius: cornerRadius)
         vfx.wantsLayer = true
         vfx.layer?.cornerRadius = cornerRadius
         vfx.layer?.masksToBounds = true
         vfx.layer?.backgroundColor = NSColor.clear.cgColor
         vfx.layer?.borderWidth = 0.5
-        vfx.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
+        vfx.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.22).cgColor
         
-        let panelSize = NSSize(width: 492, height: 560)
+        let screenFrame = (hostWindow.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let panelSize = NSSize(
+            width: min(740, max(540, screenFrame.width * 0.52)),
+            height: min(600, max(480, screenFrame.height * 0.68))
+        )
         let hosting = NSHostingController(
             rootView: AnyView(
                 rootView
-                    .frame(width: panelSize.width, height: panelSize.height)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             )
         )
@@ -175,7 +226,6 @@ final class ToolbarButlerBotButtonView: NSView {
         
         let btnInWindow = self.convert(self.bounds, to: nil)
         let btnScreen = hostWindow.convertToScreen(btnInWindow)
-        let screenFrame = (hostWindow.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let frame = UserAvatarToolbarButtonView.anchoredPanelFrame(
             buttonScreenRect: btnScreen,
             panelSize: panelSize,
@@ -184,13 +234,16 @@ final class ToolbarButlerBotButtonView: NSView {
         
         let panel = ButlerFloatingPanel(
             contentRect: frame,
-            styleMask: [.borderless, .nonactivatingPanel],
+            styleMask: [.borderless, .resizable, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
+        panel.minSize = NSSize(width: 500, height: 420)
+        panel.maxSize = NSSize(width: 1120, height: 860)
         panel.appearance = hostWindow.effectiveAppearance
         panel.isFloatingPanel = true
-        panel.level = .popUpMenu
+        panel.level = self.isPinnedPanel ? .floating : .popUpMenu
+        panel.isMovableByWindowBackground = true
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
@@ -216,6 +269,7 @@ final class ToolbarButlerBotButtonView: NSView {
     private func installMonitors(hostWindow: NSWindow, panel: ButlerFloatingPanel) {
         self.localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self, weak panel] event in
             guard let self, let panel, panel.isVisible else { return event }
+            if self.isPinnedPanel { return event }
             if event.window === panel { return event }
             if event.window === self.window {
                 let locInSelf = self.convert(event.locationInWindow, from: nil)
@@ -227,13 +281,16 @@ final class ToolbarButlerBotButtonView: NSView {
         
         self.globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             Task { @MainActor in
-                self?.closeFloatingPanel()
+                guard let self, !self.isPinnedPanel else { return }
+                self.closeFloatingPanel()
             }
         }
         
         self.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak panel] event in
             guard let self, let panel, panel.isVisible, event.keyCode == 53 else { return event }
-            if let fieldEditor = panel.firstResponder as? NSTextView, fieldEditor.isFieldEditor {
+            if self.isPinnedPanel { return event }
+            // Allow Escape inside WebView menus/popovers; only close if panel is key and user presses Escape
+            if panel.firstResponder is NSTextView {
                 return event
             }
             self.closeFloatingPanel()
@@ -340,24 +397,27 @@ private struct ButlerToolbarCapsuleLabel: View {
 }
 
 
-// MARK: - Unified Bot Chat Hub (Beautiful UI + DissolveThinkingOrbView · Hello Empty State)
+// MARK: - Unified Beautiful UI Butler Command Hub (Powered by Pi 1.6+ RPC Kernel)
 
 struct ButlerCommandHubView: View {
     
     weak var hostWindow: NSWindow?
+    var isDockedPane: Bool = false
+    var initialSeedPrompt: String = ""
+    var isPinnedPanel: Binding<Bool> = .constant(false)
+    var onDockToPane: (() -> Void)? = nil
     let onDismiss: () -> Void
     
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(.documentAppearance) private var documentAppearance
     @State private var butler = CotButlerManager.shared
     @State private var botStore = AIBotStore.shared
-    @State private var imageLoader = AIGijinkaImageLoader.shared
-    
-    @State private var showSessionSidebar = true
-    @State private var hoveredSessionID: String?
-    @State private var renamingSessionID: String?
-    @State private var renameDraft: String = ""
-    @State private var availableModels: [AgentModelOption] = []
+    @State private var piKernel = PiKernelManager.shared
+    @State private var userProfile = UserProfileManager.shared
+    @State private var webController = BeautifulAgentWebController()
+    @State private var availableModels: [BeautifulAgentModelPayload] = []
+    @State private var quotedExcerpt: String? = nil
+    @State private var streamListenerID: UUID? = nil
     
     private var resolvedIsDark: Bool {
         switch self.documentAppearance {
@@ -367,260 +427,387 @@ struct ButlerCommandHubView: View {
         }
     }
     
-    private var buiTokens: BeautifulUITokens {
-        BeautifulUITokens.resolve(isDark: self.resolvedIsDark)
-    }
-    
-    private var activeModelTitle: String {
+    private var activeModelID: String {
         let cfg = self.botStore.config(for: .butler)
         let custom = cfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
         if !custom.isEmpty {
             return custom
         }
-        return self.botStore.openCodeGoSelectableModels().profile?.displayModel ?? AIProvider.openCodeGo.defaultModel
+        return self.botStore.resolvedConfiguration(for: .butler).model
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+            ? (self.botStore.openCodeGoSelectableModels().profile?.displayModel ?? AIProvider.openCodeGo.defaultModel)
+            : self.botStore.resolvedConfiguration(for: .butler).model
     }
     
     
     var body: some View {
-        let tokens = self.buiTokens
-        let portrait = self.botStore.resolvedAvatarImage(for: .butler, pointSize: 80)
-            ?? self.butler.customAvatarImage
-            ?? self.imageLoader.thumbnail(for: self.butler.resolvedArtwork(), maxPixelSize: 80)
-        
-        VStack(spacing: 0) {
-            AgentChatHeaderBar(
-                avatarImage: portrait,
-                name: self.butler.name,
-                nickname: self.butler.nickname,
-                accent: tokens.accent,
-                tokens: tokens,
-                leadingControl: {
-                    Button {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
-                            self.showSessionSidebar.toggle()
-                        }
-                    } label: {
-                        Image(systemName: "sidebar.leading")
-                            .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(self.showSessionSidebar ? tokens.accentInk : tokens.ink2)
-                            .frame(width: 26, height: 26)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                },
-                trailingActions: {
-                    Button {
-                        withAnimation(.easeOut(duration: 0.14)) {
-                            self.butler.startNewSession()
-                        }
-                    } label: {
-                        Text(AppLanguage.text("新对话", en: "New Chat"))
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(tokens.ink2)
-                            .padding(.horizontal, 8)
-                            .frame(height: 24)
-                            .background(tokens.field, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    
-                    Button {
-                        self.onDismiss()
-                        (NSApp.delegate as? AppDelegate)?.openBotSettings(selecting: .butler)
-                    } label: {
-                        Text(AppLanguage.text("设置", en: "Settings"))
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(tokens.ink2)
-                            .padding(.horizontal, 8)
-                            .frame(height: 24)
-                            .background(tokens.field, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
+        BeautifulAgentWebView(
+            state: self.buildHostState(),
+            controller: self.webController,
+            callbacks: self.buildCallbacks()
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            self.reloadModels()
+            self.consumeAnyPendingHandoff()
+            if self.streamListenerID == nil {
+                self.streamListenerID = self.butler.addStreamPatchListener { [weak webController] patch in
+                    webController?.pushStreamPatch(patch)
                 }
-            )
-            
-            Rectangle()
-                .fill(tokens.line)
-                .frame(height: 1)
-            
-            HStack(spacing: 0) {
-                if self.showSessionSidebar {
-                    self.sessionRail(tokens: tokens)
-                        .frame(width: 152)
-                        .transition(.move(edge: .leading).combined(with: .opacity))
-                    
-                    Rectangle()
-                        .fill(tokens.line)
-                        .frame(width: 1)
-                }
-                
-                AgentChatTranscriptSurface(
-                    messages: self.mappedMessages,
-                    isStreaming: self.butler.isStreaming,
-                    streamingDraft: self.butler.streamingDraft,
-                    errorMessage: nil,
-                    placeholder: "@\(self.butler.nickname)",
-                    availableModels: self.availableModels,
-                    selectedModelTitle: self.activeModelTitle,
-                    orbColor: tokens.ink,
-                    tokens: tokens,
-                    onSelectModel: { option in
-                        var cfg = self.botStore.config(for: .butler)
-                        cfg.endpointID = option.endpointID
-                        cfg.modelOverride = option.modelID
-                        self.botStore.updateConfig(cfg, for: .butler)
-                    },
-                    onOpenSettings: {
-                        self.onDismiss()
-                        (NSApp.delegate as? AppDelegate)?.showAIPreferences(nil)
-                    },
-                    onSend: { prompt in
-                        Task {
-                            await self.butler.sendMessage(prompt)
-                        }
-                    }
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            self.webController.focusComposer()
+        }
+        .onDisappear {
+            if let id = self.streamListenerID {
+                self.butler.removeStreamPatchListener(id)
+                self.streamListenerID = nil
             }
         }
-        .background(tokens.page)
+        .onChange(of: self.butler.pendingDraftText) { _, _ in
+            self.consumeAnyPendingHandoff()
+        }
+        .onChange(of: self.butler.pendingQuoteExcerpt) { _, _ in
+            self.consumeAnyPendingHandoff()
+        }
         .task {
             self.reloadModels()
             if let fetched = try? await self.botStore.refreshOpenCodeGoModels() {
-                let profileID = self.botStore.openCodeGoSelectableModels().profile?.id
-                self.availableModels = fetched.map { AgentModelOption(endpointID: profileID, modelID: $0) }
+                let profileID = self.botStore.openCodeGoSelectableModels().profile?.id.uuidString
+                self.availableModels = Self.mapModels(fetched, endpointID: profileID)
             }
         }
     }
     
     
-    private var mappedMessages: [AgentChatMessageItem] {
-        self.butler.messages.map { msg in
-            let receipts = CotButlerManager.decodeReceipts(from: msg.actionsJSON)
-            let chips = receipts.map { AgentToolChipItem(id: $0.id, label: $0.summary) }
-            return AgentChatMessageItem(
+    private func consumeAnyPendingHandoff() {
+        let pair = self.butler.consumePendingDraftAndQuote()
+        let seed = self.initialSeedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let draft = pair.draft?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let quote = pair.quote?.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if let quote, !quote.isEmpty {
+            self.quotedExcerpt = quote
+        }
+        if let draft, !draft.isEmpty {
+            self.webController.injectDraft(draft, quote: self.quotedExcerpt)
+            self.webController.focusComposer()
+        } else if let quote, !quote.isEmpty {
+            self.webController.injectDraft("", quote: quote)
+            self.webController.focusComposer()
+        } else if !seed.isEmpty, self.butler.messages.isEmpty {
+            self.webController.injectDraft(seed, quote: nil)
+        }
+    }
+    
+    
+    private func buildHostState() -> BeautifulAgentHostStatePayload {
+        let isZh = AppLanguage.current == .simplifiedChinese
+        let avatarDataURL = self.butler.resolvedAvatarDataURL(pointSize: 72)
+        
+        var payloadMessages: [BeautifulAgentMessagePayload] = self.butler.messages.map { msg in
+            let meta = CotButlerManager.decodeMetadata(from: msg.actionsJSON)
+            var chips: [BeautifulAgentToolReceipt] = meta.receipts.map {
+                BeautifulAgentToolReceipt(id: $0.id, label: $0.summary, detail: nil, status: "done")
+            }
+            for chipLabel in meta.toolChips where !chips.contains(where: { $0.label == chipLabel }) {
+                chips.append(BeautifulAgentToolReceipt(id: "tool-\(msg.id)-\(chipLabel)", label: chipLabel, detail: nil, status: "done"))
+            }
+            return BeautifulAgentMessagePayload(
                 id: msg.id,
-                isUser: (msg.role == "user"),
+                role: msg.role == "user" ? "user" : "assistant",
                 text: msg.content,
-                toolChips: chips
+                thinking: meta.thinking,
+                thinkingDurationMs: meta.thinkingDurationMs,
+                steps: meta.steps.isEmpty ? nil : meta.steps,
+                toolChips: chips.isEmpty ? nil : chips,
+                followUps: meta.followUps.isEmpty ? nil : meta.followUps,
+                isStreaming: false,
+                isError: meta.errorMessage != nil,
+                quoteContext: meta.quoteContext,
+                createdAt: msg.createdAt.timeIntervalSince1970 * 1000
             )
         }
+        
+        if self.butler.isStreaming, let streamID = self.butler.streamingMessageID {
+            let elapsedMs = self.butler.streamingStartedAt.map { max(0, Int(Date().timeIntervalSince($0) * 1000)) } ?? 0
+            payloadMessages.append(BeautifulAgentMessagePayload(
+                id: streamID,
+                role: "assistant",
+                text: self.butler.streamingDraft,
+                thinking: self.butler.streamingThinking.isEmpty ? nil : self.butler.streamingThinking,
+                thinkingDurationMs: elapsedMs,
+                steps: self.butler.streamingSteps.isEmpty ? nil : self.butler.streamingSteps,
+                toolChips: nil,
+                followUps: nil,
+                isStreaming: true,
+                isError: false,
+                quoteContext: nil,
+                createdAt: Date().timeIntervalSince1970 * 1000
+            ))
+        }
+        
+        let sessions = self.butler.sessions.map {
+            BeautifulAgentSessionPayload(
+                id: $0.id,
+                title: $0.title,
+                isPinned: $0.isPinned,
+                messageCount: $0.messageCount,
+                updatedAt: $0.updatedAt.timeIntervalSince1970 * 1000
+            )
+        }
+        
+        let snap = CotAgentCoordinator.shared.lastWorkspaceSnapshot
+        var contextSources: [BeautifulAgentContextSourcePayload] = [
+            .init(
+                key: "doc",
+                name: AppLanguage.text("当前文档", en: "Active Doc"),
+                desc: snap?.activeDocumentTitle ?? AppLanguage.text("带入正在编辑的文件正文", en: "Attach active document"),
+                glyph: "doc",
+                insertText: "@当前文档 "
+            ),
+            .init(
+                key: "selection",
+                name: AppLanguage.text("当前选区", en: "Selection"),
+                desc: AppLanguage.text("带入编辑器中选中的片段", en: "Attach selected text"),
+                glyph: "quote",
+                insertText: "@选区 "
+            ),
+            .init(
+                key: "watchlist",
+                name: AppLanguage.text("自选行情", en: "Watchlist"),
+                desc: AppLanguage.text("结合自选股池查行情与分析", en: "Include watchlist stocks"),
+                glyph: "market",
+                insertText: "@自选股 "
+            ),
+            .init(
+                key: "news",
+                name: AppLanguage.text("本地资讯", en: "NEWS"),
+                desc: AppLanguage.text("关联最新缓存的科技与金融热点", en: "Include cached news"),
+                glyph: "news",
+                insertText: "@资讯 "
+            ),
+        ]
+        if let activeTitle = snap?.activeDocumentTitle, !activeTitle.isEmpty {
+            contextSources[0].desc = activeTitle
+        }
+        
+        let slashCommands: [BeautifulAgentSlashCommandPayload] = [
+            .init(key: "market", name: "/market", desc: AppLanguage.text("查实时股价并分析走势", en: "Lookup live stock quote"), insertText: "/market "),
+            .init(key: "news", name: "/news", desc: AppLanguage.text("汇总今天最值得关注的 AI/科技热点", en: "Summarize today's news"), insertText: "/news "),
+            .init(key: "note", name: "/note", desc: AppLanguage.text("把要点整理成一篇新 Markdown 笔记", en: "Create Markdown note"), insertText: "/note "),
+            .init(key: "memory", name: "/memory", desc: AppLanguage.text("记住我的长期偏好或习惯", en: "Save to long-term memory"), insertText: "/memory "),
+            .init(key: "new", name: "/new", desc: AppLanguage.text("开启一段全新对话", en: "Start a fresh chat"), insertText: "/new"),
+        ]
+        
+        let suggestions: [BeautifulAgentSuggestionPayload] = [
+            .init(
+                id: "s-stock",
+                label: AppLanguage.text("查一只股票实时行情", en: "Check live stock quote"),
+                prompt: AppLanguage.text("帮我查一下三安光电和英伟达今天的实时行情和近期走势", en: "Look up live quotes and recent trends for NVDA"),
+                icon: "market"
+            ),
+            .init(
+                id: "s-news",
+                label: AppLanguage.text("今天有哪些重磅 AI 资讯", en: "Today's top AI news"),
+                prompt: AppLanguage.text("帮我看看今天有哪些最值得关注的 AI 与科技热点，用要点总结", en: "Summarize today's top AI and tech headlines"),
+                icon: "news"
+            ),
+            .init(
+                id: "s-doc",
+                label: AppLanguage.text("梳理当前正在写的文档", en: "Review active document"),
+                prompt: AppLanguage.text("读取我当前正在编辑的文档，提炼核心要点并给出结构优化建议", en: "Review my active document and suggest improvements"),
+                icon: "doc"
+            ),
+            .init(
+                id: "s-memory",
+                label: AppLanguage.text("查看我的记忆与自选清单", en: "Check memory & watchlist"),
+                prompt: AppLanguage.text("帮我回顾一下你记住的我的偏好和当前的自选股清单", en: "Review my saved preferences and watchlist"),
+                icon: "spark"
+            ),
+        ]
+        
+        let userDisplayName = self.userProfile.activeProfile.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let greetingName = userDisplayName.isEmpty ? self.butler.name : userDisplayName
+        
+        return BeautifulAgentHostStatePayload(
+            mode: "butler",
+            isDark: self.resolvedIsDark,
+            locale: isZh ? "zh" : "en",
+            botName: self.butler.name,
+            botNickname: self.butler.nickname,
+            botAvatarDataURL: avatarDataURL,
+            piAvailable: self.piKernel.canRunRPC,
+            piStatusLabel: self.piKernel.statusSummary,
+            isPinnedPanel: self.isPinnedPanel.wrappedValue,
+            isDockedPane: self.isDockedPane,
+            showSidebar: true,
+            sessions: sessions,
+            activeSessionID: self.butler.activeSessionID,
+            messages: payloadMessages,
+            isStreaming: self.butler.isStreaming,
+            streamingStatusLabel: self.butler.streamingStatusLabel.isEmpty ? nil : self.butler.streamingStatusLabel,
+            errorMessage: self.butler.lastErrorMessage,
+            placeholder: AppLanguage.text("向 @\(self.butler.nickname) 提问，支持 @引用、/命令、查行情与操作编辑器…", en: "Ask @\(self.butler.nickname)..."),
+            greetingName: greetingName,
+            greetingSubtitle: self.piKernel.canRunRPC
+                ? AppLanguage.text("已连接 Pi 内核，可直接查实时行情、搜资讯、读本地笔记并控制编辑器", en: "Connected to Pi kernel for live quotes, search, notes & editor control")
+                : AppLanguage.text("随时帮你查行情、理文档、记偏好或切换看板", en: "Ask about live quotes, documents, preferences, or boards"),
+            articleTitle: nil,
+            articleSource: nil,
+            quotedExcerpt: self.quotedExcerpt,
+            availableModels: self.availableModels,
+            selectedModelID: self.activeModelID,
+            selectedModelTitle: self.activeModelID,
+            effort: nil,
+            suggestions: suggestions,
+            contextSources: contextSources,
+            slashCommands: slashCommands
+        )
+    }
+    
+    
+    private func buildCallbacks() -> BeautifulAgentWebActionCallbacks {
+        var cb = BeautifulAgentWebActionCallbacks()
+        cb.onSend = { prompt, quote in
+            let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed == "/new" {
+                self.butler.startNewSession()
+                return
+            }
+            let effectiveQuote = quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? self.quotedExcerpt
+                : quote
+            self.quotedExcerpt = nil
+            
+            var contextSources: [String] = []
+            if trimmed.contains("@当前文档") || trimmed.contains("@Active Doc") { contextSources.append("doc") }
+            if trimmed.contains("@选区") || trimmed.contains("@Selection") { contextSources.append("selection") }
+            if trimmed.contains("@自选股") || trimmed.contains("@Watchlist") { contextSources.append("watchlist") }
+            if trimmed.contains("@资讯") || trimmed.contains("@NEWS") { contextSources.append("news") }
+            
+            var resolvedPrompt = trimmed
+            if resolvedPrompt.hasPrefix("/market ") {
+                let target = String(resolvedPrompt.dropFirst("/market ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                resolvedPrompt = "帮我查询 \(target) 的实时行情、涨跌幅和近期K线走势，并给出简明分析。"
+            } else if resolvedPrompt.hasPrefix("/news ") {
+                let topic = String(resolvedPrompt.dropFirst("/news ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                resolvedPrompt = "帮我检索并总结关于「\(topic)」的最新资讯热点。"
+            } else if resolvedPrompt.hasPrefix("/note ") {
+                let topic = String(resolvedPrompt.dropFirst("/note ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                resolvedPrompt = "请帮我把「\(topic)」整理成结构清晰的 Markdown 笔记，并用 open_document 在编辑器新建文档。"
+            } else if resolvedPrompt.hasPrefix("/memory ") {
+                let mem = String(resolvedPrompt.dropFirst("/memory ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                resolvedPrompt = "请帮我记住这件事并存入我的长期记忆：\(mem)"
+            }
+            
+            Task {
+                await self.butler.sendMessage(resolvedPrompt, quote: effectiveQuote, contextSources: contextSources)
+            }
+        }
+        cb.onAbort = {
+            self.butler.abortStreaming()
+        }
+        cb.onRetry = {
+            self.butler.retryLastMessage()
+        }
+        cb.onClearChat = {
+            self.butler.clearCurrentSession()
+        }
+        cb.onClearQuote = {
+            self.quotedExcerpt = nil
+        }
+        cb.onSelectModel = { model in
+            var cfg = self.botStore.config(for: .butler)
+            if let epStr = model.endpointID, let uuid = UUID(uuidString: epStr) {
+                cfg.endpointID = uuid
+            }
+            cfg.modelOverride = model.modelID
+            self.botStore.updateConfig(cfg, for: .butler)
+            _ = try? PiKernelManager.shared.syncWorkspace()
+        }
+        cb.onNewSession = {
+            self.butler.startNewSession()
+        }
+        cb.onSelectSession = { id in
+            self.butler.selectSession(id)
+        }
+        cb.onDeleteSession = { id in
+            self.butler.deleteSession(id)
+        }
+        cb.onRenameSession = { id, title in
+            self.butler.renameSession(id, to: title)
+        }
+        cb.onTogglePinSession = { id in
+            self.butler.togglePinSession(id)
+        }
+        cb.onInsertToEditor = { text in
+            CotAgentCoordinator.shared.insertTextIntoActiveEditor(text)
+        }
+        cb.onOpenNewDocument = { text in
+            let firstLine = text.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "#* >\t ")) }
+                .first { !$0.isEmpty } ?? AppLanguage.text("总管笔记", en: "Butler Note")
+            CotAgentCoordinator.shared.openNewMarkdownDocument(
+                title: String(firstLine.prefix(24)),
+                content: text,
+                splitRight: true
+            )
+        }
+        cb.onOpenSettings = { target in
+            if !self.isDockedPane {
+                self.onDismiss()
+            }
+            if target == "ai" {
+                (NSApp.delegate as? AppDelegate)?.showAIPreferences(nil)
+            } else {
+                (NSApp.delegate as? AppDelegate)?.openBotSettings(selecting: .butler)
+            }
+        }
+        cb.onTogglePinPanel = {
+            self.isPinnedPanel.wrappedValue.toggle()
+        }
+        cb.onDockToPane = {
+            self.onDockToPane?()
+        }
+        return cb
     }
     
     
     private func reloadModels() {
         let info = self.botStore.openCodeGoSelectableModels()
-        let endpointID = info.profile?.id
-        self.availableModels = info.models.map { AgentModelOption(endpointID: endpointID, modelID: $0) }
-    }
-    
-    
-    // MARK: - Left Persisted Sessions Rail
-    
-    private func sessionRail(tokens: BeautifulUITokens) -> some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: 3) {
-                ForEach(self.butler.sessions) { session in
-                    self.sessionRow(session, tokens: tokens)
-                }
-            }
-            .padding(8)
-        }
-        .background(tokens.inset)
-    }
-    
-    
-    @ViewBuilder
-    private func sessionRow(_ session: ButlerSessionRecord, tokens: BeautifulUITokens) -> some View {
-        let isActive = (session.id == self.butler.activeSessionID)
-        let isHovered = (self.hoveredSessionID == session.id)
-        let isRenaming = (self.renamingSessionID == session.id)
+        let endpointID = info.profile?.id.uuidString
+        var list = Self.mapModels(info.models, endpointID: endpointID)
         
-        HStack(spacing: 5) {
-            if session.isPinned {
-                Circle()
-                    .fill(tokens.accent)
-                    .frame(width: 5, height: 5)
-            }
-            
-            if isRenaming {
-                TextField("", text: self.$renameDraft)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(tokens.ink)
-                    .onSubmit {
-                        self.commitSessionRename(session.id)
-                    }
-            } else {
-                Text(session.title)
-                    .font(.system(size: 12, weight: isActive ? .semibold : .regular))
-                    .foregroundStyle(isActive ? tokens.ink : tokens.ink2)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            
-            if isHovered && !isRenaming {
-                Button {
-                    withAnimation(.easeOut(duration: 0.14)) {
-                        self.butler.deleteSession(session.id)
-                    }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(tokens.ink3)
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
+        // Also surface active profile's configured models if user uses a non-OpenCodeGo gateway
+        if list.isEmpty, let activeProfile = self.botStore.resolvedEndpointProfile(for: .butler) {
+            list = Self.mapModels(activeProfile.availableModelIDs, endpointID: activeProfile.id.uuidString)
         }
-        .padding(.horizontal, 9)
-        .frame(height: 30)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isActive ? tokens.surface : (isHovered ? tokens.hover : Color.clear))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(isActive ? tokens.lineStrong : Color.clear, lineWidth: 0.7)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .onHover { hovering in
-            self.hoveredSessionID = hovering ? session.id : (self.hoveredSessionID == session.id ? nil : self.hoveredSessionID)
-        }
-        .onTapGesture(count: 2) {
-            self.renameDraft = session.title
-            self.renamingSessionID = session.id
-        }
-        .onTapGesture {
-            self.butler.selectSession(session.id)
-        }
-        .contextMenu {
-            Button(session.isPinned
-                   ? AppLanguage.text("取消置顶", en: "Unpin")
-                   : AppLanguage.text("置顶会话", en: "Pin"))
-            {
-                self.butler.togglePinSession(session.id)
-            }
-            Button(AppLanguage.text("重命名", en: "Rename")) {
-                self.renameDraft = session.title
-                self.renamingSessionID = session.id
-            }
-            Divider()
-            Button(AppLanguage.text("删除会话", en: "Delete"), role: .destructive) {
-                self.butler.deleteSession(session.id)
-            }
-        }
+        self.availableModels = list
     }
     
     
-    private func commitSessionRename(_ sessionID: String) {
-        let trimmed = self.renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            self.butler.renameSession(sessionID, to: trimmed)
+    private static func mapModels(_ ids: [String], endpointID: String?) -> [BeautifulAgentModelPayload] {
+        ids.map { mid in
+            let lower = mid.lowercased()
+            let isFlagship = lower.contains("opus") || lower.contains("gpt-5") || lower.contains("glm-5") || lower.contains("deepseek-v4") || lower.contains("gemini-2.5-pro")
+            let tag: String? = if lower.contains("flash") || lower.contains("haiku") || lower.contains("mini") {
+                AppLanguage.text("快推", en: "Fast")
+            } else if lower.contains("opus") || lower.contains("pro") || lower.contains("reasoner") {
+                AppLanguage.text("深度", en: "Deep")
+            } else if lower.contains("glm-5") || lower.contains("sonnet") || lower.contains("gpt-5") {
+                AppLanguage.text("主力", en: "Flagship")
+            } else {
+                nil
+            }
+            return BeautifulAgentModelPayload(
+                id: "\(endpointID ?? "default"):\(mid)",
+                modelID: mid,
+                title: mid,
+                endpointID: endpointID,
+                tag: tag,
+                isFlagship: isFlagship
+            )
         }
-        self.renamingSessionID = nil
     }
 }

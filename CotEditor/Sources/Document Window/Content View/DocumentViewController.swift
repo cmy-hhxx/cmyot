@@ -1140,6 +1140,24 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     
     // MARK: AI Actions
     
+    /// Opens the Chief Butler Hub with the current selection (or active document excerpt) attached as context.
+    @IBAction func askButlerWithSelection(_ sender: Any?) {
+        _ = CotAgentCoordinator.shared.captureWorkspaceSnapshot()
+        let selection = self.focusedTextView?.selectedString.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !selection.isEmpty {
+            CotButlerManager.shared.requestOpenHub(
+                draft: "",
+                quote: String(selection.prefix(1500))
+            )
+        } else {
+            CotButlerManager.shared.requestOpenHub(
+                draft: "@当前文档 ",
+                quote: nil
+            )
+        }
+    }
+    
+    
     /// Translates the selected text.
     ///
     /// - Parameter sender: The action sender.
@@ -1401,6 +1419,19 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         let panel = AIResultPanelController(action: action)
         panel.onReplace = { [weak self] result in self?.applyAIResult(result, replacingSelection: true) }
         panel.onInsert = { [weak self] result in self?.applyAIResult(result, replacingSelection: false) }
+        panel.onContinueInButler = { result in
+            let quoteBody = """
+            【原文片段】
+            \(String(text.prefix(800)))
+
+            【\(action.title)结果】
+            \(String(result.prefix(1200)))
+            """
+            CotButlerManager.shared.requestOpenHub(
+                draft: AppLanguage.text("基于上面的结果，继续帮我调整：", en: "Based on the result above, help me refine:"),
+                quote: quoteBody
+            )
+        }
         self.aiResultPanel = panel
         
         panel.present(on: window)

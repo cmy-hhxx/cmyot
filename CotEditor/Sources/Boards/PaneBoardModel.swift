@@ -27,6 +27,7 @@ nonisolated enum PaneBoardKind: String, CaseIterable, Codable, Identifiable, Sen
     case market
     case podcast
     case news
+    case butler
     
     var id: String { self.rawValue }
     
@@ -35,6 +36,7 @@ nonisolated enum PaneBoardKind: String, CaseIterable, Codable, Identifiable, Sen
             case .market: AppLanguage.text("股票看盘", en: "Markets")
             case .podcast: AppLanguage.text("播客", en: "Podcasts")
             case .news: "NEWS"
+            case .butler: AppLanguage.text("总管对话", en: "Butler")
         }
     }
     
@@ -43,6 +45,7 @@ nonisolated enum PaneBoardKind: String, CaseIterable, Codable, Identifiable, Sen
             case .market: "chart.xyaxis.line"
             case .podcast: "waveform"
             case .news: "newspaper"
+            case .butler: "sparkles"
         }
     }
 }
@@ -187,6 +190,14 @@ enum PaneBoardIntentAnalyzer {
                     dynamicTitle: category == .all ? nil : category.label,
                     isAnalyzingIntent: AIService.shared.isConfigured && trimmed.count > 16
                 )
+                
+            case .butler:
+                return PaneBoardState(
+                    kind: .butler,
+                    query: String(trimmed.prefix(240)),
+                    dynamicTitle: AppLanguage.text("总管对话", en: "Butler"),
+                    isAnalyzingIntent: false
+                )
         }
     }
     
@@ -214,7 +225,10 @@ enum PaneBoardIntentAnalyzer {
                 """
                 {"category":"all|finance|xSocial|ai","searchQuery":"精简筛选词（可空）","kycTitle":"信息兴趣标签（<=14字）","kycDetail":"一句话背景"}
                 """
+            case .butler:
+                ""
         }
+        if kind == .butler { return nil }
         
         let systemPrompt = """
         你是 CotEditor 的轻量意图路由内核。根据用户当前窗格里的内容和已有记忆画像，把文档转换成最贴合目标看板的查询参数。
@@ -311,6 +325,9 @@ enum PaneBoardIntentAnalyzer {
                     kycTitle: kycTitle,
                     kycDetail: kycDetail
                 )
+                
+            case .butler:
+                return nil
         }
     }
     
