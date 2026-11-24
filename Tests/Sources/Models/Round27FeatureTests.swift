@@ -181,4 +181,42 @@ struct Round27FeatureTests {
         #expect(!snapshot.sunburstIndex.isEmpty)
         #expect(snapshot.sunburstIndex["root"] != nil)
     }
+
+
+    @Test func dashboardUsageBreakdownIncludesCutoffAndExcludesOlderEvents() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "CotDashboardUsage-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let analytics = AnalyticsManager(database: CotLocalDatabase(customURL: directory.appending(path: "test.sqlite3")))
+        let now = Date()
+        let cutoff = try #require(Calendar.current.date(byAdding: .day, value: -30, to: now))
+        analytics.recordAIUsage(feature: "translate", model: "archived", provider: "Test", inputTokens: 100, outputTokens: 80, at: cutoff.addingTimeInterval(-1))
+        analytics.recordAIUsage(feature: "summarize", model: "current", provider: "Test", inputTokens: 30, outputTokens: 20, at: cutoff)
+
+        let breakdown = analytics.aiUsageBreakdown(days: 30, referenceDate: now)
+        #expect(breakdown.events.map(\.model) == ["current"])
+        #expect(breakdown.totals == AIUsageTotals(requests: 1, inputTokens: 30, outputTokens: 20))
+        #expect(breakdown.models.map(\.model) == ["current"])
+        #expect(breakdown.features.map(\.feature) == ["summarize"])
+    }
+
+
+    @Test func writingStreakMatchesHeatmapAcrossTodayAndYesterday() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "CotWritingStreak-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = CotLocalDatabase(customURL: directory.appending(path: "test.sqlite3"))
+        database.saveWeeklyReport(periodLabel: "20261116-1120", yearMonth: "202611", title: "History", content: "")
+        let analytics = AnalyticsManager(database: database)
+        let today = Date()
+        let tomorrow = try #require(Calendar.current.date(byAdding: .day, value: 1, to: today))
+        let followingDay = try #require(Calendar.current.date(byAdding: .day, value: 2, to: today))
+
+        for (reference, expected) in [(today, 1), (tomorrow, 1), (followingDay, 0)] {
+            let cells = analytics.heatmapCells(weeks: 53, referenceDate: reference).reversed().filter { !$0.isFuture }
+            let active = cells.first?.level == 0 ? cells.dropFirst() : cells[...]
+            #expect(active.prefix { $0.level > 0 }.count == expected)
+            #expect(analytics.writingStreak(referenceDate: reference) == expected)
+        }
+    }
 }

@@ -188,11 +188,18 @@ nonisolated enum StarMapLayoutEngine {
     }
     
     struct LayoutResult: Equatable {
+        struct LeafColumnKey: Hashable {
+            let clusterID: String
+            let quantizedX: Int
+        }
+
         let hubPoint: CGPoint
         let usesTimelineSpine: Bool
         let clusters: [PositionedCluster]
         let leaves: [PositionedLeaf]
         let bounds: CGRect
+        let leafPositionsByID: [String: PositionedLeaf]
+        let leafColumns: [LeafColumnKey: [PositionedLeaf]]
         
         init(
             hubPoint: CGPoint = .zero,
@@ -206,6 +213,10 @@ nonisolated enum StarMapLayoutEngine {
             self.clusters = clusters
             self.leaves = leaves
             self.bounds = bounds
+            self.leafPositionsByID = Dictionary(leaves.lazy.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            self.leafColumns = Dictionary(grouping: leaves) { leaf in
+                LeafColumnKey(clusterID: leaf.clusterID, quantizedX: Int(leaf.worldPoint.x.rounded()))
+            }
         }
     }
     
@@ -452,6 +463,18 @@ nonisolated struct StarMapSearchHit: Identifiable, Equatable, Sendable {
 
 
 nonisolated enum StarMapSearchEngine {
+
+    struct SearchDocument: Sendable {
+        let title: String
+        let category: String
+        let metadata: String
+        let content: String
+
+        func evaluate(terms: [String]) -> MatchEvaluation {
+            StarMapSearchEngine.evaluate(queryTerms: terms, title: self.title, category: self.category,
+                                         secondaryMeta: self.metadata, content: self.content)
+        }
+    }
     
     struct MatchEvaluation: Sendable, Equatable {
         let isMatch: Bool
@@ -459,6 +482,17 @@ nonisolated enum StarMapSearchEngine {
         let totalHits: Int
         let snippet: String?
         let matchedTerms: [String]
+    }
+
+
+    @concurrent static func evaluateCorpus(_ documents: [SearchDocument], terms: [String]) async -> [MatchEvaluation]? {
+        var evaluations: [MatchEvaluation] = []
+        evaluations.reserveCapacity(documents.count)
+        for document in documents {
+            guard !Task.isCancelled else { return nil }
+            evaluations.append(document.evaluate(terms: terms))
+        }
+        return evaluations
     }
     
     
@@ -531,11 +565,7 @@ nonisolated enum StarMapSearchEngine {
             }
         }
         
-        let snippet = Self.extractSnippet(
-            in: content,
-            anchorRange: firstContentRange,
-            terms: queryTerms
-        )
+        let snippet = firstContentRange.flatMap { Self.extractSnippet(in: content, anchorRange: $0) }
         return MatchEvaluation(
             isMatch: true,
             score: score,
@@ -590,17 +620,10 @@ nonisolated enum StarMapSearchEngine {
     
     private static func extractSnippet(
         in content: String,
-        anchorRange: Range<String.Index>?,
-        terms: [String]
+        anchorRange: Range<String.Index>
     ) -> String? {
-        guard !content.isEmpty else { return nil }
-        let targetRange = anchorRange ?? terms.lazy.compactMap { term in
-            content.range(of: term, options: [.caseInsensitive, .diacriticInsensitive])
-        }.first
-        guard let targetRange else { return nil }
-        
-        let lowerBound = content.index(targetRange.lowerBound, offsetBy: -26, limitedBy: content.startIndex) ?? content.startIndex
-        let upperBound = content.index(targetRange.upperBound, offsetBy: 48, limitedBy: content.endIndex) ?? content.endIndex
+        let lowerBound = content.index(anchorRange.lowerBound, offsetBy: -26, limitedBy: content.startIndex) ?? content.startIndex
+        let upperBound = content.index(anchorRange.upperBound, offsetBy: 48, limitedBy: content.endIndex) ?? content.endIndex
         let rawSlice = String(content[lowerBound..<upperBound])
         let collapsed = rawSlice
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
@@ -631,7 +654,7 @@ nonisolated struct StarMapRelationEdge: Identifiable, Equatable, Sendable {
 
 nonisolated enum StarMapRelationEngine {
     
-    struct CorpusDocument: Sendable {
+    struct CorpusDocument: Equatable, Sendable {
         let id: String
         let title: String
         let group: String
@@ -639,6 +662,8 @@ nonisolated enum StarMapRelationEngine {
         let content: String
         let sortTimestamp: TimeInterval
     }
+
+    static let corpusLimit = 64
     
     private static let asciiStopWords: Set<String> = [
         "the", "and", "for", "with", "this", "that", "from", "have", "has", "was", "were",
@@ -775,7 +800,7 @@ nonisolated enum StarMapRelationEngine {
         maxEdgesPerNode: Int = 3
     ) -> [StarMapRelationEdge] {
         guard docs.count >= 2 else { return [] }
-        let cappedDocs = Array(docs.prefix(64))
+        let cappedDocs = Array(docs.prefix(Self.corpusLimit))
         
         var lowerTermsByDoc: [String: [String: String]] = [:] // lowercased -> display casing
         var docFreq: [String: Int] = [:]
@@ -806,14 +831,14 @@ nonisolated enum StarMapRelationEngine {
         }
         
         let maxAllowedDF = max(2, Int(ceil(Double(cappedDocs.count) * 0.6)))
+        let discriminativeTerms = docFreq.compactMap { (2...maxAllowedDF).contains($0.value) ? $0.key : nil }
         let discriminativeByIndex: [Set<String>] = cappedDocs.map { doc in
             let map = lowerTermsByDoc[doc.id] ?? [:]
-            return Set(map.keys).intersection(
-                docFreq.compactMap { ($0.value >= 2 && $0.value <= maxAllowedDF) ? $0.key : nil }
-            )
+            return Set(map.keys).intersection(discriminativeTerms)
         }
         
         var candidates: [StarMapRelationEdge] = []
+        let minimumSharedTerms = cappedDocs.count > 8 ? 2 : 1
         
         for i in 0..<(cappedDocs.count - 1) {
             let a = cappedDocs[i]
@@ -846,23 +871,20 @@ nonisolated enum StarMapRelationEngine {
                 let bDiscriminative = discriminativeByIndex[j]
                 let sharedLowers = aDiscriminative.intersection(bDiscriminative)
                 
-                if !sharedLowers.isEmpty {
-                    let rankedShared = sharedLowers.sorted { lhs, rhs in
-                        let dfL = docFreq[lhs] ?? 99
-                        let dfR = docFreq[rhs] ?? 99
-                        if dfL != dfR { return dfL < dfR }
-                        return lhs.count > rhs.count
-                    }
-                    let requiresTwo = cappedDocs.count > 8
-                    if rankedShared.count >= (requiresTwo ? 2 : 1) {
-                        let topicStrength = min(0.92, 0.34 + Double(rankedShared.count) * 0.14)
-                        if topicStrength > bestStrength {
-                            let labels = rankedShared.prefix(2).compactMap { key in
-                                aLowerMap[key] ?? bLowerMap[key]
-                            }
-                            bestStrength = topicStrength
-                            bestReason = "共现：" + labels.joined(separator: " · ")
+                if sharedLowers.count >= minimumSharedTerms {
+                    let topicStrength = min(0.92, 0.34 + Double(sharedLowers.count) * 0.14)
+                    if topicStrength > bestStrength {
+                        let rankedShared = sharedLowers.sorted { lhs, rhs in
+                            let dfL = docFreq[lhs] ?? 99
+                            let dfR = docFreq[rhs] ?? 99
+                            if dfL != dfR { return dfL < dfR }
+                            return lhs.count > rhs.count
                         }
+                        let labels = rankedShared.prefix(2).compactMap { key in
+                            aLowerMap[key] ?? bLowerMap[key]
+                        }
+                        bestStrength = topicStrength
+                        bestReason = "共现：" + labels.joined(separator: " · ")
                     }
                 }
                 
@@ -1184,6 +1206,11 @@ nonisolated enum DocumentCenterAgentOrganizer {
         var previewText: String {
             DocumentCenterState.buildPreviewText(from: self.content)
         }
+
+        fileprivate var searchDocument: StarMapSearchEngine.SearchDocument {
+            StarMapSearchEngine.SearchDocument(title: self.title, category: self.groupName,
+                                               metadata: self.filePath ?? "", content: self.content)
+        }
         
         static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.id == rhs.id
@@ -1252,9 +1279,12 @@ nonisolated enum DocumentCenterAgentOrganizer {
         }
     }
     
-    var searchText: String = "" {
-        didSet {
-            if oldValue != self.searchText {
+    private var appliedSearchText = ""
+    var searchText: String {
+        get { self.appliedSearchText }
+        set {
+            if newValue != self.appliedSearchText {
+                self.appliedSearchText = newValue
                 self.recomputeDisplayedItems()
             }
         }
@@ -1267,8 +1297,9 @@ nonisolated enum DocumentCenterAgentOrganizer {
     var lastOrganizeCreatedGroups: [String] = []
     
     private var liveDocsByID: [String: Document] = [:]
-    @ObservationIgnored private var cachedRelationsCorpusKey: String = ""
+    @ObservationIgnored private var cachedRelationsCorpus: [StarMapRelationEngine.CorpusDocument] = []
     @ObservationIgnored private var initializedClusterIDs: Set<String> = []
+    @ObservationIgnored private var displayRevision = 0
     
     private static let shortDateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -1487,24 +1518,19 @@ nonisolated enum DocumentCenterAgentOrganizer {
             )
         }
         
-        let corpusKey = merged.map {
-            "\($0.id)|\($0.updatedAt.timeIntervalSince1970)|\($0.content.count)|\($0.title)|\($0.groupName)"
-        }.joined(separator: ";")
-        if corpusKey != self.cachedRelationsCorpusKey {
-            self.cachedRelationsCorpusKey = corpusKey
-            self.relations = StarMapRelationEngine.buildRelations(
-                for: merged.map { item in
-                    let folder = item.filePath.map { URL(filePath: $0).deletingLastPathComponent().path(percentEncoded: false) }
-                    return StarMapRelationEngine.CorpusDocument(
-                        id: item.id,
-                        title: item.title,
-                        group: item.groupName,
-                        folderPath: folder,
-                        content: item.content,
-                        sortTimestamp: item.updatedAt.timeIntervalSince1970
-                    )
-                }
+        let corpus = merged.prefix(StarMapRelationEngine.corpusLimit).map { item in
+            StarMapRelationEngine.CorpusDocument(
+                id: item.id,
+                title: item.title,
+                group: item.groupName,
+                folderPath: item.filePath.map { URL(filePath: $0).deletingLastPathComponent().path(percentEncoded: false) },
+                content: item.content,
+                sortTimestamp: item.updatedAt.timeIntervalSince1970
             )
+        }
+        if corpus != self.cachedRelationsCorpus {
+            self.relations = StarMapRelationEngine.buildRelations(for: corpus)
+            self.cachedRelationsCorpus = corpus
         }
         self.recomputeDisplayedItems()
     }
@@ -1661,7 +1687,34 @@ nonisolated enum DocumentCenterAgentOrganizer {
     }
     
     
-    private func recomputeDisplayedItems() {
+    func applySearch(_ query: String) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        let previousQuery = self.searchText
+        guard query != previousQuery else { return true }
+        let terms = StarMapSearchEngine.parseTerms(query)
+        if terms.isEmpty {
+            self.searchText = query
+            return true
+        }
+
+        while !Task.isCancelled && self.searchText == previousQuery {
+            let revision = self.displayRevision
+            let scope = (self.showingTrash || self.sidebarFilter == .trash) ? self.trashedItems : self.scopedDocuments()
+            let evaluations = await StarMapSearchEngine.evaluateCorpus(scope.map(\.searchDocument), terms: terms)
+            guard let evaluations, !Task.isCancelled, self.searchText == previousQuery else { return false }
+            guard revision == self.displayRevision else { continue }
+            self.appliedSearchText = query
+            self.recomputeDisplayedItems(search: (scope, evaluations))
+            return true
+        }
+        return false
+    }
+
+
+    private func recomputeDisplayedItems(
+        search: (scope: [ManagedDocumentItem], evaluations: [StarMapSearchEngine.MatchEvaluation])? = nil
+    ) {
+        self.displayRevision &+= 1
         
         let terms = StarMapSearchEngine.parseTerms(self.searchText)
         
@@ -1669,14 +1722,8 @@ nonisolated enum DocumentCenterAgentOrganizer {
             var evalByID: [String: StarMapSearchEngine.MatchEvaluation] = [:]
             var hits: [StarMapSearchHit] = []
             var matched: [ManagedDocumentItem] = []
-            for item in self.trashedItems {
-                let eval = StarMapSearchEngine.evaluate(
-                    queryTerms: terms,
-                    title: item.title,
-                    category: item.groupName,
-                    secondaryMeta: item.filePath ?? "",
-                    content: item.content
-                )
+            for (index, item) in (search?.scope ?? self.trashedItems).enumerated() {
+                let eval = search?.evaluations[index] ?? item.searchDocument.evaluate(terms: terms)
                 guard eval.isMatch else { continue }
                 matched.append(item)
                 if !terms.isEmpty {
@@ -1709,40 +1756,15 @@ nonisolated enum DocumentCenterAgentOrganizer {
             return
         }
         
-        let now = Date()
-        let rawScope: [ManagedDocumentItem] = switch self.sidebarFilter {
-            case .all:
-                self.items
-            case .openNow:
-                self.items.filter(\.isOpenNow)
-            case .group(let name):
-                self.items.filter { $0.groupName == name }
-            case .ungrouped:
-                self.items.filter { $0.groupName.isEmpty }
-            case .trash:
-                []
-        }
-        let baseScope: [ManagedDocumentItem] = (self.timeHorizon == .all)
-            ? rawScope
-            : rawScope.filter { self.timeHorizon.matches($0.updatedAt, now: now) }
+        let baseScope = search?.scope ?? self.scopedDocuments()
         
         var evalByID: [String: StarMapSearchEngine.MatchEvaluation] = [:]
         var hits: [StarMapSearchHit] = []
-        var matchedIDs = Set<String>()
         
-        if terms.isEmpty {
-            matchedIDs = Set(baseScope.map(\.id))
-        } else {
-            for item in baseScope {
-                let eval = StarMapSearchEngine.evaluate(
-                    queryTerms: terms,
-                    title: item.title,
-                    category: item.groupName,
-                    secondaryMeta: item.filePath ?? "",
-                    content: item.content
-                )
+        if !terms.isEmpty {
+            for (index, item) in baseScope.enumerated() {
+                let eval = search?.evaluations[index] ?? item.searchDocument.evaluate(terms: terms)
                 guard eval.isMatch else { continue }
-                matchedIDs.insert(item.id)
                 evalByID[item.id] = eval
                 hits.append(StarMapSearchHit(
                     id: item.id,
@@ -1764,29 +1786,28 @@ nonisolated enum DocumentCenterAgentOrganizer {
         self.searchHits = sortedHits
         
         // Keep matched items plus 1-hop related neighbors when searching so relationships stay legible
+        let matchedIDs = Set(evalByID.keys)
         var visibleIDs = matchedIDs
         if !terms.isEmpty {
-            let scopeIDs = Set(baseScope.map(\.id))
             for edge in self.relations {
-                if matchedIDs.contains(edge.sourceID), scopeIDs.contains(edge.targetID) {
+                if matchedIDs.contains(edge.sourceID) {
                     visibleIDs.insert(edge.targetID)
-                } else if matchedIDs.contains(edge.targetID), scopeIDs.contains(edge.sourceID) {
+                } else if matchedIDs.contains(edge.targetID) {
                     visibleIDs.insert(edge.sourceID)
                 }
             }
         }
         
-        let visible = baseScope
-            .filter { visibleIDs.contains($0.id) }
-            .sorted { lhs, rhs in
-                let hitL = evalByID[lhs.id]?.score ?? -1
-                let hitR = evalByID[rhs.id]?.score ?? -1
-                if hitL != hitR { return hitL > hitR }
-                if lhs.isOpenNow != rhs.isOpenNow {
-                    return lhs.isOpenNow && !rhs.isOpenNow
-                }
-                return lhs.updatedAt > rhs.updatedAt
+        let filtered = terms.isEmpty ? baseScope : baseScope.filter { visibleIDs.contains($0.id) }
+        let visible = filtered.sorted { lhs, rhs in
+            let hitL = evalByID[lhs.id]?.score ?? -1
+            let hitR = evalByID[rhs.id]?.score ?? -1
+            if hitL != hitR { return hitL > hitR }
+            if lhs.isOpenNow != rhs.isOpenNow {
+                return lhs.isOpenNow && !rhs.isOpenNow
             }
+            return lhs.updatedAt > rhs.updatedAt
+        }
         self.displayedItems = visible
         
         // Maintain groupSections compatibility
@@ -1827,6 +1848,20 @@ nonisolated enum DocumentCenterAgentOrganizer {
             return
         }
         self.selectedID = visible.first?.id
+    }
+    
+    
+    private func scopedDocuments() -> [ManagedDocumentItem] {
+        let scope: [ManagedDocumentItem] = switch self.sidebarFilter {
+            case .all: self.items
+            case .openNow: self.items.filter(\.isOpenNow)
+            case .group(let name): self.items.filter { $0.groupName == name }
+            case .ungrouped: self.items.filter { $0.groupName.isEmpty }
+            case .trash: []
+        }
+        guard self.timeHorizon != .all else { return scope }
+        let now = Date()
+        return scope.filter { self.timeHorizon.matches($0.updatedAt, now: now) }
     }
     
     
@@ -2090,11 +2125,12 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
         var collapsed = Set<String>()
         var leafIDsByCluster: [String: [String]] = [:]
         for cluster in clusters {
-            let cappedLeaves = Array(cluster.leaves.prefix(40))
-            counts[cluster.id] = cappedLeaves.count
-            leafIDsByCluster[cluster.id] = cappedLeaves.map(\.id)
             if cluster.isCollapsed {
                 collapsed.insert(cluster.id)
+            } else {
+                let leafIDs = cluster.leaves.prefix(40).map(\.id)
+                counts[cluster.id] = leafIDs.count
+                leafIDsByCluster[cluster.id] = leafIDs
             }
         }
         return StarMapLayoutEngine.compute(
@@ -2107,10 +2143,19 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     }
     
     
+    private static func hasSameLayoutInputs(_ previous: [StarMapClusterNode], _ current: [StarMapClusterNode]) -> Bool {
+        previous.contains(where: { $0.timelineLabel != nil }) == current.contains(where: { $0.timelineLabel != nil })
+            && previous.elementsEqual(current) { previous, current in
+                previous.id == current.id && previous.isCollapsed == current.isCollapsed
+                    && (current.isCollapsed || previous.leaves.prefix(40).elementsEqual(current.leaves.prefix(40)) { $0.id == $1.id })
+            }
+    }
+    
+    
     var body: some View {
         let isDark = (self.colorScheme == .dark)
         let tokens = DashPalette.editorialTokens(isDark: isDark)
-        let layout = (self.cachedClustersSnapshot == self.clusters && (!self.cachedLayout.clusters.isEmpty || self.clusters.isEmpty))
+        let layout = (self.cachedClustersSnapshot == self.clusters || Self.hasSameLayoutInputs(self.cachedClustersSnapshot, self.clusters))
             ? self.cachedLayout
             : Self.computeLayout(for: self.clusters)
         let worldPad: CGFloat = 160
@@ -2280,8 +2325,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 }
             }
             .onChange(of: self.clusters) { _, nextClusters in
-                let refreshed = Self.computeLayout(for: nextClusters)
-                self.cachedLayout = refreshed
+                self.cachedLayout = layout
                 self.cachedClustersSnapshot = nextClusters
             }
             .onChange(of: geo.size) { _, newSize in
@@ -2291,10 +2335,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 }
             }
             .onChange(of: self.searchQuery) { _, _ in
-                let refreshed = Self.computeLayout(for: self.clusters)
-                self.cachedLayout = refreshed
-                self.cachedClustersSnapshot = self.clusters
-                self.fitViewport(bounds: refreshed.bounds, size: geo.size, animated: true)
+                self.fitViewport(bounds: layout.bounds, size: geo.size, animated: true)
             }
             .onChange(of: self.panRequestToken) { _, _ in
                 guard let selectedLeafID = self.selectedLeafID, geo.size.width > 100 else { return }
@@ -2377,9 +2418,7 @@ private struct StarMapViewportConnectorsCanvas: View {
     
     var body: some View {
         let clusterAccentByID: [String: Color] = Dictionary(uniqueKeysWithValues: self.clusters.map { ($0.id, $0.accent) })
-        let leafPosByID: [String: StarMapLayoutEngine.PositionedLeaf] = Dictionary(
-            uniqueKeysWithValues: self.layout.leaves.map { ($0.id, $0) }
-        )
+        let leafPosByID = self.layout.leafPositionsByID
         let selectedClusterID: String? = self.focusedClusterID
             ?? self.selectedLeafID.flatMap { leafPosByID[$0]?.clusterID }
         
@@ -2454,17 +2493,7 @@ private struct StarMapViewportConnectorsCanvas: View {
             }
             
             // 2. Cluster -> Leaf clean orthogonal bus spines (zero diagonal lines slicing through cards!)
-            struct ColumnKey: Hashable {
-                let clusterID: String
-                let quantizedX: Int
-            }
-            var groupedColumns: [ColumnKey: [StarMapLayoutEngine.PositionedLeaf]] = [:]
-            for leaf in self.layout.leaves {
-                let key = ColumnKey(clusterID: leaf.clusterID, quantizedX: Int(leaf.worldPoint.x.rounded()))
-                groupedColumns[key, default: []].append(leaf)
-            }
-            
-            for (key, colLeaves) in groupedColumns where !colLeaves.isEmpty {
+            for (key, colLeaves) in self.layout.leafColumns {
                 let first = colLeaves[0]
                 let colWorldX = first.worldPoint.x
                 let side: CGFloat = colWorldX >= 0 ? 1.0 : -1.0
@@ -3557,10 +3586,7 @@ struct DocumentCenterView: View {
             }
             self.searchDebounceTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(110))
-                guard !Task.isCancelled else { return }
-                if self.state.searchText != newValue {
-                    self.state.searchText = newValue
-                }
+                _ = await self.state.applySearch(newValue)
             }
         }
         .onChange(of: self.state.searchText) { _, newValue in
@@ -3761,11 +3787,10 @@ struct DocumentCenterView: View {
                     .frame(minWidth: 210, maxWidth: 270)
                     .onSubmit {
                         self.searchDebounceTask?.cancel()
-                        if self.state.searchText != self.searchDraft {
-                            self.state.searchText = self.searchDraft
-                        }
+                        let query = self.searchDraft
                         self.unfocusSearchField()
-                        if let firstHit = self.state.searchHits.first {
+                        self.searchDebounceTask = Task {
+                            guard await self.state.applySearch(query), let firstHit = self.state.searchHits.first else { return }
                             self.state.selectedID = firstHit.id
                             self.panRequestToken &+= 1
                         }

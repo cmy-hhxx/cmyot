@@ -1159,21 +1159,23 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         let weekCount = max(4, min(53, weeks))
         let calendar = Calendar.current
         let todayStart = calendar.startOfDay(for: referenceDate)
-        
-        // Align grid columns to Sunday..Saturday so rows stay evenly packed (7 rows x N weeks).
-        let weekday = calendar.component(.weekday, from: todayStart)  // 1 = Sun ... 7 = Sat
-        let daysToEndOfWeek = 7 - weekday
-        let endDate = calendar.date(byAdding: .day, value: daysToEndOfWeek, to: todayStart) ?? todayStart
-        let totalCells = weekCount * 7
-        guard let startDate = calendar.date(byAdding: .day, value: -(totalCells - 1), to: endDate) else { return [] }
+        guard let startDate = Self.heatmapStart(weeks: weekCount, todayStart: todayStart, calendar: calendar) else { return [] }
         
         return self.buildHeatmapCells(
             gridStart: startDate,
-            totalCells: totalCells,
+            totalCells: weekCount * 7,
             targetYear: nil,
             todayStart: todayStart,
             calendar: calendar
         )
+    }
+    
+    
+    private static func heatmapStart(weeks: Int, todayStart: Date, calendar: Calendar) -> Date? {
+        // Align the rolling grid to Sunday through Saturday.
+        let weekday = calendar.component(.weekday, from: todayStart)
+        let endDate = calendar.date(byAdding: .day, value: 7 - weekday, to: todayStart) ?? todayStart
+        return calendar.date(byAdding: .day, value: 1 - weeks * 7, to: endDate)
     }
     
     
@@ -1284,8 +1286,7 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
         calendar: Calendar
     ) -> [HeatmapDayCell] {
         
-        var statsByDay = Dictionary(self.recentDailyStats.map { ($0.dateKey, $0) }, uniquingKeysWith: { first, _ in first })
-        statsByDay[self.todayStats.dateKey] = self.todayStats
+        let statsByDay = self.writingStatsByDay
         
         // Backfill historical document / weekly-report modification activity for days before telemetry existed.
         var historicalDocsByDay: [String: Int] = [:]
@@ -1316,14 +1317,13 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             let isOutOfYear = targetYear.map { calendar.component(.year, from: day) != $0 } ?? false
             let isFuture = !isOutOfYear && (day > todayStart)
             let stat = isOutOfYear ? nil : statsByDay[key]
-            let directScore = stat.map { $0.typedChars + $0.aiCompletedChars + $0.filesCreated * 60 + $0.aiRequests * 20 } ?? 0
+            let directScore = Self.heatmapActivityScore(stat)
             let fallbackScore = (isOutOfYear || isFuture) ? 0 : (historicalDocsByDay[key] ?? 0)
             let score = (isOutOfYear || isFuture) ? 0 : max(directScore, fallbackScore)
             rawScores.append(RawDay(key: key, date: day, stat: stat, score: score, isFuture: isFuture, isOutOfYear: isOutOfYear))
         }
         
-        let nonZeroScores = rawScores.filter { !$0.isOutOfYear && !$0.isFuture && $0.score > 0 }.map(\.score).sorted()
-        let maxScore = max(120, nonZeroScores.last ?? 120)
+        let maxScore = max(120, rawScores.lazy.map(\.score).max() ?? 0)
         
         return rawScores.map { item in
             let level: Int
@@ -1381,14 +1381,27 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     }
     
     
+    private var writingStatsByDay: [String: DailyWritingStats] {
+        var stats = Dictionary(self.recentDailyStats.lazy.map { ($0.dateKey, $0) }, uniquingKeysWith: { first, _ in first })
+        let today = self.todayStats
+        stats[today.dateKey] = today
+        return stats
+    }
+    
+    
+    private static func heatmapActivityScore(_ stats: DailyWritingStats?) -> Int {
+        guard let stats else { return 0 }
+        return stats.typedChars + stats.aiCompletedChars + stats.filesCreated * 60 + stats.aiRequests * 20
+    }
+    
+    
     /// Chronological daily stats for the last `days` calendar days (inclusive of `referenceDate`), filling empty days with zeros.
     func dailySeries(days: Int = 14, referenceDate: Date = Date()) -> [DailyWritingStats] {
         
         let clampedDays = max(1, min(90, days))
         let calendar = Calendar.current
         let todayStart = calendar.startOfDay(for: referenceDate)
-        var byKey = Dictionary(self.recentDailyStats.map { ($0.dateKey, $0) }, uniquingKeysWith: { first, _ in first })
-        byKey[self.todayStats.dateKey] = self.todayStats
+        let byKey = self.writingStatsByDay
         
         return (0..<clampedDays).reversed().map { offset in
             let day = calendar.date(byAdding: .day, value: -offset, to: todayStart) ?? todayStart
@@ -1445,21 +1458,43 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     
     /// Number of consecutive active days ending today or yesterday.
     var currentWritingStreak: Int {
-        
+        self.writingStreak(referenceDate: Date())
+    }
+    
+    
+    func writingStreak(referenceDate: Date) -> Int {
         let calendar = Calendar.current
-        let todayStart = calendar.startOfDay(for: Date())
-        let cellsByKey = Dictionary(self.heatmapCells(weeks: 53, referenceDate: todayStart).map { ($0.dateKey, $0) }, uniquingKeysWith: { first, _ in first })
+        let todayStart = calendar.startOfDay(for: referenceDate)
+        guard let gridStart = Self.heatmapStart(weeks: 53, todayStart: todayStart, calendar: calendar) else { return 0 }
+        let statsByDay = self.writingStatsByDay
+        var historicalDays: Set<String>?
+        
+        func isActive(_ day: Date) -> Bool {
+            let key = Self.dateKey(for: day)
+            if Self.heatmapActivityScore(statsByDay[key]) > 0 { return true }
+            if historicalDays == nil {
+                // Every stored document or report contributes at least one point to its day.
+                var days = Set<String>()
+                let tomorrow = calendar.date(byAdding: .day, value: 1, to: todayStart) ?? .distantFuture
+                for document in self.database.documents where document.updatedAt >= gridStart && document.updatedAt < tomorrow {
+                    days.insert(Self.dateKey(for: document.updatedAt))
+                }
+                for report in self.database.weeklyReports where report.updatedAt >= gridStart && report.updatedAt < tomorrow {
+                    days.insert(Self.dateKey(for: report.updatedAt))
+                }
+                historicalDays = days
+            }
+            return historicalDays?.contains(key) == true
+        }
         
         var streak = 0
         var cursor = todayStart
-        let todayKey = Self.dateKey(for: cursor)
-        if (cellsByKey[todayKey]?.level ?? 0) == 0 {
+        if !isActive(todayStart) {
             cursor = calendar.date(byAdding: .day, value: -1, to: cursor) ?? cursor
         }
         
         for _ in 0..<370 {
-            let key = Self.dateKey(for: cursor)
-            guard let cell = cellsByKey[key], cell.level > 0 else { break }
+            guard cursor >= gridStart, isActive(cursor) else { break }
             streak += 1
             guard let prev = calendar.date(byAdding: .day, value: -1, to: cursor) else { break }
             cursor = prev
@@ -1471,18 +1506,14 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     /// Model usage breakdown over the last `days` days.
     func modelDistribution(days: Int = 30) -> [ModelUsageSummary] {
         
-        let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
-        let filtered = self.recentAIEvents.filter { $0.timestamp >= cutoff }
-        return Self.aggregateModelDistribution(from: filtered)
+        Self.aggregateModelDistribution(from: self.aiEventsInWindow(days: days, referenceDate: Date()))
     }
     
     
     /// Feature usage breakdown over the last `days` days.
     func featureDistribution(days: Int = 30) -> [FeatureUsageSummary] {
         
-        let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
-        let filtered = self.recentAIEvents.filter { $0.timestamp >= cutoff }
-        return Self.aggregateFeatureDistribution(from: filtered)
+        Self.aggregateFeatureDistribution(from: self.aiEventsInWindow(days: days, referenceDate: Date()))
     }
     
     
@@ -1503,16 +1534,37 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
                     outputTokens: stats.outputTokens
                 )
             }
-            let dayEvents = self.recentAIEvents.filter { $0.dateKey == key }
-            let input = dayEvents.reduce(0) { $0 + $1.inputTokens }
-            let output = dayEvents.reduce(0) { $0 + $1.outputTokens }
-            return AIUsageTotals(requests: dayEvents.count, inputTokens: input, outputTokens: output)
+            return Self.aggregateAIUsageTotals(from: self.recentAIEvents.lazy.filter { $0.dateKey == key })
         }
+        return Self.aggregateAIUsageTotals(from: self.aiEventsInWindow(days: days, referenceDate: referenceDate))
+    }
+    
+    
+    func aiUsageBreakdown(days: Int, referenceDate: Date) -> (
+        events: [AIUsageEvent], totals: AIUsageTotals, models: [ModelUsageSummary], features: [FeatureUsageSummary]
+    ) {
+        let events = self.aiEventsInWindow(days: days, referenceDate: referenceDate)
+        return (
+            events: events,
+            totals: Self.aggregateAIUsageTotals(from: events),
+            models: Self.aggregateModelDistribution(from: events),
+            features: Self.aggregateFeatureDistribution(from: events)
+        )
+    }
+    
+    
+    private func aiEventsInWindow(days: Int, referenceDate: Date) -> [AIUsageEvent] {
         let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: referenceDate) ?? referenceDate
-        let filtered = self.recentAIEvents.filter { $0.timestamp >= cutoff }
-        let input = filtered.reduce(0) { $0 + $1.inputTokens }
-        let output = filtered.reduce(0) { $0 + $1.outputTokens }
-        return AIUsageTotals(requests: filtered.count, inputTokens: input, outputTokens: output)
+        return self.recentAIEvents.filter { $0.timestamp >= cutoff }
+    }
+    
+    
+    private static func aggregateAIUsageTotals(from events: some Sequence<AIUsageEvent>) -> AIUsageTotals {
+        events.reduce(into: AIUsageTotals(requests: 0, inputTokens: 0, outputTokens: 0)) { totals, event in
+            totals.requests += 1
+            totals.inputTokens += event.inputTokens
+            totals.outputTokens += event.outputTokens
+        }
     }
     
     

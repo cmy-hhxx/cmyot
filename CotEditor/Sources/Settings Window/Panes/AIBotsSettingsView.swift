@@ -2453,23 +2453,8 @@ struct AIBotsSettingsView: View {
         
         let targetW = Self.packCardWidth
         let targetH = Self.packCardHeight
-        self.prewarmTask = Task {
-            let rendered: [(AIGijinkaArtwork, NSImage)] = await Task.detached(priority: .userInitiated) {
-                var out: [(AIGijinkaArtwork, NSImage)] = []
-                var seen = Set<String>()
-                for entry in missingWork where seen.insert(entry.artwork.id).inserted {
-                    if Task.isCancelled { break }
-                    if let bmp = AIGijinkaImageLoader.renderPortraitBitmap(
-                        from: entry.source,
-                        cropAnchor: entry.artwork.cropAnchor,
-                        pointWidth: targetW,
-                        pointHeight: targetH
-                    ) {
-                        out.append((entry.artwork, bmp))
-                    }
-                }
-                return out
-            }.value
+        self.prewarmTask = Task(priority: .userInitiated) {
+            let rendered = await Self.renderMissingPortraits(missingWork, width: targetW, height: targetH)
             guard !Task.isCancelled else { return }
             for (art, bmp) in rendered {
                 AIGijinkaImageLoader.shared.storePortraitCard(bmp, for: art, pointWidth: targetW, pointHeight: targetH)
@@ -2477,6 +2462,8 @@ struct AIBotsSettingsView: View {
             self.rebuildSnapshots(cachedImagesOnly: false)
             let isDark = (self.colorScheme == .dark)
             for snap in self.snapshots {
+                await Task.yield()
+                guard !Task.isCancelled else { return }
                 _ = PackBakedCardTextureCache.shared.texture(
                     for: snap,
                     width: Self.packCardWidth,
@@ -2486,6 +2473,28 @@ struct AIBotsSettingsView: View {
                 )
             }
         }
+    }
+    
+    
+    @concurrent private static func renderMissingPortraits(
+        _ work: [(artwork: AIGijinkaArtwork, source: NSImage)],
+        width: CGFloat,
+        height: CGFloat
+    ) async -> [(AIGijinkaArtwork, NSImage)] {
+        var rendered: [(AIGijinkaArtwork, NSImage)] = []
+        var seen = Set<String>()
+        for entry in work where seen.insert(entry.artwork.id).inserted {
+            if Task.isCancelled { break }
+            if let bitmap = AIGijinkaImageLoader.renderPortraitBitmap(
+                from: entry.source,
+                cropAnchor: entry.artwork.cropAnchor,
+                pointWidth: width,
+                pointHeight: height
+            ) {
+                rendered.append((entry.artwork, bitmap))
+            }
+        }
+        return rendered
     }
     
     

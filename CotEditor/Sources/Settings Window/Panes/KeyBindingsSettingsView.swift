@@ -521,6 +521,7 @@ private struct KeyBindingCommandRowView: View {
     }
     
     private(set) var tree: [Item] = []
+    private var rowsByMenu: [[FlattenedCommandRow]] = []
     private(set) var isRestorable: Bool = false
     private(set) var revision: Int = 0
     private(set) var recordingItemID: ObjectIdentifier?
@@ -529,6 +530,7 @@ private struct KeyBindingCommandRowView: View {
     var rootIndex: Int?
     
     private let manager: KeyBindingManager = .shared
+    @ObservationIgnored private var searchLabels: (language: AppLanguage, values: [String: String])?
     @ObservationIgnored private var recordingItem: KeyBindingItem?
     @ObservationIgnored private var keyDownMonitor: Any?
     
@@ -628,7 +630,7 @@ private struct KeyBindingCommandRowView: View {
     /// Loads data from the user defaults.
     func load() {
         
-        self.tree = self.manager.menuTree
+        self.reloadMenuTree()
         if self.rootIndex == nil && !self.tree.isEmpty {
             self.rootIndex = 0
         }
@@ -642,10 +644,17 @@ private struct KeyBindingCommandRowView: View {
         
         try? self.manager.restoreDefaults()
         
-        self.tree = self.manager.menuTree
+        self.reloadMenuTree()
         self.isRestorable = false
         self.error = nil
         self.revision &+= 1
+    }
+    
+    
+    private func reloadMenuTree() {
+        self.tree = self.manager.menuTree
+        self.rowsByMenu = self.tree.indices.map { self.makeFlattenedRows(forMenuAt: $0) }
+        self.searchLabels = nil
     }
     
     
@@ -969,7 +978,7 @@ private struct KeyBindingCommandRowView: View {
     
     
     var modifiedCount: Int {
-        self.allFlattenedRows().count { $0.item.shortcut != $0.item.defaultShortcut }
+        self.rowsByMenu.joined().count { $0.item.shortcut != $0.item.defaultShortcut }
     }
     
     
@@ -981,42 +990,47 @@ private struct KeyBindingCommandRowView: View {
     
     func rows(searchText: String, onlyModified: Bool) -> [FlattenedCommandRow] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let isGlobal = !trimmed.isEmpty || onlyModified
-        let sourceRows: [FlattenedCommandRow] = if isGlobal {
-            self.allFlattenedRows()
-        } else {
-            self.flattenedRows(forMenuAt: self.rootIndex ?? 0)
+        if trimmed.isEmpty && !onlyModified {
+            let index = self.rootIndex ?? 0
+            return self.rowsByMenu.indices.contains(index) ? self.rowsByMenu[index] : []
+        }
+        if trimmed.isEmpty {
+            return self.rowsByMenu.joined().filter { $0.item.shortcut != $0.item.defaultShortcut }
         }
         
-        return sourceRows.filter { row in
+        let labels = self.localizedSearchLabels()
+        return self.rowsByMenu.joined().filter { row in
             if onlyModified && row.item.shortcut == row.item.defaultShortcut {
                 return false
             }
-            if !trimmed.isEmpty {
-                let hay = [
-                    row.menuName,
-                    Self.localizedMenuTitle(row.menuName),
-                    row.submenuPath ?? "",
-                    row.submenuPath.map { Self.localizedSubmenuPath($0) } ?? "",
-                    row.commandTitle,
-                    Self.localizedCommandTitle(row.commandTitle),
-                    row.item.shortcut?.symbol ?? "",
-                    row.item.defaultShortcut?.symbol ?? "",
-                ].joined(separator: " ").lowercased()
-                return hay.contains(trimmed)
-            }
-            return true
+            let shortcuts = "\(row.item.shortcut?.symbol ?? "") \(row.item.defaultShortcut?.symbol ?? "")"
+            return ((labels[row.id] ?? "") + " " + shortcuts.lowercased()).contains(trimmed)
         }
     }
     
     
-    private func allFlattenedRows() -> [FlattenedCommandRow] {
-        self.tree.indices.flatMap { self.flattenedRows(forMenuAt: $0) }
+    private func localizedSearchLabels() -> [String: String] {
+        let language = AppLanguage.current
+        if let searchLabels = self.searchLabels, searchLabels.language == language {
+            return searchLabels.values
+        }
+        let values = Dictionary(uniqueKeysWithValues: self.rowsByMenu.joined().map { row in
+            let label = [
+                row.menuName,
+                Self.localizedMenuTitle(row.menuName),
+                row.submenuPath ?? "",
+                row.submenuPath.map { Self.localizedSubmenuPath($0) } ?? "",
+                row.commandTitle,
+                Self.localizedCommandTitle(row.commandTitle),
+            ].joined(separator: " ").lowercased()
+            return (row.id, label)
+        })
+        self.searchLabels = (language, values)
+        return values
     }
     
     
-    private func flattenedRows(forMenuAt menuIndex: Int) -> [FlattenedCommandRow] {
-        guard self.tree.indices.contains(menuIndex) else { return [] }
+    private func makeFlattenedRows(forMenuAt menuIndex: Int) -> [FlattenedCommandRow] {
         let rootNode = self.tree[menuIndex]
         var result: [FlattenedCommandRow] = []
         

@@ -1373,9 +1373,8 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     /// Returns recent non-enhanced weekly reports to serve as style references when generating new reports.
     func styleReferenceWeeklyReports(limit: Int = 2) -> [StoredWeeklyReport] {
         
-        let standard = self.weeklyReports.filter { !$0.isEnhanced }
-        let pool = standard.isEmpty ? self.weeklyReports : standard
-        return Array(pool.prefix(limit))
+        let standard = Array(self.weeklyReports.lazy.filter { !$0.isEnhanced }.prefix(limit))
+        return standard.isEmpty ? Array(self.weeklyReports.prefix(limit)) : standard
     }
     
     

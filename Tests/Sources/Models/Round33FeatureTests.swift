@@ -985,13 +985,15 @@ struct Round33FeatureTests {
     }
     
     
-    @Test func documentAndWeeklyCentersBuildStarMapAndHighlightMatches() {
+    @Test func documentAndWeeklyCentersBuildStarMapAndHighlightMatches() async {
         let db = CotLocalDatabase.shared
         let id1 = "__test_sm_w1"
         let id2 = "__test_sm_w2"
+        let docID = "doc:__test_star_map_async_search"
         defer {
             db.deleteWeeklyReport(id: id1)
             db.deleteWeeklyReport(id: id2)
+            db.permanentlyDeleteDocument(id: docID, filePath: nil)
         }
         
         let longLead = String(repeating: "本周开展日常代码评审与稳定性治理。", count: 140)
@@ -1042,12 +1044,32 @@ struct Round33FeatureTests {
         reportHost.frame = NSRect(x: 0, y: 0, width: 1120, height: 720)
         reportHost.layoutSubtreeIfNeeded()
         #expect(reportHost.bounds.width == 1120)
+
+        db.saveWeeklyReport(
+            id: id1,
+            periodLabel: "20261116-1122",
+            yearMonth: "202611",
+            title: "第47周 星图引擎周报",
+            content: "替换后的内容包含独立检索词 cucumber。"
+        )
+        reportState.rebuildGroups()
+        #expect(!reportState.searchHits.contains(where: { $0.id == id1 }))
+        #expect(await reportState.applySearch("cucumber"))
+        #expect(reportState.searchHits.contains(where: { $0.id == id1 }))
+        #expect(reportState.displayedRows.first(where: { $0.id == id1 })?.report.content.contains("cucumber") == true)
         
         let docState = DocumentCenterState()
+        db.saveDocument(id: docID, title: "星图搜索", filePath: nil, syntax: "Markdown", content: "uniqueDocumentCenterTerm")
         docState.refresh()
         let docClusters = docState.buildStarMapClusters(tokens: tokens)
         #expect(docClusters.allSatisfy { !$0.title.isEmpty })
-        docState.searchText = "测试"
+        #expect(await docState.applySearch("uniqueDocumentCenterTerm"))
+        let expectedDocumentID = DocumentCenterState.canonicalKey(filePath: nil, rawID: docID)
+        #expect(docState.searchHits.contains(where: { $0.id == expectedDocumentID }))
+        let cancelledSearch = Task { await docState.applySearch("discardThisQuery") }
+        cancelledSearch.cancel()
+        #expect(await cancelledSearch.value == false)
+        #expect(docState.searchText == "uniqueDocumentCenterTerm")
         let docHost = NSHostingView(rootView: DocumentCenterView(state: docState))
         docHost.frame = NSRect(x: 0, y: 0, width: 1120, height: 720)
         docHost.layoutSubtreeIfNeeded()

@@ -107,6 +107,7 @@ import Observation
         onPartial: (@MainActor @Sendable (String) -> Void)? = nil
     ) async throws -> String {
         
+        try Task.checkCancellation()
         let db = CotLocalDatabase.shared
         let botID = AIBotID(action: action)
         let botStore = AIBotStore.shared
@@ -191,6 +192,7 @@ import Observation
     /// Runs an inline test turn for any bot using its current persona, prompt, and model override via `PiKernelManager` (with direct HTTP fallback).
     func testBot(_ botID: AIBotID, sampleInput: String) async throws -> String {
         
+        try Task.checkCancellation()
         let trimmedInput = sampleInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let effectiveInput = trimmedInput.isEmpty ? botID.defaultSampleInput : trimmedInput
         
@@ -278,6 +280,7 @@ import Observation
             }
         }
         
+        try Task.checkCancellation()
         return try await self.send(
             messages,
             configuration: configuration,

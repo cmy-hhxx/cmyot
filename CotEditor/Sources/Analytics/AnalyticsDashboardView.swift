@@ -632,6 +632,22 @@ nonisolated enum EvalSunburstLayoutEngine {
         features aiFeatures: [FeatureUsageSummary],
         ai30Totals: AIUsageTotals
     ) -> Node {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? .distantPast
+        return Self.buildTree(
+            windowEvents: recentAIEvents.filter { $0.timestamp >= cutoff },
+            models: aiModels,
+            features: aiFeatures,
+            ai30Totals: ai30Totals
+        )
+    }
+
+
+    fileprivate static func buildTree(
+        windowEvents events: [AIUsageEvent],
+        models aiModels: [ModelUsageSummary],
+        features aiFeatures: [FeatureUsageSummary],
+        ai30Totals: AIUsageTotals
+    ) -> Node {
         func featureDisplayName(_ key: String) -> String {
             switch key.lowercased() {
                 case "completion", "inline", "continue": "续写"
@@ -648,9 +664,6 @@ nonisolated enum EvalSunburstLayoutEngine {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.count <= 14 ? trimmed : String(trimmed.prefix(13)) + "…"
         }
-        
-        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? .distantPast
-        let events = recentAIEvents.filter { $0.timestamp >= cutoff }
         
         var modelNodes: [Node] = []
         if !events.isEmpty {
@@ -988,8 +1001,9 @@ struct DashboardSnapshot {
     
     
     @MainActor static func build(analytics: AnalyticsManager, selectedYear: Int, version: Int = 1) -> DashboardSnapshot {
+        let now = Date()
         let today = analytics.todayStats
-        let series14 = analytics.dailySeries(days: 14)
+        let series14 = analytics.dailySeries(days: 14, referenceDate: now)
         
         let days14: [ChartDay] = series14.map { item in
             ChartDay(
@@ -1010,21 +1024,19 @@ struct DashboardSnapshot {
             bandwidth: 1.5
         )
         
-        let availableYears = analytics.availableHeatmapYears()
+        let availableYears = analytics.availableHeatmapYears(referenceDate: now)
         let resolvedYear = availableYears.contains(selectedYear)
             ? selectedYear
-            : (availableYears.last ?? Calendar.current.component(.year, from: Date()))
-        let yearly = analytics.yearlyHeatmap(year: resolvedYear, trimFutureWeeks: true)
+            : (availableYears.last ?? Calendar.current.component(.year, from: now))
+        let yearly = analytics.yearlyHeatmap(year: resolvedYear, referenceDate: now, trimFutureWeeks: true)
         
-        let aiTodayTotals = analytics.aiUsageTotals(forTodayOnly: true)
-        let ai30Totals = analytics.aiUsageTotals(forTodayOnly: false, days: 30)
-        let models = analytics.modelDistribution(days: 30)
-        let features = analytics.featureDistribution(days: 30)
+        let aiTodayTotals = analytics.aiUsageTotals(forTodayOnly: true, referenceDate: now)
+        let breakdown = analytics.aiUsageBreakdown(days: 30, referenceDate: now)
         let sunburstRoot = EvalSunburstLayoutEngine.buildTree(
-            events: analytics.recentAIEvents,
-            models: models,
-            features: features,
-            ai30Totals: ai30Totals
+            windowEvents: breakdown.events,
+            models: breakdown.models,
+            features: breakdown.features,
+            ai30Totals: breakdown.totals
         )
         let sunburstIndex = EvalSunburstLayoutEngine.indexByID(sunburstRoot)
         
@@ -1035,12 +1047,12 @@ struct DashboardSnapshot {
             trendCurve14: trendCurve14,
             aiTrendCurve14: aiTrendCurve14,
             yearlyHeatmap: yearly,
-            currentStreak: analytics.currentWritingStreak,
+            currentStreak: analytics.writingStreak(referenceDate: now),
             availableYears: availableYears,
             aiTodayTotals: aiTodayTotals,
-            ai30Totals: ai30Totals,
-            aiModels: models,
-            aiFeatures: features,
+            ai30Totals: breakdown.totals,
+            aiModels: breakdown.models,
+            aiFeatures: breakdown.features,
             sunburstRoot: sunburstRoot,
             sunburstIndex: sunburstIndex,
             busyness: analytics.busynessMetrics,
@@ -2178,7 +2190,12 @@ final class DashboardHeroCoverStore {
     static let shared = DashboardHeroCoverStore()
     
     private let database: CotLocalDatabase
-    private(set) var coverImage: NSImage?
+    private(set) var coverImage: NSImage? {
+        didSet { self.initialToneSample = nil }
+    }
+    @ObservationIgnored private var initialToneSample: (
+        focalY: Double, aspect: CGFloat, fallback: HeroRegionTone, result: HeroBackdropToneSnapshot
+    )?
     
     var focalY: Double {
         didSet {
@@ -2212,6 +2229,21 @@ final class DashboardHeroCoverStore {
             return
         }
         self.coverImage = image
+    }
+    
+    
+    fileprivate func initialTones(canvasAspect: CGFloat, fallbackRGB: (Double, Double, Double)) -> HeroBackdropToneSnapshot {
+        let fallback = HeroRegionTone(red: fallbackRGB.0, green: fallbackRGB.1, blue: fallbackRGB.2)
+        if let sample = self.initialToneSample,
+           sample.focalY == self.focalY, sample.aspect == canvasAspect, sample.fallback == fallback
+        {
+            return sample.result
+        }
+        let result = HeroCoverToneSampler.sample(
+            image: self.coverImage, focalY: self.focalY, canvasAspect: canvasAspect, fallbackRGB: fallbackRGB
+        )
+        self.initialToneSample = (self.focalY, canvasAspect, fallback, result)
+        return result
     }
     
     
@@ -2665,12 +2697,7 @@ private struct DashboardAchievementHeroBar: View {
         
         let fallbackRGB = Self.fallbackSurfaceRGB(for: palette)
         let initialAspect: CGFloat = compact ? 3.2 : 4.2
-        let initialTones = HeroCoverToneSampler.sample(
-            image: DashboardHeroCoverStore.shared.coverImage,
-            focalY: DashboardHeroCoverStore.shared.focalY,
-            canvasAspect: initialAspect,
-            fallbackRGB: fallbackRGB
-        )
+        let initialTones = DashboardHeroCoverStore.shared.initialTones(canvasAspect: initialAspect, fallbackRGB: fallbackRGB)
         
         _serialCode = State(initialValue: serial)
         _hasProLicense = State(initialValue: tier != .explorer)

@@ -737,7 +737,10 @@ final class PiKernelManager {
         var isSettled: Bool = false
         
         var streamedText: String {
-            self.textBlocks.keys.sorted().compactMap { self.textBlocks[$0] }.joined()
+            if self.textBlocks.count <= 1 {
+                return self.textBlocks.values.first ?? ""
+            }
+            return self.textBlocks.keys.sorted().compactMap { self.textBlocks[$0] }.joined()
         }
         
         var streamedThinking: String {
@@ -748,7 +751,10 @@ final class PiKernelManager {
             (self.finalAssistantText ?? self.streamedText).trimmingCharacters(in: .whitespacesAndNewlines)
         }
         
-        mutating func ingest(_ json: [String: Any]) -> (partialSnapshot: String?, toolHint: String?) {
+        mutating func ingest(
+            _ json: [String: Any],
+            includePartialUpdates: Bool = true
+        ) -> (partialSnapshot: String?, toolHint: String?) {
             guard let eventType = json["type"] as? String else { return (nil, nil) }
             switch eventType {
                 case "message_update":
@@ -768,12 +774,12 @@ final class PiKernelManager {
                             case "text_delta":
                                 if let delta = assistantEvent["delta"] as? String, !delta.isEmpty {
                                     self.textBlocks[idx, default: ""] += delta
-                                    return (self.streamedText, nil)
+                                    return (includePartialUpdates ? self.streamedText : nil, nil)
                                 }
                             case "text_end":
                                 if let content = assistantEvent["content"] as? String {
                                     self.textBlocks[idx] = content
-                                    return (self.streamedText, nil)
+                                    return (includePartialUpdates ? self.streamedText : nil, nil)
                                 }
                             case "error":
                                 if let errStr = assistantEvent["error"] as? String, !errStr.isEmpty {
@@ -791,7 +797,7 @@ final class PiKernelManager {
                 case "tool_execution_start":
                     if let toolName = json["toolName"] as? String, !toolName.isEmpty {
                         self.activeToolName = toolName
-                        if self.streamedText.isEmpty {
+                        if includePartialUpdates, self.textBlocks.values.allSatisfy(\.isEmpty) {
                             return (nil, "▸ Pi Agent 正在执行工具 `\(toolName)`…\n")
                         }
                     }
@@ -818,7 +824,7 @@ final class PiKernelManager {
                             }.joined()
                             if !joined.isEmpty {
                                 self.finalAssistantText = joined
-                                return (joined, nil)
+                                return (includePartialUpdates ? joined : nil, nil)
                             }
                         }
                     }
@@ -1089,9 +1095,10 @@ final class PiKernelManager {
                     lineBuffer.append(chunk)
                     
                     // Strict LF framing per Pi 1.6+ JSONL protocol specification
-                    while let newlineIndex = lineBuffer.firstIndex(of: 0x0A) {
-                        var recordBytes = lineBuffer.subdata(in: 0..<newlineIndex)
-                        lineBuffer.removeSubrange(0...newlineIndex)
+                    var recordStart = lineBuffer.startIndex
+                    while let newlineIndex = lineBuffer[recordStart...].firstIndex(of: 0x0A) {
+                        var recordBytes = lineBuffer.subdata(in: recordStart..<newlineIndex)
+                        recordStart = lineBuffer.index(after: newlineIndex)
                         if recordBytes.last == 0x0D {
                             recordBytes.removeLast()
                         }
@@ -1099,7 +1106,7 @@ final class PiKernelManager {
                               let json = try? JSONSerialization.jsonObject(with: recordBytes) as? [String: Any]
                         else { continue }
                         
-                        let update = streamState.ingest(json)
+                        let update = streamState.ingest(json, includePartialUpdates: onPartial != nil)
                         if let onPartial, let snapshot = update.partialSnapshot ?? update.toolHint {
                             let now = ProcessInfo.processInfo.systemUptime
                             if now - lastEmitUptime >= 0.035 {
@@ -1111,6 +1118,7 @@ final class PiKernelManager {
                             }
                         }
                     }
+                    lineBuffer.removeSubrange(..<recordStart)
                 }
                 
                 if control.didTimeout {

@@ -150,6 +150,7 @@ import UniformTypeIdentifiers
         let periodLabel: String
         let yearMonth: String
         let rangeDesc: String?
+        let characterCount: Int
         let compactCharCount: String
         let isCurrentWeek: Bool
         let report: StoredWeeklyReport
@@ -206,9 +207,12 @@ import UniformTypeIdentifiers
             }
         }
     }
-    var searchText: String = "" {
-        didSet {
-            if oldValue != self.searchText {
+    private var appliedSearchText = ""
+    var searchText: String {
+        get { self.appliedSearchText }
+        set {
+            if newValue != self.appliedSearchText {
+                self.appliedSearchText = newValue
                 self.rebuildGroups()
             }
         }
@@ -234,7 +238,10 @@ import UniformTypeIdentifiers
     var generationError: String?
     
     private(set) var allRowItems: [ReportRowItem] = []
-    @ObservationIgnored private var cachedRelationsCorpusKey: String = ""
+    @ObservationIgnored private var cachedReports: [StoredWeeklyReport] = []
+    @ObservationIgnored private var cachedCurrentWeek: String?
+    @ObservationIgnored private var rowsInDatabaseOrder: [ReportRowItem] = []
+    @ObservationIgnored private var rowsByMonth: [(month: String, title: String, rows: [ReportRowItem])] = []
     @ObservationIgnored private var initializedClusterIDs: Set<String> = []
     
     func registerClustersForDefaultCollapse(_ ids: [String]) {
@@ -260,19 +267,54 @@ import UniformTypeIdentifiers
     }
     
     func rebuildGroups() {
+        self.rebuildGroups(evaluations: nil)
+    }
+
+
+    func applySearch(_ query: String) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        let previousQuery = self.searchText
+        guard query != previousQuery else { return true }
+        let terms = StarMapSearchEngine.parseTerms(query)
+        if terms.isEmpty {
+            self.searchText = query
+            return true
+        }
+
+        while !Task.isCancelled && self.searchText == previousQuery {
+            let reports = CotLocalDatabase.shared.weeklyReports
+            let documents = reports.map(Self.searchDocument(for:))
+            let evaluations = await StarMapSearchEngine.evaluateCorpus(documents, terms: terms)
+            guard let evaluations, !Task.isCancelled, self.searchText == previousQuery else { return false }
+            guard reports == CotLocalDatabase.shared.weeklyReports else { continue }
+            self.appliedSearchText = query
+            self.rebuildGroups(evaluations: evaluations)
+            return true
+        }
+        return false
+    }
+
+
+    private static func searchDocument(for report: StoredWeeklyReport) -> StarMapSearchEngine.SearchDocument {
+        let metadata = [report.periodLabel, Self.readablePeriodRange(report.periodLabel)]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        return StarMapSearchEngine.SearchDocument(
+            title: report.title,
+            category: Self.formatYearMonthTitle(report.yearMonth),
+            metadata: metadata,
+            content: report.content
+        )
+    }
+
+
+    private func rebuildGroups(evaluations: [StarMapSearchEngine.MatchEvaluation]?) {
         let allReports = CotLocalDatabase.shared.weeklyReports
         let currentWeek = AIService.currentWeekPeriodLabel()
-        
-        // 1. Discover cross-report topic, title-mention, and consecutive-week relationships across full corpus.
-        let corpusKey = allReports.map {
-            "\($0.id)|\($0.updatedAt.timeIntervalSince1970)|\($0.content.count)|\($0.title)|\($0.periodLabel)"
-        }.joined(separator: ";")
-        
-        let builtRelations: [StarMapRelationEdge]
-        if corpusKey == self.cachedRelationsCorpusKey {
-            builtRelations = self.relations
-        } else {
-            let corpusDocs = allReports.map { report in
+        let reportsChanged = allReports != self.cachedReports
+
+        if reportsChanged {
+            let corpusDocs = allReports.prefix(StarMapRelationEngine.corpusLimit).map { report in
                 StarMapRelationEngine.CorpusDocument(
                     id: report.id,
                     title: "\(report.periodLabel) \(report.title)",
@@ -282,45 +324,36 @@ import UniformTypeIdentifiers
                     sortTimestamp: report.updatedAt.timeIntervalSince1970
                 )
             }
-            let computed = StarMapRelationEngine.buildRelations(for: corpusDocs, maxEdgesPerNode: 3)
-            self.cachedRelationsCorpusKey = corpusKey
-            self.relations = computed
-            builtRelations = computed
+            self.relations = StarMapRelationEngine.buildRelations(for: corpusDocs, maxEdgesPerNode: 3)
+            self.cachedReports = allReports
+        }
+        if reportsChanged || currentWeek != self.cachedCurrentWeek {
+            self.prepareRows(from: allReports, currentWeek: currentWeek)
+            self.cachedCurrentWeek = currentWeek
         }
         
-        // 2. Full-text multi-keyword search with 1-hop relation neighbor retention.
+        // Full-text multi-keyword search with 1-hop relation neighbor retention.
         let terms = StarMapSearchEngine.parseTerms(self.searchText)
-        let filtered: [StoredWeeklyReport]
+        let visibleIDs: Set<String>?
         if terms.isEmpty {
             self.searchMatchesByID = [:]
             self.searchHits = []
-            filtered = allReports
+            visibleIDs = nil
         } else {
             var matchesByID: [String: StarMapSearchEngine.MatchEvaluation] = [:]
             var scoredHits: [(hit: StarMapSearchHit, updatedAt: TimeInterval)] = []
             
-            for report in allReports {
-                let monthTitle = Self.formatYearMonthTitle(report.yearMonth)
-                let meta = [report.periodLabel, Self.readablePeriodRange(report.periodLabel)]
-                    .compactMap { $0 }
-                    .joined(separator: " ")
-                let evaluation = StarMapSearchEngine.evaluate(
-                    queryTerms: terms,
-                    title: report.title,
-                    category: monthTitle,
-                    secondaryMeta: meta,
-                    content: report.content
-                )
+            for (index, row) in self.rowsInDatabaseOrder.enumerated() {
+                let report = row.report
+                let evaluation = evaluations?[index] ?? Self.searchDocument(for: report).evaluate(terms: terms)
                 guard evaluation.isMatch else { continue }
                 matchesByID[report.id] = evaluation
-                let rangeDesc = Self.readablePeriodRange(report.periodLabel)
-                let metaLine = (rangeDesc.map { "\($0) · " } ?? "\(report.periodLabel) · ")
-                    + DocumentCenterState.compactChars(report.content.count)
+                let metaLine = (row.rangeDesc.map { "\($0) · " } ?? "\(row.periodLabel) · ") + row.compactCharCount
                 scoredHits.append((
                     hit: StarMapSearchHit(
                         id: report.id,
                         title: report.title,
-                        categoryLabel: monthTitle,
+                        categoryLabel: Self.formatYearMonthTitle(row.yearMonth),
                         metaLabel: metaLine,
                         totalHits: evaluation.totalHits,
                         score: evaluation.score,
@@ -343,52 +376,67 @@ import UniformTypeIdentifiers
             self.searchHits = scoredHits.map(\.hit)
             
             let directIDs = Set(matchesByID.keys)
-            var visibleIDs = directIDs
-            for edge in builtRelations {
+            var matchingAndRelatedIDs = directIDs
+            for edge in self.relations {
                 if directIDs.contains(edge.sourceID) {
-                    visibleIDs.insert(edge.targetID)
+                    matchingAndRelatedIDs.insert(edge.targetID)
                 } else if directIDs.contains(edge.targetID) {
-                    visibleIDs.insert(edge.sourceID)
+                    matchingAndRelatedIDs.insert(edge.sourceID)
                 }
             }
-            filtered = allReports.filter { visibleIDs.contains($0.id) }
+            visibleIDs = matchingAndRelatedIDs
         }
         
-        let dict = Dictionary(grouping: filtered, by: \.yearMonth)
-        let builtGroups = dict.keys.sorted(by: >).map { month in
-            let sorted = (dict[month] ?? []).sorted { lhs, rhs in
-                if lhs.periodLabel != rhs.periodLabel {
-                    return lhs.periodLabel > rhs.periodLabel
-                }
-                return lhs.updatedAt > rhs.updatedAt
+        var builtGroups: [YearMonthGroup] = []
+        var visibleRows: [ReportRowItem] = []
+        for month in self.rowsByMonth {
+            let rows = if let visibleIDs {
+                month.rows.filter { visibleIDs.contains($0.id) }
+            } else {
+                month.rows
             }
-            return YearMonthGroup(
-                month: month,
-                displayTitle: Self.formatYearMonthTitle(month),
-                reports: sorted
-            )
+            guard !rows.isEmpty else { continue }
+            builtGroups.append(YearMonthGroup(month: month.month, displayTitle: month.title, reports: rows.map(\.report)))
+            visibleRows.append(contentsOf: rows)
         }
         self.groups = builtGroups
         self.registerClustersForDefaultCollapse(builtGroups.map(\.month))
-        let flat = builtGroups.flatMap(\.reports)
-        self.flatReports = flat
-        self.allRowItems = flat.map { report in
-            ReportRowItem(
+        self.flatReports = builtGroups.flatMap(\.reports)
+        self.allRowItems = visibleRows
+
+        if let selectedMonth = self.selectedMonth, !builtGroups.contains(where: { $0.month == selectedMonth }) {
+            self.selectedMonth = nil
+        } else {
+            self.recomputeDisplayedRows()
+        }
+    }
+
+
+    private func prepareRows(from reports: [StoredWeeklyReport], currentWeek: String) {
+        self.rowsInDatabaseOrder = reports.map { report in
+            let characterCount = report.content.count
+            return ReportRowItem(
                 id: report.id,
                 title: report.title,
                 periodLabel: report.periodLabel,
                 yearMonth: report.yearMonth,
                 rangeDesc: Self.readablePeriodRange(report.periodLabel),
-                compactCharCount: DocumentCenterState.compactChars(report.content.count),
+                characterCount: characterCount,
+                compactCharCount: DocumentCenterState.compactChars(characterCount),
                 isCurrentWeek: report.periodLabel == currentWeek,
                 report: report
             )
         }
-        
-        if let selectedMonth = self.selectedMonth, !builtGroups.contains(where: { $0.month == selectedMonth }) {
-            self.selectedMonth = nil
+        let grouped = Dictionary(grouping: self.rowsInDatabaseOrder, by: \.yearMonth)
+        self.rowsByMonth = grouped.keys.sorted(by: >).map { month in
+            let sorted = grouped[month, default: []].sorted { lhs, rhs in
+                if lhs.periodLabel != rhs.periodLabel {
+                    return lhs.periodLabel > rhs.periodLabel
+                }
+                return lhs.report.updatedAt > rhs.report.updatedAt
+            }
+            return (month, Self.formatYearMonthTitle(month), sorted)
         }
-        self.recomputeDisplayedRows()
     }
     
     
@@ -411,7 +459,8 @@ import UniformTypeIdentifiers
                visible.contains(where: { $0.id == selectedReportID }) {
                 return
             }
-            if let topHit = self.searchHits.first(where: { hit in visible.contains(where: { $0.id == hit.id }) }) {
+            let visibleIDs = Set(visible.map(\.id))
+            if let topHit = self.searchHits.first(where: { visibleIDs.contains($0.id) }) {
                 self.selectedReportID = topHit.id
                 return
             }
@@ -458,14 +507,14 @@ import UniformTypeIdentifiers
         for (idx, group) in self.groups.enumerated() {
             guard let monthRows = groupedByMonth[group.month], !monthRows.isEmpty else { continue }
             let accent = Color(hexString: paletteHexes[idx % paletteHexes.count])
-            let latestTimestamp = monthRows.map(\.report.updatedAt.timeIntervalSince1970).max() ?? 0
+            let latestTimestamp = monthRows.lazy.map(\.report.updatedAt.timeIntervalSince1970).max() ?? 0
             let timelineBadge = Self.formatTimelineBadge(group.month)
             let leaves: [StarMapLeafNode] = monthRows.prefix(40).map { row in
                 let eval = self.searchMatchesByID[row.id]
                 let badge = eval.map { "命中 \($0.totalHits) 处" } ?? (row.isCurrentWeek ? "本周" : nil)
                 let baseMeta = row.rangeDesc ?? row.periodLabel
                 let metaLine = "\(baseMeta) · \(row.compactCharCount)"
-                let weight = min(1.0, max(0.35, Double(max(120, row.report.content.count)) / 4000.0))
+                let weight = min(1.0, max(0.35, Double(max(120, row.characterCount)) / 4000.0))
                 return StarMapLeafNode(
                     id: row.id,
                     clusterID: group.month,
@@ -995,10 +1044,7 @@ struct WeeklyReportCenterView: View {
             }
             self.searchDebounceTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(110))
-                guard !Task.isCancelled else { return }
-                if self.state.searchText != newValue {
-                    self.state.searchText = newValue
-                }
+                _ = await self.state.applySearch(newValue)
             }
         }
         .onChange(of: self.state.searchText) { _, newValue in
@@ -1165,14 +1211,13 @@ struct WeeklyReportCenterView: View {
                     .focused(self.$isSearchFocused)
                     .onSubmit {
                         self.searchDebounceTask?.cancel()
-                        if self.state.searchText != self.searchDraft {
-                            self.state.searchText = self.searchDraft
-                        }
-                        if let first = self.state.searchHits.first {
+                        let query = self.searchDraft
+                        self.unfocusSearchField()
+                        self.searchDebounceTask = Task {
+                            guard await self.state.applySearch(query), let first = self.state.searchHits.first else { return }
                             self.state.selectedReportID = first.id
                             self.panRequestToken &+= 1
                         }
-                        self.unfocusSearchField()
                     }
                 
                 if !searchTerms.isEmpty {

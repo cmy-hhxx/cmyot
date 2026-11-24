@@ -30,6 +30,24 @@ import Testing
 struct Round32FeatureTests {
     
     // MARK: 1. Pi 1.6.0 Kernel Adaptation & Concise Install Prompt (< 50 lines)
+
+    @Test func piJSONLWithoutPartialUpdatesStillAccumulatesTextInBlockOrder() {
+        var state = PiKernelManager.JSONLStreamState()
+        let trailing = state.ingest([
+            "type": "message_update",
+            "assistantMessageEvent": ["type": "text_delta", "contentIndex": 1, "delta": "world"],
+        ], includePartialUpdates: false)
+        let leading = state.ingest([
+            "type": "message_update",
+            "assistantMessageEvent": ["type": "text_delta", "contentIndex": 0, "delta": "Hello "],
+        ], includePartialUpdates: false)
+
+        #expect(trailing.partialSnapshot == nil)
+        #expect(leading.partialSnapshot == nil)
+        #expect(state.resolvedOutput == "Hello world")
+    }
+    
+    
     
     @Test func piKernel16AdaptationAndConciseInstallPrompt() throws {
         let promptLines = PiKernelManager.installPrompt.components(separatedBy: .newlines)
