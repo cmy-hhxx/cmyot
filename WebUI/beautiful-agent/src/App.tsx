@@ -164,6 +164,7 @@ function AssistantMessageBlock({
               steps={message.steps}
               isWorking={isTraceWorking}
               durationMs={message.thinkingDurationMs}
+              startedAtMs={message.createdAt}
               locale={locale}
               activeLabel={statusLabel}
             />
@@ -372,6 +373,7 @@ export default function App() {
                   thinkingDurationMs: patch.thinkingDurationMs,
                   steps: patch.steps ?? [],
                   isStreaming: true,
+                  createdAt: Date.now(),
                 },
               ],
             };

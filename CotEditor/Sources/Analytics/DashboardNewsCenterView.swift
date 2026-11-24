@@ -1143,7 +1143,7 @@ struct DashboardNewsCenterView: View {
         let botStore = AIBotStore.shared
         var cb = BeautifulAgentWebActionCallbacks()
         cb.onSend = { prompt, quote in
-            guard self.newsService.streamingChatItemID == nil else { return }
+            guard self.newsService.streamingChatItemID != item.id else { return }
             let effectiveQuote = quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? self.newsQuotedExcerpt
                 : quote

@@ -10,6 +10,8 @@ export type ThinkingStep = {
   mono?: boolean;
   detail?: string[];
   durationMs?: number;
+  kind?: "thinking" | "tool";
+  startedAtMs?: number;
 };
 
 export type ToolReceipt = {

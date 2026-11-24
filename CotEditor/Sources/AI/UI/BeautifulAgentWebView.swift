@@ -34,6 +34,8 @@ nonisolated struct BeautifulAgentThinkingStep: Codable, Equatable, Hashable, Ide
     var mono: Bool
     var detail: [String]?
     var durationMs: Int?
+    var kind: String? // "thinking" | "tool"
+    var startedAtMs: Double?
     
     init(
         id: String = UUID().uuidString,
@@ -42,7 +44,9 @@ nonisolated struct BeautifulAgentThinkingStep: Codable, Equatable, Hashable, Ide
         status: String = "running",
         mono: Bool = false,
         detail: [String]? = nil,
-        durationMs: Int? = nil
+        durationMs: Int? = nil,
+        kind: String? = nil,
+        startedAtMs: Double? = nil
     ) {
         self.id = id
         self.label = label
@@ -51,6 +55,8 @@ nonisolated struct BeautifulAgentThinkingStep: Codable, Equatable, Hashable, Ide
         self.mono = mono
         self.detail = detail
         self.durationMs = durationMs
+        self.kind = kind
+        self.startedAtMs = startedAtMs
     }
 }
 

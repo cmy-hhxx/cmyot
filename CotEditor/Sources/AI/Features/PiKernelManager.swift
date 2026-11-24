@@ -20,6 +20,7 @@
 //
 
 import AppKit
+import Darwin
 import Foundation
 import Observation
 
@@ -116,6 +117,7 @@ final class PiKernelManager {
     private(set) var piBinaryPath: String?
     private(set) var piVersion: String?
     private(set) var activeBotRuns: Set<AIBotID> = []
+    @ObservationIgnored private var activeBotRunCounts: [AIBotID: Int] = [:]
     private(set) var lastSyncedAt: Date?
     private(set) var syncedProviderCount: Int = 0
     private(set) var syncedBotCount: Int = 0
@@ -404,7 +406,12 @@ final class PiKernelManager {
                 break
             }
         }
-        if endpoint == .ollama, !url.hasSuffix("/v1") {
+        if endpoint == .anthropicMessages {
+            // `@anthropic-ai/sdk` inside Pi's `anthropic-messages` provider always appends `/v1/messages`.
+            if url.hasSuffix("/v1") {
+                url.removeLast(3)
+            }
+        } else if endpoint == .ollama, !url.hasSuffix("/v1") {
             url += "/v1"
         }
         return url
@@ -476,10 +483,12 @@ final class PiKernelManager {
         let sessionsDir = self.agentDirectoryURL.appending(path: "sessions", directoryHint: .isDirectory)
         let extensionsDir = self.agentDirectoryURL.appending(path: "extensions", directoryHint: .isDirectory)
         let runtimeDir = self.agentDirectoryURL.appending(path: "runtime", directoryHint: .isDirectory)
+        let workspaceDir = self.agentDirectoryURL.appending(path: "workspace", directoryHint: .isDirectory)
         try self.ensureDirectory(agentsDir, fileManager: fm)
         try self.ensureDirectory(sessionsDir, fileManager: fm)
         try self.ensureDirectory(extensionsDir, fileManager: fm)
         try self.ensureDirectory(runtimeDir, fileManager: fm)
+        try self.ensureDirectory(workspaceDir, fileManager: fm)
         
         // Collect extra model overrides referenced by individual Bots
         var extraModelsByEndpoint: [UUID: Set<String>] = [:]
@@ -507,7 +516,7 @@ final class PiKernelManager {
             var modelEntries: [[String: Any]] = []
             let candidates = profile.availableModelIDs
                 + Array(extraModelsByEndpoint[profile.id] ?? [])
-                + (profile.provider == .custom ? [] : [profile.provider.defaultModel])
+                + (profile.provider == .custom ? [] : ([profile.provider.defaultModel] + profile.provider.recommendedModels))
             
             for rawModel in candidates {
                 let mid = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -531,6 +540,10 @@ final class PiKernelManager {
                 let perModelWireEndpoint = perModelCfg.wireConfiguration.endpoint
                 if perModelWireEndpoint != wireEndpoint {
                     modelEntry["api"] = Self.piAPIType(for: perModelWireEndpoint)
+                    let perModelBaseURL = Self.normalizedPiBaseURL(profile.baseURL, endpoint: perModelWireEndpoint)
+                    if !perModelBaseURL.isEmpty, perModelBaseURL != baseURL {
+                        modelEntry["baseUrl"] = perModelBaseURL
+                    }
                 }
                 modelEntries.append(modelEntry)
                 totalModels += 1
@@ -828,20 +841,45 @@ final class PiKernelManager {
     }
     
     
-    // MARK: Headless Pi JSONL Streaming Execution
+    // MARK: Active Run Ref-Counting
     
-    /// Determines whether `AIService` should route a Bot call through the `pi` kernel subprocess.
-    func shouldRouteThroughKernel(for botID: AIBotID, hasImages: Bool) -> Bool {
-        // Inline keystroke ghost completion stays on ultra-low-latency direct SSE;
-        // multimodal image payloads fall back cleanly unless purely text/workspace driven.
-        guard self.isKernelEnabled, self.isAvailable, !hasImages, botID != .ghost else {
-            return false
+    private func beginBotRun(_ botID: AIBotID) {
+        let next = (self.activeBotRunCounts[botID] ?? 0) + 1
+        self.activeBotRunCounts[botID] = next
+        if !self.activeBotRuns.contains(botID) {
+            self.activeBotRuns.insert(botID)
         }
-        return true
     }
     
     
-    /// Executes a Bot task on the `pi` kernel in `--mode json -p` mode, streaming deltas progressively.
+    private func endBotRun(_ botID: AIBotID) {
+        let next = max(0, (self.activeBotRunCounts[botID] ?? 1) - 1)
+        if next == 0 {
+            self.activeBotRunCounts.removeValue(forKey: botID)
+            self.activeBotRuns.remove(botID)
+        } else {
+            self.activeBotRunCounts[botID] = next
+        }
+    }
+    
+    
+    // MARK: Headless Pi JSONL Streaming Execution
+    
+    /// Determines whether `AIService` should route a single-shot Bot call through a cold-booted `pi --mode json -p` subprocess.
+    ///
+    /// Persistent multi-turn agents (Chief Butler & NEWS Companion) run directly on warm `PiRPCRuntime` via `runRPCTurn(...)`,
+    /// and interactive coding/file agents launch inside Terminal via `launchBotInFrontmostTerminal(...)`.
+    /// Single-shot editor text/JSON/HTML transforms (`AIAction` bots) stay on direct `AIClient` SSE so they stream immediately
+    /// without 2s Node cold-boot latency or autonomous filesystem/shell tools hijacking structured outputs.
+    func shouldRouteThroughKernel(for botID: AIBotID, hasImages: Bool) -> Bool {
+        _ = botID
+        _ = hasImages
+        return false
+    }
+    
+    
+    /// Executes a Bot task on the `pi` kernel in `--mode json -p` mode, streaming deltas progressively,
+    /// with safe non-root working directory, temp system-prompt file, cooperative cancellation, and a hard timeout.
     func runBot(
         _ botID: AIBotID,
         systemPrompt: String,
@@ -849,6 +887,7 @@ final class PiKernelManager {
         endpointProfile: AIEndpointProfile,
         configuration: AIConfiguration,
         workingDirectory: URL? = nil,
+        timeoutSeconds: TimeInterval = 90,
         onPartial: (@MainActor @Sendable (String) -> Void)? = nil
     ) async throws -> String {
         
@@ -868,8 +907,25 @@ final class PiKernelManager {
         let sessionDir = self.agentDirectoryURL
             .appending(path: "sessions", directoryHint: .isDirectory)
             .appending(path: botID.rawValue, directoryHint: .isDirectory)
+        let runtimeDir = self.agentDirectoryURL
+            .appending(path: "runtime", directoryHint: .isDirectory)
+        try? self.ensureDirectory(runtimeDir)
+        let tempPromptURL = runtimeDir.appending(path: "bot-\(botID.rawValue)-\(UUID().uuidString).md")
+        let systemPromptArg: String
+        if (try? Data(systemPrompt.utf8).write(to: tempPromptURL, options: .atomic)) != nil {
+            systemPromptArg = tempPromptURL.path(percentEncoded: false)
+        } else {
+            systemPromptArg = systemPrompt
+        }
+        defer { try? FileManager.default.removeItem(at: tempPromptURL) }
+        
+        let safeWorkingDir = PiRPCRuntime.safeWorkingDirectory(
+            preferred: workingDirectory,
+            agentDirectoryURL: self.agentDirectoryURL
+        )
         let agentDirPath = self.agentDirectoryURL.path(percentEncoded: false)
         let apiKey = configuration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let thinking = configuration.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines)
         
         var args: [String] = [
             "--mode", "json",
@@ -882,8 +938,11 @@ final class PiKernelManager {
             "--no-themes",
             "--provider", providerID,
             "--model", modelID,
-            "--system-prompt", systemPrompt,
+            "--system-prompt", systemPromptArg,
         ]
+        if let thinking, !thinking.isEmpty {
+            args.append(contentsOf: ["--thinking", thinking])
+        }
         if toolProfile == .pureChat {
             args.append("--no-context-files")
             args.append("--no-session")
@@ -898,99 +957,205 @@ final class PiKernelManager {
         args.append("--")
         args.append(userPrompt)
         
-        self.activeBotRuns.insert(botID)
-        defer { self.activeBotRuns.remove(botID) }
+        self.beginBotRun(botID)
+        defer { self.endBotRun(botID) }
         
         let dbPath = self.database.databaseURL.path(percentEncoded: false)
+        let clampedTimeout = max(5, timeoutSeconds)
         
-        return try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            process.executableURL = URL(filePath: binaryPath)
-            process.arguments = args
-            if let workingDirectory, FileManager.default.fileExists(atPath: workingDirectory.path(percentEncoded: false)) {
-                process.currentDirectoryURL = workingDirectory
+        final class RunControl: @unchecked Sendable {
+            private let lock = NSLock()
+            private var terminated = false
+            private var timedOutFlag = false
+            private var process: Process?
+            private var stdoutHandle: FileHandle?
+            private var finishStream: (() -> Void)?
+            
+            var didTimeout: Bool {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                return self.timedOutFlag
             }
             
-            process.environment = Self.augmentedRuntimeEnvironment(
-                binaryPath: binaryPath,
-                agentDirectoryPath: agentDirPath,
-                databasePath: dbPath
-            )
-            
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-            process.standardInput = FileHandle.nullDevice
-            
-            try process.run()
-            
-            let handle = stdoutPipe.fileHandleForReading
-            let stderrHandle = stderrPipe.fileHandleForReading
-            let stderrTask = Task.detached(priority: .utility) { () -> Data in
-                stderrHandle.readDataToEndOfFile()
-            }
-            var lineBuffer = Data()
-            var streamState = JSONLStreamState()
-            var lastEmitUptime: TimeInterval = 0
-            var pendingPartial: String?
-            
-            while true {
-                if Task.isCancelled {
-                    if process.isRunning { process.terminate() }
-                    stderrTask.cancel()
-                    throw CancellationError()
+            func attach(process: Process, stdoutHandle: FileHandle, finishStream: @escaping () -> Void) {
+                self.lock.lock()
+                self.process = process
+                self.stdoutHandle = stdoutHandle
+                self.finishStream = finishStream
+                let alreadyTerminated = self.terminated
+                self.lock.unlock()
+                if alreadyTerminated {
+                    self.stop(asTimeout: false)
                 }
-                let chunk = try handle.read(upToCount: 4096) ?? Data()
-                if chunk.isEmpty { break }
-                lineBuffer.append(chunk)
+            }
+            
+            func stop(asTimeout: Bool) {
+                self.lock.lock()
+                if asTimeout { self.timedOutFlag = true }
+                let proc = self.process
+                let handle = self.stdoutHandle
+                let finish = self.finishStream
+                let wasTerminated = self.terminated
+                self.terminated = true
+                self.lock.unlock()
                 
-                // Strict LF framing per Pi 1.6+ JSONL protocol specification
-                while let newlineIndex = lineBuffer.firstIndex(of: 0x0A) {
-                    var recordBytes = lineBuffer.subdata(in: 0..<newlineIndex)
-                    lineBuffer.removeSubrange(0...newlineIndex)
-                    if recordBytes.last == 0x0D {
-                        recordBytes.removeLast()
-                    }
-                    guard !recordBytes.isEmpty,
-                          let json = try? JSONSerialization.jsonObject(with: recordBytes) as? [String: Any]
-                    else { continue }
-                    
-                    let update = streamState.ingest(json)
-                    if let onPartial, let snapshot = update.partialSnapshot ?? update.toolHint {
-                        let now = ProcessInfo.processInfo.systemUptime
-                        if now - lastEmitUptime >= 0.035 {
-                            lastEmitUptime = now
-                            pendingPartial = nil
-                            await MainActor.run { onPartial(snapshot) }
-                        } else {
-                            pendingPartial = snapshot
+                handle?.readabilityHandler = nil
+                finish?()
+                
+                guard !wasTerminated, let proc else { return }
+                if proc.isRunning {
+                    let pid = proc.processIdentifier
+                    proc.terminate()
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.2) {
+                        if proc.isRunning, pid > 0 {
+                            _ = Darwin.kill(pid, SIGKILL)
                         }
                     }
                 }
             }
-            if let onPartial, let trailing = pendingPartial {
-                await MainActor.run { onPartial(trailing) }
-            }
-            
-            process.waitUntilExit()
-            let stderrData = await stderrTask.value
-            let stderrString = String(data: stderrData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            
-            let resolvedOutput = streamState.resolvedOutput
-            if !resolvedOutput.isEmpty {
-                return resolvedOutput
-            }
-            if let errMsg = streamState.errorMessage, !errMsg.isEmpty {
-                throw AIError.http(status: 502, message: errMsg)
-            }
-            if process.terminationStatus != 0 {
-                let detail = stderrString.isEmpty ? "exit \(process.terminationStatus)" : stderrString
-                throw AIError.http(status: 502, message: "Pi 内核执行失败：\(detail)")
-            }
-            throw AIError.emptyResponse
-        }.value
+        }
+        
+        let control = RunControl()
+        
+        return try await withTaskCancellationHandler {
+            try await Task.detached(priority: .userInitiated) {
+                let process = Process()
+                process.executableURL = URL(filePath: binaryPath)
+                process.arguments = args
+                process.currentDirectoryURL = safeWorkingDir
+                process.environment = Self.augmentedRuntimeEnvironment(
+                    binaryPath: binaryPath,
+                    agentDirectoryPath: agentDirPath,
+                    databasePath: dbPath
+                )
+                
+                let stdoutPipe = Pipe()
+                let stderrPipe = Pipe()
+                process.standardOutput = stdoutPipe
+                process.standardError = stderrPipe
+                process.standardInput = FileHandle.nullDevice
+                
+                let stdoutHandle = stdoutPipe.fileHandleForReading
+                let stderrHandle = stderrPipe.fileHandleForReading
+                
+                let stream = AsyncStream<Data> { continuation in
+                    stdoutHandle.readabilityHandler = { handle in
+                        let data = handle.availableData
+                        if data.isEmpty {
+                            handle.readabilityHandler = nil
+                            continuation.finish()
+                        } else {
+                            continuation.yield(data)
+                        }
+                    }
+                    control.attach(process: process, stdoutHandle: stdoutHandle) {
+                        continuation.finish()
+                    }
+                }
+                
+                let stderrTask = Task.detached(priority: .utility) { () -> Data in
+                    stderrHandle.readDataToEndOfFile()
+                }
+                
+                do {
+                    try process.run()
+                } catch {
+                    control.stop(asTimeout: false)
+                    stderrTask.cancel()
+                    throw error
+                }
+                
+                let timeoutTask = Task.detached(priority: .utility) {
+                    try? await Task.sleep(for: .seconds(clampedTimeout))
+                    guard !Task.isCancelled else { return }
+                    control.stop(asTimeout: true)
+                }
+                defer {
+                    timeoutTask.cancel()
+                    stdoutHandle.readabilityHandler = nil
+                }
+                
+                var lineBuffer = Data()
+                var streamState = JSONLStreamState()
+                var lastEmitUptime: TimeInterval = 0
+                var pendingPartial: String?
+                
+                for await chunk in stream {
+                    if Task.isCancelled {
+                        control.stop(asTimeout: false)
+                        stderrTask.cancel()
+                        throw CancellationError()
+                    }
+                    lineBuffer.append(chunk)
+                    
+                    // Strict LF framing per Pi 1.6+ JSONL protocol specification
+                    while let newlineIndex = lineBuffer.firstIndex(of: 0x0A) {
+                        var recordBytes = lineBuffer.subdata(in: 0..<newlineIndex)
+                        lineBuffer.removeSubrange(0...newlineIndex)
+                        if recordBytes.last == 0x0D {
+                            recordBytes.removeLast()
+                        }
+                        guard !recordBytes.isEmpty,
+                              let json = try? JSONSerialization.jsonObject(with: recordBytes) as? [String: Any]
+                        else { continue }
+                        
+                        let update = streamState.ingest(json)
+                        if let onPartial, let snapshot = update.partialSnapshot ?? update.toolHint {
+                            let now = ProcessInfo.processInfo.systemUptime
+                            if now - lastEmitUptime >= 0.035 {
+                                lastEmitUptime = now
+                                pendingPartial = nil
+                                await MainActor.run { onPartial(snapshot) }
+                            } else {
+                                pendingPartial = snapshot
+                            }
+                        }
+                    }
+                }
+                
+                if control.didTimeout {
+                    stderrTask.cancel()
+                    throw AIError.http(
+                        status: 504,
+                        message: AppLanguage.text(
+                            "Pi 内核执行超时（超过 \(Int(clampedTimeout)) 秒）",
+                            en: "Pi kernel execution timed out after \(Int(clampedTimeout))s"
+                        )
+                    )
+                }
+                if Task.isCancelled {
+                    control.stop(asTimeout: false)
+                    stderrTask.cancel()
+                    throw CancellationError()
+                }
+                
+                if let onPartial, let trailing = pendingPartial {
+                    await MainActor.run { onPartial(trailing) }
+                }
+                
+                if process.isRunning {
+                    process.waitUntilExit()
+                }
+                let stderrData = await stderrTask.value
+                let stderrString = String(data: stderrData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                
+                let resolvedOutput = streamState.resolvedOutput
+                if !resolvedOutput.isEmpty {
+                    return resolvedOutput
+                }
+                if let errMsg = streamState.errorMessage, !errMsg.isEmpty {
+                    throw AIError.http(status: 502, message: errMsg)
+                }
+                if process.terminationStatus != 0 {
+                    let detail = stderrString.isEmpty ? "exit \(process.terminationStatus)" : stderrString
+                    throw AIError.http(status: 502, message: "Pi 内核执行失败：\(detail)")
+                }
+                throw AIError.emptyResponse
+            }.value
+        } onCancel: {
+            control.stop(asTimeout: false)
+        }
     }
     
     
@@ -1031,8 +1196,8 @@ final class PiKernelManager {
         let dbPath = self.database.databaseURL.path(percentEncoded: false)
         
         let trackedBot: AIBotID = channel == .butler ? .butler : .readingCompanion
-        self.activeBotRuns.insert(trackedBot)
-        defer { self.activeBotRuns.remove(trackedBot) }
+        self.beginBotRun(trackedBot)
+        defer { self.endBotRun(trackedBot) }
         
         let request = PiRPCTurnRequest(
             channel: channel,
@@ -1060,9 +1225,9 @@ final class PiKernelManager {
     }
     
     
-    func resetRPCSession(channel: PiAgentChannel) {
+    func resetRPCSession(channel: PiAgentChannel, forceAbort: Bool = true) {
         Task {
-            await PiRPCRuntime.shared.resetSession(channel: channel)
+            await PiRPCRuntime.shared.resetSession(channel: channel, forceAbort: forceAbort)
         }
     }
     

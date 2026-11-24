@@ -49,6 +49,9 @@ final class AIResultPanelController: NSWindowController {
     /// Called with the answer when the user chooses to hand off the result to the Butler Hub for multi-turn follow-up.
     var onContinueInButler: ((String) -> Void)?
     
+    /// Called when the user cancels/dismisses the sheet so in-flight AI tasks stop immediately.
+    var onCancel: (() -> Void)?
+    
     
     // MARK: Private Properties
     
@@ -121,7 +124,7 @@ final class AIResultPanelController: NSWindowController {
         
         self.hasFinished = false
         self.continueButlerButton.isHidden = (self.onContinueInButler == nil)
-        self.subtitleLabel.stringValue = Self.serviceDescription
+        self.subtitleLabel.stringValue = self.serviceDescription
         self.orbHost.rootView = ThinkingOrbsParticleView(mode: .composing, size: 20, paused: false)
         self.orbHost.isHidden = false
         self.setText(Self.placeholder(String(localized: "ai.result.generating",
@@ -245,13 +248,14 @@ final class AIResultPanelController: NSWindowController {
     
     // MARK: Private Methods
     
-    /// The line under the header that names where the answer came from.
-    private static var serviceDescription: String {
-        
-        guard let profile = AIEndpointStore.activeProfile else { return "" }
-        
-        let model = profile.model.trimmingCharacters(in: .whitespacesAndNewlines)
-        
+    /// The line under the header that names where the answer came from for this Bot/action.
+    private var serviceDescription: String {
+        let botID = AIBotID(action: self.action)
+        let profile = AIBotStore.shared.resolvedEndpointProfile(for: botID) ?? AIEndpointStore.activeProfile
+        let resolvedModel = AIBotStore.shared.resolvedConfiguration(for: botID).model
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let profile else { return resolvedModel }
+        let model = resolvedModel.isEmpty ? profile.model.trimmingCharacters(in: .whitespacesAndNewlines) : resolvedModel
         return model.isEmpty ? profile.displayName : "\(profile.displayName) · \(model)"
     }
     
@@ -580,6 +584,11 @@ final class AIResultPanelController: NSWindowController {
     
     @objc private func cancel(_ sender: Any?) {
         
+        self.hasFinished = true
+        self.partialRenderTask?.cancel()
+        self.partialRenderTask = nil
+        self.onCancel?()
+        self.onCancel = nil
         self.dismiss()
     }
 }

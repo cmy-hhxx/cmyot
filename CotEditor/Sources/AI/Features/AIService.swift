@@ -50,13 +50,40 @@ import Observation
     /// The shared service.
     static let shared = AIService()
     
-    /// Whether a request is currently running.
+    /// Whether one or more requests are currently running.
     private(set) var isRunning = false
+    @ObservationIgnored private var activeRequestCount = 0
     
-    /// Whether the stored configuration is complete enough to make a request.
+    /// Whether any stored gateway configuration is complete enough to make a request.
     var isConfigured: Bool {
-        
-        AIConfiguration.current.isUsable
+        if AIConfiguration.current.isUsable {
+            return true
+        }
+        return AIEndpointStore.profiles.contains { profile in
+            profile.configuration(apiKey: AIEndpointStore.apiKey(for: profile)).isUsable
+        }
+    }
+    
+    
+    /// Whether the resolved gateway & model for `botID` is usable.
+    func isConfigured(for botID: AIBotID) -> Bool {
+        AIBotStore.shared.resolvedConfiguration(for: botID).isUsable
+    }
+    
+    
+    private func beginRequest() {
+        self.activeRequestCount += 1
+        if !self.isRunning {
+            self.isRunning = true
+        }
+    }
+    
+    
+    private func endRequest() {
+        self.activeRequestCount = max(0, self.activeRequestCount - 1)
+        if self.activeRequestCount == 0, self.isRunning {
+            self.isRunning = false
+        }
     }
     
     
@@ -212,7 +239,7 @@ import Observation
         if piKernel.shouldRouteThroughKernel(for: botID, hasImages: hasImages),
            let endpointProfile = AIBotStore.shared.resolvedEndpointProfile(for: botID)
         {
-            self.isRunning = true
+            self.beginRequest()
             let clock = ContinuousClock()
             let start = clock.now
             let workingDir = (NSDocumentController.shared.currentDocument as? NSDocument)?
@@ -228,7 +255,7 @@ import Observation
                     workingDirectory: workingDir,
                     onPartial: onPartial
                 )
-                self.isRunning = false
+                self.endRequest()
                 let elapsed = start.duration(to: clock.now)
                 let latencyMs = max(1, Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))
                 let effective = configuration.wireConfiguration
@@ -243,7 +270,7 @@ import Observation
                 )
                 return output
             } catch {
-                self.isRunning = false
+                self.endRequest()
                 if error is CancellationError {
                     throw error
                 }
@@ -366,8 +393,8 @@ import Observation
         let configuration = configuration ?? .current
         guard configuration.isUsable else { throw AIError.notConfigured }
         
-        self.isRunning = true
-        defer { self.isRunning = false }
+        self.beginRequest()
+        defer { self.endRequest() }
         
         // Deliver every chunk before the request returns. A detached task here used to let a
         // late chunk land after the final result, which flipped finished UI back to "running".

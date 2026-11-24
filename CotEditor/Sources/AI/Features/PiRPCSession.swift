@@ -19,6 +19,7 @@
 //  limitations under the License.
 //
 
+import Darwin
 import Foundation
 
 /// Logical warm Pi RPC channel isolating session history and tool exposure.
@@ -40,9 +41,10 @@ nonisolated enum PiAgentChannel: String, Sendable, CaseIterable {
 /// Fine-grained event emitted while a warm Pi RPC turn is streaming.
 nonisolated enum PiAgentStreamEvent: Sendable {
     case status(String)
+    case thinkingStart(startedAtMs: Double)
     case thinkingDelta(String)
-    case thinkingEnd(String)
-    case toolStart(id: String, name: String, label: String, detail: String?)
+    case thinkingEnd(String, durationMs: Int?)
+    case toolStart(id: String, name: String, label: String, detail: String?, startedAtMs: Double)
     case toolUpdate(id: String, outputPreview: String)
     case toolEnd(id: String, name: String, isError: Bool, durationMs: Int?, outputPreview: String?)
     case textDelta(String)
@@ -169,18 +171,39 @@ nonisolated struct PiRPCTurnRequest: Sendable {
 ///
 /// Keeps processes alive between turns so follow-ups start in milliseconds, dynamically refreshes
 /// per-turn system prompts via `COT_DYNAMIC_SYSTEM_PROMPT_FILE`, hot-switches models via `set_model`,
-/// and immediately drains CotEditor's SQLite action queue whenever `editor_action` completes.
+/// enforces strict per-tool and per-turn timeouts with automatic wedged-daemon recycling,
+/// responds instantly to Swift Task cancellation, and immediately drains CotEditor's SQLite action
+/// queue whenever `editor_action` completes.
 actor PiRPCRuntime {
+    
+    /// Configurable timeouts governing prompt acknowledgement, per-tool execution, idle stalls, and overall turn cap.
+    nonisolated struct TimeoutPolicy: Sendable {
+        var promptAckSeconds: Double = 12.0
+        var cotToolTimeoutSeconds: Double = 25.0
+        var workspaceToolTimeoutSeconds: Double = 45.0
+        var idleTurnTimeoutSeconds: Double = 55.0
+        var maxTurnDurationSeconds: Double = 180.0
+        var abortGraceMilliseconds: Int = 600
+        
+        static let `default` = TimeoutPolicy()
+    }
     
     static let shared = PiRPCRuntime()
     
+    private static let fastCotToolNames: Set<String> = [
+        "lookup_stock_quote", "search_news", "web_search", "web_fetch",
+        "get_workspace_context", "search_documents", "read_document", "read_memory", "editor_action",
+    ]
+    
     private final class ChannelDaemon: @unchecked Sendable {
+        let id = UUID()
         let channel: PiAgentChannel
         let process: Process
         let stdinHandle: FileHandle
         let stdoutHandle: FileHandle
         let stderrHandle: FileHandle
         let systemPromptFileURL: URL
+        let workingDirectoryURL: URL
         let workspaceConfigStamp: String
         var currentProviderID: String
         var currentModelID: String
@@ -189,6 +212,7 @@ actor PiRPCRuntime {
         var isRunningTurn: Bool = false
         var stdoutTask: Task<Void, Never>?
         var stderrTask: Task<Void, Never>?
+        var finishStreams: (@Sendable () -> Void)?
         var stderrBuffer: String = ""
         
         init(
@@ -198,6 +222,7 @@ actor PiRPCRuntime {
             stdoutHandle: FileHandle,
             stderrHandle: FileHandle,
             systemPromptFileURL: URL,
+            workingDirectoryURL: URL,
             workspaceConfigStamp: String,
             providerID: String,
             modelID: String
@@ -208,16 +233,29 @@ actor PiRPCRuntime {
             self.stdoutHandle = stdoutHandle
             self.stderrHandle = stderrHandle
             self.systemPromptFileURL = systemPromptFileURL
+            self.workingDirectoryURL = workingDirectoryURL
             self.workspaceConfigStamp = workspaceConfigStamp
             self.currentProviderID = providerID
             self.currentModelID = modelID
         }
     }
     
+    private struct PendingResponseEntry {
+        let channel: PiAgentChannel
+        let daemonID: UUID
+        let continuation: CheckedContinuation<[String: Any], Error>
+        var timeoutTask: Task<Void, Never>?
+    }
+    
     private struct ActiveTurn {
+        let id = UUID()
+        let daemonID: UUID
+        let logicalSessionKey: String
         let continuation: CheckedContinuation<PiAgentRunResult, Error>
         let onEvent: @MainActor @Sendable (PiAgentStreamEvent) -> Void
         let startedAt: Date
+        var lastActivityUptime: TimeInterval
+        var promptAcked: Bool = false
         var textBlocks: [Int: String] = [:]
         var thinkingBlocks: [Int: String] = [:]
         var finalAssistantText: String?
@@ -226,14 +264,40 @@ actor PiRPCRuntime {
         var errorMessage: String?
         var aborted: Bool = false
         var thinkingStepID: String?
+        var thinkingStartedAt: Date?
+        var firstAnswerTextAt: Date?
+        var toolStartedAt: [String: Date] = [:]
+        var toolTimeoutTasks: [String: Task<Void, Never>] = [:]
+        var promptAckTask: Task<Void, Never>?
+        var turnWatchdogTask: Task<Void, Never>?
+        var settleFallbackTask: Task<Void, Never>?
         var lastTextEmitUptime: TimeInterval = 0
+        
+        mutating func cancelAllWatchdogs() {
+            self.promptAckTask?.cancel()
+            self.promptAckTask = nil
+            self.turnWatchdogTask?.cancel()
+            self.turnWatchdogTask = nil
+            self.settleFallbackTask?.cancel()
+            self.settleFallbackTask = nil
+            for task in self.toolTimeoutTasks.values {
+                task.cancel()
+            }
+            self.toolTimeoutTasks.removeAll()
+        }
     }
     
+    private let timeoutPolicy: TimeoutPolicy
     private var daemons: [PiAgentChannel: ChannelDaemon] = [:]
-    private var pendingResponses: [String: CheckedContinuation<[String: Any], Error>] = [:]
-    private var promptCommandChannels: [String: PiAgentChannel] = [:]
+    private var pendingResponses: [String: PendingResponseEntry] = [:]
+    private var promptCommandChannels: [String: (channel: PiAgentChannel, turnID: UUID, daemonID: UUID)] = [:]
     private var activeTurns: [PiAgentChannel: ActiveTurn] = [:]
     private var nextCommandSeq: Int = 1
+    
+    
+    init(timeoutPolicy: TimeoutPolicy = .default) {
+        self.timeoutPolicy = timeoutPolicy
+    }
     
     
     // MARK: - Public Control
@@ -242,13 +306,30 @@ actor PiRPCRuntime {
         _ request: PiRPCTurnRequest,
         onEvent: @escaping @MainActor @Sendable (PiAgentStreamEvent) -> Void
     ) async throws -> PiAgentRunResult {
-        // Ensure any previous stuck turn on this channel is aborted cleanly
-        if self.activeTurns[request.channel] != nil {
-            await self.abort(channel: request.channel)
-            try? await Task.sleep(for: .milliseconds(120))
+        try Task.checkCancellation()
+        
+        // 1. Force-clear any previous stuck or in-flight turn on this channel without leaking its continuation
+        if let priorTurn = self.activeTurns[request.channel] {
+            self.cancelActiveTurn(channel: request.channel, turnID: priorTurn.id, sendAbort: true)
+        }
+        if let existingDaemon = self.daemons[request.channel], existingDaemon.isRunningTurn {
+            let settled = await self.waitForDaemonIdle(
+                channel: request.channel,
+                daemonID: existingDaemon.id,
+                maxWaitMs: self.timeoutPolicy.abortGraceMilliseconds
+            )
+            if !settled {
+                self.terminateDaemon(
+                    channel: request.channel,
+                    expectedDaemonID: existingDaemon.id,
+                    reason: AppLanguage.text("上一次工具执行未及时退出，已自动重启内核", en: "Previous run wedged; recycled Pi daemon")
+                )
+            }
         }
         
-        let daemon = try self.ensureDaemon(for: request)
+        try Task.checkCancellation()
+        
+        var daemon = try self.ensureDaemon(for: request)
         
         // Write fresh per-turn dynamic system prompt read by `cot-tools.ts`'s `before_agent_start` hook
         try Data(request.systemPrompt.utf8).write(to: daemon.systemPromptFileURL, options: .atomic)
@@ -258,7 +339,18 @@ actor PiRPCRuntime {
         let needsSessionReset = daemon.activeLogicalSessionKey != request.logicalSessionKey
         if needsSessionReset {
             if daemon.activeLogicalSessionKey != nil {
-                _ = try? await self.sendCommand(to: daemon, payload: ["type": "new_session"], timeoutSec: 8)
+                do {
+                    _ = try await self.sendCommand(to: daemon, payload: ["type": "new_session"], timeoutSec: 5)
+                } catch {
+                    // If warm daemon refuses or stalls on `new_session`, recycle cleanly rather than hanging
+                    self.terminateDaemon(
+                        channel: request.channel,
+                        expectedDaemonID: daemon.id,
+                        reason: AppLanguage.text("切换会话超时，正在重启 Pi 内核", en: "Session reset timed out; restarting Pi daemon")
+                    )
+                    daemon = try self.ensureDaemon(for: request)
+                    try Data(request.systemPrompt.utf8).write(to: daemon.systemPromptFileURL, options: .atomic)
+                }
             }
             daemon.activeLogicalSessionKey = request.logicalSessionKey
             if let prior = request.priorHistoryContext?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -275,20 +367,35 @@ actor PiRPCRuntime {
             }
         }
         
-        // Sync model & thinking level on warm daemon
+        // Sync model & thinking level on warm daemon; recycle if model catalog refreshed or `set_model` fails
         if daemon.currentProviderID != request.providerID || daemon.currentModelID != request.modelID {
-            let resp = try await self.sendCommand(
-                to: daemon,
-                payload: [
-                    "type": "set_model",
-                    "provider": request.providerID,
-                    "modelId": request.modelID,
-                ],
-                timeoutSec: 8
-            )
-            if (resp["success"] as? Bool) == true {
+            let modelSwitched: Bool
+            do {
+                let resp = try await self.sendCommand(
+                    to: daemon,
+                    payload: [
+                        "type": "set_model",
+                        "provider": request.providerID,
+                        "modelId": request.modelID,
+                    ],
+                    timeoutSec: 6
+                )
+                modelSwitched = (resp["success"] as? Bool) == true
+            } catch {
+                modelSwitched = false
+            }
+            if modelSwitched {
                 daemon.currentProviderID = request.providerID
                 daemon.currentModelID = request.modelID
+            } else {
+                self.terminateDaemon(
+                    channel: request.channel,
+                    expectedDaemonID: daemon.id,
+                    reason: AppLanguage.text("模型切换需要刷新 Pi 内核", en: "Restarting Pi daemon for model switch")
+                )
+                daemon = try self.ensureDaemon(for: request)
+                try Data(request.systemPrompt.utf8).write(to: daemon.systemPromptFileURL, options: .atomic)
+                daemon.activeLogicalSessionKey = request.logicalSessionKey
             }
         }
         
@@ -301,45 +408,210 @@ actor PiRPCRuntime {
                     "type": "set_thinking_level",
                     "level": desiredThinking,
                 ],
-                timeoutSec: 5
+                timeoutSec: 4
             )
             daemon.currentThinkingLevel = desiredThinking
         }
         
+        try Task.checkCancellation()
+        
         daemon.isRunningTurn = true
         let promptCommandID = self.makeCommandID(prefix: request.channel.rawValue)
+        let activeDaemon = daemon
+        let channel = request.channel
+        let turnBox = TurnIDBox()
         
-        return try await withCheckedThrowingContinuation { continuation in
-            let turn = ActiveTurn(
-                continuation: continuation,
-                onEvent: onEvent,
-                startedAt: Date()
-            )
-            self.activeTurns[request.channel] = turn
-            
-            let cmd: [String: Any] = [
-                "id": promptCommandID,
-                "type": "prompt",
-                "message": effectivePrompt,
-            ]
-            self.promptCommandChannels[promptCommandID] = request.channel
-            do {
-                try self.writeJSONLine(cmd, to: daemon.stdinHandle)
-            } catch {
-                self.promptCommandChannels.removeValue(forKey: promptCommandID)
-                self.finishTurn(channel: request.channel, error: error)
-                return
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                var turn = ActiveTurn(
+                    daemonID: activeDaemon.id,
+                    logicalSessionKey: request.logicalSessionKey,
+                    continuation: continuation,
+                    onEvent: onEvent,
+                    startedAt: Date(),
+                    lastActivityUptime: ProcessInfo.processInfo.systemUptime
+                )
+                let turnID = turn.id
+                turnBox.set(turnID)
+                
+                // Guard against pre-cancelled tasks entering the continuation
+                if Task.isCancelled {
+                    activeDaemon.isRunningTurn = false
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                
+                // Prompt-ack watchdog: if Pi never acknowledges `prompt`, recycle wedged daemon
+                let ackSec = self.timeoutPolicy.promptAckSeconds
+                turn.promptAckTask = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(ackSec))
+                    guard !Task.isCancelled else { return }
+                    await self?.handlePromptAckTimeout(channel: channel, turnID: turnID, daemonID: activeDaemon.id)
+                }
+                
+                // Turn idle & overall duration watchdog
+                let idleSec = self.timeoutPolicy.idleTurnTimeoutSeconds
+                let maxTurnSec = self.timeoutPolicy.maxTurnDurationSeconds
+                turn.turnWatchdogTask = Task { [weak self] in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: .seconds(2))
+                        guard !Task.isCancelled else { return }
+                        let shouldContinue = await self?.checkTurnWatchdog(
+                            channel: channel,
+                            turnID: turnID,
+                            daemonID: activeDaemon.id,
+                            idleTimeoutSec: idleSec,
+                            maxTurnSec: maxTurnSec
+                        ) ?? false
+                        if !shouldContinue { return }
+                    }
+                }
+                
+                self.activeTurns[channel] = turn
+                self.promptCommandChannels[promptCommandID] = (channel: channel, turnID: turnID, daemonID: activeDaemon.id)
+                
+                let cmd: [String: Any] = [
+                    "id": promptCommandID,
+                    "type": "prompt",
+                    "message": effectivePrompt,
+                ]
+                do {
+                    try self.writeJSONLine(cmd, to: activeDaemon.stdinHandle)
+                } catch {
+                    self.promptCommandChannels.removeValue(forKey: promptCommandID)
+                    self.finishTurn(channel: channel, expectedTurnID: turnID, error: error)
+                    return
+                }
+            }
+        } onCancel: {
+            Task { [weak self] in
+                await self?.cancelActiveTurn(channel: channel, turnID: turnBox.get(), sendAbort: true)
             }
         }
     }
     
     
     func abort(channel: PiAgentChannel) async {
-        guard let daemon = self.daemons[channel], daemon.process.isRunning else { return }
-        if var turn = self.activeTurns[channel] {
-            turn.aborted = true
-            self.activeTurns[channel] = turn
+        if let active = self.activeTurns[channel] {
+            self.cancelActiveTurn(channel: channel, turnID: active.id, sendAbort: true)
+            return
         }
+        guard let daemon = self.daemons[channel], daemon.process.isRunning else { return }
+        self.sendAbortPacket(to: daemon)
+    }
+    
+    
+    func resetSession(channel: PiAgentChannel, forceAbort: Bool = true) async {
+        if forceAbort, let active = self.activeTurns[channel] {
+            self.cancelActiveTurn(channel: channel, turnID: active.id, sendAbort: true)
+        }
+        guard let daemon = self.daemons[channel] else { return }
+        daemon.activeLogicalSessionKey = nil
+        
+        guard daemon.process.isRunning else {
+            self.daemons.removeValue(forKey: channel)
+            return
+        }
+        if daemon.isRunningTurn {
+            let settled = await self.waitForDaemonIdle(
+                channel: channel,
+                daemonID: daemon.id,
+                maxWaitMs: self.timeoutPolicy.abortGraceMilliseconds
+            )
+            if !settled {
+                self.terminateDaemon(
+                    channel: channel,
+                    expectedDaemonID: daemon.id,
+                    reason: AppLanguage.text("已重置会话并重启 Pi 内核", en: "Reset session and recycled Pi daemon")
+                )
+                return
+            }
+        }
+        do {
+            _ = try await self.sendCommand(to: daemon, payload: ["type": "new_session"], timeoutSec: 3.5)
+        } catch {
+            self.terminateDaemon(
+                channel: channel,
+                expectedDaemonID: daemon.id,
+                reason: AppLanguage.text("新建会话超时，已重置 Pi 内核", en: "New session timed out; recycled Pi daemon")
+            )
+        }
+    }
+    
+    
+    func shutdownAll() {
+        for channel in Array(self.daemons.keys) {
+            self.terminateDaemon(channel: channel, expectedDaemonID: nil, reason: "Pi 内核已关闭")
+        }
+    }
+    
+    
+    /// Pure helper safely parsing Pi's `durationMs` (Int or Double) and falling back to Swift wall-clock measurement.
+    nonisolated static func resolvedToolDurationMs(
+        rawDurationValue: Any?,
+        startedAt: Date?,
+        now: Date = Date()
+    ) -> Int? {
+        if let num = rawDurationValue as? NSNumber {
+            let rounded = Int(num.doubleValue.rounded())
+            if rounded > 0 {
+                return rounded
+            }
+        } else if let intVal = rawDurationValue as? Int, intVal > 0 {
+            return intVal
+        } else if let dblVal = rawDurationValue as? Double, dblVal.isFinite, dblVal > 0 {
+            return max(1, Int(dblVal.rounded()))
+        }
+        if let startedAt {
+            let wallMs = Int((now.timeIntervalSince(startedAt) * 1000.0).rounded())
+            return max(1, wallMs)
+        }
+        return nil
+    }
+    
+    
+    /// Resolves a safe non-root working directory for Pi so built-in `find`/`grep`/`bash` never scan `/`.
+    nonisolated static func safeWorkingDirectory(preferred: URL?, agentDirectoryURL: URL) -> URL {
+        let fm = FileManager.default
+        if let preferred {
+            let path = preferred.standardizedFileURL.path(percentEncoded: false)
+            if !path.isEmpty, path != "/", fm.fileExists(atPath: path) {
+                return preferred.standardizedFileURL
+            }
+        }
+        let fallback = agentDirectoryURL.appending(path: "workspace", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: fallback, withIntermediateDirectories: true)
+        return fallback
+    }
+    
+    
+    // MARK: - Watchdogs & Cancellation
+    
+    private func cancelActiveTurn(channel: PiAgentChannel, turnID: UUID?, sendAbort: Bool) {
+        if let current = self.activeTurns[channel],
+           turnID == nil || current.id == turnID
+        {
+            var removed = self.activeTurns.removeValue(forKey: channel)!
+            removed.cancelAllWatchdogs()
+            removed.aborted = true
+            self.clearPromptCommands(for: channel, turnID: removed.id)
+            
+            let daemon = self.daemons[channel]
+            if sendAbort, let daemon, daemon.id == removed.daemonID, daemon.process.isRunning {
+                self.sendAbortPacket(to: daemon)
+                let targetDaemonID = daemon.id
+                let graceMs = max(900, self.timeoutPolicy.abortGraceMilliseconds * 2)
+                Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(graceMs))
+                    await self?.recycleDaemonIfStillRunningTurn(channel: channel, daemonID: targetDaemonID)
+                }
+            }
+            removed.continuation.resume(throwing: CancellationError())
+        }
+    }
+    
+    
+    private func sendAbortPacket(to daemon: ChannelDaemon) {
         let cmd: [String: Any] = [
             "id": self.makeCommandID(prefix: "abort"),
             "type": "abort",
@@ -348,30 +620,116 @@ actor PiRPCRuntime {
     }
     
     
-    func resetSession(channel: PiAgentChannel) async {
-        guard let daemon = self.daemons[channel] else { return }
-        daemon.activeLogicalSessionKey = nil
-        if daemon.process.isRunning && !daemon.isRunningTurn {
-            _ = try? await self.sendCommand(to: daemon, payload: ["type": "new_session"], timeoutSec: 5)
+    private func waitForDaemonIdle(channel: PiAgentChannel, daemonID: UUID, maxWaitMs: Int) async -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + Double(max(50, maxWaitMs)) / 1000.0
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            guard let daemon = self.daemons[channel], daemon.id == daemonID else { return true }
+            if !daemon.process.isRunning || !daemon.isRunningTurn {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(40))
         }
+        guard let daemon = self.daemons[channel], daemon.id == daemonID else { return true }
+        return !daemon.process.isRunning || !daemon.isRunningTurn
     }
     
     
-    func shutdownAll() {
-        for channel in Array(self.daemons.keys) {
-            self.terminateDaemon(channel: channel, reason: "Pi 内核已关闭")
+    private func recycleDaemonIfStillRunningTurn(channel: PiAgentChannel, daemonID: UUID) {
+        guard let daemon = self.daemons[channel], daemon.id == daemonID else { return }
+        guard self.activeTurns[channel] == nil, daemon.isRunningTurn else { return }
+        self.terminateDaemon(
+            channel: channel,
+            expectedDaemonID: daemonID,
+            reason: AppLanguage.text("中断后后台进程未响应，已回收重启", en: "Recycled unresponsive Pi daemon after abort")
+        )
+    }
+    
+    
+    private func handlePromptAckTimeout(channel: PiAgentChannel, turnID: UUID, daemonID: UUID) {
+        guard let turn = self.activeTurns[channel], turn.id == turnID, !turn.promptAcked else { return }
+        let stderrHint = self.daemons[channel]?.stderrBuffer.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let baseMsg = AppLanguage.text("Pi 内核响应超时，已自动重置连接", en: "Pi RPC prompt acknowledgement timed out")
+        let msg = stderrHint.isEmpty ? baseMsg : "\(baseMsg) (\(String(stderrHint.prefix(200))))"
+        self.terminateDaemon(channel: channel, expectedDaemonID: daemonID, reason: msg)
+        self.finishTurn(channel: channel, expectedTurnID: turnID, error: AIError.http(status: 504, message: msg))
+    }
+    
+    
+    private func handleToolTimeout(channel: PiAgentChannel, turnID: UUID, toolCallID: String, toolName: String) {
+        guard var turn = self.activeTurns[channel], turn.id == turnID else { return }
+        guard let startedAt = turn.toolStartedAt.removeValue(forKey: toolCallID) else { return }
+        turn.toolTimeoutTasks.removeValue(forKey: toolCallID)?.cancel()
+        
+        let elapsedMs = max(1, Int((Date().timeIntervalSince(startedAt) * 1000.0).rounded()))
+        let timeoutDetail = AppLanguage.text("工具执行超时，已自动终止", en: "Tool timed out and was aborted")
+        if let idx = turn.steps.firstIndex(where: { $0.id == toolCallID }) {
+            turn.steps[idx].status = "error"
+            turn.steps[idx].durationMs = elapsedMs
+            turn.steps[idx].detail = [timeoutDetail]
         }
+        let label = PiToolDisplayMeta.label(for: toolName)
+        let msg = AppLanguage.text("工具「\(label)」执行超时，已自动中断并解除会话锁定", en: "Tool '\(label)' timed out and was aborted")
+        turn.errorMessage = msg
+        self.activeTurns[channel] = turn
+        
+        let onEvent = turn.onEvent
+        Task { @MainActor in
+            onEvent(.toolEnd(id: toolCallID, name: toolName, isError: true, durationMs: elapsedMs, outputPreview: timeoutDetail))
+            onEvent(.error(msg))
+        }
+        
+        // Abort & recycle wedged daemon so the channel is immediately ready for the next message
+        self.terminateDaemon(channel: channel, expectedDaemonID: turn.daemonID, reason: msg)
+        self.finishTurn(channel: channel, expectedTurnID: turnID, error: AIError.http(status: 504, message: msg))
+    }
+    
+    
+    private func checkTurnWatchdog(
+        channel: PiAgentChannel,
+        turnID: UUID,
+        daemonID: UUID,
+        idleTimeoutSec: Double,
+        maxTurnSec: Double
+    ) -> Bool {
+        guard let turn = self.activeTurns[channel], turn.id == turnID else { return false }
+        let nowUptime = ProcessInfo.processInfo.systemUptime
+        let totalElapsed = Date().timeIntervalSince(turn.startedAt)
+        
+        if totalElapsed >= maxTurnSec {
+            let msg = AppLanguage.text("本轮推理总耗时超过上限，已自动中止", en: "Turn exceeded maximum duration and was aborted")
+            self.terminateDaemon(channel: channel, expectedDaemonID: daemonID, reason: msg)
+            self.finishTurn(channel: channel, expectedTurnID: turnID, error: AIError.http(status: 504, message: msg))
+            return false
+        }
+        
+        // While a tool is running, the per-tool watchdog handles its timeout; otherwise enforce idle timeout
+        if turn.toolStartedAt.isEmpty, (nowUptime - turn.lastActivityUptime) >= idleTimeoutSec {
+            let msg = AppLanguage.text("模型长时间无响应，已自动释放会话", en: "Model stream stalled; released session")
+            self.terminateDaemon(channel: channel, expectedDaemonID: daemonID, reason: msg)
+            self.finishTurn(channel: channel, expectedTurnID: turnID, error: AIError.http(status: 504, message: msg))
+            return false
+        }
+        return true
     }
     
     
     // MARK: - Daemon Lifecycle
     
     private func ensureDaemon(for request: PiRPCTurnRequest) throws -> ChannelDaemon {
+        let safeCWD = Self.safeWorkingDirectory(
+            preferred: request.workingDirectoryURL,
+            agentDirectoryURL: request.agentDirectoryURL
+        )
         if let existing = self.daemons[request.channel] {
-            if existing.process.isRunning && existing.workspaceConfigStamp == request.workspaceConfigStamp {
+            let sameCWD = existing.workingDirectoryURL.standardizedFileURL == safeCWD.standardizedFileURL
+            if existing.process.isRunning && existing.workspaceConfigStamp == request.workspaceConfigStamp && sameCWD {
                 return existing
             }
-            self.terminateDaemon(channel: request.channel, reason: "配置已更新，正在重启 Pi 内核")
+            self.terminateDaemon(
+                channel: request.channel,
+                expectedDaemonID: existing.id,
+                reason: "配置或工作目录已更新，正在重启 Pi 内核"
+            )
         }
         
         let fm = FileManager.default
@@ -414,9 +772,7 @@ actor PiRPCRuntime {
         let process = Process()
         process.executableURL = URL(filePath: request.binaryPath)
         process.arguments = args
-        if let cwd = request.workingDirectoryURL, fm.fileExists(atPath: cwd.path(percentEncoded: false)) {
-            process.currentDirectoryURL = cwd
-        }
+        process.currentDirectoryURL = safeCWD
         var env = PiKernelManager.augmentedRuntimeEnvironment(
             binaryPath: request.binaryPath,
             agentDirectoryPath: request.agentDirectoryURL.path(percentEncoded: false),
@@ -442,6 +798,7 @@ actor PiRPCRuntime {
             stdoutHandle: stdoutPipe.fileHandleForReading,
             stderrHandle: stderrPipe.fileHandleForReading,
             systemPromptFileURL: systemPromptFile,
+            workingDirectoryURL: safeCWD,
             workspaceConfigStamp: request.workspaceConfigStamp,
             providerID: request.providerID,
             modelID: request.modelID
@@ -450,22 +807,53 @@ actor PiRPCRuntime {
         self.daemons[request.channel] = daemon
         
         let channel = request.channel
+        let daemonID = daemon.id
         let outHandle = daemon.stdoutHandle
         let errHandle = daemon.stderrHandle
         
+        let (stdoutStream, stdoutContinuation) = AsyncStream<Data>.makeStream()
+        let (stderrStream, stderrContinuation) = AsyncStream<Data>.makeStream()
+        
+        // Event-driven pipe streaming via `readabilityHandler` + `availableData`.
+        // CRITICAL: Never use `FileHandle.read(upToCount: N)` on a persistent RPC pipe because
+        // Foundation loops until N bytes OR EOF arrive, which permanently deadlocks short JSONL
+        // responses (`prompt` ack, `new_session`, `set_model`, `agent_settled`) when stdout stays open.
+        outHandle.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                stdoutContinuation.finish()
+            } else {
+                stdoutContinuation.yield(data)
+            }
+        }
+        errHandle.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                stderrContinuation.finish()
+            } else {
+                stderrContinuation.yield(data)
+            }
+        }
+        daemon.finishStreams = {
+            outHandle.readabilityHandler = nil
+            errHandle.readabilityHandler = nil
+            stdoutContinuation.finish()
+            stderrContinuation.finish()
+        }
+        
         daemon.stderrTask = Task.detached(priority: .utility) { [weak self] in
-            while true {
-                guard let chunk = try? errHandle.read(upToCount: 4096), !chunk.isEmpty else { break }
+            for await chunk in stderrStream {
                 if let text = String(data: chunk, encoding: .utf8), !text.isEmpty {
-                    await self?.appendStderr(channel: channel, text: text)
+                    await self?.appendStderr(channel: channel, daemonID: daemonID, text: text)
                 }
             }
         }
         
         daemon.stdoutTask = Task.detached(priority: .userInitiated) { [weak self] in
             var buffer = Data()
-            while true {
-                guard let chunk = try? outHandle.read(upToCount: 8192), !chunk.isEmpty else { break }
+            for await chunk in stdoutStream {
                 buffer.append(chunk)
                 while let nl = buffer.firstIndex(of: 0x0A) {
                     var lineData = buffer.subdata(in: 0..<nl)
@@ -474,33 +862,50 @@ actor PiRPCRuntime {
                     guard !lineData.isEmpty,
                           let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
                     else { continue }
-                    await self?.handleIncomingJSON(channel: channel, json: obj)
+                    await self?.handleIncomingJSON(channel: channel, daemonID: daemonID, json: obj)
                 }
             }
-            await self?.handleDaemonEOF(channel: channel)
+            await self?.handleDaemonEOF(channel: channel, daemonID: daemonID)
         }
         
         return daemon
     }
     
     
-    private func terminateDaemon(channel: PiAgentChannel, reason: String) {
+    private func terminateDaemon(channel: PiAgentChannel, expectedDaemonID: UUID?, reason: String) {
+        if let expectedDaemonID, let current = self.daemons[channel], current.id != expectedDaemonID {
+            return
+        }
         if let daemon = self.daemons.removeValue(forKey: channel) {
+            daemon.finishStreams?()
+            daemon.finishStreams = nil
             daemon.stdoutTask?.cancel()
             daemon.stderrTask?.cancel()
             try? daemon.stdinHandle.close()
-            if daemon.process.isRunning {
-                daemon.process.terminate()
+            let proc = daemon.process
+            if proc.isRunning {
+                proc.terminate()
+                let pid = proc.processIdentifier
+                Task.detached(priority: .utility) {
+                    try? await Task.sleep(for: .milliseconds(900))
+                    if proc.isRunning && pid > 0 {
+                        kill(pid, SIGKILL)
+                    }
+                }
             }
-        }
-        if self.activeTurns[channel] != nil {
-            self.finishTurn(channel: channel, error: AIError.http(status: 502, message: reason))
+            self.failPendingResponses(for: channel, daemonID: daemon.id, reason: reason)
+            self.clearPromptCommands(for: channel, daemonID: daemon.id)
+            if let active = self.activeTurns[channel], active.daemonID == daemon.id {
+                self.finishTurn(channel: channel, expectedTurnID: active.id, error: AIError.http(status: 502, message: reason))
+            }
+        } else if expectedDaemonID == nil, let active = self.activeTurns[channel] {
+            self.finishTurn(channel: channel, expectedTurnID: active.id, error: AIError.http(status: 502, message: reason))
         }
     }
     
     
-    private func appendStderr(channel: PiAgentChannel, text: String) {
-        guard let daemon = self.daemons[channel] else { return }
+    private func appendStderr(channel: PiAgentChannel, daemonID: UUID, text: String) {
+        guard let daemon = self.daemons[channel], daemon.id == daemonID else { return }
         daemon.stderrBuffer += text
         if daemon.stderrBuffer.count > 4000 {
             daemon.stderrBuffer = String(daemon.stderrBuffer.suffix(3000))
@@ -508,14 +913,46 @@ actor PiRPCRuntime {
     }
     
     
-    private func handleDaemonEOF(channel: PiAgentChannel) {
-        let stderrText = self.daemons[channel]?.stderrBuffer.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    private func handleDaemonEOF(channel: PiAgentChannel, daemonID: UUID) {
+        guard let daemon = self.daemons[channel], daemon.id == daemonID else {
+            // Late EOF from an already-replaced daemon — ignore so we never disrupt a fresh daemon!
+            return
+        }
+        let stderrText = daemon.stderrBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
         self.daemons.removeValue(forKey: channel)
-        if self.activeTurns[channel] != nil {
-            let message = stderrText.isEmpty
-                ? AppLanguage.text("Pi 内核进程意外退出", en: "Pi RPC process exited unexpectedly")
-                : "Pi 内核退出：\(String(stderrText.prefix(240)))"
-            self.finishTurn(channel: channel, error: AIError.http(status: 502, message: message))
+        let message = stderrText.isEmpty
+            ? AppLanguage.text("Pi 内核进程意外退出", en: "Pi RPC process exited unexpectedly")
+            : "Pi 内核退出：\(String(stderrText.prefix(240)))"
+        self.failPendingResponses(for: channel, daemonID: daemonID, reason: message)
+        self.clearPromptCommands(for: channel, daemonID: daemonID)
+        if let active = self.activeTurns[channel], active.daemonID == daemonID {
+            self.finishTurn(channel: channel, expectedTurnID: active.id, error: AIError.http(status: 502, message: message))
+        }
+    }
+    
+    
+    private func failPendingResponses(for channel: PiAgentChannel, daemonID: UUID, reason: String) {
+        let matchingKeys = self.pendingResponses.compactMap { key, entry -> String? in
+            (entry.channel == channel && entry.daemonID == daemonID) ? key : nil
+        }
+        for key in matchingKeys {
+            if let entry = self.pendingResponses.removeValue(forKey: key) {
+                entry.timeoutTask?.cancel()
+                entry.continuation.resume(throwing: AIError.http(status: 502, message: reason))
+            }
+        }
+    }
+    
+    
+    private func clearPromptCommands(for channel: PiAgentChannel, turnID: UUID? = nil, daemonID: UUID? = nil) {
+        let keys = self.promptCommandChannels.compactMap { key, meta -> String? in
+            guard meta.channel == channel else { return nil }
+            if let turnID, meta.turnID != turnID { return nil }
+            if let daemonID, meta.daemonID != daemonID { return nil }
+            return key
+        }
+        for key in keys {
+            self.promptCommandChannels.removeValue(forKey: key)
         }
     }
     
@@ -544,52 +981,132 @@ actor PiRPCRuntime {
         let id = self.makeCommandID(prefix: "cmd")
         var full = payload
         full["id"] = id
+        let channel = daemon.channel
+        let daemonID = daemon.id
         
-        return try await withCheckedThrowingContinuation { continuation in
-            self.pendingResponses[id] = continuation
-            do {
-                try self.writeJSONLine(full, to: daemon.stdinHandle)
-            } catch {
-                self.pendingResponses.removeValue(forKey: id)
-                continuation.resume(throwing: error)
-                return
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                let timeoutTask = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(timeoutSec))
+                    guard !Task.isCancelled else { return }
+                    await self?.timeoutPendingResponse(id: id)
+                }
+                self.pendingResponses[id] = PendingResponseEntry(
+                    channel: channel,
+                    daemonID: daemonID,
+                    continuation: continuation,
+                    timeoutTask: timeoutTask
+                )
+                do {
+                    try self.writeJSONLine(full, to: daemon.stdinHandle)
+                } catch {
+                    if let removed = self.pendingResponses.removeValue(forKey: id) {
+                        removed.timeoutTask?.cancel()
+                        removed.continuation.resume(throwing: error)
+                    }
+                    return
+                }
             }
-            
+        } onCancel: {
             Task { [weak self] in
-                try? await Task.sleep(for: .seconds(timeoutSec))
-                await self?.timeoutPendingResponse(id: id)
+                await self?.cancelPendingResponse(id: id)
             }
         }
     }
     
     
     private func timeoutPendingResponse(id: String) {
-        if let cont = self.pendingResponses.removeValue(forKey: id) {
-            cont.resume(throwing: AIError.http(status: 504, message: "Pi RPC command timed out"))
+        if let entry = self.pendingResponses.removeValue(forKey: id) {
+            entry.timeoutTask?.cancel()
+            entry.continuation.resume(throwing: AIError.http(status: 504, message: "Pi RPC command timed out"))
         }
     }
     
     
-    private func handleIncomingJSON(channel: PiAgentChannel, json: [String: Any]) {
+    private func cancelPendingResponse(id: String) {
+        if let entry = self.pendingResponses.removeValue(forKey: id) {
+            entry.timeoutTask?.cancel()
+            entry.continuation.resume(throwing: CancellationError())
+        }
+    }
+    
+    
+    private func handleIncomingJSON(channel: PiAgentChannel, daemonID: UUID, json: [String: Any]) {
+        guard let daemon = self.daemons[channel], daemon.id == daemonID else { return }
         guard let eventType = json["type"] as? String else { return }
         
+        // Auto-cancel headless extension UI dialog prompts so Pi never blocks waiting for TUI confirmation
+        if eventType == "extension_ui_request",
+           let reqID = json["id"] as? String,
+           let method = json["method"] as? String,
+           ["select", "confirm", "input", "editor"].contains(method)
+        {
+            let reply: [String: Any] = [
+                "type": "extension_ui_response",
+                "id": reqID,
+                "cancelled": true,
+            ]
+            try? self.writeJSONLine(reply, to: daemon.stdinHandle)
+            return
+        }
+        
         if eventType == "response", let id = json["id"] as? String {
-            if let cont = self.pendingResponses.removeValue(forKey: id) {
-                cont.resume(returning: json)
+            if let entry = self.pendingResponses.removeValue(forKey: id) {
+                entry.timeoutTask?.cancel()
+                entry.continuation.resume(returning: json)
                 return
             }
-            if let promptChannel = self.promptCommandChannels.removeValue(forKey: id) {
-                if (json["success"] as? Bool) == false {
-                    let err = (json["error"] as? String) ?? "Pi prompt rejected"
-                    self.finishTurn(channel: promptChannel, error: AIError.http(status: 502, message: err))
+            if let promptMeta = self.promptCommandChannels.removeValue(forKey: id) {
+                if var turn = self.activeTurns[promptMeta.channel], turn.id == promptMeta.turnID {
+                    turn.promptAcked = true
+                    turn.promptAckTask?.cancel()
+                    turn.promptAckTask = nil
+                    turn.lastActivityUptime = ProcessInfo.processInfo.systemUptime
+                    self.activeTurns[promptMeta.channel] = turn
+                    
+                    if (json["success"] as? Bool) == false {
+                        let err = (json["error"] as? String) ?? "Pi prompt rejected"
+                        self.finishTurn(channel: promptMeta.channel, expectedTurnID: promptMeta.turnID, error: AIError.http(status: 502, message: err))
+                        return
+                    }
+                    let disposition = ((json["data"] as? [String: Any])?["disposition"] as? String)
+                        ?? (json["disposition"] as? String)
+                    if disposition == "handled" {
+                        self.completeTurnNormally(channel: promptMeta.channel, expectedTurnID: promptMeta.turnID, allowEmptyText: true)
+                        return
+                    }
                 }
                 return
             }
             return
         }
         
-        guard var turn = self.activeTurns[channel] else { return }
+        // Even if the Swift caller already cancelled/released the turn, keep `daemon.isRunningTurn` accurate on settle
+        if eventType == "agent_settled" {
+            daemon.isRunningTurn = false
+        }
+        
+        guard var turn = self.activeTurns[channel], turn.daemonID == daemonID else { return }
+        turn.lastActivityUptime = ProcessInfo.processInfo.systemUptime
         let onEvent = turn.onEvent
+        let turnID = turn.id
+        
+        func closeActiveThinkingStepIfNeeded(now: Date = Date()) -> Int? {
+            guard let thinkID = turn.thinkingStepID,
+                  let idx = turn.steps.firstIndex(where: { $0.id == thinkID && $0.status == "running" })
+            else { return nil }
+            let durMs = turn.thinkingStartedAt.map { max(1, Int((now.timeIntervalSince($0) * 1000.0).rounded())) }
+            turn.steps[idx].status = "done"
+            if let durMs {
+                turn.steps[idx].durationMs = durMs
+            }
+            turn.thinkingStartedAt = nil
+            return durMs
+        }
         
         switch eventType {
             case "message_start":
@@ -599,6 +1116,7 @@ actor PiRPCRuntime {
                     turn.textBlocks = [:]
                     turn.thinkingBlocks = [:]
                     turn.thinkingStepID = nil
+                    turn.thinkingStartedAt = nil
                     self.activeTurns[channel] = turn
                 }
                 
@@ -609,9 +1127,12 @@ actor PiRPCRuntime {
                     let idx = assistantEvent["contentIndex"] as? Int ?? 0
                     switch subType {
                         case "thinking_start":
+                            let now = Date()
+                            let startedMs = now.timeIntervalSince1970 * 1000.0
                             if turn.thinkingStepID == nil {
-                                let stepID = "think-\(idx)"
+                                let stepID = "think-\(turn.steps.count)-\(idx)"
                                 turn.thinkingStepID = stepID
+                                turn.thinkingStartedAt = now
                                 turn.steps.append(BeautifulAgentThinkingStep(
                                     id: stepID,
                                     label: AppLanguage.text("推理思考", en: "Reasoning"),
@@ -619,14 +1140,20 @@ actor PiRPCRuntime {
                                     status: "running",
                                     mono: false,
                                     detail: nil,
-                                    durationMs: nil
+                                    durationMs: nil,
+                                    kind: "thinking",
+                                    startedAtMs: startedMs
                                 ))
                             }
                             self.activeTurns[channel] = turn
-                            Task { @MainActor in onEvent(.status(AppLanguage.text("正在推理…", en: "Reasoning..."))) }
+                            Task { @MainActor in
+                                onEvent(.thinkingStart(startedAtMs: startedMs))
+                                onEvent(.status(AppLanguage.text("正在推理…", en: "Reasoning...")))
+                            }
                             
                         case "thinking_delta":
                             if let delta = assistantEvent["delta"] as? String, !delta.isEmpty {
+                                let now = Date()
                                 turn.thinkingBlocks[idx, default: ""] += delta
                                 let combinedThinking = turn.thinkingBlocks.keys.sorted().compactMap { turn.thinkingBlocks[$0] }.joined()
                                 let previewLines = combinedThinking
@@ -635,13 +1162,17 @@ actor PiRPCRuntime {
                                     .filter { !$0.isEmpty }
                                     .suffix(3)
                                     .map { String($0.prefix(140)) }
+                                var emittedStartMs: Double?
                                 if let stepID = turn.thinkingStepID,
                                    let i = turn.steps.firstIndex(where: { $0.id == stepID })
                                 {
                                     turn.steps[i].detail = previewLines.isEmpty ? nil : previewLines
                                 } else {
-                                    let stepID = "think-\(idx)"
+                                    let stepID = "think-\(turn.steps.count)-\(idx)"
+                                    let startedMs = now.timeIntervalSince1970 * 1000.0
+                                    emittedStartMs = startedMs
                                     turn.thinkingStepID = stepID
+                                    turn.thinkingStartedAt = now
                                     turn.steps.append(BeautifulAgentThinkingStep(
                                         id: stepID,
                                         label: AppLanguage.text("推理思考", en: "Reasoning"),
@@ -649,38 +1180,56 @@ actor PiRPCRuntime {
                                         status: "running",
                                         mono: false,
                                         detail: previewLines.isEmpty ? nil : previewLines,
-                                        durationMs: nil
+                                        durationMs: nil,
+                                        kind: "thinking",
+                                        startedAtMs: startedMs
                                     ))
                                 }
                                 self.activeTurns[channel] = turn
-                                Task { @MainActor in onEvent(.thinkingDelta(combinedThinking)) }
+                                Task { @MainActor in
+                                    if let emittedStartMs {
+                                        onEvent(.thinkingStart(startedAtMs: emittedStartMs))
+                                    }
+                                    onEvent(.thinkingDelta(combinedThinking))
+                                }
                             }
                             
                         case "thinking_end":
                             if let content = assistantEvent["content"] as? String, !content.isEmpty {
                                 turn.thinkingBlocks[idx] = content
                             }
-                            if let stepID = turn.thinkingStepID,
-                               let i = turn.steps.firstIndex(where: { $0.id == stepID })
-                            {
-                                turn.steps[i].status = "done"
-                            }
+                            let durMs = closeActiveThinkingStepIfNeeded()
                             let fullThinking = turn.thinkingBlocks.keys.sorted().compactMap { turn.thinkingBlocks[$0] }.joined()
                             self.activeTurns[channel] = turn
-                            Task { @MainActor in onEvent(.thinkingEnd(fullThinking)) }
+                            Task { @MainActor in onEvent(.thinkingEnd(fullThinking, durationMs: durMs)) }
                             
                         case "text_delta":
                             if let delta = assistantEvent["delta"] as? String, !delta.isEmpty {
+                                let nowDate = Date()
+                                if turn.firstAnswerTextAt == nil {
+                                    turn.firstAnswerTextAt = nowDate
+                                }
+                                let closedThinkingMs = closeActiveThinkingStepIfNeeded(now: nowDate)
                                 turn.textBlocks[idx, default: ""] += delta
                                 let joined = turn.textBlocks.keys.sorted().compactMap { turn.textBlocks[$0] }.joined()
-                                let now = ProcessInfo.processInfo.systemUptime
-                                let shouldEmit = (now - turn.lastTextEmitUptime) >= 0.025
+                                let nowUptime = ProcessInfo.processInfo.systemUptime
+                                let shouldEmit = (nowUptime - turn.lastTextEmitUptime) >= 0.025
                                 if shouldEmit {
-                                    turn.lastTextEmitUptime = now
+                                    turn.lastTextEmitUptime = nowUptime
                                 }
+                                let fullThinking = closedThinkingMs != nil
+                                    ? turn.thinkingBlocks.keys.sorted().compactMap { turn.thinkingBlocks[$0] }.joined()
+                                    : nil
                                 self.activeTurns[channel] = turn
-                                if shouldEmit {
-                                    Task { @MainActor in onEvent(.textDelta(joined)) }
+                                if shouldEmit || closedThinkingMs != nil {
+                                    Task { @MainActor in
+                                        if let fullThinking {
+                                            onEvent(.thinkingEnd(fullThinking, durationMs: closedThinkingMs))
+                                        }
+                                        if shouldEmit {
+                                            onEvent(.textDelta(joined))
+                                        }
+                                    }
                                 }
                             }
                             
@@ -711,22 +1260,33 @@ actor PiRPCRuntime {
                 }
                 
             case "tool_execution_start":
+                let now = Date()
+                let startedMs = now.timeIntervalSince1970 * 1000.0
                 let toolCallID = (json["toolCallId"] as? String) ?? UUID().uuidString
                 let toolName = (json["toolName"] as? String) ?? "tool"
                 let args = json["args"] as? [String: Any]
                 let label = PiToolDisplayMeta.label(for: toolName)
                 let detail = PiToolDisplayMeta.summarizeArgs(toolName, args: args)
                 
-                // Mark running thinking step done once tool begins
-                if let thinkID = turn.thinkingStepID,
-                   let idx = turn.steps.firstIndex(where: { $0.id == thinkID && $0.status == "running" })
-                {
-                    turn.steps[idx].status = "done"
-                }
+                let closedThinkingMs = closeActiveThinkingStepIfNeeded(now: now)
+                let fullThinking = closedThinkingMs != nil
+                    ? turn.thinkingBlocks.keys.sorted().compactMap { turn.thinkingBlocks[$0] }.joined()
+                    : nil
                 
                 if !turn.toolNames.contains(toolName) {
                     turn.toolNames.append(toolName)
                 }
+                turn.toolStartedAt[toolCallID] = now
+                turn.toolTimeoutTasks[toolCallID]?.cancel()
+                let toolTimeoutSec = Self.fastCotToolNames.contains(toolName)
+                    ? self.timeoutPolicy.cotToolTimeoutSeconds
+                    : self.timeoutPolicy.workspaceToolTimeoutSeconds
+                turn.toolTimeoutTasks[toolCallID] = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(toolTimeoutSec))
+                    guard !Task.isCancelled else { return }
+                    await self?.handleToolTimeout(channel: channel, turnID: turnID, toolCallID: toolCallID, toolName: toolName)
+                }
+                
                 turn.steps.append(BeautifulAgentThinkingStep(
                     id: toolCallID,
                     label: label,
@@ -734,11 +1294,16 @@ actor PiRPCRuntime {
                     status: "running",
                     mono: ["bash", "grep", "read", "edit", "write"].contains(toolName),
                     detail: nil,
-                    durationMs: nil
+                    durationMs: nil,
+                    kind: "tool",
+                    startedAtMs: startedMs
                 ))
                 self.activeTurns[channel] = turn
                 Task { @MainActor in
-                    onEvent(.toolStart(id: toolCallID, name: toolName, label: label, detail: detail))
+                    if let fullThinking {
+                        onEvent(.thinkingEnd(fullThinking, durationMs: closedThinkingMs))
+                    }
+                    onEvent(.toolStart(id: toolCallID, name: toolName, label: label, detail: detail, startedAtMs: startedMs))
                 }
                 
             case "tool_execution_update":
@@ -756,7 +1321,13 @@ actor PiRPCRuntime {
                 let toolCallID = (json["toolCallId"] as? String) ?? ""
                 let toolName = (json["toolName"] as? String) ?? ""
                 let isError = (json["isError"] as? Bool) == true
-                let durationMs = json["durationMs"] as? Int
+                turn.toolTimeoutTasks.removeValue(forKey: toolCallID)?.cancel()
+                let startedAt = turn.toolStartedAt.removeValue(forKey: toolCallID)
+                let durationMs = Self.resolvedToolDurationMs(
+                    rawDurationValue: json["durationMs"],
+                    startedAt: startedAt,
+                    now: Date()
+                )
                 let preview = PiToolDisplayMeta.extractToolOutputText(from: json["result"])
                 if let idx = turn.steps.firstIndex(where: { $0.id == toolCallID }) {
                     turn.steps[idx].status = isError ? "error" : "done"
@@ -804,8 +1375,20 @@ actor PiRPCRuntime {
                     self.activeTurns[channel] = turn
                 }
                 
+            case "agent_end":
+                // `agent_settled` normally follows immediately; guard with a 1.5s fallback if `willRetry == false`
+                if (json["willRetry"] as? Bool) != true {
+                    turn.settleFallbackTask?.cancel()
+                    turn.settleFallbackTask = Task { [weak self] in
+                        try? await Task.sleep(for: .milliseconds(1500))
+                        guard !Task.isCancelled else { return }
+                        await self?.completeTurnNormally(channel: channel, expectedTurnID: turnID)
+                    }
+                    self.activeTurns[channel] = turn
+                }
+                
             case "agent_settled":
-                self.completeTurnNormally(channel: channel)
+                self.completeTurnNormally(channel: channel, expectedTurnID: turnID)
                 
             default:
                 break
@@ -813,29 +1396,56 @@ actor PiRPCRuntime {
     }
     
     
-    private func completeTurnNormally(channel: PiAgentChannel) {
-        guard let turn = self.activeTurns.removeValue(forKey: channel) else { return }
-        self.daemons[channel]?.isRunningTurn = false
+    private func completeTurnNormally(
+        channel: PiAgentChannel,
+        expectedTurnID: UUID? = nil,
+        allowEmptyText: Bool = false
+    ) {
+        if let expectedTurnID, let current = self.activeTurns[channel], current.id != expectedTurnID {
+            return
+        }
+        guard var turn = self.activeTurns.removeValue(forKey: channel) else { return }
+        turn.cancelAllWatchdogs()
+        self.clearPromptCommands(for: channel, turnID: turn.id)
+        if let daemon = self.daemons[channel], daemon.id == turn.daemonID {
+            daemon.isRunningTurn = false
+        }
         
+        let now = Date()
         let streamedText = turn.textBlocks.keys.sorted().compactMap { turn.textBlocks[$0] }.joined()
         let finalText = (turn.finalAssistantText ?? streamedText).trimmingCharacters(in: .whitespacesAndNewlines)
         let fullThinking = turn.thinkingBlocks.keys.sorted().compactMap { turn.thinkingBlocks[$0] }.joined()
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let elapsedMs = max(1, Int(Date().timeIntervalSince(turn.startedAt) * 1000))
         
         var finalSteps = turn.steps
         for i in finalSteps.indices where finalSteps[i].status == "running" {
             finalSteps[i].status = turn.aborted ? "error" : "done"
+            if finalSteps[i].durationMs == nil, let startedMs = finalSteps[i].startedAtMs {
+                let delta = Int((now.timeIntervalSince1970 * 1000.0 - startedMs).rounded())
+                finalSteps[i].durationMs = max(1, delta)
+            }
+        }
+        
+        // Prefer sum of actual reasoning+tool durations (or time until first answer text), avoiding text-streaming tail inflation
+        let sumStepDurations = finalSteps.reduce(0) { $0 + max(0, $1.durationMs ?? 0) }
+        let wallMs = max(1, Int((now.timeIntervalSince(turn.startedAt) * 1000.0).rounded()))
+        let preAnswerMs = turn.firstAnswerTextAt.map { max(1, Int(($0.timeIntervalSince(turn.startedAt) * 1000.0).rounded())) }
+        let resolvedThinkingMs: Int = if sumStepDurations > 0 {
+            min(wallMs, sumStepDurations)
+        } else if let preAnswerMs {
+            min(wallMs, preAnswerMs)
+        } else {
+            wallMs
         }
         
         let onEvent = turn.onEvent
         Task { @MainActor in onEvent(.settled) }
         
-        if !finalText.isEmpty || turn.aborted {
+        if !finalText.isEmpty || turn.aborted || allowEmptyText {
             turn.continuation.resume(returning: PiAgentRunResult(
                 text: finalText,
                 thinking: fullThinking,
-                thinkingDurationMs: elapsedMs,
+                thinkingDurationMs: resolvedThinkingMs,
                 steps: finalSteps,
                 toolNames: turn.toolNames,
                 aborted: turn.aborted
@@ -850,9 +1460,16 @@ actor PiRPCRuntime {
     }
     
     
-    private func finishTurn(channel: PiAgentChannel, error: any Error) {
-        guard let turn = self.activeTurns.removeValue(forKey: channel) else { return }
-        self.daemons[channel]?.isRunningTurn = false
+    private func finishTurn(channel: PiAgentChannel, expectedTurnID: UUID? = nil, error: any Error) {
+        if let expectedTurnID, let current = self.activeTurns[channel], current.id != expectedTurnID {
+            return
+        }
+        guard var turn = self.activeTurns.removeValue(forKey: channel) else { return }
+        turn.cancelAllWatchdogs()
+        self.clearPromptCommands(for: channel, turnID: turn.id)
+        if let daemon = self.daemons[channel], daemon.id == turn.daemonID {
+            daemon.isRunningTurn = false
+        }
         turn.continuation.resume(throwing: error)
     }
     
@@ -867,6 +1484,25 @@ actor PiRPCRuntime {
             case "high": return "high"
             default: return nil
         }
+    }
+}
+
+
+private final class TurnIDBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UUID?
+    
+    func set(_ id: UUID) {
+        self.lock.lock()
+        self.value = id
+        self.lock.unlock()
+    }
+    
+    func get() -> UUID? {
+        self.lock.lock()
+        let current = self.value
+        self.lock.unlock()
+        return current
     }
 }
 
@@ -893,9 +1529,11 @@ enum CotSwiftToolFallback {
         if marketKeywords.contains(where: { lower.contains($0) }) {
             let candidates = Self.extractStockCandidates(from: userText)
             for candidate in candidates.prefix(2) {
+                let lookupStart = Date()
                 if let inst = await CotMarketService.shared.resolveInstrument(for: candidate),
                    let snap = await CotMarketService.shared.refresh(instrument: inst, period: .day, isBackgroundWatchlistRefresh: true)
                 {
+                    let elapsedMs = max(1, Int((Date().timeIntervalSince(lookupStart) * 1000.0).rounded()))
                     let cur = inst.market.currencyPrefix
                     let sign = snap.changeAmount >= 0 ? "+" : ""
                     let summary = """
@@ -911,7 +1549,9 @@ enum CotSwiftToolFallback {
                         status: "done",
                         mono: false,
                         detail: Array(summary.components(separatedBy: .newlines).prefix(3)),
-                        durationMs: nil
+                        durationMs: elapsedMs,
+                        kind: "tool",
+                        startedAtMs: lookupStart.timeIntervalSince1970 * 1000.0
                     ))
                     break
                 }
@@ -921,6 +1561,7 @@ enum CotSwiftToolFallback {
         // Detect news inquiry and attach cached headlines
         let newsKeywords = ["新闻", "资讯", "热点", "头条", "最新消息", "发生了什么", "news"]
         if newsKeywords.contains(where: { lower.contains($0) }) {
+            let newsStart = Date()
             let items = AIHotNewsService.shared.items.prefix(8)
             if !items.isEmpty {
                 let list = items.map { item -> String in
@@ -936,7 +1577,9 @@ enum CotSwiftToolFallback {
                     status: "done",
                     mono: false,
                     detail: items.prefix(3).map(\.title),
-                    durationMs: nil
+                    durationMs: max(1, Int((Date().timeIntervalSince(newsStart) * 1000.0).rounded())),
+                    kind: "tool",
+                    startedAtMs: newsStart.timeIntervalSince1970 * 1000.0
                 ))
             }
         }

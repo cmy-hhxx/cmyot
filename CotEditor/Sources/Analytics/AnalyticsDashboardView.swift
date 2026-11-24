@@ -1067,6 +1067,7 @@ struct AnalyticsDashboardView: View {
     @State private var analytics = AnalyticsManager.shared
     @State private var profileManager = UserProfileManager.shared
     @State private var studioPalette = StudioPaletteManager.shared
+    @State private var heroCoverStore = DashboardHeroCoverStore.shared
     
     @State private var snapshot: DashboardSnapshot?
     @State private var snapshotVersion: Int = 0
@@ -1114,7 +1115,12 @@ struct AnalyticsDashboardView: View {
                 let outerPad: CGFloat = self.isEmbeddedInSettings ? 12 : 24
                 let vSpacing: CGFloat = self.isEmbeddedInSettings ? 12 : 16
                 let hSpacing: CGFloat = self.isEmbeddedInSettings ? 12 : 16
-                let heroH: CGFloat = self.isEmbeddedInSettings ? 132 : 172
+                let hasHeroPhoto = (self.heroCoverStore.coverImage != nil)
+                let heroH: CGFloat = if self.isEmbeddedInSettings {
+                    hasHeroPhoto ? 196 : 152
+                } else {
+                    hasHeroPhoto ? 276 : 208
+                }
                 let row1H: CGFloat = self.isEmbeddedInSettings ? 228 : 304
                 let row2H: CGFloat = self.isEmbeddedInSettings ? 236 : 336
                 
@@ -1132,6 +1138,7 @@ struct AnalyticsDashboardView: View {
                                 )
                                 .frame(maxWidth: .infinity)
                                 .frame(height: heroH)
+                                .animation(DashMotion.resolve(DashMotion.standard), value: hasHeroPhoto)
                                 .opacity(self.hasAppeared ? 1 : 0)
                                 .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.992)
                                 .offset(y: self.hasAppeared || DashMotion.isReducedMotion ? 0 : 8)
@@ -2293,6 +2300,316 @@ final class DashboardHeroCoverStore {
 }
 
 
+/// Sampled color & perceptual luminance of one region of the Dashboard hero backdrop.
+nonisolated struct HeroRegionTone: Equatable, Sendable {
+    
+    let red: Double
+    let green: Double
+    let blue: Double
+    /// WCAG 2.1 relative luminance (`0.0` pure black ... `1.0` pure white).
+    let luminance: Double
+    /// HSV-like chroma saturation (`0.0` neutral ... `1.0` vivid).
+    let saturation: Double
+    
+    /// `true` when dark ink should sit atop airy luminous frosted glass;
+    /// `false` when crisp luminous off-white ink should sit atop chromatic translucent frosted glass.
+    var isLightBackground: Bool {
+        self.luminance > 0.54
+    }
+    
+    init(red: Double, green: Double, blue: Double) {
+        let r = max(0, min(1, red))
+        let g = max(0, min(1, green))
+        let b = max(0, min(1, blue))
+        self.red = r
+        self.green = g
+        self.blue = b
+        self.luminance = Self.relativeLuminance(r: r, g: g, b: b)
+        let hi = max(r, max(g, b))
+        let lo = min(r, min(g, b))
+        self.saturation = hi > 0.001 ? (hi - lo) / hi : 0
+    }
+    
+    static func relativeLuminance(r: Double, g: Double, b: Double) -> Double {
+        func linearize(_ c: Double) -> Double {
+            c <= 0.04045 ? (c / 12.92) : pow((c + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b)
+    }
+    
+    static func interpolate(_ lhs: HeroRegionTone, _ rhs: HeroRegionTone, t: Double) -> HeroRegionTone {
+        let u = max(0, min(1, t))
+        return HeroRegionTone(
+            red: lhs.red + (rhs.red - lhs.red) * u,
+            green: lhs.green + (rhs.green - lhs.green) * u,
+            blue: lhs.blue + (rhs.blue - lhs.blue) * u
+        )
+    }
+}
+
+
+/// Real-time regional backdrop color & luminance snapshot driving adaptive Back button, top controls, and floating danmaku.
+nonisolated struct HeroBackdropToneSnapshot: Equatable, Sendable {
+    
+    let hasPhoto: Bool
+    /// Sampled directly behind the top-left Back button.
+    let topLeft: HeroRegionTone
+    /// Sampled directly behind the top-right Danmaku toggle & Cover picker controls.
+    let topRight: HeroRegionTone
+    /// Horizontal samples across the panoramic mid-stage danmaku flight corridor (`x: 0...1`).
+    let danmakuColumns: [HeroRegionTone]
+    /// Sampled near the lower photo edge feeding the bottom dock harmonization.
+    let bottomStrip: HeroRegionTone
+    
+    /// Returns a smoothly interpolated regional background tone at horizontal fraction `x` (`0...1`).
+    func danmakuTone(atNormalizedX x: Double) -> HeroRegionTone {
+        guard !self.danmakuColumns.isEmpty else { return self.topRight }
+        if self.danmakuColumns.count == 1 { return self.danmakuColumns[0] }
+        let clamped = max(0, min(1, x))
+        let scaled = clamped * Double(self.danmakuColumns.count - 1)
+        let idx0 = Int(floor(scaled))
+        let idx1 = min(self.danmakuColumns.count - 1, idx0 + 1)
+        let frac = scaled - Double(idx0)
+        return HeroRegionTone.interpolate(self.danmakuColumns[idx0], self.danmakuColumns[idx1], t: frac)
+    }
+}
+
+
+/// Chromatic, material-backed adaptive glass styling derived directly from a sampled `HeroRegionTone`.
+///
+/// Strictly avoids opaque black slabs and muddy dark shadows: blends the real background hue with
+/// frosted translucent glass and contrast-verified foreground ink.
+@MainActor
+struct HeroAdaptiveGlassTokens {
+    
+    let fillTint: Color
+    let ink: Color
+    let secondaryInk: Color
+    let border: Color
+    let topSpecular: Color
+    let inactiveTrack: Color
+    let accentDot: Color
+    let usesLightInk: Bool
+    
+    static func resolve(
+        for tone: HeroRegionTone,
+        hasPhoto: Bool,
+        hovered: Bool = false,
+        palette: DashPalette
+    ) -> HeroAdaptiveGlassTokens {
+        let isLightBg = tone.isLightBackground
+        let midToneBoost = max(0, 1.0 - abs(tone.luminance - 0.50) * 4.0) // Extra frost near luminance ~0.50
+        
+        if isLightBg {
+            // Bright / pastel / sunlit backdrop -> airy frosted light glass tinted softly with photo hue + crisp deep ink
+            let tintR = min(1.0, 0.88 + tone.red * 0.12)
+            let tintG = min(1.0, 0.88 + tone.green * 0.12)
+            let tintB = min(1.0, 0.88 + tone.blue * 0.12)
+            let baseOpacity = hasPhoto ? (0.56 + midToneBoost * 0.14) : 0.72
+            let opacity = hovered ? min(0.88, baseOpacity + 0.14) : baseOpacity
+            
+            // Deep hue-harmonized ink (never washed out)
+            let inkR = 0.08 + tone.red * 0.07
+            let inkG = 0.09 + tone.green * 0.07
+            let inkB = 0.11 + tone.blue * 0.08
+            
+            let borderOpacity = hovered ? 0.30 : 0.18
+            return HeroAdaptiveGlassTokens(
+                fillTint: Color(red: tintR, green: tintG, blue: tintB).opacity(opacity),
+                ink: Color(red: inkR, green: inkG, blue: inkB).opacity(0.94),
+                secondaryInk: Color(red: inkR, green: inkG, blue: inkB).opacity(0.68),
+                border: Color(red: inkR, green: inkG, blue: inkB).opacity(borderOpacity),
+                topSpecular: Color.white.opacity(hovered ? 0.85 : 0.68),
+                inactiveTrack: Color(red: inkR, green: inkG, blue: inkB).opacity(0.20),
+                accentDot: palette.accentFill,
+                usesLightInk: false
+            )
+        } else {
+            // Deep / twilight / rich colorful backdrop -> chromatic translucent frosted glass (NOT pure black) + crisp luminous ink
+            let lift = 0.14 + tone.saturation * 0.10
+            let tintR = min(0.52, tone.red * 0.56 + lift)
+            let tintG = min(0.52, tone.green * 0.56 + lift)
+            let tintB = min(0.56, tone.blue * 0.56 + lift + 0.02)
+            let baseOpacity = hasPhoto ? (0.36 + midToneBoost * 0.14) : 0.44
+            let opacity = hovered ? min(0.64, baseOpacity + 0.12) : baseOpacity
+            
+            let inkR = 0.94 + tone.red * 0.06
+            let inkG = 0.95 + tone.green * 0.05
+            let inkB = 0.97 + tone.blue * 0.03
+            
+            let dotR = min(1.0, 0.52 + tone.red * 0.35 + 0.12)
+            let dotG = min(1.0, 0.68 + tone.green * 0.25 + 0.06)
+            let dotB = min(1.0, 0.78 + tone.blue * 0.20)
+            
+            return HeroAdaptiveGlassTokens(
+                fillTint: Color(red: tintR, green: tintG, blue: tintB).opacity(opacity),
+                ink: Color(red: inkR, green: inkG, blue: inkB).opacity(0.96),
+                secondaryInk: Color(red: inkR, green: inkG, blue: inkB).opacity(0.76),
+                border: Color.white.opacity(hovered ? 0.40 : 0.24),
+                topSpecular: Color.white.opacity(hovered ? 0.36 : 0.22),
+                inactiveTrack: Color.white.opacity(0.28),
+                accentDot: Color(red: dotR, green: dotG, blue: dotB),
+                usesLightInk: true
+            )
+        }
+    }
+    
+    static func danmakuAccentDot(
+        for itemTone: PersonalityTagTone,
+        background: HeroRegionTone,
+        palette: DashPalette
+    ) -> Color {
+        if background.isLightBackground {
+            switch itemTone {
+                case .calm: return Color(red: 0.14, green: 0.48, blue: 0.78)
+                case .sharp: return palette.accentFill
+                case .warm: return Color(red: 0.84, green: 0.44, blue: 0.14)
+                case .playful: return Color(red: 0.54, green: 0.32, blue: 0.78)
+            }
+        } else {
+            switch itemTone {
+                case .calm: return Color(red: 0.52, green: 0.84, blue: 1.0)
+                case .sharp: return Color(red: 0.48, green: 0.94, blue: 0.74)
+                case .warm: return Color(red: 1.0, green: 0.78, blue: 0.42)
+                case .playful: return Color(red: 0.86, green: 0.68, blue: 1.0)
+            }
+        }
+    }
+}
+
+
+/// Fast sub-millisecond sRGB sampler matching `HeroPhotoFadeBackdrop`'s exact `.aspectRatio(.fill)` + `focalY` crop geometry.
+enum HeroCoverToneSampler {
+    
+    static let danmakuColumnCount = 6
+    
+    static func sample(
+        image: NSImage?,
+        focalY: Double,
+        canvasAspect: CGFloat,
+        fallbackRGB: (Double, Double, Double)
+    ) -> HeroBackdropToneSnapshot {
+        let fallbackTone = HeroRegionTone(red: fallbackRGB.0, green: fallbackRGB.1, blue: fallbackRGB.2)
+        guard let image,
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              cgImage.width > 0,
+              cgImage.height > 0
+        else {
+            return HeroBackdropToneSnapshot(
+                hasPhoto: false,
+                topLeft: fallbackTone,
+                topRight: fallbackTone,
+                danmakuColumns: Array(repeating: fallbackTone, count: Self.danmakuColumnCount),
+                bottomStrip: fallbackTone
+            )
+        }
+        
+        let clampedAspect = max(0.4, min(10.0, canvasAspect))
+        let imgW = CGFloat(cgImage.width)
+        let imgH = CGFloat(cgImage.height)
+        let imgAspect = imgW / max(1, imgH)
+        let clampedFocal = max(0.0, min(1.0, focalY))
+        
+        // Match SwiftUI `.aspectRatio(contentMode: .fill)` + `yOffset = -overflowY * focalY`
+        // (`CGImage.cropping(to:)` uses top-left pixel coordinates: y=0 is top edge).
+        let cropRect: CGRect
+        if imgAspect <= clampedAspect {
+            let visibleH = min(imgH, imgW / clampedAspect)
+            let overflowY = max(0, imgH - visibleH)
+            cropRect = CGRect(
+                x: 0,
+                y: overflowY * CGFloat(clampedFocal),
+                width: imgW,
+                height: max(1, visibleH)
+            ).integral
+        } else {
+            let visibleW = min(imgW, imgH * clampedAspect)
+            let overflowX = max(0, imgW - visibleW)
+            cropRect = CGRect(
+                x: overflowX * 0.5,
+                y: 0,
+                width: max(1, visibleW),
+                height: imgH
+            ).integral
+        }
+        
+        let cropped = cgImage.cropping(to: cropRect) ?? cgImage
+        let sampleW = 48
+        let sampleH = 24
+        var bytes = [UInt8](repeating: 0, count: sampleW * sampleH * 4)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        
+        guard let ctx = CGContext(
+            data: &bytes,
+            width: sampleW,
+            height: sampleH,
+            bitsPerComponent: 8,
+            bytesPerRow: sampleW * 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else {
+            return HeroBackdropToneSnapshot(
+                hasPhoto: true,
+                topLeft: fallbackTone,
+                topRight: fallbackTone,
+                danmakuColumns: Array(repeating: fallbackTone, count: Self.danmakuColumnCount),
+                bottomStrip: fallbackTone
+            )
+        }
+        ctx.interpolationQuality = .low
+        ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: sampleW, height: sampleH))
+        
+        func averageTone(xMin: Double, xMax: Double, yMin: Double, yMax: Double) -> HeroRegionTone {
+            let ix0 = max(0, min(sampleW - 1, Int(floor(xMin * Double(sampleW)))))
+            let ix1 = max(ix0 + 1, min(sampleW, Int(ceil(xMax * Double(sampleW)))))
+            let iy0 = max(0, min(sampleH - 1, Int(floor(yMin * Double(sampleH)))))
+            let iy1 = max(iy0 + 1, min(sampleH, Int(ceil(yMax * Double(sampleH)))))
+            var sumR = 0.0
+            var sumG = 0.0
+            var sumB = 0.0
+            var count = 0.0
+            for py in iy0..<iy1 {
+                for px in ix0..<ix1 {
+                    let offset = (py * sampleW + px) * 4
+                    let a = Double(bytes[offset + 3]) / 255.0
+                    let r = a > 0.001 ? min(1.0, (Double(bytes[offset]) / 255.0) / a) : fallbackRGB.0
+                    let g = a > 0.001 ? min(1.0, (Double(bytes[offset + 1]) / 255.0) / a) : fallbackRGB.1
+                    let b = a > 0.001 ? min(1.0, (Double(bytes[offset + 2]) / 255.0) / a) : fallbackRGB.2
+                    sumR += r
+                    sumG += g
+                    sumB += b
+                    count += 1
+                }
+            }
+            guard count > 0 else { return fallbackTone }
+            return HeroRegionTone(red: sumR / count, green: sumG / count, blue: sumB / count)
+        }
+        
+        let topLeft = averageTone(xMin: 0.00, xMax: 0.24, yMin: 0.00, yMax: 0.24)
+        let topRight = averageTone(xMin: 0.62, xMax: 1.00, yMin: 0.00, yMax: 0.24)
+        let bottomStrip = averageTone(xMin: 0.04, xMax: 0.96, yMin: 0.56, yMax: 0.84)
+        
+        var columns: [HeroRegionTone] = []
+        columns.reserveCapacity(Self.danmakuColumnCount)
+        let step = 1.0 / Double(Self.danmakuColumnCount)
+        for idx in 0..<Self.danmakuColumnCount {
+            let x0 = Double(idx) * step
+            let x1 = min(1.0, x0 + step)
+            columns.append(averageTone(xMin: x0, xMax: x1, yMin: 0.22, yMax: 0.64))
+        }
+        
+        return HeroBackdropToneSnapshot(
+            hasPhoto: true,
+            topLeft: topLeft,
+            topRight: topRight,
+            danmakuColumns: columns,
+            bottomStrip: bottomStrip
+        )
+    }
+}
+
+
 private struct DashboardAchievementHeroBar: View {
     
     let profile: UserProfile
@@ -2314,6 +2631,8 @@ private struct DashboardAchievementHeroBar: View {
     @State private var isDropTargeted = false
     @State private var hasAppeared = false
     @State private var startDate = Date()
+    @State private var toneSnapshot: HeroBackdropToneSnapshot
+    @State private var lastSampleAspectBucket: Int = 0
     
     
     init(
@@ -2344,9 +2663,27 @@ private struct DashboardAchievementHeroBar: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         
+        let fallbackRGB = Self.fallbackSurfaceRGB(for: palette)
+        let initialAspect: CGFloat = compact ? 3.2 : 4.2
+        let initialTones = HeroCoverToneSampler.sample(
+            image: DashboardHeroCoverStore.shared.coverImage,
+            focalY: DashboardHeroCoverStore.shared.focalY,
+            canvasAspect: initialAspect,
+            fallbackRGB: fallbackRGB
+        )
+        
         _serialCode = State(initialValue: serial)
         _hasProLicense = State(initialValue: tier != .explorer)
         _isDanmakuEnabled = State(initialValue: rawDanmaku == "true" || rawDanmaku == "1")
+        _toneSnapshot = State(initialValue: initialTones)
+    }
+    
+    
+    private static func fallbackSurfaceRGB(for palette: DashPalette) -> (Double, Double, Double) {
+        if let srgb = NSColor(palette.card).usingColorSpace(.sRGB) {
+            return (Double(srgb.redComponent), Double(srgb.greenComponent), Double(srgb.blueComponent))
+        }
+        return palette.tokens.isDark ? (0.14, 0.15, 0.17) : (0.96, 0.96, 0.97)
     }
     
     
@@ -2399,52 +2736,103 @@ private struct DashboardAchievementHeroBar: View {
     }
     
     
+    private func refreshAdaptiveTones(canvasSize: CGSize) {
+        let aspect = canvasSize.height > 1 ? (canvasSize.width / canvasSize.height) : (self.compact ? 3.2 : 4.2)
+        let sampled = HeroCoverToneSampler.sample(
+            image: self.coverStore.coverImage,
+            focalY: self.coverStore.focalY,
+            canvasAspect: aspect,
+            fallbackRGB: Self.fallbackSurfaceRGB(for: self.palette)
+        )
+        if sampled != self.toneSnapshot {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                self.toneSnapshot = sampled
+            }
+        }
+    }
+    
+    
     var body: some View {
         let streakDays = max(1, self.snapshot.currentStreak)
         let todayTotal = self.snapshot.today.typedChars + self.snapshot.today.aiCompletedChars
         let avg14 = Int(self.snapshot.trendCurve14.averageValue.rounded())
-        let isDark = self.palette.tokens.isDark
         let hasPhoto = (self.coverStore.coverImage != nil)
-        let useDarkGlassPills = hasPhoto || isDark
+        let coverImageID = self.coverStore.coverImage.map(ObjectIdentifier.init)
         let moodLabel = self.snapshot.mood.dominantLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayMood = moodLabel.isEmpty ? AppLanguage.text("冷静", en: "Calm") : moodLabel
         let padH: CGFloat = self.compact ? 16 : 22
-        let padV: CGFloat = self.compact ? 12 : 16
+        let padTop: CGFloat = self.compact ? 12 : 16
+        let padBottom: CGFloat = self.compact ? 12 : 16
         let rowHeight: CGFloat = self.compact ? 44 : 48
+        let topLeftTone = self.toneSnapshot.topLeft
+        let topRightTone = self.toneSnapshot.topRight
         
         GeometryReader { heroGeo in
+            let aspectBucket = Int(((heroGeo.size.width / max(1, heroGeo.size.height)) * 20).rounded())
+            
             VStack(alignment: .leading, spacing: 0) {
-                // Top floating frosted glass controls over photo / mist header
+                // Top floating adaptive frosted glass controls (real-time synced to topLeft & topRight pixels)
                 HStack(alignment: .center, spacing: 8) {
                     if let onBack = self.onBack {
-                        self.heroBackButton(useDarkGlass: useDarkGlassPills, action: onBack)
+                        self.heroBackButton(tone: topLeftTone, hasPhoto: hasPhoto, action: onBack)
                     } else {
                         Color.clear
-                            .frame(width: 1, height: 26)
+                            .frame(width: 1, height: 28)
                     }
                     
                     Spacer(minLength: 12)
                     
                     HStack(spacing: 8) {
                         if self.compact {
+                            let badgeGlass = HeroAdaptiveGlassTokens.resolve(
+                                for: topRightTone,
+                                hasPhoto: hasPhoto,
+                                hovered: false,
+                                palette: self.palette
+                            )
                             Text(displayMood)
                                 .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(self.heroCapsuleInk(useDarkGlass: useDarkGlassPills))
-                                .padding(.horizontal, 9)
-                                .frame(height: 26)
-                                .background(self.heroCapsuleBackground(useDarkGlass: useDarkGlassPills, hovered: false), in: Capsule())
-                                .overlay(Capsule().strokeBorder(self.heroCapsuleBorder(useDarkGlass: useDarkGlassPills, hovered: false), lineWidth: 0.8))
+                                .foregroundStyle(badgeGlass.ink)
+                                .padding(.horizontal, 10)
+                                .frame(height: 28)
+                                .background {
+                                    self.adaptiveGlassCapsule(glass: badgeGlass)
+                                }
                         }
                         
-                        self.danmakuToggleButton(useDarkGlass: useDarkGlassPills)
-                        self.coverImageControlPill(useDarkGlass: useDarkGlassPills, hasPhoto: hasPhoto)
+                        self.danmakuToggleButton(tone: topRightTone, hasPhoto: hasPhoto)
+                        self.coverImageControlPill(tone: topRightTone, hasPhoto: hasPhoto)
                     }
                 }
-                .frame(height: 26)
+                .padding(.horizontal, padH)
+                .padding(.top, padTop)
+                .frame(height: 28 + padTop, alignment: .top)
                 
-                Spacer(minLength: self.compact ? 10 : 18)
+                // Open panoramic showcase zone — unobstructed cover view + real-time background-adaptive floating danmaku
+                ZStack {
+                    if self.isDanmakuEnabled {
+                        GeometryReader { stageGeo in
+                            let danmakuPaused = AnimationConstants.isReducedMotionEnabled
+                                || !self.activityGate.isAppActive
+                                || !self.isWindowVisible
+                            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: danmakuPaused)) { timeline in
+                                let elapsed = max(0, timeline.date.timeIntervalSince(self.startDate))
+                                self.adaptiveDanmakuStage(
+                                    size: stageGeo.size,
+                                    items: self.danmakuItems,
+                                    elapsed: elapsed,
+                                    hasPhoto: hasPhoto
+                                )
+                            }
+                        }
+                        .clipped()
+                        .transition(.opacity)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.vertical, self.compact ? 4 : 8)
                 
-                // Bottom editorial identity + telemetry strip resting on melted pure card surface
+                // Bottom editorial identity + telemetry strip resting on smoothly melted card-surface dock (always visible!)
                 HStack(alignment: .center, spacing: 0) {
                     self.identityLockup(streakDays: streakDays)
                         .frame(width: self.compact ? 186 : 228, alignment: .leading)
@@ -2458,20 +2846,20 @@ private struct DashboardAchievementHeroBar: View {
                         todayTotal: todayTotal,
                         streakDays: streakDays,
                         avg14: avg14,
-                        displayMood: displayMood,
-                        items: self.danmakuItems
+                        displayMood: displayMood
                     )
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(height: rowHeight)
+                .padding(.horizontal, padH)
+                .padding(.bottom, padBottom)
             }
-            .padding(.horizontal, padH)
-            .padding(.vertical, padV)
             .frame(width: heroGeo.size.width, height: heroGeo.size.height, alignment: .topLeading)
             .background {
                 HeroPhotoFadeBackdrop(
                     coverImage: self.coverStore.coverImage,
                     focalY: self.coverStore.focalY,
+                    bottomTone: self.toneSnapshot.bottomStrip,
                     palette: self.palette
                 )
             }
@@ -2494,10 +2882,26 @@ private struct DashboardAchievementHeroBar: View {
             }
             .observeWindowRenderActivity(self.$isWindowVisible)
             .onAppear {
+                self.lastSampleAspectBucket = aspectBucket
+                self.refreshAdaptiveTones(canvasSize: heroGeo.size)
                 guard !self.hasAppeared else { return }
                 withAnimation(DashMotion.resolve(DashMotion.chartReveal.delay(0.08))) {
                     self.hasAppeared = true
                 }
+            }
+            .onChange(of: coverImageID) { _, _ in
+                self.refreshAdaptiveTones(canvasSize: heroGeo.size)
+            }
+            .onChange(of: self.coverStore.focalY) { _, _ in
+                self.refreshAdaptiveTones(canvasSize: heroGeo.size)
+            }
+            .onChange(of: self.palette.tokens.isDark) { _, _ in
+                self.refreshAdaptiveTones(canvasSize: heroGeo.size)
+            }
+            .onChange(of: aspectBucket) { _, newBucket in
+                guard newBucket != self.lastSampleAspectBucket else { return }
+                self.lastSampleAspectBucket = newBucket
+                self.refreshAdaptiveTones(canvasSize: heroGeo.size)
             }
         }
     }
@@ -2526,47 +2930,48 @@ private struct DashboardAchievementHeroBar: View {
     }
     
     
-    private func heroCapsuleInk(useDarkGlass: Bool) -> Color {
-        useDarkGlass ? Color.white.opacity(0.94) : self.palette.pine
+    private func adaptiveGlassCapsule(glass: HeroAdaptiveGlassTokens) -> some View {
+        Capsule()
+            .fill(.ultraThinMaterial)
+            .overlay(
+                Capsule()
+                    .fill(glass.fillTint)
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [glass.topSpecular, glass.border],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.85
+                    )
+            )
     }
     
     
-    private func heroCapsuleBackground(useDarkGlass: Bool, hovered: Bool) -> Color {
-        if useDarkGlass {
-            return Color.black.opacity(hovered ? 0.56 : 0.42)
-        }
-        return Color.white.opacity(hovered ? 0.96 : 0.84)
-    }
-    
-    
-    private func heroCapsuleBorder(useDarkGlass: Bool, hovered: Bool) -> Color {
-        if useDarkGlass {
-            return Color.white.opacity(hovered ? 0.34 : 0.20)
-        }
-        return self.palette.hairlineStrong.opacity(hovered ? 1.0 : 0.72)
-    }
-    
-    
-    private func heroBackButton(useDarkGlass: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 3.5) {
+    private func heroBackButton(tone: HeroRegionTone, hasPhoto: Bool, action: @escaping () -> Void) -> some View {
+        let glass = HeroAdaptiveGlassTokens.resolve(
+            for: tone,
+            hasPhoto: hasPhoto,
+            hovered: self.isBackHovered,
+            palette: self.palette
+        )
+        return Button(action: action) {
+            HStack(spacing: 4) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 10, weight: .semibold))
                     .offset(x: self.isBackHovered && !DashMotion.isReducedMotion ? -1.5 : 0)
                 Text(AppLanguage.text("返回", en: "Back"))
                     .font(.system(size: 11.5, weight: .medium))
             }
-            .foregroundStyle(self.heroCapsuleInk(useDarkGlass: useDarkGlass))
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .background(
-                self.heroCapsuleBackground(useDarkGlass: useDarkGlass, hovered: self.isBackHovered),
-                in: Capsule()
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(self.heroCapsuleBorder(useDarkGlass: useDarkGlass, hovered: self.isBackHovered), lineWidth: 0.8)
-            )
+            .foregroundStyle(glass.ink)
+            .padding(.horizontal, 11)
+            .frame(height: 28)
+            .background {
+                self.adaptiveGlassCapsule(glass: glass)
+            }
             .contentShape(Capsule())
         }
         .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.94))
@@ -2582,8 +2987,13 @@ private struct DashboardAchievementHeroBar: View {
     
     
     @ViewBuilder
-    private func coverImageControlPill(useDarkGlass: Bool, hasPhoto: Bool) -> some View {
-        let ink = self.heroCapsuleInk(useDarkGlass: useDarkGlass)
+    private func coverImageControlPill(tone: HeroRegionTone, hasPhoto: Bool) -> some View {
+        let glass = HeroAdaptiveGlassTokens.resolve(
+            for: tone,
+            hasPhoto: hasPhoto,
+            hovered: self.isCoverButtonHovered,
+            palette: self.palette
+        )
         let pillLabel = HStack(spacing: 5) {
             Image(systemName: hasPhoto ? "photo" : "photo.badge.plus")
                 .font(.system(size: 10.5, weight: .semibold))
@@ -2592,17 +3002,12 @@ private struct DashboardAchievementHeroBar: View {
                  : AppLanguage.text("上传背景", en: "Add Cover"))
                 .font(.system(size: 11, weight: .medium))
         }
-        .foregroundStyle(ink)
-        .padding(.horizontal, 10)
-        .frame(height: 26)
-        .background(
-            self.heroCapsuleBackground(useDarkGlass: useDarkGlass, hovered: self.isCoverButtonHovered),
-            in: Capsule()
-        )
-        .overlay(
-            Capsule()
-                .strokeBorder(self.heroCapsuleBorder(useDarkGlass: useDarkGlass, hovered: self.isCoverButtonHovered), lineWidth: 0.8)
-        )
+        .foregroundStyle(glass.ink)
+        .padding(.horizontal, 11)
+        .frame(height: 28)
+        .background {
+            self.adaptiveGlassCapsule(glass: glass)
+        }
         .contentShape(Capsule())
         
         if hasPhoto {
@@ -2617,34 +3022,56 @@ private struct DashboardAchievementHeroBar: View {
                 
                 Button {
                     withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                        self.coverStore.focalY = 0.15
+                        self.coverStore.focalY = 0.05
                     }
                 } label: {
                     HStack {
-                        Text(AppLanguage.text("画面偏上", en: "Focus Top"))
-                        if self.coverStore.focalY < 0.30 { Image(systemName: "checkmark") }
+                        Text(AppLanguage.text("画面顶部", en: "Focus Top Edge"))
+                        if self.coverStore.focalY < 0.16 { Image(systemName: "checkmark") }
                     }
                 }
                 
                 Button {
                     withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                        self.coverStore.focalY = 0.45
+                        self.coverStore.focalY = 0.25
+                    }
+                } label: {
+                    HStack {
+                        Text(AppLanguage.text("画面偏上", en: "Focus Upper"))
+                        if self.coverStore.focalY >= 0.16 && self.coverStore.focalY < 0.38 { Image(systemName: "checkmark") }
+                    }
+                }
+                
+                Button {
+                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                        self.coverStore.focalY = 0.50
                     }
                 } label: {
                     HStack {
                         Text(AppLanguage.text("画面居中", en: "Focus Center"))
-                        if self.coverStore.focalY >= 0.30 && self.coverStore.focalY <= 0.65 { Image(systemName: "checkmark") }
+                        if self.coverStore.focalY >= 0.38 && self.coverStore.focalY <= 0.64 { Image(systemName: "checkmark") }
                     }
                 }
                 
                 Button {
                     withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                        self.coverStore.focalY = 0.82
+                        self.coverStore.focalY = 0.78
                     }
                 } label: {
                     HStack {
-                        Text(AppLanguage.text("画面偏下", en: "Focus Bottom"))
-                        if self.coverStore.focalY > 0.65 { Image(systemName: "checkmark") }
+                        Text(AppLanguage.text("画面偏下", en: "Focus Lower"))
+                        if self.coverStore.focalY > 0.64 && self.coverStore.focalY < 0.90 { Image(systemName: "checkmark") }
+                    }
+                }
+                
+                Button {
+                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                        self.coverStore.focalY = 0.96
+                    }
+                } label: {
+                    HStack {
+                        Text(AppLanguage.text("画面底部", en: "Focus Bottom Edge"))
+                        if self.coverStore.focalY >= 0.90 { Image(systemName: "checkmark") }
                     }
                 }
                 
@@ -2726,108 +3153,93 @@ private struct DashboardAchievementHeroBar: View {
         todayTotal: Int,
         streakDays: Int,
         avg14: Int,
-        displayMood: String,
-        items: [DashboardHeroDanmakuScheduler.Item]
+        displayMood: String
     ) -> some View {
         let rhythmBars = Array(self.snapshot.busyness.slices.suffix(6))
         
-        return Group {
-            if self.isDanmakuEnabled {
-                GeometryReader { stageGeo in
-                    let danmakuPaused = AnimationConstants.isReducedMotionEnabled
-                        || !self.activityGate.isAppActive
-                        || !self.isWindowVisible
-                    TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: danmakuPaused)) { timeline in
-                        let elapsed = max(0, timeline.date.timeIntervalSince(self.startDate))
-                        self.inlineDanmakuTrack(size: stageGeo.size, items: items, elapsed: elapsed)
+        return HStack(alignment: .center, spacing: 0) {
+            self.headerStatBlock(
+                label: AppLanguage.text("今日码字", en: "Today"),
+                value: todayTotal.formatted(),
+                unit: AppLanguage.text("字", en: "ch")
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            
+            self.headerStatBlock(
+                label: AppLanguage.text("连续", en: "Streak"),
+                value: "\(streakDays)",
+                unit: AppLanguage.text("天", en: "d")
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            
+            self.headerStatBlock(
+                label: AppLanguage.text("年度活跃", en: "Active"),
+                value: "\(self.snapshot.yearlyHeatmap.activeDays)",
+                unit: AppLanguage.text("天", en: "d")
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            
+            if !self.compact && avg14 > 0 {
+                self.headerStatBlock(
+                    label: AppLanguage.text("14日均", en: "14d"),
+                    value: avg14.formatted(),
+                    unit: AppLanguage.text("字", en: "ch")
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            
+            if !self.compact {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
+                        Text(AppLanguage.text("心境", en: "Mood"))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(self.palette.mutedInk)
+                        Text("\(self.snapshot.mood.score)")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(self.palette.accentFill)
+                            .contentTransition(.numericText())
                     }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-                .transition(.opacity.combined(with: .offset(y: 4)))
-            } else {
-                HStack(alignment: .center, spacing: 0) {
-                    self.headerStatBlock(
-                        label: AppLanguage.text("今日码字", en: "Today"),
-                        value: todayTotal.formatted(),
-                        unit: AppLanguage.text("字", en: "ch")
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
                     
-                    self.headerStatBlock(
-                        label: AppLanguage.text("连续", en: "Streak"),
-                        value: "\(streakDays)",
-                        unit: AppLanguage.text("天", en: "d")
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    
-                    self.headerStatBlock(
-                        label: AppLanguage.text("年度活跃", en: "Active"),
-                        value: "\(self.snapshot.yearlyHeatmap.activeDays)",
-                        unit: AppLanguage.text("天", en: "d")
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    
-                    if !self.compact && avg14 > 0 {
-                        self.headerStatBlock(
-                            label: AppLanguage.text("14日均", en: "14d"),
-                            value: avg14.formatted(),
-                            unit: AppLanguage.text("字", en: "ch")
-                        )
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    
-                    if !self.compact {
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 5) {
-                                Text(AppLanguage.text("心境", en: "Mood"))
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(self.palette.mutedInk)
-                                Text("\(self.snapshot.mood.score)")
-                                    .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
-                                    .foregroundStyle(self.palette.accentFill)
-                                    .contentTransition(.numericText())
-                            }
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(displayMood)
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundStyle(self.palette.pine)
                             .lineLimit(1)
-                            
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                Text(displayMood)
-                                    .font(.system(size: 20, weight: .bold))
-                                    .foregroundStyle(self.palette.pine)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.75)
-                                
-                                HStack(alignment: .bottom, spacing: 3) {
-                                    ForEach(Array(rhythmBars.enumerated()), id: \.element.id) { idx, slice in
-                                        let h = max(5, CGFloat(slice.intensity) * 18)
-                                        Capsule(style: .continuous)
-                                            .fill(slice.intensity > 0.35 ? self.palette.accentFill : self.palette.accentFill.opacity(0.22))
-                                            .frame(width: 3, height: h)
-                                            .scaleEffect(
-                                                y: self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.15,
-                                                anchor: .bottom
-                                            )
-                                            .animation(
-                                                DashMotion.resolve(DashMotion.springCard.delay(Double(idx) * 0.035)),
-                                                value: self.hasAppeared
-                                            )
-                                    }
-                                }
-                                .frame(height: 18, alignment: .bottom)
+                            .minimumScaleFactor(0.75)
+                        
+                        HStack(alignment: .bottom, spacing: 3) {
+                            ForEach(Array(rhythmBars.enumerated()), id: \.element.id) { idx, slice in
+                                let h = max(5, CGFloat(slice.intensity) * 18)
+                                Capsule(style: .continuous)
+                                    .fill(slice.intensity > 0.35 ? self.palette.accentFill : self.palette.accentFill.opacity(0.22))
+                                    .frame(width: 3, height: h)
+                                    .scaleEffect(
+                                        y: self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.15,
+                                        anchor: .bottom
+                                    )
+                                    .animation(
+                                        DashMotion.resolve(DashMotion.springCard.delay(Double(idx) * 0.035)),
+                                        value: self.hasAppeared
+                                    )
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(height: 18, alignment: .bottom)
                     }
                 }
-                .transition(.opacity.combined(with: .offset(y: -4)))
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
     
     
-    private func danmakuToggleButton(useDarkGlass: Bool) -> some View {
-        let ink = self.heroCapsuleInk(useDarkGlass: useDarkGlass)
-        let trackInactive = useDarkGlass ? Color.white.opacity(0.26) : ink.opacity(0.18)
+    private func danmakuToggleButton(tone: HeroRegionTone, hasPhoto: Bool) -> some View {
+        let glass = HeroAdaptiveGlassTokens.resolve(
+            for: tone,
+            hasPhoto: hasPhoto,
+            hovered: self.isToggleHovered,
+            palette: self.palette
+        )
         return Button {
             let next = !self.isDanmakuEnabled
             if next {
@@ -2844,11 +3256,11 @@ private struct DashboardAchievementHeroBar: View {
             HStack(spacing: 6) {
                 Text(AppLanguage.text("弹幕", en: "Ticker"))
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(ink)
+                    .foregroundStyle(glass.ink)
                 
                 ZStack(alignment: self.isDanmakuEnabled ? .trailing : .leading) {
                     Capsule()
-                        .fill(self.isDanmakuEnabled ? self.palette.accentFill : trackInactive)
+                        .fill(self.isDanmakuEnabled ? self.palette.accentFill : glass.inactiveTrack)
                         .frame(width: 24, height: 14)
                     Circle()
                         .fill(Color.white)
@@ -2856,16 +3268,11 @@ private struct DashboardAchievementHeroBar: View {
                         .padding(.horizontal, 2)
                 }
             }
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .background(
-                self.heroCapsuleBackground(useDarkGlass: useDarkGlass, hovered: self.isToggleHovered),
-                in: Capsule()
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(self.heroCapsuleBorder(useDarkGlass: useDarkGlass, hovered: self.isToggleHovered), lineWidth: 0.8)
-            )
+            .padding(.horizontal, 11)
+            .frame(height: 28)
+            .background {
+                self.adaptiveGlassCapsule(glass: glass)
+            }
             .contentShape(Capsule())
         }
         .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.95))
@@ -2925,49 +3332,64 @@ private struct DashboardAchievementHeroBar: View {
     }
     
     
-    private func inlineDanmakuTrack(
+    private func adaptiveDanmakuStage(
         size: CGSize,
         items: [DashboardHeroDanmakuScheduler.Item],
-        elapsed: TimeInterval
+        elapsed: TimeInterval,
+        hasPhoto: Bool
     ) -> some View {
-        let laneCount = 2
-        let lanePitch: CGFloat = max(21, size.height / CGFloat(laneCount))
-        let pillHeight: CGFloat = self.compact ? 20 : 22
-        let maxW = items.map { DashboardHeroDanmakuScheduler.estimatedPillSize(for: $0.text).width }.max() ?? 110
-        let step = maxW + 24
-        let cycle = max(size.width + maxW + 40, CGFloat(max(1, items.count)) * step * 0.5)
+        let laneCount = (!self.compact && size.height >= 104) ? 3 : 2
+        let lanePitch: CGFloat = max(28, size.height / CGFloat(laneCount))
+        let pillHeight: CGFloat = self.compact ? 24 : 26
+        let maxW = items.map { DashboardHeroDanmakuScheduler.estimatedPillSize(for: $0.text).width }.max() ?? 116
+        let step = maxW + 44
+        let cycle = max(size.width + maxW + 64, CGFloat(max(1, items.count)) * step / CGFloat(laneCount))
         
         return ZStack(alignment: .topLeading) {
             ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
                 let lane = idx % laneCount
                 let pillSize = DashboardHeroDanmakuScheduler.estimatedPillSize(for: item.text)
-                let speed: CGFloat = lane == 0 ? 18.0 : 14.5
-                let raw = CGFloat(elapsed) * speed + CGFloat(idx / laneCount) * step + (lane == 1 ? step * 0.5 : 0)
+                let speed: CGFloat = switch lane {
+                    case 0: 21.0
+                    case 1: 16.5
+                    default: 24.5
+                }
+                let phaseOffset = CGFloat(lane) * (step * 0.42)
+                let raw = CGFloat(elapsed) * speed + CGFloat(idx / laneCount) * step + phaseOffset
                 let travel = raw.truncatingRemainder(dividingBy: cycle)
                 let centerX = (size.width + maxW * 0.5) - travel
                 let centerY = (CGFloat(lane) + 0.5) * lanePitch
                 let edgeDist = min(centerX - pillSize.width * 0.5, size.width - (centerX + pillSize.width * 0.5))
-                let fade = min(1.0, max(0.0, Double(edgeDist / 24.0)))
+                let fade = min(1.0, max(0.0, Double(edgeDist / 34.0)))
                 if fade > 0.02 {
-                    HStack(spacing: 5) {
+                    // Sample the exact horizontal column behind this pill right now so its glass & ink adapt continuously!
+                    let normalizedX = Double(centerX / max(1, size.width))
+                    let localBgTone = self.toneSnapshot.danmakuTone(atNormalizedX: normalizedX)
+                    let pillGlass = HeroAdaptiveGlassTokens.resolve(
+                        for: localBgTone,
+                        hasPhoto: hasPhoto,
+                        hovered: false,
+                        palette: self.palette
+                    )
+                    let dotColor = HeroAdaptiveGlassTokens.danmakuAccentDot(
+                        for: item.tone,
+                        background: localBgTone,
+                        palette: self.palette
+                    )
+                    HStack(spacing: 6) {
                         Circle()
-                            .fill(self.palette.accentFill)
-                            .frame(width: 4.5, height: 4.5)
+                            .fill(dotColor)
+                            .frame(width: 5, height: 5)
                         Text(item.text)
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(self.palette.pine)
+                            .font(.system(size: self.compact ? 11.5 : 12, weight: .medium))
+                            .foregroundStyle(pillGlass.ink)
                             .lineLimit(1)
                     }
-                    .padding(.horizontal, 9)
+                    .padding(.horizontal, 11)
                     .frame(height: pillHeight)
-                    .background(
-                        Capsule()
-                            .fill(self.palette.inset)
-                            .overlay(
-                                Capsule()
-                                    .strokeBorder(self.palette.hairline, lineWidth: 0.75)
-                            )
-                    )
+                    .background {
+                        self.adaptiveGlassCapsule(glass: pillGlass)
+                    }
                     .position(x: centerX, y: centerY)
                     .opacity(fade)
                 }
@@ -2977,16 +3399,19 @@ private struct DashboardAchievementHeroBar: View {
 }
 
 
-/// Clean photographic hero backdrop that melts smoothly downward into the card surface (no dark prism slab).
+/// Panoramic photographic hero backdrop preserving crystal clarity across the upper 62% showcase
+/// and melting smoothly downward into a subtly color-harmonized card surface for bottom telemetry legibility.
 private struct HeroPhotoFadeBackdrop: View {
     
     let coverImage: NSImage?
     let focalY: Double
+    let bottomTone: HeroRegionTone
     let palette: DashPalette
     
     var body: some View {
         let isDark = self.palette.tokens.isDark
         let cardColor = self.palette.card
+        let ambientTint = Color(red: self.bottomTone.red, green: self.bottomTone.green, blue: self.bottomTone.blue)
         
         ZStack(alignment: .top) {
             cardColor
@@ -3015,25 +3440,36 @@ private struct HeroPhotoFadeBackdrop: View {
                     LinearGradient(
                         stops: [
                             .init(color: .white, location: 0.00),
-                            .init(color: .white.opacity(0.96), location: 0.30),
-                            .init(color: .white.opacity(0.54), location: 0.52),
-                            .init(color: .white.opacity(0.14), location: 0.67),
-                            .init(color: .clear, location: 0.78),
+                            .init(color: .white, location: 0.62),
+                            .init(color: .white.opacity(0.68), location: 0.76),
+                            .init(color: .white.opacity(0.18), location: 0.88),
+                            .init(color: .clear, location: 0.96),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 )
                 
-                // Silky card-surface mist wash ensuring crisp lower typography on any photo
+                // Delicate photo-harmonized mist dock strictly at the lower 36% so bottom telemetry stays razor-sharp
                 LinearGradient(
                     stops: [
                         .init(color: .clear, location: 0.00),
-                        .init(color: .clear, location: 0.24),
-                        .init(color: cardColor.opacity(0.55), location: 0.54),
-                        .init(color: cardColor.opacity(0.92), location: 0.69),
-                        .init(color: cardColor, location: 0.78),
+                        .init(color: .clear, location: 0.60),
+                        .init(color: cardColor.opacity(0.45), location: 0.74),
+                        .init(color: cardColor.opacity(0.88), location: 0.84),
+                        .init(color: cardColor, location: 0.93),
                         .init(color: cardColor, location: 1.00),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                
+                // Subtle ambient chromatic wash echoing the cover image's lower tone into the card base
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.64),
+                        .init(color: ambientTint.opacity(isDark ? 0.10 : 0.06), location: 0.88),
+                        .init(color: ambientTint.opacity(isDark ? 0.06 : 0.03), location: 1.00),
                     ],
                     startPoint: .top,
                     endPoint: .bottom
@@ -3044,8 +3480,8 @@ private struct HeroPhotoFadeBackdrop: View {
                     LinearGradient(
                         stops: [
                             .init(color: self.palette.accentFill.opacity(isDark ? 0.16 : 0.09), location: 0.00),
-                            .init(color: self.palette.tokens.secondaryAccent.opacity(isDark ? 0.08 : 0.05), location: 0.36),
-                            .init(color: cardColor.opacity(0.0), location: 0.72),
+                            .init(color: self.palette.tokens.secondaryAccent.opacity(isDark ? 0.08 : 0.05), location: 0.42),
+                            .init(color: cardColor.opacity(0.0), location: 0.78),
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -3056,9 +3492,9 @@ private struct HeroPhotoFadeBackdrop: View {
                             self.palette.accentFill.opacity(isDark ? 0.14 : 0.08),
                             Color.clear,
                         ],
-                        center: UnitPoint(x: 0.78, y: 0.08),
+                        center: UnitPoint(x: 0.78, y: 0.12),
                         startRadius: 10,
-                        endRadius: 340
+                        endRadius: 380
                     )
                 }
             }

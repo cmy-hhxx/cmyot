@@ -32,7 +32,7 @@ nonisolated enum PiCotToolsExtension {
     static let source: String = #"""
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
@@ -77,15 +77,53 @@ function sqlQuote(v: string): string {
   return "'" + v.replace(/'/g, "''") + "'";
 }
 
-function runSqliteJson(sql: string): any[] {
+function execFileAsync(
+  file: string,
+  args: string[],
+  timeoutMs = 4000,
+  signal?: AbortSignal
+): Promise<string> {
+  if (signal?.aborted) {
+    return Promise.reject(new Error("Aborted"));
+  }
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      file,
+      args,
+      {
+        encoding: "utf8",
+        timeout: timeoutMs,
+        killSignal: "SIGKILL",
+        maxBuffer: 4 * 1024 * 1024,
+      },
+      (err, stdout) => {
+        signal?.removeEventListener("abort", onAbort);
+        if (err) {
+          reject(err);
+        } else {
+          resolve(typeof stdout === "string" ? stdout : String(stdout || ""));
+        }
+      }
+    );
+    const onAbort = () => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      reject(new Error("Aborted"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function runSqliteJson(sql: string, signal?: AbortSignal): Promise<any[]> {
   const p = dbPath();
   if (!p || !existsSync(p)) return [];
   try {
-    const out = execFileSync("/usr/bin/sqlite3", ["-readonly", "-cmd", ".timeout 3000", "-json", p, sql], {
-      encoding: "utf8",
-      timeout: 6000,
-      maxBuffer: 4 * 1024 * 1024,
-    }).trim();
+    const out = (
+      await execFileAsync("/usr/bin/sqlite3", ["-readonly", "-cmd", ".timeout 2500", "-json", p, sql], 4000, signal)
+    ).trim();
     if (!out) return [];
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : [];
@@ -94,47 +132,72 @@ function runSqliteJson(sql: string): any[] {
   }
 }
 
-function enqueueEditorAction(actionType: string, payloadObj: Record<string, any>): boolean {
+async function enqueueEditorAction(
+  actionType: string,
+  payloadObj: Record<string, any>,
+  signal?: AbortSignal
+): Promise<boolean> {
   const p = dbPath();
   if (!p || !existsSync(p)) return false;
   const payloadJSON = JSON.stringify({ ...payloadObj, type: actionType });
   const nowSec = Date.now() / 1000;
   try {
-    execFileSync(
-      "/usr/bin/python3",
-      [
-        "-c",
-        "import sqlite3,sys; db,at,pj,ts=sys.argv[1],sys.argv[2],sys.argv[3],float(sys.argv[4]); c=sqlite3.connect(db,timeout=5); c.execute('INSERT INTO agent_command_queue (action_type, payload_json, status, result_note, created_at) VALUES (?, ?, \"pending\", \"\", ?)', (at, pj, ts)); c.commit(); c.close()",
-        p,
-        actionType,
-        payloadJSON,
-        String(nowSec),
-      ],
-      { encoding: "utf8", timeout: 5000 }
-    );
+    const sql = `INSERT INTO agent_command_queue (action_type, payload_json, status, result_note, created_at) VALUES (${sqlQuote(actionType)}, ${sqlQuote(payloadJSON)}, 'pending', '', ${nowSec});`;
+    await execFileAsync("/usr/bin/sqlite3", ["-cmd", ".timeout 2500", p, sql], 4000, signal);
     return true;
   } catch {
-    try {
-      const sql = `INSERT INTO agent_command_queue (action_type, payload_json, status, result_note, created_at) VALUES (${sqlQuote(actionType)}, ${sqlQuote(payloadJSON)}, 'pending', '', ${nowSec});`;
-      execFileSync("/usr/bin/sqlite3", ["-cmd", ".timeout 3000", p, sql], { encoding: "utf8", timeout: 5000 });
-      return true;
-    } catch {
-      return false;
-    }
+    return false;
   }
 }
 
-async function fetchText(url: string, referer?: string, timeoutMs = 10000, signal?: AbortSignal): Promise<string> {
+async function fetchText(
+  url: string,
+  referer?: string,
+  timeoutMs = 7000,
+  signal?: AbortSignal,
+  maxBytes = 512 * 1024
+): Promise<string> {
+  if (signal?.aborted) {
+    throw new Error("Aborted");
+  }
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  const onAbort = () => ctrl.abort();
+  const timer = setTimeout(() => ctrl.abort(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs);
+  const onAbort = () => ctrl.abort(new Error("Aborted"));
   signal?.addEventListener("abort", onAbort, { once: true });
   try {
     const headers: Record<string, string> = { "User-Agent": UA };
     if (referer) headers["Referer"] = referer;
     const res = await fetch(url, { headers, signal: ctrl.signal, redirect: "follow" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
+    if (!res.body || typeof res.body.getReader !== "function") {
+      const full = await res.text();
+      return full.slice(0, maxBytes);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: false });
+    let totalBytes = 0;
+    let output = "";
+    try {
+      while (totalBytes < maxBytes) {
+        if (ctrl.signal.aborted) {
+          throw new Error("Fetch timed out or aborted");
+        }
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          totalBytes += value.byteLength;
+          output += decoder.decode(value, { stream: true });
+        }
+      }
+      output += decoder.decode();
+    } finally {
+      try {
+        await reader.cancel();
+      } catch {
+        // ignore cancel error
+      }
+    }
+    return output;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", onAbort);
@@ -205,7 +268,7 @@ async function resolveUSCode(inst: ResolvedInstrument, signal?: AbortSignal): Pr
   if (inst.namespace !== "us" || inst.tencentCode.includes(".")) return inst.tencentCode;
   try {
     const url = `https://smartbox.gtimg.cn/s3/?v=2&q=${encodeURIComponent(inst.symbol)}&t=all&c=1`;
-    const body = await fetchText(url, "https://gu.qq.com/", 6000, signal);
+    const body = await fetchText(url, "https://gu.qq.com/", 4500, signal);
     const re = /us~([A-Za-z0-9.-]+)~/gi;
     let m: RegExpExecArray | null;
     while ((m = re.exec(body)) !== null) {
@@ -228,13 +291,17 @@ async function resolveStock(query: string, signal?: AbortSignal): Promise<Resolv
       return entry.inst;
     }
   }
-  const url = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=${EM_SEARCH_TOKEN}&count=10`;
-  const raw = await fetchText(url, "https://quote.eastmoney.com/", 8000, signal);
-  const parsed = JSON.parse(raw);
-  const rows: any[] = parsed?.QuotationCodeTable?.Data || [];
-  for (const row of rows) {
-    const inst = normalizeInstrument(row);
-    if (inst) return inst;
+  try {
+    const url = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=${EM_SEARCH_TOKEN}&count=10`;
+    const raw = await fetchText(url, "https://quote.eastmoney.com/", 5500, signal);
+    const parsed = JSON.parse(raw);
+    const rows: any[] = parsed?.QuotationCodeTable?.Data || [];
+    for (const row of rows) {
+      const inst = normalizeInstrument(row);
+      if (inst) return inst;
+    }
+  } catch {
+    // ignore suggest failure
   }
   return null;
 }
@@ -294,6 +361,30 @@ export default function (pi: ExtensionAPI) {
     return undefined;
   });
 
+  // Guard built-in shell & filesystem tools from runaway timeouts or scanning `/`
+  pi.on("tool_call", async (event: any) => {
+    const toolName = String(event?.toolName || "");
+    const input = event?.input;
+    if (!input || typeof input !== "object") return undefined;
+
+    if (toolName === "bash") {
+      const rawTimeout = Number(input.timeout);
+      if (!Number.isFinite(rawTimeout) || rawTimeout <= 0 || rawTimeout > 30) {
+        input.timeout = 25;
+      }
+      const cmd = String(input.command || "");
+      if (/\b(?:find|rg|grep)\s+\/(?:\s|$)/.test(cmd)) {
+        return { block: true, reason: "Refused to scan root directory '/'. Specify a concrete workspace subdirectory." };
+      }
+    } else if (toolName === "find" || toolName === "grep" || toolName === "ls") {
+      const targetPath = String(input.path || "").trim();
+      if (targetPath === "/" || (!targetPath && process.cwd() === "/")) {
+        return { block: true, reason: "Refused to scan root directory '/'. Specify a concrete file or project path." };
+      }
+    }
+    return undefined;
+  });
+
   // 1. Live Stock Quote & K-Line Lookup
   pi.registerTool({
     name: "lookup_stock_quote",
@@ -321,8 +412,8 @@ export default function (pi: ExtensionAPI) {
       const intradayUrl = `https://push2delay.eastmoney.com/api/qt/stock/trends2/get?secid=${encodeURIComponent(inst.eastmoneySecID)}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&ndays=1`;
 
       const [klineText, intradayText] = await Promise.all([
-        fetchText(klineUrl, "https://gu.qq.com/", 9000, signal).catch(() => ""),
-        fetchText(intradayUrl, "https://quote.eastmoney.com/", 9000, signal).catch(() => ""),
+        fetchText(klineUrl, "https://gu.qq.com/", 6500, signal).catch(() => ""),
+        fetchText(intradayUrl, "https://quote.eastmoney.com/", 6500, signal).catch(() => ""),
       ]);
 
       let bars: Array<{ date: string; open: number; close: number; high: number; low: number; vol: number }> = [];
@@ -472,7 +563,7 @@ export default function (pi: ExtensionAPI) {
       const limit = Math.min(20, Math.max(1, Number(params.limit || 8)));
       const matches: string[] = [];
 
-      const rows = runSqliteJson(`SELECT value FROM configs WHERE key = 'analytics.aiHotNewsCacheJSON' LIMIT 1;`);
+      const rows = await runSqliteJson(`SELECT value FROM configs WHERE key = 'analytics.aiHotNewsCacheJSON' LIMIT 1;`, signal);
       if (rows.length > 0 && typeof rows[0]?.value === "string") {
         try {
           const parsed = JSON.parse(rows[0].value);
@@ -499,7 +590,7 @@ export default function (pi: ExtensionAPI) {
       if (matches.length < 3 && q) {
         try {
           const hnUrl = `https://hn.algolia.com/api/v1/search_by_date?query=${encodeURIComponent(q)}&tags=story&hitsPerPage=${limit}`;
-          const raw = await fetchText(hnUrl, undefined, 7000, signal);
+          const raw = await fetchText(hnUrl, undefined, 5000, signal);
           const data = JSON.parse(raw);
           for (const hit of (data?.hits || []).slice(0, limit - matches.length)) {
             if (!hit?.title) continue;
@@ -535,7 +626,7 @@ export default function (pi: ExtensionAPI) {
 
       // Try Bing RSS first (fast, reliable XML)
       try {
-        const rss = await fetchText(`https://www.bing.com/search?format=rss&q=${encodeURIComponent(q)}`, "https://www.bing.com/", 9000, signal);
+        const rss = await fetchText(`https://www.bing.com/search?format=rss&q=${encodeURIComponent(q)}`, "https://www.bing.com/", 6000, signal);
         const itemRe = /<item>([\s\S]*?)<\/item>/gi;
         let m: RegExpExecArray | null;
         while ((m = itemRe.exec(rss)) !== null && results.length < limit) {
@@ -551,7 +642,7 @@ export default function (pi: ExtensionAPI) {
 
       if (results.length === 0) {
         try {
-          const html = await fetchText(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, "https://duckduckgo.com/", 9000, signal);
+          const html = await fetchText(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, "https://duckduckgo.com/", 4500, signal);
           const linkRe = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
           let m: RegExpExecArray | null;
           while ((m = linkRe.exec(html)) !== null && results.length < limit) {
@@ -590,9 +681,18 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "仅支持 http:// 或 https:// 网址。" }], details: {} };
       }
       const maxChars = Math.min(16000, Math.max(500, Number(params.maxChars || 6000)));
-      const html = await fetchText(url, undefined, 12000, signal);
-      const text = stripTags(html).slice(0, maxChars);
-      return { content: [{ type: "text", text: text || "页面未提取到有效文本。" }], details: { url, chars: text.length } };
+      try {
+        const html = await fetchText(url, undefined, 8000, signal);
+        const text = stripTags(html).slice(0, maxChars);
+        return { content: [{ type: "text", text: text || "页面未提取到有效文本。" }], details: { url, chars: text.length } };
+      } catch (err: any) {
+        const msg = err instanceof Error ? err.message : String(err || "请求超时");
+        return {
+          content: [{ type: "text", text: `无法抓取该网页（${msg}）。` }],
+          details: { url, error: msg },
+          isError: true,
+        };
+      }
     },
   });
 
@@ -602,8 +702,8 @@ export default function (pi: ExtensionAPI) {
     label: "感知当前工作区",
     description: "获取用户当前在 CotEditor 中打开的窗口、分屏、标签页、正在编辑的文档正文与选区、当前看盘标的及正在播放的播客。",
     parameters: Type.Object({}),
-    async execute() {
-      const rows = runSqliteJson(`SELECT payload_json FROM workspace_live_state WHERE slot = 'active_workspace' LIMIT 1;`);
+    async execute(_id, _params, signal) {
+      const rows = await runSqliteJson(`SELECT payload_json FROM workspace_live_state WHERE slot = 'active_workspace' LIMIT 1;`, signal);
       if (rows.length === 0 || !rows[0]?.payload_json) {
         return { content: [{ type: "text", text: "当前暂无工作区快照。" }], details: {} };
       }
@@ -641,14 +741,15 @@ export default function (pi: ExtensionAPI) {
       limit: Type.Optional(Type.Number({ description: "最多返回条数，默认 10" })),
       includeWeeklyReports: Type.Optional(Type.Boolean({ description: "是否同时搜索历史周报，默认 true" })),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, signal) {
       const q = String(params.query || "").trim();
       const limit = Math.min(20, Math.max(1, Number(params.limit || 10)));
       const includeWeekly = params.includeWeeklyReports !== false;
       const likeClause = q ? `AND (title LIKE ${sqlQuote(`%${q}%`)} OR content LIKE ${sqlQuote(`%${q}%`)})` : "";
 
-      const docs = runSqliteJson(
-        `SELECT id, title, group_name, syntax, substr(content, 1, 180) AS snippet, datetime(updated_at, 'unixepoch', 'localtime') AS updated FROM documents WHERE deleted_at IS NULL ${likeClause} ORDER BY updated_at DESC LIMIT ${limit};`
+      const docs = await runSqliteJson(
+        `SELECT id, title, group_name, syntax, substr(content, 1, 180) AS snippet, datetime(updated_at, 'unixepoch', 'localtime') AS updated FROM documents WHERE deleted_at IS NULL ${likeClause} ORDER BY updated_at DESC LIMIT ${limit};`,
+        signal
       );
       const lines: string[] = [];
       for (const d of docs) {
@@ -657,8 +758,9 @@ export default function (pi: ExtensionAPI) {
       }
       if (includeWeekly) {
         const wClause = q ? `WHERE title LIKE ${sqlQuote(`%${q}%`)} OR content LIKE ${sqlQuote(`%${q}%`)}` : "";
-        const reps = runSqliteJson(
-          `SELECT id, period_label, title, substr(content, 1, 160) AS snippet FROM weekly_reports ${wClause} ORDER BY updated_at DESC LIMIT 5;`
+        const reps = await runSqliteJson(
+          `SELECT id, period_label, title, substr(content, 1, 160) AS snippet FROM weekly_reports ${wClause} ORDER BY updated_at DESC LIMIT 5;`,
+          signal
         );
         for (const r of reps) {
           const snippet = String(r.snippet || "").replace(/\s+/g, " ").trim();
@@ -681,13 +783,14 @@ export default function (pi: ExtensionAPI) {
       idOrTitle: Type.String({ description: "文档 ID 或标题（支持模糊匹配）" }),
       maxChars: Type.Optional(Type.Number({ description: "最大字符数，默认 8000" })),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, signal) {
       const target = String(params.idOrTitle || "").trim();
       if (!target) return { content: [{ type: "text", text: "请提供文档 ID 或标题。" }], details: {} };
       const maxChars = Math.min(20000, Math.max(500, Number(params.maxChars || 8000)));
 
-      const exact = runSqliteJson(
-        `SELECT id, title, syntax, content FROM documents WHERE deleted_at IS NULL AND (id = ${sqlQuote(target)} OR title = ${sqlQuote(target)} OR title LIKE ${sqlQuote(`%${target}%`)}) ORDER BY updated_at DESC LIMIT 1;`
+      const exact = await runSqliteJson(
+        `SELECT id, title, syntax, content FROM documents WHERE deleted_at IS NULL AND (id = ${sqlQuote(target)} OR title = ${sqlQuote(target)} OR title LIKE ${sqlQuote(`%${target}%`)}) ORDER BY updated_at DESC LIMIT 1;`,
+        signal
       );
       if (exact.length > 0) {
         const d = exact[0];
@@ -696,8 +799,9 @@ export default function (pi: ExtensionAPI) {
           details: { id: d.id },
         };
       }
-      const rep = runSqliteJson(
-        `SELECT id, period_label, title, content FROM weekly_reports WHERE id = ${sqlQuote(target)} OR title LIKE ${sqlQuote(`%${target}%`)} ORDER BY updated_at DESC LIMIT 1;`
+      const rep = await runSqliteJson(
+        `SELECT id, period_label, title, content FROM weekly_reports WHERE id = ${sqlQuote(target)} OR title LIKE ${sqlQuote(`%${target}%`)} ORDER BY updated_at DESC LIMIT 1;`,
+        signal
       );
       if (rep.length > 0) {
         const r = rep[0];
@@ -716,15 +820,19 @@ export default function (pi: ExtensionAPI) {
     label: "读取长期记忆与自选清单",
     description: "读取用户的 KYC 长期记忆画像、股票自选池、关注的信息源与创作者列表。",
     parameters: Type.Object({}),
-    async execute() {
-      const memories = runSqliteJson(
-        `SELECT dimension, fact_key, title, detail, is_pinned FROM user_kyc_memories WHERE is_archived = 0 ORDER BY is_pinned DESC, confidence DESC, updated_at DESC LIMIT 40;`
-      );
-      const stocks = runSqliteJson(
-        `SELECT instrument_id, symbol, name, thesis_note, last_price, last_change_pct FROM user_watchlist_stocks ORDER BY sort_order ASC, updated_at DESC LIMIT 30;`
-      );
-      const feeds = runSqliteJson(`SELECT title, site_url, category FROM user_followed_feeds ORDER BY is_pinned DESC, updated_at DESC LIMIT 20;`);
-      const creators = runSqliteJson(`SELECT platform, handle, display_name, why_following FROM user_followed_creators ORDER BY is_pinned DESC, updated_at DESC LIMIT 20;`);
+    async execute(_id, _params, signal) {
+      const [memories, stocks, feeds, creators] = await Promise.all([
+        runSqliteJson(
+          `SELECT dimension, fact_key, title, detail, is_pinned FROM user_kyc_memories WHERE is_archived = 0 ORDER BY is_pinned DESC, confidence DESC, updated_at DESC LIMIT 40;`,
+          signal
+        ),
+        runSqliteJson(
+          `SELECT instrument_id, symbol, name, thesis_note, last_price, last_change_pct FROM user_watchlist_stocks ORDER BY sort_order ASC, updated_at DESC LIMIT 30;`,
+          signal
+        ),
+        runSqliteJson(`SELECT title, site_url, category FROM user_followed_feeds ORDER BY is_pinned DESC, updated_at DESC LIMIT 20;`, signal),
+        runSqliteJson(`SELECT platform, handle, display_name, why_following FROM user_followed_creators ORDER BY is_pinned DESC, updated_at DESC LIMIT 20;`, signal),
+      ]);
 
       const sections: string[] = [];
       if (memories.length) {
@@ -791,12 +899,12 @@ export default function (pi: ExtensionAPI) {
       displayName: Type.Optional(Type.String({ description: "创作者名称" })),
       why: Type.Optional(Type.String({ description: "关注原因" })),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, signal) {
       const actionType = String(params.type || "").trim();
       if (!actionType) {
         return { content: [{ type: "text", text: "缺少 action type。" }], details: {} };
       }
-      const ok = enqueueEditorAction(actionType, params as Record<string, any>);
+      const ok = await enqueueEditorAction(actionType, params as Record<string, any>, signal);
       if (!ok) {
         return {
           content: [{ type: "text", text: `未能将操作 ${actionType} 写入本地队列（COT_DB_PATH 不可用）。` }],

@@ -262,7 +262,7 @@ enum WorkspaceOrganizer {
             return
         }
         
-        guard AIService.shared.isConfigured else {
+        guard AIService.shared.isConfigured(for: .organizeAndMerge) else {
             let alert = NSAlert()
             alert.messageText = String(localized: "chrome.aiAlert.title",
                                        defaultValue: "AI Is Not Configured", table: "Chrome")
@@ -286,11 +286,14 @@ enum WorkspaceOrganizer {
         
         let targetWindow = anchorWindow ?? NSApp.mainWindow ?? NSApp.orderedWindows.first
         let profileDesc: String = {
-            if let profile = AIEndpointStore.activeProfile {
-                let model = profile.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            let profile = AIBotStore.shared.resolvedEndpointProfile(for: .organizeAndMerge) ?? AIEndpointStore.activeProfile
+            let resolvedModel = AIBotStore.shared.resolvedConfiguration(for: .organizeAndMerge).model
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let profile {
+                let model = resolvedModel.isEmpty ? profile.model.trimmingCharacters(in: .whitespacesAndNewlines) : resolvedModel
                 return model.isEmpty ? profile.displayName : "\(profile.displayName) · \(model)"
             }
-            return "AI"
+            return resolvedModel.isEmpty ? "AI" : resolvedModel
         }()
         let progressController = WorkspaceOrganizeProgressController(
             totalDocumentCount: entries.count,

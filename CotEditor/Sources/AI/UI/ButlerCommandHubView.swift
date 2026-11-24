@@ -472,9 +472,9 @@ struct ButlerCommandHubView: View {
         }
         .task {
             self.reloadModels()
-            if let fetched = try? await self.botStore.refreshOpenCodeGoModels() {
-                let profileID = self.botStore.openCodeGoSelectableModels().profile?.id.uuidString
-                self.availableModels = Self.mapModels(fetched, endpointID: profileID)
+            let targetProfile = self.botStore.resolvedEndpointProfile(for: .butler)
+            if (try? await self.botStore.refreshGatewayModels(for: targetProfile)) != nil {
+                self.reloadModels()
             }
         }
     }
@@ -529,21 +529,23 @@ struct ButlerCommandHubView: View {
             )
         }
         
-        if self.butler.isStreaming, let streamID = self.butler.streamingMessageID {
-            let elapsedMs = self.butler.streamingStartedAt.map { max(0, Int(Date().timeIntervalSince($0) * 1000)) } ?? 0
+        let isActiveSessionStreaming = self.butler.isStreaming
+            && self.butler.streamingSessionID == self.butler.activeSessionID
+        if isActiveSessionStreaming, let streamID = self.butler.streamingMessageID {
+            let startedAtMs = (self.butler.streamingStartedAt ?? Date()).timeIntervalSince1970 * 1000
             payloadMessages.append(BeautifulAgentMessagePayload(
                 id: streamID,
                 role: "assistant",
                 text: self.butler.streamingDraft,
                 thinking: self.butler.streamingThinking.isEmpty ? nil : self.butler.streamingThinking,
-                thinkingDurationMs: elapsedMs,
+                thinkingDurationMs: nil,
                 steps: self.butler.streamingSteps.isEmpty ? nil : self.butler.streamingSteps,
                 toolChips: nil,
                 followUps: nil,
                 isStreaming: true,
                 isError: false,
                 quoteContext: nil,
-                createdAt: Date().timeIntervalSince1970 * 1000
+                createdAt: startedAtMs
             ))
         }
         
@@ -645,8 +647,8 @@ struct ButlerCommandHubView: View {
             sessions: sessions,
             activeSessionID: self.butler.activeSessionID,
             messages: payloadMessages,
-            isStreaming: self.butler.isStreaming,
-            streamingStatusLabel: self.butler.streamingStatusLabel.isEmpty ? nil : self.butler.streamingStatusLabel,
+            isStreaming: isActiveSessionStreaming,
+            streamingStatusLabel: isActiveSessionStreaming && !self.butler.streamingStatusLabel.isEmpty ? self.butler.streamingStatusLabel : nil,
             errorMessage: self.butler.lastErrorMessage,
             placeholder: AppLanguage.text("向 @\(self.butler.nickname) 提问，支持 @引用、/命令、查行情与操作编辑器…", en: "Ask @\(self.butler.nickname)..."),
             greetingName: greetingName,
@@ -775,23 +777,27 @@ struct ButlerCommandHubView: View {
     
     
     private func reloadModels() {
-        let info = self.botStore.openCodeGoSelectableModels()
-        let endpointID = info.profile?.id.uuidString
-        var list = Self.mapModels(info.models, endpointID: endpointID)
-        
-        // Also surface active profile's configured models if user uses a non-OpenCodeGo gateway
-        if list.isEmpty, let activeProfile = self.botStore.resolvedEndpointProfile(for: .butler) {
-            list = Self.mapModels(activeProfile.availableModelIDs, endpointID: activeProfile.id.uuidString)
+        let groups = self.botStore.selectableGatewayGroups()
+        let showGatewayLabel = groups.count > 1
+        var list: [BeautifulAgentModelPayload] = []
+        for group in groups {
+            let endpointID = group.profile.id.uuidString
+            let gatewaySuffix = showGatewayLabel ? group.title : nil
+            list.append(contentsOf: Self.mapModels(group.models, endpointID: endpointID, gatewayLabel: gatewaySuffix))
         }
         self.availableModels = list
     }
     
     
-    private static func mapModels(_ ids: [String], endpointID: String?) -> [BeautifulAgentModelPayload] {
+    private static func mapModels(
+        _ ids: [String],
+        endpointID: String?,
+        gatewayLabel: String? = nil
+    ) -> [BeautifulAgentModelPayload] {
         ids.map { mid in
             let lower = mid.lowercased()
             let isFlagship = lower.contains("opus") || lower.contains("gpt-5") || lower.contains("glm-5") || lower.contains("deepseek-v4") || lower.contains("gemini-2.5-pro")
-            let tag: String? = if lower.contains("flash") || lower.contains("haiku") || lower.contains("mini") {
+            let tierTag: String? = if lower.contains("flash") || lower.contains("haiku") || lower.contains("mini") {
                 AppLanguage.text("快推", en: "Fast")
             } else if lower.contains("opus") || lower.contains("pro") || lower.contains("reasoner") {
                 AppLanguage.text("深度", en: "Deep")
@@ -800,12 +806,18 @@ struct ButlerCommandHubView: View {
             } else {
                 nil
             }
+            let combinedTag: String? = switch (gatewayLabel, tierTag) {
+                case let (gw?, tier?): "\(gw) · \(tier)"
+                case let (gw?, nil): gw
+                case let (nil, tier?): tier
+                case (nil, nil): nil
+            }
             return BeautifulAgentModelPayload(
                 id: "\(endpointID ?? "default"):\(mid)",
                 modelID: mid,
                 title: mid,
                 endpointID: endpointID,
-                tag: tag,
+                tag: combinedTag,
                 isFlagship: isFlagship
             )
         }

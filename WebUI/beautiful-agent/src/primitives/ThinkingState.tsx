@@ -1,19 +1,35 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ThinkingStep } from "../types";
 
 /* ─────────────────────────────────────────────────────────
  * THINKING STATE — live expandable trace (beautifului.dev)
  * Drives real Pi reasoning + real tool execution steps:
- *   · shimmering header while working, quiet summary once done
+ *   · shimmering header while working with live ticking timer
  *   · smooth grid-template-rows expand/collapse with thin vertical guide line
- *   · live spinner → crisp checkmark per step, click row to inspect tool output
+ *   · live spinner → crisp checkmark per step, live elapsed duration while running
  * ───────────────────────────────────────────────────────── */
+
+function isThinkingStep(step: ThinkingStep): boolean {
+  return step.kind === "thinking" || step.id.startsWith("think-") || step.id === "news-think";
+}
+
+function formatDuration(ms: number, live: boolean): string {
+  const safe = Math.max(0, ms);
+  if (live) {
+    return `${(safe / 1000).toFixed(1)}s`;
+  }
+  if (safe < 1000) {
+    return `${Math.max(1, Math.round(safe))}ms`;
+  }
+  return `${(safe / 1000).toFixed(1)}s`;
+}
 
 export default function ThinkingState({
   thinking = "",
   steps = [],
   isWorking = false,
   durationMs,
+  startedAtMs,
   locale = "zh",
   activeLabel,
 }: {
@@ -21,6 +37,7 @@ export default function ThinkingState({
   steps?: ThinkingStep[];
   isWorking?: boolean;
   durationMs?: number;
+  startedAtMs?: number;
   locale?: "zh" | "en";
   activeLabel?: string;
 }) {
@@ -28,10 +45,18 @@ export default function ThinkingState({
   const [openStepIds, setOpenStepIds] = useState<Set<string>>(new Set());
   const traceRef = useRef<HTMLDivElement>(null);
   const [lineHeight, setLineHeight] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const hasContent = Boolean(thinking.trim()) || steps.length > 0;
   const autoExpanded = isWorking;
   const expanded = manualExpanded ?? autoExpanded;
+
+  useEffect(() => {
+    if (!isWorking) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 200);
+    return () => window.clearInterval(timer);
+  }, [isWorking]);
 
   useLayoutEffect(() => {
     if (traceRef.current) setLineHeight(traceRef.current.offsetHeight);
@@ -50,12 +75,26 @@ export default function ThinkingState({
         ? "正在思考"
         : "Thinking");
 
+  const liveHeaderMs = isWorking
+    ? startedAtMs && startedAtMs > 0
+      ? Math.max(0, nowMs - startedAtMs)
+      : durationMs && durationMs > 0
+        ? durationMs
+        : undefined
+    : undefined;
+
+  const toolSteps = steps.filter((s) => !isThinkingStep(s));
+
   const doneSummary = (() => {
-    const secs = durationMs && durationMs > 0 ? Math.max(0.1, durationMs / 1000).toFixed(1) : null;
-    if (steps.length > 0) {
+    const resolvedMs =
+      durationMs && durationMs > 0
+        ? durationMs
+        : steps.reduce((acc, s) => acc + (s.durationMs && s.durationMs > 0 ? s.durationMs : 0), 0);
+    const secs = resolvedMs > 0 ? Math.max(0.1, resolvedMs / 1000).toFixed(1) : null;
+    if (toolSteps.length > 0) {
       return locale === "zh"
-        ? `已执行 ${steps.length} 项工具${secs ? ` · ${secs}s` : ""}`
-        : `Ran ${steps.length} ${steps.length === 1 ? "tool" : "tools"}${secs ? ` · ${secs}s` : ""}`;
+        ? `已执行 ${toolSteps.length} 项工具${secs ? ` · ${secs}s` : ""}`
+        : `Ran ${toolSteps.length} ${toolSteps.length === 1 ? "tool" : "tools"}${secs ? ` · ${secs}s` : ""}`;
     }
     return locale === "zh"
       ? secs
@@ -95,16 +134,23 @@ export default function ThinkingState({
 
         <span role="status" className="min-w-0 truncate">
           {isWorking ? (
-            <span
-              className="bg-clip-text text-[12.5px] font-medium whitespace-nowrap text-transparent"
-              style={{
-                backgroundImage:
-                  "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
-                backgroundSize: "200% 100%",
-                animation: "shimmer-text 1.4s linear infinite",
-              }}
-            >
-              {activeTitle}
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className="bg-clip-text text-[12.5px] font-medium whitespace-nowrap text-transparent"
+                style={{
+                  backgroundImage:
+                    "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
+                  backgroundSize: "200% 100%",
+                  animation: "shimmer-text 1.4s linear infinite",
+                }}
+              >
+                {activeTitle}
+              </span>
+              {liveHeaderMs !== undefined && liveHeaderMs >= 200 && (
+                <span className="shrink-0 font-mono text-[11px] text-ink-3 tabular-nums">
+                  {formatDuration(liveHeaderMs, true)}
+                </span>
+              )}
             </span>
           ) : (
             <span className="text-[12.5px] font-medium whitespace-nowrap text-ink-2" style={{ animation: "fade-in 260ms ease-out both" }}>
@@ -201,11 +247,24 @@ export default function ThinkingState({
                           </span>
                         )}
 
-                        {step.durationMs !== undefined && step.durationMs > 0 && (
-                          <span className="shrink-0 font-mono text-[10.5px] text-ink-3 tabular-nums">
-                            {step.durationMs < 1000 ? `${step.durationMs}ms` : `${(step.durationMs / 1000).toFixed(1)}s`}
-                          </span>
-                        )}
+                        {(() => {
+                          if (step.status === "running" && step.startedAtMs && step.startedAtMs > 0) {
+                            const elapsed = Math.max(0, nowMs - step.startedAtMs);
+                            return (
+                              <span className="shrink-0 font-mono text-[10.5px] text-ink-3 tabular-nums">
+                                {formatDuration(elapsed, true)}
+                              </span>
+                            );
+                          }
+                          if (step.durationMs !== undefined && step.durationMs > 0) {
+                            return (
+                              <span className="shrink-0 font-mono text-[10.5px] text-ink-3 tabular-nums">
+                                {formatDuration(step.durationMs, false)}
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
                       </button>
 
                       {hasDetail && (

@@ -1254,18 +1254,21 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         let instantHTML = MarkdownTableFormatter.generateInstantChartHTML(from: sourceText)
         panel.presentChart(html: instantHTML)
         
-        if AIService.shared.isConfigured {
-            Task {
+        if AIService.shared.isConfigured(for: .interactiveChart) {
+            let task = Task { [weak panel] in
                 do {
                     let result = try await AIService.shared.run(.interactiveChart, on: sourceText) { partial in
-                        panel.presentPartial(result: partial)
+                        panel?.presentPartial(result: partial)
                     }
-                    panel.present(result: result)
+                    panel?.present(result: result)
+                } catch is CancellationError {
+                    return
                 } catch {
                     // Keep the instant interactive chart usable and show the aligned table below
-                    panel.present(result: MarkdownTableFormatter.formatTables(in: sourceText))
+                    panel?.present(result: MarkdownTableFormatter.formatTables(in: sourceText))
                 }
             }
+            panel.onCancel = { task.cancel() }
         } else {
             panel.present(result: MarkdownTableFormatter.formatTables(in: sourceText))
         }
@@ -1363,30 +1366,34 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.aiResultPanel = panel
         panel.present(on: window)
         
-        Task {
+        let task = Task { [weak panel] in
             do {
                 let ocr = try await LocalVisionOCR.recognizeText(in: image)
+                try Task.checkCancellation()
                 let rawText = ocr.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 
                 if !rawText.isEmpty {
-                    panel.presentPartial(result: rawText)
+                    panel?.presentPartial(result: rawText)
                 }
                 
-                guard AIService.shared.isConfigured else {
-                    panel.present(result: rawText.isEmpty ? "（未检测到文字）" : rawText)
+                guard AIService.shared.isConfigured(for: .ocrPolish) else {
+                    panel?.present(result: rawText.isEmpty ? "（未检测到文字）" : rawText)
                     return
                 }
                 
                 let aiImages: [AIImage] = ocr.pngData.map { [AIImage(data: $0, mimeType: "image/png")] } ?? []
                 let promptInput = rawText.isEmpty ? "请识别并整理图片中的文字与表格内容。" : "本地 OCR 初步识别结果如下，请校对并结构化整理：\n\n\(rawText)"
                 let polished = try await AIService.shared.run(.ocrPolish, on: promptInput, images: aiImages) { partial in
-                    panel.presentPartial(result: partial)
+                    panel?.presentPartial(result: partial)
                 }
-                panel.present(result: polished)
+                panel?.present(result: polished)
+            } catch is CancellationError {
+                return
             } catch {
-                panel.present(error: error)
+                panel?.present(error: error)
             }
         }
+        panel.onCancel = { task.cancel() }
     }
     
     
@@ -1411,7 +1418,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             return
         }
         
-        guard AIService.shared.isConfigured else {
+        guard AIService.shared.isConfigured(for: AIBotID(action: action)) else {
             self.presentAIConfigurationAlert(on: window)
             return
         }
@@ -1436,16 +1443,19 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         panel.present(on: window)
         
-        Task { [weak panel, weak self] in
+        let task = Task { [weak panel] in
             do {
                 let result = try await AIService.shared.run(action, on: text) { partial in
                     panel?.presentPartial(result: partial)
                 }
                 panel?.present(result: result)
+            } catch is CancellationError {
+                return
             } catch {
                 panel?.present(error: error)
             }
         }
+        panel.onCancel = { task.cancel() }
     }
     
     
@@ -1457,7 +1467,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             return
         }
         
-        guard AIService.shared.isConfigured else {
+        guard AIService.shared.isConfigured(for: .weeklyReport) else {
             self.presentAIConfigurationAlert(on: window)
             return
         }
@@ -1541,16 +1551,19 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.aiResultPanel = panel
         panel.present(on: window)
         
-        Task { [weak panel] in
+        let task = Task { [weak panel] in
             do {
                 let result = try await AIService.shared.run(.weeklyReport, on: rawInput) { partial in
                     panel?.presentPartial(result: partial)
                 }
                 panel?.present(result: result)
+            } catch is CancellationError {
+                return
             } catch {
                 panel?.present(error: error)
             }
         }
+        panel.onCancel = { task.cancel() }
     }
     
     

@@ -89,6 +89,7 @@ final class CotButlerManager {
     private(set) var activeSessionID: String = ""
     private(set) var messages: [ButlerChatMessage] = []
     private(set) var isStreaming: Bool = false
+    private(set) var streamingSessionID: String?
     private(set) var streamingMessageID: String?
     private(set) var streamingDraft: String = ""
     private(set) var streamingThinking: String = ""
@@ -106,6 +107,7 @@ final class CotButlerManager {
     private var dbObserver: (any NSObjectProtocol)?
     private var isSyncingIdentity = false
     @ObservationIgnored private var activeTurnTask: Task<Void, Never>?
+    @ObservationIgnored private var activeTurnGeneration: UInt64 = 0
     @ObservationIgnored private var streamPatchListeners: [UUID: @MainActor (BeautifulAgentStreamPatchPayload) -> Void] = [:]
     
     
@@ -336,12 +338,68 @@ final class CotButlerManager {
     }
     
     
+    private func cancelAndResetStreaming(savePartial: Bool, resetRPC: Bool) {
+        let wasStreaming = self.isStreaming
+        let priorSessionID = self.streamingSessionID ?? self.activeSessionID
+        let partial = Self.stripActionEnvelope(self.streamingDraft)
+        let priorThinking = self.streamingThinking
+        var priorSteps = self.streamingSteps
+        let priorStartedAt = self.streamingStartedAt
+        let priorTask = self.activeTurnTask
+        
+        self.activeTurnGeneration &+= 1
+        self.isStreaming = false
+        self.streamingSessionID = nil
+        self.streamingMessageID = nil
+        self.streamingDraft = ""
+        self.streamingThinking = ""
+        self.streamingSteps = []
+        self.streamingStatusLabel = ""
+        self.streamingStartedAt = nil
+        self.activeTurnTask = nil
+        
+        priorTask?.cancel()
+        
+        if savePartial, wasStreaming, !partial.isEmpty, !priorSessionID.isEmpty {
+            let nowMs = Date().timeIntervalSince1970 * 1000
+            for idx in priorSteps.indices where priorSteps[idx].status == "running" {
+                priorSteps[idx].status = "done"
+                if priorSteps[idx].durationMs == nil, let startedAtMs = priorSteps[idx].startedAtMs {
+                    priorSteps[idx].durationMs = max(1, Int(nowMs - startedAtMs))
+                }
+            }
+            let elapsedMs = priorStartedAt.map { max(1, Int(Date().timeIntervalSince($0) * 1000)) }
+            let meta = ButlerMessageMetadata(
+                thinking: priorThinking.isEmpty ? nil : priorThinking,
+                thinkingDurationMs: elapsedMs,
+                steps: priorSteps
+            )
+            self.appendAssistantMessage(partial, metadata: meta, sessionID: priorSessionID)
+        }
+        
+        if self.database === CotLocalDatabase.shared {
+            if resetRPC {
+                PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: true)
+            } else if wasStreaming {
+                PiKernelManager.shared.abortRPCTurn(channel: .butler)
+            }
+        }
+    }
+    
+    
     func startNewSession() {
         self.lastErrorMessage = nil
+        let hadStreaming = self.isStreaming
+        if hadStreaming {
+            self.cancelAndResetStreaming(savePartial: true, resetRPC: true)
+        }
         if let active = self.sessions.first(where: { $0.id == self.activeSessionID }),
            self.messages.isEmpty,
            active.messageCount == 0
         {
+            if !hadStreaming, self.database === CotLocalDatabase.shared {
+                PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: true)
+            }
             return
         }
         let created = self.database.createButlerSession(title: AppLanguage.text("新对话", en: "New Chat"))
@@ -349,8 +407,8 @@ final class CotButlerManager {
         self.database.set(created.id, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
         self.sessions = self.database.fetchButlerSessions()
         self.messages = []
-        if self.database === CotLocalDatabase.shared {
-            PiKernelManager.shared.resetRPCSession(channel: .butler)
+        if !hadStreaming, self.database === CotLocalDatabase.shared {
+            PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: true)
         }
     }
     
@@ -359,6 +417,9 @@ final class CotButlerManager {
         guard self.activeSessionID != sessionID,
               self.sessions.contains(where: { $0.id == sessionID })
         else { return }
+        if self.isStreaming {
+            self.cancelAndResetStreaming(savePartial: true, resetRPC: false)
+        }
         self.lastErrorMessage = nil
         self.activeSessionID = sessionID
         self.database.set(sessionID, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
@@ -380,6 +441,10 @@ final class CotButlerManager {
     
     
     func deleteSession(_ sessionID: String) {
+        let shouldResetStreaming = self.isStreaming && (self.streamingSessionID == sessionID || self.activeSessionID == sessionID)
+        if shouldResetStreaming {
+            self.cancelAndResetStreaming(savePartial: false, resetRPC: true)
+        }
         self.database.deleteButlerSession(id: sessionID)
         var remaining = self.database.fetchButlerSessions()
         if remaining.isEmpty {
@@ -392,8 +457,8 @@ final class CotButlerManager {
             self.database.set(self.activeSessionID, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
         }
         self.messages = self.database.fetchButlerMessages(sessionID: self.activeSessionID)
-        if self.database === CotLocalDatabase.shared {
-            PiKernelManager.shared.resetRPCSession(channel: .butler)
+        if !shouldResetStreaming, self.database === CotLocalDatabase.shared {
+            PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: true)
         }
     }
     
@@ -401,12 +466,10 @@ final class CotButlerManager {
     func clearCurrentSession() {
         guard !self.activeSessionID.isEmpty else { return }
         self.lastErrorMessage = nil
+        self.cancelAndResetStreaming(savePartial: false, resetRPC: true)
         self.database.clearButlerMessages(sessionID: self.activeSessionID)
         self.messages = []
         self.sessions = self.database.fetchButlerSessions()
-        if self.database === CotLocalDatabase.shared {
-            PiKernelManager.shared.resetRPCSession(channel: .butler)
-        }
     }
     
     
@@ -438,10 +501,7 @@ final class CotButlerManager {
     
     func abortStreaming() {
         guard self.isStreaming else { return }
-        self.activeTurnTask?.cancel()
-        if self.database === CotLocalDatabase.shared {
-            PiKernelManager.shared.abortRPCTurn(channel: .butler)
-        }
+        self.cancelAndResetStreaming(savePartial: true, resetRPC: false)
     }
     
     
@@ -461,7 +521,16 @@ final class CotButlerManager {
         contextSources: [String] = []
     ) async {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !self.isStreaming else { return }
+        guard !text.isEmpty else { return }
+        
+        if self.isStreaming {
+            // Self-heal stale streaming flags or cleanly cancel a background turn on another session.
+            if self.activeTurnTask == nil || self.streamingSessionID != self.activeSessionID {
+                self.cancelAndResetStreaming(savePartial: true, resetRPC: false)
+            } else {
+                return
+            }
+        }
         
         if self.activeSessionID.isEmpty {
             self.bootstrapSessionsAndMessages()
@@ -492,8 +561,11 @@ final class CotButlerManager {
             return
         }
         
+        self.activeTurnGeneration &+= 1
+        let turnGeneration = self.activeTurnGeneration
         let streamID = "stream-\(UUID().uuidString)"
         self.isStreaming = true
+        self.streamingSessionID = targetSessionID
         self.streamingMessageID = streamID
         self.streamingDraft = ""
         self.streamingThinking = ""
@@ -508,12 +580,15 @@ final class CotButlerManager {
                 quote: cleanQuote,
                 contextSources: contextSources,
                 sessionID: targetSessionID,
-                resolvedConfig: resolvedConfig
+                resolvedConfig: resolvedConfig,
+                generation: turnGeneration
             )
         }
         self.activeTurnTask = task
         await task.value
-        self.activeTurnTask = nil
+        if self.activeTurnGeneration == turnGeneration {
+            self.activeTurnTask = nil
+        }
     }
     
     
@@ -522,16 +597,21 @@ final class CotButlerManager {
         quote: String?,
         contextSources: [String],
         sessionID: String,
-        resolvedConfig: AIConfiguration
+        resolvedConfig: AIConfiguration,
+        generation: UInt64
     ) async {
+        let turnClockStart = ContinuousClock.now
         defer {
-            self.isStreaming = false
-            self.streamingMessageID = nil
-            self.streamingDraft = ""
-            self.streamingThinking = ""
-            self.streamingSteps = []
-            self.streamingStatusLabel = ""
-            self.streamingStartedAt = nil
+            if self.activeTurnGeneration == generation {
+                self.isStreaming = false
+                self.streamingSessionID = nil
+                self.streamingMessageID = nil
+                self.streamingDraft = ""
+                self.streamingThinking = ""
+                self.streamingSteps = []
+                self.streamingStatusLabel = ""
+                self.streamingStartedAt = nil
+            }
         }
         
         let augmentedUserPrompt = self.buildTurnUserPrompt(
@@ -564,16 +644,21 @@ final class CotButlerManager {
                     configuration: resolvedConfig,
                     workingDirectory: workingDir
                 ) { [weak self] event in
-                    self?.handlePiStreamEvent(event)
+                    guard let self, self.activeTurnGeneration == generation else { return }
+                    self.handlePiStreamEvent(event)
                 }
+                
+                guard self.activeTurnGeneration == generation else { return }
                 
                 // Drain any editor_action queued by Pi right before finalizing
                 await CotAgentCoordinator.shared.drainCommandQueueNow()
+                guard self.activeTurnGeneration == generation else { return }
                 
                 let extracted = Self.extractActions(from: result.text)
                 let legacyReceipts = extracted.actions.isEmpty
                     ? []
                     : await CotAgentCoordinator.shared.execute(extracted.actions)
+                guard self.activeTurnGeneration == generation else { return }
                 
                 let replyText: String = {
                     if !extracted.cleanText.isEmpty {
@@ -588,6 +673,19 @@ final class CotButlerManager {
                     return AppLanguage.text("已处理完毕。", en: "Done.")
                 }()
                 
+                let elapsed = turnClockStart.duration(to: .now)
+                let latencyMs = max(1, Int(elapsed.components.seconds * 1000) + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))
+                let effective = resolvedConfig.wireConfiguration
+                AnalyticsManager.shared.recordAIUsage(
+                    feature: "butler",
+                    model: effective.model,
+                    provider: "Pi RPC · \(effective.endpoint.label)",
+                    inputTokens: AINextTokenPredictor.estimateTokens(in: piSystemPrompt + "\n" + augmentedUserPrompt),
+                    outputTokens: AINextTokenPredictor.estimateTokens(in: replyText + "\n" + result.thinking),
+                    latencyMs: latencyMs,
+                    success: true
+                )
+                
                 let toolChips = result.toolNames.map { PiToolDisplayMeta.label(for: $0) }
                 let meta = ButlerMessageMetadata(
                     receipts: legacyReceipts,
@@ -601,6 +699,7 @@ final class CotButlerManager {
                 self.appendAssistantMessage(replyText, metadata: meta, sessionID: sessionID)
                 return
             } catch is CancellationError {
+                guard self.activeTurnGeneration == generation else { return }
                 let partial = Self.stripActionEnvelope(self.streamingDraft)
                 let final = partial.isEmpty ? AppLanguage.text("已停止生成。", en: "Stopped.") : partial
                 let meta = ButlerMessageMetadata(
@@ -610,8 +709,8 @@ final class CotButlerManager {
                 self.appendAssistantMessage(final, metadata: meta, sessionID: sessionID)
                 return
             } catch {
-                // If user manually aborted, do not silently fall back
-                if Task.isCancelled { return }
+                // If user manually aborted or started a new session, do not fall back
+                guard self.activeTurnGeneration == generation, !Task.isCancelled else { return }
                 // Reset streaming state cleanly before falling back to Swift Tool Assist + Direct SSE
                 self.streamingDraft = ""
                 self.streamingThinking = ""
@@ -621,8 +720,11 @@ final class CotButlerManager {
             }
         }
         
+        guard self.activeTurnGeneration == generation, !Task.isCancelled else { return }
+        
         // 2. Resilient fallback path: Native Swift tool lookup (real quotes + news) + direct SSE streaming
         let enriched = await CotSwiftToolFallback.enrichIfNeeded(for: userText)
+        guard self.activeTurnGeneration == generation, !Task.isCancelled else { return }
         if !enriched.steps.isEmpty {
             self.streamingSteps = enriched.steps
             self.streamingStatusLabel = AppLanguage.text("正在整理回复…", en: "Composing reply...")
@@ -656,7 +758,7 @@ final class CotButlerManager {
                 configuration: resolvedConfig,
                 analyticsFeature: "butler"
             ) { [weak self] partial in
-                guard let self else { return }
+                guard let self, self.activeTurnGeneration == generation else { return }
                 let now = Date()
                 guard now.timeIntervalSince(lastDraftFlushAt) >= 0.04 else { return }
                 lastDraftFlushAt = now
@@ -664,12 +766,14 @@ final class CotButlerManager {
                 self.emitStreamPatch()
             }
             
+            guard self.activeTurnGeneration == generation else { return }
             let extracted = Self.extractActions(from: fullRaw)
             let receipts = await CotAgentCoordinator.shared.execute(extracted.actions)
+            guard self.activeTurnGeneration == generation else { return }
             let replyText = extracted.cleanText.isEmpty
                 ? (receipts.isEmpty ? "已处理。" : receipts.map(\.summary).joined(separator: " · "))
                 : extracted.cleanText
-            let elapsedMs = self.streamingStartedAt.map { max(1, Int(Date().timeIntervalSince($0) * 1000)) } ?? 0
+            let totalToolMs = enriched.steps.compactMap(\.durationMs).reduce(0, +)
             let toolNames: [String] = enriched.steps.map { step in
                 if step.id.hasPrefix("fallback-quote-") { return "lookup_stock_quote" }
                 if step.id == "fallback-news" { return "search_news" }
@@ -677,21 +781,36 @@ final class CotButlerManager {
             }
             let meta = ButlerMessageMetadata(
                 receipts: receipts,
-                thinkingDurationMs: enriched.steps.isEmpty ? nil : elapsedMs,
+                thinkingDurationMs: totalToolMs > 0 ? totalToolMs : nil,
                 steps: enriched.steps,
                 toolChips: enriched.steps.map(\.label),
                 followUps: Self.suggestFollowUps(userText: userText, toolNames: toolNames)
             )
             self.appendAssistantMessage(replyText, metadata: meta, sessionID: sessionID)
         } catch is CancellationError {
+            guard self.activeTurnGeneration == generation else { return }
             let partial = Self.stripActionEnvelope(self.streamingDraft)
             if !partial.isEmpty {
                 self.appendAssistantMessage(partial, metadata: ButlerMessageMetadata(steps: self.streamingSteps), sessionID: sessionID)
             }
         } catch {
+            guard self.activeTurnGeneration == generation else { return }
             self.lastErrorMessage = error.localizedDescription
             let meta = ButlerMessageMetadata(errorMessage: error.localizedDescription)
             self.appendAssistantMessage(error.localizedDescription, metadata: meta, sessionID: sessionID)
+        }
+    }
+    
+    
+    private func closeRunningThinkingSteps(explicitDurationMs: Int? = nil) {
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        for idx in self.streamingSteps.indices where self.streamingSteps[idx].id == "think-live" && self.streamingSteps[idx].status == "running" {
+            self.streamingSteps[idx].status = "done"
+            if let explicitDurationMs, explicitDurationMs > 0 {
+                self.streamingSteps[idx].durationMs = explicitDurationMs
+            } else if self.streamingSteps[idx].durationMs == nil, let startedAtMs = self.streamingSteps[idx].startedAtMs {
+                self.streamingSteps[idx].durationMs = max(1, Int(nowMs - startedAtMs))
+            }
         }
     }
     
@@ -700,6 +819,23 @@ final class CotButlerManager {
         switch event {
             case .status(let label):
                 self.streamingStatusLabel = label
+                self.emitStreamPatch()
+                
+            case .thinkingStart(let startedAtMs):
+                self.streamingStatusLabel = AppLanguage.text("正在深度思考…", en: "Thinking deeply...")
+                if !self.streamingSteps.contains(where: { $0.id == "think-live" }) {
+                    self.streamingSteps.append(BeautifulAgentThinkingStep(
+                        id: "think-live",
+                        label: AppLanguage.text("推理思考", en: "Reasoning"),
+                        chip: nil,
+                        status: "running",
+                        mono: false,
+                        detail: nil,
+                        durationMs: nil,
+                        kind: "thinking",
+                        startedAtMs: startedAtMs
+                    ))
+                }
                 self.emitStreamPatch()
                 
             case .thinkingDelta(let thinking):
@@ -713,6 +849,7 @@ final class CotButlerManager {
                     .map { String($0.prefix(140)) }
                 if let idx = self.streamingSteps.firstIndex(where: { $0.id == "think-live" }) {
                     self.streamingSteps[idx].detail = previewLines.isEmpty ? nil : previewLines
+                    self.streamingSteps[idx].status = "running"
                 } else {
                     self.streamingSteps.append(BeautifulAgentThinkingStep(
                         id: "think-live",
@@ -721,32 +858,37 @@ final class CotButlerManager {
                         status: "running",
                         mono: false,
                         detail: previewLines.isEmpty ? nil : previewLines,
-                        durationMs: nil
+                        durationMs: nil,
+                        kind: "thinking",
+                        startedAtMs: Date().timeIntervalSince1970 * 1000
                     ))
                 }
                 self.emitStreamPatch()
                 
-            case .thinkingEnd(let thinking):
+            case .thinkingEnd(let thinking, let durationMs):
                 self.streamingThinking = thinking
-                for idx in self.streamingSteps.indices where self.streamingSteps[idx].id == "think-live" && self.streamingSteps[idx].status == "running" {
-                    self.streamingSteps[idx].status = "done"
-                }
+                self.closeRunningThinkingSteps(explicitDurationMs: durationMs)
                 self.emitStreamPatch()
                 
-            case .toolStart(let id, let name, let label, let detail):
-                for idx in self.streamingSteps.indices where self.streamingSteps[idx].id == "think-live" && self.streamingSteps[idx].status == "running" {
-                    self.streamingSteps[idx].status = "done"
-                }
+            case .toolStart(let id, let name, let label, let detail, let startedAtMs):
+                self.closeRunningThinkingSteps()
                 self.streamingStatusLabel = detail.map { "\(label)：\($0)" } ?? label
-                self.streamingSteps.append(BeautifulAgentThinkingStep(
+                let step = BeautifulAgentThinkingStep(
                     id: id,
                     label: label,
                     chip: detail ?? name,
                     status: "running",
                     mono: ["bash", "grep", "read", "edit", "write"].contains(name),
                     detail: nil,
-                    durationMs: nil
-                ))
+                    durationMs: nil,
+                    kind: "tool",
+                    startedAtMs: startedAtMs
+                )
+                if let idx = self.streamingSteps.firstIndex(where: { $0.id == id }) {
+                    self.streamingSteps[idx] = step
+                } else {
+                    self.streamingSteps.append(step)
+                }
                 self.emitStreamPatch()
                 
             case .toolUpdate(let id, let preview):
@@ -759,7 +901,11 @@ final class CotButlerManager {
             case .toolEnd(let id, _, let isError, let durationMs, let preview):
                 if let idx = self.streamingSteps.firstIndex(where: { $0.id == id }) {
                     self.streamingSteps[idx].status = isError ? "error" : "done"
-                    self.streamingSteps[idx].durationMs = durationMs
+                    if let durationMs {
+                        self.streamingSteps[idx].durationMs = durationMs
+                    } else if let startedAtMs = self.streamingSteps[idx].startedAtMs {
+                        self.streamingSteps[idx].durationMs = max(1, Int(Date().timeIntervalSince1970 * 1000 - startedAtMs))
+                    }
                     if let preview {
                         let lines = Array(preview.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.prefix(4))
                         self.streamingSteps[idx].detail = lines.isEmpty ? nil : lines
@@ -769,6 +915,7 @@ final class CotButlerManager {
                 self.emitStreamPatch()
                 
             case .textDelta(let text), .textEnd(let text):
+                self.closeRunningThinkingSteps()
                 self.streamingDraft = Self.stripActionEnvelope(text)
                 self.emitStreamPatch()
                 
