@@ -1157,22 +1157,52 @@ nonisolated enum DocumentCenterAgentOrganizer {
         let titleLower = item.title.lowercased()
         let syntaxLower = item.syntax.lowercased()
         let effectiveTitle = item.isUntitled ? "" : item.title
-        let sampleLower = (effectiveTitle + "\n" + item.excerpt).lowercased()
         
-        if sampleLower.contains("会议") || sampleLower.contains("纪要") || sampleLower.contains("例会") || sampleLower.contains("周会") || sampleLower.contains("meeting") || sampleLower.contains("sync") {
-            return "会议纪要"
+        // 1. Prioritize direct title affinity against existing healthy user groups (e.g. "cot优化roadmap" -> "cot优化").
+        if !effectiveTitle.isEmpty {
+            let sig = OrganizeTopicSignature.extract(title: effectiveTitle, content: item.excerpt, isUntitled: false)
+            if !sig.titleProjectStems.isEmpty {
+                let bestExisting = existingSet
+                    .filter { !Self.catchAllGroupNames.contains($0) && !Self.isMonolithicGroup(count: groupCounts[$0, default: 0], totalItems: totalItems) }
+                    .max { lhs, rhs in
+                        OrganizeTopicSignature.titleAffinityScore(for: sig, groupName: lhs)
+                            < OrganizeTopicSignature.titleAffinityScore(for: sig, groupName: rhs)
+                    }
+                if let bestExisting,
+                   OrganizeTopicSignature.titleAffinityScore(for: sig, groupName: bestExisting) >= 12
+                {
+                    return bestExisting
+                }
+            }
         }
-        if sampleLower.contains("方案") || sampleLower.contains("需求") || sampleLower.contains("prd") || sampleLower.contains("设计") || sampleLower.contains("规划") || sampleLower.contains("架构") || sampleLower.contains("roadmap") {
-            return "项目方案"
+        
+        // 2. Check explicit title signals before falling back to body excerpts so body examples never hijack the group.
+        func matchCategory(in text: String) -> String? {
+            if text.contains("会议") || text.contains("纪要") || text.contains("例会") || text.contains("周会") || text.contains("meeting") || text.contains("sync") {
+                return "会议纪要"
+            }
+            if text.contains("方案") || text.contains("需求") || text.contains("prd") || text.contains("设计") || text.contains("规划") || text.contains("架构") || text.contains("roadmap") || text.contains("路线图") {
+                return "项目方案"
+            }
+            if text.contains("评测") || text.contains("重评") || text.contains("归因") || text.contains("badcase") || text.contains("goldencase") || text.contains("评级") || text.contains("压测") || text.contains("基准") || text.contains("看板") || text.contains("eval") || text.contains("benchmark") {
+                return "评测分析"
+            }
+            if text.contains("数据梳理") || text.contains("聚类") || text.contains("统计") || text.contains("指标") || text.contains("大盘") || text.contains("口径") || text.contains("报表") || text.contains("trace") || text.contains("dataset") {
+                return "数据分析"
+            }
+            if text.contains("周报") || text.contains("日报") || text.contains("复盘") || text.contains("总结") || text.contains("todo") || text.contains("清单") || text.contains("排期") || text.contains("待办") {
+                return "工作清单"
+            }
+            return nil
         }
-        if sampleLower.contains("评测") || sampleLower.contains("重评") || sampleLower.contains("归因") || sampleLower.contains("badcase") || sampleLower.contains("goldencase") || sampleLower.contains("评级") || sampleLower.contains("压测") || sampleLower.contains("基准") || sampleLower.contains("看板") || sampleLower.contains("eval") || sampleLower.contains("benchmark") {
-            return "评测分析"
+        
+        if !effectiveTitle.isEmpty, let titleMatch = matchCategory(in: effectiveTitle.lowercased()) {
+            return titleMatch
         }
-        if sampleLower.contains("数据梳理") || sampleLower.contains("聚类") || sampleLower.contains("统计") || sampleLower.contains("指标") || sampleLower.contains("大盘") || sampleLower.contains("口径") || sampleLower.contains("报表") || sampleLower.contains("trace") || sampleLower.contains("dataset") {
-            return "数据分析"
-        }
-        if sampleLower.contains("周报") || sampleLower.contains("日报") || sampleLower.contains("复盘") || sampleLower.contains("总结") || sampleLower.contains("todo") || sampleLower.contains("清单") || sampleLower.contains("排期") || sampleLower.contains("待办") {
-            return "工作清单"
+        
+        let sampleLower = (effectiveTitle + "\n" + item.excerpt).lowercased()
+        if let bodyMatch = matchCategory(in: sampleLower) {
+            return bodyMatch
         }
         if syntaxLower == "json" || syntaxLower == "yaml" || syntaxLower == "toml" || syntaxLower == "xml" || syntaxLower == "csv" || titleLower.hasSuffix(".env") {
             return "配置数据"
@@ -1489,6 +1519,7 @@ nonisolated enum DocumentCenterAgentOrganizer {
     var isAgentOrganizing: Bool = false
     var agentOrganizeProgressText: String = "一键整理中"
     var agentOrganizeSummary: String?
+    var lastOrganizeMergeLogs: [String] = []
     var lastOrganizeUndoSnapshot: [OrganizeUndoEntry] = []
     var lastOrganizeCreatedGroups: [String] = []
     var lastOrganizeRemovedGroups: [String] = []
@@ -2394,6 +2425,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     let clusters: [StarMapClusterNode]
     let relations: [StarMapRelationEdge]
     let selectedLeafID: String?
+    let multiSelectedLeafIDs: Set<String>
     let focusedClusterID: String?
     let searchQuery: String
     let panRequestToken: Int
@@ -2401,6 +2433,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     let isOverlayBlockingInteraction: Bool
     let onSelectedLeafFrameChange: ((CGRect?) -> Void)?
     let onSelectLeaf: (String) -> Void
+    let onCommandSelectLeaf: ((String) -> Void)?
     let onDoubleClickLeaf: (String) -> Void
     let onToggleCluster: (String) -> Void
     @ViewBuilder let clusterContextMenu: (StarMapClusterNode) -> ClusterMenu
@@ -2412,6 +2445,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
         clusters: [StarMapClusterNode],
         relations: [StarMapRelationEdge] = [],
         selectedLeafID: String?,
+        multiSelectedLeafIDs: Set<String> = [],
         focusedClusterID: String?,
         searchQuery: String,
         panRequestToken: Int = 0,
@@ -2419,6 +2453,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
         isOverlayBlockingInteraction: Bool = false,
         onSelectedLeafFrameChange: ((CGRect?) -> Void)? = nil,
         onSelectLeaf: @escaping (String) -> Void,
+        onCommandSelectLeaf: ((String) -> Void)? = nil,
         onDoubleClickLeaf: @escaping (String) -> Void,
         onToggleCluster: @escaping (String) -> Void,
         @ViewBuilder clusterContextMenu: @escaping (StarMapClusterNode) -> ClusterMenu,
@@ -2429,6 +2464,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
         self.clusters = clusters
         self.relations = relations
         self.selectedLeafID = selectedLeafID
+        self.multiSelectedLeafIDs = multiSelectedLeafIDs
         self.focusedClusterID = focusedClusterID
         self.searchQuery = searchQuery
         self.panRequestToken = panRequestToken
@@ -2436,6 +2472,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
         self.isOverlayBlockingInteraction = isOverlayBlockingInteraction
         self.onSelectedLeafFrameChange = onSelectedLeafFrameChange
         self.onSelectLeaf = onSelectLeaf
+        self.onCommandSelectLeaf = onCommandSelectLeaf
         self.onDoubleClickLeaf = onDoubleClickLeaf
         self.onToggleCluster = onToggleCluster
         self.clusterContextMenu = clusterContextMenu
@@ -2547,6 +2584,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                     relations: self.relations,
                     layout: layout,
                     selectedLeafID: self.selectedLeafID,
+                    multiSelectedLeafIDs: self.multiSelectedLeafIDs,
                     focusedClusterID: self.focusedClusterID,
                     isDark: isDark,
                     tokens: tokens,
@@ -2555,6 +2593,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                     panOffset: self.panOffset,
                     zoomScale: self.zoomScale,
                     onSelectLeaf: self.onSelectLeaf,
+                    onCommandSelectLeaf: self.onCommandSelectLeaf,
                     onDoubleClickLeaf: self.onDoubleClickLeaf,
                     onToggleCluster: self.onToggleCluster,
                     clusterContextMenu: self.clusterContextMenu,
@@ -3017,6 +3056,7 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
     let relations: [StarMapRelationEdge]
     let layout: StarMapLayoutEngine.LayoutResult
     let selectedLeafID: String?
+    let multiSelectedLeafIDs: Set<String>
     let focusedClusterID: String?
     let isDark: Bool
     let tokens: StudioColorTokens
@@ -3025,6 +3065,7 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
     let panOffset: CGSize
     let zoomScale: CGFloat
     let onSelectLeaf: (String) -> Void
+    let onCommandSelectLeaf: ((String) -> Void)?
     let onDoubleClickLeaf: (String) -> Void
     let onToggleCluster: (String) -> Void
     @ViewBuilder let clusterContextMenu: (StarMapClusterNode) -> ClusterMenu
@@ -3038,6 +3079,7 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
             && lhs.relations == rhs.relations
             && lhs.layout == rhs.layout
             && lhs.selectedLeafID == rhs.selectedLeafID
+            && lhs.multiSelectedLeafIDs == rhs.multiSelectedLeafIDs
             && lhs.focusedClusterID == rhs.focusedClusterID
             && lhs.isDark == rhs.isDark
             && lhs.viewportSize == rhs.viewportSize
@@ -3162,7 +3204,8 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
             ForEach(self.layout.leaves) { lPos in
                 let pt = self.screenPosition(lPos.worldPoint)
                 if cullRect.contains(pt), let leaf = leafMap[lPos.id] {
-                    let isSelected = (self.selectedLeafID == leaf.id)
+                    let isMultiSelected = self.multiSelectedLeafIDs.contains(leaf.id)
+                    let isSelected = (self.selectedLeafID == leaf.id) || isMultiSelected
                     let isRelated = relatedIDs.contains(leaf.id)
                     let dimmed = (self.focusedClusterID != nil && self.focusedClusterID != leaf.clusterID && !isSelected && !isRelated)
                     
@@ -3170,6 +3213,7 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
                         leaf: leaf,
                         tokens: tokens,
                         isSelected: isSelected,
+                        isMultiSelected: isMultiSelected,
                         isRelated: isRelated,
                         dimmed: dimmed,
                         isDark: self.isDark,
@@ -3183,7 +3227,13 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
                         self.onDoubleClickLeaf(leaf.id)
                     }
                     .onTapGesture(count: 1) {
-                        self.onSelectLeaf(leaf.id)
+                        if let onCommandSelect = self.onCommandSelectLeaf,
+                           NSEvent.modifierFlags.contains(.command)
+                        {
+                            onCommandSelect(leaf.id)
+                        } else {
+                            self.onSelectLeaf(leaf.id)
+                        }
                     }
                     .contextMenu {
                         self.leafContextMenu(leaf)
@@ -3333,6 +3383,7 @@ private struct StarMapLeafCardView: View, Equatable {
     let leaf: StarMapLeafNode
     let tokens: StudioColorTokens
     let isSelected: Bool
+    let isMultiSelected: Bool
     let isRelated: Bool
     let dimmed: Bool
     let isDark: Bool
@@ -3344,6 +3395,7 @@ private struct StarMapLeafCardView: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.leaf == rhs.leaf
             && lhs.isSelected == rhs.isSelected
+            && lhs.isMultiSelected == rhs.isMultiSelected
             && lhs.isRelated == rhs.isRelated
             && lhs.dimmed == rhs.dimmed
             && lhs.isDark == rhs.isDark
@@ -3357,9 +3409,15 @@ private struct StarMapLeafCardView: View, Equatable {
         let dotSide = m.scaled(self.isSelected ? 7 : 6)
         VStack(alignment: .leading, spacing: m.scaled(3.5)) {
             HStack(spacing: m.scaled(6)) {
-                Circle()
-                    .fill(self.isRelated ? self.tokens.accent : self.leaf.dotColor)
-                    .frame(width: dotSide, height: dotSide)
+                if self.isMultiSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: m.fontSize(11), weight: .semibold))
+                        .foregroundStyle(self.tokens.accent)
+                } else {
+                    Circle()
+                        .fill(self.isRelated ? self.tokens.accent : self.leaf.dotColor)
+                        .frame(width: dotSide, height: dotSide)
+                }
                 
                 Text(self.leaf.title)
                     .font(.system(size: m.fontSize(12), weight: self.isSelected ? .semibold : .medium))

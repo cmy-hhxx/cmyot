@@ -1394,4 +1394,125 @@ struct Round43VimMaterialProactiveDashboardTests {
         #expect(menu.items.first?.view is ContextMenuActionDockView)
         #expect(menu.minimumWidth == EditorContextMenuMetrics.menuWidth)
     }
+    
+    
+    // MARK: 15. High-Precision Series Merging (`cot优化roadmap 7` + `CoTEditor Roadmap 3`) & Title-Group Coherence
+    
+    @Test func oneClickOrganizeMergesLongSameSeriesRoadmapsAndEnforcesTitleGroupCoherence() async throws {
+        let now = Date()
+        let longRoadmap7Body = "# CotEditor 优化 Roadmap 7\n"
+            + String(repeating: "性能优化、右键菜单升级、无极缩放修复与评测看板展示案例。\n", count: 360)
+        let longRoadmap3Body = "# CoTEditor Roadmap 3\n"
+            + String(repeating: "文档星图重构、双指缩放与空格预览演进里程碑。\n", count: 220)
+        let aimeBoardBody = "# AIME 评测看板与归因优化\n"
+            + String(repeating: "badcase 聚类、误报率统计与大盘口径校准。\n", count: 400)
+        let aimeStatsBody = "# AIME 数据梳理与统计\n梳理全量 cases_aime.jsonl 统计口径与去重逻辑。"
+        
+        // Verify sizes match the real 11K / 6.2K / 13K char scale from user's workspace!
+        #expect(longRoadmap7Body.count > 10_000)
+        #expect(longRoadmap3Body.count > 5_000)
+        
+        // 1. Entity stem & series detection recognizes `cot` <-> `CoTEditor` + `roadmap` across version numbers.
+        let sig7 = OrganizeTopicSignature.extract(title: "cot优化roadmap 7", content: longRoadmap7Body, isUntitled: false)
+        let sig3 = OrganizeTopicSignature.extract(title: "CoTEditor Roadmap 3", content: longRoadmap3Body, isUntitled: false)
+        #expect(sig7.titleProjectStems.contains("cot"))
+        #expect(sig3.titleProjectStems.contains("cot"))
+        #expect(sig7.artifactRole == "roadmap")
+        #expect(sig3.artifactRole == "roadmap")
+        #expect(OrganizeTopicSignature.isSameSeries(sig7, sig3) == true)
+        
+        // Guardrail: Distinct dated reports NEVER falsely merge even with shared project stem.
+        let reportA = OrganizeTopicSignature.extract(title: "AIME 周报 2026-11-18", content: "第46周总结", isUntitled: false)
+        let reportB = OrganizeTopicSignature.extract(title: "AIME 周报 2026-11-25", content: "第47周总结", isUntitled: false)
+        #expect(OrganizeTopicSignature.isSameSeries(reportA, reportB) == false)
+        
+        // 2. Full organize pipeline merges the 11K + 6.2K roadmaps into ONE clean doc in `cot优化`,
+        //    never leaves `cot优化roadmap 7` stranded inside `评测与数据`, and preserves AIME docs separately!
+        let inputs: [OrganizeFunnelInput] = [
+            OrganizeFunnelInput(
+                id: "doc:aime-board",
+                dbRecordID: "doc:aime-board",
+                title: "AIME 评测看板与归因优化",
+                filePath: nil,
+                syntax: "Markdown",
+                currentGroup: "评测与数据",
+                content: aimeBoardBody,
+                updatedAt: now,
+                isOpenNow: true,
+                isUntitled: false
+            ),
+            OrganizeFunnelInput(
+                id: "doc:cot-r7",
+                dbRecordID: "doc:cot-r7",
+                title: "cot优化roadmap 7",
+                filePath: nil,
+                syntax: "Markdown",
+                currentGroup: "评测与数据", // Misplaced initially, just like screenshot!
+                content: longRoadmap7Body,
+                updatedAt: now.addingTimeInterval(-180),
+                isOpenNow: false,
+                isUntitled: false
+            ),
+            OrganizeFunnelInput(
+                id: "doc:aime-stats",
+                dbRecordID: "doc:aime-stats",
+                title: "AIME 数据梳理与统计",
+                filePath: nil,
+                syntax: "Markdown",
+                currentGroup: "评测与数据",
+                content: aimeStatsBody,
+                updatedAt: now.addingTimeInterval(-5 * 86_400),
+                isOpenNow: false,
+                isUntitled: false
+            ),
+            OrganizeFunnelInput(
+                id: "doc:cot-r3",
+                dbRecordID: "doc:cot-r3",
+                title: "CoTEditor Roadmap 3",
+                filePath: nil,
+                syntax: "Markdown",
+                currentGroup: "cot优化",
+                content: longRoadmap3Body,
+                updatedAt: now.addingTimeInterval(-3600),
+                isOpenNow: true,
+                isUntitled: false
+            ),
+        ]
+        
+        let plan = await DocumentOrganizeFunnel.runFullPipeline(
+            items: inputs,
+            existingGroups: ["评测与数据", "cot优化"],
+            allowRemoteAI: false
+        )
+        
+        // The two CotEditor roadmaps MUST merge into 1 cluster with clean version-stripped title & `cot优化` group!
+        let cotCluster = try #require(plan.funnel.mergeClusters.first(where: { cluster in
+            let allIDs = Set([cluster.primary.id] + cluster.duplicates.map(\.id))
+            return allIDs.contains("doc:cot-r7") && allIDs.contains("doc:cot-r3")
+        }))
+        #expect(cotCluster.bestGroup == "cot优化")
+        #expect(!cotCluster.bestTitle.hasSuffix("7"))
+        #expect(!cotCluster.bestTitle.hasSuffix("3"))
+        #expect(cotCluster.mergedContent.contains("无极缩放修复"))
+        #expect(cotCluster.mergedContent.contains("空格预览演进里程碑"))
+        
+        let cotAssignment = try #require(plan.assignments.first(where: { $0.id == cotCluster.primary.id }))
+        #expect(cotAssignment.group == "cot优化")
+        
+        // 3. Title-group coherence reconciler pulls a misgrouped doc into its matching active group automatically.
+        let misgrouped = [
+            DocumentCenterAgentOrganizer.Assignment(id: "doc:cot-r7", group: "评测与数据", suggestedTitle: nil),
+            DocumentCenterAgentOrganizer.Assignment(id: "doc:cot-r3", group: "cot优化", suggestedTitle: nil),
+            DocumentCenterAgentOrganizer.Assignment(id: "doc:aime-board", group: "评测与数据", suggestedTitle: nil),
+        ]
+        let survivorMap = Dictionary(uniqueKeysWithValues: inputs.map { ($0.id, $0) })
+        let reconciled = DocumentOrganizeFunnel.reconcileTitleGroupCoherence(misgrouped, survivorByID: survivorMap)
+        let fixedR7 = try #require(reconciled.first(where: { $0.id == "doc:cot-r7" }))
+        #expect(fixedR7.group == "cot优化")
+        
+        // 4. Smart manual merge candidate ranking puts `CoTEditor Roadmap 3` #1 with "同系列" badge for `cot优化roadmap 7`!
+        let rankedTargets = OrganizeTopicSignature.rankedMergeCandidates(for: inputs[1], in: inputs)
+        #expect(rankedTargets.first?.item.id == "doc:cot-r3")
+        #expect(rankedTargets.first?.badge == "同系列")
+    }
 }

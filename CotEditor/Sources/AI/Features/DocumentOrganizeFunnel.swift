@@ -114,7 +114,7 @@ nonisolated struct OrganizeFullPlan: Sendable, Equatable {
 
 nonisolated enum DocumentOrganizeFunnel {
     
-    static let defaultShardSize = 24
+    static let defaultShardSize = 36
     static let defaultMaxConcurrency = 4
     
     private static let copySuffixRegex = try! NSRegularExpression(
@@ -515,15 +515,29 @@ nonisolated enum DocumentOrganizeFunnel {
             unite: unite
         )
         
-        // Pass 2D: Content-aware semantic merge for fragmented scratch notes on the exact same concrete topic.
+        // Pass 2C+: Same-project / same-series iterative docs (e.g. "cot优化roadmap 7" + "CoTEditor Roadmap 3")
         var postNearRoots: [Int] = []
         var seenPostNear = Set<Int>()
         for idx in 0..<n {
             let r = find(idx)
             if seenPostNear.insert(r).inserted { postNearRoots.append(r) }
         }
+        Self.mergeSameSeriesRoots(
+            Array(postNearRoots.prefix(240)),
+            cleanItems: cleanItems,
+            find: find,
+            unite: unite
+        )
+        
+        // Pass 2D: Content-aware semantic merge for fragmented scratch notes on the exact same concrete topic.
+        var postSeriesRoots: [Int] = []
+        var seenPostSeries = Set<Int>()
+        for idx in 0..<n {
+            let r = find(idx)
+            if seenPostSeries.insert(r).inserted { postSeriesRoots.append(r) }
+        }
         Self.mergeSemanticSameTopicRoots(
-            Array(postNearRoots.prefix(180)),
+            Array(postSeriesRoots.prefix(180)),
             cleanItems: cleanItems,
             find: find,
             unite: unite
@@ -550,8 +564,70 @@ nonisolated enum DocumentOrganizeFunnel {
         "功能", "页面", "版本", "时间", "状态", "步骤", "建议", "注意", "如下", "需要",
     ]
     
-    private static let maxSemanticClusterDocs = 5
-    private static let maxSemanticClusterChars = 14_000
+    private static let maxSemanticClusterDocs = 6
+    private static let maxSemanticClusterChars = 64_000
+    private static let maxSingleDocSemanticChars = 32_000
+    
+    
+    /// Pass 2C+: Merges living document series sharing the same project stem and artifact role
+    /// (e.g., `"cot优化roadmap 7"` and `"CoTEditor Roadmap 3"`), even across 10K+ char drafts.
+    private static func mergeSameSeriesRoots(
+        _ roots: [Int],
+        cleanItems: [OrganizeFunnelInput],
+        find: (Int) -> Int,
+        unite: (Int, Int, String) -> Void
+    ) {
+        guard roots.count >= 2 else { return }
+        
+        var sigByRoot: [Int: OrganizeTopicSignature] = [:]
+        sigByRoot.reserveCapacity(roots.count)
+        for idx in roots {
+            let item = cleanItems[idx]
+            sigByRoot[idx] = OrganizeTopicSignature.extract(
+                title: item.title,
+                content: item.content,
+                isUntitled: item.isUntitled
+            )
+        }
+        
+        var clusterSize: [Int: Int] = [:]
+        var clusterChars: [Int: Int] = [:]
+        for itemIdx in 0..<cleanItems.count {
+            let r = find(itemIdx)
+            clusterSize[r, default: 0] += 1
+            clusterChars[r, default: 0] += cleanItems[itemIdx].content.count
+        }
+        
+        for i in 0..<roots.count {
+            let a = roots[i]
+            let itemA = cleanItems[a]
+            guard let sigA = sigByRoot[a], !sigA.titleProjectStems.isEmpty else { continue }
+            
+            for j in (i + 1)..<roots.count {
+                let b = roots[j]
+                let ra = find(a)
+                let rb = find(b)
+                if ra == rb { continue }
+                
+                let itemB = cleanItems[b]
+                if itemA.filePath != nil && itemB.filePath != nil { continue }
+                guard let sigB = sigByRoot[b], !sigB.titleProjectStems.isEmpty else { continue }
+                
+                let combinedDocs = (clusterSize[ra] ?? 1) + (clusterSize[rb] ?? 1)
+                let combinedChars = (clusterChars[ra] ?? itemA.content.count) + (clusterChars[rb] ?? itemB.content.count)
+                guard combinedDocs <= Self.maxSemanticClusterDocs,
+                      combinedChars <= Self.maxSemanticClusterChars
+                else { continue }
+                
+                if OrganizeTopicSignature.isSameSeries(sigA, sigB) {
+                    unite(a, b, "同系列版本合并")
+                    let newRoot = find(a)
+                    clusterSize[newRoot] = combinedDocs
+                    clusterChars[newRoot] = combinedChars
+                }
+            }
+        }
+    }
     
     
     private static func isStrongEntityToken(_ token: String) -> Bool {
@@ -588,7 +664,7 @@ nonisolated enum DocumentOrganizeFunnel {
             }
         }
         
-        let maxCommonDF = roots.count >= 4 ? max(2, Int(Double(roots.count) * 0.45)) : roots.count
+        let maxCommonDF = roots.count >= 6 ? max(3, Int(Double(roots.count) * 0.45)) : roots.count
         var specificTermsByRoot: [Int: Set<String>] = [:]
         for idx in roots {
             let filtered = (rawTermsByRoot[idx] ?? []).filter { (docFreq[$0] ?? 0) <= maxCommonDF }
@@ -607,7 +683,7 @@ nonisolated enum DocumentOrganizeFunnel {
         for i in 0..<roots.count {
             let a = roots[i]
             let itemA = cleanItems[a]
-            guard itemA.content.count <= 8_000 else { continue }
+            guard itemA.content.count <= Self.maxSingleDocSemanticChars else { continue }
             let termsA = specificTermsByRoot[a] ?? []
             guard termsA.count >= 2 else { continue }
             
@@ -618,7 +694,7 @@ nonisolated enum DocumentOrganizeFunnel {
                 if ra == rb { continue }
                 
                 let itemB = cleanItems[b]
-                guard itemB.content.count <= 8_000 else { continue }
+                guard itemB.content.count <= Self.maxSingleDocSemanticChars else { continue }
                 // Protect two distinct saved files on disk from local heuristic merging.
                 if itemA.filePath != nil && itemB.filePath != nil { continue }
                 
@@ -719,9 +795,20 @@ nonisolated enum DocumentOrganizeFunnel {
             let primary = ranked[0]
             let duplicates = Array(ranked.dropFirst())
             let mergedContent = Self.mergeStructuredContents(primary: primary, secondaries: duplicates)
-            let bestGroup = ranked.first(where: { !$0.currentGroup.isEmpty })?.currentGroup ?? primary.currentGroup
-            let bestTitle = ranked.first(where: { !$0.isUntitled })?.title ?? primary.title
             let reason = reasons[idx]
+            let bestTitle: String = (reason == "同系列版本合并")
+                ? OrganizeTopicSignature.cleanSeriesTitle(primary: primary, secondaries: duplicates)
+                : (ranked.first(where: { !$0.isUntitled })?.title ?? primary.title)
+            let clusterSig = OrganizeTopicSignature.extract(
+                title: bestTitle,
+                content: mergedContent,
+                isUntitled: DocumentCenterAgentOrganizer.isGenericUntitled(bestTitle, hasFilePath: primary.filePath != nil)
+            )
+            let nonEmptyGroups = ranked.map(\.currentGroup).filter { !$0.isEmpty }
+            let bestGroup = nonEmptyGroups.max { lhs, rhs in
+                OrganizeTopicSignature.titleAffinityScore(for: clusterSig, groupName: lhs)
+                    < OrganizeTopicSignature.titleAffinityScore(for: clusterSig, groupName: rhs)
+            } ?? primary.currentGroup
             
             mergeClusters.append(OrganizeMergeCluster(
                 primary: primary,
@@ -886,9 +973,9 @@ nonisolated enum DocumentOrganizeFunnel {
         
         let survivorByID = Dictionary(uniqueKeysWithValues: baseFunnel.survivors.map { ($0.id, $0) })
         let maxSingleClusterDocs = baseFunnel.survivors.count >= 5
-            ? min(5, max(2, Int(Double(baseFunnel.survivors.count) * 0.60)))
+            ? min(6, max(2, Int(Double(baseFunnel.survivors.count) * 0.60)))
             : min(4, max(2, baseFunnel.survivors.count - 1))
-        let maxMergedChars = 24_000
+        let maxMergedChars = 80_000
         
         var claimedIDs = Set<String>()
         var existingClustersByPrimary = Dictionary(uniqueKeysWithValues: baseFunnel.mergeClusters.map { ($0.primary.id, $0) })
@@ -1099,11 +1186,50 @@ nonisolated enum DocumentOrganizeFunnel {
     }
     
     
+    /// Reconciles any misgrouped document whose title strongly names an existing active group
+    /// (e.g., `"cot优化roadmap 7"` stranded in `"评测与数据"` while group `"cot优化"` exists).
+    static func reconcileTitleGroupCoherence(
+        _ assignments: [DocumentCenterAgentOrganizer.Assignment],
+        survivorByID: [String: OrganizeFunnelInput]
+    ) -> [DocumentCenterAgentOrganizer.Assignment] {
+        let activeGroups = Array(Set(assignments.map(\.group).filter { !$0.isEmpty })).sorted()
+        guard activeGroups.count >= 2 else { return assignments }
+        
+        return assignments.map { current in
+            guard let doc = survivorByID[current.id] else { return current }
+            let effectiveTitle = current.suggestedTitle ?? doc.title
+            let isUntitled = DocumentCenterAgentOrganizer.isGenericUntitled(effectiveTitle, hasFilePath: doc.filePath != nil)
+            guard !isUntitled else { return current }
+            
+            let sig = OrganizeTopicSignature.extract(title: effectiveTitle, content: doc.content, isUntitled: false)
+            guard !sig.titleProjectStems.isEmpty else { return current }
+            
+            let currentScore = OrganizeTopicSignature.titleAffinityScore(for: sig, groupName: current.group)
+            var bestGroup = current.group
+            var bestScore = currentScore
+            for candidateGroup in activeGroups where candidateGroup != current.group {
+                let candidateScore = OrganizeTopicSignature.titleAffinityScore(for: sig, groupName: candidateGroup)
+                if candidateScore >= 12 && candidateScore > bestScore + 8 {
+                    bestScore = candidateScore
+                    bestGroup = candidateGroup
+                }
+            }
+            guard bestGroup != current.group else { return current }
+            return DocumentCenterAgentOrganizer.Assignment(
+                id: current.id,
+                group: bestGroup,
+                suggestedTitle: current.suggestedTitle
+            )
+        }
+    }
+    
+    
     /// Guarantees clean Star-Map output after AI or local classification:
     /// 1) Consolidates synonym drift;
-    /// 2) Splits any remaining oversized monolithic group (`>= 10` docs) into crisp topic buckets;
-    /// 3) Compacts overly fine-grained / singleton micro-groups into a balanced 2–5 pillar overview;
-    /// 4) Ensures every untitled / whimsical-generated document receives a unique, content-derived title.
+    /// 2) Reconciles title-to-group coherence;
+    /// 3) Splits any remaining oversized monolithic group (`>= 10` docs) into crisp topic buckets;
+    /// 4) Compacts overly fine-grained / singleton micro-groups into a balanced 2–5 pillar overview;
+    /// 5) Re-verifies title coherence & ensures every untitled / whimsical document gets a unique title.
     static func finalizeAssignments(
         _ assignments: [DocumentCenterAgentOrganizer.Assignment],
         survivors: [OrganizeFunnelInput],
@@ -1111,6 +1237,7 @@ nonisolated enum DocumentOrganizeFunnel {
     ) -> [DocumentCenterAgentOrganizer.Assignment] {
         var result = Self.consolidateAssignments(assignments, existingGroups: existingGroups)
         let survivorByID = Dictionary(uniqueKeysWithValues: survivors.map { ($0.id, $0) })
+        result = Self.reconcileTitleGroupCoherence(result, survivorByID: survivorByID)
         
         // 1. Anti-monolith guard: if any single group holds >= 10 docs or swallows >= 80% of a >= 5 doc workspace, split by content semantics.
         var indicesByGroup: [String: [Int]] = [:]
@@ -1150,8 +1277,10 @@ nonisolated enum DocumentOrganizeFunnel {
             }
         }
         
-        // 2. Compact fragmented micro-groups so the Star Map stays genuinely uncluttered.
+        // 2. Compact fragmented micro-groups so the Star Map stays genuinely uncluttered,
+        // then re-verify title-group coherence so named project docs never drift into unrelated buckets.
         result = Self.compactFragmentedGroups(result, survivorByID: survivorByID)
+        result = Self.reconcileTitleGroupCoherence(result, survivorByID: survivorByID)
         
         // 3. Guaranteed meaningful title + deduplication for every untitled / whimsical-generated survivor.
         var usedTitles = Set(
@@ -1242,7 +1371,17 @@ nonisolated enum DocumentOrganizeFunnel {
             )
         }
         
-        let shards = Self.makeShards(agentInputs, shardSize: shardSize)
+        // Cohesive ordering keeps same-project/same-series survivors in the same AI shard so cross-doc merges are never blind-spotted.
+        let orderedForSharding = agentInputs.sorted { lhs, rhs in
+            let metaL = localFunnel.survivors.first(where: { $0.id == lhs.id })
+            let metaR = localFunnel.survivors.first(where: { $0.id == rhs.id })
+            let stemL = OrganizeTopicSignature.extract(title: lhs.title, content: metaL?.content ?? lhs.excerpt, isUntitled: lhs.isUntitled).primaryProjectStem
+            let stemR = OrganizeTopicSignature.extract(title: rhs.title, content: metaR?.content ?? rhs.excerpt, isUntitled: rhs.isUntitled).primaryProjectStem
+            if stemL != stemR { return stemL < stemR }
+            if lhs.currentGroup != rhs.currentGroup { return lhs.currentGroup < rhs.currentGroup }
+            return lhs.title < rhs.title
+        }
+        let shards = Self.makeShards(orderedForSharding, shardSize: shardSize)
         let totalBatches = shards.count
         let useAI = allowRemoteAI && AIService.shared.isConfigured
         
@@ -1378,16 +1517,21 @@ nonisolated enum DocumentOrganizeFunnel {
     ) {
         let validIDs = Set(shard.map(\.id))
         let manifestLines = shard.enumerated().map { idx, item -> String in
-            let snippet = DocumentCenterState.cleanExcerpt(from: item.excerpt, maxLength: 240)
             let meta = survivorMetaByID[item.id]
-            let charCount = meta?.content.count ?? item.excerpt.count
+            let fullContent = meta?.content ?? item.excerpt
+            let digest = OrganizeTopicSignature.outlineDigest(
+                title: item.title,
+                content: fullContent,
+                isUntitled: item.isUntitled
+            )
+            let charCount = fullContent.count
             let isScratch = (meta?.filePath == nil)
             let groupTag = bloatedGroups.contains(item.currentGroup) ? "\(item.currentGroup)(待重分)" : item.currentGroup
-            return "[\(idx + 1)] id=\"\(item.id)\" | title=\"\(item.title)\" | chars=\(charCount) | scratch=\(isScratch ? "true" : "false") | group=\"\(groupTag)\" | untitled=\(item.isUntitled ? "true" : "false") | snippet=\"\(snippet)\""
+            return "[\(idx + 1)] id=\"\(item.id)\" | title=\"\(item.title)\" | chars=\(charCount) | scratch=\(isScratch ? "true" : "false") | group=\"\(groupTag)\" | untitled=\(item.isUntitled ? "true" : "false") | \(digest)"
         }.joined(separator: "\n")
         
         var palette: [String] = []
-        for g in DocumentCenterAgentOrganizer.coreTopicPalette + healthyExistingGroups.prefix(3) {
+        for g in DocumentCenterAgentOrganizer.coreTopicPalette + healthyExistingGroups.prefix(4) {
             if !palette.contains(g) { palette.append(g) }
         }
         let groupPalette = palette.joined(separator: "、")
@@ -1396,15 +1540,17 @@ nonisolated enum DocumentOrganizeFunnel {
             : "\n- 原分组「\(bloatedGroups.joined(separator: "、"))」过于臃肿或泛化，禁止原封不动塞回同一组，请结合实际主题整合。"
         
         let systemPrompt = """
-        你是文档星图极速整理与语义合并 Agent（第 \(shardIndex + 1)/\(totalShards) 批）。用户觉得碎片文件太多、看不过来，需要真正精简且清晰的结构。
+        你是文档星图高精度整理与语义合并 Agent（第 \(shardIndex + 1)/\(totalShards) 批）。
         核心规则：
-        1. **审慎而主动地语义合并（merges）**：
-           - 凡是内容实质属于**同一具体事项/同一项目迭代/同一问题排查/同一实验或任务的多次记录**（尤其是 scratch=true 的碎片草稿），请合并为 1 篇完整文档（填入 merges，单次最多合并 2-5 篇，并给出 4-16 字精准 mergedTitle）。
-           - **严禁过度合并**：主题独立、用途不同的文档（如不同项目、规范口径 vs 排障记录 vs 周报 vs 个人备忘）必须保持独立，绝不能把无关文档强行合为一篇大杂烩；也不要把两篇 scratch=false 的独立磁盘文件强行合并。
-        2. **克制清爽的分组粒度（assignments）**：
-           - 杜绝拆分过细！合并后全批总分组数严格收敛在 **2-\(targetMaxGroups) 个高辨识度大类**，避免出现只有 1 篇文档的零散小分组。
-           - 优先使用简洁大类：\(groupPalette)（如需自拟仅限 2-5 字清晰中文名）。\(bloatedHint)
-        3. **彻底清洗占位名**：所有 untitled=true（含系统随机趣名如「啃瓜的小浣熊」「潜艇里的柴犬」）必须根据正文提炼 4-16 字清爽中文标题，禁止填 null 或照抄随机名，不含 Markdown 符号。
+        1. **高精度语义与同系列合并（merges）**：
+           - **同项目同系列迭代必合**：凡是属于同一项目/产品的同一类活文档（如 `cot优化roadmap 7` 与 `CoTEditor Roadmap 3`、`方案 v1` 与 `方案 2`，忽略大小写/简称与全称差异及尾部编号），即使正文字数上万，只要 scratch=true 必须合并为 1 篇，并去掉尾部版本号给出清晰标题（如 `CotEditor 优化 Roadmap`）。
+           - **同事项碎片必合**：同一问题排查、同一实验/需求的多份碎片笔记主动合并（单组 2-6 篇）。
+           - **严禁过度合并**：不同项目、不同日期的独立周报/会议纪要、或两篇 scratch=false 的独立磁盘文件禁止强行合并。
+        2. **标题与核心实体优先归组（assignments）**：
+           - 归组时严格以**标题、核心项目实体与全篇纲要**为第一依据，绝不可被正文中的局部举例词带偏（例如标题是 `cot优化roadmap` 必须归入 `cot优化` 或工程开发类，绝不可误入 `评测与数据`）。
+           - 同一项目的文档必须收拢到同一分组；全批收敛在 **2-\(targetMaxGroups) 个高辨识度大类**，避免 1 篇的孤立分组。
+           - 优先使用：\(groupPalette)（如需自拟仅限 2-6 字清晰名）。\(bloatedHint)
+        3. **清洗占位名**：所有 untitled=true（含随机趣名如「啃瓜的小浣熊」）必须根据正文提炼 4-16 字清爽中文标题，不含 Markdown 符号。
         4. 仅输出严格合法 JSON，无任何解释：
            {"merges":[{"primaryId":"主文档id","mergeIds":["被并入id"],"mergedTitle":"合并后标题","group":"分组名","reason":"简短合并原因"}],"assignments":[{"id":"原id","group":"分组名","suggestedTitle":"untitled=true时必填，否则null"}]}
         5. assignments 需覆盖本批每个未被 mergeIds 吸收的 id（每个 id 仅出现一次）。

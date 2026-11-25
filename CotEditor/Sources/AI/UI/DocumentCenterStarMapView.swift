@@ -61,6 +61,8 @@ struct DocumentCenterView: View {
     @State private var toastTask: Task<Void, Never>?
     @State private var organizeTask: Task<Void, Never>?
     @State private var keyMonitor: Any?
+    @State private var multiSelectedIDs: Set<String> = []
+    @State private var isShowingOrganizeLog = false
     
     
     var body: some View {
@@ -167,6 +169,7 @@ struct DocumentCenterView: View {
                     clusters: clusters,
                     relations: self.state.sidebarFilter == .trash ? [] : visibleRelations,
                     selectedLeafID: activeItem?.id,
+                    multiSelectedLeafIDs: self.multiSelectedIDs,
                     focusedClusterID: self.focusedClusterID,
                     searchQuery: self.state.searchText,
                     panRequestToken: self.panRequestToken,
@@ -177,9 +180,18 @@ struct DocumentCenterView: View {
                     },
                     onSelectLeaf: { leafID in
                         self.isRenaming = false
-                        self.state.selectedID = leafID
+                        if !self.multiSelectedIDs.isEmpty {
+                            self.toggleMultiSelection(for: leafID)
+                        } else {
+                            self.state.selectedID = leafID
+                        }
+                    },
+                    onCommandSelectLeaf: { leafID in
+                        self.isRenaming = false
+                        self.toggleMultiSelection(for: leafID)
                     },
                     onDoubleClickLeaf: { leafID in
+                        self.multiSelectedIDs.removeAll()
                         self.state.selectedID = leafID
                         guard let target = displayedItems.first(where: { $0.id == leafID }) else { return }
                         if target.isTrashed {
@@ -243,13 +255,23 @@ struct DocumentCenterView: View {
                 .padding(16)
             }
             
-            if !showingQuickLook, let activeItem {
-                VStack {
-                    Spacer()
-                    self.bottomSelectionCapsule(item: activeItem, allItems: displayedItems, tokens: tokens)
-                        .padding(.bottom, 16)
+            if !showingQuickLook {
+                let batchItems = displayedItems.filter { self.multiSelectedIDs.contains($0.id) && !$0.isTrashed }
+                if !batchItems.isEmpty {
+                    VStack {
+                        Spacer()
+                        self.batchSelectionCapsule(items: batchItems, allItems: displayedItems, tokens: tokens)
+                            .padding(.bottom, 16)
+                    }
+                    .frame(maxWidth: .infinity)
+                } else if let activeItem {
+                    VStack {
+                        Spacer()
+                        self.bottomSelectionCapsule(item: activeItem, allItems: displayedItems, tokens: tokens)
+                            .padding(.bottom, 16)
+                    }
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
             }
         }
     }
@@ -643,11 +665,30 @@ struct DocumentCenterView: View {
         } else {
             if let summary = self.state.agentOrganizeSummary {
                 HStack(spacing: 6) {
-                    Text(summary)
-                        .font(.system(size: 11.5, weight: .medium).monospacedDigit())
-                        .foregroundStyle(tokens.accentText)
+                    Button {
+                        if !self.state.lastOrganizeMergeLogs.isEmpty {
+                            self.isShowingOrganizeLog.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(summary)
+                                .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                                .foregroundStyle(tokens.accentText)
+                            if !self.state.lastOrganizeMergeLogs.isEmpty {
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundStyle(tokens.accentText.opacity(0.75))
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .popover(isPresented: self.$isShowingOrganizeLog, arrowEdge: .bottom) {
+                        self.organizeMergeLogPopover(tokens: tokens)
+                    }
                     if !self.state.lastOrganizeUndoSnapshot.isEmpty {
                         Button("撤销") {
+                            self.isShowingOrganizeLog = false
                             self.undoAgentOrganize()
                         }
                         .font(.system(size: 11.5, weight: .semibold))
@@ -659,6 +700,7 @@ struct DocumentCenterView: View {
                         .pointerStyle(.link)
                     }
                     Button {
+                        self.isShowingOrganizeLog = false
                         self.state.agentOrganizeSummary = nil
                     } label: {
                         Image(systemName: "xmark")
@@ -973,6 +1015,39 @@ struct DocumentCenterView: View {
             .buttonStyle(.plain)
             .pointerStyle(.link)
         } else {
+            if self.state.items.count >= 2 {
+                let candidates = self.rankedMergeTargets(for: item, limit: 8)
+                Menu {
+                    if !candidates.isEmpty {
+                        ForEach(candidates, id: \.item.id) { entry in
+                            Button("\(entry.item.title)  ·  \(entry.badge)") {
+                                self.mergeDocumentsManually([item, entry.item])
+                            }
+                        }
+                        Divider()
+                    }
+                    Button("多选合并…") {
+                        self.multiSelectedIDs = [item.id]
+                        self.showToast("继续点选要合并的文档")
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.triangle.merge")
+                            .font(.system(size: 10.5, weight: .semibold))
+                        Text("合并")
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .foregroundStyle(tokens.primaryInk.opacity(0.84))
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .background(tokens.inset, in: Capsule())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .pointerStyle(.link)
+            }
+            
             Button {
                 self.open(item: item)
             } label: {
@@ -1044,9 +1119,24 @@ struct DocumentCenterView: View {
         }
         if cluster.id.hasPrefix("group:") {
             let groupName = String(cluster.id.dropFirst(6))
+            let groupItems = self.state.items.filter { $0.groupName == groupName }
             Button("打开全部分组文档") {
-                let groupItems = self.state.items.filter { $0.groupName == groupName }
                 self.openAll(items: groupItems)
+            }
+            if groupItems.count >= 2 {
+                Button("合并组内文档（\(groupItems.count) 篇）") {
+                    self.mergeDocumentsManually(groupItems, preferredGroup: groupName)
+                }
+            }
+            let otherGroups = self.db.documentGroups.filter { $0 != groupName }
+            if !otherGroups.isEmpty && !groupItems.isEmpty {
+                Menu("并入其他分组") {
+                    ForEach(otherGroups, id: \.self) { targetGroup in
+                        Button(targetGroup) {
+                            self.mergeGroup(from: groupName, into: targetGroup)
+                        }
+                    }
+                }
             }
             Button("重命名分组") {
                 self.groupRenameDraft = groupName
@@ -1080,6 +1170,20 @@ struct DocumentCenterView: View {
             Button("彻底删除", role: .destructive) { self.permanentlyDelete(item: item) }
         } else {
             Button("在编辑器打开") { self.open(item: item) }
+            if self.state.items.count >= 2 {
+                let candidates = self.rankedMergeTargets(for: item, limit: 8)
+                Menu("合并到…") {
+                    ForEach(candidates, id: \.item.id) { entry in
+                        Button("\(entry.item.title)  ·  \(entry.badge)") {
+                            self.mergeDocumentsManually([item, entry.item])
+                        }
+                    }
+                }
+                let isMulti = self.multiSelectedIDs.contains(item.id)
+                Button(isMulti ? "移出多选" : "加入多选合并") {
+                    self.toggleMultiSelection(for: item.id)
+                }
+            }
             Button("重命名") {
                 self.state.selectedID = item.id
                 self.renameDraft = item.title
@@ -1245,6 +1349,10 @@ struct DocumentCenterView: View {
         self.state.lastOrganizeUndoSnapshot = undoEntries
         self.state.lastOrganizeCreatedGroups = createdGroups
         self.state.lastOrganizeRemovedGroups = removedEmptyGroups
+        self.state.lastOrganizeMergeLogs = fullPlan.funnel.mergeClusters.map { cluster in
+            let sources = ([cluster.primary.title] + cluster.duplicates.map(\.title)).joined(separator: " + ")
+            return "\(cluster.bestTitle) ← \(sources)"
+        }
         return stats
     }
     
@@ -1532,6 +1640,7 @@ struct DocumentCenterView: View {
         self.state.lastOrganizeUndoSnapshot = []
         self.state.lastOrganizeCreatedGroups = []
         self.state.lastOrganizeRemovedGroups = []
+        self.state.lastOrganizeMergeLogs = []
         self.state.agentOrganizeSummary = nil
         self.state.sidebarFilter = .all
         self.state.refresh()
@@ -1583,6 +1692,14 @@ struct DocumentCenterView: View {
     
     
     private func handleEscapePop() -> Bool {
+        if !self.multiSelectedIDs.isEmpty {
+            self.multiSelectedIDs.removeAll()
+            return true
+        }
+        if self.isShowingOrganizeLog {
+            self.isShowingOrganizeLog = false
+            return true
+        }
         if self.isRenaming {
             self.isRenaming = false
             return true
@@ -1865,6 +1982,326 @@ struct DocumentCenterView: View {
         self.isRenaming = false
         self.state.refresh()
         self.state.selectedID = targetSelectionID
+    }
+    
+    
+    // MARK: Batch Multi-Select Capsule, Manual Merge & Organize Detail Popover
+    
+    private func batchSelectionCapsule(
+        items: [DocumentCenterState.ManagedDocumentItem],
+        allItems: [DocumentCenterState.ManagedDocumentItem],
+        tokens: StudioColorTokens
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tokens.accent)
+            
+            Text("已选 \(items.count) 篇")
+                .font(.system(size: 12.5, weight: .semibold).monospacedDigit())
+                .foregroundStyle(tokens.primaryInk)
+            
+            Spacer(minLength: 8)
+            
+            if items.count >= 2 {
+                Button {
+                    self.mergeDocumentsManually(items)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.triangle.merge")
+                            .font(.system(size: 10.5, weight: .semibold))
+                        Text("合并为 1 篇")
+                            .font(.system(size: 11.5, weight: .semibold))
+                    }
+                    .foregroundStyle(tokens.onAccentInk)
+                    .padding(.horizontal, 11)
+                    .frame(height: 26)
+                    .background(tokens.accent, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+            }
+            
+            Menu {
+                Button("未分组") { self.moveBatch(items: items, toGroup: "") }
+                if !self.db.documentGroups.isEmpty {
+                    Divider()
+                    ForEach(self.db.documentGroups, id: \.self) { group in
+                        Button(group) { self.moveBatch(items: items, toGroup: group) }
+                    }
+                }
+            } label: {
+                Text("移至分组")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(tokens.primaryInk.opacity(0.84))
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .background(tokens.inset, in: Capsule())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .pointerStyle(.link)
+            
+            Button {
+                for item in items {
+                    self.delete(item: item, in: allItems)
+                }
+                self.multiSelectedIDs.removeAll()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.red)
+                    .frame(width: 26, height: 26)
+                    .background(Color.red.opacity(0.10), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+            
+            Button("取消") {
+                self.multiSelectedIDs.removeAll()
+            }
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(tokens.primaryInk.opacity(0.70))
+            .padding(.horizontal, 9)
+            .frame(height: 26)
+            .background(tokens.inset, in: Capsule())
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .frame(maxWidth: 540)
+        .background(tokens.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(tokens.hairlineStrong, lineWidth: 0.9))
+        .shadow(color: tokens.cardShadow, radius: 10, y: 4)
+        .padding(.horizontal, 24)
+    }
+    
+    
+    private func organizeMergeLogPopover(tokens: StudioColorTokens) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("整理明细")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tokens.primaryInk)
+                Spacer()
+                if !self.state.lastOrganizeUndoSnapshot.isEmpty {
+                    Button("撤销全部") {
+                        self.isShowingOrganizeLog = false
+                        self.undoAgentOrganize()
+                    }
+                    .controlSize(.small)
+                }
+            }
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(self.state.lastOrganizeMergeLogs.enumerated()), id: \.offset) { _, line in
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "arrow.triangle.merge")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(tokens.accent)
+                                .padding(.top, 2)
+                            Text(line)
+                                .font(.system(size: 12))
+                                .foregroundStyle(tokens.primaryInk.opacity(0.88))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 220)
+        }
+        .padding(14)
+        .frame(width: 340)
+    }
+    
+    
+    private func toggleMultiSelection(for leafID: String) {
+        if self.multiSelectedIDs.isEmpty, let existing = self.state.selectedID, existing != leafID {
+            self.multiSelectedIDs.insert(existing)
+        }
+        if self.multiSelectedIDs.contains(leafID) {
+            self.multiSelectedIDs.remove(leafID)
+        } else {
+            self.multiSelectedIDs.insert(leafID)
+            self.state.selectedID = leafID
+        }
+    }
+    
+    
+    private func rankedMergeTargets(
+        for source: DocumentCenterState.ManagedDocumentItem,
+        limit: Int
+    ) -> [(item: DocumentCenterState.ManagedDocumentItem, badge: String)] {
+        let toFunnel: (DocumentCenterState.ManagedDocumentItem) -> OrganizeFunnelInput = { item in
+            OrganizeFunnelInput(
+                id: item.id,
+                dbRecordID: item.dbRecordID ?? item.id,
+                title: item.title,
+                filePath: item.filePath,
+                syntax: item.syntax,
+                currentGroup: item.groupName,
+                content: item.content,
+                updatedAt: item.updatedAt,
+                isOpenNow: item.isOpenNow,
+                isUntitled: DocumentCenterAgentOrganizer.isGenericUntitled(item.title, hasFilePath: item.filePath != nil)
+            )
+        }
+        let itemByID = Dictionary(uniqueKeysWithValues: self.state.items.map { ($0.id, $0) })
+        let candidates = self.state.items.filter { !$0.isTrashed && $0.id != source.id }.map(toFunnel)
+        let ranked = OrganizeTopicSignature.rankedMergeCandidates(for: toFunnel(source), in: candidates, limit: limit)
+        return ranked.compactMap { entry in
+            guard let item = itemByID[entry.item.id] else { return nil }
+            return (item, entry.badge)
+        }
+    }
+    
+    
+    private func mergeDocumentsManually(
+        _ rawItems: [DocumentCenterState.ManagedDocumentItem],
+        preferredGroup: String? = nil
+    ) {
+        var seen = Set<String>()
+        let unique = rawItems.filter { !$0.isTrashed && seen.insert($0.id).inserted }
+        guard unique.count >= 2 else { return }
+        
+        let funnelInputs = unique.map { item in
+            OrganizeFunnelInput(
+                id: item.id,
+                dbRecordID: item.dbRecordID ?? item.id,
+                title: item.title,
+                filePath: item.filePath,
+                syntax: item.syntax,
+                currentGroup: item.groupName,
+                content: item.content,
+                updatedAt: item.updatedAt,
+                isOpenNow: item.isOpenNow,
+                isUntitled: DocumentCenterAgentOrganizer.isGenericUntitled(item.title, hasFilePath: item.filePath != nil)
+            )
+        }
+        let ranked = funnelInputs.sorted { lhs, rhs in
+            if (lhs.filePath != nil) != (rhs.filePath != nil) { return lhs.filePath != nil }
+            if lhs.isUntitled != rhs.isUntitled { return !lhs.isUntitled }
+            if lhs.content.count != rhs.content.count { return lhs.content.count > rhs.content.count }
+            return lhs.updatedAt > rhs.updatedAt
+        }
+        let primary = ranked[0]
+        let duplicates = Array(ranked.dropFirst())
+        let mergedContent = DocumentOrganizeFunnel.mergeStructuredContents(primary: primary, secondaries: duplicates)
+        let bestTitle = OrganizeTopicSignature.cleanSeriesTitle(primary: primary, secondaries: duplicates)
+        let titleSig = OrganizeTopicSignature.extract(title: bestTitle, content: mergedContent, isUntitled: false)
+        let resolvedGroup: String = {
+            if let preferredGroup, !preferredGroup.isEmpty { return preferredGroup }
+            let groups = ranked.map(\.currentGroup).filter { !$0.isEmpty }
+            return groups.max { lhs, rhs in
+                OrganizeTopicSignature.titleAffinityScore(for: titleSig, groupName: lhs)
+                    < OrganizeTopicSignature.titleAffinityScore(for: titleSig, groupName: rhs)
+            } ?? primary.currentGroup
+        }()
+        
+        let cluster = OrganizeMergeCluster(
+            primary: primary,
+            duplicates: duplicates,
+            mergedContent: mergedContent,
+            bestGroup: resolvedGroup,
+            bestTitle: bestTitle,
+            reason: "手动合并"
+        )
+        let itemsByID = Dictionary(uniqueKeysWithValues: unique.map { ($0.id, $0) })
+        var undoEntries: [DocumentCenterState.OrganizeUndoEntry] = []
+        var removedEmptyGroups: [String] = []
+        
+        self.db.withTransaction {
+            _ = self.applyDuplicateMerges([cluster], itemsByID: itemsByID, undoEntries: &undoEntries)
+            removedEmptyGroups = self.db.pruneEmptyDocumentGroups(reloadAfter: false)
+        }
+        self.db.reloadDocuments()
+        
+        self.multiSelectedIDs.removeAll()
+        self.state.lastOrganizeUndoSnapshot = undoEntries
+        self.state.lastOrganizeCreatedGroups = []
+        self.state.lastOrganizeRemovedGroups = removedEmptyGroups
+        self.state.lastOrganizeMergeLogs = [
+            "\(bestTitle) ← \(unique.map(\.title).joined(separator: " + "))",
+        ]
+        self.state.agentOrganizeSummary = "已合并 \(unique.count) 篇为「\(bestTitle)」"
+        self.state.refresh()
+        self.state.selectedID = primary.id
+        self.fitRequestToken &+= 1
+    }
+    
+    
+    private func moveBatch(items: [DocumentCenterState.ManagedDocumentItem], toGroup groupName: String) {
+        self.db.withTransaction {
+            for item in items {
+                self.db.assignDocumentGroup(
+                    id: item.dbRecordID ?? item.id,
+                    filePath: item.filePath,
+                    groupName: groupName,
+                    fallbackTitle: item.title,
+                    fallbackSyntax: item.syntax,
+                    fallbackContent: item.content,
+                    reloadAfter: false
+                )
+            }
+            _ = self.db.pruneEmptyDocumentGroups(reloadAfter: false)
+        }
+        self.db.reloadDocuments()
+        self.multiSelectedIDs.removeAll()
+        self.state.refresh()
+        self.showToast(groupName.isEmpty ? "已移动 \(items.count) 篇至未分组" : "已移动 \(items.count) 篇至「\(groupName)」")
+    }
+    
+    
+    private func mergeGroup(from donorGroup: String, into targetGroup: String) {
+        guard donorGroup != targetGroup else { return }
+        let donorItems = self.state.items.filter { $0.groupName == donorGroup }
+        guard !donorItems.isEmpty else { return }
+        var undoEntries: [DocumentCenterState.OrganizeUndoEntry] = []
+        
+        self.db.withTransaction {
+            for item in donorItems {
+                let recordID = item.dbRecordID ?? item.id
+                undoEntries.append(DocumentCenterState.OrganizeUndoEntry(
+                    kind: .modified,
+                    itemID: item.id,
+                    dbRecordID: recordID,
+                    filePath: item.filePath,
+                    previousGroup: item.groupName,
+                    previousTitle: item.title,
+                    titleWasChanged: false,
+                    syntax: item.syntax,
+                    content: item.content
+                ))
+                self.db.assignDocumentGroup(
+                    id: recordID,
+                    filePath: item.filePath,
+                    groupName: targetGroup,
+                    fallbackTitle: item.title,
+                    fallbackSyntax: item.syntax,
+                    fallbackContent: item.content,
+                    reloadAfter: false
+                )
+            }
+            self.db.deleteDocumentGroup(named: donorGroup)
+        }
+        self.db.reloadDocuments()
+        
+        if self.focusedClusterID == "group:\(donorGroup)" {
+            self.focusedClusterID = "group:\(targetGroup)"
+        }
+        if self.state.sidebarFilter == .group(donorGroup) {
+            self.state.sidebarFilter = .group(targetGroup)
+        }
+        self.state.lastOrganizeUndoSnapshot = undoEntries
+        self.state.lastOrganizeCreatedGroups = []
+        self.state.lastOrganizeRemovedGroups = [donorGroup]
+        self.state.lastOrganizeMergeLogs = ["分组「\(donorGroup)」→「\(targetGroup)」（\(donorItems.count) 篇）"]
+        self.state.agentOrganizeSummary = "已将「\(donorGroup)」并入「\(targetGroup)」"
+        self.state.refresh()
+        self.fitRequestToken &+= 1
     }
     
     
