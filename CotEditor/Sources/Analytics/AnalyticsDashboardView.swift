@@ -4597,22 +4597,16 @@ private struct HeatmapStaticBaseCanvas: View, Equatable {
                 )
             }
             
-            // Highlight recent 14-day window columns with strict unclipped concentric rounded frame
-            let scopedCols = self.yearlyHeatmap.weeks.enumerated().compactMap { colIdx, week in
-                week.contains(where: { self.recentDayIDs.contains($0.id) && !$0.isOutOfYear && !$0.isFuture }) ? colIdx : nil
-            }
-            if let minCol = scopedCols.min(), let maxCol = scopedCols.max() {
-                let scopeRect = self.layout.scopeRect(minCol: minCol, maxCol: maxCol)
-                let scopePath = RoundedRectangle(cornerRadius: self.layout.scopeCornerRadius, style: .continuous)
-                    .path(in: scopeRect)
+            // Highlight exact recent 14-day cells with a gutter-centered, zero-overlap orthogonal contour
+            let scopeLoops = self.layout.scopeContourLoops(
+                weeks: self.yearlyHeatmap.weeks,
+                matchingIDs: self.recentDayIDs
+            )
+            let scopePath = self.layout.scopeContourPath(for: scopeLoops)
+            if !scopePath.isEmpty {
                 context.fill(
                     scopePath,
-                    with: .color(self.palette.accentFill.opacity(isDark ? 0.14 : 0.08))
-                )
-                context.stroke(
-                    scopePath,
-                    with: .color(self.palette.accentFill.opacity(isDark ? 0.50 : 0.38)),
-                    lineWidth: HeatmapGridLayout.scopeStrokeWidth
+                    with: .color(self.palette.accentFill.opacity(isDark ? 0.14 : 0.085))
                 )
             }
             
@@ -4625,6 +4619,19 @@ private struct HeatmapStaticBaseCanvas: View, Equatable {
                     let fill = (cell.level == 0) ? emptyCellFill : self.palette.heat(cell.level)
                     context.fill(path, with: .color(fill))
                 }
+            }
+            
+            // Stroke the contour on top, strictly centered in the cell gutter so it is 100% unbroken and never touches any cell
+            if !scopePath.isEmpty {
+                context.stroke(
+                    scopePath,
+                    with: .color(self.palette.accentFill.opacity(isDark ? 0.56 : 0.44)),
+                    style: StrokeStyle(
+                        lineWidth: self.layout.scopeStrokeWidth,
+                        lineCap: .round,
+                        lineJoin: .round
+                    )
+                )
             }
         }
         .frame(width: self.layout.canvasWidth, height: self.heatmapHeight)
@@ -4651,14 +4658,20 @@ struct HeatmapGridLayout: Equatable {
     
     var pitch: CGFloat { self.cellSide + self.gap }
     
-    /// Concentric outward padding for the 14-day scope frame, strictly inside `sidePad` & `bottomPad`.
+    /// Exact half-gutter outset so the 14-day contour runs dead-center between adjacent cells
+    /// with zero overlap into neighboring columns or rows.
     var scopeOutset: CGFloat {
-        self.cellSide < 9.0 ? 2.5 : 3.0
+        self.gap * 0.5
     }
     
-    /// Concentric rounded corner radius matching `cellCornerRadius + scopeOutset`.
+    /// Stroke width tuned to always stay strictly clear of both inner and outer cell edges inside the gutter.
+    var scopeStrokeWidth: CGFloat {
+        self.gap <= 2.0 ? 0.9 : 1.0
+    }
+    
+    /// Concentric rounded corner radius matching `cellCornerRadius + scopeOutset`, capped safely below half-pitch.
     var scopeCornerRadius: CGFloat {
-        self.cornerRadius + self.scopeOutset
+        min(self.cornerRadius + self.scopeOutset, self.pitch * 0.42)
     }
     
     
@@ -4733,7 +4746,7 @@ struct HeatmapGridLayout: Equatable {
     }
     
     
-    /// Exact concentric highlight rectangle enclosing columns `minCol...maxCol` across all 7 weekday rows.
+    /// Exact gutter-centered highlight rectangle enclosing columns `minCol...maxCol` across all 7 weekday rows.
     func scopeRect(minCol: Int, maxCol: Int) -> CGRect {
         let first = self.cellRect(col: minCol, row: 0)
         let last = self.cellRect(col: maxCol, row: 6)
@@ -4744,6 +4757,152 @@ struct HeatmapGridLayout: Equatable {
             width: (last.maxX - first.minX) + outset * 2,
             height: (last.maxY - first.minY) + outset * 2
         )
+    }
+    
+    
+    /// Computes the exact orthogonal boundary loop(s) in canvas coordinates enclosing ONLY the matched heatmap cells,
+    /// running strictly along the dead-center of cell gutters so the outline never collides with adjacent cells
+    /// and never wraps older days or empty future slots.
+    func scopeContourLoops(
+        weeks: [[HeatmapDayCell]],
+        matchingIDs: Set<String>
+    ) -> [[CGPoint]] {
+        struct GridCoord: Hashable {
+            let x: Int
+            let y: Int
+        }
+        struct DirectedEdge: Hashable {
+            let from: GridCoord
+            let to: GridCoord
+        }
+        
+        var occupied = Set<GridCoord>()
+        for (colIdx, week) in weeks.enumerated() {
+            for (rowIdx, cell) in week.enumerated() where rowIdx < 7 && !cell.isOutOfYear && !cell.isFuture {
+                if matchingIDs.contains(cell.id) {
+                    occupied.insert(GridCoord(x: colIdx, y: rowIdx))
+                }
+            }
+        }
+        guard !occupied.isEmpty else { return [] }
+        
+        var outgoing: [GridCoord: [DirectedEdge]] = [:]
+        var allEdges: [DirectedEdge] = []
+        
+        func addEdge(_ from: GridCoord, _ to: GridCoord) {
+            let e = DirectedEdge(from: from, to: to)
+            outgoing[from, default: []].append(e)
+            allEdges.append(e)
+        }
+        
+        for cell in occupied {
+            if !occupied.contains(GridCoord(x: cell.x, y: cell.y - 1)) {
+                addEdge(GridCoord(x: cell.x, y: cell.y), GridCoord(x: cell.x + 1, y: cell.y))
+            }
+            if !occupied.contains(GridCoord(x: cell.x + 1, y: cell.y)) {
+                addEdge(GridCoord(x: cell.x + 1, y: cell.y), GridCoord(x: cell.x + 1, y: cell.y + 1))
+            }
+            if !occupied.contains(GridCoord(x: cell.x, y: cell.y + 1)) {
+                addEdge(GridCoord(x: cell.x + 1, y: cell.y + 1), GridCoord(x: cell.x, y: cell.y + 1))
+            }
+            if !occupied.contains(GridCoord(x: cell.x - 1, y: cell.y)) {
+                addEdge(GridCoord(x: cell.x, y: cell.y + 1), GridCoord(x: cell.x, y: cell.y))
+            }
+        }
+        
+        var used = Set<DirectedEdge>()
+        var loops: [[CGPoint]] = []
+        let outset = self.scopeOutset
+        
+        for startEdge in allEdges where !used.contains(startEdge) {
+            var rawVertices: [GridCoord] = [startEdge.from]
+            var current = startEdge
+            used.insert(current)
+            
+            var safety = 0
+            while current.to != startEdge.from && safety < allEdges.count + 4 {
+                safety += 1
+                rawVertices.append(current.to)
+                let candidates = (outgoing[current.to] ?? []).filter { !used.contains($0) }
+                guard !candidates.isEmpty else { break }
+                
+                // Prefer turning right/continuing cleanly without self-crossing at touch vertices.
+                let dx = current.to.x - current.from.x
+                let dy = current.to.y - current.from.y
+                let next = candidates.min { lhs, rhs in
+                    let ldx = lhs.to.x - lhs.from.x
+                    let ldy = lhs.to.y - lhs.from.y
+                    let rdx = rhs.to.x - rhs.from.x
+                    let rdy = rhs.to.y - rhs.from.y
+                    let lScore = Self.turnPriority(dx: dx, dy: dy, ndx: ldx, ndy: ldy)
+                    let rScore = Self.turnPriority(dx: dx, dy: dy, ndx: rdx, ndy: rdy)
+                    return lScore < rScore
+                } ?? candidates[0]
+                
+                used.insert(next)
+                current = next
+            }
+            
+            guard rawVertices.count >= 4 else { continue }
+            
+            // Collapse collinear intermediate vertices so only true 90° corners remain.
+            var corners: [GridCoord] = []
+            let n = rawVertices.count
+            for i in 0..<n {
+                let prev = rawVertices[(i + n - 1) % n]
+                let curr = rawVertices[i]
+                let next = rawVertices[(i + 1) % n]
+                let cross = (curr.x - prev.x) * (next.y - curr.y) - (curr.y - prev.y) * (next.x - curr.x)
+                if cross != 0 {
+                    corners.append(curr)
+                }
+            }
+            guard corners.count >= 4 else { continue }
+            
+            let points = corners.map { v in
+                CGPoint(
+                    x: self.gridOriginX + CGFloat(v.x) * self.pitch - outset,
+                    y: self.gridOriginY + CGFloat(v.y) * self.pitch - outset
+                )
+            }
+            loops.append(points)
+        }
+        return loops
+    }
+    
+    
+    /// Builds a smooth rounded orthogonal `Path` from closed contour loops with concentric corner radii.
+    func scopeContourPath(for loops: [[CGPoint]]) -> Path {
+        var path = Path()
+        let baseRadius = self.scopeCornerRadius
+        for loop in loops where loop.count >= 4 {
+            let count = loop.count
+            let last = loop[count - 1]
+            let first = loop[0]
+            let startMid = CGPoint(x: (last.x + first.x) * 0.5, y: (last.y + first.y) * 0.5)
+            path.move(to: startMid)
+            for i in 0..<count {
+                let curr = loop[i]
+                let next = loop[(i + 1) % count]
+                let prev = loop[(i + count - 1) % count]
+                let lenPrev = hypot(curr.x - prev.x, curr.y - prev.y)
+                let lenNext = hypot(next.x - curr.x, next.y - curr.y)
+                let cornerR = min(baseRadius, min(lenPrev, lenNext) * 0.45)
+                path.addArc(tangent1End: curr, tangent2End: next, radius: cornerR)
+            }
+            path.closeSubpath()
+        }
+        return path
+    }
+    
+    
+    private static func turnPriority(dx: Int, dy: Int, ndx: Int, ndy: Int) -> Int {
+        // In flipped Y-down screen coordinates, clockwise interior keeps right-hand interior:
+        // cross < 0 is a left (concave) turn, cross == 0 is straight, cross > 0 is a right (convex) turn.
+        let cross = dx * ndy - dy * ndx
+        if cross < 0 { return 0 }
+        if cross == 0 { return 1 }
+        return 2
     }
     
     

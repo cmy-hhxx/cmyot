@@ -264,7 +264,6 @@ struct Round43VimMaterialProactiveDashboardTests {
     
     
     @Test func heatmapScopeBorderNeverClipsAcrossTightAndWideViewports() {
-        let strokeHalf = HeatmapGridLayout.scopeStrokeWidth * 0.5
         let testSizes: [(CGSize, Int)] = [
             (CGSize(width: 480, height: 78), 48),
             (CGSize(width: 560, height: 88), 52),
@@ -272,16 +271,90 @@ struct Round43VimMaterialProactiveDashboardTests {
             (CGSize(width: 720, height: 140), 20),
             (CGSize(width: 560, height: 240), 53),
         ]
-        for (size, weeks) in testSizes {
-            let layout = HeatmapGridLayout.compute(size: size, weekCount: weeks)
-            let scope = layout.scopeRect(minCol: max(0, weeks - 3), maxCol: weeks - 1)
+        for (size, weeksCount) in testSizes {
+            let layout = HeatmapGridLayout.compute(size: size, weekCount: weeksCount)
+            let strokeHalf = layout.scopeStrokeWidth * 0.5
+            let scope = layout.scopeRect(minCol: max(0, weeksCount - 3), maxCol: weeksCount - 1)
             #expect(scope.minX - strokeHalf >= 1.5)
             #expect(scope.maxX + strokeHalf <= layout.canvasWidth - 1.5)
             #expect(scope.minY - strokeHalf >= 10.0)
             #expect(scope.maxY + strokeHalf <= layout.canvasHeight - 1.5)
             #expect(layout.canvasHeight <= size.height + 1.0)
-            #expect(abs(layout.scopeCornerRadius - (layout.cornerRadius + layout.scopeOutset)) < 0.001)
+            // Gutter clearance: half-gutter outset minus half-stroke leaves strictly positive air gap before neighbor cells
+            #expect(layout.scopeOutset == layout.gap * 0.5)
+            #expect(layout.scopeOutset - strokeHalf >= 0.45)
         }
+        
+        // Exact stepped 14-day orthogonal contour (e.g. ending on Wednesday row=3 -> 8 corners, zero neighbor overlap, zero future/past cells)
+        let weeks: [[HeatmapDayCell]] = (0..<10).map { col in
+            (0..<7).map { row in
+                let isFuture = (col == 9 && row > 3)
+                return HeatmapDayCell(
+                    dateKey: "c\(col)r\(row)",
+                    date: Date(),
+                    typedChars: 100,
+                    aiCompletedChars: 0,
+                    filesCreated: 0,
+                    aiRequests: 0,
+                    level: 1,
+                    isFuture: isFuture,
+                    isOutOfYear: false
+                )
+            }
+        }
+        // Last 14 days ending at (col 9, row 3): col 7 rows 4..6 (3d) + col 8 rows 0..6 (7d) + col 9 rows 0..3 (4d)
+        var recentIDs = Set<String>()
+        for row in 4...6 { recentIDs.insert("c7r\(row)") }
+        for row in 0...6 { recentIDs.insert("c8r\(row)") }
+        for row in 0...3 { recentIDs.insert("c9r\(row)") }
+        
+        let layout = HeatmapGridLayout.compute(size: CGSize(width: 560, height: 106), weekCount: 10)
+        let loops = layout.scopeContourLoops(weeks: weeks, matchingIDs: recentIDs)
+        #expect(loops.count == 1)
+        #expect(loops[0].count == 8)
+        
+        let path = layout.scopeContourPath(for: loops)
+        let bounds = path.boundingRect
+        let strokeHalf = layout.scopeStrokeWidth * 0.5
+        #expect(bounds.minX - strokeHalf >= 1.5)
+        #expect(bounds.maxX + strokeHalf <= layout.canvasWidth - 1.5)
+        #expect(bounds.minY - strokeHalf >= 10.0)
+        #expect(bounds.maxY + strokeHalf <= layout.canvasHeight - 1.5)
+        
+        // Verify contour encloses all 14 recent cell centers and excludes older top-left cells (c7r0..c7r3) and future cells (c9r4..c9r6)
+        for col in 0..<10 {
+            for row in 0..<7 {
+                let rect = layout.cellRect(col: col, row: row)
+                let center = CGPoint(x: rect.midX, y: rect.midY)
+                let id = "c\(col)r\(row)"
+                let inside = path.contains(center)
+                #expect(inside == recentIDs.contains(id))
+            }
+        }
+        
+        // Full 2-week Saturday case (ending at row=6) produces exact 4-corner rounded rectangle
+        var fullWeekIDs = Set<String>()
+        for col in 8...9 {
+            for row in 0...6 { fullWeekIDs.insert("c\(col)r\(row)") }
+        }
+        let fullWeeks: [[HeatmapDayCell]] = (0..<10).map { col in
+            (0..<7).map { row in
+                HeatmapDayCell(
+                    dateKey: "c\(col)r\(row)",
+                    date: Date(),
+                    typedChars: 50,
+                    aiCompletedChars: 0,
+                    filesCreated: 0,
+                    aiRequests: 0,
+                    level: 1,
+                    isFuture: false,
+                    isOutOfYear: false
+                )
+            }
+        }
+        let rectLoops = layout.scopeContourLoops(weeks: fullWeeks, matchingIDs: fullWeekIDs)
+        #expect(rectLoops.count == 1)
+        #expect(rectLoops[0].count == 4)
     }
     
     
