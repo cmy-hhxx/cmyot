@@ -22,61 +22,127 @@
 import AppKit
 import SwiftUI
 
-/// Pure frame geometry helper for anchoring floating panels cleanly beneath the macOS menu bar item.
-nonisolated enum MenuBarFloatingGeometry {
+/// Pure frame & pointer geometry for anchoring a speech-bubble tip directly beneath the Butler toolbar button.
+nonisolated enum ButlerTipBubbleGeometry {
     
-    static func anchoredFrame(
-        statusItemRect: NSRect?,
-        panelSize: NSSize,
+    struct Placement: Equatable, Sendable {
+        var frame: NSRect
+        /// Horizontal X coordinate inside the bubble frame where the upward speech-bubble tail points.
+        var arrowCenterX: CGFloat
+    }
+    
+    static func placement(
+        anchorScreenRect: NSRect,
+        bubbleSize: NSSize,
         visibleScreenFrame: NSRect,
         margin: CGFloat = 10
-    ) -> NSRect {
-        let anchorX: CGFloat
-        let topY: CGFloat
-        if let rect = statusItemRect, rect.width > 0, rect.height > 0 {
-            anchorX = rect.midX - panelSize.width * 0.5
-            topY = rect.minY - 6
-        } else {
-            anchorX = visibleScreenFrame.maxX - panelSize.width - margin
-            topY = visibleScreenFrame.maxY - margin
-        }
-        let clampedX = min(
-            max(visibleScreenFrame.minX + margin, anchorX),
-            max(visibleScreenFrame.minX + margin, visibleScreenFrame.maxX - panelSize.width - margin)
+    ) -> Placement {
+        let desiredX = anchorScreenRect.midX - bubbleSize.width * 0.5
+        let minX = visibleScreenFrame.minX + margin
+        let maxX = max(minX, visibleScreenFrame.maxX - bubbleSize.width - margin)
+        let clampedX = min(max(minX, desiredX), maxX)
+        let topY = anchorScreenRect.minY - 4
+        let clampedY = max(visibleScreenFrame.minY + margin, topY - bubbleSize.height)
+        
+        let rawArrowX = anchorScreenRect.midX - clampedX
+        let clampedArrowX = min(max(24, rawArrowX), max(24, bubbleSize.width - 24))
+        
+        return Placement(
+            frame: NSRect(x: floor(clampedX), y: floor(clampedY), width: bubbleSize.width, height: bubbleSize.height),
+            arrowCenterX: clampedArrowX
         )
-        let clampedY = max(visibleScreenFrame.minY + margin, topY - panelSize.height)
-        return NSRect(x: floor(clampedX), y: floor(clampedY), width: panelSize.width, height: panelSize.height)
     }
 }
 
 
-/// Manages the macOS menu bar extra icon, non-activating floating tip bubble,
-/// and compact daily-journal hub popover for CotEditor's proactive agent.
+/// Speech bubble silhouette with an upward pointer triangle aimed at the Butler icon beside Todos.
+struct ButlerSpeechBubbleShape: Shape {
+    
+    var cornerRadius: CGFloat = 13
+    var arrowHeight: CGFloat = 8
+    var arrowWidth: CGFloat = 16
+    var arrowCenterX: CGFloat
+    
+    func path(in rect: CGRect) -> Path {
+        let r = min(self.cornerRadius, min(rect.width, rect.height - self.arrowHeight) * 0.5)
+        let topY = rect.minY + self.arrowHeight
+        let halfArrow = self.arrowWidth * 0.5
+        let clampedArrowX = min(max(rect.minX + r + halfArrow + 4, self.arrowCenterX), rect.maxX - r - halfArrow - 4)
+        let arrowLeft = clampedArrowX - halfArrow
+        let arrowRight = clampedArrowX + halfArrow
+        
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + r, y: topY))
+        path.addLine(to: CGPoint(x: arrowLeft, y: topY))
+        path.addQuadCurve(
+            to: CGPoint(x: clampedArrowX, y: rect.minY + 1),
+            control: CGPoint(x: arrowLeft + halfArrow * 0.45, y: topY)
+        )
+        path.addQuadCurve(
+            to: CGPoint(x: arrowRight, y: topY),
+            control: CGPoint(x: arrowRight - halfArrow * 0.45, y: topY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - r, y: topY))
+        path.addArc(
+            center: CGPoint(x: rect.maxX - r, y: topY + r),
+            radius: r,
+            startAngle: .degrees(-90),
+            endAngle: .degrees(0),
+            clockwise: false
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
+        path.addArc(
+            center: CGPoint(x: rect.maxX - r, y: rect.maxY - r),
+            radius: r,
+            startAngle: .degrees(0),
+            endAngle: .degrees(90),
+            clockwise: false
+        )
+        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
+        path.addArc(
+            center: CGPoint(x: rect.minX + r, y: rect.maxY - r),
+            radius: r,
+            startAngle: .degrees(90),
+            endAngle: .degrees(180),
+            clockwise: false
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: topY + r))
+        path.addArc(
+            center: CGPoint(x: rect.minX + r, y: topY + r),
+            radius: r,
+            startAngle: .degrees(180),
+            endAngle: .degrees(270),
+            clockwise: false
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
+
+/// Presents lightweight, non-activating speech-bubble reminders exclusively anchored
+/// beneath the Butler toolbar button beside the Todos icon (no macOS system menu bar icon).
 @MainActor
-final class ProactiveMenuBarTipController: NSObject {
+final class ButlerToolbarTipBubbleController: NSObject {
     
-    static let shared = ProactiveMenuBarTipController()
+    static let shared = ButlerToolbarTipBubbleController()
     
-    private final class FloatingTipPanel: NSPanel {
+    private final class SpeechBubblePanel: NSPanel {
         override var canBecomeKey: Bool { false }
         override var canBecomeMain: Bool { false }
     }
     
-    private final class HubPopoverPanel: NSPanel {
-        override var canBecomeKey: Bool { true }
-        override var canBecomeMain: Bool { false }
+    private struct WeakAnchor {
+        weak var view: ToolbarButlerBotButtonView?
     }
     
     private let service: ProactiveDailyJournalService
-    private var statusItem: NSStatusItem?
-    private var tipPanel: FloatingTipPanel?
-    private var tipHosting: NSHostingController<ProactiveFloatingTipView>?
-    private var hubPanel: HubPopoverPanel?
-    private var hubHosting: NSHostingController<ProactiveMenuBarHubView>?
+    private var anchors: [WeakAnchor] = []
+    private var bubblePanel: SpeechBubblePanel?
+    private var bubbleHosting: NSHostingController<ButlerToolbarSpeechBubbleView>?
     private var autoDismissTask: Task<Void, Never>?
-    private var isTipHovered = false
-    private var localMouseMonitor: Any?
-    private var globalMouseMonitor: Any?
+    private var isBubbleHovered = false
+    private var windowCloseObserver: (any NSObjectProtocol)?
     
     
     private init(service: ProactiveDailyJournalService = .shared) {
@@ -85,94 +151,90 @@ final class ProactiveMenuBarTipController: NSObject {
     }
     
     
-    func setupStatusItemIfNeeded() {
+    func startListening() {
         guard !CotLocalDatabase.isRunningUnitTests else { return }
-        if self.statusItem == nil {
-            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-            if let button = item.button {
-                button.target = self
-                button.action = #selector(self.toggleHubPopover(_:))
-                button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            }
-            self.statusItem = item
-            self.refreshStatusItemAppearance()
-        }
-        
         self.service.onTipPublished = { [weak self] tip in
-            self?.refreshStatusItemAppearance()
-            self?.presentFloatingTip(tip)
+            self?.presentTip(tip)
         }
     }
     
     
-    func refreshStatusItemAppearance() {
-        guard let button = self.statusItem?.button else { return }
-        let unread = self.service.unreadCount
-        let symbolName = unread > 0 ? "note.text.badge.plus" : "note.text"
-        let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: AppLanguage.text("总管随记", en: "Agent Journal"))
-        img?.isTemplate = true
-        button.image = img
-        button.toolTip = unread > 0
-            ? AppLanguage.text("总管随记 · \(unread) 条未读", en: "Agent Journal · \(unread) unread")
-            : AppLanguage.text("总管随记", en: "Agent Journal")
+    func registerAnchor(_ view: ToolbarButlerBotButtonView) {
+        self.anchors.removeAll { $0.view == nil || $0.view === view }
+        self.anchors.append(WeakAnchor(view: view))
     }
     
     
-    func presentFloatingTip(_ tip: ProactiveTipItem) {
+    func unregisterAnchor(_ view: ToolbarButlerBotButtonView) {
+        self.anchors.removeAll { $0.view == nil || $0.view === view }
+    }
+    
+    
+    func presentTip(_ tip: ProactiveTipItem, preferredAnchor: ToolbarButlerBotButtonView? = nil) {
         guard !CotLocalDatabase.isRunningUnitTests else { return }
-        guard self.hubPanel?.isVisible != true else { return }
+        guard let anchor = preferredAnchor ?? self.resolveActiveAnchor(),
+              let hostWindow = anchor.window,
+              hostWindow.isVisible,
+              !anchor.isFloatingChatVisible
+        else { return }
         
-        self.dismissFloatingTip(animated: false)
-        self.isTipHovered = false
+        self.dismiss(animated: false)
+        self.isBubbleHovered = false
         
-        let cornerRadius: CGFloat = 14
-        let rootView = ProactiveFloatingTipView(
+        let bubbleSize = NSSize(width: 294, height: 118)
+        let btnInWindow = anchor.convert(anchor.bounds, to: nil)
+        let btnScreen = hostWindow.convertToScreen(btnInWindow)
+        let screenFrame = (hostWindow.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let placement = ButlerTipBubbleGeometry.placement(
+            anchorScreenRect: btnScreen,
+            bubbleSize: bubbleSize,
+            visibleScreenFrame: screenFrame
+        )
+        
+        let rootView = ButlerToolbarSpeechBubbleView(
             tip: tip,
             butlerName: CotButlerManager.shared.name,
-            onOpenJournal: { [weak self] in
-                self?.dismissFloatingTip(animated: true)
-                self?.service.openTodayJournalWindow()
-                self?.refreshStatusItemAppearance()
-            },
-            onNextTip: { [weak self] in
-                guard let self else { return }
-                Task { @MainActor in
-                    _ = await self.service.recordProactiveNote(allowRemoteAI: false, showFloatingTip: true)
-                }
+            arrowCenterX: placement.arrowCenterX,
+            onOpenJournal: { [weak self, weak hostWindow] in
+                self?.dismiss(animated: true)
+                self?.service.openTodayJournalWindow(preferredWindow: hostWindow)
             },
             onDismiss: { [weak self] in
-                self?.dismissFloatingTip(animated: true)
+                self?.dismiss(animated: true)
             },
             onHoverChanged: { [weak self] hovered in
-                self?.isTipHovered = hovered
-                if !hovered {
-                    self?.scheduleAutoDismiss(seconds: 6)
-                } else {
+                self?.isBubbleHovered = hovered
+                if hovered {
                     self?.autoDismissTask?.cancel()
+                } else {
+                    self?.scheduleAutoDismiss(seconds: 6)
                 }
             }
         )
         
-        let panelSize = NSSize(width: 312, height: 118)
-        let (vfx, hosting) = Self.makeGlassContainer(rootView: rootView, cornerRadius: cornerRadius)
-        let frame = self.resolveMenuBarAnchoredFrame(size: panelSize)
+        let hosting = NSHostingController(rootView: rootView)
+        hosting.sizingOptions = []
+        hosting.view.wantsLayer = true
+        hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
         
-        let panel = FloatingTipPanel(
-            contentRect: frame,
+        let panel = SpeechBubblePanel(
+            contentRect: placement.frame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
+        panel.appearance = hostWindow.effectiveAppearance
         panel.isFloatingPanel = true
-        panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        panel.level = .floating
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
-        panel.contentView = vfx
+        panel.contentViewController = hosting
         panel.invalidateShadow()
         panel.alphaValue = 0
-        panel.orderFrontRegardless()
+        
+        hostWindow.addChildWindow(panel, ordered: .above)
+        panel.orderFront(nil)
         
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.20
@@ -180,18 +242,31 @@ final class ProactiveMenuBarTipController: NSObject {
             panel.animator().alphaValue = 1.0
         }
         
-        self.tipPanel = panel
-        self.tipHosting = hosting
-        self.scheduleAutoDismiss(seconds: 12)
+        self.bubblePanel = panel
+        self.bubbleHosting = hosting
+        self.windowCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: hostWindow,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.dismiss(animated: false)
+            }
+        }
+        self.scheduleAutoDismiss(seconds: 11)
     }
     
     
-    func dismissFloatingTip(animated: Bool = true) {
+    func dismiss(animated: Bool = true) {
         self.autoDismissTask?.cancel()
         self.autoDismissTask = nil
-        guard let panel = self.tipPanel else { return }
-        self.tipPanel = nil
-        self.tipHosting = nil
+        if let observer = self.windowCloseObserver {
+            NotificationCenter.default.removeObserver(observer)
+            self.windowCloseObserver = nil
+        }
+        guard let panel = self.bubblePanel else { return }
+        self.bubblePanel = nil
+        self.bubbleHosting = nil
         
         if animated {
             NSAnimationContext.runAnimationGroup({ ctx in
@@ -199,115 +274,27 @@ final class ProactiveMenuBarTipController: NSObject {
                 panel.animator().alphaValue = 0
             }, completionHandler: {
                 Task { @MainActor in
+                    panel.parent?.removeChildWindow(panel)
                     panel.orderOut(nil)
                 }
             })
         } else {
+            panel.parent?.removeChildWindow(panel)
             panel.orderOut(nil)
         }
     }
     
     
-    @objc private func toggleHubPopover(_ sender: Any?) {
-        if self.hubPanel?.isVisible == true {
-            self.closeHubPopover()
-            return
+    private func resolveActiveAnchor() -> ToolbarButlerBotButtonView? {
+        self.anchors.removeAll { $0.view == nil }
+        let live = self.anchors.compactMap(\.view).filter { $0.window?.isVisible == true }
+        if let key = live.first(where: { $0.window?.isKeyWindow == true }) {
+            return key
         }
-        self.presentHubPopover()
-    }
-    
-    
-    private func presentHubPopover() {
-        self.dismissFloatingTip(animated: false)
-        self.closeHubPopover()
-        _ = self.service.ensureTodayDocument()
-        self.refreshStatusItemAppearance()
-        
-        let cornerRadius: CGFloat = 14
-        let rootView = ProactiveMenuBarHubView(
-            service: self.service,
-            onOpenJournal: { [weak self] in
-                self?.closeHubPopover()
-                self?.service.openTodayJournalWindow()
-                self?.refreshStatusItemAppearance()
-            },
-            onRecordNow: { [weak self] in
-                guard let self else { return }
-                Task { @MainActor in
-                    _ = await self.service.recordProactiveNote(allowRemoteAI: false, showFloatingTip: false)
-                    self.refreshStatusItemAppearance()
-                }
-            },
-            onOpenButlerChat: { [weak self] in
-                self?.closeHubPopover()
-                NSApp.activate(ignoringOtherApps: true)
-                CotButlerManager.shared.requestOpenHub()
-            }
-        )
-        
-        let panelSize = NSSize(width: 332, height: 344)
-        let (vfx, hosting) = Self.makeGlassContainer(rootView: rootView, cornerRadius: cornerRadius)
-        let frame = self.resolveMenuBarAnchoredFrame(size: panelSize)
-        
-        let panel = HubPopoverPanel(
-            contentRect: frame,
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        panel.isFloatingPanel = true
-        panel.level = .popUpMenu
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = true
-        panel.contentView = vfx
-        panel.invalidateShadow()
-        panel.alphaValue = 0
-        panel.makeKeyAndOrderFront(nil)
-        
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.16
-            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
-            panel.animator().alphaValue = 1.0
+        if let main = live.first(where: { $0.window?.isMainWindow == true }) {
+            return main
         }
-        
-        self.hubPanel = panel
-        self.hubHosting = hosting
-        self.installHubDismissMonitors(panel: panel)
-    }
-    
-    
-    private func closeHubPopover() {
-        if let localMouseMonitor {
-            NSEvent.removeMonitor(localMouseMonitor)
-            self.localMouseMonitor = nil
-        }
-        if let globalMouseMonitor {
-            NSEvent.removeMonitor(globalMouseMonitor)
-            self.globalMouseMonitor = nil
-        }
-        self.hubPanel?.orderOut(nil)
-        self.hubPanel = nil
-        self.hubHosting = nil
-    }
-    
-    
-    private func installHubDismissMonitors(panel: HubPopoverPanel) {
-        self.localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self, weak panel] event in
-            guard let self, let panel, panel.isVisible else { return event }
-            if event.window === panel { return event }
-            if let buttonWindow = self.statusItem?.button?.window, event.window === buttonWindow {
-                return event
-            }
-            self.closeHubPopover()
-            return event
-        }
-        self.globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            Task { @MainActor in
-                self?.closeHubPopover()
-            }
-        }
+        return live.first
     }
     
     
@@ -315,74 +302,41 @@ final class ProactiveMenuBarTipController: NSObject {
         self.autoDismissTask?.cancel()
         self.autoDismissTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
-            guard !Task.isCancelled, let self, !self.isTipHovered else { return }
-            self.dismissFloatingTip(animated: true)
+            guard !Task.isCancelled, let self, !self.isBubbleHovered else { return }
+            self.dismiss(animated: true)
         }
-    }
-    
-    
-    private func resolveMenuBarAnchoredFrame(size: NSSize) -> NSRect {
-        let button = self.statusItem?.button
-        let statusRect: NSRect? = button?.window.map { win in
-            let rectInWin = button?.convert(button?.bounds ?? .zero, to: nil) ?? .zero
-            return win.convertToScreen(rectInWin)
-        }
-        let screen = button?.window?.screen ?? NSScreen.main
-        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        return MenuBarFloatingGeometry.anchoredFrame(
-            statusItemRect: statusRect,
-            panelSize: size,
-            visibleScreenFrame: visible
-        )
-    }
-    
-    
-    private static func makeGlassContainer<Content: View>(
-        rootView: Content,
-        cornerRadius: CGFloat
-    ) -> (NSVisualEffectView, NSHostingController<Content>) {
-        let vfx = NSVisualEffectView()
-        vfx.material = .popover
-        vfx.blendingMode = .behindWindow
-        vfx.state = .active
-        vfx.maskImage = UserAvatarToolbarButtonView.makeRoundedMaskImage(cornerRadius: cornerRadius)
-        vfx.wantsLayer = true
-        vfx.layer?.cornerRadius = cornerRadius
-        vfx.layer?.cornerCurve = .continuous
-        vfx.layer?.masksToBounds = true
-        vfx.layer?.borderWidth = 0.6
-        vfx.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.26).cgColor
-        
-        let hosting = NSHostingController(rootView: rootView)
-        hosting.sizingOptions = []
-        hosting.view.translatesAutoresizingMaskIntoConstraints = false
-        hosting.view.wantsLayer = true
-        hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
-        vfx.addSubview(hosting.view)
-        NSLayoutConstraint.activate([
-            hosting.view.leadingAnchor.constraint(equalTo: vfx.leadingAnchor),
-            hosting.view.trailingAnchor.constraint(equalTo: vfx.trailingAnchor),
-            hosting.view.topAnchor.constraint(equalTo: vfx.topAnchor),
-            hosting.view.bottomAnchor.constraint(equalTo: vfx.bottomAnchor),
-        ])
-        return (vfx, hosting)
     }
 }
 
 
-// MARK: - SwiftUI Views (Floating Tip & Menu Bar Popover)
+// MARK: - SwiftUI Speech Bubble View
 
-struct ProactiveFloatingTipView: View {
+struct ButlerToolbarSpeechBubbleView: View {
     
     let tip: ProactiveTipItem
     let butlerName: String
+    let arrowCenterX: CGFloat
     let onOpenJournal: () -> Void
-    let onNextTip: () -> Void
     let onDismiss: () -> Void
     let onHoverChanged: (Bool) -> Void
     
+    @Environment(\.colorScheme) private var colorScheme
+    
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let shape = ButlerSpeechBubbleShape(
+            cornerRadius: 13,
+            arrowHeight: 8,
+            arrowWidth: 16,
+            arrowCenterX: self.arrowCenterX
+        )
+        let fillSurface = self.colorScheme == .dark
+            ? Color(nsColor: .windowBackgroundColor).opacity(0.92)
+            : Color.white.opacity(0.95)
+        let borderColor = self.colorScheme == .dark
+            ? Color.white.opacity(0.14)
+            : Color.black.opacity(0.10)
+        
+        VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 Text(self.tip.category)
                     .font(.system(size: 10.5, weight: .semibold))
@@ -409,7 +363,7 @@ struct ProactiveFloatingTipView: View {
             
             VStack(alignment: .leading, spacing: 2) {
                 Text(self.tip.headline)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 
@@ -421,7 +375,7 @@ struct ProactiveFloatingTipView: View {
             
             HStack(spacing: 8) {
                 Button(action: self.onOpenJournal) {
-                    Text(AppLanguage.text("打开今日随记", en: "Open Journal"))
+                    Text(AppLanguage.text("查看今日随记", en: "Open Journal"))
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 11)
@@ -431,8 +385,8 @@ struct ProactiveFloatingTipView: View {
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
                 
-                Button(action: self.onNextTip) {
-                    Text(AppLanguage.text("再记一条", en: "Next Tip"))
+                Button(action: self.onDismiss) {
+                    Text(AppLanguage.text("知道了", en: "Dismiss"))
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 9)
@@ -445,151 +399,20 @@ struct ProactiveFloatingTipView: View {
                 Spacer()
             }
         }
+        .padding(.top, 18)
+        .padding(.bottom, 12)
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            ZStack {
+                shape.fill(.regularMaterial)
+                shape.fill(fillSurface)
+            }
+        )
+        .overlay(
+            shape.stroke(borderColor, lineWidth: 0.8)
+        )
+        .clipShape(shape)
         .onHover(perform: self.onHoverChanged)
-    }
-}
-
-
-struct ProactiveMenuBarHubView: View {
-    
-    @Bindable var service: ProactiveDailyJournalService
-    let onOpenJournal: () -> Void
-    let onRecordNow: () -> Void
-    let onOpenButlerChat: () -> Void
-    
-    @State private var hoveredTipID: String?
-    
-    var body: some View {
-        let _ = self.service.revision
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(self.service.todayDocumentTitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text(AppLanguage.text("\(self.service.todayTips.count) 条记录", en: "\(self.service.todayTips.count) entries"))
-                        .font(.system(size: 11).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                
-                Spacer(minLength: 8)
-                
-                Button(action: self.onOpenJournal) {
-                    Text(AppLanguage.text("打开文档", en: "Open"))
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 11)
-                        .frame(height: 26)
-                        .background(Color.accentColor, in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            
-            Divider()
-            
-            if self.service.todayTips.isEmpty {
-                VStack(spacing: 10) {
-                    Text(AppLanguage.text("今日随记暂无记录", en: "No entries yet"))
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Button(action: self.onRecordNow) {
-                        Label(AppLanguage.text("立即记录一条", en: "Record Note"), systemImage: "plus")
-                    }
-                    .controlSize(.small)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 6) {
-                        ForEach(self.service.todayTips) { tip in
-                            self.tipRow(tip)
-                        }
-                    }
-                    .padding(10)
-                }
-            }
-            
-            Divider()
-            
-            HStack(spacing: 8) {
-                Button(action: self.onRecordNow) {
-                    Label(AppLanguage.text("记一条", en: "Log"), systemImage: "square.and.pencil")
-                        .font(.system(size: 11.5, weight: .medium))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                
-                Button(action: self.onOpenButlerChat) {
-                    Text(AppLanguage.text("总管对话", en: "Butler"))
-                        .font(.system(size: 11.5, weight: .medium))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                
-                Spacer(minLength: 4)
-                
-                Toggle(AppLanguage.text("浮窗提醒", en: "Tips"), isOn: self.$service.tipsEnabled)
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .font(.system(size: 11))
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-    
-    
-    private func tipRow(_ tip: ProactiveTipItem) -> some View {
-        let isHovered = (self.hoveredTipID == tip.id)
-        return Button(action: self.onOpenJournal) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(tip.category)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                    Text(ProactiveJournalComposer.clockText(for: tip.createdAt))
-                        .font(.system(size: 10, design: .monospaced).monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                    if !tip.isRead {
-                        Circle()
-                            .fill(Color.accentColor)
-                            .frame(width: 6, height: 6)
-                    }
-                }
-                Text(tip.headline)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(tip.body)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                Color.primary.opacity(isHovered ? 0.065 : 0.03),
-                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(isHovered ? 0.14 : 0.06), lineWidth: 0.7)
-            )
-        }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-        .onHover { inside in
-            self.hoveredTipID = inside ? tip.id : (self.hoveredTipID == tip.id ? nil : self.hoveredTipID)
-        }
     }
 }

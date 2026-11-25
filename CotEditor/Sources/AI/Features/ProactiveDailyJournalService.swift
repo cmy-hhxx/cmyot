@@ -23,9 +23,9 @@ import AppKit
 import Foundation
 import Observation
 
-// MARK: - Pure Data Models & Deterministic Daily Journal Composer
+// MARK: - Pure Data Models & Deterministic Plain-Text Daily Journal Composer
 
-/// A single lightweight tip emitted by the proactive agent and logged into today's daily journal document.
+/// A single lightweight tip emitted by the proactive agent and logged into today's plain-text daily journal.
 nonisolated struct ProactiveTipItem: Codable, Equatable, Identifiable, Sendable {
     
     var id: String
@@ -33,7 +33,7 @@ nonisolated struct ProactiveTipItem: Codable, Equatable, Identifiable, Sendable 
     var category: String
     var headline: String
     var body: String
-    var markdownEntry: String
+    var entryText: String
     var createdAt: Date
     var isRead: Bool = false
 }
@@ -63,17 +63,10 @@ nonisolated struct ProactiveDailyTipLedger: Codable, Equatable, Sendable {
 }
 
 
-/// Pure offline engine composing daily journal metadata, Markdown entries, and deduplicated floating tips.
+/// Pure offline engine composing plain-text daily journal entries and deduplicated speech-bubble tips.
 nonisolated enum ProactiveJournalComposer {
     
     static let journalGroupName = "总管随记"
-    
-    private static let dayFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd"
-        return f
-    }()
     
     private static let clockFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -81,6 +74,9 @@ nonisolated enum ProactiveJournalComposer {
         f.dateFormat = "HH:mm"
         return f
     }()
+    
+    private static let headingPrefixRegex = try! NSRegularExpression(pattern: #"(?m)^\s{0,3}#{1,6}\s+"#)
+    private static let listBulletPrefixRegex = try! NSRegularExpression(pattern: #"(?m)^\s*[-*•]\s+"#)
     
     
     static func dayKey(for date: Date, calendar: Calendar = .current) -> String {
@@ -109,13 +105,47 @@ nonisolated enum ProactiveJournalComposer {
     }
     
     
+    /// Clean plain-text header without any Markdown `#` or `*` markup.
     static func initialHeader(for date: Date, butlerName: String, calendar: Calendar = .current) -> String {
         let title = Self.dailyDocumentTitle(for: date, butlerName: butlerName, calendar: calendar)
-        return "# \(title)\n\n"
+        return "\(title)\n\n"
     }
     
     
-    /// Appends a timestamped Markdown observation section to today's journal content cleanly.
+    /// Strips Markdown syntax clutter (`#`, `*`, `**`, `` ` ``, leading `- `) to keep notes clean plain text.
+    static func sanitizePlainText(_ raw: String) -> String {
+        var text = raw.replacingOccurrences(of: "\r\n", with: "\n")
+        let fullRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        text = Self.headingPrefixRegex.stringByReplacingMatches(in: text, range: fullRange, withTemplate: "")
+        let afterHeading = NSRange(text.startIndex..<text.endIndex, in: text)
+        text = Self.listBulletPrefixRegex.stringByReplacingMatches(in: text, range: afterHeading, withTemplate: "")
+        text = text
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "__", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "#", with: "")
+        let lines = text
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        var cleaned: [String] = []
+        var previousBlank = false
+        for line in lines {
+            if line.isEmpty {
+                if !previousBlank && !cleaned.isEmpty {
+                    cleaned.append("")
+                }
+                previousBlank = true
+            } else {
+                cleaned.append(line)
+                previousBlank = false
+            }
+        }
+        return cleaned.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    
+    /// Appends a clean plain-text timestamped section to today's journal content.
     static func appendEntry(
         tip: ProactiveTipItem,
         to existingContent: String,
@@ -127,16 +157,14 @@ nonisolated enum ProactiveJournalComposer {
             ? Self.initialHeader(for: date, butlerName: butlerName, calendar: calendar)
             : existingContent.trimmingCharacters(in: .newlines) + "\n\n"
         let clock = Self.clockText(for: tip.createdAt)
-        let block = """
-        ## \(clock) · \(tip.category)｜\(tip.headline)
-
-        \(tip.markdownEntry.trimmingCharacters(in: .whitespacesAndNewlines))
-        """
+        let cleanHeadline = Self.sanitizePlainText(tip.headline)
+        let cleanBody = Self.sanitizePlainText(tip.entryText)
+        let block = "[\(clock)] \(tip.category) · \(cleanHeadline)\n\(cleanBody)"
         return base + block + "\n"
     }
     
     
-    /// Synthesizes the next non-duplicate proactive observation & concise floating tip from live signals.
+    /// Synthesizes the next non-duplicate proactive observation & concise speech-bubble tip from live signals.
     static func synthesizeNextTip(
         signals: ProactiveJournalSignals,
         seenKeys: Set<String>,
@@ -159,38 +187,33 @@ nonisolated enum ProactiveJournalComposer {
         if let podcast = signals.unreadPodcasts.first {
             let key = "podcast:\(podcast.id)"
             let body = "已离线缓存，话题：\(podcast.topic)"
-            let md = """
-            - 节目：**\(podcast.episodeTitle)**
-            - 主题：\(podcast.topic)
-            - 备注：音频已缓存就绪，休息或通勤时可随时收听。
-            """
+            let plain = "节目：\(podcast.episodeTitle)\n主题：\(podcast.topic)\n音频已离线缓存，休息或通勤时可以随时收听。"
             items.append(ProactiveTipItem(
                 id: UUID().uuidString,
                 dedupKey: key,
                 category: "播客就绪",
                 headline: String(podcast.episodeTitle.prefix(26)),
                 body: String(body.prefix(48)),
-                markdownEntry: md,
+                entryText: plain,
                 createdAt: now
             ))
         }
         
         if let action = signals.pendingActions.first(where: { !$0.action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
-            let cleanTitle = action.action.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanTitle = Self.sanitizePlainText(action.action)
             let key = "action:\(cleanTitle.prefix(24))"
-            let sourceNote = action.sourceDocumentTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-            let body = sourceNote.isEmpty ? "已在今日随记中整理跟进要点" : "来自《\(sourceNote)》，已记入今日随记"
-            let md = """
-            - 待跟进：**\(cleanTitle)**
-            \(sourceNote.isEmpty ? "" : "- 来源文档：\(sourceNote)\n")- 建议：可先用 15 分钟推进最关键的一小步。
-            """
+            let sourceNote = Self.sanitizePlainText(action.sourceDocumentTitle)
+            let body = sourceNote.isEmpty ? "已在今日随记中记下跟进要点" : "来自《\(sourceNote)》，已记入今日随记"
+            let plain = sourceNote.isEmpty
+                ? "待跟进：\(cleanTitle)\n可以先用 15 分钟推进最关键的一小步。"
+                : "待跟进：\(cleanTitle)\n来源文档：\(sourceNote)\n可以先用 15 分钟推进最关键的一小步。"
             items.append(ProactiveTipItem(
                 id: UUID().uuidString,
                 dedupKey: key,
                 category: "待办提醒",
                 headline: String(cleanTitle.prefix(26)),
                 body: String(body.prefix(48)),
-                markdownEntry: md,
+                entryText: plain,
                 createdAt: now
             ))
         }
@@ -202,9 +225,9 @@ nonisolated enum ProactiveJournalComposer {
                 let pct = signals.quotes[stock.instrumentID]?.changePercent ?? stock.lastChangePct
                 if let price, let pct {
                     let sign = pct >= 0 ? "+" : ""
-                    return "- **\(stock.name)** (\(stock.symbol))：\(String(format: "%.2f", price))（\(sign)\(String(format: "%.2f%%", pct))）"
+                    return "\(stock.name) (\(stock.symbol))  \(String(format: "%.2f", price)) (\(sign)\(String(format: "%.2f%%", pct)))"
                 }
-                return "- **\(stock.name)** (\(stock.symbol))：已纳入自选观察"
+                return "\(stock.name) (\(stock.symbol))  已纳入自选观察"
             }
             let firstStock = picked[0]
             let pct = signals.quotes[firstStock.instrumentID]?.changePercent ?? firstStock.lastChangePct
@@ -220,7 +243,7 @@ nonisolated enum ProactiveJournalComposer {
                 category: "行情速览",
                 headline: String("\(headline) 动态".prefix(26)),
                 body: String(body.prefix(48)),
-                markdownEntry: summaryLines.joined(separator: "\n"),
+                entryText: summaryLines.joined(separator: "\n"),
                 createdAt: now
             ))
         }
@@ -228,59 +251,54 @@ nonisolated enum ProactiveJournalComposer {
         if let news = signals.recentNews.first {
             let key = "news:\(news.id.prefix(24))"
             let pub = news.displayPublisherLabel
-            let summary = (news.summary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            let md = """
-            - 标题：**\(news.title)**
-            - 来源：\(pub)
-            \(summary.isEmpty ? "" : "- 摘要：\(summary)")
-            """
+            let summary = Self.sanitizePlainText(news.summary ?? "")
+            let plain = summary.isEmpty
+                ? "标题：\(news.title)\n来源：\(pub)"
+                : "标题：\(news.title)\n来源：\(pub)\n摘要：\(summary)"
             items.append(ProactiveTipItem(
                 id: UUID().uuidString,
                 dedupKey: key,
                 category: "热点观察",
                 headline: String(news.title.prefix(26)),
                 body: "\(pub) · 已摘录到今日随记",
-                markdownEntry: md,
+                entryText: plain,
                 createdAt: now
             ))
         }
         
         if signals.todayChars > 0 || (signals.activeDocTitle?.isEmpty == false) {
-            let docTitle = signals.activeDocTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let docTitle = Self.sanitizePlainText(signals.activeDocTitle ?? "")
             let headline = signals.todayChars > 0
                 ? "今日已写 \(signals.todayChars.formatted()) 字"
                 : "正在推进《\(docTitle.prefix(16))》"
             let body = signals.writingStreakDays > 1
                 ? "连续创作第 \(signals.writingStreakDays) 天，节奏保持得不错"
                 : "已记录当前写作进展，随时可回头复盘"
-            let md = """
-            - 今日字数：\(signals.todayChars.formatted()) 字（连续 \(max(1, signals.writingStreakDays)) 天）
-            \(docTitle.isEmpty ? "" : "- 当前文档：\(docTitle)\n")- 节律建议：写完这一段记得抬头歇 1 分钟，保持好手感。
-            """
+            let plain = docTitle.isEmpty
+                ? "今日字数：\(signals.todayChars.formatted()) 字（连续 \(max(1, signals.writingStreakDays)) 天）\n写完这一段记得抬头歇一分钟，保持手感。"
+                : "今日字数：\(signals.todayChars.formatted()) 字（连续 \(max(1, signals.writingStreakDays)) 天）\n当前文档：\(docTitle)\n写完这一段记得抬头歇一分钟，保持手感。"
             items.append(ProactiveTipItem(
                 id: UUID().uuidString,
                 dedupKey: "writing:\(signals.todayChars / 300):\(docTitle.prefix(16))",
                 category: "写作节奏",
                 headline: String(headline.prefix(26)),
                 body: String(body.prefix(48)),
-                markdownEntry: md,
+                entryText: plain,
                 createdAt: now
             ))
         }
         
         if let memory = signals.memories.first(where: { !$0.isArchived }) {
             let key = "memory:\(memory.id)"
-            let md = """
-            - 长期关注：**\(memory.title)**（\(memory.dimension.label)）
-            - 详情：\(memory.detail.isEmpty ? "持续沉淀相关资料与思考。" : memory.detail)
-            """
+            let detail = Self.sanitizePlainText(memory.detail)
+            let plain = "长期关注：\(memory.title)（\(memory.dimension.label)）\n\(detail.isEmpty ? "持续沉淀相关资料与思考。" : detail)"
             items.append(ProactiveTipItem(
                 id: UUID().uuidString,
                 dedupKey: key,
                 category: "灵感笔记",
                 headline: String(memory.title.prefix(26)),
                 body: "结合长期记忆记下了一条延伸思考",
-                markdownEntry: md,
+                entryText: plain,
                 createdAt: now
             ))
         }
@@ -295,23 +313,21 @@ nonisolated enum ProactiveJournalComposer {
         now: Date
     ) -> ProactiveTipItem {
         let clock = Self.clockText(for: now)
-        let activeDoc = signals.activeDocTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let activeDoc = Self.sanitizePlainText(signals.activeDocTitle ?? "")
         let headline = activeDoc.isEmpty ? "今日阶段小结" : "《\(activeDoc.prefix(14))》进展记录"
         let body = signals.todayChars > 0
             ? "累计 \(signals.todayChars.formatted()) 字，刚记下一条工作脉络"
-            : "刚更新了今日工作随记，点开看看"
-        let md = """
-        - 时间节点：\(clock)
-        - 今日输出：\(signals.todayChars.formatted()) 字
-        \(activeDoc.isEmpty ? "" : "- 关注文档：\(activeDoc)\n")- 随手记：保持专注，重要想法随时留档。
-        """
+            : "刚更新了今日随记，点开看看"
+        let plain = activeDoc.isEmpty
+            ? "时间节点：\(clock)，今日输出 \(signals.todayChars.formatted()) 字。\n重要想法随时留档。"
+            : "时间节点：\(clock)，今日输出 \(signals.todayChars.formatted()) 字。\n关注文档：\(activeDoc)。"
         return ProactiveTipItem(
             id: UUID().uuidString,
             dedupKey: "checkin:\(seenCount):\(clock)",
             category: "总管随记",
             headline: String(headline.prefix(26)),
             body: String(body.prefix(48)),
-            markdownEntry: md,
+            entryText: plain,
             createdAt: now
         )
     }
@@ -320,8 +336,8 @@ nonisolated enum ProactiveJournalComposer {
 
 // MARK: - Stateful Proactive Daily Journal Service
 
-/// Allocates one daily Markdown journal document per calendar day for the proactive agent,
-/// appends periodic observations in the background, and emits lightweight menu bar tips.
+/// Allocates one plain-text daily journal document per calendar day for the proactive agent,
+/// appends periodic observations in the background, and emits speech-bubble tips from the Butler toolbar icon.
 @MainActor @Observable
 final class ProactiveDailyJournalService {
     
@@ -367,7 +383,7 @@ final class ProactiveDailyJournalService {
     
     // MARK: Daily Document Allocation & Updates
     
-    /// Ensures today's dedicated daily Markdown document exists in `CotLocalDatabase` and returns it.
+    /// Ensures today's dedicated plain-text daily document exists in `CotLocalDatabase` and returns it.
     @discardableResult
     func ensureTodayDocument(now: Date = Date(), butlerName: String? = nil) -> StoredDocumentRecord {
         let dayKey = ProactiveJournalComposer.dayKey(for: now)
@@ -381,6 +397,19 @@ final class ProactiveDailyJournalService {
         self.todayDocumentTitle = title
         
         if let existing = self.database.documents.first(where: { $0.id == docID && $0.deletedAt == nil }) {
+            if existing.syntax != SyntaxName.none {
+                let cleaned = ProactiveJournalComposer.sanitizePlainText(existing.content)
+                let migratedContent = cleaned.isEmpty ? ProactiveJournalComposer.initialHeader(for: now, butlerName: resolvedName) : cleaned + "\n"
+                self.database.saveDocument(
+                    id: existing.id,
+                    title: existing.title,
+                    filePath: existing.filePath,
+                    syntax: SyntaxName.none,
+                    content: migratedContent,
+                    groupName: existing.groupName.isEmpty ? ProactiveJournalComposer.journalGroupName : existing.groupName
+                )
+                return self.database.documents.first(where: { $0.id == docID }) ?? existing
+            }
             return existing
         }
         
@@ -389,7 +418,7 @@ final class ProactiveDailyJournalService {
             id: docID,
             title: title,
             filePath: nil,
-            syntax: "Markdown",
+            syntax: SyntaxName.none,
             content: header,
             groupName: ProactiveJournalComposer.journalGroupName
         )
@@ -397,7 +426,7 @@ final class ProactiveDailyJournalService {
             id: docID,
             title: title,
             filePath: nil,
-            syntax: "Markdown",
+            syntax: SyntaxName.none,
             content: header,
             highlightsJSON: "[]",
             updatedAt: now,
@@ -406,8 +435,8 @@ final class ProactiveDailyJournalService {
     }
     
     
-    /// Synthesizes one proactive note, appends it into today's daily journal document,
-    /// syncs any open editor tab for that document, and optionally triggers the menu bar floating tip.
+    /// Synthesizes one proactive plain-text note, appends it into today's daily journal document,
+    /// syncs any open editor tab for that document, and optionally triggers the Butler toolbar speech bubble.
     @discardableResult
     func recordProactiveNote(
         signals explicitSignals: ProactiveJournalSignals? = nil,
@@ -440,7 +469,7 @@ final class ProactiveDailyJournalService {
             id: doc.id,
             title: doc.title,
             filePath: doc.filePath,
-            syntax: "Markdown",
+            syntax: SyntaxName.none,
             content: updatedContent,
             groupName: doc.groupName.isEmpty ? ProactiveJournalComposer.journalGroupName : doc.groupName
         )
@@ -461,7 +490,7 @@ final class ProactiveDailyJournalService {
     }
     
     
-    /// Opens today's daily journal document inside CotEditor, marks all tips read, and clears any active toast.
+    /// Opens today's daily plain-text journal document inside CotEditor, marks tips read, and dismisses active bubbles.
     func openTodayJournalWindow(preferredWindow: NSWindow? = nil, now: Date = Date()) {
         let record = self.ensureTodayDocument(now: now)
         self.markAllRead()
@@ -569,12 +598,12 @@ final class ProactiveDailyJournalService {
     
     private func enrichTipWithAI(tip: ProactiveTipItem, signals: ProactiveJournalSignals) async -> ProactiveTipItem? {
         let system = """
-        你是 CotEditor 的主动式总管助手（\(signals.butlerName)），每天在一篇个人随记文档里给用户留短小的观察与提醒。
-        请把下面的素材润色成一条更自然、温和、克制的随记条目，只返回严格 JSON：
-        {"headline":"14字以内简短标题","body":"26字以内浮窗一句话提示","markdownEntry":"2-3行简洁Markdown要点"}
-        禁止使用表情符号。
+        你是 CotEditor 的主动式总管助手（\(signals.butlerName)），每天在一篇纯文本随记里给用户写简短观察与提醒。
+        请润色成自然、温和、克制的纯文本条目，只返回严格 JSON：
+        {"headline":"14字以内简短标题","body":"26字以内气泡一句话提示","entryText":"1-2句干净纯文本内容"}
+        严禁使用任何 #、*、**、-、反引号等 Markdown 符号，严禁使用表情符号。
         """
-        let user = "类别：\(tip.category)\n原标题：\(tip.headline)\n原内容：\n\(tip.markdownEntry)"
+        let user = "类别：\(tip.category)\n原标题：\(tip.headline)\n原内容：\n\(tip.entryText)"
         do {
             let raw = try await AIService.shared.chat(
                 [.system(system), .user(user)],
@@ -586,19 +615,19 @@ final class ProactiveDailyJournalService {
             struct Enriched: Decodable {
                 var headline: String?
                 var body: String?
-                var markdownEntry: String?
+                var entryText: String?
             }
             let data = Data(raw[start...end].utf8)
             let decoded = try JSONDecoder().decode(Enriched.self, from: data)
             var next = tip
-            if let h = decoded.headline?.trimmingCharacters(in: .whitespacesAndNewlines), !h.isEmpty {
+            if let h = decoded.headline.map(ProactiveJournalComposer.sanitizePlainText), !h.isEmpty {
                 next.headline = String(h.prefix(24))
             }
-            if let b = decoded.body?.trimmingCharacters(in: .whitespacesAndNewlines), !b.isEmpty {
+            if let b = decoded.body.map(ProactiveJournalComposer.sanitizePlainText), !b.isEmpty {
                 next.body = String(b.prefix(46))
             }
-            if let md = decoded.markdownEntry?.trimmingCharacters(in: .whitespacesAndNewlines), !md.isEmpty {
-                next.markdownEntry = md
+            if let txt = decoded.entryText.map(ProactiveJournalComposer.sanitizePlainText), !txt.isEmpty {
+                next.entryText = txt
             }
             return next
         } catch {
@@ -619,8 +648,10 @@ final class ProactiveDailyJournalService {
                         ? String(doc.databaseDocumentID.dropFirst(4))
                         : doc.databaseDocumentID
                     guard docClean == cleanID || doc.databaseDocumentID == id else { continue }
-                    // Only overwrite in-place when user has no unsaved edits in the journal tab
                     guard !doc.needsUserSavePrompt else { continue }
+                    if doc.syntaxName != SyntaxName.none {
+                        doc.setSyntax(name: SyntaxName.none)
+                    }
                     doc.textStorage.replaceCharacters(
                         in: NSRange(location: 0, length: doc.textStorage.length),
                         with: content

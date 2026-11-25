@@ -145,7 +145,10 @@ struct Round43VimMaterialProactiveDashboardTests {
         let doc = service.ensureTodayDocument(now: date, butlerName: "曜")
         #expect(doc.id == "doc:butler-daily-2026-11-25")
         #expect(doc.title == "曜随记 · 2026-11-25")
+        #expect(doc.syntax == SyntaxName.none)
         #expect(doc.groupName == "总管随记")
+        #expect(!doc.content.contains("#"))
+        #expect(!doc.content.contains("*"))
         
         var receivedTips: [ProactiveTipItem] = []
         service.onTipPublished = { tip in
@@ -165,7 +168,7 @@ struct Round43VimMaterialProactiveDashboardTests {
             pendingActions: [
                 DocumentActionPrediction(
                     id: "act-1",
-                    action: "整理本周发布清单",
+                    action: "**整理本周发布清单**",
                     reason: "",
                     sourceDocumentTitle: "架构方案.md",
                     sourceDocumentID: nil,
@@ -194,35 +197,44 @@ struct Round43VimMaterialProactiveDashboardTests {
         #expect(service.todayTips.count == 2)
         
         let updatedDoc = try #require(db.documents.first(where: { $0.id == doc.id }))
+        #expect(updatedDoc.syntax == SyntaxName.none)
         #expect(updatedDoc.content.contains("整理本周发布清单"))
         #expect(updatedDoc.content.contains("1,280"))
+        #expect(!updatedDoc.content.contains("#"))
+        #expect(!updatedDoc.content.contains("*"))
+        
+        // Verify Markdown sanitizer removes #, **, *, `, and bullet dashes cleanly
+        let sanitized = ProactiveJournalComposer.sanitizePlainText("## 标题\n- **重点** `内容` *细节*")
+        #expect(sanitized == "标题\n重点 内容 细节")
         
         service.markAllRead()
         #expect(service.unreadCount == 0)
         
-        // Menu bar floating geometry clamps safely inside visible screen frame
+        // Toolbar speech bubble geometry clamps inside screen & aims tail arrow at Butler icon beside Todos
         let screenFrame = NSRect(x: 0, y: 0, width: 1440, height: 875)
-        let tipFrame = MenuBarFloatingGeometry.anchoredFrame(
-            statusItemRect: NSRect(x: 1400, y: 875, width: 28, height: 24),
-            panelSize: NSSize(width: 312, height: 118),
+        let anchorRect = NSRect(x: 1280, y: 820, width: 84, height: 28)
+        let placement = ButlerTipBubbleGeometry.placement(
+            anchorScreenRect: anchorRect,
+            bubbleSize: NSSize(width: 294, height: 118),
             visibleScreenFrame: screenFrame
         )
-        #expect(tipFrame.maxX <= screenFrame.maxX - 10)
-        #expect(tipFrame.minX >= screenFrame.minX + 10)
-        #expect(tipFrame.maxY <= screenFrame.maxY)
+        #expect(placement.frame.maxX <= screenFrame.maxX - 10)
+        #expect(placement.frame.minX >= screenFrame.minX + 10)
+        #expect(placement.frame.maxY <= anchorRect.minY)
+        #expect(abs((placement.frame.minX + placement.arrowCenterX) - anchorRect.midX) <= 1.5)
         
-        // Verify floating tip SwiftUI view mounts cleanly
-        let tipHost = NSHostingView(rootView: ProactiveFloatingTipView(
+        // Verify Butler speech bubble SwiftUI view mounts cleanly
+        let tipHost = NSHostingView(rootView: ButlerToolbarSpeechBubbleView(
             tip: firstTip,
             butlerName: "曜",
+            arrowCenterX: placement.arrowCenterX,
             onOpenJournal: {},
-            onNextTip: {},
             onDismiss: {},
             onHoverChanged: { _ in }
         ))
-        tipHost.frame = NSRect(x: 0, y: 0, width: 312, height: 118)
+        tipHost.frame = NSRect(x: 0, y: 0, width: 294, height: 118)
         tipHost.layoutSubtreeIfNeeded()
-        #expect(tipHost.bounds.width == 312)
+        #expect(tipHost.bounds.width == 294)
         
         // Verify Butler WebUI bundle has no recommendation cards
         let webHTML = BeautifulAgentUIBundle.htmlDocument()
@@ -240,10 +252,39 @@ struct Round43VimMaterialProactiveDashboardTests {
         )
         #expect(laptop.needsVerticalScroll == false)
         #expect(laptop.unifiedTopStageHeight == laptop.heroHeight + laptop.unifiedInnerGap + laptop.row1Height + laptop.unifiedBottomPad)
-        // Combined Row 1 + Row 2 stage gives generous vertical height (~350-400pt) so photos never feel squished into a thin strip
         let stageAspect = 1236.0 / laptop.unifiedTopStageHeight
         #expect(stageAspect < 3.6)
         #expect(laptop.heroHeight <= 158)
         #expect(laptop.totalContentHeight <= 700)
+        
+        // Verify Apple HIG concentric corner radius law (`innerRadius + inset == outerRadius`)
+        #expect(DashboardCornerMetrics.innerCardRadius(compact: false) + DashboardCornerMetrics.unifiedInset(compact: false) == DashboardCornerMetrics.unifiedOuterRadius(compact: false))
+        #expect(DashboardCornerMetrics.innerCardRadius(compact: true) + DashboardCornerMetrics.unifiedInset(compact: true) == DashboardCornerMetrics.unifiedOuterRadius(compact: true))
+    }
+    
+    
+    // MARK: 5. Lossless Vector Zoom Metrics for Document Center & Weekly Report Star-Map
+    
+    @Test func starMapLosslessVectorZoomScalesTypographyAndAnchorsViewportCenter() {
+        let m1 = StarMapZoomMetrics(zoom: 1.0)
+        let m2 = StarMapZoomMetrics(zoom: 2.2)
+        #expect(abs(m2.fontSize(12) - 26.4) < 0.01)
+        #expect(abs(m2.scaled(160) - 352.0) < 0.01)
+        #expect(m2.zoom <= StarMapZoomMetrics.maxZoom)
+        #expect(StarMapZoomMetrics(zoom: 5.0).zoom == StarMapZoomMetrics.maxZoom)
+        #expect(StarMapZoomMetrics(zoom: 0.1).zoom == StarMapZoomMetrics.minZoom)
+        #expect(m1.strokeWidth(1.0) >= 0.7)
+        
+        // Anchored pan keeps the world point at viewport center invariant under zoom
+        let worldPt = CGPoint(x: 240, y: -120)
+        let vpCenter = CGPoint(x: 500, y: 400)
+        let panAt1 = CGSize(width: -worldPt.x, height: -worldPt.y)
+        let panAt2 = StarMapZoomMetrics.zoomAnchoredPan(oldPan: panAt1, oldZoom: 1.0, newZoom: 2.0)
+        let screenBefore = StarMapZoomMetrics.screenPoint(world: worldPt, viewportCenter: vpCenter, panOffset: panAt1, zoom: 1.0)
+        let screenAfter = StarMapZoomMetrics.screenPoint(world: worldPt, viewportCenter: vpCenter, panOffset: panAt2, zoom: 2.0)
+        #expect(abs(screenBefore.x - vpCenter.x) < 0.01)
+        #expect(abs(screenBefore.y - vpCenter.y) < 0.01)
+        #expect(abs(screenAfter.x - vpCenter.x) < 0.01)
+        #expect(abs(screenAfter.y - vpCenter.y) < 0.01)
     }
 }

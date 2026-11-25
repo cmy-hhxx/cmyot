@@ -785,18 +785,41 @@ enum DashMotion {
         AnimationConstants.isReducedMotionEnabled ? nil : animation
     }
     
-    static let quick = Animation.timingCurve(0.25, 0.8, 0.25, 1, duration: 0.16)
-    static let standard = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.26)
-    static let travel = Animation.timingCurve(0.45, 0, 0.1, 1, duration: 0.25)
-    static let sunburst = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.30)
-    static let springCard = Animation.spring(response: 0.36, dampingFraction: 0.82)
-    static let press = Animation.spring(response: 0.20, dampingFraction: 0.74)
-    static let chartReveal = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.58)
-    static let staggeredEntrance = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.42)
-    static let pageTransition: AnyTransition = .asymmetric(
-        insertion: .opacity.combined(with: .offset(y: 6)),
-        removal: .opacity
-    )
+    static let quick = Animation.easeOut(duration: 0.12)
+    static let standard = Animation.timingCurve(0.20, 0.90, 0.30, 1.0, duration: 0.20)
+    static let travel = Animation.timingCurve(0.32, 0.0, 0.15, 1.0, duration: 0.20)
+    static let sunburst = Animation.timingCurve(0.20, 0.90, 0.30, 1.0, duration: 0.22)
+    static let springCard = Animation.snappy(duration: 0.22, extraBounce: 0)
+    static let press = Animation.easeOut(duration: 0.09)
+    static let chartReveal = Animation.timingCurve(0.18, 0.92, 0.28, 1.0, duration: 0.34)
+    static let staggeredEntrance = Animation.easeOut(duration: 0.16)
+    static let pageTransition: AnyTransition = .opacity
+}
+
+
+/// Apple HIG concentric corner-radius hierarchy (`outerRadius == innerRadius + inset`)
+/// ensuring unified, lightweight curvature across the photo backdrop stage and bento cards.
+nonisolated enum DashboardCornerMetrics {
+    
+    static func unifiedOuterRadius(compact: Bool) -> CGFloat {
+        compact ? 20 : 24
+    }
+    
+    static func unifiedInset(compact: Bool) -> CGFloat {
+        compact ? 8 : 10
+    }
+    
+    static func innerCardRadius(compact: Bool) -> CGFloat {
+        Self.unifiedOuterRadius(compact: compact) - Self.unifiedInset(compact: compact)
+    }
+    
+    static func row2CardRadius(compact: Bool) -> CGFloat {
+        compact ? 16 : 18
+    }
+    
+    static let nestedWellRadius: CGFloat = 8
+    static let newsMiniCardRadius: CGFloat = 10
+    static let newsCoverRadius: CGFloat = 6
 }
 
 
@@ -1106,9 +1129,9 @@ nonisolated struct DashboardViewportLayout: Equatable, Sendable {
         let outerPadH: CGFloat = isEmbeddedInSettings ? 12 : (vpW >= 1280 ? 22 : 16)
         let outerPadV: CGFloat = isEmbeddedInSettings ? 10 : (vpH >= 840 ? 14 : 11)
         let vSpacing: CGFloat = isEmbeddedInSettings ? 10 : (vpH >= 840 ? 13 : 10)
-        let hSpacing: CGFloat = isEmbeddedInSettings ? 9 : (vpW >= 1200 ? 12 : 10)
+        let hSpacing: CGFloat = isEmbeddedInSettings ? 8 : 10
         let unifiedInnerGap: CGFloat = isTight ? 8 : 10
-        let unifiedBottomPad: CGFloat = isTight ? 10 : 14
+        let unifiedBottomPad: CGFloat = DashboardCornerMetrics.unifiedInset(compact: isEmbeddedInSettings)
         
         let minHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 112 : 98) : (hasHeroPhoto ? 122 : 106)
         let maxHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 138 : 120) : (hasHeroPhoto ? 158 : 134)
@@ -1236,13 +1259,11 @@ struct AnalyticsDashboardView: View {
                                 .frame(maxWidth: .infinity)
                                 .frame(height: layout.unifiedTopStageHeight)
                                 .animation(DashMotion.resolve(DashMotion.standard), value: hasHeroPhoto)
-                                .opacity(self.hasAppeared ? 1 : 0)
-                                .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.992)
-                                .offset(y: self.hasAppeared || DashMotion.isReducedMotion ? 0 : 8)
-                                .animation(DashMotion.resolve(DashMotion.staggeredEntrance), value: self.hasAppeared)
                                 
                                 self.row2Section(snapshot, layout: layout)
                             }
+                            .opacity(self.hasAppeared ? 1 : 0)
+                            .animation(DashMotion.resolve(DashMotion.staggeredEntrance), value: self.hasAppeared)
                             .padding(.horizontal, layout.outerPadH)
                             .padding(.vertical, layout.outerPadV)
                             .frame(maxWidth: layout.maxContentWidth, alignment: .leading)
@@ -1352,21 +1373,14 @@ struct AnalyticsDashboardView: View {
                     availableYears: snapshot.availableYears,
                     selectedYear: self.$selectedYear,
                     compact: layout.isTight,
+                    cornerRadius: DashboardCornerMetrics.innerCardRadius(compact: self.isEmbeddedInSettings),
                     overPhoto: overPhoto,
                     palette: self.palette
                 )
                 .frame(width: leftWidth, height: height)
-                .opacity(self.hasAppeared ? 1 : 0)
-                .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.988)
-                .offset(y: self.hasAppeared || DashMotion.isReducedMotion ? 0 : 10)
-                .animation(DashMotion.resolve(DashMotion.staggeredEntrance.delay(0.05)), value: self.hasAppeared)
                 
                 self.flippableQuadSection(snapshot, height: height, gap: spacing, overPhoto: overPhoto)
                     .frame(width: rightWidth, height: height)
-                    .opacity(self.hasAppeared ? 1 : 0)
-                    .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.988)
-                    .offset(y: self.hasAppeared || DashMotion.isReducedMotion ? 0 : 12)
-                    .animation(DashMotion.resolve(DashMotion.staggeredEntrance.delay(0.09)), value: self.hasAppeared)
             }
         }
         .frame(height: height)
@@ -1379,11 +1393,13 @@ struct AnalyticsDashboardView: View {
         gap: CGFloat,
         overPhoto: Bool
     ) -> some View {
-        ZStack {
+        let cardRadius = DashboardCornerMetrics.innerCardRadius(compact: self.isEmbeddedInSettings)
+        return ZStack {
             if let expanded = self.expandedQuad {
                 DashboardExpandedQuadCard(
                     metric: expanded,
                     snapshot: snapshot,
+                    cornerRadius: cardRadius,
                     overPhoto: overPhoto,
                     palette: self.palette
                 ) {
@@ -1393,10 +1409,7 @@ struct AnalyticsDashboardView: View {
                 }
                 .id("expanded-\(expanded.rawValue)")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .scale(scale: 0.955)),
-                    removal: .opacity.combined(with: .scale(scale: 0.97))
-                ))
+                .transition(.opacity)
             } else {
                 let vGap: CGFloat = gap
                 let hGap: CGFloat = gap
@@ -1406,6 +1419,7 @@ struct AnalyticsDashboardView: View {
                 VStack(spacing: vGap) {
                     DashboardAIUsageWideCard(
                         snapshot: snapshot,
+                        cornerRadius: cardRadius,
                         overPhoto: overPhoto,
                         palette: self.palette
                     ) {
@@ -1416,17 +1430,14 @@ struct AnalyticsDashboardView: View {
                     .frame(maxWidth: .infinity, minHeight: topH, maxHeight: topH)
                     
                     HStack(spacing: hGap) {
-                        self.quadCard(metric: .busyness, snapshot: snapshot, overPhoto: overPhoto)
+                        self.quadCard(metric: .busyness, snapshot: snapshot, cornerRadius: cardRadius, overPhoto: overPhoto)
                             .frame(maxWidth: .infinity, minHeight: botH, maxHeight: botH)
-                        self.quadCard(metric: .mood, snapshot: snapshot, overPhoto: overPhoto)
+                        self.quadCard(metric: .mood, snapshot: snapshot, cornerRadius: cardRadius, overPhoto: overPhoto)
                             .frame(maxWidth: .infinity, minHeight: botH, maxHeight: botH)
                     }
                 }
                 .id("compact-bento-grid")
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .scale(scale: 0.975)),
-                    removal: .opacity.combined(with: .scale(scale: 0.96))
-                ))
+                .transition(.opacity)
             }
         }
         .animation(DashMotion.resolve(DashMotion.springCard), value: self.expandedQuad)
@@ -1436,11 +1447,13 @@ struct AnalyticsDashboardView: View {
     private func quadCard(
         metric: DashboardQuadMetric,
         snapshot: DashboardSnapshot,
+        cornerRadius: CGFloat,
         overPhoto: Bool
     ) -> some View {
         DashboardCompactQuadCard(
             metric: metric,
             snapshot: snapshot,
+            cornerRadius: cornerRadius,
             overPhoto: overPhoto,
             palette: self.palette
         ) {
@@ -1456,24 +1469,18 @@ struct AnalyticsDashboardView: View {
     private func row2Section(_ snapshot: DashboardSnapshot, layout: DashboardViewportLayout) -> some View {
         let height = layout.row2Height
         let spacing = layout.hSpacing
+        let row2Radius = DashboardCornerMetrics.row2CardRadius(compact: self.isEmbeddedInSettings)
         return HStack(alignment: .top, spacing: spacing) {
-            self.doneTodayColumn(points: snapshot.doneTodayPoints, compact: layout.isTight)
+            self.doneTodayColumn(points: snapshot.doneTodayPoints, compact: layout.isTight, cornerRadius: row2Radius)
                 .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
-                .opacity(self.hasAppeared ? 1 : 0)
-                .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.988)
-                .offset(y: self.hasAppeared || DashMotion.isReducedMotion ? 0 : 12)
-                .animation(DashMotion.resolve(DashMotion.staggeredEntrance.delay(0.12)), value: self.hasAppeared)
             
-            self.predictedActionsColumn(predictions: snapshot.actionPredictions, compact: layout.isTight)
+            self.predictedActionsColumn(predictions: snapshot.actionPredictions, compact: layout.isTight, cornerRadius: row2Radius)
                 .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
-                .opacity(self.hasAppeared ? 1 : 0)
-                .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.988)
-                .offset(y: self.hasAppeared || DashMotion.isReducedMotion ? 0 : 14)
-                .animation(DashMotion.resolve(DashMotion.staggeredEntrance.delay(0.16)), value: self.hasAppeared)
             
             DashboardNewsColumnCard(
                 compact: self.isEmbeddedInSettings,
                 tightPadding: layout.isTight,
+                cornerRadius: row2Radius,
                 cardHeight: height,
                 palette: self.palette,
                 onOpenWorkspace: { selectedID in
@@ -1481,27 +1488,25 @@ struct AnalyticsDashboardView: View {
                 }
             )
             .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
-            .opacity(self.hasAppeared ? 1 : 0)
-            .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.988)
-            .offset(y: self.hasAppeared || DashMotion.isReducedMotion ? 0 : 16)
-            .animation(DashMotion.resolve(DashMotion.staggeredEntrance.delay(0.20)), value: self.hasAppeared)
         }
     }
     
     
-    private func doneTodayColumn(points: [String], compact: Bool) -> some View {
+    private func doneTodayColumn(points: [String], compact: Bool, cornerRadius: CGFloat) -> some View {
         DoneTodayEditorialCard(
             points: points,
             compact: compact,
+            cornerRadius: cornerRadius,
             palette: self.palette
         )
     }
     
     
-    private func predictedActionsColumn(predictions: [DocumentActionPrediction], compact: Bool) -> some View {
+    private func predictedActionsColumn(predictions: [DocumentActionPrediction], compact: Bool, cornerRadius: CGFloat) -> some View {
         NextActionsEditorialCard(
             predictions: predictions,
             compact: compact,
+            cornerRadius: cornerRadius,
             palette: self.palette
         )
     }
@@ -1583,6 +1588,7 @@ private struct DoneTodayEditorialCard: View {
     
     let points: [String]
     let compact: Bool
+    var cornerRadius: CGFloat = 18
     let palette: DashPalette
     
     @State private var hoveredRow: Int?
@@ -1638,26 +1644,22 @@ private struct DoneTodayEditorialCard: View {
                                 verticalPad: self.compact ? 8.5 : 10,
                                 palette: self.palette
                             ) { hovering in
-                                withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                                    if hovering {
-                                        self.hoveredRow = offset
-                                    } else if self.hoveredRow == offset {
-                                        self.hoveredRow = nil
-                                    }
+                                if hovering {
+                                    self.hoveredRow = offset
+                                } else if self.hoveredRow == offset {
+                                    self.hoveredRow = nil
                                 }
                             }
-                            .transition(.opacity.combined(with: .offset(y: 4)))
                         }
                     }
                     .padding(.bottom, 4)
-                    .animation(DashMotion.resolve(DashMotion.standard), value: self.points)
                 }
             }
             .padding(.horizontal, scrollOuterH)
         }
         .padding(.vertical, outerV)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 16, showsShadow: false)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, showsShadow: false)
     }
 }
 
@@ -1667,6 +1669,7 @@ private struct NextActionsEditorialCard: View {
     
     let predictions: [DocumentActionPrediction]
     let compact: Bool
+    var cornerRadius: CGFloat = 18
     let palette: DashPalette
     
     @State private var hoveredID: String?
@@ -1722,26 +1725,22 @@ private struct NextActionsEditorialCard: View {
                                 verticalPad: self.compact ? 9 : 12.5,
                                 palette: self.palette
                             ) { hovering in
-                                withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                                    if hovering {
-                                        self.hoveredID = pred.id
-                                    } else if self.hoveredID == pred.id {
-                                        self.hoveredID = nil
-                                    }
+                                if hovering {
+                                    self.hoveredID = pred.id
+                                } else if self.hoveredID == pred.id {
+                                    self.hoveredID = nil
                                 }
                             }
-                            .transition(.opacity.combined(with: .offset(y: 4)))
                         }
                     }
                     .padding(.bottom, 4)
-                    .animation(DashMotion.resolve(DashMotion.standard), value: self.predictions.map(\.id))
                 }
             }
             .padding(.horizontal, scrollOuterH)
         }
         .padding(.vertical, outerV)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 16, showsShadow: false)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, showsShadow: false)
     }
 }
 
@@ -1751,6 +1750,7 @@ private struct DashboardNewsColumnCard: View {
     
     let compact: Bool
     var tightPadding: Bool = false
+    var cornerRadius: CGFloat = 18
     let cardHeight: CGFloat
     let palette: DashPalette
     let onOpenWorkspace: (String?) -> Void
@@ -1877,7 +1877,7 @@ private struct DashboardNewsColumnCard: View {
                             .frame(height: 32)
                             .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
-                        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.96))
+                        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.99))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
@@ -1928,7 +1928,7 @@ private struct DashboardNewsColumnCard: View {
         .padding(.horizontal, outerH)
         .padding(.vertical, outerV)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, showsShadow: false)
     }
 }
 
@@ -1989,7 +1989,7 @@ private struct NewsMiniVisualCard: View {
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: self.coverHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsCoverRadius, style: .continuous))
                 
                 Text(self.item.title)
                     .font(.system(size: self.showPublisherLine ? 11.8 : 11.0, weight: self.isRead ? .regular : .semibold))
@@ -2024,16 +2024,12 @@ private struct NewsMiniVisualCard: View {
             .frame(maxWidth: .infinity)
             .frame(height: self.slotHeight, alignment: .topLeading)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous)
                     .fill(self.isHovered ? self.palette.insetHover : self.palette.inset)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(self.isHovered ? self.palette.accentFill.opacity(0.38) : self.palette.hairline, lineWidth: 0.8)
-            )
+            .clipShape(RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous))
         }
-        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.98))
+        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.992))
         .pointerStyle(.link)
         .onAppear {
             self.onAppearLoadCover()
@@ -3028,14 +3024,15 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
         let coverImageID = self.coverStore.coverImage.map(ObjectIdentifier.init)
         let moodLabel = self.snapshot.mood.dominantLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayMood = moodLabel.isEmpty ? AppLanguage.text("冷静", en: "Calm") : moodLabel
-        let padH: CGFloat = self.compact ? 16 : 20
+        let padH: CGFloat = DashboardCornerMetrics.unifiedInset(compact: self.compact)
+        let outerRadius: CGFloat = DashboardCornerMetrics.unifiedOuterRadius(compact: self.compact)
         let topLeftTone = self.toneSnapshot.topLeft
         let topRightTone = self.toneSnapshot.topRight
         
         GeometryReader { heroGeo in
             let isShortHero = self.compact || self.heroHeight < 136
-            let padTop: CGFloat = isShortHero ? 9 : 12
-            let rowHeight: CGFloat = isShortHero ? 46 : 52
+            let padTop: CGFloat = isShortHero ? 9 : 11
+            let rowHeight: CGFloat = isShortHero ? 44 : 50
             let aspectBucket = Int(((heroGeo.size.width / max(1, heroGeo.size.height)) * 20).rounded())
             
             VStack(alignment: .leading, spacing: 0) {
@@ -3073,7 +3070,7 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                             self.coverImageControlPill(tone: topRightTone, hasPhoto: hasPhoto)
                         }
                     }
-                    .padding(.horizontal, padH)
+                    .padding(.horizontal, padH + 4)
                     .padding(.top, padTop)
                     .frame(height: 28 + padTop, alignment: .top)
                     
@@ -3152,15 +3149,15 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.vertical, 2)
                     
-                    // Editorial identity + telemetry strip resting on a delicate frosted ribbon over the shared backdrop
+                    // Borderless identity + telemetry strip seamlessly resting in the progressive-blur zone
                     HStack(alignment: .center, spacing: 0) {
                         self.identityLockup(streakDays: streakDays)
-                            .frame(width: self.compact ? 182 : 220, alignment: .leading)
+                            .frame(width: self.compact ? 182 : 218, alignment: .leading)
                         
                         Rectangle()
-                            .fill(self.palette.hairlineStrong)
-                            .frame(width: 1, height: self.compact ? 26 : 30)
-                            .padding(.horizontal, self.compact ? 12 : 20)
+                            .fill(self.palette.hairlineStrong.opacity(0.65))
+                            .frame(width: 0.75, height: self.compact ? 24 : 28)
+                            .padding(.horizontal, self.compact ? 12 : 18)
                         
                         self.telemetryMatrixZone(
                             todayTotal: todayTotal,
@@ -3170,26 +3167,8 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                         )
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(.horizontal, hasPhoto ? 14 : 0)
+                    .padding(.horizontal, padH + 6)
                     .frame(height: rowHeight)
-                    .background {
-                        if hasPhoto {
-                            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                .fill(.regularMaterial)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                        .fill(self.palette.card.opacity(self.palette.tokens.isDark ? 0.56 : 0.66))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                        .strokeBorder(
-                                            self.palette.tokens.isDark ? Color.white.opacity(0.14) : Color.white.opacity(0.55),
-                                            lineWidth: 0.75
-                                        )
-                                )
-                        }
-                    }
-                    .padding(.horizontal, padH)
                 }
                 .frame(height: self.heroHeight, alignment: .topLeading)
                 
@@ -3210,19 +3189,34 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                     palette: self.palette
                 )
             }
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(
-                        self.isDropTargeted ? self.palette.accentFill : (self.isAdjustingCover ? self.palette.accentFill.opacity(0.65) : self.palette.hairline),
-                        lineWidth: (self.isDropTargeted || self.isAdjustingCover) ? 1.8 : 0.85
-                    )
-            )
+            .clipShape(RoundedRectangle(cornerRadius: outerRadius, style: .continuous))
+            .overlay {
+                if self.isDropTargeted || self.isAdjustingCover {
+                    RoundedRectangle(cornerRadius: outerRadius, style: .continuous)
+                        .strokeBorder(
+                            self.isDropTargeted ? self.palette.accentFill : self.palette.accentFill.opacity(0.55),
+                            lineWidth: 1.5
+                        )
+                } else {
+                    RoundedRectangle(cornerRadius: outerRadius, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(self.palette.tokens.isDark ? 0.10 : (hasPhoto ? 0.42 : 0.65)),
+                                    Color.clear,
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 0.5
+                        )
+                }
+            }
             .shadow(
-                color: self.palette.cardShadow,
-                radius: 6,
+                color: Color.black.opacity(self.palette.tokens.isDark ? 0.22 : 0.045),
+                radius: 12,
                 x: 0,
-                y: 2
+                y: 4
             )
             .simultaneousGesture(
                 DragGesture(minimumDistance: 2)
@@ -3351,7 +3345,6 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
             HStack(spacing: 4) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 10, weight: .semibold))
-                    .offset(x: self.isBackHovered && !DashMotion.isReducedMotion ? -1.5 : 0)
                 Text(AppLanguage.text("返回", en: "Back"))
                     .font(.system(size: 11.5, weight: .medium))
             }
@@ -3363,13 +3356,11 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
             }
             .contentShape(Capsule())
         }
-        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.94))
+        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.99))
         .pointerStyle(.link)
         .onHover { hovering in
             if hovering != self.isBackHovered {
-                withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                    self.isBackHovered = hovering
-                }
+                self.isBackHovered = hovering
             }
         }
     }
@@ -3683,19 +3674,11 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                             .minimumScaleFactor(0.75)
                         
                         HStack(alignment: .bottom, spacing: 3) {
-                            ForEach(Array(rhythmBars.enumerated()), id: \.element.id) { idx, slice in
+                            ForEach(Array(rhythmBars.enumerated()), id: \.element.id) { _, slice in
                                 let h = max(5, CGFloat(slice.intensity) * 18)
                                 Capsule(style: .continuous)
                                     .fill(slice.intensity > 0.35 ? self.palette.accentFill : self.palette.accentFill.opacity(0.22))
                                     .frame(width: 3, height: h)
-                                    .scaleEffect(
-                                        y: self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.15,
-                                        anchor: .bottom
-                                    )
-                                    .animation(
-                                        DashMotion.resolve(DashMotion.springCard.delay(Double(idx) * 0.035)),
-                                        value: self.hasAppeared
-                                    )
                             }
                         }
                         .frame(height: 18, alignment: .bottom)
@@ -3719,7 +3702,7 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
             if next {
                 self.startDate = Date()
             }
-            withAnimation(DashMotion.resolve(DashMotion.springCard)) {
+            withAnimation(DashMotion.resolve(DashMotion.quick)) {
                 self.isDanmakuEnabled = next
             }
             CotLocalDatabase.shared.set(
@@ -3749,13 +3732,11 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
             }
             .contentShape(Capsule())
         }
-        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.95))
+        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.99))
         .pointerStyle(.link)
         .onHover { hovering in
             if hovering != self.isToggleHovered {
-                withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                    self.isToggleHovered = hovering
-                }
+                self.isToggleHovered = hovering
             }
         }
     }
@@ -3776,10 +3757,13 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                     .clipped()
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(self.palette.hairlineStrong, lineWidth: 1.0)
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(
+                    Color.white.opacity(self.palette.tokens.isDark ? 0.14 : 0.65),
+                    lineWidth: 0.6
+                )
         )
     }
     
@@ -3930,7 +3914,7 @@ private struct HeroPhotoFadeBackdrop: View {
                         .frame(width: targetW, height: targetH)
                         .clipped()
                     } else {
-                        // Fill Mode: exact 2D overflow computation spanning the unified Row 1 + Row 2 stage
+                        // Fill Mode: crisp scenic upper showcase melting into Apple-style progressive frosted blur
                         let renderedW = safeAspect >= targetAspect ? (targetH * safeAspect) : targetW
                         let renderedH = safeAspect >= targetAspect ? targetH : (targetW / safeAspect)
                         let overflowX = max(0, renderedW - targetW)
@@ -3938,33 +3922,57 @@ private struct HeroPhotoFadeBackdrop: View {
                         let xOffset = -overflowX * CGFloat(max(0.0, min(1.0, self.focalX)))
                         let yOffset = -overflowY * CGFloat(max(0.0, min(1.0, self.focalY)))
                         
-                        Image(nsImage: coverImage)
-                            .resizable()
-                            .interpolation(.high)
-                            .frame(width: renderedW, height: renderedH)
-                            .offset(x: xOffset, y: yOffset)
-                            .frame(width: targetW, height: targetH, alignment: .topLeading)
-                            .clipped()
+                        ZStack(alignment: .topLeading) {
+                            Image(nsImage: coverImage)
+                                .resizable()
+                                .interpolation(.high)
+                                .frame(width: renderedW, height: renderedH)
+                                .offset(x: xOffset, y: yOffset)
+                                .frame(width: targetW, height: targetH, alignment: .topLeading)
+                            
+                            Image(nsImage: coverImage)
+                                .resizable()
+                                .interpolation(.medium)
+                                .frame(width: renderedW, height: renderedH)
+                                .offset(x: xOffset, y: yOffset)
+                                .frame(width: targetW, height: targetH, alignment: .topLeading)
+                                .blur(radius: 26, opaque: true)
+                                .mask(
+                                    LinearGradient(
+                                        stops: [
+                                            .init(color: .clear, location: 0.00),
+                                            .init(color: .clear, location: 0.16),
+                                            .init(color: .white.opacity(0.72), location: 0.34),
+                                            .init(color: .white, location: 0.50),
+                                            .init(color: .white, location: 1.00),
+                                        ],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                        }
+                        .clipped()
                     }
                 }
                 
-                // Gentle lower veil harmonizing the frosted Row 2 bento cards without cutting off the photo
+                // Luminous Apple progressive frost veil ensuring effortless contrast across identity strip & Row 2 glass cards
                 LinearGradient(
                     stops: [
                         .init(color: .clear, location: 0.00),
-                        .init(color: .clear, location: 0.34),
-                        .init(color: cardColor.opacity(isDark ? 0.20 : 0.14), location: 0.62),
-                        .init(color: cardColor.opacity(isDark ? 0.42 : 0.34), location: 1.00),
+                        .init(color: .clear, location: 0.16),
+                        .init(color: cardColor.opacity(isDark ? 0.44 : 0.56), location: 0.34),
+                        .init(color: cardColor.opacity(isDark ? 0.54 : 0.62), location: 0.54),
+                        .init(color: cardColor.opacity(isDark ? 0.42 : 0.48), location: 1.00),
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
                 
-                // Subtle ambient chromatic wash echoing the cover image's lower tone
+                // Subtle chromatic tint echoing the photo's natural hue across the lower frost
                 LinearGradient(
                     stops: [
-                        .init(color: .clear, location: 0.42),
-                        .init(color: ambientTint.opacity(isDark ? 0.12 : 0.08), location: 1.00),
+                        .init(color: .clear, location: 0.28),
+                        .init(color: ambientTint.opacity(isDark ? 0.14 : 0.10), location: 1.00),
                     ],
                     startPoint: .top,
                     endPoint: .bottom
@@ -4012,6 +4020,7 @@ private struct DashboardHeatmapCard: View {
     let availableYears: [Int]
     @Binding var selectedYear: Int
     let compact: Bool
+    var cornerRadius: CGFloat = 14
     var overPhoto: Bool = false
     let palette: DashPalette
     
@@ -4068,8 +4077,6 @@ private struct DashboardHeatmapCard: View {
                         Text(readout.total.formatted())
                             .font(.system(size: self.compact ? 17 : 20, weight: .semibold).monospacedDigit())
                             .foregroundStyle(isInspecting ? self.palette.emerald : self.palette.pine)
-                            .contentTransition(.numericText())
-                            .animation(DashMotion.quick, value: readout.total)
                         Text("字")
                             .font(.system(size: 11, weight: .regular))
                             .foregroundStyle(self.palette.mutedInk)
@@ -4205,15 +4212,11 @@ private struct DashboardHeatmapCard: View {
                                     case .active(let location):
                                         let hit = layout.hitTestCoord(point: location, weeks: self.yearlyHeatmap.weeks)
                                         if hit != self.hoveredHit {
-                                            withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                                                self.hoveredHit = hit
-                                            }
+                                            self.hoveredHit = hit
                                         }
                                     case .ended:
                                         if self.hoveredHit != nil {
-                                            withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                                                self.hoveredHit = nil
-                                            }
+                                            self.hoveredHit = nil
                                         }
                                 }
                             }
@@ -4224,7 +4227,6 @@ private struct DashboardHeatmapCard: View {
                                     layout: layout,
                                     in: CGSize(width: layout.canvasWidth, height: heatmapH)
                                 )
-                                .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .bottom)))
                             }
                         }
                     }
@@ -4316,19 +4318,15 @@ private struct DashboardHeatmapCard: View {
                     .padding(.vertical, 4)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(self.palette.inset.opacity(self.palette.tokens.isDark ? 0.45 : 0.65))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(self.palette.hairline, lineWidth: 0.7)
+                        RoundedRectangle(cornerRadius: DashboardCornerMetrics.nestedWellRadius, style: .continuous)
+                            .fill(self.palette.inset.opacity(self.palette.tokens.isDark ? 0.38 : (self.overPhoto ? 0.44 : 0.58)))
                     )
                 }
             }
         }
         .padding(self.compact ? 11 : 13)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 15, overPhoto: self.overPhoto)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, overPhoto: self.overPhoto)
         .onAppear {
             guard self.waveReveal < 1.0 else { return }
             withAnimation(DashMotion.resolve(DashMotion.chartReveal.delay(0.10))) {
@@ -4737,6 +4735,7 @@ struct HeatmapGridLayout: Equatable {
 private struct DashboardAIUsageWideCard: View {
     
     let snapshot: DashboardSnapshot
+    var cornerRadius: CGFloat = 14
     var overPhoto: Bool = false
     let palette: DashPalette
     let onTap: () -> Void
@@ -4844,10 +4843,10 @@ private struct DashboardAIUsageWideCard: View {
                 .frame(width: cardGeo.size.width, height: cardGeo.size.height, alignment: .center)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .dashboardCardSurface(palette: self.palette, cornerRadius: 15, isHighlighted: self.isHovered, overPhoto: self.overPhoto)
-            .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, isHighlighted: self.isHovered, overPhoto: self.overPhoto)
+            .contentShape(RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous))
         }
-        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.992))
+        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.995))
         .pointerStyle(.link)
         .onHover { hovering in
             if hovering != self.isHovered {
@@ -4877,6 +4876,7 @@ private struct DashboardCompactQuadCard: View {
     
     let metric: DashboardQuadMetric
     let snapshot: DashboardSnapshot
+    var cornerRadius: CGFloat = 14
     var overPhoto: Bool = false
     let palette: DashPalette
     let onTap: () -> Void
@@ -4918,10 +4918,10 @@ private struct DashboardCompactQuadCard: View {
             }
             .padding(11)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .dashboardCardSurface(palette: self.palette, cornerRadius: 15, isHighlighted: self.isHovered, overPhoto: self.overPhoto)
-            .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, isHighlighted: self.isHovered, overPhoto: self.overPhoto)
+            .contentShape(RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous))
         }
-        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.992))
+        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.995))
         .pointerStyle(.link)
         .onHover { hovering in
             if hovering != self.isHovered {
@@ -4992,6 +4992,7 @@ private struct DashboardExpandedQuadCard: View {
     
     let metric: DashboardQuadMetric
     let snapshot: DashboardSnapshot
+    var cornerRadius: CGFloat = 14
     var overPhoto: Bool = false
     let palette: DashPalette
     let onClose: () -> Void
@@ -5036,13 +5037,11 @@ private struct DashboardExpandedQuadCard: View {
                         .background(Circle().fill(self.isCloseHovered ? self.palette.insetHover : self.palette.inset))
                         .contentShape(Circle())
                 }
-                .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.94))
+                .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.99))
                 .pointerStyle(.link)
                 .onHover { hovering in
                     guard hovering != self.isCloseHovered else { return }
-                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                        self.isCloseHovered = hovering
-                    }
+                    self.isCloseHovered = hovering
                 }
             }
             .frame(height: 26)
@@ -5052,7 +5051,7 @@ private struct DashboardExpandedQuadCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 15, isHighlighted: false, overPhoto: self.overPhoto)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, isHighlighted: false, overPhoto: self.overPhoto)
         .onChange(of: self.metric) { _, _ in
             self.hoverDetail = nil
         }
@@ -6422,11 +6421,13 @@ private struct EmotionSankeyCanvas: View, Animatable {
 
 private struct DashboardCardButtonStyle: ButtonStyle {
     
-    var pressedScale: CGFloat = 0.986
+    var pressedScale: CGFloat = 0.995
     
     func makeBody(configuration: Configuration) -> some View {
+        let clampedScale = max(0.985, self.pressedScale)
         configuration.label
-            .scaleEffect(configuration.isPressed && !DashMotion.isReducedMotion ? self.pressedScale : 1.0)
+            .scaleEffect(configuration.isPressed && !DashMotion.isReducedMotion ? clampedScale : 1.0)
+            .opacity(configuration.isPressed ? 0.92 : 1.0)
             .animation(DashMotion.resolve(DashMotion.press), value: configuration.isPressed)
     }
 }
@@ -6503,45 +6504,54 @@ private extension View {
         overPhoto: Bool = false
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        let strokeColor: Color = if overPhoto {
-            palette.tokens.isDark
-                ? Color.white.opacity(isHighlighted ? 0.24 : 0.14)
-                : Color.white.opacity(isHighlighted ? 0.78 : 0.56)
-        } else {
-            isHighlighted ? palette.tokens.hairlineStrong : palette.hairline
-        }
-        let tintColor = palette.tokens.isDark
-            ? Color.white.opacity(isHighlighted ? 0.03 : 0)
-            : Color.black.opacity(isHighlighted ? 0.015 : 0)
-        let shadowColor = showsShadow
-            ? (isHighlighted
-                ? Color.black.opacity(palette.tokens.isDark ? 0.28 : 0.06)
-                : palette.cardShadow)
+        let isDark = palette.tokens.isDark
+        let shadowColor = showsShadow && !overPhoto
+            ? Color.black.opacity(isDark ? 0.18 : 0.032)
             : .clear
         return self
             .background(
                 ZStack {
                     if overPhoto {
-                        shape
-                            .fill(.regularMaterial)
-                        shape
-                            .fill(palette.card.opacity(palette.tokens.isDark ? 0.74 : 0.78))
+                        shape.fill(.ultraThinMaterial)
+                        shape.fill(palette.card.opacity(isDark ? (isHighlighted ? 0.56 : 0.48) : (isHighlighted ? 0.66 : 0.56)))
                     } else {
                         shape
                             .fill(palette.card)
                             .shadow(
                                 color: shadowColor,
-                                radius: showsShadow ? (isHighlighted ? 9 : 6) : 0,
+                                radius: showsShadow ? 8 : 0,
                                 x: 0,
-                                y: showsShadow ? (isHighlighted ? 3 : 2) : 0
+                                y: showsShadow ? 2 : 0
                             )
+                        if isHighlighted {
+                            shape.fill(isDark ? Color.white.opacity(0.035) : Color.black.opacity(0.018))
+                        }
                     }
-                    shape.fill(tintColor)
                 }
             )
-            .overlay(
-                shape.strokeBorder(strokeColor, lineWidth: 0.85)
-            )
-            .animation(DashMotion.resolve(.easeInOut(duration: 0.22)), value: isHighlighted)
+            .overlay {
+                if overPhoto {
+                    // Apple liquid-glass whisper top specular highlight only (zero boxy perimeter wireframe)
+                    shape.strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(isDark ? (isHighlighted ? 0.24 : 0.15) : (isHighlighted ? 0.80 : 0.62)),
+                                Color.white.opacity(isDark ? 0.03 : 0.10),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.5
+                    )
+                } else {
+                    shape.strokeBorder(
+                        isDark
+                            ? Color.white.opacity(isHighlighted ? 0.10 : 0.055)
+                            : Color.black.opacity(isHighlighted ? 0.075 : 0.04),
+                        lineWidth: 0.5
+                    )
+                }
+            }
+            .animation(DashMotion.resolve(DashMotion.quick), value: isHighlighted)
     }
 }

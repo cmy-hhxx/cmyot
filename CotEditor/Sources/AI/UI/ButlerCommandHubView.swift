@@ -33,8 +33,14 @@ final class ToolbarButlerBotButtonView: NSView {
         override var canBecomeMain: Bool { false }
     }
     
+    private final class ToolbarClickButton: NSButton {
+        override func menu(for event: NSEvent) -> NSMenu? {
+            self.superview?.menu(for: event)
+        }
+    }
+    
     private let hostingView: NSHostingView<ButlerToolbarCapsuleLabel>
-    private let clickButton = NSButton()
+    private let clickButton = ToolbarClickButton()
     private var panel: ButlerFloatingPanel?
     private var panelHosting: NSHostingController<AnyView>?
     private var isPinnedPanel: Bool = false
@@ -134,7 +140,82 @@ final class ToolbarButlerBotButtonView: NSView {
         if let openHubObserver {
             NotificationCenter.default.removeObserver(openHubObserver)
         }
+        ButlerToolbarTipBubbleController.shared.unregisterAnchor(self)
         self.closeFloatingPanel()
+    }
+    
+    
+    var isFloatingChatVisible: Bool {
+        self.panel?.isVisible == true
+    }
+    
+    
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if self.window != nil {
+            ButlerToolbarTipBubbleController.shared.registerAnchor(self)
+        } else {
+            ButlerToolbarTipBubbleController.shared.unregisterAnchor(self)
+        }
+    }
+    
+    
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        let openJournal = NSMenuItem(
+            title: AppLanguage.text("打开今日总管随记", en: "Open Today's Journal"),
+            action: #selector(self.openTodayJournal(_:)),
+            keyEquivalent: ""
+        )
+        openJournal.target = self
+        menu.addItem(openJournal)
+        
+        let recordTip = NSMenuItem(
+            title: AppLanguage.text("立即弹出一条主动提醒", en: "Show Proactive Tip Now"),
+            action: #selector(self.triggerProactiveTipNow(_:)),
+            keyEquivalent: ""
+        )
+        recordTip.target = self
+        menu.addItem(recordTip)
+        
+        menu.addItem(.separator())
+        
+        let toggleItem = NSMenuItem(
+            title: AppLanguage.text("主动提醒气泡", en: "Proactive Tip Bubbles"),
+            action: #selector(self.toggleProactiveTips(_:)),
+            keyEquivalent: ""
+        )
+        toggleItem.target = self
+        toggleItem.state = ProactiveDailyJournalService.shared.tipsEnabled ? .on : .off
+        menu.addItem(toggleItem)
+        return menu
+    }
+    
+    
+    @objc private func openTodayJournal(_ sender: Any?) {
+        ButlerToolbarTipBubbleController.shared.dismiss(animated: false)
+        ProactiveDailyJournalService.shared.openTodayJournalWindow(preferredWindow: self.window)
+    }
+    
+    
+    @objc private func triggerProactiveTipNow(_ sender: Any?) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let tip = await ProactiveDailyJournalService.shared.recordProactiveNote(
+                allowRemoteAI: false,
+                showFloatingTip: false
+            ) {
+                ButlerToolbarTipBubbleController.shared.presentTip(tip, preferredAnchor: self)
+            }
+        }
+    }
+    
+    
+    @objc private func toggleProactiveTips(_ sender: Any?) {
+        ProactiveDailyJournalService.shared.tipsEnabled.toggle()
+        if !ProactiveDailyJournalService.shared.tipsEnabled {
+            ButlerToolbarTipBubbleController.shared.dismiss(animated: true)
+        }
     }
     
     
@@ -153,6 +234,7 @@ final class ToolbarButlerBotButtonView: NSView {
     
     
     @objc private func togglePanel(_ sender: Any?) {
+        ButlerToolbarTipBubbleController.shared.dismiss(animated: false)
         if let panel = self.panel, panel.isVisible {
             self.closeFloatingPanel()
             return
@@ -163,6 +245,7 @@ final class ToolbarButlerBotButtonView: NSView {
     
     private func showFloatingPanel() {
         guard let hostWindow = self.window else { return }
+        ButlerToolbarTipBubbleController.shared.dismiss(animated: false)
         self.closeFloatingPanel()
         _ = CotAgentCoordinator.shared.captureWorkspaceSnapshot()
         
@@ -350,12 +433,14 @@ final class ToolbarButlerBotButtonView: NSView {
 private struct ButlerToolbarCapsuleLabel: View {
     
     @State private var butler = CotButlerManager.shared
+    @State private var journalService = ProactiveDailyJournalService.shared
     @State private var imageLoader = AIGijinkaImageLoader.shared
     @State private var studioPalette = StudioPaletteManager.shared
     @State private var isHovered = false
     @Environment(\.colorScheme) private var colorScheme
     
     var body: some View {
+        let _ = self.journalService.revision
         let tokens = self.studioPalette.tokens(isDark: self.colorScheme == .dark)
         let artwork = self.butler.resolvedArtwork()
         let portrait = self.butler.customAvatarImage ?? self.imageLoader.thumbnail(for: artwork, maxPixelSize: 64)
@@ -391,6 +476,10 @@ private struct ButlerToolbarCapsuleLabel: View {
                     interactive: false,
                     color: tokens.accent
                 )
+            } else if self.journalService.unreadCount > 0 {
+                Circle()
+                    .fill(tokens.accent)
+                    .frame(width: 6, height: 6)
             }
         }
         .padding(.horizontal, 8)
