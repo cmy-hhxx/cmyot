@@ -1076,6 +1076,8 @@ nonisolated struct DashboardViewportLayout: Equatable, Sendable {
     let outerPadV: CGFloat
     let vSpacing: CGFloat
     let hSpacing: CGFloat
+    let unifiedInnerGap: CGFloat
+    let unifiedBottomPad: CGFloat
     let heroHeight: CGFloat
     let row1Height: CGFloat
     let row2Height: CGFloat
@@ -1084,8 +1086,12 @@ nonisolated struct DashboardViewportLayout: Equatable, Sendable {
     let isTight: Bool
     let needsVerticalScroll: Bool
     
+    var unifiedTopStageHeight: CGFloat {
+        self.heroHeight + self.unifiedInnerGap + self.row1Height + self.unifiedBottomPad
+    }
+    
     var totalContentHeight: CGFloat {
-        self.outerPadV * 2 + self.vSpacing * 2 + self.heroHeight + self.row1Height + self.row2Height
+        self.outerPadV * 2 + self.vSpacing + self.unifiedTopStageHeight + self.row2Height
     }
     
     static func resolve(
@@ -1098,26 +1104,29 @@ nonisolated struct DashboardViewportLayout: Equatable, Sendable {
         let isTight = isEmbeddedInSettings || vpH < 760
         
         let outerPadH: CGFloat = isEmbeddedInSettings ? 12 : (vpW >= 1280 ? 22 : 16)
-        let outerPadV: CGFloat = isEmbeddedInSettings ? 10 : (vpH >= 840 ? 16 : 12)
-        let vSpacing: CGFloat = isEmbeddedInSettings ? 10 : (vpH >= 840 ? 14 : 11)
-        let hSpacing: CGFloat = isEmbeddedInSettings ? 10 : (vpW >= 1200 ? 14 : 12)
+        let outerPadV: CGFloat = isEmbeddedInSettings ? 10 : (vpH >= 840 ? 14 : 11)
+        let vSpacing: CGFloat = isEmbeddedInSettings ? 10 : (vpH >= 840 ? 13 : 10)
+        let hSpacing: CGFloat = isEmbeddedInSettings ? 9 : (vpW >= 1200 ? 12 : 10)
+        let unifiedInnerGap: CGFloat = isTight ? 8 : 10
+        let unifiedBottomPad: CGFloat = isTight ? 10 : 14
         
-        let minHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 132 : 116) : (hasHeroPhoto ? 142 : 122)
-        let maxHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 164 : 138) : (hasHeroPhoto ? 204 : 164)
-        let minRow1: CGFloat = isEmbeddedInSettings ? 206 : 226
-        let maxRow1: CGFloat = isEmbeddedInSettings ? 248 : 292
-        let minRow2: CGFloat = isEmbeddedInSettings ? 196 : 216
-        let maxRow2: CGFloat = isEmbeddedInSettings ? 248 : 326
+        let minHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 112 : 98) : (hasHeroPhoto ? 122 : 106)
+        let maxHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 138 : 120) : (hasHeroPhoto ? 158 : 134)
+        let minRow1: CGFloat = isEmbeddedInSettings ? 192 : 208
+        let maxRow1: CGFloat = isEmbeddedInSettings ? 232 : 264
+        let minRow2: CGFloat = isEmbeddedInSettings ? 190 : 210
+        let maxRow2: CGFloat = isEmbeddedInSettings ? 242 : 308
         
-        let minTotal = outerPadV * 2 + vSpacing * 2 + minHero + minRow1 + minRow2
+        let chromeV = outerPadV * 2 + vSpacing + unifiedInnerGap + unifiedBottomPad
+        let minTotal = chromeV + minHero + minRow1 + minRow2
         let needsScroll = vpH < minTotal
-        let usableH = max(minHero + minRow1 + minRow2, vpH - outerPadV * 2 - vSpacing * 2)
+        let usableH = max(minHero + minRow1 + minRow2, vpH - chromeV)
         
-        let heroWeight: CGFloat = hasHeroPhoto ? 0.225 : 0.185
+        let heroWeight: CGFloat = hasHeroPhoto ? 0.195 : 0.165
         let heroH = min(maxHero, max(minHero, floor(usableH * heroWeight)))
         
         let remainingAfterHero = usableH - heroH
-        let row1H = min(maxRow1, max(minRow1, floor(remainingAfterHero * 0.485)))
+        let row1H = min(maxRow1, max(minRow1, floor(remainingAfterHero * 0.475)))
         let row2H = min(maxRow2, max(minRow2, floor(remainingAfterHero - row1H)))
         
         return DashboardViewportLayout(
@@ -1125,6 +1134,8 @@ nonisolated struct DashboardViewportLayout: Equatable, Sendable {
             outerPadV: outerPadV,
             vSpacing: vSpacing,
             hSpacing: hSpacing,
+            unifiedInnerGap: unifiedInnerGap,
+            unifiedBottomPad: unifiedBottomPad,
             heroHeight: heroH,
             row1Height: row1H,
             row2Height: row2H,
@@ -1213,19 +1224,22 @@ struct AnalyticsDashboardView: View {
                                     profile: self.profileManager.activeProfile,
                                     avatarImage: self.profileManager.avatarImage(for: self.profileManager.activeProfile),
                                     snapshot: snapshot,
+                                    heroHeight: layout.heroHeight,
+                                    innerGap: layout.unifiedInnerGap,
+                                    bottomPad: layout.unifiedBottomPad,
                                     compact: self.isEmbeddedInSettings,
                                     palette: self.palette,
                                     onBack: self.isEmbeddedInSettings ? nil : self.onDismiss
-                                )
+                                ) {
+                                    self.row1Section(snapshot, layout: layout, overPhoto: hasHeroPhoto)
+                                }
                                 .frame(maxWidth: .infinity)
-                                .frame(height: layout.heroHeight)
+                                .frame(height: layout.unifiedTopStageHeight)
                                 .animation(DashMotion.resolve(DashMotion.standard), value: hasHeroPhoto)
                                 .opacity(self.hasAppeared ? 1 : 0)
                                 .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.992)
                                 .offset(y: self.hasAppeared || DashMotion.isReducedMotion ? 0 : 8)
                                 .animation(DashMotion.resolve(DashMotion.staggeredEntrance), value: self.hasAppeared)
-                                
-                                self.row1Section(snapshot, layout: layout)
                                 
                                 self.row2Section(snapshot, layout: layout)
                             }
@@ -1315,7 +1329,11 @@ struct AnalyticsDashboardView: View {
     
     // MARK: Row 1 — Unified Heatmap + Mathematical Wave Card & AI Usage / Busyness Rose / Mood Flow
     
-    private func row1Section(_ snapshot: DashboardSnapshot, layout: DashboardViewportLayout) -> some View {
+    private func row1Section(
+        _ snapshot: DashboardSnapshot,
+        layout: DashboardViewportLayout,
+        overPhoto: Bool
+    ) -> some View {
         let height = layout.row1Height
         let spacing = layout.hSpacing
         return GeometryReader { proxy in
@@ -1334,6 +1352,7 @@ struct AnalyticsDashboardView: View {
                     availableYears: snapshot.availableYears,
                     selectedYear: self.$selectedYear,
                     compact: layout.isTight,
+                    overPhoto: overPhoto,
                     palette: self.palette
                 )
                 .frame(width: leftWidth, height: height)
@@ -1342,7 +1361,7 @@ struct AnalyticsDashboardView: View {
                 .offset(y: self.hasAppeared || DashMotion.isReducedMotion ? 0 : 10)
                 .animation(DashMotion.resolve(DashMotion.staggeredEntrance.delay(0.05)), value: self.hasAppeared)
                 
-                self.flippableQuadSection(snapshot, height: height, gap: spacing)
+                self.flippableQuadSection(snapshot, height: height, gap: spacing, overPhoto: overPhoto)
                     .frame(width: rightWidth, height: height)
                     .opacity(self.hasAppeared ? 1 : 0)
                     .scaleEffect(self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.988)
@@ -1354,12 +1373,18 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    private func flippableQuadSection(_ snapshot: DashboardSnapshot, height: CGFloat, gap: CGFloat) -> some View {
+    private func flippableQuadSection(
+        _ snapshot: DashboardSnapshot,
+        height: CGFloat,
+        gap: CGFloat,
+        overPhoto: Bool
+    ) -> some View {
         ZStack {
             if let expanded = self.expandedQuad {
                 DashboardExpandedQuadCard(
                     metric: expanded,
                     snapshot: snapshot,
+                    overPhoto: overPhoto,
                     palette: self.palette
                 ) {
                     withAnimation(DashMotion.resolve(DashMotion.springCard)) {
@@ -1375,12 +1400,13 @@ struct AnalyticsDashboardView: View {
             } else {
                 let vGap: CGFloat = gap
                 let hGap: CGFloat = gap
-                let topH = max(88, floor((height - vGap) * 0.49))
-                let botH = max(84, height - vGap - topH)
+                let topH = max(84, floor((height - vGap) * 0.49))
+                let botH = max(80, height - vGap - topH)
                 
                 VStack(spacing: vGap) {
                     DashboardAIUsageWideCard(
                         snapshot: snapshot,
+                        overPhoto: overPhoto,
                         palette: self.palette
                     ) {
                         withAnimation(DashMotion.resolve(DashMotion.springCard)) {
@@ -1390,9 +1416,9 @@ struct AnalyticsDashboardView: View {
                     .frame(maxWidth: .infinity, minHeight: topH, maxHeight: topH)
                     
                     HStack(spacing: hGap) {
-                        self.quadCard(metric: .busyness, snapshot: snapshot)
+                        self.quadCard(metric: .busyness, snapshot: snapshot, overPhoto: overPhoto)
                             .frame(maxWidth: .infinity, minHeight: botH, maxHeight: botH)
-                        self.quadCard(metric: .mood, snapshot: snapshot)
+                        self.quadCard(metric: .mood, snapshot: snapshot, overPhoto: overPhoto)
                             .frame(maxWidth: .infinity, minHeight: botH, maxHeight: botH)
                     }
                 }
@@ -1407,10 +1433,15 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    private func quadCard(metric: DashboardQuadMetric, snapshot: DashboardSnapshot) -> some View {
+    private func quadCard(
+        metric: DashboardQuadMetric,
+        snapshot: DashboardSnapshot,
+        overPhoto: Bool
+    ) -> some View {
         DashboardCompactQuadCard(
             metric: metric,
             snapshot: snapshot,
+            overPhoto: overPhoto,
             palette: self.palette
         ) {
             withAnimation(DashMotion.resolve(DashMotion.springCard)) {
@@ -2835,14 +2866,18 @@ enum HeroCoverToneSampler {
 }
 
 
-private struct DashboardAchievementHeroBar: View {
+private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
     
     let profile: UserProfile
     let avatarImage: NSImage?
     let snapshot: DashboardSnapshot
+    let heroHeight: CGFloat
+    let innerGap: CGFloat
+    let bottomPad: CGFloat
     let compact: Bool
     let palette: DashPalette
     let onBack: (() -> Void)?
+    let embeddedRow1: () -> EmbeddedRow1
     
     @State private var coverStore = DashboardHeroCoverStore.shared
     @State private var serialCode: String
@@ -2867,16 +2902,24 @@ private struct DashboardAchievementHeroBar: View {
         profile: UserProfile,
         avatarImage: NSImage?,
         snapshot: DashboardSnapshot,
+        heroHeight: CGFloat,
+        innerGap: CGFloat,
+        bottomPad: CGFloat,
         compact: Bool,
         palette: DashPalette,
-        onBack: (() -> Void)?
+        onBack: (() -> Void)?,
+        @ViewBuilder embeddedRow1: @escaping () -> EmbeddedRow1
     ) {
         self.profile = profile
         self.avatarImage = avatarImage
         self.snapshot = snapshot
+        self.heroHeight = heroHeight
+        self.innerGap = innerGap
+        self.bottomPad = bottomPad
         self.compact = compact
         self.palette = palette
         self.onBack = onBack
+        self.embeddedRow1 = embeddedRow1
         
         let db = CotLocalDatabase.shared
         var serial = db.string(forKey: CotLocalDatabase.ConfigKey.cotPassSerialCode)
@@ -2892,7 +2935,7 @@ private struct DashboardAchievementHeroBar: View {
             .lowercased()
         
         let fallbackRGB = Self.fallbackSurfaceRGB(for: palette)
-        let initialAspect: CGFloat = compact ? 3.2 : 4.2
+        let initialAspect: CGFloat = compact ? 2.6 : 2.95
         let initialTones = DashboardHeroCoverStore.shared.initialTones(canvasAspect: initialAspect, fallbackRGB: fallbackRGB)
         
         _serialCode = State(initialValue: serial)
@@ -2990,146 +3033,171 @@ private struct DashboardAchievementHeroBar: View {
         let topRightTone = self.toneSnapshot.topRight
         
         GeometryReader { heroGeo in
-            let isShortHero = self.compact || heroGeo.size.height < 176
-            let padTop: CGFloat = isShortHero ? 10 : 14
-            let padBottom: CGFloat = isShortHero ? 10 : 14
-            let rowHeight: CGFloat = isShortHero ? 42 : 46
+            let isShortHero = self.compact || self.heroHeight < 136
+            let padTop: CGFloat = isShortHero ? 9 : 12
+            let rowHeight: CGFloat = isShortHero ? 46 : 52
             let aspectBucket = Int(((heroGeo.size.width / max(1, heroGeo.size.height)) * 20).rounded())
             
             VStack(alignment: .leading, spacing: 0) {
-                // Top floating adaptive frosted glass controls (real-time synced to topLeft & topRight pixels)
-                HStack(alignment: .center, spacing: 8) {
-                    if let onBack = self.onBack {
-                        self.heroBackButton(tone: topLeftTone, hasPhoto: hasPhoto, action: onBack)
-                    } else {
-                        Color.clear
-                            .frame(width: 1, height: 28)
-                    }
-                    
-                    Spacer(minLength: 12)
-                    
-                    HStack(spacing: 8) {
-                        if self.compact {
-                            let badgeGlass = HeroAdaptiveGlassTokens.resolve(
-                                for: topRightTone,
-                                hasPhoto: hasPhoto,
-                                hovered: false,
-                                palette: self.palette
-                            )
-                            Text(displayMood)
-                                .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(badgeGlass.ink)
-                                .padding(.horizontal, 10)
-                                .frame(height: 28)
-                                .background {
-                                    self.adaptiveGlassCapsule(glass: badgeGlass)
-                                }
+                VStack(alignment: .leading, spacing: 0) {
+                    // Top floating adaptive frosted glass controls (real-time synced to topLeft & topRight pixels)
+                    HStack(alignment: .center, spacing: 8) {
+                        if let onBack = self.onBack {
+                            self.heroBackButton(tone: topLeftTone, hasPhoto: hasPhoto, action: onBack)
+                        } else {
+                            Color.clear
+                                .frame(width: 1, height: 28)
                         }
                         
-                        self.danmakuToggleButton(tone: topRightTone, hasPhoto: hasPhoto)
-                        self.coverImageControlPill(tone: topRightTone, hasPhoto: hasPhoto)
-                    }
-                }
-                .padding(.horizontal, padH)
-                .padding(.top, padTop)
-                .frame(height: 28 + padTop, alignment: .top)
-                
-                // Open panoramic showcase zone — unobstructed cover view + real-time background-adaptive floating danmaku
-                ZStack {
-                    if self.isDanmakuEnabled && !self.isAdjustingCover {
-                        GeometryReader { stageGeo in
-                            let danmakuPaused = AnimationConstants.isReducedMotionEnabled
-                                || !self.activityGate.isAppActive
-                                || !self.isWindowVisible
-                            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: danmakuPaused)) { timeline in
-                                let elapsed = max(0, timeline.date.timeIntervalSince(self.startDate))
-                                self.adaptiveDanmakuStage(
-                                    size: stageGeo.size,
-                                    items: self.danmakuItems,
-                                    elapsed: elapsed,
-                                    hasPhoto: hasPhoto
+                        Spacer(minLength: 12)
+                        
+                        HStack(spacing: 8) {
+                            if self.compact {
+                                let badgeGlass = HeroAdaptiveGlassTokens.resolve(
+                                    for: topRightTone,
+                                    hasPhoto: hasPhoto,
+                                    hovered: false,
+                                    palette: self.palette
                                 )
-                            }
-                        }
-                        .clipped()
-                        .transition(.opacity)
-                    }
-                    
-                    if self.isAdjustingCover && hasPhoto {
-                        let hudGlass = HeroAdaptiveGlassTokens.resolve(
-                            for: topRightTone,
-                            hasPhoto: true,
-                            hovered: true,
-                            palette: self.palette
-                        )
-                        HStack(spacing: 10) {
-                            Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
-                                .font(.system(size: 11, weight: .semibold))
-                            Text(AppLanguage.text("上下左右拖动画面调整构图", en: "Drag to adjust framing"))
-                                .font(.system(size: 11.5, weight: .medium))
-                            
-                            Button {
-                                withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                                    self.coverStore.applySmartAutoFocal()
-                                }
-                            } label: {
-                                Text(AppLanguage.text("智能对焦", en: "Auto Focus"))
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .padding(.horizontal, 8)
-                                    .frame(height: 22)
-                                    .background(self.palette.accentFill.opacity(0.22), in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                            
-                            Button {
-                                withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                                    self.isAdjustingCover = false
-                                }
-                            } label: {
-                                Text(AppLanguage.text("完成", en: "Done"))
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(self.palette.tokens.onAccentInk)
+                                Text(displayMood)
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(badgeGlass.ink)
                                     .padding(.horizontal, 10)
-                                    .frame(height: 22)
-                                    .background(self.palette.accentFill, in: Capsule())
+                                    .frame(height: 28)
+                                    .background {
+                                        self.adaptiveGlassCapsule(glass: badgeGlass)
+                                    }
                             }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
+                            
+                            self.danmakuToggleButton(tone: topRightTone, hasPhoto: hasPhoto)
+                            self.coverImageControlPill(tone: topRightTone, hasPhoto: hasPhoto)
                         }
-                        .foregroundStyle(hudGlass.ink)
-                        .padding(.horizontal, 12)
-                        .frame(height: 32)
-                        .background {
-                            self.adaptiveGlassCapsule(glass: hudGlass)
-                        }
-                        .transition(.opacity)
                     }
+                    .padding(.horizontal, padH)
+                    .padding(.top, padTop)
+                    .frame(height: 28 + padTop, alignment: .top)
+                    
+                    // Open panoramic showcase zone — unobstructed cover view + real-time background-adaptive floating danmaku
+                    ZStack {
+                        if self.isDanmakuEnabled && !self.isAdjustingCover {
+                            GeometryReader { stageGeo in
+                                let danmakuPaused = AnimationConstants.isReducedMotionEnabled
+                                    || !self.activityGate.isAppActive
+                                    || !self.isWindowVisible
+                                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: danmakuPaused)) { timeline in
+                                    let elapsed = max(0, timeline.date.timeIntervalSince(self.startDate))
+                                    self.adaptiveDanmakuStage(
+                                        size: stageGeo.size,
+                                        items: self.danmakuItems,
+                                        elapsed: elapsed,
+                                        hasPhoto: hasPhoto
+                                    )
+                                }
+                            }
+                            .clipped()
+                            .transition(.opacity)
+                        }
+                        
+                        if self.isAdjustingCover && hasPhoto {
+                            let hudGlass = HeroAdaptiveGlassTokens.resolve(
+                                for: topRightTone,
+                                hasPhoto: true,
+                                hovered: true,
+                                palette: self.palette
+                            )
+                            HStack(spacing: 10) {
+                                Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(AppLanguage.text("拖动画面调整构图", en: "Drag to adjust framing"))
+                                    .font(.system(size: 11.5, weight: .medium))
+                                
+                                Button {
+                                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                                        self.coverStore.applySmartAutoFocal()
+                                    }
+                                } label: {
+                                    Text(AppLanguage.text("智能对焦", en: "Auto Focus"))
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .padding(.horizontal, 8)
+                                        .frame(height: 22)
+                                        .background(self.palette.accentFill.opacity(0.22), in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .pointerStyle(.link)
+                                
+                                Button {
+                                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                                        self.isAdjustingCover = false
+                                    }
+                                } label: {
+                                    Text(AppLanguage.text("完成", en: "Done"))
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(self.palette.tokens.onAccentInk)
+                                        .padding(.horizontal, 10)
+                                        .frame(height: 22)
+                                        .background(self.palette.accentFill, in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .pointerStyle(.link)
+                            }
+                            .foregroundStyle(hudGlass.ink)
+                            .padding(.horizontal, 12)
+                            .frame(height: 30)
+                            .background {
+                                self.adaptiveGlassCapsule(glass: hudGlass)
+                            }
+                            .transition(.opacity)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.vertical, 2)
+                    
+                    // Editorial identity + telemetry strip resting on a delicate frosted ribbon over the shared backdrop
+                    HStack(alignment: .center, spacing: 0) {
+                        self.identityLockup(streakDays: streakDays)
+                            .frame(width: self.compact ? 182 : 220, alignment: .leading)
+                        
+                        Rectangle()
+                            .fill(self.palette.hairlineStrong)
+                            .frame(width: 1, height: self.compact ? 26 : 30)
+                            .padding(.horizontal, self.compact ? 12 : 20)
+                        
+                        self.telemetryMatrixZone(
+                            todayTotal: todayTotal,
+                            streakDays: streakDays,
+                            avg14: avg14,
+                            displayMood: displayMood
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, hasPhoto ? 14 : 0)
+                    .frame(height: rowHeight)
+                    .background {
+                        if hasPhoto {
+                            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                .fill(.regularMaterial)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                        .fill(self.palette.card.opacity(self.palette.tokens.isDark ? 0.56 : 0.66))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                        .strokeBorder(
+                                            self.palette.tokens.isDark ? Color.white.opacity(0.14) : Color.white.opacity(0.55),
+                                            lineWidth: 0.75
+                                        )
+                                )
+                        }
+                    }
+                    .padding(.horizontal, padH)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.vertical, isShortHero ? 2 : 6)
+                .frame(height: self.heroHeight, alignment: .topLeading)
                 
-                // Bottom editorial identity + telemetry strip resting on smoothly melted card-surface dock (always visible!)
-                HStack(alignment: .center, spacing: 0) {
-                    self.identityLockup(streakDays: streakDays)
-                        .frame(width: self.compact ? 186 : 228, alignment: .leading)
-                    
-                    Rectangle()
-                        .fill(self.palette.hairlineStrong)
-                        .frame(width: 1, height: self.compact ? 28 : 34)
-                        .padding(.horizontal, self.compact ? 14 : 22)
-                    
-                    self.telemetryMatrixZone(
-                        todayTotal: todayTotal,
-                        streakDays: streakDays,
-                        avg14: avg14,
-                        displayMood: displayMood
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(height: rowHeight)
-                .padding(.horizontal, padH)
-                .padding(.bottom, padBottom)
+                self.embeddedRow1()
+                    .padding(.horizontal, padH)
+                    .padding(.top, self.innerGap)
+                    .padding(.bottom, self.bottomPad)
+                    .allowsHitTesting(!self.isAdjustingCover)
             }
             .frame(width: heroGeo.size.width, height: heroGeo.size.height, alignment: .topLeading)
             .background {
@@ -3142,9 +3210,9 @@ private struct DashboardAchievementHeroBar: View {
                     palette: self.palette
                 )
             }
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(
                         self.isDropTargeted ? self.palette.accentFill : (self.isAdjustingCover ? self.palette.accentFill.opacity(0.65) : self.palette.hairline),
                         lineWidth: (self.isDropTargeted || self.isAdjustingCover) ? 1.8 : 0.85
@@ -3862,7 +3930,7 @@ private struct HeroPhotoFadeBackdrop: View {
                         .frame(width: targetW, height: targetH)
                         .clipped()
                     } else {
-                        // Fill Mode: exact 2D overflow computation with strict clamping so edges never show gaps
+                        // Fill Mode: exact 2D overflow computation spanning the unified Row 1 + Row 2 stage
                         let renderedW = safeAspect >= targetAspect ? (targetH * safeAspect) : targetW
                         let renderedH = safeAspect >= targetAspect ? targetH : (targetW / safeAspect)
                         let overflowX = max(0, renderedW - targetW)
@@ -3879,40 +3947,24 @@ private struct HeroPhotoFadeBackdrop: View {
                             .clipped()
                     }
                 }
-                .mask(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .white, location: 0.00),
-                            .init(color: .white, location: 0.68),
-                            .init(color: .white.opacity(0.68), location: 0.80),
-                            .init(color: .white.opacity(0.20), location: 0.91),
-                            .init(color: .clear, location: 0.98),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
                 
-                // Delicate photo-harmonized mist dock strictly across lower telemetry band
+                // Gentle lower veil harmonizing the frosted Row 2 bento cards without cutting off the photo
                 LinearGradient(
                     stops: [
                         .init(color: .clear, location: 0.00),
-                        .init(color: .clear, location: 0.66),
-                        .init(color: cardColor.opacity(0.42), location: 0.78),
-                        .init(color: cardColor.opacity(0.88), location: 0.88),
-                        .init(color: cardColor, location: 0.95),
-                        .init(color: cardColor, location: 1.00),
+                        .init(color: .clear, location: 0.34),
+                        .init(color: cardColor.opacity(isDark ? 0.20 : 0.14), location: 0.62),
+                        .init(color: cardColor.opacity(isDark ? 0.42 : 0.34), location: 1.00),
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
                 
-                // Subtle ambient chromatic wash echoing the cover image's lower tone into the card base
+                // Subtle ambient chromatic wash echoing the cover image's lower tone
                 LinearGradient(
                     stops: [
-                        .init(color: .clear, location: 0.68),
-                        .init(color: ambientTint.opacity(isDark ? 0.10 : 0.06), location: 0.90),
-                        .init(color: ambientTint.opacity(isDark ? 0.06 : 0.03), location: 1.00),
+                        .init(color: .clear, location: 0.42),
+                        .init(color: ambientTint.opacity(isDark ? 0.12 : 0.08), location: 1.00),
                     ],
                     startPoint: .top,
                     endPoint: .bottom
@@ -3960,6 +4012,7 @@ private struct DashboardHeatmapCard: View {
     let availableYears: [Int]
     @Binding var selectedYear: Int
     let compact: Bool
+    var overPhoto: Bool = false
     let palette: DashPalette
     
     @State private var hoveredHit: HeatmapGridLayout.Hit?
@@ -4273,9 +4326,9 @@ private struct DashboardHeatmapCard: View {
                 }
             }
         }
-        .padding(self.compact ? 12 : 16)
+        .padding(self.compact ? 11 : 13)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 15, overPhoto: self.overPhoto)
         .onAppear {
             guard self.waveReveal < 1.0 else { return }
             withAnimation(DashMotion.resolve(DashMotion.chartReveal.delay(0.10))) {
@@ -4684,6 +4737,7 @@ struct HeatmapGridLayout: Equatable {
 private struct DashboardAIUsageWideCard: View {
     
     let snapshot: DashboardSnapshot
+    var overPhoto: Bool = false
     let palette: DashPalette
     let onTap: () -> Void
     
@@ -4785,13 +4839,13 @@ private struct DashboardAIUsageWideCard: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
                 .frame(width: cardGeo.size.width, height: cardGeo.size.height, alignment: .center)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: self.isHovered)
-            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .dashboardCardSurface(palette: self.palette, cornerRadius: 15, isHighlighted: self.isHovered, overPhoto: self.overPhoto)
+            .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
         .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.992))
         .pointerStyle(.link)
@@ -4823,6 +4877,7 @@ private struct DashboardCompactQuadCard: View {
     
     let metric: DashboardQuadMetric
     let snapshot: DashboardSnapshot
+    var overPhoto: Bool = false
     let palette: DashPalette
     let onTap: () -> Void
     
@@ -4861,10 +4916,10 @@ private struct DashboardCompactQuadCard: View {
                 self.miniVisualization
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(13)
+            .padding(11)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: self.isHovered)
-            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .dashboardCardSurface(palette: self.palette, cornerRadius: 15, isHighlighted: self.isHovered, overPhoto: self.overPhoto)
+            .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
         .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.992))
         .pointerStyle(.link)
@@ -4937,6 +4992,7 @@ private struct DashboardExpandedQuadCard: View {
     
     let metric: DashboardQuadMetric
     let snapshot: DashboardSnapshot
+    var overPhoto: Bool = false
     let palette: DashPalette
     let onClose: () -> Void
     
@@ -4994,9 +5050,9 @@ private struct DashboardExpandedQuadCard: View {
             self.detailedVisualization
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(16)
+        .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: false)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 15, isHighlighted: false, overPhoto: self.overPhoto)
         .onChange(of: self.metric) { _, _ in
             self.hoverDetail = nil
         }
@@ -6443,12 +6499,19 @@ private extension View {
         palette: DashPalette,
         cornerRadius: CGFloat = 16,
         isHighlighted: Bool = false,
-        showsShadow: Bool = true
+        showsShadow: Bool = true,
+        overPhoto: Bool = false
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        let strokeColor = isHighlighted ? palette.tokens.hairlineStrong : palette.hairline
+        let strokeColor: Color = if overPhoto {
+            palette.tokens.isDark
+                ? Color.white.opacity(isHighlighted ? 0.24 : 0.14)
+                : Color.white.opacity(isHighlighted ? 0.78 : 0.56)
+        } else {
+            isHighlighted ? palette.tokens.hairlineStrong : palette.hairline
+        }
         let tintColor = palette.tokens.isDark
-            ? Color.white.opacity(isHighlighted ? 0.025 : 0)
+            ? Color.white.opacity(isHighlighted ? 0.03 : 0)
             : Color.black.opacity(isHighlighted ? 0.015 : 0)
         let shadowColor = showsShadow
             ? (isHighlighted
@@ -6458,14 +6521,21 @@ private extension View {
         return self
             .background(
                 ZStack {
-                    shape
-                        .fill(palette.card)
-                        .shadow(
-                            color: shadowColor,
-                            radius: showsShadow ? (isHighlighted ? 9 : 6) : 0,
-                            x: 0,
-                            y: showsShadow ? (isHighlighted ? 3 : 2) : 0
-                        )
+                    if overPhoto {
+                        shape
+                            .fill(.regularMaterial)
+                        shape
+                            .fill(palette.card.opacity(palette.tokens.isDark ? 0.74 : 0.78))
+                    } else {
+                        shape
+                            .fill(palette.card)
+                            .shadow(
+                                color: shadowColor,
+                                radius: showsShadow ? (isHighlighted ? 9 : 6) : 0,
+                                x: 0,
+                                y: showsShadow ? (isHighlighted ? 3 : 2) : 0
+                            )
+                    }
                     shape.fill(tintColor)
                 }
             )

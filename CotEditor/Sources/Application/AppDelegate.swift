@@ -207,6 +207,8 @@ extension Logger {
         NSTouchBar.isAutomaticCustomizeTouchBarMenuItemEnabled = true
         AnalyticsManager.shared.startBackgroundDigestScheduler()
         ScheduledAIDocumentOrganizer.shared.startScheduler()
+        ProactiveMenuBarTipController.shared.setupStatusItemIfNeeded()
+        ProactiveDailyJournalService.shared.startBackgroundScheduler()
         AppIconManager.shared.applySavedAppIconOnLaunch()
         
         #if DEBUG

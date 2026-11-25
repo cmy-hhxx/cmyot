@@ -619,11 +619,12 @@ struct Round35AIBackendAndDashboardHeroTests {
         )
         #expect(laptop.needsVerticalScroll == false)
         #expect(laptop.totalContentHeight <= 700)
-        #expect(laptop.heroHeight >= 142 && laptop.heroHeight <= 204)
-        #expect(laptop.row1Height >= 226)
-        #expect(laptop.row2Height >= 216)
+        #expect(laptop.heroHeight >= 122 && laptop.heroHeight <= 158)
+        #expect(laptop.row1Height >= 208)
+        #expect(laptop.row2Height >= 210)
+        #expect(laptop.unifiedTopStageHeight >= 340)
         
-        // Large display (1440x960) -> single page, capped heights so cards keep balanced proportions
+        // Large display (1440x960) -> single page, capped compact heights so cards keep balanced proportions
         let desktop = DashboardViewportLayout.resolve(
             viewportSize: CGSize(width: 1440, height: 960),
             isEmbeddedInSettings: false,
@@ -631,9 +632,9 @@ struct Round35AIBackendAndDashboardHeroTests {
         )
         #expect(desktop.needsVerticalScroll == false)
         #expect(desktop.totalContentHeight <= 960)
-        #expect(desktop.heroHeight <= 204)
-        #expect(desktop.row1Height <= 292)
-        #expect(desktop.row2Height <= 326)
+        #expect(desktop.heroHeight <= 158)
+        #expect(desktop.row1Height <= 264)
+        #expect(desktop.row2Height <= 308)
         
         // Embedded Settings pane (980x620) -> single page, zero vertical scroll
         let settings = DashboardViewportLayout.resolve(

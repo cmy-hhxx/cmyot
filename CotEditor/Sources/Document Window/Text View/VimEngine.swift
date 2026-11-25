@@ -1008,8 +1008,9 @@ final class VimEngine {
     private func move(_ motion: Motion) {
         
         guard let textView else { return }
+        let explicitCount = self.count
         let count: Int
-        if let explicitCount = self.count {
+        if let explicitCount {
             self.count = nil
             self.countUpdatedTimestamp = 0
             count = max(1, explicitCount)
@@ -1019,6 +1020,8 @@ final class VimEngine {
         }
         let string = textView.string as NSString
         var location = self.currentCursorLocation()
+        var isLargeJump = false
+        var snapToDocumentEnd = false
         
         switch motion {
             case .left:
@@ -1128,18 +1131,29 @@ final class VimEngine {
                 for _ in 0..<count { location = self.paragraphLocation(from: location, forward: true, string: string) }
             case .documentStart:
                 self.resetPreferredColumn()
-                location = count > 1 ? self.lineLocation(number: count) : 0
+                isLargeJump = true
+                if let explicitCount {
+                    location = self.lineLocation(number: max(1, explicitCount))
+                } else {
+                    location = 0
+                }
             case .documentEnd:
                 self.resetPreferredColumn()
-                if count > 1 {
-                    location = self.lineLocation(number: count)
+                isLargeJump = true
+                if let explicitCount {
+                    location = self.lineLocation(number: max(1, explicitCount))
                 } else {
+                    snapToDocumentEnd = true
                     let range = self.lineRange(at: max(0, string.length - 1))
                     location = self.firstNonBlank(in: range, string: string)
                 }
         }
         
-        self.moveCursorOrExtendVisual(to: location)
+        self.moveCursorOrExtendVisual(
+            to: location,
+            isLargeJump: isLargeJump,
+            snapToDocumentEnd: snapToDocumentEnd
+        )
         self.count = nil
         self.countUpdatedTimestamp = 0
     }
@@ -2678,15 +2692,96 @@ final class VimEngine {
     }
     
     
+    private func ensureLayoutForJump(
+        to clamped: Int,
+        documentLength: Int,
+        snapToDocumentEnd: Bool,
+        in textView: NSTextView
+    ) {
+        guard let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer
+        else { return }
+        
+        if snapToDocumentEnd {
+            // Non-contiguous layout leaves textView.frame.height estimated until glyphs are laid out;
+            // force layout through the end so NSClipView does not clamp the scroll origin above the bottom.
+            if documentLength > 0, documentLength <= 400_000 {
+                layoutManager.ensureLayout(forCharacterRange: NSRange(location: 0, length: documentLength))
+            } else if documentLength > 0 {
+                let tailStart = max(0, documentLength - 16_384)
+                layoutManager.ensureLayout(forCharacterRange: NSRange(location: tailStart, length: documentLength - tailStart))
+            }
+            layoutManager.ensureLayout(for: textContainer)
+        } else if documentLength > 0 {
+            let range = NSRange(location: 0, length: min(documentLength, clamped + 1))
+            layoutManager.ensureLayout(forCharacterRange: range)
+        }
+        
+        if textView.isVerticallyResizable {
+            let usedRect = layoutManager.usedRect(for: textContainer)
+            let extraRect = layoutManager.extraLineFragmentRect
+            let contentMaxY = max(usedRect.maxY, extraRect.maxY) + textView.textContainerOrigin.y + textView.textContainerInset.height
+            if contentMaxY > textView.frame.height {
+                textView.setFrameSize(NSSize(width: textView.frame.width, height: ceil(contentMaxY)))
+            }
+        }
+        textView.enclosingScrollView?.layoutSubtreeIfNeeded()
+    }
+    
+    
     private func scrollLocationToVisible(
         _ location: Int,
         cursorRect precomputedRect: NSRect? = nil,
         in textView: NSTextView,
-        isContinuous: Bool = false
+        isContinuous: Bool = false,
+        isLargeJump: Bool = false,
+        snapToDocumentEnd: Bool = false
     ) {
         let length = (textView.string as NSString).length
         let clamped = max(0, min(location, length))
         let targetRange = NSRange(location: clamped, length: 0)
+        
+        if isLargeJump || snapToDocumentEnd {
+            self.ensureLayoutForJump(
+                to: clamped,
+                documentLength: length,
+                snapToDocumentEnd: snapToDocumentEnd,
+                in: textView
+            )
+            if let editorTextView = textView as? EditorTextView {
+                editorTextView.funEffects.cancelSmoothScroll()
+            }
+            textView.scrollRangeToVisible(snapToDocumentEnd ? NSRange(location: length, length: 0) : targetRange)
+            
+            if let scrollView = textView.enclosingScrollView {
+                let visible = textView.visibleRect
+                if visible.height > 0 {
+                    let maxOriginY = max(0, textView.bounds.height - visible.height)
+                    let marginY = min(44, visible.height * 0.14)
+                    if let finalRect = (textView as? EditorTextView)?.vimCursorRect(at: clamped) {
+                        let desiredY: CGFloat
+                        if snapToDocumentEnd {
+                            desiredY = min(maxOriginY, max(0, finalRect.maxY + marginY - visible.height))
+                        } else if finalRect.maxY > visible.maxY - marginY {
+                            desiredY = min(maxOriginY, max(0, finalRect.maxY + marginY - visible.height))
+                        } else if finalRect.minY < visible.minY + marginY {
+                            desiredY = min(maxOriginY, max(0, finalRect.minY - marginY))
+                        } else {
+                            desiredY = visible.minY
+                        }
+                        let desiredX: CGFloat = (finalRect.minX < visible.minX || finalRect.maxX > visible.maxX)
+                            ? max(0, finalRect.minX - 8)
+                            : (snapToDocumentEnd ? 0 : visible.minX)
+                        textView.scroll(NSPoint(x: desiredX, y: desiredY))
+                        scrollView.reflectScrolledClipView(scrollView.contentView)
+                    } else if snapToDocumentEnd {
+                        textView.scroll(NSPoint(x: 0, y: maxOriginY))
+                        scrollView.reflectScrolledClipView(scrollView.contentView)
+                    }
+                }
+            }
+            return
+        }
         
         if let editorTextView = textView as? EditorTextView {
             let visible = editorTextView.visibleRect
@@ -2703,6 +2798,14 @@ final class VimEngine {
                 let comfortableBottom = effectiveMaxY - marginY
                 
                 if probeRect.maxY > comfortableBottom {
+                    if probeRect.maxY + marginY > editorTextView.bounds.height {
+                        self.ensureLayoutForJump(
+                            to: clamped,
+                            documentLength: length,
+                            snapToDocumentEnd: false,
+                            in: editorTextView
+                        )
+                    }
                     let desiredY = probeRect.maxY + marginY - visible.height
                     editorTextView.funEffects.smoothScrollViewport(
                         to: desiredY,
@@ -2732,7 +2835,12 @@ final class VimEngine {
     }
     
     
-    private func updateVisualSelection(to location: Int, animated: Bool = true) {
+    private func updateVisualSelection(
+        to location: Int,
+        animated: Bool = true,
+        isLargeJump: Bool = false,
+        snapToDocumentEnd: Bool = false
+    ) {
         
         guard let textView, let anchor = self.visualAnchor else { return }
         let string = textView.string as NSString
@@ -2766,14 +2874,23 @@ final class VimEngine {
         editorTextView?.syncNativeCaretVisibility()
         
         textView.setSelectedRange(selectionRange)
-        let newRect = editorTextView?.vimCursorRect(at: clamped)
-        self.scrollLocationToVisible(clamped, cursorRect: newRect, in: textView, isContinuous: self.lastMoveWasContinuous)
+        let preRect = (isLargeJump || snapToDocumentEnd) ? nil : editorTextView?.vimCursorRect(at: clamped)
+        self.scrollLocationToVisible(
+            clamped,
+            cursorRect: preRect,
+            in: textView,
+            isContinuous: self.lastMoveWasContinuous,
+            isLargeJump: isLargeJump,
+            snapToDocumentEnd: snapToDocumentEnd
+        )
+        let newRect = (isLargeJump || snapToDocumentEnd) ? editorTextView?.vimCursorRect(at: clamped) : preRect
+        let shouldAnimateCursor = animated && !isLargeJump && !snapToDocumentEnd
         
         if let editorTextView {
             if editorTextView.funEffects.ownsVimCursorDrawing,
                let newRect
             {
-                if animated {
+                if shouldAnimateCursor {
                     editorTextView.funEffects.animateVimCursorTransition(
                         from: oldRect,
                         to: newRect,
@@ -2792,7 +2909,7 @@ final class VimEngine {
                     anchorLocation: clampedAnchor,
                     activeLocation: clamped,
                     isLinewise: self.visualLinewise,
-                    animated: animated,
+                    animated: shouldAnimateCursor,
                     isContinuous: self.lastMoveWasContinuous
                 )
             } else {
@@ -2804,21 +2921,29 @@ final class VimEngine {
     }
     
     
-    private func moveCursorOrExtendVisual(to location: Int) {
+    private func moveCursorOrExtendVisual(
+        to location: Int,
+        isLargeJump: Bool = false,
+        snapToDocumentEnd: Bool = false
+    ) {
         
         guard let textView else { return }
         if VimState.shared.mode == .visual,
            self.visualAnchor != nil,
            VimState.shared.visualOwnerID == ObjectIdentifier(textView)
         {
-            self.updateVisualSelection(to: location)
+            self.updateVisualSelection(to: location, isLargeJump: isLargeJump, snapToDocumentEnd: snapToDocumentEnd)
         } else {
-            self.setCursor(location)
+            self.setCursor(location, isLargeJump: isLargeJump, snapToDocumentEnd: snapToDocumentEnd)
         }
     }
     
     
-    private func setCursor(_ location: Int) {
+    private func setCursor(
+        _ location: Int,
+        isLargeJump: Bool = false,
+        snapToDocumentEnd: Bool = false
+    ) {
         
         guard let textView else { return }
         let oldLocation = textView.selectedRange().location
@@ -2833,20 +2958,36 @@ final class VimEngine {
         
         textView.setSelectedRange(targetRange)
         let settled = textView.selectedRange().location
-        let newRect = editorTextView?.vimCursorRect(at: settled)
-        self.scrollLocationToVisible(settled, cursorRect: newRect, in: textView, isContinuous: self.lastMoveWasContinuous)
+        let preRect = (isLargeJump || snapToDocumentEnd) ? nil : editorTextView?.vimCursorRect(at: settled)
+        self.scrollLocationToVisible(
+            settled,
+            cursorRect: preRect,
+            in: textView,
+            isContinuous: self.lastMoveWasContinuous,
+            isLargeJump: isLargeJump,
+            snapToDocumentEnd: snapToDocumentEnd
+        )
+        let newRect = (isLargeJump || snapToDocumentEnd) ? editorTextView?.vimCursorRect(at: settled) : preRect
         
         if let editorTextView,
            editorTextView.funEffects.ownsVimCursorDrawing,
            let newRect
         {
             editorTextView.syncNativeCaretVisibility()
-            editorTextView.funEffects.animateVimCursorTransition(
-                from: oldRect,
-                to: newRect,
-                color: editorTextView.effectiveCursorColor,
-                isContinuous: self.lastMoveWasContinuous
-            )
+            if isLargeJump || snapToDocumentEnd {
+                editorTextView.funEffects.moveVimCursor(
+                    to: newRect,
+                    color: editorTextView.effectiveCursorColor,
+                    animated: false
+                )
+            } else {
+                editorTextView.funEffects.animateVimCursorTransition(
+                    from: oldRect,
+                    to: newRect,
+                    color: editorTextView.effectiveCursorColor,
+                    isContinuous: self.lastMoveWasContinuous
+                )
+            }
         }
     }
     

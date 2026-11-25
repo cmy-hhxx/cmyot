@@ -1064,52 +1064,6 @@ export default function App() {
                   onAbort={() => postToNative("abort")}
                 />
               </div>
-
-              {!isNews && state.proactiveCards && state.proactiveCards.length > 0 && (
-                <div
-                  className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-3"
-                  style={homeRevealStyle(revealStage >= 3)}
-                >
-                  {state.proactiveCards.map((card) => (
-                    <div
-                      key={card.id}
-                      onClick={() => handleSend(card.prompt)}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          handleSend(card.prompt);
-                        }
-                      }}
-                      className="group relative flex cursor-pointer flex-col justify-between rounded-[11px] border border-line bg-surface/80 p-3 text-left transition-all duration-150 hover:border-line-strong hover:bg-hover"
-                    >
-                      <div className="mb-1.5 flex items-center justify-between gap-2">
-                        <span className="rounded-full bg-accent-tint px-2 py-0.5 text-[10.5px] font-semibold text-accent-ink">
-                          {card.badge}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            postToNative("dismissProactiveCard", { id: card.id });
-                          }}
-                          className="rounded p-0.5 text-[12px] leading-none text-ink-3 opacity-0 transition-opacity group-hover:opacity-100 hover:text-ink"
-                          aria-label="Dismiss card"
-                        >
-                          ×
-                        </button>
-                      </div>
-                      <div className="line-clamp-2 text-[12.5px] font-semibold leading-snug text-ink">
-                        {card.title}
-                      </div>
-                      <div className="mt-1 line-clamp-1 text-[11px] text-ink-3">
-                        {card.subtitle}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           </div>
         ) : (

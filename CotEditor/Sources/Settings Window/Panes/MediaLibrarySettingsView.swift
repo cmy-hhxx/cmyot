@@ -182,7 +182,6 @@ struct MediaLibrarySettingsView: View {
     @State private var isDropTargeted = false
     @State private var hoveredAssetID: String?
     @State private var statusBanner: String?
-    @State private var searchQuery = ""
     @State private var editingAsset: UserMediaAsset?
     @State private var isBoardsExpanded = false
     
@@ -194,6 +193,10 @@ struct MediaLibrarySettingsView: View {
         self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.08)
     }
     
+    private var cardHoverBorder: Color {
+        self.colorScheme == .dark ? Color.white.opacity(0.20) : Color.black.opacity(0.18)
+    }
+    
     
     var body: some View {
         let _ = self.library.revision
@@ -201,14 +204,13 @@ struct MediaLibrarySettingsView: View {
         
         VStack(spacing: 0) {
             self.headerControls
-                .padding(.horizontal, 24)
-                .padding(.top, 14)
-                .padding(.bottom, 12)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
             
             Divider()
             
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 14) {
                     if let statusBanner = self.statusBanner {
                         HStack(spacing: 8) {
                             Image(systemName: "checkmark.circle.fill")
@@ -234,7 +236,7 @@ struct MediaLibrarySettingsView: View {
                         .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(Color.accentColor.opacity(0.28), lineWidth: 0.8)
+                                .strokeBorder(Color.accentColor.opacity(0.26), lineWidth: 0.8)
                         )
                         .transition(.opacity.combined(with: .move(edge: .top)))
                     }
@@ -247,7 +249,7 @@ struct MediaLibrarySettingsView: View {
                             self.backgroundLibrarySection
                     }
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 20)
                 .padding(.vertical, 16)
             }
         }
@@ -257,14 +259,12 @@ struct MediaLibrarySettingsView: View {
                     .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [7, 4]))
                     .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay {
-                        VStack(spacing: 6) {
-                            Text(AppLanguage.text(
-                                "松手导入到\(self.activeTab == .avatar ? "头像库" : "背景库")",
-                                en: "Drop to Import"
-                            ))
-                            .font(.system(size: 12.5, weight: .semibold))
-                            .foregroundStyle(.primary)
-                        }
+                        Text(AppLanguage.text(
+                            "松手导入到\(self.activeTab == .avatar ? "头像库" : "背景库")",
+                            en: "Drop to Import"
+                        ))
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(.primary)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -283,28 +283,15 @@ struct MediaLibrarySettingsView: View {
                 onDismiss: { self.editingAsset = nil },
                 onSaved: { updated in
                     self.editingAsset = nil
-                    self.showStatus("✓ 已更新「\(updated.title)」")
+                    self.showStatus(AppLanguage.text("已更新「\(updated.title)」", en: "Updated \"\(updated.title)\""))
                 }
             )
         }
     }
     
     
-    private var filteredAvatars: [UserMediaAsset] {
-        let q = self.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return self.library.avatars }
-        return self.library.avatars.filter { $0.title.lowercased().contains(q) }
-    }
-    
-    private var filteredBackgrounds: [UserMediaAsset] {
-        let q = self.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return self.library.backgrounds }
-        return self.library.backgrounds.filter { $0.title.lowercased().contains(q) }
-    }
-    
-    
     private var headerControls: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Picker("", selection: self.$activeTab) {
                 Text(AppLanguage.text("头像 (\(self.library.avatars.count))", en: "Avatars (\(self.library.avatars.count))"))
                     .monospacedDigit()
@@ -315,39 +302,16 @@ struct MediaLibrarySettingsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 196)
+            .frame(width: 216)
             
-            HStack(spacing: 5) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                TextField(AppLanguage.text("搜索", en: "Search"), text: self.$searchQuery)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                if !self.searchQuery.isEmpty {
-                    Button {
-                        self.searchQuery = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 26)
-            .frame(minWidth: 100, maxWidth: 146)
-            .background(Color.primary.opacity(self.colorScheme == .dark ? 0.07 : 0.05), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            
-            Spacer(minLength: 4)
+            Spacer(minLength: 8)
             
             Button {
                 UserMediaLibraryImporter.presentFolderPicker(preferredKind: self.activeTab) { result in
                     self.handleImportCompleted(result)
                 }
             } label: {
-                Image(systemName: "folder.badge.plus")
+                Label(AppLanguage.text("文件夹", en: "Folder"), systemImage: "folder.badge.plus")
             }
             .controlSize(.small)
             .help(AppLanguage.text("导入文件夹", en: "Import Folder"))
@@ -369,21 +333,14 @@ struct MediaLibrarySettingsView: View {
     
     @ViewBuilder
     private var avatarLibrarySection: some View {
-        let avatars = self.filteredAvatars
         if self.library.avatars.isEmpty {
             self.emptyLibraryCard(title: AppLanguage.text("暂无头像", en: "No Avatars"))
-        } else if avatars.isEmpty {
-            Text(AppLanguage.text("无匹配头像", en: "No matching avatars"))
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 36)
         } else {
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 116, maximum: 142), spacing: 10)],
-                spacing: 10
+                columns: [GridItem(.adaptive(minimum: 126, maximum: 152), spacing: 12)],
+                spacing: 12
             ) {
-                ForEach(avatars) { asset in
+                ForEach(self.library.avatars) { asset in
                     self.avatarCard(asset)
                 }
             }
@@ -395,7 +352,7 @@ struct MediaLibrarySettingsView: View {
         let isHovered = (self.hoveredAssetID == asset.id)
         let thumb = self.library.thumbnailImage(for: asset, maxPixelSize: 280)
         
-        return VStack(spacing: 8) {
+        return VStack(spacing: 10) {
             ZStack(alignment: .topTrailing) {
                 Button {
                     self.editingAsset = asset
@@ -413,7 +370,7 @@ struct MediaLibrarySettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .frame(width: 76, height: 76)
+                        .frame(width: 80, height: 80)
                         .clipShape(Circle())
                         .overlay(
                             Circle()
@@ -427,7 +384,7 @@ struct MediaLibrarySettingsView: View {
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 2)
                                 .background(Color.black.opacity(0.62), in: Capsule())
-                                .padding(.bottom, 4)
+                                .padding(.bottom, 5)
                         }
                     }
                 }
@@ -442,30 +399,30 @@ struct MediaLibrarySettingsView: View {
                         }
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundStyle(.white, Color.black.opacity(0.65))
+                            .font(.system(size: 15))
+                            .foregroundStyle(.white, Color.black.opacity(0.62))
                     }
                     .buttonStyle(.plain)
                     .help(AppLanguage.text("移除", en: "Delete"))
                     .offset(x: 4, y: -2)
                 }
             }
-            .padding(.top, 4)
+            .padding(.top, 2)
             
             Text(asset.title)
-                .font(.system(size: 11.5, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .lineLimit(1)
                 .foregroundStyle(.primary)
             
-            HStack(spacing: 5) {
+            HStack(spacing: 6) {
                 Button {
                     self.editingAsset = asset
                 } label: {
                     Image(systemName: "crop")
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 22)
-                        .background(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.06), in: Capsule())
+                        .frame(width: 26, height: 24)
+                        .background(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.055), in: Capsule())
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
@@ -475,7 +432,7 @@ struct MediaLibrarySettingsView: View {
                     ForEach(AIBotID.allCases) { botID in
                         Button {
                             if self.library.applyAvatar(assetID: asset.id, to: botID) {
-                                self.showStatus("✓ 已设为 \(botID.displayName) 头像")
+                                self.showStatus(AppLanguage.text("已设为 \(botID.displayName) 头像", en: "Set as \(botID.displayName) Avatar"))
                             }
                         } label: {
                             Text(AppLanguage.text("设为 \(botID.displayName)", en: "Use for \(botID.displayName)"))
@@ -484,7 +441,7 @@ struct MediaLibrarySettingsView: View {
                     Divider()
                     Button {
                         if self.library.applyAvatarToActiveUser(assetID: asset.id) {
-                            self.showStatus("✓ 已设为当前账户头像")
+                            self.showStatus(AppLanguage.text("已设为当前账户头像", en: "Set as Account Avatar"))
                         }
                     } label: {
                         Text(AppLanguage.text("设为账户头像", en: "Use for User"))
@@ -493,22 +450,21 @@ struct MediaLibrarySettingsView: View {
                     Text(AppLanguage.text("使用 ▾", en: "Use ▾"))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color.accentColor)
-                        .padding(.horizontal, 9)
-                        .frame(height: 22)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 24)
                         .background(Color.accentColor.opacity(0.11), in: Capsule())
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .fixedSize()
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity)
-        .background(self.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(self.cardBackground, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(self.cardBorder, lineWidth: 0.75)
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(isHovered ? self.cardHoverBorder : self.cardBorder, lineWidth: 0.8)
         )
         .onHover { inside in
             self.hoveredAssetID = inside ? asset.id : (self.hoveredAssetID == asset.id ? nil : self.hoveredAssetID)
@@ -519,7 +475,10 @@ struct MediaLibrarySettingsView: View {
     // MARK: - Board Background Summary & Backgrounds Grid
     
     private var boardAssignmentsCard: some View {
-        let activeCount = BoardBackgroundSlot.allCases.filter { self.library.boardAssignment(for: $0) != nil }.count
+        let activeSlots = BoardBackgroundSlot.allCases.compactMap { slot -> (BoardBackgroundSlot, UserMediaAsset)? in
+            guard let asset = self.library.boardBackgroundAsset(for: slot) else { return nil }
+            return (slot, asset)
+        }
         
         return VStack(spacing: 0) {
             Button {
@@ -528,25 +487,47 @@ struct MediaLibrarySettingsView: View {
                 }
             } label: {
                 HStack(spacing: 8) {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    
                     Text(AppLanguage.text("看板背景", en: "Board Backgrounds"))
                         .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(.primary)
                     
-                    Text("\(activeCount)/\(BoardBackgroundSlot.allCases.count)")
+                    Text("\(activeSlots.count)/\(BoardBackgroundSlot.allCases.count)")
                         .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1.5)
                         .background(Color.primary.opacity(0.06), in: Capsule())
                     
-                    Spacer()
+                    Spacer(minLength: 8)
+                    
+                    if !self.isBoardsExpanded, !activeSlots.isEmpty {
+                        HStack(spacing: 4) {
+                            ForEach(activeSlots.prefix(4), id: \.0.id) { _, asset in
+                                if let thumb = self.library.thumbnailImage(for: asset, maxPixelSize: 80) {
+                                    Image(nsImage: thumb)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 24, height: 15)
+                                        .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                                                .strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5)
+                                        )
+                                }
+                            }
+                        }
+                    }
                     
                     Image(systemName: self.isBoardsExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 12)
-                .frame(height: 36)
+                .padding(.horizontal, 14)
+                .frame(height: 38)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -557,17 +538,17 @@ struct MediaLibrarySettingsView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(BoardBackgroundSlot.allCases.enumerated()), id: \.element.id) { idx, slot in
                         if idx > 0 {
-                            Divider().padding(.leading, 12)
+                            Divider().padding(.leading, 14)
                         }
                         self.boardSlotRow(slot)
                     }
                 }
             }
         }
-        .background(self.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(self.cardBackground, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(self.cardBorder, lineWidth: 0.75)
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(self.cardBorder, lineWidth: 0.8)
         )
     }
     
@@ -585,7 +566,7 @@ struct MediaLibrarySettingsView: View {
             
             Text(slot.title)
                 .font(.system(size: 12.5, weight: .medium))
-                .frame(width: 96, alignment: .leading)
+                .frame(width: 90, alignment: .leading)
             
             if let asset, let assignment {
                 HStack(spacing: 6) {
@@ -593,7 +574,7 @@ struct MediaLibrarySettingsView: View {
                         Image(nsImage: thumb)
                             .resizable()
                             .scaledToFill()
-                            .frame(width: 30, height: 20)
+                            .frame(width: 30, height: 19)
                             .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                     }
                     Text(asset.title)
@@ -602,9 +583,9 @@ struct MediaLibrarySettingsView: View {
                         .lineLimit(1)
                 }
                 
-                Spacer(minLength: 4)
+                Spacer(minLength: 6)
                 
-                HStack(spacing: 4) {
+                HStack(spacing: 5) {
                     Text(AppLanguage.text("浓度", en: "Opacity"))
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
@@ -615,7 +596,7 @@ struct MediaLibrarySettingsView: View {
                         ),
                         in: 0.06...0.55
                     )
-                    .frame(width: 64)
+                    .frame(width: 66)
                     
                     Text(AppLanguage.text("模糊", en: "Blur"))
                         .font(.system(size: 10.5))
@@ -627,7 +608,7 @@ struct MediaLibrarySettingsView: View {
                         ),
                         in: 0...28
                     )
-                    .frame(width: 58)
+                    .frame(width: 60)
                 }
                 
                 Button {
@@ -648,28 +629,21 @@ struct MediaLibrarySettingsView: View {
                 Spacer()
             }
         }
-        .padding(.horizontal, 12)
-        .frame(minHeight: 38)
+        .padding(.horizontal, 14)
+        .frame(minHeight: 40)
     }
     
     
     @ViewBuilder
     private var backgroundLibrarySection: some View {
-        let backgrounds = self.filteredBackgrounds
         if self.library.backgrounds.isEmpty {
             self.emptyLibraryCard(title: AppLanguage.text("暂无背景", en: "No Backgrounds"))
-        } else if backgrounds.isEmpty {
-            Text(AppLanguage.text("无匹配背景", en: "No matching backgrounds"))
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 36)
         } else {
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 162, maximum: 210), spacing: 10)],
-                spacing: 10
+                columns: [GridItem(.adaptive(minimum: 186, maximum: 244), spacing: 12)],
+                spacing: 12
             ) {
-                ForEach(backgrounds) { asset in
+                ForEach(self.library.backgrounds) { asset in
                     self.backgroundCard(asset)
                 }
             }
@@ -679,12 +653,12 @@ struct MediaLibrarySettingsView: View {
     
     private func backgroundCard(_ asset: UserMediaAsset) -> some View {
         let isHovered = (self.hoveredAssetID == asset.id)
-        let thumb = self.library.thumbnailImage(for: asset, maxPixelSize: 420)
+        let thumb = self.library.thumbnailImage(for: asset, maxPixelSize: 480)
         let isWallpaper = self.wallpaperManager.spec.isEnabled
             && self.wallpaperManager.spec.selectedID == WallpaperManager.mediaLibraryWallpaperID(for: asset.id)
         let assignedBoards = self.library.assignedBoardSlots(forBackgroundID: asset.id)
         
-        return VStack(alignment: .leading, spacing: 7) {
+        return VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topTrailing) {
                 Button {
                     self.editingAsset = asset
@@ -701,31 +675,31 @@ struct MediaLibrarySettingsView: View {
                                     .fill(Color.primary.opacity(0.08))
                             }
                         }
-                        .frame(height: 102)
+                        .frame(height: 118)
                         .frame(maxWidth: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                         
                         if isHovered {
-                            Text(AppLanguage.text("裁切编辑", en: "Crop"))
+                            Text(AppLanguage.text("编辑构图", en: "Edit"))
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
                                 .background(Color.black.opacity(0.62), in: Capsule())
-                                .padding(6)
+                                .padding(7)
                         }
                     }
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
                 .overlay(alignment: .topLeading) {
-                    if isWallpaper || !assignedBoards.isEmpty || asset.editSpec != nil {
+                    if isWallpaper || !assignedBoards.isEmpty {
                         HStack(spacing: 4) {
                             if isWallpaper {
                                 Text(AppLanguage.text("壁纸", en: "Wallpaper"))
                                     .font(.system(size: 9.5, weight: .semibold))
                                     .foregroundStyle(.white)
-                                    .padding(.horizontal, 6)
+                                    .padding(.horizontal, 6.5)
                                     .padding(.vertical, 2)
                                     .background(Color.accentColor, in: Capsule())
                             }
@@ -733,7 +707,7 @@ struct MediaLibrarySettingsView: View {
                                 Text(slot.shortTitle)
                                     .font(.system(size: 9.5, weight: .semibold))
                                     .foregroundStyle(.white)
-                                    .padding(.horizontal, 6)
+                                    .padding(.horizontal, 6.5)
                                     .padding(.vertical, 2)
                                     .background(Color.black.opacity(0.58), in: Capsule())
                             }
@@ -741,12 +715,12 @@ struct MediaLibrarySettingsView: View {
                                 Text("+\(assignedBoards.count - 2)")
                                     .font(.system(size: 9.5, weight: .semibold).monospacedDigit())
                                     .foregroundStyle(.white)
-                                    .padding(.horizontal, 5)
+                                    .padding(.horizontal, 5.5)
                                     .padding(.vertical, 2)
                                     .background(Color.black.opacity(0.58), in: Capsule())
                             }
                         }
-                        .padding(6)
+                        .padding(7)
                         .allowsHitTesting(false)
                     }
                 }
@@ -758,19 +732,19 @@ struct MediaLibrarySettingsView: View {
                         }
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundStyle(.white, Color.black.opacity(0.65))
+                            .font(.system(size: 15))
+                            .foregroundStyle(.white, Color.black.opacity(0.62))
                     }
                     .buttonStyle(.plain)
-                    .padding(5)
+                    .padding(6)
                     .help(AppLanguage.text("移除", en: "Delete"))
                 }
             }
             
-            HStack(spacing: 5) {
-                VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: 1.5) {
                     Text(asset.title)
-                        .font(.system(size: 11.5, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                         .lineLimit(1)
                     if asset.pixelWidth > 0, asset.pixelHeight > 0 {
                         Text("\(asset.pixelWidth)×\(asset.pixelHeight)")
@@ -787,8 +761,8 @@ struct MediaLibrarySettingsView: View {
                     Image(systemName: "crop")
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 22)
-                        .background(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.06), in: Capsule())
+                        .frame(width: 26, height: 24)
+                        .background(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.055), in: Capsule())
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
@@ -797,7 +771,7 @@ struct MediaLibrarySettingsView: View {
                 Menu {
                     Button {
                         if self.library.applyBackgroundToEditorWallpaper(assetID: asset.id) {
-                            self.showStatus("✓ 已设为编辑器壁纸")
+                            self.showStatus(AppLanguage.text("已设为编辑器壁纸", en: "Set as Editor Wallpaper"))
                         }
                     } label: {
                         Label(AppLanguage.text("设为编辑器壁纸", en: "Editor Wallpaper"), systemImage: "macwindow")
@@ -805,7 +779,7 @@ struct MediaLibrarySettingsView: View {
                     
                     Button {
                         if self.library.applyBackgroundToDashboardHero(assetID: asset.id) {
-                            self.showStatus("✓ 已设为数据看板封面")
+                            self.showStatus(AppLanguage.text("已设为数据看板封面", en: "Set as Dashboard Cover"))
                         }
                     } label: {
                         Label(AppLanguage.text("设为看板封面", en: "Dashboard Cover"), systemImage: "rectangle.topthird.inset.filled")
@@ -817,7 +791,7 @@ struct MediaLibrarySettingsView: View {
                         let active = (self.library.boardAssignment(for: slot)?.assetID == asset.id)
                         Button {
                             self.library.setBoardBackground(assetID: asset.id, for: slot)
-                            self.showStatus("✓ 已设为\(slot.title)背景")
+                            self.showStatus(AppLanguage.text("已设为\(slot.title)背景", en: "Set for \(slot.title)"))
                         } label: {
                             Label(
                                 active ? "✓ \(slot.title)" : slot.title,
@@ -829,20 +803,21 @@ struct MediaLibrarySettingsView: View {
                     Text(AppLanguage.text("应用 ▾", en: "Apply ▾"))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color.accentColor)
-                        .padding(.horizontal, 8)
-                        .frame(height: 22)
+                        .padding(.horizontal, 9)
+                        .frame(height: 24)
                         .background(Color.accentColor.opacity(0.11), in: Capsule())
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
             }
+            .padding(.horizontal, 2)
         }
-        .padding(8)
-        .background(self.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(9)
+        .background(self.cardBackground, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(self.cardBorder, lineWidth: 0.75)
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(isHovered ? self.cardHoverBorder : self.cardBorder, lineWidth: 0.8)
         )
         .onHover { inside in
             self.hoveredAssetID = inside ? asset.id : (self.hoveredAssetID == asset.id ? nil : self.hoveredAssetID)

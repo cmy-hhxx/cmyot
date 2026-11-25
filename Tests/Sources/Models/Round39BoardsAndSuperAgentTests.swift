@@ -310,7 +310,7 @@ struct Round39BoardsAndSuperAgentTests {
         #expect(personalContext.contains("TrainingNotes.md"))
         
         let webHTML = BeautifulAgentUIBundle.htmlDocument()
-        #expect(webHTML.contains("proactiveCards"))
+        #expect(!webHTML.contains("dismissProactiveCard"))
         #expect(webHTML.contains("backgroundWorkers"))
         #expect(webHTML.contains("requestAnimationFrame"))
     }

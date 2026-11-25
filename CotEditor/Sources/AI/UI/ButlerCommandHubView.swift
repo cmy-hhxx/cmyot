@@ -683,13 +683,6 @@ struct ButlerCommandHubView: View {
         let isDark = self.resolvedIsDark
         let surfaces = self.resolvedThemeSurfaces(isDark: isDark)
         let _ = self.proactiveEngine.revision
-        let proactiveCards = self.proactiveEngine.buildProactiveCards(
-            watchlist: self.marketService.watchlist,
-            quotes: self.marketService.quotes,
-            memories: CotMemoryStore.shared.memories,
-            unreadPodcasts: self.podcastService.unreadReminders,
-            recentNews: self.newsService.items
-        )
         let workers = self.proactiveEngine.workers
         
         return BeautifulAgentHostStatePayload(
@@ -728,7 +721,7 @@ struct ButlerCommandHubView: View {
             availableBots: availableBots,
             themePageHex: surfaces.pageHex,
             themeCanvasHex: surfaces.canvasHex,
-            proactiveCards: proactiveCards,
+            proactiveCards: nil,
             backgroundWorkers: workers
         )
     }
