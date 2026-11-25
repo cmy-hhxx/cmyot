@@ -95,8 +95,25 @@ extension NSAttributedString.Key {
     }  // @objc for AppleScript support
     var isTransient = false  // untitled & empty document that was created automatically
     var isExplicitlyNamed = false  // true once user or AI deliberately renames this document
+    var isPerformingSaveTrim = false  // suppresses dirty marking while trimming whitespace during save
     @ObservationIgnored @Published var hasUncommittedChanges = false
     @ObservationIgnored @Published var lastManualSaveDate: Date?
+    
+    /// Whether closing this document or quitting the app requires asking the user to save uncommitted edits.
+    var needsUserSavePrompt: Bool {
+        if self.fileURL == nil, self.textStorage.string.isEmpty {
+            return false
+        }
+        if self.fileURL == nil {
+            return self.hasUncommittedChanges || self.isDocumentEdited
+        }
+        return self.hasUncommittedChanges || self.isDocumentEdited || self.hasUnautosavedChanges
+    }
+    
+    /// Every text view attached directly to this document's text storage.
+    private var attachedTextViews: [NSTextView] {
+        self.textStorage.layoutManagers.compactMap(\.firstTextView)
+    }
     
     nonisolated var isVerticalText: Bool {
         
@@ -533,6 +550,11 @@ extension NSAttributedString.Key {
     
     @IBAction override func save(_ sender: Any?) {
         
+        for textView in self.attachedTextViews {
+            textView.breakUndoCoalescing()
+            (textView as? EditorTextView)?.cancelScheduledTrailingWhitespaceTrim()
+        }
+        
         self.syncToLocalDatabase(force: true)
         self.viewController?.savePaneTabsSessionToDatabase()
         
@@ -542,7 +564,7 @@ extension NSAttributedString.Key {
                 ?? (try? NSDocumentController.shared.typeForContents(of: fileURL))
                 ?? UTType.plainText.identifier
             self.save(to: fileURL, ofType: typeName, for: .saveOperation) { [weak self] error in
-                Task { @MainActor in
+                DispatchQueue.syncOnMain {
                     guard let self else { return }
                     if let error {
                         CotLogger.shared.error(
@@ -554,21 +576,35 @@ extension NSAttributedString.Key {
                         self.presentErrorAsSheet(error)
                         return
                     }
-                    self.hasUncommittedChanges = false
-                    self.lastManualSaveDate = .now
-                    self.updateChangeCount(.changeCleared)
-                    self.viewController?.editorViewControllers.forEach { $0.updateTabState() }
+                    self.clearDirtyAndDraftStateAfterSave(removeUntitledAutosave: false)
                     NotificationCenter.default.post(name: DidUpdateChangeMessage.name, object: self)
                 }
             }
             return
         }
         
+        self.clearDirtyAndDraftStateAfterSave(removeUntitledAutosave: true)
+        AnalyticsManager.shared.recordDocumentSaved()
+    }
+    
+    
+    private func clearDirtyAndDraftStateAfterSave(removeUntitledAutosave: Bool) {
+        
+        for textView in self.attachedTextViews {
+            textView.breakUndoCoalescing()
+            (textView as? EditorTextView)?.cancelScheduledTrailingWhitespaceTrim()
+        }
+        if removeUntitledAutosave, self.fileURL == nil {
+            if let autosavedURL = self.autosavedContentsFileURL {
+                try? FileManager.default.removeItem(at: autosavedURL)
+                self.autosavedContentsFileURL = nil
+            }
+            self.isDraft = false
+        }
         self.hasUncommittedChanges = false
         self.lastManualSaveDate = .now
         self.updateChangeCount(.changeCleared)
         self.viewController?.editorViewControllers.forEach { $0.updateTabState() }
-        AnalyticsManager.shared.recordDocumentSaved()
     }
     
     
@@ -583,10 +619,9 @@ extension NSAttributedString.Key {
     
     override func autosave(withImplicitCancellability autosavingIsImplicitlyCancellable: Bool, completionHandler: @escaping ((any Error)?) -> Void) {
         
-        // An empty scratch document has nothing worth restoring; autosaving it would only
-        // leave an empty window behind that AppKit resurrects — and tabs together with the
-        // other restored windows — on the next launch.
-        if self.fileURL == nil, !self.isDocumentEdited, self.textStorage.length == 0 {
+        // Skip AppKit autosave for untitled documents that have no uncommitted changes (empty scratch
+        // buffers or notes already saved via ⌘S into CotLocalDatabase), preventing stale draft prompts on quit.
+        if self.fileURL == nil, !self.needsUserSavePrompt {
             completionHandler(nil)
             return
         }
@@ -608,14 +643,18 @@ extension NSAttributedString.Key {
             return completionHandler(error)
         }
         
-        // break undo grouping
-        for textView in self.textViews {
+        // break undo grouping & cancel any pending delayed trim timer
+        for textView in self.attachedTextViews {
             textView.breakUndoCoalescing()
+            (textView as? EditorTextView)?.cancelScheduledTrailingWhitespaceTrim()
         }
         
-        // trim trailing whitespace if needed
+        // trim trailing whitespace if needed without re-marking dirty state after save
         if self.isEditable, !saveOperation.isAutosave, let textView = self.textView as? EditorTextView, textView.isAutomaticWhitespaceTrimmingEnabled {
+            self.isPerformingSaveTrim = true
             textView.trimTrailingWhitespace()
+            textView.breakUndoCoalescing()
+            self.isPerformingSaveTrim = false
         }
         
         // apply save panel options
@@ -655,11 +694,15 @@ extension NSAttributedString.Key {
                 assert(pendingFileData != nil)
                 self.fileData.withLock { $0 = pendingFileData }
                 
-                Task { @MainActor in
+                // Synchronously clear dirty state before `completionHandler` runs so an immediate ⌘Q
+                // right after ⌘S never observes stale dirty flags.
+                DispatchQueue.syncOnMain {
                     PlainTextInlineImageStore.shared.migrateGlobalAssetsIfNeeded(in: self.textStorage.string, to: url)
                     self.hasUncommittedChanges = false
                     if !saveOperation.isAutosave {
                         self.lastManualSaveDate = .now
+                        self.isDraft = false
+                        self.updateChangeCount(.changeCleared)
                         AnalyticsManager.shared.recordDocumentSaved()
                     }
                     self.syncToLocalDatabase()
@@ -785,7 +828,7 @@ extension NSAttributedString.Key {
             return
         }
         
-        if self.hasUnautosavedChanges, !self.allowsLossySaving, !self.canBeConverted() {
+        if self.needsUserSavePrompt, self.hasUnautosavedChanges, !self.allowsLossySaving, !self.canBeConverted() {
             let alert = NSAlert()
             alert.messageText = AppLanguage.text(
                 "要保存对文档「\(self.displayName!)」的更改吗？",
@@ -830,12 +873,21 @@ extension NSAttributedString.Key {
     /// Replaces macOS's verbose English save/delete close dialog with an ultra-concise 1-click Chinese sheet.
     private func presentMinimalClosePromptIfNeeded(withDelegate delegate: Any, shouldClose shouldCloseSelector: Selector?, contextInfo: UnsafeMutableRawPointer?) {
         
-        let needsPrompt = self.hasUnautosavedChanges
-            || self.isDocumentEdited
-            || (self.fileURL == nil && !self.textStorage.string.isEmpty)
+        guard self.needsUserSavePrompt else {
+            if self.fileURL == nil {
+                if let autosavedURL = self.autosavedContentsFileURL {
+                    try? FileManager.default.removeItem(at: autosavedURL)
+                    self.autosavedContentsFileURL = nil
+                }
+                self.isDraft = false
+                self.updateChangeCount(.changeCleared)
+            }
+            DelegateContext(delegate: delegate, selector: shouldCloseSelector, contextInfo: contextInfo)
+                .perform(from: self, flag: true)
+            return
+        }
         
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
-              needsPrompt,
               let hostWindow = self.windowForSheet,
               hostWindow.isVisible
         else {
@@ -991,8 +1043,13 @@ extension NSAttributedString.Key {
         switch change {
             case .changeCleared, .changeReadOtherContents:
                 self.hasUncommittedChanges = false
+                if self.fileURL == nil {
+                    self.isDraft = false
+                }
             case .changeDone:
-                self.hasUncommittedChanges = true
+                if !self.isPerformingSaveTrim {
+                    self.hasUncommittedChanges = true
+                }
             default:
                 break
         }
@@ -1007,6 +1064,9 @@ extension NSAttributedString.Key {
         
         // This method updates the values in the .isDocumentEdited and .hasUnautosavedChanges properties.
         super.updateChangeCount(withToken: changeCountToken, for: saveOperation)
+        if !self.isDocumentEdited && !self.hasUnautosavedChanges {
+            self.hasUncommittedChanges = false
+        }
         
         NotificationCenter.default.post(name: DidUpdateChangeMessage.name, object: self)
     }

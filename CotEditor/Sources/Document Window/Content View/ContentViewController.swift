@@ -955,7 +955,8 @@ private final class EditorWallpaperBackdropView: NSView {
             scale: spec.scale,
             panX: spec.panX,
             panY: spec.panY,
-            isFlippedY: self.isFlipped
+            isFlippedY: self.isFlipped,
+            displayMode: spec.displayMode
         )
         guard !drawRect.isEmpty else { return }
         

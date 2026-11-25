@@ -339,7 +339,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         guard let viewController = self.documentViewController else { return true }
         
         let extraDocuments = viewController.paneDocuments
-            .filter { $0 !== viewController.document && $0.isDocumentEdited }
+            .filter { $0 !== viewController.document && $0.needsUserSavePrompt }
         
         guard !self.isReviewingPaneDocuments, !extraDocuments.isEmpty else { return true }
         
@@ -531,7 +531,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     /// Reflects the unsaved state of every pane in the window's close button.
     private func updateEditedState() {
         
-        let isEdited = self.documentViewController?.paneDocuments.contains { $0.isDocumentEdited } ?? false
+        let isEdited = self.documentViewController?.paneDocuments.contains { $0.needsUserSavePrompt } ?? false
         
         self.setDocumentEdited(isEdited)
     }

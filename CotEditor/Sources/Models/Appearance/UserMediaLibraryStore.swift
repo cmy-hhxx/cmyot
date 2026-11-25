@@ -48,6 +48,86 @@ nonisolated enum UserMediaKind: String, Codable, CaseIterable, Identifiable, Sen
 }
 
 
+nonisolated enum MediaAspectPreset: String, Codable, CaseIterable, Identifiable, Sendable {
+    
+    case original
+    case square
+    case portrait3x4
+    case landscape4x3
+    case landscape16x10
+    case landscape16x9
+    case ultrawide21x9
+    
+    var id: String { self.rawValue }
+    
+    var label: String {
+        switch self {
+            case .original: AppLanguage.text("原始", en: "Original")
+            case .square: "1:1"
+            case .portrait3x4: "3:4"
+            case .landscape4x3: "4:3"
+            case .landscape16x10: "16:10"
+            case .landscape16x9: "16:9"
+            case .ultrawide21x9: "21:9"
+        }
+    }
+    
+    var aspectRatio: CGFloat? {
+        switch self {
+            case .original: nil
+            case .square: 1.0
+            case .portrait3x4: 3.0 / 4.0
+            case .landscape4x3: 4.0 / 3.0
+            case .landscape16x10: 16.0 / 10.0
+            case .landscape16x9: 16.0 / 9.0
+            case .ultrawide21x9: 21.0 / 9.0
+        }
+    }
+    
+    static func presets(for kind: UserMediaKind) -> [MediaAspectPreset] {
+        switch kind {
+            case .avatar:
+                [.square, .portrait3x4, .original]
+            case .background:
+                [.original, .landscape16x10, .landscape16x9, .ultrawide21x9, .landscape4x3, .square]
+        }
+    }
+}
+
+
+nonisolated struct UserMediaEditSpec: Codable, Equatable, Sendable {
+    
+    var scale: Double = 1.0           // 1.0 ... 4.0
+    var panX: Double = 0.0            // -1.0 ... 1.0
+    var panY: Double = 0.0            // -1.0 ... 1.0
+    var aspectPreset: MediaAspectPreset = .original
+    var quarterTurns: Int = 0         // 0, 1, 2, 3 (90° clockwise)
+    var flipHorizontal: Bool = false
+    
+    static let identity = UserMediaEditSpec()
+    
+    var isIdentity: Bool {
+        abs(self.scale - 1.0) < 0.005
+            && abs(self.panX) < 0.005
+            && abs(self.panY) < 0.005
+            && self.aspectPreset == .original
+            && ((self.quarterTurns % 4) == 0)
+            && !self.flipHorizontal
+    }
+    
+    func clamped() -> UserMediaEditSpec {
+        UserMediaEditSpec(
+            scale: max(1.0, min(4.0, self.scale)),
+            panX: max(-1.0, min(1.0, self.panX)),
+            panY: max(-1.0, min(1.0, self.panY)),
+            aspectPreset: self.aspectPreset,
+            quarterTurns: ((self.quarterTurns % 4) + 4) % 4,
+            flipHorizontal: self.flipHorizontal
+        )
+    }
+}
+
+
 nonisolated struct UserMediaAsset: Identifiable, Codable, Equatable, Sendable {
     
     let id: String
@@ -55,9 +135,53 @@ nonisolated struct UserMediaAsset: Identifiable, Codable, Equatable, Sendable {
     var title: String
     let filename: String
     let contentSHA256: String
-    let pixelWidth: Int
-    let pixelHeight: Int
+    var pixelWidth: Int
+    var pixelHeight: Int
     let createdAt: Date
+    var editSpec: UserMediaEditSpec? = nil
+    var originalFilename: String? = nil
+    
+    enum CodingKeys: String, CodingKey {
+        case id, kind, title, filename, contentSHA256, pixelWidth, pixelHeight, createdAt, editSpec, originalFilename
+    }
+    
+    init(
+        id: String,
+        kind: UserMediaKind,
+        title: String,
+        filename: String,
+        contentSHA256: String,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        createdAt: Date,
+        editSpec: UserMediaEditSpec? = nil,
+        originalFilename: String? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.filename = filename
+        self.contentSHA256 = contentSHA256
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.createdAt = createdAt
+        self.editSpec = editSpec
+        self.originalFilename = originalFilename
+    }
+    
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.kind = try c.decode(UserMediaKind.self, forKey: .kind)
+        self.title = try c.decode(String.self, forKey: .title)
+        self.filename = try c.decode(String.self, forKey: .filename)
+        self.contentSHA256 = try c.decode(String.self, forKey: .contentSHA256)
+        self.pixelWidth = try c.decode(Int.self, forKey: .pixelWidth)
+        self.pixelHeight = try c.decode(Int.self, forKey: .pixelHeight)
+        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        self.editSpec = try c.decodeIfPresent(UserMediaEditSpec.self, forKey: .editSpec)
+        self.originalFilename = try c.decodeIfPresent(String.self, forKey: .originalFilename)
+    }
 }
 
 
@@ -102,7 +226,7 @@ nonisolated enum BoardBackgroundSlot: String, Codable, CaseIterable, Identifiabl
             case .market: "chart.xyaxis.line"
             case .podcast: "waveform"
             case .news: "newspaper"
-            case .butler: "sparkles"
+            case .butler: "person.crop.rectangle.stack"
         }
     }
 }
@@ -276,6 +400,29 @@ final class UserMediaLibraryStore {
         self.directory(for: asset.kind).appending(path: asset.filename)
     }
     
+    func originalsDirectory(for kind: UserMediaKind) -> URL {
+        self.directory(for: kind).appending(path: "originals", directoryHint: .isDirectory)
+    }
+    
+    func originalFileURL(for asset: UserMediaAsset) -> URL {
+        if let orig = asset.originalFilename {
+            let candidate = self.originalsDirectory(for: asset.kind).appending(path: orig)
+            if FileManager.default.fileExists(atPath: candidate.path(percentEncoded: false)) {
+                return candidate
+            }
+        }
+        return self.fileURL(for: asset)
+    }
+    
+    func originalImage(for asset: UserMediaAsset) -> NSImage? {
+        let url = self.originalFileURL(for: asset)
+        let maxDim: CGFloat = (asset.kind == .avatar) ? 1024 : 2400
+        if let cg = Self.normalizedCGImage(fromURL: url, maxDimension: maxDim) {
+            return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        }
+        return NSImage(contentsOf: url)
+    }
+    
     func thumbnailImage(for asset: UserMediaAsset, maxPixelSize: CGFloat = 320) -> NSImage? {
         let key = "\(asset.id)@\(Int(maxPixelSize))" as NSString
         if let cached = self.thumbnailCache.object(forKey: key) {
@@ -440,16 +587,19 @@ final class UserMediaLibraryStore {
     
     func deleteAsset(id: String, kind: UserMediaKind) {
         let url: URL?
+        let originalURL: URL?
         switch kind {
             case .avatar:
                 guard let idx = self.avatars.firstIndex(where: { $0.id == id }) else { return }
                 let removed = self.avatars.remove(at: idx)
                 url = self.fileURL(for: removed)
+                originalURL = removed.originalFilename.map { self.originalsDirectory(for: .avatar).appending(path: $0) }
                 self.persistCatalog(for: .avatar)
             case .background:
                 guard let idx = self.backgrounds.firstIndex(where: { $0.id == id }) else { return }
                 let removed = self.backgrounds.remove(at: idx)
                 url = self.fileURL(for: removed)
+                originalURL = removed.originalFilename.map { self.originalsDirectory(for: .background).appending(path: $0) }
                 self.persistCatalog(for: .background)
                 
                 var assignmentsChanged = false
@@ -472,9 +622,209 @@ final class UserMediaLibraryStore {
         if let url {
             try? FileManager.default.removeItem(at: url)
         }
+        if let originalURL {
+            try? FileManager.default.removeItem(at: originalURL)
+        }
         self.fullImageCache.removeObject(forKey: id as NSString)
         self.thumbnailCache.removeAllObjects()
         self.notifyChanged()
+    }
+    
+    
+    // MARK: - Non-Destructive Image Crop, Zoom, Pan & Aspect Editing
+    
+    /// Updates an asset's framing/crop/aspect edit and/or title while preserving the untouched original master file.
+    @discardableResult
+    func updateAssetEdit(
+        id: String,
+        kind: UserMediaKind,
+        title: String? = nil,
+        editSpec: UserMediaEditSpec,
+        wallpaperManager: WallpaperManager = .shared
+    ) -> UserMediaAsset? {
+        guard let existing = self.asset(id: id, kind: kind) else { return nil }
+        let clampedSpec = editSpec.clamped()
+        let activeURL = self.fileURL(for: existing)
+        
+        // Preserve untouched original master once before baking edits.
+        var preservedOriginalName = existing.originalFilename
+        if preservedOriginalName == nil {
+            let origDir = self.originalsDirectory(for: kind)
+            try? FileManager.default.createDirectory(at: origDir, withIntermediateDirectories: true)
+            let origURL = origDir.appending(path: existing.filename)
+            if !FileManager.default.fileExists(atPath: origURL.path(percentEncoded: false)) {
+                try? FileManager.default.copyItem(at: activeURL, to: origURL)
+            }
+            if FileManager.default.fileExists(atPath: origURL.path(percentEncoded: false)) {
+                preservedOriginalName = existing.filename
+            }
+        }
+        
+        let masterURL = preservedOriginalName.map { self.originalsDirectory(for: kind).appending(path: $0) } ?? activeURL
+        let maxDim: CGFloat = (kind == .avatar) ? 640 : 2400
+        guard let sourceCG = Self.normalizedCGImage(fromURL: masterURL, maxDimension: maxDim),
+              let renderedCG = Self.renderEditedCGImage(from: sourceCG, spec: clampedSpec, maxOutputSide: maxDim),
+              let encoded = Self.encodeNormalizedImage(renderedCG, kind: kind, maxDimension: maxDim)
+        else { return nil }
+        
+        do {
+            try encoded.data.write(to: activeURL, options: .atomic)
+        } catch {
+            return nil
+        }
+        
+        let resolvedTitle: String = {
+            if let raw = title?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+                return raw
+            }
+            return existing.title
+        }()
+        
+        var updated = existing
+        updated.title = resolvedTitle
+        updated.pixelWidth = encoded.width
+        updated.pixelHeight = encoded.height
+        updated.editSpec = clampedSpec.isIdentity ? nil : clampedSpec
+        updated.originalFilename = preservedOriginalName
+        
+        switch kind {
+            case .avatar:
+                if let idx = self.avatars.firstIndex(where: { $0.id == id }) {
+                    self.avatars[idx] = updated
+                    self.persistCatalog(for: .avatar)
+                }
+            case .background:
+                if let idx = self.backgrounds.firstIndex(where: { $0.id == id }) {
+                    self.backgrounds[idx] = updated
+                    self.persistCatalog(for: .background)
+                }
+                let libWallpaperID = WallpaperManager.mediaLibraryWallpaperID(for: id)
+                if wallpaperManager.customRecords.contains(where: { $0.id == libWallpaperID }) {
+                    _ = wallpaperManager.refreshMediaLibraryBackground(assetID: id, title: updated.title, fileURL: activeURL)
+                }
+        }
+        
+        self.fullImageCache.removeObject(forKey: id as NSString)
+        self.thumbnailCache.removeAllObjects()
+        self.notifyChanged()
+        return updated
+    }
+    
+    
+    /// Computes the aspect-fill + zoom/pan draw rect for both SwiftUI preview (`isFlippedY == true`)
+    /// and unflipped CoreGraphics/AppKit bitmap rendering (`isFlippedY == false`).
+    nonisolated static func cropDrawRect(
+        imageSize: CGSize,
+        viewportSize: CGSize,
+        scale: Double,
+        panX: Double,
+        panY: Double,
+        isFlippedY: Bool
+    ) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0,
+              viewportSize.width > 0, viewportSize.height > 0
+        else { return .zero }
+        
+        let clampedScale = max(1.0, min(4.0, scale))
+        let clampedPanX = max(-1.0, min(1.0, panX))
+        let clampedPanY = max(-1.0, min(1.0, panY))
+        
+        let baseScale = max(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height)
+        let drawW = imageSize.width * baseScale * CGFloat(clampedScale)
+        let drawH = imageSize.height * baseScale * CGFloat(clampedScale)
+        let slackX = max(0, (drawW - viewportSize.width) * 0.5)
+        let slackY = max(0, (drawH - viewportSize.height) * 0.5)
+        
+        let originX = (viewportSize.width - drawW) * 0.5 - CGFloat(clampedPanX) * slackX
+        let ySign: CGFloat = isFlippedY ? -1.0 : 1.0
+        let originY = (viewportSize.height - drawH) * 0.5 + ySign * CGFloat(clampedPanY) * slackY
+        return CGRect(x: originX, y: originY, width: drawW, height: drawH)
+    }
+    
+    
+    /// Renders an edited `CGImage` applying rotation, horizontal flip, aspect-ratio crop, zoom, and pan.
+    nonisolated static func renderEditedCGImage(
+        from sourceCG: CGImage,
+        spec: UserMediaEditSpec,
+        maxOutputSide: CGFloat
+    ) -> CGImage? {
+        let clamped = spec.clamped()
+        guard let oriented = Self.orientedCGImage(sourceCG, quarterTurns: clamped.quarterTurns, flipHorizontal: clamped.flipHorizontal) else {
+            return nil
+        }
+        let ow = CGFloat(oriented.width)
+        let oh = CGFloat(oriented.height)
+        guard ow > 0, oh > 0 else { return nil }
+        
+        let targetAspect = clamped.aspectPreset.aspectRatio ?? (ow / oh)
+        let longestSource = max(ow, oh)
+        let cappedLongest = min(maxOutputSide, max(longestSource, 512))
+        
+        let outW: Int
+        let outH: Int
+        if targetAspect >= 1.0 {
+            outW = max(32, Int(cappedLongest.rounded()))
+            outH = max(32, Int((cappedLongest / targetAspect).rounded()))
+        } else {
+            outH = max(32, Int(cappedLongest.rounded()))
+            outW = max(32, Int((cappedLongest * targetAspect).rounded()))
+        }
+        
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: outW,
+            height: outH,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        
+        ctx.interpolationQuality = .high
+        let drawRect = Self.cropDrawRect(
+            imageSize: CGSize(width: ow, height: oh),
+            viewportSize: CGSize(width: CGFloat(outW), height: CGFloat(outH)),
+            scale: clamped.scale,
+            panX: clamped.panX,
+            panY: clamped.panY,
+            isFlippedY: false
+        )
+        ctx.draw(oriented, in: drawRect)
+        return ctx.makeImage()
+    }
+    
+    
+    nonisolated static func orientedCGImage(_ source: CGImage, quarterTurns: Int, flipHorizontal: Bool) -> CGImage? {
+        let turns = ((quarterTurns % 4) + 4) % 4
+        if turns == 0 && !flipHorizontal {
+            return source
+        }
+        let sw = CGFloat(source.width)
+        let sh = CGFloat(source.height)
+        let swapAxes = (turns % 2 == 1)
+        let outW = Int(swapAxes ? sh : sw)
+        let outH = Int(swapAxes ? sw : sh)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: max(1, outW),
+            height: max(1, outH),
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        
+        ctx.interpolationQuality = .high
+        ctx.translateBy(x: CGFloat(outW) * 0.5, y: CGFloat(outH) * 0.5)
+        if flipHorizontal {
+            ctx.scaleBy(x: -1, y: 1)
+        }
+        // Clockwise rotation in unflipped CG coordinates is negative radians.
+        ctx.rotate(by: -CGFloat(turns) * (.pi * 0.5))
+        ctx.draw(source, in: CGRect(x: -sw * 0.5, y: -sh * 0.5, width: sw, height: sh))
+        return ctx.makeImage()
     }
     
     

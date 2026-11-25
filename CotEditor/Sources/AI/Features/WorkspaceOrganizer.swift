@@ -313,12 +313,12 @@ enum WorkspaceOrganizer {
         }
         progressController.present(on: targetWindow)
         
-        // Step 1: Snapshot every document into local SQLite before any modification.
+        // Step 1: Snapshot every document into local SQLite before any modification, then run Data Funnel.
         progressController.state.markStepActive(
             0,
-            detail: "正在备份 \(entries.count) 份文档快照到本地数据库…",
+            detail: "正在备份 \(entries.count) 份文档快照并启动数据漏斗…",
             progress: 0.12,
-            headline: "步骤 1/4：备份当前文档快照"
+            headline: "步骤 1/4：备份快照与漏斗初筛"
         )
         CotLocalDatabase.shared.withTransaction {
             for entry in entries {
@@ -326,35 +326,70 @@ enum WorkspaceOrganizer {
                 doc.syncToLocalDatabase(force: true)
             }
         }
-        progressController.state.markStepCompleted(0, detail: "已安全备份 \(entries.count) 份文档快照")
         
-        let compiledPrompt = self.buildPrompt(from: entries)
+        let funnelInputs: [OrganizeFunnelInput] = entries.map { entry in
+            OrganizeFunnelInput(
+                id: entry.id,
+                dbRecordID: entry.fileURL?.path(percentEncoded: false)
+                    ?? (entry.document.map { $0.databaseDocumentID.hasPrefix("doc:") ? $0.databaseDocumentID : "doc:\($0.databaseDocumentID)" } ?? entry.id),
+                title: entry.originalTitle,
+                filePath: entry.fileURL?.path(percentEncoded: false),
+                syntax: entry.syntaxName,
+                currentGroup: "",
+                content: entry.content,
+                updatedAt: entry.document?.lastManualSaveDate ?? Date(),
+                isOpenNow: true,
+                isUntitled: DocumentCenterAgentOrganizer.isGenericUntitled(entry.originalTitle, hasFilePath: entry.fileURL != nil)
+            )
+        }
+        let localFunnel = DocumentOrganizeFunnel.runLocalFunnel(items: funnelInputs)
+        let preFunnelResult = self.applyLocalWorkspaceFunnel(localFunnel, entries: entries)
+        let survivingEntries = preFunnelResult.survivingEntries
+        
+        let funnelSummaryParts: [String] = [
+            preFunnelResult.deletedCount > 0 ? "清理无效/乱码 \(preFunnelResult.deletedCount) 份" : nil,
+            preFunnelResult.mergedDuplicateCount > 0 ? "合并重复 \(preFunnelResult.mergedDuplicateCount) 份" : nil,
+            "保留 \(survivingEntries.count) 份进入 AI 整理",
+        ].compactMap(\.self)
+        progressController.state.markStepCompleted(0, detail: funnelSummaryParts.joined(separator: " · "))
+        
+        guard !survivingEntries.isEmpty else {
+            let mapMarkdown = self.renderMapMarkdown(
+                overview: "数据漏斗已完成清洗：\(funnelSummaryParts.joined(separator: "，"))。",
+                mappingRows: preFunnelResult.mappingRows,
+                groups: [],
+                untouchedEntries: []
+            )
+            self.finishOrganizeAndOpenMap(
+                mapMarkdown: mapMarkdown,
+                targetWindow: targetWindow,
+                progressController: progressController,
+                summary: "漏斗整理完成：\(funnelSummaryParts.joined(separator: " · "))。"
+            )
+            return
+        }
+        
+        let shards = DocumentOrganizeFunnel.makeShards(survivingEntries, shardSize: 8)
+        let totalBatches = shards.count
         
         progressController.state.markStepActive(
             1,
-            detail: "正在发送 \(entries.count) 份文档至 AI 分析去重与拟定文件名…",
+            detail: "正在分 \(totalBatches) 批并发整理 \(survivingEntries.count) 份核心文档…",
             progress: 0.25,
-            headline: "步骤 2/4：AI 归类分析与内容提炼"
+            headline: "步骤 2/4：分片并发 AI 归类与提炼"
         )
         
         let organizeTask = Task { @MainActor in
             do {
-                let rawResponse = try await AIService.shared.run(.organizeAndMerge, on: compiledPrompt) { partial in
-                    let charCount = partial.count
-                    progressController.state.streamedCharacters = charCount
-                    let streamProgress = 0.25 + min(0.47, Double(charCount) / 8000.0 * 0.47)
-                    progressController.state.markStepActive(
-                        1,
-                        detail: "已接收模型整理方案 \(charCount) 字…",
-                        progress: streamProgress,
-                        headline: "步骤 2/4：正在接收 AI 归类与命名方案"
-                    )
-                }
+                let mergedPlan = try await self.runShardedMergePlan(
+                    shards: shards,
+                    progressController: progressController
+                )
                 
                 guard !Task.isCancelled else { return }
                 progressController.state.markStepCompleted(
                     1,
-                    detail: "AI 分析完成（共 \(rawResponse.count) 字）"
+                    detail: "AI 分片分析完成（共 \(totalBatches) 批 · \(mergedPlan.groups.count) 组）"
                 )
                 
                 progressController.state.markStepActive(
@@ -364,12 +399,15 @@ enum WorkspaceOrganizer {
                     headline: "步骤 3/4：原位更新文档与智能重命名"
                 )
                 
-                let plan = try self.decodePlan(from: rawResponse)
-                let outcome = self.apply(plan: plan, entries: entries)
+                let outcome = self.apply(
+                    plan: mergedPlan,
+                    entries: survivingEntries,
+                    prefixedMappingRows: preFunnelResult.mappingRows
+                )
                 
                 progressController.state.markStepCompleted(
                     2,
-                    detail: "已更新 \(outcome.updatedCount) 份文档并重命名，原有分屏 Pane 完整保留"
+                    detail: "已清理 \(preFunnelResult.deletedCount) 份无效 · 合并 \(preFunnelResult.mergedDuplicateCount) 份重复 · 更新 \(outcome.updatedCount) 组"
                 )
                 
                 progressController.state.markStepActive(
@@ -379,35 +417,11 @@ enum WorkspaceOrganizer {
                     headline: "步骤 4/4：生成整理合并 Map"
                 )
                 
-                if let hostDocVC = (targetWindow?.windowController as? DocumentWindowController)?.documentViewController {
-                    hostDocVC.openGeneratedTab(
-                        title: "整理合并 Map",
-                        content: outcome.mapMarkdown,
-                        syntaxName: SyntaxName.none,
-                        databaseID: "organize-map:latest"
-                    )
-                } else {
-                    let mapDoc = try (NSDocumentController.shared as? DocumentController)?
-                        .openUntitledDocument(content: outcome.mapMarkdown, title: "整理合并 Map", display: true)
-                    mapDoc?.isExplicitlyNamed = true
-                    mapDoc?.setSyntax(name: SyntaxName.none)
-                    mapDoc?.syncToLocalDatabase(force: true)
-                }
-                
-                var primaryDocVC: DocumentViewController?
-                for window in NSApp.orderedWindows {
-                    guard let docVC = (window.windowController as? DocumentWindowController)?.documentViewController else { continue }
-                    if primaryDocVC == nil { primaryDocVC = docVC }
-                    for pane in docVC.editorViewControllers {
-                        pane.updateTabState()
-                    }
-                    window.windowController?.synchronizeWindowTitleWithDocumentName()
-                }
-                primaryDocVC?.savePaneTabsSessionToDatabase()
-                
-                progressController.state.markStepCompleted(3, detail: "已生成并在当前焦点 Pane 中打开《整理合并 Map》")
-                progressController.state.markCompleted(
-                    summary: "整理完成：共处理 \(outcome.updatedCount) 组文档、重命名 \(outcome.renamedCount) 份文件/标签页，原有窗口与分屏 Pane 布局未作任何破坏性变动。"
+                self.finishOrganizeAndOpenMap(
+                    mapMarkdown: outcome.mapMarkdown,
+                    targetWindow: targetWindow,
+                    progressController: progressController,
+                    summary: "整理完成：清理 \(preFunnelResult.deletedCount) 份无效、合并 \(preFunnelResult.mergedDuplicateCount) 份重复、整理 \(outcome.updatedCount) 组、重命名 \(outcome.renamedCount) 份。"
                 )
             } catch is CancellationError {
                 CotLogger.shared.info(category: .organizer, "Organize & Merge cancelled by user")
@@ -459,6 +473,13 @@ enum WorkspaceOrganizer {
     }
     
     
+    private static let mapTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
+    
+    
     /// Builds a structured Map document from a parsed merge plan.
     static func renderMapMarkdown(
         overview: String?,
@@ -467,9 +488,7 @@ enum WorkspaceOrganizer {
         untouchedEntries: [SourceEntry]
     ) -> String {
         
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        let timestamp = formatter.string(from: Date())
+        let timestamp = Self.mapTimestampFormatter.string(from: Date())
         
         var lines: [String] = [
             "# 文档整理合并 Map",
@@ -618,11 +637,15 @@ enum WorkspaceOrganizer {
     }
     
     
-    private static func apply(plan: MergePlan, entries: [SourceEntry]) -> ApplyOutcome {
+    private static func apply(
+        plan: MergePlan,
+        entries: [SourceEntry],
+        prefixedMappingRows: [(originalTitle: String, location: String, action: String, newTitle: String, note: String)] = []
+    ) -> ApplyOutcome {
         
         let entryByID = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
         var consumedIDs = Set<String>()
-        var mappingRows: [(originalTitle: String, location: String, action: String, newTitle: String, note: String)] = []
+        var mappingRows: [(originalTitle: String, location: String, action: String, newTitle: String, note: String)] = prefixedMappingRows
         var createdGroups: [(title: String, syntax: String, summary: String)] = []
         var updatedCount = 0
         var renamedCount = 0
@@ -814,5 +837,209 @@ enum WorkspaceOrganizer {
             return String(title.dropLast(".md".count)).trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return title
+    }
+    
+    
+    private struct WorkspaceFunnelOutcome {
+        let survivingEntries: [SourceEntry]
+        let mappingRows: [(originalTitle: String, location: String, action: String, newTitle: String, note: String)]
+        let deletedCount: Int
+        let mergedDuplicateCount: Int
+    }
+    
+    
+    private static func applyLocalWorkspaceFunnel(
+        _ funnel: OrganizeFunnelStageResult,
+        entries: [SourceEntry]
+    ) -> WorkspaceFunnelOutcome {
+        let entryByID = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
+        var mappingRows: [(originalTitle: String, location: String, action: String, newTitle: String, note: String)] = []
+        var removedIDs = Set<String>()
+        var deletedCount = 0
+        var mergedDuplicateCount = 0
+        
+        CotLocalDatabase.shared.withTransaction {
+            for junk in funnel.junkToDelete {
+                guard let entry = entryByID[junk.item.id] else { continue }
+                // Never delete external files on disk; clean untitled junk tabs & DB records directly.
+                if let doc = entry.document, doc.fileURL == nil {
+                    removedIDs.insert(entry.id)
+                    deletedCount += 1
+                    CotLocalDatabase.shared.permanentlyDeleteDocument(id: junk.item.dbRecordID, filePath: nil)
+                    if let tab = entry.tab, let pane = entry.pane, pane.tabs.count > 1, let winVC = entry.windowVC {
+                        _ = winVC.closeMergedTabSafely(tab, in: pane)
+                    } else {
+                        doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: "")
+                        doc.updateChangeCount(.changeCleared)
+                    }
+                    mappingRows.append((
+                        originalTitle: entry.originalTitle,
+                        location: entry.locationLabel,
+                        action: "漏斗清理（\(junk.reason.label)）",
+                        newTitle: "已删除",
+                        note: "自动识别为\(junk.reason.label)并清理"
+                    ))
+                }
+            }
+            
+            for cluster in funnel.mergeClusters {
+                guard let primary = entryByID[cluster.primary.id], let primaryDoc = primary.document else { continue }
+                if cluster.mergedContent != primaryDoc.textStorage.string {
+                    primaryDoc.textStorage.replaceCharacters(in: primaryDoc.textStorage.range, with: cluster.mergedContent)
+                    primaryDoc.syncToLocalDatabase(force: true)
+                }
+                for dup in cluster.duplicates {
+                    guard let sec = entryByID[dup.id] else { continue }
+                    removedIDs.insert(sec.id)
+                    mergedDuplicateCount += 1
+                    if let secDoc = sec.document, secDoc.fileURL == nil {
+                        CotLocalDatabase.shared.permanentlyDeleteDocument(id: dup.dbRecordID, filePath: nil)
+                        if let tab = sec.tab, let pane = sec.pane, pane.tabs.count > 1, let winVC = sec.windowVC {
+                            _ = winVC.closeMergedTabSafely(tab, in: pane)
+                        }
+                    }
+                    mappingRows.append((
+                        originalTitle: sec.originalTitle,
+                        location: sec.locationLabel,
+                        action: "漏斗去重合并",
+                        newTitle: primary.originalTitle,
+                        note: "\(cluster.reason)，内容已无损并入主文档"
+                    ))
+                }
+            }
+        }
+        
+        if deletedCount > 0 || mergedDuplicateCount > 0 {
+            CotLocalDatabase.shared.reloadDocuments()
+        }
+        
+        let mergedContentByID = Dictionary(uniqueKeysWithValues: funnel.mergeClusters.map { ($0.primary.id, $0.mergedContent) })
+        let surviving: [SourceEntry] = entries.compactMap { entry in
+            guard !removedIDs.contains(entry.id) else { return nil }
+            guard let updatedText = mergedContentByID[entry.id] else { return entry }
+            return SourceEntry(
+                id: entry.id,
+                windowIndex: entry.windowIndex,
+                paneIndex: entry.paneIndex,
+                originalTitle: entry.originalTitle,
+                fileURL: entry.fileURL,
+                syntaxName: entry.syntaxName,
+                content: updatedText,
+                windowVC: entry.windowVC,
+                pane: entry.pane,
+                tab: entry.tab,
+                document: entry.document
+            )
+        }
+        
+        return WorkspaceFunnelOutcome(
+            survivingEntries: surviving,
+            mappingRows: mappingRows,
+            deletedCount: deletedCount,
+            mergedDuplicateCount: mergedDuplicateCount
+        )
+    }
+    
+    
+    private static func runShardedMergePlan(
+        shards: [[SourceEntry]],
+        progressController: WorkspaceOrganizeProgressController
+    ) async throws -> MergePlan {
+        if shards.count == 1, let singleShard = shards.first {
+            let prompt = self.buildPrompt(from: singleShard)
+            let raw = try await AIService.shared.run(.organizeAndMerge, on: prompt) { partial in
+                let charCount = partial.count
+                progressController.state.streamedCharacters = charCount
+                let streamProgress = 0.25 + min(0.47, Double(charCount) / 8000.0 * 0.47)
+                progressController.state.markStepActive(
+                    1,
+                    detail: "已接收模型整理方案 \(charCount) 字…",
+                    progress: streamProgress,
+                    headline: "步骤 2/4：正在接收 AI 归类与命名方案"
+                )
+            }
+            return try self.decodePlan(from: raw)
+        }
+        
+        let totalBatches = shards.count
+        var shardPlans: [(Int, MergePlan)] = []
+        var completed = 0
+        let maxConcurrency = min(3, totalBatches)
+        
+        try await withThrowingTaskGroup(of: (Int, MergePlan).self) { group in
+            var nextIdx = 0
+            func enqueue() {
+                guard nextIdx < totalBatches, !Task.isCancelled else { return }
+                let idx = nextIdx
+                let shard = shards[idx]
+                nextIdx += 1
+                group.addTask { @MainActor in
+                    let prompt = self.buildPrompt(from: shard)
+                    let raw = try await AIService.shared.run(.organizeAndMerge, on: prompt) { _ in }
+                    let plan = try self.decodePlan(from: raw)
+                    return (idx, plan)
+                }
+            }
+            for _ in 0..<maxConcurrency { enqueue() }
+            while let result = try await group.next() {
+                shardPlans.append(result)
+                completed += 1
+                let prog = 0.25 + (Double(completed) / Double(totalBatches)) * 0.47
+                progressController.state.markStepActive(
+                    1,
+                    detail: "分片整理完成 \(completed)/\(totalBatches) 批…",
+                    progress: prog,
+                    headline: "步骤 2/4：分片并发 AI 归类与提炼"
+                )
+                enqueue()
+            }
+        }
+        
+        shardPlans.sort { $0.0 < $1.0 }
+        let combinedGroups = shardPlans.flatMap { $0.1.groups }
+        let combinedMappings = shardPlans.flatMap { $0.1.mapping ?? [] }
+        let overviews = shardPlans.compactMap { $0.1.overview?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        return MergePlan(
+            overview: overviews.isEmpty ? "已分 \(totalBatches) 批完成文档整理与合并。" : overviews.joined(separator: " "),
+            groups: combinedGroups,
+            mapping: combinedMappings
+        )
+    }
+    
+    
+    private static func finishOrganizeAndOpenMap(
+        mapMarkdown: String,
+        targetWindow: NSWindow?,
+        progressController: WorkspaceOrganizeProgressController,
+        summary: String
+    ) {
+        if let hostDocVC = (targetWindow?.windowController as? DocumentWindowController)?.documentViewController {
+            hostDocVC.openGeneratedTab(
+                title: "整理合并 Map",
+                content: mapMarkdown,
+                syntaxName: SyntaxName.none,
+                databaseID: "organize-map:latest"
+            )
+        } else if let mapDoc = try? (NSDocumentController.shared as? DocumentController)?
+            .openUntitledDocument(content: mapMarkdown, title: "整理合并 Map", display: true)
+        {
+            mapDoc.isExplicitlyNamed = true
+            mapDoc.setSyntax(name: SyntaxName.none)
+            mapDoc.syncToLocalDatabase(force: true)
+        }
+        
+        var primaryDocVC: DocumentViewController?
+        for window in NSApp.orderedWindows {
+            guard let docVC = (window.windowController as? DocumentWindowController)?.documentViewController else { continue }
+            if primaryDocVC == nil { primaryDocVC = docVC }
+            for pane in docVC.editorViewControllers {
+                pane.updateTabState()
+            }
+            window.windowController?.synchronizeWindowTitleWithDocumentName()
+        }
+        primaryDocVC?.savePaneTabsSessionToDatabase()
+        
+        progressController.state.markStepCompleted(3, detail: "已生成并在当前焦点 Pane 中打开《整理合并 Map》")
+        progressController.state.markCompleted(summary: summary)
     }
 }

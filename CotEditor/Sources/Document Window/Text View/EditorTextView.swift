@@ -201,6 +201,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         self.trimTrailingWhitespace(keepingEditingPoint: true)
     }
     
+    /// Cancels any delayed trailing-whitespace trim so a post-save timer cannot re-dirty the document.
+    func cancelScheduledTrailingWhitespaceTrim() {
+        self.trimTrailingWhitespaceTask.cancel()
+    }
+    
     private var fontObservers: Set<AnyCancellable> = []
     private var wallpaperObserver: AnyCancellable?
     private var windowOpacityObserver: NSKeyValueObservation?

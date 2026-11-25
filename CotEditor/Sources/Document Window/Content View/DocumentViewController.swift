@@ -710,7 +710,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             
             // keep painted highlights attached to the text they were drawn on
             document.adjustHighlights(forEditIn: range, changeInLength: length)
-            if !self.isRestoringPersistedPaneTabs {
+            if !self.isRestoringPersistedPaneTabs && !document.isPerformingSaveTrim {
                 document.markEditedByUser()
             }
             document.scheduleDatabaseSync()
@@ -2218,7 +2218,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     ///   - completion: Called with `true` when every one of them may be closed.
     func reviewDocuments(_ documents: [Document], completion: @escaping (Bool) -> Void) {
         
-        let pending = documents.filter(\.isDocumentEdited)
+        let pending = documents.filter(\.needsUserSavePrompt)
         guard !pending.isEmpty else {
             completion(true)
             return
@@ -3496,6 +3496,8 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         if !resolvedContent.isEmpty {
             doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: resolvedContent)
             doc.updateChangeCount(.changeCleared)
+            doc.hasUncommittedChanges = false
+            doc.isDraft = false
         }
         let resolvedHighlightsJSON = item.highlightsJSON ?? dbFallback?.highlightsJSON
         if let highlightsJSON = resolvedHighlightsJSON,

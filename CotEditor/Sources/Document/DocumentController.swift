@@ -88,6 +88,17 @@ final class DocumentController: NSDocumentController {
     
     // MARK: Document Controller Methods
     
+    override var hasEditedDocuments: Bool {
+        
+        self.documents.contains { document in
+            if let plainDoc = document as? Document {
+                return plainDoc.needsUserSavePrompt
+            }
+            return document.isDocumentEdited
+        }
+    }
+    
+    
     override func openDocument(withContentsOf url: URL, display displayDocument: Bool) async throws -> (NSDocument, Bool) {
         
         defer {

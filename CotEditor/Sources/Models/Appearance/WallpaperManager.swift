@@ -25,21 +25,77 @@ import ImageIO
 import Observation
 import SwiftUI
 
+nonisolated enum WallpaperDisplayMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    
+    case fill
+    case fit
+    case center
+    
+    var id: String { self.rawValue }
+    
+    var label: String {
+        switch self {
+            case .fill: AppLanguage.text("充满", en: "Fill")
+            case .fit: AppLanguage.text("适应", en: "Fit")
+            case .center: AppLanguage.text("居中", en: "Center")
+        }
+    }
+    
+    var minScale: Double {
+        switch self {
+            case .fill: 1.0
+            case .fit, .center: 0.5
+        }
+    }
+    
+    static let maxScale: Double = 4.0
+}
+
+
 nonisolated struct WallpaperFraming: Codable, Equatable, Sendable {
     
-    var scale: Double = 1.0   // 1.0 ... 2.6
-    var panX: Double = 0.0    // -1.0 ... 1.0
-    var panY: Double = 0.0    // -1.0 ... 1.0
+    var scale: Double = 1.0          // 1.0 ... 4.0 (fill), 0.5 ... 4.0 (fit / center)
+    var panX: Double = 0.0           // -1.0 ... 1.0
+    var panY: Double = 0.0           // -1.0 ... 1.0
+    var displayMode: WallpaperDisplayMode = .fill
+    
+    enum CodingKeys: String, CodingKey {
+        case scale, panX, panY, displayMode
+    }
+    
+    init(
+        scale: Double = 1.0,
+        panX: Double = 0.0,
+        panY: Double = 0.0,
+        displayMode: WallpaperDisplayMode = .fill
+    ) {
+        self.scale = scale
+        self.panX = panX
+        self.panY = panY
+        self.displayMode = displayMode
+    }
+    
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.scale = try c.decodeIfPresent(Double.self, forKey: .scale) ?? 1.0
+        self.panX = try c.decodeIfPresent(Double.self, forKey: .panX) ?? 0.0
+        self.panY = try c.decodeIfPresent(Double.self, forKey: .panY) ?? 0.0
+        self.displayMode = try c.decodeIfPresent(WallpaperDisplayMode.self, forKey: .displayMode) ?? .fill
+    }
     
     var isDefault: Bool {
-        abs(self.scale - 1.0) < 0.005 && abs(self.panX) < 0.005 && abs(self.panY) < 0.005
+        abs(self.scale - 1.0) < 0.005
+            && abs(self.panX) < 0.005
+            && abs(self.panY) < 0.005
+            && self.displayMode == .fill
     }
     
     func clamped() -> WallpaperFraming {
         WallpaperFraming(
-            scale: max(1.0, min(2.6, self.scale)),
+            scale: max(self.displayMode.minScale, min(WallpaperDisplayMode.maxScale, self.scale)),
             panX: max(-1.0, min(1.0, self.panX)),
-            panY: max(-1.0, min(1.0, self.panY))
+            panY: max(-1.0, min(1.0, self.panY)),
+            displayMode: self.displayMode
         )
     }
 }
@@ -49,17 +105,18 @@ nonisolated struct WallpaperSpec: Codable, Equatable, Sendable {
     
     var isEnabled: Bool = false
     var selectedID: String = "ink-aurora"
-    var opacity: Double = 0.16      // 0.04 ... 0.55
-    var blurRadius: Double = 10.0   // 0.0 ... 32.0
-    var scale: Double = 1.0         // 1.0 ... 2.6
+    var opacity: Double = 0.16      // 0.04 ... 0.85
+    var blurRadius: Double = 10.0   // 0.0 ... 40.0
+    var scale: Double = 1.0         // 0.5 ... 4.0
     var panX: Double = 0.0          // -1.0 ... 1.0
     var panY: Double = 0.0          // -1.0 ... 1.0
+    var displayMode: WallpaperDisplayMode = .fill
     var perItemFraming: [String: WallpaperFraming] = [:]
     
     static let `default` = WallpaperSpec()
     
     enum CodingKeys: String, CodingKey {
-        case isEnabled, selectedID, opacity, blurRadius, scale, panX, panY, perItemFraming
+        case isEnabled, selectedID, opacity, blurRadius, scale, panX, panY, displayMode, perItemFraming
     }
     
     init(
@@ -70,6 +127,7 @@ nonisolated struct WallpaperSpec: Codable, Equatable, Sendable {
         scale: Double = 1.0,
         panX: Double = 0.0,
         panY: Double = 0.0,
+        displayMode: WallpaperDisplayMode = .fill,
         perItemFraming: [String: WallpaperFraming] = [:]
     ) {
         self.isEnabled = isEnabled
@@ -79,6 +137,7 @@ nonisolated struct WallpaperSpec: Codable, Equatable, Sendable {
         self.scale = scale
         self.panX = panX
         self.panY = panY
+        self.displayMode = displayMode
         self.perItemFraming = perItemFraming
     }
     
@@ -91,21 +150,23 @@ nonisolated struct WallpaperSpec: Codable, Equatable, Sendable {
         self.scale = try c.decodeIfPresent(Double.self, forKey: .scale) ?? 1.0
         self.panX = try c.decodeIfPresent(Double.self, forKey: .panX) ?? 0.0
         self.panY = try c.decodeIfPresent(Double.self, forKey: .panY) ?? 0.0
+        self.displayMode = try c.decodeIfPresent(WallpaperDisplayMode.self, forKey: .displayMode) ?? .fill
         self.perItemFraming = try c.decodeIfPresent([String: WallpaperFraming].self, forKey: .perItemFraming) ?? [:]
     }
     
     var currentFraming: WallpaperFraming {
-        WallpaperFraming(scale: self.scale, panX: self.panX, panY: self.panY).clamped()
+        WallpaperFraming(scale: self.scale, panX: self.panX, panY: self.panY, displayMode: self.displayMode).clamped()
     }
     
     func clamped() -> WallpaperSpec {
         var copy = self
-        copy.opacity = max(0.04, min(0.55, self.opacity))
-        copy.blurRadius = max(0.0, min(32.0, self.blurRadius))
-        let framing = WallpaperFraming(scale: self.scale, panX: self.panX, panY: self.panY).clamped()
+        copy.opacity = max(0.04, min(0.85, self.opacity))
+        copy.blurRadius = max(0.0, min(40.0, self.blurRadius))
+        let framing = WallpaperFraming(scale: self.scale, panX: self.panX, panY: self.panY, displayMode: self.displayMode).clamped()
         copy.scale = framing.scale
         copy.panX = framing.panX
         copy.panY = framing.panY
+        copy.displayMode = framing.displayMode
         copy.perItemFraming = self.perItemFraming.mapValues { $0.clamped() }
         if copy.selectedID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             copy.selectedID = "ink-aurora"
@@ -299,6 +360,7 @@ final class WallpaperManager {
         next.scale = restored.scale
         next.panX = restored.panX
         next.panY = restored.panY
+        next.displayMode = restored.displayMode
         if enableIfDisabled {
             next.isEnabled = true
         }
@@ -306,9 +368,15 @@ final class WallpaperManager {
     }
     
     
-    /// Updates interactive crop/pan/zoom framing for the active wallpaper.
-    func updateFraming(scale: Double? = nil, panX: Double? = nil, panY: Double? = nil) {
+    /// Updates interactive crop/pan/zoom/mode framing for the active wallpaper.
+    func updateFraming(
+        scale: Double? = nil,
+        panX: Double? = nil,
+        panY: Double? = nil,
+        displayMode: WallpaperDisplayMode? = nil
+    ) {
         var next = self.spec
+        if let displayMode { next.displayMode = displayMode }
         if let scale { next.scale = scale }
         if let panX { next.panX = panX }
         if let panY { next.panY = panY }
@@ -322,36 +390,82 @@ final class WallpaperManager {
         next.scale = 1.0
         next.panX = 0.0
         next.panY = 0.0
+        next.displayMode = .fill
         next.perItemFraming.removeValue(forKey: next.selectedID)
         self.spec = next
     }
     
     
-    /// Computes the exact aspect-fill + zoom/pan draw rect for both flipped SwiftUI previews and unflipped AppKit backdrops.
+    /// Returns the authentic aspect ratio of the active editor window (or primary Mac display) for faithful preview framing.
+    static func referenceWindowAspectRatio() -> CGFloat {
+        if let docWindow = NSApp.orderedWindows.first(where: { $0.windowController is DocumentWindowController && $0.isVisible }),
+           let contentView = docWindow.contentView,
+           contentView.bounds.height > 120
+        {
+            let ratio = contentView.bounds.width / contentView.bounds.height
+            return max(1.15, min(2.25, ratio))
+        }
+        if let screen = NSScreen.main ?? NSScreen.screens.first, screen.frame.height > 0 {
+            let ratio = screen.frame.width / screen.frame.height
+            return max(1.25, min(2.10, ratio))
+        }
+        return 16.0 / 10.0
+    }
+    
+    
+    /// Computes the exact draw rect across Fill, Fit, and Center modes for both flipped SwiftUI previews and unflipped AppKit backdrops.
     nonisolated static func framedDrawRect(
         imageSize: CGSize,
         viewportSize: CGSize,
         scale: Double,
         panX: Double,
         panY: Double,
-        isFlippedY: Bool
+        isFlippedY: Bool,
+        displayMode: WallpaperDisplayMode = .fill
     ) -> CGRect {
         guard imageSize.width > 0, imageSize.height > 0,
               viewportSize.width > 0, viewportSize.height > 0
         else { return .zero }
         
-        let clamped = WallpaperFraming(scale: scale, panX: panX, panY: panY).clamped()
-        let baseScale = max(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height)
+        let clamped = WallpaperFraming(scale: scale, panX: panX, panY: panY, displayMode: displayMode).clamped()
+        let baseScale: CGFloat = switch displayMode {
+            case .fill:
+                max(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height)
+            case .fit, .center:
+                min(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height)
+        }
         let drawW = imageSize.width * baseScale * CGFloat(clamped.scale)
         let drawH = imageSize.height * baseScale * CGFloat(clamped.scale)
-        let slackX = max(0, (drawW - viewportSize.width) * 0.5)
-        let slackY = max(0, (drawH - viewportSize.height) * 0.5)
-        
-        let originX = (viewportSize.width - drawW) * 0.5 - CGFloat(clamped.panX) * slackX
         let ySign: CGFloat = isFlippedY ? -1.0 : 1.0
-        let originY = (viewportSize.height - drawH) * 0.5 + ySign * CGFloat(clamped.panY) * slackY
         
-        return CGRect(x: originX, y: originY, width: drawW, height: drawH)
+        switch displayMode {
+            case .fill:
+                let slackX = max(0, (drawW - viewportSize.width) * 0.5)
+                let slackY = max(0, (drawH - viewportSize.height) * 0.5)
+                let originX = (viewportSize.width - drawW) * 0.5 - CGFloat(clamped.panX) * slackX
+                let originY = (viewportSize.height - drawH) * 0.5 + ySign * CGFloat(clamped.panY) * slackY
+                return CGRect(x: originX, y: originY, width: drawW, height: drawH)
+                
+            case .fit:
+                let originX: CGFloat = if drawW >= viewportSize.width {
+                    (viewportSize.width - drawW) * 0.5 - CGFloat(clamped.panX) * ((drawW - viewportSize.width) * 0.5)
+                } else {
+                    (viewportSize.width - drawW) * 0.5 + CGFloat(clamped.panX) * ((viewportSize.width - drawW) * 0.5)
+                }
+                let originY: CGFloat = if drawH >= viewportSize.height {
+                    (viewportSize.height - drawH) * 0.5 + ySign * CGFloat(clamped.panY) * ((drawH - viewportSize.height) * 0.5)
+                } else {
+                    (viewportSize.height - drawH) * 0.5 - ySign * CGFloat(clamped.panY) * ((viewportSize.height - drawH) * 0.5)
+                }
+                return CGRect(x: originX, y: originY, width: drawW, height: drawH)
+                
+            case .center:
+                let travelX = max(abs(drawW - viewportSize.width) * 0.5, (drawW + viewportSize.width) * 0.32)
+                let travelY = max(abs(drawH - viewportSize.height) * 0.5, (drawH + viewportSize.height) * 0.32)
+                let originX = (viewportSize.width - drawW) * 0.5 - CGFloat(clamped.panX) * travelX
+                let originY = (viewportSize.height - drawH) * 0.5 + ySign * CGFloat(clamped.panY) * travelY
+                return CGRect(x: originX, y: originY, width: drawW, height: drawH)
+        }
     }
     
     
@@ -367,22 +481,51 @@ final class WallpaperManager {
               viewportSize.width > 0, viewportSize.height > 0
         else { return clampedStart }
         
-        let baseScale = max(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height)
-        let baseW = imageSize.width * baseScale * CGFloat(clampedStart.scale)
-        let baseH = imageSize.height * baseScale * CGFloat(clampedStart.scale)
-        let baseSlackX = max(0, (baseW - viewportSize.width) * 0.5)
-        let baseSlackY = max(0, (baseH - viewportSize.height) * 0.5)
+        let mode = clampedStart.displayMode
+        let baseScale: CGFloat = (mode == .fill)
+            ? max(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height)
+            : min(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height)
         
-        // If aspect ratio nearly matches the viewport at 1.0x, smoothly nudge zoom so dragging always frames freely.
-        let effectiveScale = (baseSlackX < 3 && baseSlackY < 3) ? max(clampedStart.scale, 1.22) : clampedStart.scale
-        let effW = imageSize.width * baseScale * CGFloat(effectiveScale)
-        let effH = imageSize.height * baseScale * CGFloat(effectiveScale)
-        let slackX = max(0, (effW - viewportSize.width) * 0.5)
-        let slackY = max(0, (effH - viewportSize.height) * 0.5)
-        
-        let nextPanX = slackX > 1 ? clampedStart.panX - Double(translation.width / slackX) : clampedStart.panX
-        let nextPanY = slackY > 1 ? clampedStart.panY - Double(translation.height / slackY) : clampedStart.panY
-        return WallpaperFraming(scale: effectiveScale, panX: nextPanX, panY: nextPanY).clamped()
+        switch mode {
+            case .fill:
+                let baseW = imageSize.width * baseScale * CGFloat(clampedStart.scale)
+                let baseH = imageSize.height * baseScale * CGFloat(clampedStart.scale)
+                let baseSlackX = max(0, (baseW - viewportSize.width) * 0.5)
+                let baseSlackY = max(0, (baseH - viewportSize.height) * 0.5)
+                
+                // If aspect ratio nearly matches the viewport at 1.0x, smoothly nudge zoom so dragging always frames freely.
+                let effectiveScale = (baseSlackX < 3 && baseSlackY < 3) ? max(clampedStart.scale, 1.22) : clampedStart.scale
+                let effW = imageSize.width * baseScale * CGFloat(effectiveScale)
+                let effH = imageSize.height * baseScale * CGFloat(effectiveScale)
+                let slackX = max(0, (effW - viewportSize.width) * 0.5)
+                let slackY = max(0, (effH - viewportSize.height) * 0.5)
+                
+                let nextPanX = slackX > 1 ? clampedStart.panX - Double(translation.width / slackX) : clampedStart.panX
+                let nextPanY = slackY > 1 ? clampedStart.panY - Double(translation.height / slackY) : clampedStart.panY
+                return WallpaperFraming(scale: effectiveScale, panX: nextPanX, panY: nextPanY, displayMode: .fill).clamped()
+                
+            case .fit:
+                let drawW = imageSize.width * baseScale * CGFloat(clampedStart.scale)
+                let drawH = imageSize.height * baseScale * CGFloat(clampedStart.scale)
+                let diffX = drawW - viewportSize.width
+                let diffY = drawH - viewportSize.height
+                let nextPanX: Double = abs(diffX) > 1
+                    ? clampedStart.panX + (diffX >= 0 ? -1.0 : 1.0) * Double(translation.width / (abs(diffX) * 0.5))
+                    : clampedStart.panX
+                let nextPanY: Double = abs(diffY) > 1
+                    ? clampedStart.panY + (diffY >= 0 ? -1.0 : 1.0) * Double(translation.height / (abs(diffY) * 0.5))
+                    : clampedStart.panY
+                return WallpaperFraming(scale: clampedStart.scale, panX: nextPanX, panY: nextPanY, displayMode: .fit).clamped()
+                
+            case .center:
+                let drawW = imageSize.width * baseScale * CGFloat(clampedStart.scale)
+                let drawH = imageSize.height * baseScale * CGFloat(clampedStart.scale)
+                let travelX = max(abs(drawW - viewportSize.width) * 0.5, (drawW + viewportSize.width) * 0.32)
+                let travelY = max(abs(drawH - viewportSize.height) * 0.5, (drawH + viewportSize.height) * 0.32)
+                let nextPanX = travelX > 1 ? clampedStart.panX - Double(translation.width / travelX) : clampedStart.panX
+                let nextPanY = travelY > 1 ? clampedStart.panY - Double(translation.height / travelY) : clampedStart.panY
+                return WallpaperFraming(scale: clampedStart.scale, panX: nextPanX, panY: nextPanY, displayMode: .center).clamped()
+        }
     }
     
     
@@ -419,6 +562,23 @@ final class WallpaperManager {
     }
     
     
+    /// Re-bakes a cached Media Library wallpaper file after the user edits/crops it in the Material Library.
+    @discardableResult
+    func refreshMediaLibraryBackground(assetID: String, title: String, fileURL: URL) -> WallpaperItem? {
+        let wallpaperID = Self.mediaLibraryWallpaperID(for: assetID)
+        guard let normalized = Self.downsampledImage(from: fileURL, maxPixelSize: 2400) ?? NSImage(contentsOf: fileURL) else {
+            return nil
+        }
+        self.rawImageCache.removeObject(forKey: wallpaperID as NSString)
+        self.thumbnailCache.removeObject(forKey: wallpaperID as NSString)
+        self.blurredImageCache.removeAllObjects()
+        let wasSelected = (self.spec.selectedID == wallpaperID)
+        let item = self.storeCustomWallpaper(normalized, customID: wallpaperID, title: title, activateAfter: wasSelected)
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        return item
+    }
+    
+    
     /// Saves a user-chosen artwork image into App Support, adds it to the catalog, and activates it.
     @discardableResult
     func saveCustomWallpaper(_ image: NSImage, title: String? = nil) -> WallpaperItem? {
@@ -428,7 +588,7 @@ final class WallpaperManager {
     
     
     @discardableResult
-    private func storeCustomWallpaper(_ image: NSImage, customID: String, title: String?) -> WallpaperItem? {
+    private func storeCustomWallpaper(_ image: NSImage, customID: String, title: String?, activateAfter: Bool = true) -> WallpaperItem? {
         var proposed = NSRect(origin: .zero, size: image.size)
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
                 ?? image.cgImage(forProposedRect: &proposed, context: nil, hints: nil)
@@ -485,7 +645,9 @@ final class WallpaperManager {
             self.rawImageCache.setObject(cachedImg, forKey: customID as NSString, cost: Self.estimatedImageCost(cachedImg))
         }
         self.catalogVersion += 1
-        self.selectWallpaper(id: customID, enableIfDisabled: true)
+        if activateAfter {
+            self.selectWallpaper(id: customID, enableIfDisabled: true)
+        }
         return self.allItems.first { $0.id == customID }
     }
     
@@ -510,6 +672,7 @@ final class WallpaperManager {
             next.scale = restored.scale
             next.panX = restored.panX
             next.panY = restored.panY
+            next.displayMode = restored.displayMode
             self.spec = next
         } else {
             self.spec.perItemFraming.removeValue(forKey: id)

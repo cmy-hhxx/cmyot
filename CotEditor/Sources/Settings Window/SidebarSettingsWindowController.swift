@@ -1131,6 +1131,8 @@ internal final class WallpaperFramingInteractionNSView: NSView {
     var onDragChanged: ((CGSize) -> Void)?
     var onDragEnd: (() -> Void)?
     var onMagnify: ((CGFloat, NSEvent.Phase) -> Void)?
+    var onScrollZoom: ((CGFloat) -> Void)?
+    var onDoubleClick: (() -> Void)?
     var onDropTargetedChange: ((Bool) -> Void)?
     var onDropURLs: (([URL]) -> Void)?
     var onDropImages: (([NSImage]) -> Void)?
@@ -1161,6 +1163,10 @@ internal final class WallpaperFramingInteractionNSView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard self.isInteractive else {
             super.mouseDown(with: event)
+            return
+        }
+        if event.clickCount == 2, let onDoubleClick = self.onDoubleClick {
+            onDoubleClick()
             return
         }
         let pt = self.convert(event.locationInWindow, from: nil)
@@ -1204,6 +1210,17 @@ internal final class WallpaperFramingInteractionNSView: NSView {
         self.onMagnify?(event.magnification, event.phase)
     }
     
+    override func scrollWheel(with event: NSEvent) {
+        guard self.isInteractive, let onScrollZoom = self.onScrollZoom else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let delta = event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 0.004 : 0.025)
+        if abs(delta) > 0.0001 {
+            onScrollZoom(delta)
+        }
+    }
+    
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
         let pb = sender.draggingPasteboard
         let hasURL = pb.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
@@ -1241,13 +1258,15 @@ internal final class WallpaperFramingInteractionNSView: NSView {
 }
 
 
-private struct WallpaperFramingInteractionOverlay: NSViewRepresentable {
+internal struct WallpaperFramingInteractionOverlay: NSViewRepresentable {
     
     var isInteractive: Bool = true
     var onDragStart: (() -> Void)? = nil
     var onDragChanged: ((CGSize) -> Void)? = nil
     var onDragEnd: (() -> Void)? = nil
     var onMagnify: ((CGFloat, NSEvent.Phase) -> Void)? = nil
+    var onScrollZoom: ((CGFloat) -> Void)? = nil
+    var onDoubleClick: (() -> Void)? = nil
     var onDropTargetedChange: ((Bool) -> Void)? = nil
     var onDropURLs: (([URL]) -> Void)? = nil
     var onDropImages: (([NSImage]) -> Void)? = nil
@@ -1268,6 +1287,8 @@ private struct WallpaperFramingInteractionOverlay: NSViewRepresentable {
         view.onDragChanged = self.onDragChanged
         view.onDragEnd = self.onDragEnd
         view.onMagnify = self.onMagnify
+        view.onScrollZoom = self.onScrollZoom
+        view.onDoubleClick = self.onDoubleClick
         view.onDropTargetedChange = self.onDropTargetedChange
         view.onDropURLs = self.onDropURLs
         view.onDropImages = self.onDropImages
@@ -1758,216 +1779,241 @@ private struct SidebarWallpaperSettingsPane: View {
         let framing = self.manager.spec.currentFraming
         
         VStack(spacing: 0) {
-            // Pinned Interactive Crop & Preview Stage
-            VStack(spacing: 0) {
-                SettingsGroupCard(title: nil) {
-                    VStack(spacing: 10) {
-                        self.liveEditorPreviewStage(selectedItem: selectedItem)
-                            .frame(height: 158)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .strokeBorder(
-                                        self.isDropTargeted
-                                            ? StudioPaletteManager.shared.activeAccentColor
-                                            : ((self.isFramingActive || self.showViewfinderGrid)
-                                                ? StudioPaletteManager.shared.activeAccentColor.opacity(0.65)
-                                                : (self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.08))),
-                                        style: self.isDropTargeted ? StrokeStyle(lineWidth: 2, dash: [6, 4]) : StrokeStyle(lineWidth: (self.isFramingActive || self.showViewfinderGrid) ? 1.3 : 0.75)
-                                    )
-                                    .allowsHitTesting(false)
-                            )
-                        
-                        HStack(spacing: 8) {
-                            if let selectedItem {
-                                Circle()
-                                    .fill(Color(hexString: selectedItem.accentHex))
-                                    .frame(width: 8, height: 8)
-                                Text(selectedItem.title)
-                                    .font(.system(size: 13, weight: .medium))
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            
-                            Spacer()
-                            
-                            Button {
-                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                                    self.showViewfinderGrid.toggle()
-                                }
-                            } label: {
-                                Label(
-                                    AppLanguage.text("构图网格", en: "Grid"),
-                                    systemImage: self.showViewfinderGrid ? "viewfinder.circle.fill" : "viewfinder"
+            self.pinnedPreviewSection(selectedItem: selectedItem, framing: framing)
+            Divider()
+            self.scrollableControlsSection(items: items)
+        }
+    }
+    
+    
+    private func pinnedPreviewSection(selectedItem: WallpaperItem?, framing: WallpaperFraming) -> some View {
+        VStack(spacing: 0) {
+            SettingsGroupCard(title: nil) {
+                VStack(spacing: 10) {
+                    self.liveEditorPreviewStage(selectedItem: selectedItem)
+                        .frame(height: 204)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(
+                                    self.isDropTargeted
+                                        ? StudioPaletteManager.shared.activeAccentColor
+                                        : ((self.isFramingActive || self.showViewfinderGrid)
+                                            ? StudioPaletteManager.shared.activeAccentColor.opacity(0.65)
+                                            : (self.colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08))),
+                                    style: self.isDropTargeted
+                                        ? StrokeStyle(lineWidth: 2, dash: [6, 4])
+                                        : StrokeStyle(lineWidth: (self.isFramingActive || self.showViewfinderGrid) ? 1.3 : 0.75)
                                 )
+                                .allowsHitTesting(false)
+                        )
+                    
+                    HStack(spacing: 7) {
+                        if let selectedItem {
+                            Circle()
+                                .fill(Color(hexString: selectedItem.accentHex))
+                                .frame(width: 7, height: 7)
+                            Text(selectedItem.title)
+                                .font(.system(size: 12.5, weight: .medium))
+                                .lineLimit(1)
+                        }
+                        
+                        Picker("", selection: Binding(
+                            get: { self.manager.spec.displayMode },
+                            set: { mode in
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                                    self.manager.updateFraming(displayMode: mode)
+                                }
+                            }
+                        )) {
+                            ForEach(WallpaperDisplayMode.allCases) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .frame(width: 144)
+                        
+                        Spacer(minLength: 4)
+                        
+                        Button {
+                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                                self.showViewfinderGrid.toggle()
+                            }
+                        } label: {
+                            Image(systemName: self.showViewfinderGrid ? "viewfinder.circle.fill" : "viewfinder")
+                        }
+                        .controlSize(.small)
+                        .tint(self.showViewfinderGrid ? StudioPaletteManager.shared.activeAccentColor : nil)
+                        .help(AppLanguage.text("构图网格", en: "Grid"))
+                        
+                        if !framing.isDefault {
+                            Button(AppLanguage.text("重置", en: "Reset")) {
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
+                                    self.manager.resetFraming()
+                                }
                             }
                             .controlSize(.small)
-                            .tint(self.showViewfinderGrid ? StudioPaletteManager.shared.activeAccentColor : nil)
-                            
-                            if !framing.isDefault {
-                                Button(AppLanguage.text("居中重置", en: "Reset Crop")) {
-                                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
-                                        self.manager.resetFraming()
-                                    }
-                                }
-                                .controlSize(.small)
-                            }
-                            
-                            if let selectedItem, selectedItem.isCustom {
-                                Button(role: .destructive) {
-                                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
-                                        self.manager.deleteCustomWallpaper(id: selectedItem.id)
-                                    }
-                                } label: {
-                                    Image(systemName: "trash")
-                                }
-                                .controlSize(.small)
-                                .help(AppLanguage.text("删除壁纸", en: "Delete"))
-                            }
-                            
-                            Button {
-                                UserMediaLibraryImporter.presentFolderPicker(preferredKind: .background) { result in
-                                    if let firstID = result.firstAddedBackgroundID {
-                                        _ = self.mediaLibrary.applyBackgroundToEditorWallpaper(assetID: firstID, wallpaperManager: self.manager)
-                                    }
+                        }
+                        
+                        if let selectedItem, selectedItem.isCustom {
+                            Button(role: .destructive) {
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
+                                    self.manager.deleteCustomWallpaper(id: selectedItem.id)
                                 }
                             } label: {
-                                Image(systemName: "folder.badge.plus")
+                                Image(systemName: "trash")
                             }
                             .controlSize(.small)
-                            .help(AppLanguage.text("导入背景文件夹", en: "Import Background Folder"))
+                            .help(AppLanguage.text("删除壁纸", en: "Delete"))
+                        }
+                        
+                        Button {
+                            UserMediaLibraryImporter.presentFolderPicker(preferredKind: .background) { result in
+                                if let firstID = result.firstAddedBackgroundID {
+                                    _ = self.mediaLibrary.applyBackgroundToEditorWallpaper(assetID: firstID, wallpaperManager: self.manager)
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "folder.badge.plus")
+                        }
+                        .controlSize(.small)
+                        .help(AppLanguage.text("导入背景文件夹", en: "Import Background Folder"))
+                        
+                        Button {
+                            self.pickCustomWallpaperImage()
+                        } label: {
+                            Label(AppLanguage.text("上传", en: "Upload"), systemImage: "plus")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(12)
+            }
+        }
+        .padding(.horizontal, SettingsDesignTokens.contentPadding)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+    }
+    
+    
+    private func scrollableControlsSection(items: [WallpaperItem]) -> some View {
+        let zoomRange = self.manager.spec.displayMode.minScale...WallpaperDisplayMode.maxScale
+        
+        return ScrollView {
+            VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+                SettingsGroupCard(title: AppLanguage.text("画面调整", en: "Framing & Display")) {
+                    SettingsItemRow(label: AppLanguage.text("启用编辑器壁纸", en: "Enable Wallpaper")) {
+                        Toggle("", isOn: Binding(
+                            get: { self.manager.spec.isEnabled },
+                            set: { val in
+                                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
+                                    self.manager.spec.isEnabled = val
+                                }
+                            }
+                        ))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                    }
+                    
+                    SettingsRowDivider()
+                    
+                    SettingsItemRow(label: AppLanguage.text("缩放比例", en: "Zoom")) {
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: Binding(
+                                    get: { self.manager.spec.scale },
+                                    set: { self.manager.updateFraming(scale: $0) }
+                                ),
+                                in: zoomRange
+                            )
+                            .frame(width: SettingsDesignTokens.sliderWidth)
+                            .disabled(!self.manager.spec.isEnabled)
                             
-                            Button {
-                                self.pickCustomWallpaperImage()
-                            } label: {
-                                Label(AppLanguage.text("上传图片", en: "Upload"), systemImage: "photo.badge.plus")
+                            Text("\(Int((self.manager.spec.scale * 100).rounded()))%")
+                                .font(.system(size: 12).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+                        }
+                        .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
+                    }
+                    
+                    SettingsRowDivider()
+                    
+                    SettingsItemRow(label: AppLanguage.text("画面浓度", en: "Opacity")) {
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: Binding(
+                                    get: { self.manager.spec.opacity },
+                                    set: { self.manager.spec.opacity = $0 }
+                                ),
+                                in: 0.04...0.85
+                            )
+                            .frame(width: SettingsDesignTokens.sliderWidth)
+                            .disabled(!self.manager.spec.isEnabled)
+                            
+                            Text("\(Int((self.manager.spec.opacity * 100).rounded()))%")
+                                .font(.system(size: 12).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+                        }
+                        .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
+                    }
+                    
+                    SettingsRowDivider()
+                    
+                    SettingsItemRow(label: AppLanguage.text("柔焦模糊", en: "Soft Blur")) {
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: Binding(
+                                    get: { self.manager.spec.blurRadius },
+                                    set: { self.manager.spec.blurRadius = $0 }
+                                ),
+                                in: 0...40
+                            )
+                            .frame(width: SettingsDesignTokens.sliderWidth)
+                            .disabled(!self.manager.spec.isEnabled)
+                            
+                            Text("\(Int(self.manager.spec.blurRadius.rounded())) px")
+                                .font(.system(size: 12).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
+                        }
+                        .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
+                    }
+                }
+                
+                if !self.mediaLibrary.backgrounds.isEmpty {
+                    SettingsGroupCard(title: AppLanguage.text("我的背景库", en: "My Background Library")) {
+                        LazyVGrid(
+                            columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
+                            spacing: 8
+                        ) {
+                            ForEach(self.mediaLibrary.backgrounds) { asset in
+                                self.backgroundLibraryTile(asset)
                             }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
+                        }
+                        .padding(12)
+                    }
+                }
+                
+                SettingsGroupCard(title: AppLanguage.text("精选壁纸", en: "Gallery")) {
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
+                        spacing: 8
+                    ) {
+                        ForEach(items) { item in
+                            self.wallpaperTile(item)
                         }
                     }
                     .padding(12)
                 }
             }
             .padding(.horizontal, SettingsDesignTokens.contentPadding)
-            .padding(.top, 14)
-            .padding(.bottom, 12)
-            
-            Divider()
-            
-            // Scrollable Gallery & Backdrop Sliders
-            ScrollView {
-                VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
-                    if !self.mediaLibrary.backgrounds.isEmpty {
-                        SettingsGroupCard(title: AppLanguage.text("我的背景库", en: "My Background Library")) {
-                            LazyVGrid(
-                                columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
-                                spacing: 8
-                            ) {
-                                ForEach(self.mediaLibrary.backgrounds) { asset in
-                                    self.backgroundLibraryTile(asset)
-                                }
-                            }
-                            .padding(12)
-                        }
-                    }
-                    
-                    SettingsGroupCard(title: AppLanguage.text("精选壁纸", en: "Gallery")) {
-                        LazyVGrid(
-                            columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
-                            spacing: 8
-                        ) {
-                            ForEach(items) { item in
-                                self.wallpaperTile(item)
-                            }
-                        }
-                        .padding(12)
-                    }
-                    
-                    SettingsGroupCard(title: AppLanguage.text("编辑器背景显示", en: "Editor Backdrop")) {
-                        SettingsItemRow(label: AppLanguage.text("启用编辑器壁纸", en: "Enable Wallpaper")) {
-                            Toggle("", isOn: Binding(
-                                get: { self.manager.spec.isEnabled },
-                                set: { val in
-                                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                                        self.manager.spec.isEnabled = val
-                                    }
-                                }
-                            ))
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
-                        }
-                        
-                        SettingsRowDivider()
-                        
-                        SettingsItemRow(label: AppLanguage.text("取景缩放", en: "Crop Zoom")) {
-                            HStack(spacing: 8) {
-                                Slider(
-                                    value: Binding(
-                                        get: { self.manager.spec.scale },
-                                        set: { self.manager.updateFraming(scale: $0) }
-                                    ),
-                                    in: 1.0...2.6
-                                )
-                                .frame(width: SettingsDesignTokens.sliderWidth)
-                                .disabled(!self.manager.spec.isEnabled)
-                                
-                                Text("\(Int((self.manager.spec.scale * 100).rounded()))%")
-                                    .font(.system(size: 12).monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
-                            }
-                            .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
-                        }
-                        
-                        SettingsRowDivider()
-                        
-                        SettingsItemRow(label: AppLanguage.text("画面浓度", en: "Opacity")) {
-                            HStack(spacing: 8) {
-                                Slider(
-                                    value: Binding(
-                                        get: { self.manager.spec.opacity },
-                                        set: { self.manager.spec.opacity = $0 }
-                                    ),
-                                    in: 0.04...0.48
-                                )
-                                .frame(width: SettingsDesignTokens.sliderWidth)
-                                .disabled(!self.manager.spec.isEnabled)
-                                
-                                Text("\(Int((self.manager.spec.opacity * 100).rounded()))%")
-                                    .font(.system(size: 12).monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
-                            }
-                            .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
-                        }
-                        
-                        SettingsRowDivider()
-                        
-                        SettingsItemRow(label: AppLanguage.text("柔焦模糊", en: "Soft Blur")) {
-                            HStack(spacing: 8) {
-                                Slider(
-                                    value: Binding(
-                                        get: { self.manager.spec.blurRadius },
-                                        set: { self.manager.spec.blurRadius = $0 }
-                                    ),
-                                    in: 0...32
-                                )
-                                .frame(width: SettingsDesignTokens.sliderWidth)
-                                .disabled(!self.manager.spec.isEnabled)
-                                
-                                Text("\(Int(self.manager.spec.blurRadius.rounded())) px")
-                                    .font(.system(size: 12).monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: SettingsDesignTokens.readoutWidth, alignment: .trailing)
-                            }
-                            .frame(width: SettingsDesignTokens.controlWidth, alignment: .trailing)
-                        }
-                    }
-                }
-                .padding(.horizontal, SettingsDesignTokens.contentPadding)
-                .padding(.vertical, 16)
-            }
+            .padding(.vertical, 16)
         }
     }
     
@@ -1976,85 +2022,97 @@ private struct SidebarWallpaperSettingsPane: View {
     private func liveEditorPreviewStage(selectedItem: WallpaperItem?) -> some View {
         let isDark = (self.colorScheme == .dark)
         let editorBase = isDark ? Color(red: 0.09, green: 0.095, blue: 0.11) : Color(red: 0.985, green: 0.985, blue: 0.99)
+        let studioMat = isDark ? Color(red: 0.055, green: 0.06, blue: 0.075) : Color(red: 0.89, green: 0.90, blue: 0.92)
         let artwork = selectedItem.map { self.manager.artworkImage(for: $0.id) }
         let accent = selectedItem.map { Color(hexString: $0.accentHex) } ?? StudioPaletteManager.shared.activeAccentColor
         let framingMode = (self.isFramingActive || self.showViewfinderGrid)
         let previewAlpha = framingMode
-            ? 0.92
-            : (self.manager.spec.isEnabled ? min(0.84, max(0.20, self.manager.spec.opacity * 1.65)) : 0.16)
+            ? 0.94
+            : (self.manager.spec.isEnabled ? min(0.95, max(0.20, self.manager.spec.opacity * 1.45)) : 0.16)
         let previewBlur = framingMode
             ? 0.0
-            : (self.manager.spec.isEnabled ? min(14, self.manager.spec.blurRadius * 0.45) : 0.0)
+            : (self.manager.spec.isEnabled ? min(16, self.manager.spec.blurRadius * 0.42) : 0.0)
+        let windowAspect = WallpaperManager.referenceWindowAspectRatio()
         
-        GeometryReader { geo in
+        GeometryReader { outerGeo in
+            // Apple-style true window-aspect miniature preview centered inside the dark studio matte.
+            let viewportRect = MediaAssetCropEditorSheet.fittedCropRect(
+                in: outerGeo.size,
+                aspect: windowAspect,
+                inset: 10
+            )
+            let drawInViewport = artwork.map {
+                WallpaperManager.framedDrawRect(
+                    imageSize: $0.size,
+                    viewportSize: viewportRect.size,
+                    scale: self.manager.spec.scale,
+                    panX: self.manager.spec.panX,
+                    panY: self.manager.spec.panY,
+                    isFlippedY: true,
+                    displayMode: self.manager.spec.displayMode
+                )
+            } ?? .zero
+            
             ZStack(alignment: .topLeading) {
-                editorBase
-                    .overlay(alignment: .topLeading) {
-                        if let artwork {
-                            let drawRect = WallpaperManager.framedDrawRect(
-                                imageSize: artwork.size,
-                                viewportSize: geo.size,
-                                scale: self.manager.spec.scale,
-                                panX: self.manager.spec.panX,
-                                panY: self.manager.spec.panY,
-                                isFlippedY: true
-                            )
-                            Image(nsImage: artwork)
-                                .resizable()
-                                .interpolation(.high)
-                                .frame(width: max(1, drawRect.width), height: max(1, drawRect.height))
-                                .position(x: drawRect.midX, y: drawRect.midY)
-                                .blur(radius: previewBlur)
-                                .opacity(previewAlpha)
-                                .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20), value: selectedItem?.id)
-                        }
-                    }
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .clipped()
+                studioMat
                 
-                // Miniature authentic CotEditor window chrome & code skeleton (dims while framing image)
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 6) {
-                        Circle().fill(Color(red: 0.95, green: 0.37, blue: 0.35)).frame(width: 7, height: 7)
-                        Circle().fill(Color(red: 0.96, green: 0.74, blue: 0.26)).frame(width: 7, height: 7)
-                        Circle().fill(Color(red: 0.30, green: 0.78, blue: 0.38)).frame(width: 7, height: 7)
-                        
-                        Spacer()
-                        
-                        Text(AppLanguage.text("拖拽框选区域", en: "Drag to Frame"))
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .opacity(framingMode ? 0.95 : 0.72)
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(height: 26)
-                    .background(isDark ? Color.black.opacity(0.28) : Color.white.opacity(0.62))
-                    
-                    Divider().opacity(0.25)
-                    
-                    VStack(alignment: .leading, spacing: 7) {
-                        self.sampleCodeRow(line: "1", segments: [(accent, 42), (.primary.opacity(0.75), 96), (.secondary.opacity(0.45), 64)])
-                        self.sampleCodeRow(line: "2", segments: [(.clear, 16), (.primary.opacity(0.65), 118), (accent.opacity(0.75), 54)])
-                        self.sampleCodeRow(line: "3", segments: [(.clear, 16), (.secondary.opacity(0.50), 146)])
-                        self.sampleCodeRow(line: "4", segments: [(.clear, 32), (accent.opacity(0.85), 62), (.primary.opacity(0.70), 82)])
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.top, 12)
-                    .opacity(framingMode ? 0.18 : 1.0)
-                    .animation(.timingCurve(0.2, 0, 0, 1, duration: 0.16), value: framingMode)
-                    
-                    Spacer(minLength: 0)
+                // Apple Photos / Lock Screen style out-of-frame ghost peek while dragging or zooming.
+                if framingMode, let artwork, !drawInViewport.isEmpty {
+                    Image(nsImage: artwork)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: max(1, drawInViewport.width), height: max(1, drawInViewport.height))
+                        .position(
+                            x: viewportRect.minX + drawInViewport.midX,
+                            y: viewportRect.minY + drawInViewport.midY
+                        )
+                        .opacity(0.24)
                 }
-                .allowsHitTesting(false)
                 
-                // AppKit pan/pinch/drop overlay (mouseDownCanMoveWindow == false so dragging never moves window)
+                // True-aspect miniature CotEditor window stage.
+                ZStack(alignment: .topLeading) {
+                    editorBase
+                        .overlay(alignment: .topLeading) {
+                            if let artwork, !drawInViewport.isEmpty {
+                                Image(nsImage: artwork)
+                                    .resizable()
+                                    .interpolation(.high)
+                                    .frame(width: max(1, drawInViewport.width), height: max(1, drawInViewport.height))
+                                    .position(x: drawInViewport.midX, y: drawInViewport.midY)
+                                    .blur(radius: previewBlur)
+                                    .opacity(previewAlpha)
+                                    .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20), value: selectedItem?.id)
+                            }
+                        }
+                        .frame(width: viewportRect.width, height: viewportRect.height)
+                        .clipped()
+                    
+                    self.miniEditorChrome(isDark: isDark, accent: accent, framingMode: framingMode)
+                        .allowsHitTesting(false)
+                    
+                    if framingMode {
+                        self.viewfinderOverlay(size: viewportRect.size, accent: accent)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .frame(width: viewportRect.width, height: viewportRect.height)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(
+                            framingMode ? accent.opacity(0.92) : (isDark ? Color.white.opacity(0.18) : Color.black.opacity(0.16)),
+                            lineWidth: framingMode ? 1.5 : 0.8
+                        )
+                )
+                .shadow(color: Color.black.opacity(isDark ? 0.42 : 0.16), radius: 8, y: 3)
+                .offset(x: viewportRect.minX, y: viewportRect.minY)
+                
+                // Direct AppKit pan / pinch / scroll-zoom / double-click / drop surface across the full stage.
                 WallpaperFramingInteractionOverlay(
                     isInteractive: artwork != nil,
                     onDragStart: {
                         guard artwork != nil else { return }
-                        if !self.manager.spec.isEnabled {
-                            self.manager.spec.isEnabled = true
-                        }
+                        if !self.manager.spec.isEnabled { self.manager.spec.isEnabled = true }
                         self.dragStartFraming = self.manager.spec.currentFraming
                         self.isFramingActive = true
                     },
@@ -2064,10 +2122,15 @@ private struct SidebarWallpaperSettingsPane: View {
                         let updated = WallpaperManager.dragUpdatedFraming(
                             start: start,
                             imageSize: artwork.size,
-                            viewportSize: geo.size,
+                            viewportSize: viewportRect.size,
                             translation: translation
                         )
-                        self.manager.updateFraming(scale: updated.scale, panX: updated.panX, panY: updated.panY)
+                        self.manager.updateFraming(
+                            scale: updated.scale,
+                            panX: updated.panX,
+                            panY: updated.panY,
+                            displayMode: updated.displayMode
+                        )
                     },
                     onDragEnd: {
                         self.dragStartFraming = nil
@@ -2076,12 +2139,8 @@ private struct SidebarWallpaperSettingsPane: View {
                         }
                     },
                     onMagnify: { magnificationDelta, phase in
-                        if !self.manager.spec.isEnabled {
-                            self.manager.spec.isEnabled = true
-                        }
-                        if phase == .began {
-                            self.isFramingActive = true
-                        }
+                        if !self.manager.spec.isEnabled { self.manager.spec.isEnabled = true }
+                        if phase == .began { self.isFramingActive = true }
                         self.manager.updateFraming(scale: self.manager.spec.scale * (1.0 + Double(magnificationDelta)))
                         if phase == .ended || phase == .cancelled {
                             withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.22)) {
@@ -2089,27 +2148,28 @@ private struct SidebarWallpaperSettingsPane: View {
                             }
                         }
                     },
-                    onDropTargetedChange: { targeted in
-                        self.isDropTargeted = targeted
+                    onScrollZoom: { delta in
+                        if !self.manager.spec.isEnabled { self.manager.spec.isEnabled = true }
+                        self.manager.updateFraming(scale: self.manager.spec.scale * (1.0 + Double(delta)))
                     },
-                    onDropURLs: { urls in
-                        self.handleDroppedURLs(urls)
+                    onDoubleClick: {
+                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
+                            if self.manager.spec.currentFraming.isDefault {
+                                self.manager.updateFraming(scale: 1.6)
+                            } else {
+                                self.manager.resetFraming()
+                            }
+                        }
                     },
-                    onDropImages: { images in
-                        self.handleDroppedImages(images)
-                    }
+                    onDropTargetedChange: { targeted in self.isDropTargeted = targeted },
+                    onDropURLs: { urls in self.handleDroppedURLs(urls) },
+                    onDropImages: { images in self.handleDroppedImages(images) }
                 )
-                
-                // Viewfinder 3x3 framing grid + corner brackets
-                if framingMode {
-                    self.viewfinderOverlay(size: geo.size, accent: accent)
-                        .allowsHitTesting(false)
-                }
                 
                 if self.isDropTargeted {
                     ZStack {
                         Color.black.opacity(0.35)
-                        Text(AppLanguage.text("松手设为自定义壁纸", en: "Drop Image to Use as Wallpaper"))
+                        Text(AppLanguage.text("松手设为壁纸", en: "Drop to Set Wallpaper"))
                             .font(.system(size: 12.5, weight: .semibold))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 12)
@@ -2119,39 +2179,67 @@ private struct SidebarWallpaperSettingsPane: View {
                     .allowsHitTesting(false)
                 }
             }
+            .clipped()
+        }
+    }
+    
+    
+    private func miniEditorChrome(isDark: Bool, accent: Color, framingMode: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 5) {
+                Circle().fill(Color(red: 0.95, green: 0.37, blue: 0.35)).frame(width: 6, height: 6)
+                Circle().fill(Color(red: 0.96, green: 0.74, blue: 0.26)).frame(width: 6, height: 6)
+                Circle().fill(Color(red: 0.30, green: 0.78, blue: 0.38)).frame(width: 6, height: 6)
+                Spacer()
+                Text("\(Int((self.manager.spec.scale * 100).rounded()))%")
+                    .font(.system(size: 9.5, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .opacity(framingMode ? 0.95 : 0.65)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 22)
+            .background(isDark ? Color.black.opacity(0.28) : Color.white.opacity(0.62))
+            
+            Divider().opacity(0.25)
+            
+            VStack(alignment: .leading, spacing: 7) {
+                self.sampleCodeRow(line: "1", segments: [(accent, 36), (.primary.opacity(0.75), 82), (.secondary.opacity(0.45), 52)])
+                self.sampleCodeRow(line: "2", segments: [(.clear, 14), (.primary.opacity(0.65), 98), (accent.opacity(0.75), 44)])
+                self.sampleCodeRow(line: "3", segments: [(.clear, 14), (.secondary.opacity(0.50), 120)])
+                self.sampleCodeRow(line: "4", segments: [(.clear, 26), (accent.opacity(0.85), 50), (.primary.opacity(0.70), 68)])
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .opacity(framingMode ? 0.14 : 0.96)
+            .animation(.timingCurve(0.2, 0, 0, 1, duration: 0.16), value: framingMode)
+            
+            Spacer(minLength: 0)
         }
     }
     
     
     @ViewBuilder
     private func viewfinderOverlay(size: CGSize, accent: Color) -> some View {
-        let inset: CGFloat = 10
-        let w = max(20, size.width - inset * 2)
-        let h = max(20, size.height - inset * 2)
         ZStack(alignment: .bottomTrailing) {
             Path { path in
                 for i in 1...2 {
-                    let x = inset + w * CGFloat(i) / 3.0
-                    path.move(to: CGPoint(x: x, y: inset))
-                    path.addLine(to: CGPoint(x: x, y: inset + h))
-                    let y = inset + h * CGFloat(i) / 3.0
-                    path.move(to: CGPoint(x: inset, y: y))
-                    path.addLine(to: CGPoint(x: inset + w, y: y))
+                    let x = size.width * CGFloat(i) / 3.0
+                    path.move(to: CGPoint(x: x, y: 0))
+                    path.addLine(to: CGPoint(x: x, y: size.height))
+                    let y = size.height * CGFloat(i) / 3.0
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: size.width, y: y))
                 }
             }
-            .stroke(Color.white.opacity(0.32), style: StrokeStyle(lineWidth: 0.75, dash: [4, 4]))
+            .stroke(Color.white.opacity(0.36), lineWidth: 0.75)
             
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(accent.opacity(0.85), lineWidth: 1.4)
-                .padding(inset)
-            
-            Text("\(Int((self.manager.spec.scale * 100).rounded()))%")
+            Text("\(self.manager.spec.displayMode.label) · \(Int((self.manager.spec.scale * 100).rounded()))%")
                 .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
                 .foregroundStyle(.white)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
-                .background(Color.black.opacity(0.55), in: Capsule())
-                .padding(14)
+                .background(Color.black.opacity(0.58), in: Capsule())
+                .padding(8)
         }
     }
     
