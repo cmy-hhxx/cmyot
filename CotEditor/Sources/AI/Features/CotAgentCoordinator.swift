@@ -451,6 +451,29 @@ final class CotAgentCoordinator {
                 }
                 return AppliedActionReceipt(symbolName: "waveform", summary: q)
                 
+            case "curate_podcast":
+                let topic = (action.query ?? action.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !topic.isEmpty else { return nil }
+                let reason = action.detail ?? action.why
+                let shouldOpenBoard = (action.board == "podcast")
+                if shouldOpenBoard,
+                   let docVC = Self.activeDocumentViewController(),
+                   let pane = docVC.focusedEditorViewController
+                {
+                    docVC.openNewBoardTab(.podcast, in: pane, explicitQuery: topic, splitRight: action.splitRight == true)
+                }
+                Task { @MainActor in
+                    _ = await CotPodcastService.shared.agentDiscoverDownloadAndRemind(
+                        topic: topic,
+                        reason: reason,
+                        openBoard: false
+                    )
+                }
+                return AppliedActionReceipt(
+                    symbolName: "waveform.badge.plus",
+                    summary: AppLanguage.text("正在搜索并下载「\(topic)」播客", en: "Finding & Downloading: \(topic)")
+                )
+                
             default:
                 return nil
         }

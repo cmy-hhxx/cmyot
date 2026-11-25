@@ -102,18 +102,21 @@ nonisolated struct BeautifulAgentSessionPayload: Codable, Equatable, Identifiabl
     var isPinned: Bool
     var messageCount: Int?
     var updatedAt: Double?
+    var workspaceID: String? = nil
     var workspacePath: String? = nil
     var workspaceName: String? = nil
+    var sortOrder: Int? = nil
 }
 
 
 nonisolated struct BeautifulAgentWorkspacePayload: Codable, Equatable, Identifiable, Sendable {
+    var id: String
     var path: String
     var name: String
+    var folderPath: String? = nil
     var subtitle: String
+    var isFolderBacked: Bool = false
     var isOpenInEditor: Bool
-    
-    var id: String { self.path }
 }
 
 
@@ -207,6 +210,10 @@ nonisolated struct BeautifulAgentHostStatePayload: Codable, Equatable, Sendable 
     var availableWorkspaces: [BeautifulAgentWorkspacePayload]? = nil
     var availableDocuments: [BeautifulAgentDocumentMentionPayload]? = nil
     var availableBots: [BeautifulAgentBotMentionPayload]? = nil
+    var themePageHex: String? = nil
+    var themeCanvasHex: String? = nil
+    var proactiveCards: [ButlerProactiveCardPayload]? = nil
+    var backgroundWorkers: [ButlerBackgroundWorkerPayload]? = nil
 }
 
 
@@ -233,18 +240,30 @@ struct BeautifulAgentWebActionCallbacks {
     var onSelectEffort: (String) -> Void = { _ in }
     var onNewSession: () -> Void = { }
     var onNewSessionInWorkspace: ((String?) -> Void)? = nil
+    var onNewSessionInWorkspaceTarget: ((String?, String?) -> Void)? = nil
     var onSelectSession: (String) -> Void = { _ in }
     var onDeleteSession: (String) -> Void = { _ in }
     var onRenameSession: (String, String) -> Void = { _, _ in }
     var onTogglePinSession: (String) -> Void = { _ in }
     var onSetSessionWorkspace: (String, String?) -> Void = { _, _ in }
+    var onSetSessionWorkspaceTarget: ((String, String?, String?) -> Void)? = nil
     var onChooseWorkspaceFolder: (String, Bool) -> Void = { _, _ in }
+    var onCreateWorkspace: ((String, String?, Bool, String?) -> Void)? = nil
+    var onRenameWorkspace: ((String, String) -> Void)? = nil
+    var onDeleteWorkspace: ((String) -> Void)? = nil
+    var onUpdateWorkspaceFolder: ((String, String?) -> Void)? = nil
+    var onChooseWorkspaceFolderForWorkspace: ((String) -> Void)? = nil
+    var onReorderWorkspaces: (([String]) -> Void)? = nil
+    var onMoveSession: ((String, String?, [String], Bool?) -> Void)? = nil
     var onInsertToEditor: (String) -> Void = { _ in }
     var onOpenNewDocument: (String) -> Void = { _ in }
     var onOpenSettings: (String) -> Void = { _ in }
     var onTogglePinPanel: () -> Void = { }
     var onDockToPane: () -> Void = { }
     var onQuickAction: (String) -> Void = { _ in }
+    var onDismissProactiveCard: ((String) -> Void)? = nil
+    var onOpenWorkerAction: ((String, String?) -> Void)? = nil
+    var onDismissWorker: ((String) -> Void)? = nil
 }
 
 
@@ -396,6 +415,7 @@ struct BeautifulAgentWebView: NSViewRepresentable {
     let state: BeautifulAgentHostStatePayload
     let controller: BeautifulAgentWebController
     let callbacks: BeautifulAgentWebActionCallbacks
+    var cornerRadius: CGFloat = 0
     
     
     func makeCoordinator() -> Coordinator {
@@ -408,11 +428,31 @@ struct BeautifulAgentWebView: NSViewRepresentable {
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         let userContent = WKUserContentController()
         userContent.add(WeakScriptMessageProxy(target: context.coordinator), name: "cotAgent")
+        
+        // Apply dark class & harmonized theme surface variables before the first paint to eliminate any white flash.
+        let isDarkLiteral = self.state.isDark ? "true" : "false"
+        let pageHexJSON = Self.encodeJSString(self.state.themePageHex)
+        let canvasHexJSON = Self.encodeJSString(self.state.themeCanvasHex)
+        let bootstrapJS = """
+        (function() {
+          var root = document.documentElement;
+          root.classList.toggle('dark', \(isDarkLiteral));
+          var pageHex = \(pageHexJSON);
+          var canvasHex = \(canvasHexJSON);
+          if (pageHex) root.style.setProperty('--page', pageHex);
+          if (canvasHex) root.style.setProperty('--canvas', canvasHex);
+        })();
+        """
+        userContent.addUserScript(WKUserScript(source: bootstrapJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.userContentController = userContent
         
         let webView = CotAgentWKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
+        webView.underPageBackgroundColor = .clear
+        webView.wantsLayer = true
+        webView.layer?.backgroundColor = NSColor.clear.cgColor
+        Self.applyLayerCornerMask(to: webView, cornerRadius: self.cornerRadius)
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsMagnification = false
         
@@ -428,8 +468,31 @@ struct BeautifulAgentWebView: NSViewRepresentable {
     
     func updateNSView(_ nsView: WKWebView, context: Context) {
         context.coordinator.callbacks = self.callbacks
+        Self.applyLayerCornerMask(to: nsView, cornerRadius: self.cornerRadius)
         self.controller.webView = nsView
         self.controller.syncState(self.state)
+    }
+    
+    
+    private static func applyLayerCornerMask(to webView: WKWebView, cornerRadius: CGFloat) {
+        webView.wantsLayer = true
+        if cornerRadius > 0 {
+            webView.layer?.cornerRadius = cornerRadius
+            webView.layer?.cornerCurve = .continuous
+            webView.layer?.masksToBounds = true
+        } else {
+            webView.layer?.cornerRadius = 0
+            webView.layer?.masksToBounds = false
+        }
+    }
+    
+    
+    private static func encodeJSString(_ value: String?) -> String {
+        guard let value,
+              let data = try? JSONEncoder().encode(value),
+              let json = String(data: data, encoding: .utf8)
+        else { return "null" }
+        return json
     }
     
     
@@ -510,22 +573,83 @@ struct BeautifulAgentWebView: NSViewRepresentable {
                     }
                     
                 case "newSession":
+                    let wsID = (dict["workspaceId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
                     let wsPath = (dict["workspacePath"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if let onNewInWorkspace = self.callbacks.onNewSessionInWorkspace {
-                        onNewInWorkspace((wsPath?.isEmpty == false) ? wsPath : nil)
+                    let cleanID = (wsID?.isEmpty == false) ? wsID : nil
+                    let cleanPath = (wsPath?.isEmpty == false) ? wsPath : nil
+                    if let onTarget = self.callbacks.onNewSessionInWorkspaceTarget {
+                        onTarget(cleanID, cleanPath)
+                    } else if let onNewInWorkspace = self.callbacks.onNewSessionInWorkspace {
+                        onNewInWorkspace(cleanPath)
                     } else {
                         self.callbacks.onNewSession()
                     }
                     
                 case "setSessionWorkspace":
                     let sessionID = (dict["sessionId"] as? String) ?? ""
+                    let wsID = (dict["workspaceId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
                     let wsPath = (dict["workspacePath"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.callbacks.onSetSessionWorkspace(sessionID, (wsPath?.isEmpty == false) ? wsPath : nil)
+                    let cleanID = (wsID?.isEmpty == false) ? wsID : nil
+                    let cleanPath = (wsPath?.isEmpty == false) ? wsPath : nil
+                    if let onTarget = self.callbacks.onSetSessionWorkspaceTarget {
+                        onTarget(sessionID, cleanID, cleanPath)
+                    } else {
+                        self.callbacks.onSetSessionWorkspace(sessionID, cleanPath)
+                    }
                     
                 case "chooseWorkspaceFolder":
                     let sessionID = (dict["sessionId"] as? String) ?? ""
                     let createNew = (dict["createNew"] as? Bool) == true
                     self.callbacks.onChooseWorkspaceFolder(sessionID, createNew)
+                    
+                case "createWorkspace":
+                    let name = ((dict["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let folderRaw = (dict["folderPath"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let startSession = (dict["startSession"] as? Bool) ?? true
+                    let assignSessionID = (dict["assignSessionId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !name.isEmpty {
+                        self.callbacks.onCreateWorkspace?(
+                            name,
+                            (folderRaw?.isEmpty == false) ? folderRaw : nil,
+                            startSession,
+                            (assignSessionID?.isEmpty == false) ? assignSessionID : nil
+                        )
+                    }
+                    
+                case "renameWorkspace":
+                    if let id = dict["id"] as? String, let name = dict["name"] as? String {
+                        self.callbacks.onRenameWorkspace?(id, name)
+                    }
+                    
+                case "deleteWorkspace":
+                    if let id = dict["id"] as? String {
+                        self.callbacks.onDeleteWorkspace?(id)
+                    }
+                    
+                case "updateWorkspaceFolder":
+                    if let id = dict["id"] as? String {
+                        let folderRaw = (dict["folderPath"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        self.callbacks.onUpdateWorkspaceFolder?(id, (folderRaw?.isEmpty == false) ? folderRaw : nil)
+                    }
+                    
+                case "chooseWorkspaceFolderForWorkspace":
+                    if let wsID = dict["workspaceId"] as? String, !wsID.isEmpty {
+                        self.callbacks.onChooseWorkspaceFolderForWorkspace?(wsID)
+                    }
+                    
+                case "reorderWorkspaces":
+                    if let orderedIDs = dict["orderedIds"] as? [String] {
+                        self.callbacks.onReorderWorkspaces?(orderedIDs)
+                    }
+                    
+                case "moveSession":
+                    if let sessionID = dict["sessionId"] as? String, !sessionID.isEmpty {
+                        let targetRaw = (dict["targetWorkspaceId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let targetWS = (targetRaw?.isEmpty == false) ? targetRaw : nil
+                        let orderedIDs = (dict["orderedSessionIds"] as? [String]) ?? []
+                        let isPinned = dict["isPinned"] as? Bool
+                        self.callbacks.onMoveSession?(sessionID, targetWS, orderedIDs, isPinned)
+                    }
                     
                 case "selectSession":
                     if let id = dict["id"] as? String {
@@ -585,6 +709,22 @@ struct BeautifulAgentWebView: NSViewRepresentable {
                 case "quickAction":
                     if let action = dict["action"] as? String {
                         self.callbacks.onQuickAction(action)
+                    }
+                    
+                case "dismissProactiveCard":
+                    if let id = dict["id"] as? String, !id.isEmpty {
+                        self.callbacks.onDismissProactiveCard?(id)
+                    }
+                    
+                case "openWorkerAction":
+                    if let board = dict["board"] as? String, !board.isEmpty {
+                        let query = (dict["query"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        self.callbacks.onOpenWorkerAction?(board, (query?.isEmpty == false) ? query : nil)
+                    }
+                    
+                case "dismissWorker":
+                    if let id = dict["id"] as? String, !id.isEmpty {
+                        self.callbacks.onDismissWorker?(id)
                     }
                     
                 default:

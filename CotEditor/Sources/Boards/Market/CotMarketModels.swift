@@ -209,6 +209,40 @@ nonisolated struct MarketQuoteSnapshot: Sendable, Equatable {
     let volume: Double
     let barsByPeriod: [MarketChartPeriod: [MarketBar]]
     let updatedAt: Date
+    let turnoverRate: Double?
+    let amount: Double?
+    let peRatio: Double?
+    let marketCap: Double?
+    
+    init(
+        instrument: MarketInstrument,
+        lastPrice: Double,
+        previousClose: Double,
+        dayOpen: Double,
+        high: Double,
+        low: Double,
+        volume: Double,
+        barsByPeriod: [MarketChartPeriod: [MarketBar]],
+        updatedAt: Date,
+        turnoverRate: Double? = nil,
+        amount: Double? = nil,
+        peRatio: Double? = nil,
+        marketCap: Double? = nil
+    ) {
+        self.instrument = instrument
+        self.lastPrice = lastPrice
+        self.previousClose = previousClose
+        self.dayOpen = dayOpen
+        self.high = high
+        self.low = low
+        self.volume = volume
+        self.barsByPeriod = barsByPeriod
+        self.updatedAt = updatedAt
+        self.turnoverRate = turnoverRate
+        self.amount = amount
+        self.peRatio = peRatio
+        self.marketCap = marketCap
+    }
     
     var changeAmount: Double { self.lastPrice - self.previousClose }
     
@@ -249,6 +283,8 @@ enum MarketTonePalette {
 nonisolated enum MarketAliasCatalog {
     
     private static let catalog: [(aliases: [String], instrument: MarketInstrument)] = [
+        (["三安光电", "三安", "600703", "sh600703"], MarketInstrument(namespace: .shanghai, symbol: "600703", name: "三安光电", eastmoneySecID: "1.600703", tencentCode: "sh600703")),
+        (["京东方", "京东方a", "京东方A", "000725", "sz000725"], MarketInstrument(namespace: .shenzhen, symbol: "000725", name: "京东方A", eastmoneySecID: "0.000725", tencentCode: "sz000725")),
         (["恒生科技", "恒生科技指数", "hstech", "恒科"], MarketInstrument(namespace: .hongKong, symbol: "HSTECH", name: "恒生科技指数", eastmoneySecID: "124.HSTECH", tencentCode: "hkHSTECH")),
         (["恒生指数", "恒指", "hsi"], MarketInstrument(namespace: .hongKong, symbol: "HSI", name: "恒生指数", eastmoneySecID: "100.HSI", tencentCode: "hkHSI")),
         (["恒生国企", "国企指数", "hscei"], MarketInstrument(namespace: .hongKong, symbol: "HSCEI", name: "恒生中国企业指数", eastmoneySecID: "100.HSCEI", tencentCode: "hkHSCEI")),

@@ -47,6 +47,8 @@ interface ResolvedInstrument {
 }
 
 const ALIAS_CATALOG: Array<{ keys: string[]; inst: ResolvedInstrument }> = [
+  { keys: ["三安光电", "三安", "600703", "sh600703"], inst: { namespace: "sh", symbol: "600703", name: "三安光电", eastmoneySecID: "1.600703", tencentCode: "sh600703" } },
+  { keys: ["京东方", "京东方a", "000725", "sz000725"], inst: { namespace: "sz", symbol: "000725", name: "京东方A", eastmoneySecID: "0.000725", tencentCode: "sz000725" } },
   { keys: ["hstech", "恒生科技", "恒生科技指数", "恒科"], inst: { namespace: "hk", symbol: "HSTECH", name: "恒生科技指数", eastmoneySecID: "124.HSTECH", tencentCode: "hkHSTECH" } },
   { keys: ["hsi", "恒生指数", "恒指"], inst: { namespace: "hk", symbol: "HSI", name: "恒生指数", eastmoneySecID: "100.HSI", tencentCode: "hkHSI" } },
   { keys: ["上证", "上证指数", "大盘", "000001.sh"], inst: { namespace: "sh", symbol: "000001", name: "上证指数", eastmoneySecID: "1.000001", tencentCode: "sh000001" } },
@@ -155,7 +157,8 @@ async function fetchText(
   referer?: string,
   timeoutMs = 7000,
   signal?: AbortSignal,
-  maxBytes = 512 * 1024
+  maxBytes = 512 * 1024,
+  extraHeaders?: Record<string, string>
 ): Promise<string> {
   if (signal?.aborted) {
     throw new Error("Aborted");
@@ -165,7 +168,11 @@ async function fetchText(
   const onAbort = () => ctrl.abort(new Error("Aborted"));
   signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    const headers: Record<string, string> = { "User-Agent": UA };
+    const headers: Record<string, string> = {
+      "User-Agent": UA,
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+      ...extraHeaders,
+    };
     if (referer) headers["Referer"] = referer;
     const res = await fetch(url, { headers, signal: ctrl.signal, redirect: "follow" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -333,15 +340,76 @@ function decodeHtmlEntities(input: string): string {
 function stripTags(html: string): string {
   return decodeHtmlEntities(
     html
+      .replace(/<!--[\s\S]*?-->/g, " ")
       .replace(/<script[\s\S]*?<\/script>/gi, " ")
       .replace(/<style[\s\S]*?<\/style>/gi, " ")
       .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
-      .replace(/<\/(p|div|li|tr|h1|h2|h3|h4|h5|h6|br|article|section)>/gi, "\n")
+      .replace(/<nav[\s\S]*?<\/nav>/gi, " ")
+      .replace(/<footer[\s\S]*?<\/footer>/gi, " ")
+      .replace(/<\/(p|div|li|tr|h1|h2|h3|h4|h5|h6|br|article|section|blockquote)>/gi, "\n")
       .replace(/<[^>]+>/g, " ")
   )
     .replace(/[ \t\r]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function isBlockedOrEmptyText(text: string): boolean {
+  const clean = text.trim();
+  if (clean.length < 180) return true;
+  const lower = clean.toLowerCase();
+  const blockedMarkers = [
+    "javascript is not available",
+    "please enable javascript",
+    "enable cookies",
+    "verify you are human",
+    "checking your browser",
+    "just a moment...",
+    "access denied",
+  ];
+  return clean.length < 800 && blockedMarkers.some((m) => lower.includes(m));
+}
+
+function extractReadableHtmlText(html: string): string {
+  // 1. Check JSON-LD articleBody
+  let bestText = "";
+  const ldRe = /<script[^>]+type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = ldRe.exec(html)) !== null) {
+    try {
+      const parsed = JSON.parse(m[1].trim());
+      const items: any[] = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.["@graph"])
+          ? [parsed, ...parsed["@graph"]]
+          : [parsed];
+      for (const entry of items) {
+        const body = typeof entry?.articleBody === "string" ? stripTags(entry.articleBody) : "";
+        if (body.length > bestText.length) bestText = body;
+      }
+    } catch {
+      // ignore malformed ld+json
+    }
+  }
+
+  // 2. Semantic <article> or <main> container
+  for (const re of [/<article\b[^>]*>([\s\S]*?)<\/article>/gi, /<main\b[^>]*>([\s\S]*?)<\/main>/gi]) {
+    let containerMatch: RegExpExecArray | null;
+    while ((containerMatch = re.exec(html)) !== null) {
+      const candidate = stripTags(containerMatch[1]);
+      if (candidate.length > bestText.length) {
+        bestText = candidate;
+      }
+    }
+    if (bestText.length >= 240) break;
+  }
+
+  // 3. Full HTML fallback
+  if (bestText.length < 240) {
+    const full = stripTags(html);
+    if (full.length > bestText.length) bestText = full;
+  }
+  return bestText;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -409,11 +477,13 @@ export default function (pi: ExtensionAPI) {
       const tc = await resolveUSCode(inst, signal);
 
       const klineUrl = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${encodeURIComponent(`${tc},${period},,,40,qfq`)}`;
-      const intradayUrl = `https://push2delay.eastmoney.com/api/qt/stock/trends2/get?secid=${encodeURIComponent(inst.eastmoneySecID)}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&ndays=1`;
+      const push2HisUrl = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${encodeURIComponent(inst.eastmoneySecID)}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56&klt=1&fqt=1&end=20500101&lmt=60`;
+      const rtUrl = `https://qt.gtimg.cn/q=${encodeURIComponent(tc)}`;
 
-      const [klineText, intradayText] = await Promise.all([
+      const [klineText, intradayText, rtText] = await Promise.all([
         fetchText(klineUrl, "https://gu.qq.com/", 6500, signal).catch(() => ""),
-        fetchText(intradayUrl, "https://quote.eastmoney.com/", 6500, signal).catch(() => ""),
+        inst.namespace === "us" ? Promise.resolve("") : fetchText(push2HisUrl, "https://quote.eastmoney.com/", 6500, signal).catch(() => ""),
+        fetchText(rtUrl, "https://gu.qq.com/", 5500, signal).catch(() => ""),
       ]);
 
       let bars: Array<{ date: string; open: number; close: number; high: number; low: number; vol: number }> = [];
@@ -426,6 +496,25 @@ export default function (pi: ExtensionAPI) {
       let qtTurnoverPct: number | null = null;
       let qtPE: number | null = null;
       let qtMarketCap: number | null = null;
+
+      if (rtText) {
+        const qStart = rtText.indexOf('"');
+        const qEnd = rtText.lastIndexOf('"');
+        if (qStart >= 0 && qEnd > qStart) {
+          const rtFields = rtText.slice(qStart + 1, qEnd).split("~");
+          if (rtFields.length > 6) {
+            qtLast = toNum(rtFields[3]) ?? qtLast;
+            qtPrev = toNum(rtFields[4]) ?? qtPrev;
+            qtOpen = toNum(rtFields[5]) ?? qtOpen;
+            qtTime = String(rtFields[30] || qtTime);
+            qtHigh = toNum(rtFields[33]) ?? qtHigh;
+            qtLow = toNum(rtFields[34]) ?? qtLow;
+            qtTurnoverPct = toNum(rtFields[38]) ?? qtTurnoverPct;
+            qtPE = toNum(rtFields[39]) ?? qtPE;
+            qtMarketCap = toNum(rtFields[45]) ?? qtMarketCap;
+          }
+        }
+      }
 
       if (klineText) {
         try {
@@ -446,15 +535,15 @@ export default function (pi: ExtensionAPI) {
           const qtObj = payload?.qt || {};
           const fields: any[] = qtObj[tc] || (Object.values(qtObj)[0] as any) || [];
           if (Array.isArray(fields) && fields.length > 5) {
-            qtLast = toNum(fields[3]);
-            qtPrev = toNum(fields[4]);
-            qtOpen = toNum(fields[5]);
-            qtTime = String(fields[30] || "");
-            qtHigh = toNum(fields[33]);
-            qtLow = toNum(fields[34]);
-            qtTurnoverPct = toNum(fields[38]);
-            qtPE = toNum(fields[39]);
-            qtMarketCap = toNum(fields[45]);
+            qtLast = qtLast ?? toNum(fields[3]);
+            qtPrev = qtPrev ?? toNum(fields[4]);
+            qtOpen = qtOpen ?? toNum(fields[5]);
+            qtTime = qtTime || String(fields[30] || "");
+            qtHigh = qtHigh ?? toNum(fields[33]);
+            qtLow = qtLow ?? toNum(fields[34]);
+            qtTurnoverPct = qtTurnoverPct ?? toNum(fields[38]);
+            qtPE = qtPE ?? toNum(fields[39]);
+            qtMarketCap = qtMarketCap ?? toNum(fields[45]);
           }
         } catch {
           // ignore parse error
@@ -469,10 +558,10 @@ export default function (pi: ExtensionAPI) {
       if (intradayText) {
         try {
           const env = JSON.parse(intradayText);
-          const trends: string[] = env?.data?.trends || [];
-          intradayPrev = toNum(env?.data?.preClose);
-          if (trends.length > 0) {
-            const parsed = trends
+          const klines: string[] = env?.data?.klines || [];
+          intradayPrev = toNum(env?.data?.preKPrice);
+          if (klines.length > 0) {
+            const parsed = klines
               .map((line) => line.split(","))
               .filter((cols) => cols.length >= 5)
               .map((cols) => ({
@@ -554,12 +643,20 @@ export default function (pi: ExtensionAPI) {
     description: "从 CotEditor 本地 NEWS 缓存（AI/科技/金融等中文热点）和公开资讯流中按关键词检索最新新闻。",
     parameters: Type.Object({
       query: Type.Optional(Type.String({ description: "关键词（留空则返回最新热点前若干条）" })),
-      category: Type.Optional(Type.String({ description: "可选分类过滤，如 AI、科技、金融" })),
+      category: Type.Optional(Type.String({ description: "可选分类过滤，如 AI、科技、金融、X" })),
       limit: Type.Optional(Type.Number({ description: "最多返回条数，默认 8" })),
     }),
     async execute(_id, params, signal) {
       const q = String(params.query || "").trim().toLowerCase();
-      const cat = String(params.category || "").trim().toLowerCase();
+      const rawCat = String(params.category || "").trim().toLowerCase();
+      const normalizedCat =
+        rawCat === "金融" || rawCat === "财经"
+          ? "finance"
+          : rawCat === "x" || rawCat === "x 动态" || rawCat === "推特" || rawCat === "社交"
+            ? "xsocial"
+            : rawCat === "ai" || rawCat === "人工智能" || rawCat === "科技"
+              ? "ai"
+              : rawCat;
       const limit = Math.min(20, Math.max(1, Number(params.limit || 8)));
       const matches: string[] = [];
 
@@ -573,10 +670,22 @@ export default function (pi: ExtensionAPI) {
             const summary = String(item?.summary || "").trim();
             const category = String(item?.category || "").trim();
             const source = String(item?.source || "").trim();
-            const url = String(item?.url || "").trim();
+            const tag = String(item?.tag || "").trim();
+            const url = String(item?.urlString || item?.url || "").trim();
             if (!title) continue;
-            if (cat && !category.toLowerCase().includes(cat)) continue;
-            if (q && !(title.toLowerCase().includes(q) || summary.toLowerCase().includes(q) || category.toLowerCase().includes(q))) {
+            if (normalizedCat && !category.toLowerCase().includes(normalizedCat) && !tag.toLowerCase().includes(rawCat)) {
+              continue;
+            }
+            if (
+              q &&
+              !(
+                title.toLowerCase().includes(q) ||
+                summary.toLowerCase().includes(q) ||
+                category.toLowerCase().includes(q) ||
+                source.toLowerCase().includes(q) ||
+                tag.toLowerCase().includes(q)
+              )
+            ) {
               continue;
             }
             matches.push(`- [${category || source || "NEWS"}] ${title}${summary ? ` — ${summary.slice(0, 140)}` : ""}${url ? ` (${url})` : ""}`);
@@ -608,7 +717,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // 3. Web Search (Bing RSS + DuckDuckGo HTML fallback)
+  // 3. Web Search (Bing RSS + DuckDuckGo HTML + Google News RSS fallback)
   pi.registerTool({
     name: "web_search",
     label: "全网搜索",
@@ -651,6 +760,24 @@ export default function (pi: ExtensionAPI) {
             if (title) results.push({ title, url, snippet: "" });
           }
         } catch {
+          // fallback below
+        }
+      }
+
+      if (results.length === 0) {
+        try {
+          const gNewsURL = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`;
+          const rss = await fetchText(gNewsURL, "https://news.google.com/", 6000, signal);
+          const itemRe = /<item>([\s\S]*?)<\/item>/gi;
+          let m: RegExpExecArray | null;
+          while ((m = itemRe.exec(rss)) !== null && results.length < limit) {
+            const block = m[1];
+            const title = decodeHtmlEntities((block.match(/<title>([\s\S]*?)<\/title>/i)?.[1] || "").trim());
+            const link = decodeHtmlEntities((block.match(/<link>([\s\S]*?)<\/link>/i)?.[1] || "").trim());
+            const desc = stripTags(block.match(/<description>([\s\S]*?)<\/description>/i)?.[1] || "");
+            if (title && link) results.push({ title, url: link, snippet: desc.slice(0, 200) });
+          }
+        } catch {
           // ignore
         }
       }
@@ -666,11 +793,11 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // 4. Web Fetch
+  // 4. Web Fetch (X/FxTwitter + HN API + Readable HTML + Jina Reader fallback)
   pi.registerTool({
     name: "web_fetch",
     label: "读取网页正文",
-    description: "抓取指定 HTTP/HTTPS 网页并提取可读纯文本内容。",
+    description: "抓取指定 HTTP/HTTPS 网页、博客或 X/Twitter 帖子并提取完整可读正文内容。",
     parameters: Type.Object({
       url: Type.String({ description: "完整 http:// 或 https:// URL" }),
       maxChars: Type.Optional(Type.Number({ description: "最大字符数，默认 6000" })),
@@ -681,18 +808,130 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "仅支持 http:// 或 https:// 网址。" }], details: {} };
       }
       const maxChars = Math.min(16000, Math.max(500, Number(params.maxChars || 6000)));
-      try {
-        const html = await fetchText(url, undefined, 8000, signal);
-        const text = stripTags(html).slice(0, maxChars);
-        return { content: [{ type: "text", text: text || "页面未提取到有效文本。" }], details: { url, chars: text.length } };
-      } catch (err: any) {
-        const msg = err instanceof Error ? err.message : String(err || "请求超时");
-        return {
-          content: [{ type: "text", text: `无法抓取该网页（${msg}）。` }],
-          details: { url, error: msg },
-          isError: true,
-        };
+
+      // Special-case X / Twitter status posts via FxTwitter API
+      const xMatch = url.match(/^https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/([A-Za-z0-9_]+)\/status\/(\d+)/i);
+      if (xMatch) {
+        try {
+          const fxRaw = await fetchText(`https://api.fxtwitter.com/${xMatch[1]}/status/${xMatch[2]}`, "https://x.com/", 6500, signal);
+          const fx = JSON.parse(fxRaw);
+          const tweet = fx?.tweet;
+          if (tweet) {
+            const parts: string[] = [];
+            const authorName = tweet?.author?.name || xMatch[1];
+            const authorHandle = tweet?.author?.screen_name || xMatch[1];
+            parts.push(`作者：${authorName} (@${authorHandle})`);
+            if (tweet?.article?.title) {
+              parts.push(`# ${tweet.article.title}`);
+            }
+            if (typeof tweet?.text === "string" && tweet.text.trim()) {
+              parts.push(tweet.text.trim());
+            }
+            const articleBlocks: any[] = tweet?.article?.content?.blocks || [];
+            if (Array.isArray(articleBlocks) && articleBlocks.length > 0) {
+              for (const b of articleBlocks) {
+                const t = String(b?.text || "").trim();
+                if (t) parts.push(t);
+              }
+            }
+            if (tweet?.quote?.text) {
+              parts.push(`> 引用 @${tweet.quote?.author?.screen_name || ""}: ${tweet.quote.text}`);
+            }
+            const formatted = parts.join("\n\n").slice(0, maxChars);
+            if (formatted.length >= 20) {
+              return { content: [{ type: "text", text: formatted }], details: { url, chars: formatted.length, via: "fxtwitter" } };
+            }
+          }
+        } catch {
+          // fall through to Jina Reader
+        }
       }
+
+      // Special-case Hacker News discussions via Algolia API
+      const hnMatch = url.match(/^https?:\/\/news\.ycombinator\.com\/item\?id=(\d+)/i);
+      if (hnMatch) {
+        try {
+          const hnRaw = await fetchText(`https://hn.algolia.com/api/v1/items/${hnMatch[1]}`, "https://news.ycombinator.com/", 6500, signal);
+          const item = JSON.parse(hnRaw);
+          const parts: string[] = [];
+          if (item?.title) parts.push(`# ${item.title}`);
+          if (item?.url) parts.push(`原链接：${item.url}`);
+          if (typeof item?.text === "string" && item.text.trim()) {
+            parts.push(stripTags(item.text));
+          }
+          const children: any[] = Array.isArray(item?.children) ? item.children : [];
+          const comments = children
+            .filter((c) => typeof c?.text === "string" && !c?.deleted && !c?.dead)
+            .slice(0, 8)
+            .map((c) => `- **${c.author || "anon"}**: ${stripTags(c.text).slice(0, 500)}`);
+          if (comments.length > 0) {
+            parts.push("## 精选评论\n" + comments.join("\n\n"));
+          }
+          const formatted = parts.join("\n\n").slice(0, maxChars);
+          if (formatted.length >= 30) {
+            return { content: [{ type: "text", text: formatted }], details: { url, chars: formatted.length, via: "hn_api" } };
+          }
+        } catch {
+          // fall through
+        }
+      }
+
+      // Direct HTML extraction first
+      let directText = "";
+      let directErr: string | null = null;
+      try {
+        const html = await fetchText(
+          url,
+          undefined,
+          8000,
+          signal,
+          1024 * 1024,
+          { Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" }
+        );
+        directText = extractReadableHtmlText(html);
+      } catch (err: any) {
+        directErr = err instanceof Error ? err.message : String(err || "请求失败");
+      }
+
+      if (!isBlockedOrEmptyText(directText)) {
+        const sliced = directText.slice(0, maxChars);
+        return { content: [{ type: "text", text: sliced }], details: { url, chars: sliced.length, via: "direct" } };
+      }
+
+      // Automatic Jina Reader fallback when direct fetch is short/blocked/JS-gated
+      try {
+        const jinaRaw = await fetchText(
+          `https://r.jina.ai/${url}`,
+          undefined,
+          8500,
+          signal,
+          768 * 1024,
+          { Accept: "text/plain", "X-Return-Format": "markdown" }
+        );
+        const jinaText = jinaRaw
+          .replace(/^(?:Title|URL Source|Published Time|Markdown Content):.*$/gim, "")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
+        const best = jinaText.length > directText.length ? jinaText : directText;
+        if (best.trim().length > 0) {
+          const sliced = best.slice(0, maxChars);
+          return { content: [{ type: "text", text: sliced }], details: { url, chars: sliced.length, via: jinaText.length > directText.length ? "jina" : "direct" } };
+        }
+      } catch {
+        // fallback error handling below
+      }
+
+      if (directText.trim().length > 0) {
+        const sliced = directText.slice(0, maxChars);
+        return { content: [{ type: "text", text: sliced }], details: { url, chars: sliced.length, via: "direct_short" } };
+      }
+
+      const msg = directErr || "页面未提取到有效文本";
+      return {
+        content: [{ type: "text", text: `无法抓取该网页（${msg}）。` }],
+        details: { url, error: msg },
+        isError: true,
+      };
     },
   });
 
@@ -915,6 +1154,44 @@ export default function (pi: ExtensionAPI) {
       return {
         content: [{ type: "text", text: `已下发编辑器操作：${label}（CotEditor 将立即执行）。` }],
         details: { ok: true, actionType, label },
+      };
+    },
+  });
+
+  // 10. Autonomous Podcast Discovery, Download & Listen Reminder
+  pi.registerTool({
+    name: "find_and_download_podcast",
+    label: "找播客并下载提醒",
+    description:
+      "根据用户的知识诉求或话题（如 大模型训练、芯片制造、个人成长）在全网播客库检索最契合的单集，自动后台下载离线音频到播客看板并发送收听提醒。用户要求帮忙找播客、下载或推荐播客时调用此工具。",
+    parameters: Type.Object({
+      topic: Type.String({ description: "播客主题、知识领域或关键词，如 大模型训练" }),
+      reason: Type.Optional(Type.String({ description: "推荐给用户的收听理由" })),
+      openBoard: Type.Optional(Type.Boolean({ description: "是否立即打开播客看板，默认 false（后台下载后提醒）" })),
+    }),
+    async execute(_id, params, signal) {
+      const topic = String(params.topic || "").trim();
+      if (!topic) {
+        return { content: [{ type: "text", text: "请提供播客主题或关键词。" }], details: {} };
+      }
+      const ok = await enqueueEditorAction(
+        "curate_podcast",
+        {
+          query: topic,
+          detail: params.reason ? String(params.reason) : undefined,
+          board: params.openBoard === true ? "podcast" : undefined,
+        },
+        signal
+      );
+      if (!ok) {
+        return {
+          content: [{ type: "text", text: `未能创建播客搜索任务（COT_DB_PATH 不可用）。` }],
+          details: { ok: false, topic },
+        };
+      }
+      return {
+        content: [{ type: "text", text: `已派发播客搜寻与离线下载任务：「${topic}」。下载完成后将加入播客看板并提醒收听。` }],
+        details: { ok: true, topic },
       };
     },
   });

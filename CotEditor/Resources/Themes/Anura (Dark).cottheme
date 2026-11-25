@@ -1,63 +1,63 @@
 {
   "attributes": {
-    "color": "#D7BA7D"
+    "color": "#D8A6FF"
   },
   "background": {
-    "color": "#1F1F1F"
+    "color": "#121315"
   },
   "characters": {
-    "color": "#CE9178"
+    "color": "#E8927C"
   },
   "commands": {
-    "color": "#DCDCAA"
+    "color": "#B49BFF"
   },
   "comments": {
-    "color": "#6A9955"
+    "color": "#6C7384"
   },
   "highlight": {
-    "color": "#2F81F7",
+    "color": "#4284FC",
     "usesSystemSetting": false
   },
   "insertionPoint": {
-    "color": "#AEAFAD",
+    "color": "#4284FC",
     "usesSystemSetting": true
   },
   "invisibles": {
-    "color": "#404040"
+    "color": "#3B3F4C"
   },
   "keywords": {
-    "color": "#569CD6"
+    "color": "#7AA2F7"
   },
   "lineHighlight": {
-    "color": "#FFFFFF0A"
+    "color": "#FFFFFF08"
   },
   "metadata": {
     "author": "1024jp",
-    "description": "VS Code Dark Modern palette.",
+    "description": "Refined Apple editorial dark palette.",
     "distributionURL": "https://coteditor.com",
     "license": "Same as CotEditor (Apache, ver.2)"
   },
   "name": "Anura (Dark)",
   "numbers": {
-    "color": "#B5CEA8"
+    "color": "#58C994"
   },
   "selection": {
-    "color": "#264F78",
+    "color": "#264266",
     "usesSystemSetting": false
   },
   "strings": {
-    "color": "#CE9178"
+    "color": "#E09B6B"
   },
   "text": {
-    "color": "#CCCCCC"
+    "color": "#E0E2EA"
   },
   "types": {
-    "color": "#4EC9B0"
+    "color": "#4FD1C5"
   },
   "values": {
-    "color": "#4FC1FF"
+    "color": "#58C994"
   },
   "variables": {
-    "color": "#9CDCFE"
+    "color": "#C4D0E4"
   }
 }

@@ -202,6 +202,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let dashboardDanmakuEnabled = "analytics.dashboardDanmakuEnabled"
         static let newsBookmarkedItemsJSON = "analytics.newsBookmarkedItemsJSON"
         static let newsReadIDsJSON = "analytics.newsReadIDsJSON"
+        static let newsBrowsingHistoryJSON = "analytics.newsBrowsingHistoryJSON"
         static let newsPersonalNotesJSON = "analytics.newsPersonalNotesJSON"
         static let newsAIBriefsJSON = "analytics.newsAIBriefsJSON"
         static let newsReaderFontScale = "analytics.newsReaderFontScale"
@@ -211,6 +212,8 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let butlerActiveSessionID = "butler.activeSessionID"
         static let butlerCustomAvatarBase64 = "butler.customAvatarBase64"
         static let watchlistSeededV1 = "market.watchlistSeededV1"
+        static let watchlistSeededUserFocusV2 = "market.watchlistSeededUserFocusV2"
+        static let podcastAgentRemindersJSON = "podcast.agentRemindersJSON"
         static let aiScheduledOrganizeEnabled = "ai.scheduledOrganize.enabled"
         static let aiScheduledOrganizeHour = "ai.scheduledOrganize.hour"
         static let aiScheduledOrganizeMinute = "ai.scheduledOrganize.minute"
@@ -222,7 +225,12 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let aiScheduledOrganizeLastCycleKey = "ai.scheduledOrganize.lastCycleKey"
         static let aiScheduledOrganizeLastSummary = "ai.scheduledOrganize.lastSummary"
         static let dashboardHeroCoverImageBase64 = "dashboard.heroCoverImageBase64"
+        static let dashboardHeroCoverFocalX = "dashboard.heroCoverFocalX"
         static let dashboardHeroCoverFocalY = "dashboard.heroCoverFocalY"
+        static let dashboardHeroCoverFitMode = "dashboard.heroCoverFitMode"
+        static let userAvatarLibraryJSON = "media.avatarLibraryJSON"
+        static let userBackgroundLibraryJSON = "media.backgroundLibraryJSON"
+        static let boardBackgroundAssignmentsJSON = "media.boardBackgroundAssignmentsJSON"
     }
     
     static let weeklyReportsDidChangeNotification = Notification.Name("CotLocalDatabaseWeeklyReportsDidChange")
@@ -1980,6 +1988,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         if self === Self.shared {
             StudioPaletteManager.shared.reloadFromDatabase()
             WallpaperManager.shared.reloadFromDatabase()
+            UserMediaLibraryStore.shared.reloadFromDatabase()
             ThemeManager.shared.validateOrRepairActiveThemePreference()
             AIBotStore.shared.reloadFromDatabase()
             UserHabitPredictor.shared.reloadFromDatabase()

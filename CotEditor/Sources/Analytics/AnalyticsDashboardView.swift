@@ -20,8 +20,10 @@
 //
 
 import AppKit
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
+import Vision
 
 // MARK: - Window / Settings Entry Points
 
@@ -842,13 +844,13 @@ struct DashPalette: Sendable, Equatable {
     
     static func editorialTokens(isDark: Bool) -> StudioColorTokens {
         if isDark {
-            let canvas = Color(red: 0.071, green: 0.078, blue: 0.094)       // #121418
-            let card = Color(red: 0.098, green: 0.110, blue: 0.133)         // #191C22
-            let inset = Color(red: 0.129, green: 0.145, blue: 0.176)        // #21252D
-            let insetHover = Color(red: 0.165, green: 0.184, blue: 0.227)   // #2A2F3A
+            let canvas = Color(hexString: "#15161A")
+            let card = Color(hexString: "#1C1E24")
+            let inset = Color(hexString: "#22252D")
+            let insetHover = Color(hexString: "#2A2E38")
             let primary = Color(red: 0.925, green: 0.937, blue: 0.961)      // #ECEFF5
-            let accent = Color(red: 0.294, green: 0.482, blue: 1.000)       // #4B7BFF
-            let accentText = Color(red: 0.490, green: 0.635, blue: 1.000)   // #7DA2FF
+            let accent = Color(hexString: "#519AFD")
+            let accentText = Color(hexString: "#8FC0FF")
             let secondaryAcc = Color(red: 0.220, green: 0.365, blue: 0.765) // #385DC3
             let paleAcc = Color(red: 0.145, green: 0.216, blue: 0.396)      // #253765
             let empty = Color(red: 0.137, green: 0.153, blue: 0.188)        // #232730
@@ -863,7 +865,7 @@ struct DashPalette: Sendable, Equatable {
                 inset: inset,
                 insetHover: insetHover,
                 hairline: Color.white.opacity(0.075),
-                hairlineStrong: Color.white.opacity(0.15),
+                hairlineStrong: Color.white.opacity(0.16),
                 topSpecular: Color.white.opacity(0.06),
                 architecturalDot: Color.white.opacity(0.05),
                 primaryInk: primary,
@@ -881,13 +883,13 @@ struct DashPalette: Sendable, Equatable {
                 heat4: Color(red: 0.345, green: 0.522, blue: 1.000)  // #5885FF
             )
         } else {
-            let canvas = Color(red: 0.957, green: 0.961, blue: 0.973)       // #F4F5F8
+            let canvas = Color(hexString: "#F4F5F7")
             let card = Color.white                                          // #FFFFFF
-            let inset = Color(red: 0.957, green: 0.965, blue: 0.976)        // #F4F6F9
-            let insetHover = Color(red: 0.918, green: 0.929, blue: 0.953)   // #EAEDF3
+            let inset = Color(hexString: "#F1F3F6")
+            let insetHover = Color(hexString: "#E8EBF0")
             let primary = Color(red: 0.082, green: 0.098, blue: 0.133)      // #151922
-            let accent = Color(red: 0.169, green: 0.361, blue: 0.902)       // #2B5CE6
-            let accentText = Color(red: 0.118, green: 0.278, blue: 0.780)   // #1E47C7
+            let accent = Color(hexString: "#2F7CF6")
+            let accentText = Color(hexString: "#1D67DB")
             let secondaryAcc = Color(red: 0.431, green: 0.576, blue: 0.961) // #6E93F5
             let paleAcc = Color(red: 0.871, green: 0.906, blue: 0.992)      // #DEE7FD
             let empty = Color(red: 0.922, green: 0.933, blue: 0.953)        // #EBEEF3
@@ -902,7 +904,7 @@ struct DashPalette: Sendable, Equatable {
                 inset: inset,
                 insetHover: insetHover,
                 hairline: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.08),
-                hairlineStrong: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.15),
+                hairlineStrong: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.16),
                 topSpecular: Color.white.opacity(0.80),
                 architecturalDot: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.05),
                 primaryInk: primary,
@@ -1713,7 +1715,7 @@ private struct NextActionsEditorialCard: View {
 }
 
 
-/// Isolated NEWS column card with pure pagination (no vertical scrollbar) and 2-up Xiaohongshu mini cards.
+/// Isolated NEWS column card with Douyin/Xiaohongshu-style fresh-batch refresh (zero pagination) and crisp mini cards.
 private struct DashboardNewsColumnCard: View {
     
     let compact: Bool
@@ -1723,12 +1725,10 @@ private struct DashboardNewsColumnCard: View {
     let onOpenWorkspace: (String?) -> Void
     
     @State private var newsService = AIHotNewsService.shared
-    @State private var currentPage: Int = 0
-    @State private var pageTurnDirection: Int = 1
     
     
     var body: some View {
-        let items = self.newsService.filteredItems
+        let items = self.newsService.feedItems(for: self.newsService.selectedCategory)
         let outerH: CGFloat = (self.compact || self.tightPadding) ? 14 : 18
         let outerV: CGFloat = (self.compact || self.tightPadding) ? 12 : 16
         
@@ -1758,6 +1758,12 @@ private struct DashboardNewsColumnCard: View {
                             let active = (self.newsService.selectedCategory == cat)
                             Button {
                                 self.newsService.selectedCategory = cat
+                                self.newsService.prefetchCovers(for: cat, limit: 8)
+                                if self.newsService.feedItems(for: cat).isEmpty {
+                                    Task {
+                                        await self.newsService.refreshFeed(for: cat, visibleCount: 4, forceNetwork: true)
+                                    }
+                                }
                             } label: {
                                 Text(cat == .xSocial ? "X" : cat.label)
                                     .font(.system(size: 11, weight: active ? .medium : .regular))
@@ -1782,8 +1788,13 @@ private struct DashboardNewsColumnCard: View {
                     isRefreshing: self.newsService.isLoading,
                     palette: self.palette
                 ) {
+                    let visibleSlots = self.compact ? 2 : 4
                     Task {
-                        await self.newsService.refreshIfNeeded(force: true)
+                        await self.newsService.refreshFeed(
+                            for: self.newsService.selectedCategory,
+                            visibleCount: visibleSlots,
+                            forceNetwork: true
+                        )
                     }
                 }
             }
@@ -1791,24 +1802,16 @@ private struct DashboardNewsColumnCard: View {
             
             GeometryReader { geo in
                 let colCount = (!self.compact && geo.size.width >= 200) ? 2 : 1
-                let rowCount = geo.size.height >= 180 ? 2 : 1
-                let pageSize = colCount * rowCount
-                let pages: [[AIHotNewsItem]] = stride(from: 0, to: items.count, by: pageSize).map { start in
-                    Array(items[start..<min(start + pageSize, items.count)])
-                }
-                let hasPager = pages.count > 1
-                let pagerSpacing: CGFloat = hasPager ? 8 : 0
-                let pagerBarH: CGFloat = hasPager ? 20 : 0
-                let gridGap: CGFloat = 8
-                let gridAvailH = max(92, floor(geo.size.height - pagerBarH - pagerSpacing))
-                let slotH: CGFloat = max(78, floor((gridAvailH - CGFloat(max(0, rowCount - 1)) * gridGap) / CGFloat(rowCount)))
-                let showFooterLine = (slotH >= 136)
-                let textReservedH: CGFloat = showFooterLine ? 64 : 44
-                let coverH: CGFloat = max(46, floor(slotH - textReservedH))
-                let safePage = min(max(0, self.currentPage), max(0, pages.count - 1))
-                let activeItems = pages.isEmpty ? [] : pages[safePage]
+                let rowCount = geo.size.height >= 166 ? 2 : 1
+                let slotCount = colCount * rowCount
+                let gridGap: CGFloat = 9
+                let slotH: CGFloat = max(84, floor((geo.size.height - CGFloat(max(0, rowCount - 1)) * gridGap) / CGFloat(rowCount)))
+                let showFooterLine = (slotH >= 122)
+                let textReservedH: CGFloat = showFooterLine ? 60 : 42
+                let coverH: CGFloat = max(48, floor(slotH - textReservedH))
+                let activeItems = Array(items.prefix(slotCount))
                 
-                if items.isEmpty {
+                if activeItems.isEmpty {
                     if self.newsService.isLoading {
                         VStack(spacing: gridGap) {
                             ForEach(0..<rowCount, id: \.self) { _ in
@@ -1825,13 +1828,17 @@ private struct DashboardNewsColumnCard: View {
                     } else {
                         Button {
                             Task {
-                                await self.newsService.refreshIfNeeded(force: true)
+                                await self.newsService.refreshFeed(
+                                    for: self.newsService.selectedCategory,
+                                    visibleCount: slotCount,
+                                    forceNetwork: true
+                                )
                             }
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "arrow.clockwise")
                                     .font(.system(size: 12, weight: .medium))
-                                Text(AppLanguage.text("刷新资讯", en: "Refresh News"))
+                                Text(AppLanguage.text("刷新获取最新内容", en: "Refresh News"))
                                     .font(.system(size: 12.5, weight: .medium))
                             }
                             .foregroundStyle(self.palette.secondaryInk)
@@ -1843,100 +1850,45 @@ private struct DashboardNewsColumnCard: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
-                    VStack(alignment: .leading, spacing: pagerSpacing) {
-                        VStack(alignment: .leading, spacing: gridGap) {
-                            ForEach(0..<rowCount, id: \.self) { rowIdx in
-                                HStack(alignment: .top, spacing: gridGap) {
-                                    ForEach(0..<colCount, id: \.self) { colIdx in
-                                        let itemIdx = rowIdx * colCount + colIdx
-                                        if itemIdx < activeItems.count {
-                                            let item = activeItems[itemIdx]
-                                            NewsMiniVisualCard(
-                                                item: item,
-                                                cover: self.newsService.cachedCoverImage(for: item),
-                                                isRead: self.newsService.isRead(item),
-                                                coverHeight: coverH,
-                                                slotHeight: slotH,
-                                                showPublisherLine: showFooterLine,
-                                                palette: self.palette,
-                                                onAppearLoadCover: {
-                                                    self.newsService.requestCoverLoad(for: item)
-                                                }
-                                            ) {
-                                                self.onOpenWorkspace(item.id)
+                    VStack(alignment: .leading, spacing: gridGap) {
+                        ForEach(0..<rowCount, id: \.self) { rowIdx in
+                            HStack(alignment: .top, spacing: gridGap) {
+                                ForEach(0..<colCount, id: \.self) { colIdx in
+                                    let itemIdx = rowIdx * colCount + colIdx
+                                    if itemIdx < activeItems.count {
+                                        let item = activeItems[itemIdx]
+                                        NewsMiniVisualCard(
+                                            item: item,
+                                            cover: self.newsService.cachedCoverImage(for: item),
+                                            isRead: self.newsService.isRead(item),
+                                            coverHeight: coverH,
+                                            slotHeight: slotH,
+                                            showPublisherLine: showFooterLine,
+                                            palette: self.palette,
+                                            onAppearLoadCover: {
+                                                self.newsService.requestCoverLoad(for: item)
                                             }
-                                        } else {
-                                            Color.clear
-                                                .frame(maxWidth: .infinity)
-                                                .frame(height: slotH)
+                                        ) {
+                                            self.onOpenWorkspace(item.id)
                                         }
+                                    } else {
+                                        Color.clear
+                                            .frame(maxWidth: .infinity)
+                                            .frame(height: slotH)
                                     }
                                 }
                             }
-                        }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: gridAvailH, alignment: .top)
-                        .id("dash-news-page-\(self.newsService.selectedCategory.rawValue)-\(safePage)")
-                        .transition(
-                            DashMotion.isReducedMotion
-                                ? .opacity
-                                : .asymmetric(
-                                    insertion: .opacity.combined(with: .offset(x: CGFloat(self.pageTurnDirection) * 14)),
-                                    removal: .opacity.combined(with: .offset(x: CGFloat(-self.pageTurnDirection) * 10))
-                                )
-                        )
-                        
-                        if hasPager {
-                            HStack(spacing: 8) {
-                                Text("\(safePage + 1) / \(pages.count)")
-                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
-                                    .foregroundStyle(self.palette.mutedInk)
-                                
-                                Spacer(minLength: 0)
-                                
-                                HStack(spacing: 4) {
-                                    self.newsPageButton(
-                                        systemName: "chevron.left",
-                                        disabled: safePage <= 0
-                                    ) {
-                                        let target = max(0, safePage - 1)
-                                        self.pageTurnDirection = -1
-                                        withAnimation(DashMotion.resolve(DashMotion.travel)) {
-                                            self.currentPage = target
-                                        }
-                                    }
-                                    
-                                    self.newsPageButton(
-                                        systemName: "chevron.right",
-                                        disabled: safePage >= pages.count - 1
-                                    ) {
-                                        let target = min(pages.count - 1, safePage + 1)
-                                        self.pageTurnDirection = 1
-                                        withAnimation(DashMotion.resolve(DashMotion.travel)) {
-                                            self.currentPage = target
-                                        }
-                                    }
-                                }
-                            }
-                            .frame(height: pagerBarH)
                         }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .id("dash-news-\(self.newsService.selectedCategory.rawValue)-\(self.newsService.feedRefreshToken)")
+                    .transition(.opacity)
+                    .animation(DashMotion.resolve(DashMotion.quick), value: self.newsService.feedRefreshToken)
                     .onAppear {
-                        self.prefetchNeighborCovers(pages: pages, safePage: safePage)
+                        self.newsService.prefetchCovers(for: self.newsService.selectedCategory, limit: slotCount * 2)
                     }
-                    .onChange(of: safePage) { _, nextPage in
-                        self.prefetchNeighborCovers(pages: pages, safePage: nextPage)
-                    }
-                    .onChange(of: self.newsService.selectedCategory) { _, _ in
-                        self.pageTurnDirection = 1
-                        self.currentPage = 0
-                    }
-                    .onChange(of: items.count) { _, _ in
-                        let maxPage = max(0, pages.count - 1)
-                        if self.currentPage > maxPage {
-                            self.currentPage = maxPage
-                        }
-                        self.prefetchNeighborCovers(pages: pages, safePage: min(self.currentPage, maxPage))
+                    .onChange(of: self.newsService.selectedCategory) { _, nextCat in
+                        self.newsService.prefetchCovers(for: nextCat, limit: slotCount * 2)
                     }
                 }
             }
@@ -1946,36 +1898,6 @@ private struct DashboardNewsColumnCard: View {
         .padding(.vertical, outerV)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .dashboardCardSurface(palette: self.palette, cornerRadius: 16)
-    }
-    
-    
-    private func prefetchNeighborCovers(pages: [[AIHotNewsItem]], safePage: Int) {
-        guard !pages.isEmpty else { return }
-        let nextIdx = safePage + 1
-        if nextIdx < pages.count {
-            for item in pages[nextIdx] {
-                self.newsService.requestCoverLoad(for: item)
-            }
-        }
-    }
-    
-    
-    private func newsPageButton(systemName: String, disabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 9.5, weight: .semibold))
-                .foregroundStyle(disabled ? self.palette.mutedInk.opacity(0.32) : self.palette.secondaryInk)
-                .frame(width: 22, height: 20)
-                .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .strokeBorder(self.palette.hairline, lineWidth: 0.7)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .pointerStyle(disabled ? .default : .link)
     }
 }
 
@@ -1997,9 +1919,10 @@ private struct NewsMiniVisualCard: View {
     
     var body: some View {
         let publisher = self.item.displayPublisherLabel
+        let category = self.item.resolvedCategory
         
         Button(action: self.onTap) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 5) {
                 ZStack(alignment: .topLeading) {
                     if let cover = self.cover {
                         Color.clear
@@ -2015,22 +1938,33 @@ private struct NewsMiniVisualCard: View {
                         self.fallbackCover
                     }
                     
-                    if !self.isRead {
-                        Circle()
-                            .fill(self.palette.accentFill)
-                            .frame(width: 5, height: 5)
-                            .padding(5)
+                    HStack(spacing: 4) {
+                        Text(category == .xSocial ? "X" : category.badgeLabel)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(self.palette.pine)
+                            .padding(.horizontal, 5.5)
+                            .frame(height: 16)
+                            .background(self.palette.card.opacity(0.86), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        
+                        Spacer(minLength: 0)
+                        
+                        if !self.isRead {
+                            Circle()
+                                .fill(self.palette.accentFill)
+                                .frame(width: 5, height: 5)
+                        }
                     }
+                    .padding(5)
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: self.coverHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 6.5, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 
                 Text(self.item.title)
-                    .font(.system(size: self.showPublisherLine ? 11.5 : 10.8, weight: self.isRead ? .regular : .medium))
+                    .font(.system(size: self.showPublisherLine ? 11.8 : 11.0, weight: self.isRead ? .regular : .semibold))
                     .foregroundStyle(self.isRead ? self.palette.secondaryInk : self.palette.pine)
                     .lineLimit(2)
-                    .lineSpacing(1)
+                    .lineSpacing(1.5)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .layoutPriority(1)
@@ -2038,14 +1972,24 @@ private struct NewsMiniVisualCard: View {
                 if self.showPublisherLine {
                     Spacer(minLength: 0)
                     
-                    Text(publisher.isEmpty ? self.item.resolvedCategory.label : publisher)
-                        .font(.system(size: 10, weight: .regular))
-                        .foregroundStyle(self.palette.mutedInk)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    HStack(spacing: 4) {
+                        Text(publisher.isEmpty ? category.label : publisher)
+                            .font(.system(size: 10, weight: .regular))
+                            .foregroundStyle(self.palette.mutedInk)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        
+                        Spacer(minLength: 2)
+                        
+                        if let published = self.item.publishedAt {
+                            Text(Self.shortAge(from: published))
+                                .font(.system(size: 9.5, design: .monospaced).monospacedDigit())
+                                .foregroundStyle(self.palette.mutedInk.opacity(0.8))
+                        }
+                    }
                 }
             }
-            .padding(self.showPublisherLine ? 6 : 5)
+            .padding(self.showPublisherLine ? 7 : 5)
             .frame(maxWidth: .infinity)
             .frame(height: self.slotHeight, alignment: .topLeading)
             .background(
@@ -2072,24 +2016,36 @@ private struct NewsMiniVisualCard: View {
     
     
     private var fallbackCover: some View {
-        let seed = abs(self.item.id.hashValue)
-        let tint: Color = switch seed % 4 {
-            case 0: self.palette.accentFill
-            case 1: self.palette.mint
-            case 2: self.palette.statusPositive
-            default: self.palette.emerald
+        let tint: Color = switch self.item.resolvedCategory {
+            case .finance: self.palette.statusPositive
+            case .xSocial: Color(red: 0.212, green: 0.478, blue: 0.612)
+            case .ai, .all: self.palette.accentFill
         }
+        let teaser = self.item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return ZStack(alignment: .bottomLeading) {
             LinearGradient(
-                colors: [tint.opacity(self.palette.tokens.isDark ? 0.34 : 0.22), tint.opacity(0.06)],
+                colors: [tint.opacity(self.palette.tokens.isDark ? 0.26 : 0.16), tint.opacity(0.05)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
-            Capsule()
-                .fill(tint.opacity(0.45))
-                .frame(width: 24, height: 3)
-                .padding(7)
+            if !teaser.isEmpty && self.coverHeight >= 54 {
+                Text(teaser)
+                    .font(.system(size: 9.5, weight: .regular))
+                    .foregroundStyle(self.palette.secondaryInk.opacity(0.86))
+                    .lineLimit(2)
+                    .lineSpacing(1.5)
+                    .padding(.horizontal, 7)
+                    .padding(.bottom, 6)
+            }
         }
+    }
+    
+    
+    private static func shortAge(from date: Date) -> String {
+        let sec = max(60, Int(Date().timeIntervalSince(date)))
+        if sec < 3600 { return "\(sec / 60)m" }
+        if sec < 86_400 { return "\(sec / 3600)h" }
+        return "\(sec / 86_400)d"
     }
 }
 
@@ -2267,7 +2223,22 @@ nonisolated enum DashboardHeroDanmakuScheduler {
 }
 
 
-/// Persists and caches the user-uploaded dashboard hero cover photo and its vertical focal alignment.
+/// Display mode for the user-uploaded dashboard hero cover photo.
+nonisolated enum HeroCoverFitMode: String, CaseIterable, Sendable {
+    case fill = "fill"
+    case fit = "fit"
+    
+    var label: String {
+        switch self {
+            case .fill: AppLanguage.text("铺满裁切", en: "Fill Frame")
+            case .fit: AppLanguage.text("完整适配", en: "Fit Whole Image")
+        }
+    }
+}
+
+
+/// Persists and caches the user-uploaded dashboard hero cover photo, EXIF-normalized orientation,
+/// 2D focal alignment (`focalX`, `focalY`), and display fit mode (`fill` vs `fit`).
 @MainActor @Observable
 final class DashboardHeroCoverStore {
     
@@ -2278,8 +2249,20 @@ final class DashboardHeroCoverStore {
         didSet { self.initialToneSample = nil }
     }
     @ObservationIgnored private var initialToneSample: (
-        focalY: Double, aspect: CGFloat, fallback: HeroRegionTone, result: HeroBackdropToneSnapshot
+        focalX: Double, focalY: Double, fitMode: HeroCoverFitMode, aspect: CGFloat, fallback: HeroRegionTone, result: HeroBackdropToneSnapshot
     )?
+    
+    var focalX: Double {
+        didSet {
+            let clamped = max(0.0, min(1.0, self.focalX))
+            if abs(clamped - self.focalX) > 0.0001 {
+                self.focalX = clamped
+                return
+            }
+            guard abs(oldValue - clamped) > 0.0001 else { return }
+            self.database.set(String(format: "%.2f", clamped), forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFocalX)
+        }
+    }
     
     var focalY: Double {
         didSet {
@@ -2293,11 +2276,22 @@ final class DashboardHeroCoverStore {
         }
     }
     
+    var fitMode: HeroCoverFitMode {
+        didSet {
+            guard self.fitMode != oldValue else { return }
+            self.database.set(self.fitMode.rawValue, forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFitMode)
+        }
+    }
+    
     
     init(database: CotLocalDatabase = .shared) {
         self.database = database
-        let rawFocal = Double(database.string(forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFocalY))
-        self.focalY = max(0.0, min(1.0, rawFocal ?? 0.42))
+        let rawFocalX = Double(database.string(forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFocalX))
+        let rawFocalY = Double(database.string(forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFocalY))
+        let rawMode = database.string(forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFitMode)
+        self.focalX = max(0.0, min(1.0, rawFocalX ?? 0.50))
+        self.focalY = max(0.0, min(1.0, rawFocalY ?? 0.42))
+        self.fitMode = HeroCoverFitMode(rawValue: rawMode) ?? .fill
         self.reloadFromDatabase()
     }
     
@@ -2307,32 +2301,60 @@ final class DashboardHeroCoverStore {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !b64.isEmpty,
               let data = Data(base64Encoded: b64),
-              let image = NSImage(data: data)
+              let cg = Self.normalizedCGImage(from: data, maxDimension: 1920)
         else {
-            self.coverImage = nil
+            if !b64.isEmpty,
+               let data = Data(base64Encoded: b64),
+               let fallback = NSImage(data: data)
+            {
+                self.coverImage = fallback
+            } else {
+                self.coverImage = nil
+            }
             return
         }
-        self.coverImage = image
+        self.coverImage = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
     
     
     fileprivate func initialTones(canvasAspect: CGFloat, fallbackRGB: (Double, Double, Double)) -> HeroBackdropToneSnapshot {
         let fallback = HeroRegionTone(red: fallbackRGB.0, green: fallbackRGB.1, blue: fallbackRGB.2)
         if let sample = self.initialToneSample,
-           sample.focalY == self.focalY, sample.aspect == canvasAspect, sample.fallback == fallback
+           sample.focalX == self.focalX,
+           sample.focalY == self.focalY,
+           sample.fitMode == self.fitMode,
+           sample.aspect == canvasAspect,
+           sample.fallback == fallback
         {
             return sample.result
         }
         let result = HeroCoverToneSampler.sample(
-            image: self.coverImage, focalY: self.focalY, canvasAspect: canvasAspect, fallbackRGB: fallbackRGB
+            image: self.coverImage,
+            focalX: self.focalX,
+            focalY: self.focalY,
+            fitMode: self.fitMode,
+            canvasAspect: canvasAspect,
+            fallbackRGB: fallbackRGB
         )
-        self.initialToneSample = (self.focalY, canvasAspect, fallback, result)
+        self.initialToneSample = (self.focalX, self.focalY, self.fitMode, canvasAspect, fallback, result)
         return result
     }
     
     
     @discardableResult
     func setCoverImage(from url: URL) -> Bool {
+        if let cg = Self.normalizedCGImage(fromURL: url, maxDimension: 2400) {
+            let normalizedNSImage = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+            guard self.setCoverImage(normalizedNSImage) else { return false }
+            if let smart = Self.detectSmartFocalPoint(for: cg) {
+                self.focalX = smart.x
+                self.focalY = smart.y
+            } else {
+                self.focalX = 0.50
+                self.focalY = 0.42
+            }
+            return true
+        }
         guard let image = NSImage(contentsOf: url) else { return false }
         return self.setCoverImage(image)
     }
@@ -2341,19 +2363,35 @@ final class DashboardHeroCoverStore {
     @discardableResult
     func setCoverImage(_ image: NSImage) -> Bool {
         guard let encodedData = Self.processedCoverJPEGData(from: image),
-              let decoded = NSImage(data: encodedData)
+              let cg = Self.normalizedCGImage(from: encodedData, maxDimension: 1920)
         else { return false }
         
         self.database.set(encodedData.base64EncodedString(), forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverImageBase64)
-        self.coverImage = decoded
+        self.coverImage = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         return true
+    }
+    
+    
+    func applySmartAutoFocal() {
+        guard let image = self.coverImage,
+              let cg = Self.underlyingCGImage(from: image),
+              let smart = Self.detectSmartFocalPoint(for: cg)
+        else {
+            self.focalX = 0.50
+            self.focalY = 0.42
+            return
+        }
+        self.focalX = smart.x
+        self.focalY = smart.y
     }
     
     
     func clearCoverImage() {
         self.database.set("", forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverImageBase64)
         self.coverImage = nil
+        self.focalX = 0.50
         self.focalY = 0.42
+        self.fitMode = .fill
     }
     
     
@@ -2367,15 +2405,82 @@ final class DashboardHeroCoverStore {
         panel.begin { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
             Task { @MainActor [weak self] in
+                _ = UserMediaLibraryStore.shared.importURLs([url], preferredKind: .background)
                 _ = self?.setCoverImage(from: url)
             }
         }
     }
     
     
+    nonisolated static func underlyingCGImage(from image: NSImage) -> CGImage? {
+        if let direct = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return direct
+        }
+        var proposed = NSRect(origin: .zero, size: image.size)
+        return image.cgImage(forProposedRect: &proposed, context: nil, hints: nil)
+    }
+    
+    
+    /// Uses Vision face detection first, then attention-based saliency, returning top-left normalized `(x, y)` focal coordinates.
+    nonisolated static func detectSmartFocalPoint(for cgImage: CGImage) -> (x: Double, y: Double)? {
+        guard cgImage.width >= 24, cgImage.height >= 24 else { return nil }
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        
+        let faceRequest = VNDetectFaceRectanglesRequest()
+        try? handler.perform([faceRequest])
+        if let faces = faceRequest.results, !faces.isEmpty {
+            let unionBox = faces.reduce(CGRect.null) { $0.union($1.boundingBox) }
+            if !unionBox.isNull && !unionBox.isEmpty {
+                let fx = max(0.06, min(0.94, Double(unionBox.midX)))
+                // Bias slightly toward upper-third of face box so foreheads/heads stay unclipped
+                let visionTargetY = unionBox.minY + unionBox.height * 0.62
+                let fy = max(0.06, min(0.94, 1.0 - Double(visionTargetY)))
+                return (fx, fy)
+            }
+        }
+        
+        let saliencyRequest = VNGenerateAttentionBasedSaliencyImageRequest()
+        try? handler.perform([saliencyRequest])
+        if let obs = saliencyRequest.results?.first,
+           let salient = obs.salientObjects?.first
+        {
+            let box = salient.boundingBox
+            let fx = max(0.06, min(0.94, Double(box.midX)))
+            let fy = max(0.06, min(0.94, 1.0 - Double(box.midY)))
+            return (fx, fy)
+        }
+        return nil
+    }
+    
+    
+    private nonisolated static func normalizedCGImage(fromURL url: URL, maxDimension: CGFloat) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return Self.normalizedCGImage(fromSource: source, maxDimension: maxDimension)
+    }
+    
+    
+    private nonisolated static func normalizedCGImage(from data: Data, maxDimension: CGFloat) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return Self.normalizedCGImage(fromSource: source, maxDimension: maxDimension)
+    }
+    
+    
+    private nonisolated static func normalizedCGImage(fromSource source: CGImageSource, maxDimension: CGFloat) -> CGImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxDimension,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        if let thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+            return thumb
+        }
+        return CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+    }
+    
+    
     private static func processedCoverJPEGData(from image: NSImage, maxDimension: CGFloat = 1920) -> Data? {
-        var proposedRect = NSRect(origin: .zero, size: image.size)
-        guard let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) else {
+        guard let cgImage = Self.underlyingCGImage(from: image) else {
             return nil
         }
         let srcW = CGFloat(cgImage.width)
@@ -2594,20 +2699,22 @@ struct HeroAdaptiveGlassTokens {
 }
 
 
-/// Fast sub-millisecond sRGB sampler matching `HeroPhotoFadeBackdrop`'s exact `.aspectRatio(.fill)` + `focalY` crop geometry.
+/// Fast sub-millisecond sRGB sampler matching `HeroPhotoFadeBackdrop`'s exact fill/fit & 2D focal crop geometry.
 enum HeroCoverToneSampler {
     
     static let danmakuColumnCount = 6
     
     static func sample(
         image: NSImage?,
+        focalX: Double = 0.50,
         focalY: Double,
+        fitMode: HeroCoverFitMode = .fill,
         canvasAspect: CGFloat,
         fallbackRGB: (Double, Double, Double)
     ) -> HeroBackdropToneSnapshot {
         let fallbackTone = HeroRegionTone(red: fallbackRGB.0, green: fallbackRGB.1, blue: fallbackRGB.2)
         guard let image,
-              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let cgImage = DashboardHeroCoverStore.underlyingCGImage(from: image),
               cgImage.width > 0,
               cgImage.height > 0
         else {
@@ -2624,17 +2731,19 @@ enum HeroCoverToneSampler {
         let imgW = CGFloat(cgImage.width)
         let imgH = CGFloat(cgImage.height)
         let imgAspect = imgW / max(1, imgH)
-        let clampedFocal = max(0.0, min(1.0, focalY))
+        let clampedFocalX = max(0.0, min(1.0, focalX))
+        let clampedFocalY = max(0.0, min(1.0, focalY))
         
-        // Match SwiftUI `.aspectRatio(contentMode: .fill)` + `yOffset = -overflowY * focalY`
-        // (`CGImage.cropping(to:)` uses top-left pixel coordinates: y=0 is top edge).
+        // Match HeroPhotoFadeBackdrop's crop geometry (`CGImage.cropping(to:)` uses top-left pixel coordinates).
         let cropRect: CGRect
-        if imgAspect <= clampedAspect {
+        if fitMode == .fit {
+            cropRect = CGRect(x: 0, y: 0, width: imgW, height: imgH)
+        } else if imgAspect <= clampedAspect {
             let visibleH = min(imgH, imgW / clampedAspect)
             let overflowY = max(0, imgH - visibleH)
             cropRect = CGRect(
                 x: 0,
-                y: overflowY * CGFloat(clampedFocal),
+                y: overflowY * CGFloat(clampedFocalY),
                 width: imgW,
                 height: max(1, visibleH)
             ).integral
@@ -2642,7 +2751,7 @@ enum HeroCoverToneSampler {
             let visibleW = min(imgW, imgH * clampedAspect)
             let overflowX = max(0, imgW - visibleW)
             cropRect = CGRect(
-                x: overflowX * 0.5,
+                x: overflowX * CGFloat(clampedFocalX),
                 y: 0,
                 width: max(1, visibleW),
                 height: imgH
@@ -2745,10 +2854,13 @@ private struct DashboardAchievementHeroBar: View {
     @State private var isToggleHovered = false
     @State private var isCoverButtonHovered = false
     @State private var isDropTargeted = false
+    @State private var isAdjustingCover = false
+    @State private var dragStartFocal: (x: Double, y: Double)? = nil
     @State private var hasAppeared = false
     @State private var startDate = Date()
     @State private var toneSnapshot: HeroBackdropToneSnapshot
     @State private var lastSampleAspectBucket: Int = 0
+    @State private var isShowingHeroBgLibraryPicker = false
     
     
     init(
@@ -2851,7 +2963,9 @@ private struct DashboardAchievementHeroBar: View {
         let aspect = canvasSize.height > 1 ? (canvasSize.width / canvasSize.height) : (self.compact ? 3.2 : 4.2)
         let sampled = HeroCoverToneSampler.sample(
             image: self.coverStore.coverImage,
+            focalX: self.coverStore.focalX,
             focalY: self.coverStore.focalY,
+            fitMode: self.coverStore.fitMode,
             canvasAspect: aspect,
             fallbackRGB: Self.fallbackSurfaceRGB(for: self.palette)
         )
@@ -2922,7 +3036,7 @@ private struct DashboardAchievementHeroBar: View {
                 
                 // Open panoramic showcase zone — unobstructed cover view + real-time background-adaptive floating danmaku
                 ZStack {
-                    if self.isDanmakuEnabled {
+                    if self.isDanmakuEnabled && !self.isAdjustingCover {
                         GeometryReader { stageGeo in
                             let danmakuPaused = AnimationConstants.isReducedMotionEnabled
                                 || !self.activityGate.isAppActive
@@ -2938,6 +3052,57 @@ private struct DashboardAchievementHeroBar: View {
                             }
                         }
                         .clipped()
+                        .transition(.opacity)
+                    }
+                    
+                    if self.isAdjustingCover && hasPhoto {
+                        let hudGlass = HeroAdaptiveGlassTokens.resolve(
+                            for: topRightTone,
+                            hasPhoto: true,
+                            hovered: true,
+                            palette: self.palette
+                        )
+                        HStack(spacing: 10) {
+                            Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text(AppLanguage.text("上下左右拖动画面调整构图", en: "Drag to adjust framing"))
+                                .font(.system(size: 11.5, weight: .medium))
+                            
+                            Button {
+                                withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                                    self.coverStore.applySmartAutoFocal()
+                                }
+                            } label: {
+                                Text(AppLanguage.text("智能对焦", en: "Auto Focus"))
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .padding(.horizontal, 8)
+                                    .frame(height: 22)
+                                    .background(self.palette.accentFill.opacity(0.22), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                            
+                            Button {
+                                withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                                    self.isAdjustingCover = false
+                                }
+                            } label: {
+                                Text(AppLanguage.text("完成", en: "Done"))
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(self.palette.tokens.onAccentInk)
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 22)
+                                    .background(self.palette.accentFill, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        }
+                        .foregroundStyle(hudGlass.ink)
+                        .padding(.horizontal, 12)
+                        .frame(height: 32)
+                        .background {
+                            self.adaptiveGlassCapsule(glass: hudGlass)
+                        }
                         .transition(.opacity)
                     }
                 }
@@ -2970,7 +3135,9 @@ private struct DashboardAchievementHeroBar: View {
             .background {
                 HeroPhotoFadeBackdrop(
                     coverImage: self.coverStore.coverImage,
+                    focalX: self.coverStore.focalX,
                     focalY: self.coverStore.focalY,
+                    fitMode: self.coverStore.fitMode,
                     bottomTone: self.toneSnapshot.bottomStrip,
                     palette: self.palette
                 )
@@ -2979,8 +3146,8 @@ private struct DashboardAchievementHeroBar: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(
-                        self.isDropTargeted ? self.palette.accentFill : self.palette.hairline,
-                        lineWidth: self.isDropTargeted ? 1.8 : 0.85
+                        self.isDropTargeted ? self.palette.accentFill : (self.isAdjustingCover ? self.palette.accentFill.opacity(0.65) : self.palette.hairline),
+                        lineWidth: (self.isDropTargeted || self.isAdjustingCover) ? 1.8 : 0.85
                     )
             )
             .shadow(
@@ -2988,6 +3155,41 @@ private struct DashboardAchievementHeroBar: View {
                 radius: 6,
                 x: 0,
                 y: 2
+            )
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        guard self.isAdjustingCover,
+                              hasPhoto,
+                              self.coverStore.fitMode == .fill,
+                              let cover = self.coverStore.coverImage
+                        else { return }
+                        if self.dragStartFocal == nil {
+                            self.dragStartFocal = (self.coverStore.focalX, self.coverStore.focalY)
+                        }
+                        guard let start = self.dragStartFocal else { return }
+                        let targetW = max(1, heroGeo.size.width)
+                        let targetH = max(1, heroGeo.size.height)
+                        let imgAspect: CGFloat = {
+                            if let cg = DashboardHeroCoverStore.underlyingCGImage(from: cover), cg.height > 0 {
+                                return CGFloat(cg.width) / CGFloat(cg.height)
+                            }
+                            return cover.size.height > 0 ? (cover.size.width / cover.size.height) : 1.77
+                        }()
+                        let targetAspect = targetW / targetH
+                        if imgAspect >= targetAspect {
+                            let renderedW = targetH * imgAspect
+                            let overflowX = max(1, renderedW - targetW)
+                            self.coverStore.focalX = max(0, min(1, start.x - Double(value.translation.width / overflowX)))
+                        } else {
+                            let renderedH = targetW / max(0.2, imgAspect)
+                            let overflowY = max(1, renderedH - targetH)
+                            self.coverStore.focalY = max(0, min(1, start.y - Double(value.translation.height / overflowY)))
+                        }
+                    }
+                    .onEnded { _ in
+                        self.dragStartFocal = nil
+                    }
             )
             .onDrop(of: [.fileURL], isTargeted: self.$isDropTargeted) { providers in
                 self.handleImageDrop(providers: providers)
@@ -3002,9 +3204,16 @@ private struct DashboardAchievementHeroBar: View {
                 }
             }
             .onChange(of: coverImageID) { _, _ in
+                self.isAdjustingCover = false
+                self.refreshAdaptiveTones(canvasSize: heroGeo.size)
+            }
+            .onChange(of: self.coverStore.focalX) { _, _ in
                 self.refreshAdaptiveTones(canvasSize: heroGeo.size)
             }
             .onChange(of: self.coverStore.focalY) { _, _ in
+                self.refreshAdaptiveTones(canvasSize: heroGeo.size)
+            }
+            .onChange(of: self.coverStore.fitMode) { _, _ in
                 self.refreshAdaptiveTones(canvasSize: heroGeo.size)
             }
             .onChange(of: self.palette.tokens.isDark) { _, _ in
@@ -3122,107 +3331,192 @@ private struct DashboardAchievementHeroBar: View {
         }
         .contentShape(Capsule())
         
-        if hasPhoto {
-            Menu {
-                Button {
-                    self.coverStore.presentImagePicker()
+        Group {
+            if hasPhoto {
+                Menu {
+                    Button {
+                        self.isShowingHeroBgLibraryPicker = true
+                    } label: {
+                        Label(AppLanguage.text("从背景库选择…", en: "Choose from Library…"), systemImage: "photo.stack")
+                    }
+                    
+                    Button {
+                        self.coverStore.presentImagePicker()
+                    } label: {
+                        Label(AppLanguage.text("更换本地图片…", en: "Choose Local Image…"), systemImage: "photo.badge.plus")
+                    }
+                    
+                    Divider()
+                    
+                    Button {
+                        withAnimation(DashMotion.resolve(DashMotion.standard)) {
+                            self.coverStore.fitMode = .fill
+                        }
+                    } label: {
+                        HStack {
+                            Text(AppLanguage.text("铺满裁切 (Fill)", en: "Fill Frame"))
+                            if self.coverStore.fitMode == .fill { Image(systemName: "checkmark") }
+                        }
+                    }
+                    
+                    Button {
+                        withAnimation(DashMotion.resolve(DashMotion.standard)) {
+                            self.isAdjustingCover = false
+                            self.coverStore.fitMode = .fit
+                        }
+                    } label: {
+                        HStack {
+                            Text(AppLanguage.text("完整适配 (不裁切)", en: "Fit Whole Image"))
+                            if self.coverStore.fitMode == .fit { Image(systemName: "checkmark") }
+                        }
+                    }
+                    
+                    if self.coverStore.fitMode == .fill {
+                        Divider()
+                        
+                        Button {
+                            withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                                self.isAdjustingCover.toggle()
+                            }
+                        } label: {
+                            Label(
+                                self.isAdjustingCover
+                                    ? AppLanguage.text("退出拖拽构图", en: "Finish Dragging")
+                                    : AppLanguage.text("拖拽调整构图", en: "Drag to Reposition"),
+                                systemImage: "arrow.up.and.down.and.arrow.left.and.right"
+                            )
+                        }
+                        
+                        Button {
+                            withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                                self.coverStore.applySmartAutoFocal()
+                            }
+                        } label: {
+                            Label(AppLanguage.text("智能识别对焦", en: "Smart Auto Focus"), systemImage: "viewfinder")
+                        }
+                        
+                        Divider()
+                        
+                        Button {
+                            withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                                self.coverStore.focalY = 0.08
+                            }
+                        } label: {
+                            HStack {
+                                Text(AppLanguage.text("画面顶部", en: "Focus Top Edge"))
+                                if self.coverStore.focalY < 0.16 { Image(systemName: "checkmark") }
+                            }
+                        }
+                        
+                        Button {
+                            withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                                self.coverStore.focalY = 0.25
+                            }
+                        } label: {
+                            HStack {
+                                Text(AppLanguage.text("画面偏上", en: "Focus Upper"))
+                                if self.coverStore.focalY >= 0.16 && self.coverStore.focalY < 0.38 { Image(systemName: "checkmark") }
+                            }
+                        }
+                        
+                        Button {
+                            withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                                self.coverStore.focalY = 0.50
+                                self.coverStore.focalX = 0.50
+                            }
+                        } label: {
+                            HStack {
+                                Text(AppLanguage.text("画面居中", en: "Focus Center"))
+                                if self.coverStore.focalY >= 0.38 && self.coverStore.focalY <= 0.64 { Image(systemName: "checkmark") }
+                            }
+                        }
+                        
+                        Button {
+                            withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                                self.coverStore.focalY = 0.78
+                            }
+                        } label: {
+                            HStack {
+                                Text(AppLanguage.text("画面偏下", en: "Focus Lower"))
+                                if self.coverStore.focalY > 0.64 && self.coverStore.focalY < 0.90 { Image(systemName: "checkmark") }
+                            }
+                        }
+                        
+                        Button {
+                            withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                                self.coverStore.focalY = 0.96
+                            }
+                        } label: {
+                            HStack {
+                                Text(AppLanguage.text("画面底部", en: "Focus Bottom Edge"))
+                                if self.coverStore.focalY >= 0.90 { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    Button(role: .destructive) {
+                        withAnimation(DashMotion.resolve(DashMotion.standard)) {
+                            self.isAdjustingCover = false
+                            self.coverStore.clearCoverImage()
+                        }
+                    } label: {
+                        Label(AppLanguage.text("移除背景图片", en: "Remove Cover"), systemImage: "trash")
+                    }
                 } label: {
-                    Label(AppLanguage.text("更换背景图片…", en: "Choose New Image…"), systemImage: "photo.badge.plus")
+                    pillLabel
                 }
-                
-                Divider()
-                
-                Button {
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .pointerStyle(.link)
+                .onHover { hovering in
+                    guard hovering != self.isCoverButtonHovered else { return }
                     withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                        self.coverStore.focalY = 0.05
-                    }
-                } label: {
-                    HStack {
-                        Text(AppLanguage.text("画面顶部", en: "Focus Top Edge"))
-                        if self.coverStore.focalY < 0.16 { Image(systemName: "checkmark") }
+                        self.isCoverButtonHovered = hovering
                     }
                 }
-                
-                Button {
+            } else {
+                Menu {
+                    Button {
+                        self.isShowingHeroBgLibraryPicker = true
+                    } label: {
+                        Label(AppLanguage.text("从背景库选择…", en: "Choose from Library…"), systemImage: "photo.stack")
+                    }
+                    
+                    Button {
+                        self.coverStore.presentImagePicker()
+                    } label: {
+                        Label(AppLanguage.text("上传本地图片…", en: "Upload Image…"), systemImage: "photo.badge.plus")
+                    }
+                } label: {
+                    pillLabel
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .pointerStyle(.link)
+                .onHover { hovering in
+                    guard hovering != self.isCoverButtonHovered else { return }
                     withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                        self.coverStore.focalY = 0.25
-                    }
-                } label: {
-                    HStack {
-                        Text(AppLanguage.text("画面偏上", en: "Focus Upper"))
-                        if self.coverStore.focalY >= 0.16 && self.coverStore.focalY < 0.38 { Image(systemName: "checkmark") }
+                        self.isCoverButtonHovered = hovering
                     }
                 }
-                
-                Button {
-                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                        self.coverStore.focalY = 0.50
-                    }
-                } label: {
-                    HStack {
-                        Text(AppLanguage.text("画面居中", en: "Focus Center"))
-                        if self.coverStore.focalY >= 0.38 && self.coverStore.focalY <= 0.64 { Image(systemName: "checkmark") }
-                    }
-                }
-                
-                Button {
-                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                        self.coverStore.focalY = 0.78
-                    }
-                } label: {
-                    HStack {
-                        Text(AppLanguage.text("画面偏下", en: "Focus Lower"))
-                        if self.coverStore.focalY > 0.64 && self.coverStore.focalY < 0.90 { Image(systemName: "checkmark") }
-                    }
-                }
-                
-                Button {
-                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                        self.coverStore.focalY = 0.96
-                    }
-                } label: {
-                    HStack {
-                        Text(AppLanguage.text("画面底部", en: "Focus Bottom Edge"))
-                        if self.coverStore.focalY >= 0.90 { Image(systemName: "checkmark") }
-                    }
-                }
-                
-                Divider()
-                
-                Button(role: .destructive) {
-                    withAnimation(DashMotion.resolve(DashMotion.standard)) {
-                        self.coverStore.clearCoverImage()
-                    }
-                } label: {
-                    Label(AppLanguage.text("移除背景图片", en: "Remove Cover"), systemImage: "trash")
-                }
-            } label: {
-                pillLabel
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .pointerStyle(.link)
-            .onHover { hovering in
-                guard hovering != self.isCoverButtonHovered else { return }
-                withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                    self.isCoverButtonHovered = hovering
-                }
-            }
-        } else {
-            Button {
-                self.coverStore.presentImagePicker()
-            } label: {
-                pillLabel
-            }
-            .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.95))
-            .pointerStyle(.link)
-            .onHover { hovering in
-                guard hovering != self.isCoverButtonHovered else { return }
-                withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                    self.isCoverButtonHovered = hovering
-                }
-            }
+        }
+        .popover(isPresented: self.$isShowingHeroBgLibraryPicker, arrowEdge: .bottom) {
+            BackgroundLibraryPickerPopover(
+                title: AppLanguage.text("选择数据看板背景", en: "Choose Dashboard Cover"),
+                onSelect: { asset in
+                    _ = UserMediaLibraryStore.shared.applyBackgroundToDashboardHero(assetID: asset.id, heroStore: self.coverStore)
+                    self.isShowingHeroBgLibraryPicker = false
+                },
+                onClear: hasPhoto ? {
+                    self.coverStore.clearCoverImage()
+                    self.isShowingHeroBgLibraryPicker = false
+                } : nil
+            )
         }
     }
     
@@ -3511,12 +3805,14 @@ private struct DashboardAchievementHeroBar: View {
 }
 
 
-/// Panoramic photographic hero backdrop preserving crystal clarity across the upper 62% showcase
-/// and melting smoothly downward into a subtly color-harmonized card surface for bottom telemetry legibility.
+/// Adaptive photographic hero backdrop supporting both clamped 2D `.fill` framing and uncropped `.fit` ambient presentation,
+/// keeping upper showcase clarity while smoothly melting into the bottom telemetry strip.
 private struct HeroPhotoFadeBackdrop: View {
     
     let coverImage: NSImage?
+    let focalX: Double
     let focalY: Double
+    let fitMode: HeroCoverFitMode
     let bottomTone: HeroRegionTone
     let palette: DashPalette
     
@@ -3532,44 +3828,79 @@ private struct HeroPhotoFadeBackdrop: View {
                 GeometryReader { geo in
                     let targetW = max(1, geo.size.width)
                     let targetH = max(1, geo.size.height)
-                    let imgSize = coverImage.size
-                    let imgAspect = (imgSize.height > 0) ? (imgSize.width / imgSize.height) : 1.77
-                    let renderedH = max(targetH, targetW / max(0.2, imgAspect))
-                    let overflowY = max(0, renderedH - targetH)
-                    let clampedFocal = max(0.0, min(1.0, self.focalY))
-                    let yOffset = -overflowY * CGFloat(clampedFocal)
+                    let imgAspect: CGFloat = {
+                        if let cg = DashboardHeroCoverStore.underlyingCGImage(from: coverImage), cg.height > 0 {
+                            return CGFloat(cg.width) / CGFloat(cg.height)
+                        }
+                        let sz = coverImage.size
+                        return sz.height > 0 ? (sz.width / sz.height) : 1.77
+                    }()
+                    let safeAspect = max(0.2, min(8.0, imgAspect))
+                    let targetAspect = targetW / targetH
                     
-                    Image(nsImage: coverImage)
-                        .resizable()
-                        .interpolation(.high)
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: targetW, height: renderedH, alignment: .top)
-                        .offset(y: yOffset)
-                        .frame(width: targetW, height: targetH, alignment: .top)
+                    if self.fitMode == .fit {
+                        // Fit Mode: harmonious blurred ambient fill + uncropped centered subject
+                        ZStack(alignment: .center) {
+                            Image(nsImage: coverImage)
+                                .resizable()
+                                .interpolation(.medium)
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: targetW, height: targetH)
+                                .blur(radius: 26)
+                                .scaleEffect(1.08)
+                                .overlay(ambientTint.opacity(isDark ? 0.24 : 0.14))
+                                .clipped()
+                            
+                            Image(nsImage: coverImage)
+                                .resizable()
+                                .interpolation(.high)
+                                .aspectRatio(contentMode: .fit)
+                                .frame(maxWidth: targetW * 0.94, maxHeight: max(60, targetH * 0.82))
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .padding(.bottom, targetH * 0.16)
+                        }
+                        .frame(width: targetW, height: targetH)
                         .clipped()
+                    } else {
+                        // Fill Mode: exact 2D overflow computation with strict clamping so edges never show gaps
+                        let renderedW = safeAspect >= targetAspect ? (targetH * safeAspect) : targetW
+                        let renderedH = safeAspect >= targetAspect ? targetH : (targetW / safeAspect)
+                        let overflowX = max(0, renderedW - targetW)
+                        let overflowY = max(0, renderedH - targetH)
+                        let xOffset = -overflowX * CGFloat(max(0.0, min(1.0, self.focalX)))
+                        let yOffset = -overflowY * CGFloat(max(0.0, min(1.0, self.focalY)))
+                        
+                        Image(nsImage: coverImage)
+                            .resizable()
+                            .interpolation(.high)
+                            .frame(width: renderedW, height: renderedH)
+                            .offset(x: xOffset, y: yOffset)
+                            .frame(width: targetW, height: targetH, alignment: .topLeading)
+                            .clipped()
+                    }
                 }
                 .mask(
                     LinearGradient(
                         stops: [
                             .init(color: .white, location: 0.00),
-                            .init(color: .white, location: 0.62),
-                            .init(color: .white.opacity(0.68), location: 0.76),
-                            .init(color: .white.opacity(0.18), location: 0.88),
-                            .init(color: .clear, location: 0.96),
+                            .init(color: .white, location: 0.68),
+                            .init(color: .white.opacity(0.68), location: 0.80),
+                            .init(color: .white.opacity(0.20), location: 0.91),
+                            .init(color: .clear, location: 0.98),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 )
                 
-                // Delicate photo-harmonized mist dock strictly at the lower 36% so bottom telemetry stays razor-sharp
+                // Delicate photo-harmonized mist dock strictly across lower telemetry band
                 LinearGradient(
                     stops: [
                         .init(color: .clear, location: 0.00),
-                        .init(color: .clear, location: 0.60),
-                        .init(color: cardColor.opacity(0.45), location: 0.74),
-                        .init(color: cardColor.opacity(0.88), location: 0.84),
-                        .init(color: cardColor, location: 0.93),
+                        .init(color: .clear, location: 0.66),
+                        .init(color: cardColor.opacity(0.42), location: 0.78),
+                        .init(color: cardColor.opacity(0.88), location: 0.88),
+                        .init(color: cardColor, location: 0.95),
                         .init(color: cardColor, location: 1.00),
                     ],
                     startPoint: .top,
@@ -3579,8 +3910,8 @@ private struct HeroPhotoFadeBackdrop: View {
                 // Subtle ambient chromatic wash echoing the cover image's lower tone into the card base
                 LinearGradient(
                     stops: [
-                        .init(color: .clear, location: 0.64),
-                        .init(color: ambientTint.opacity(isDark ? 0.10 : 0.06), location: 0.88),
+                        .init(color: .clear, location: 0.68),
+                        .init(color: ambientTint.opacity(isDark ? 0.10 : 0.06), location: 0.90),
                         .init(color: ambientTint.opacity(isDark ? 0.06 : 0.03), location: 1.00),
                     ],
                     startPoint: .top,
@@ -4379,8 +4710,6 @@ private struct DashboardAIUsageWideCard: View {
                     ZStack {
                         AIUsageSunburstChartView(snapshot: self.snapshot, palette: self.palette, detailed: false)
                             .frame(width: ringSide, height: ringSide)
-                            .scaleEffect(self.isHovered && !DashMotion.isReducedMotion ? 1.04 : 1.0)
-                            .animation(DashMotion.resolve(DashMotion.springCard), value: self.isHovered)
                         
                         VStack(spacing: 0.5) {
                             Text("\(displayReqs)")
@@ -4415,58 +4744,33 @@ private struct DashboardAIUsageWideCard: View {
                             
                             Spacer(minLength: 4)
                             
-                            VStack(alignment: .trailing, spacing: 5) {
-                                HStack(spacing: 4) {
-                                    Text(costEstimate.formattedRMB)
-                                        .font(.system(size: 11.5, weight: .bold, design: .rounded).monospacedDigit())
-                                        .foregroundStyle(self.palette.emerald)
-                                    Text("·")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(self.palette.secondaryInk)
-                                    Text(costEstimate.formattedUSD)
-                                        .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
-                                        .foregroundStyle(self.palette.secondaryInk)
-                                }
-                                .padding(.horizontal, 8)
-                                .frame(height: 22)
-                                .background(self.palette.tokens.positivePillBg, in: Capsule())
-                                
-                                HStack(alignment: .bottom, spacing: 3) {
-                                    let aiMax = max(20.0, self.snapshot.days14.map { Double($0.ai) }.max() ?? 20.0)
-                                    ForEach(Array(self.snapshot.days14.suffix(10).enumerated()), id: \.offset) { idx, day in
-                                        let frac = CGFloat(Double(day.ai) / aiMax)
-                                        let h = max(3, frac * 11)
-                                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                                            .fill(day.ai > 0 ? (idx == 9 ? self.palette.accentFill : self.palette.accentFill.opacity(0.45)) : self.palette.emptyDot)
-                                            .frame(width: 3, height: h)
-                                            .scaleEffect(y: self.hasAppeared ? 1.0 : 0.15, anchor: .bottom)
-                                            .animation(
-                                                DashMotion.resolve(DashMotion.springCard.delay(0.08 + Double(idx) * 0.022)),
-                                                value: self.hasAppeared
-                                            )
-                                    }
-                                }
-                                .frame(height: 11, alignment: .bottom)
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(costEstimate.formattedRMB)
+                                    .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+                                    .foregroundStyle(self.palette.pine)
+                                Text(costEstimate.formattedUSD)
+                                    .font(.system(size: 10.5, weight: .regular, design: .monospaced).monospacedDigit())
+                                    .foregroundStyle(self.palette.mutedInk)
                             }
                         }
                         
-                        VStack(spacing: 4) {
+                        VStack(spacing: 5) {
                             GeometryReader { barGeo in
                                 let w = max(40, barGeo.size.width)
                                 let splitX = max(14, min(w - 14, w * CGFloat(inFrac)))
                                 HStack(spacing: 2) {
-                                    RoundedRectangle(cornerRadius: 3.2, style: .continuous)
-                                        .fill(self.palette.accentFill)
+                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                        .fill(self.palette.pine.opacity(self.palette.tokens.isDark ? 0.72 : 0.68))
                                         .frame(width: max(8, splitX - 1))
                                     
-                                    RoundedRectangle(cornerRadius: 3.2, style: .continuous)
-                                        .fill(self.palette.mint.opacity(0.70))
+                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                        .fill(self.palette.pine.opacity(self.palette.tokens.isDark ? 0.22 : 0.16))
                                         .frame(maxWidth: .infinity)
                                 }
                                 .scaleEffect(x: self.hasAppeared ? 1.0 : 0.08, anchor: .leading)
                                 .animation(DashMotion.resolve(DashMotion.chartReveal.delay(0.12)), value: self.hasAppeared)
                             }
-                            .frame(height: 6)
+                            .frame(height: 4)
                             
                             HStack {
                                 Text("输入 \(Self.compactTokens(inTok)) · \(inPct)%")
@@ -4487,17 +4791,13 @@ private struct DashboardAIUsageWideCard: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: self.isHovered)
-            .offset(y: self.isHovered && !DashMotion.isReducedMotion ? -1.5 : 0)
-            .animation(DashMotion.resolve(DashMotion.quick), value: self.isHovered)
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-        .buttonStyle(DashboardCardButtonStyle())
+        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.992))
         .pointerStyle(.link)
         .onHover { hovering in
             if hovering != self.isHovered {
-                withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                    self.isHovered = hovering
-                }
+                self.isHovered = hovering
             }
         }
         .onAppear {
@@ -4561,20 +4861,16 @@ private struct DashboardCompactQuadCard: View {
                 self.miniVisualization
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(12)
+            .padding(13)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: self.isHovered)
-            .offset(y: self.isHovered && !DashMotion.isReducedMotion ? -1.5 : 0)
-            .animation(DashMotion.resolve(DashMotion.quick), value: self.isHovered)
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-        .buttonStyle(DashboardCardButtonStyle())
+        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.992))
         .pointerStyle(.link)
         .onHover { hovering in
             if hovering != self.isHovered {
-                withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                    self.isHovered = hovering
-                }
+                self.isHovered = hovering
             }
         }
     }
@@ -4679,13 +4975,12 @@ private struct DashboardExpandedQuadCard: View {
                 Button(action: self.onClose) {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(self.isCloseHovered ? self.palette.accentFill : self.palette.pine.opacity(0.70))
-                        .offset(x: self.isCloseHovered && !DashMotion.isReducedMotion ? -1.5 : 0)
+                        .foregroundStyle(self.isCloseHovered ? self.palette.pine : self.palette.pine.opacity(0.68))
                         .frame(width: 26, height: 26)
                         .background(Circle().fill(self.isCloseHovered ? self.palette.insetHover : self.palette.inset))
                         .contentShape(Circle())
                 }
-                .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.92))
+                .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.94))
                 .pointerStyle(.link)
                 .onHover { hovering in
                     guard hovering != self.isCloseHovered else { return }
@@ -4701,7 +4996,7 @@ private struct DashboardExpandedQuadCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: true)
+        .dashboardCardSurface(palette: self.palette, cornerRadius: 16, isHighlighted: false)
         .onChange(of: self.metric) { _, _ in
             self.hoverDetail = nil
         }
@@ -4955,7 +5250,7 @@ private struct SunburstDialCanvas: View, Equatable {
                     isDark: self.isDark,
                     palette: self.palette
                 )
-                let opacityMod: Double = (!hasHover || isRelated) ? (isDirectlyHovered ? 1.0 : 0.94) : 0.56
+                let opacityMod: Double = (!hasHover || isRelated) ? (isDirectlyHovered ? 1.0 : 0.94) : 0.72
                 context.fill(path, with: .color(baseColor.opacity(opacityMod)))
                 context.stroke(
                     path,
@@ -5141,7 +5436,7 @@ private struct AIUsageSunburstChartView: View {
     
     private func updateHover(_ nextID: String?) {
         guard nextID != self.hoveredNodeID else { return }
-        withAnimation(.easeOut(duration: 0.12)) {
+        withAnimation(.easeInOut(duration: 0.18)) {
             self.hoveredNodeID = nextID
         }
         guard let onHoverDetail = self.onHoverDetail else { return }
@@ -6151,26 +6446,32 @@ private extension View {
         showsShadow: Bool = true
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        let strokeColor = isHighlighted ? palette.accentFill.opacity(0.48) : palette.hairline
+        let strokeColor = isHighlighted ? palette.tokens.hairlineStrong : palette.hairline
+        let tintColor = palette.tokens.isDark
+            ? Color.white.opacity(isHighlighted ? 0.025 : 0)
+            : Color.black.opacity(isHighlighted ? 0.015 : 0)
         let shadowColor = showsShadow
             ? (isHighlighted
-                ? (palette.tokens.isDark ? Color.black.opacity(0.32) : palette.accentFill.opacity(0.11))
+                ? Color.black.opacity(palette.tokens.isDark ? 0.28 : 0.06)
                 : palette.cardShadow)
             : .clear
         return self
             .background(
-                shape
-                    .fill(palette.card)
-                    .shadow(
-                        color: shadowColor,
-                        radius: showsShadow ? (isHighlighted ? 12 : 6) : 0,
-                        x: 0,
-                        y: showsShadow ? (isHighlighted ? 4 : 2) : 0
-                    )
+                ZStack {
+                    shape
+                        .fill(palette.card)
+                        .shadow(
+                            color: shadowColor,
+                            radius: showsShadow ? (isHighlighted ? 9 : 6) : 0,
+                            x: 0,
+                            y: showsShadow ? (isHighlighted ? 3 : 2) : 0
+                        )
+                    shape.fill(tintColor)
+                }
             )
             .overlay(
-                shape.strokeBorder(strokeColor, lineWidth: isHighlighted ? 1.05 : 0.8)
+                shape.strokeBorder(strokeColor, lineWidth: 0.85)
             )
-            .animation(DashMotion.resolve(DashMotion.quick), value: isHighlighted)
+            .animation(DashMotion.resolve(.easeInOut(duration: 0.22)), value: isHighlighted)
     }
 }

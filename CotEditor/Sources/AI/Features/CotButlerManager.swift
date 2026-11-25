@@ -148,18 +148,20 @@ final class CotButlerManager {
     }
     
     private(set) var customAvatarImage: NSImage?
+    private(set) var workspaces: [ButlerWorkspaceRecord] = []
     private(set) var sessions: [ButlerSessionRecord] = []
     private(set) var activeSessionID: String = ""
     private(set) var messages: [ButlerChatMessage] = []
     private(set) var isStreaming: Bool = false
     private(set) var streamingSessionID: String?
     private(set) var streamingMessageID: String?
-    private(set) var streamingDraft: String = ""
-    private(set) var streamingThinking: String = ""
-    private(set) var streamingSteps: [BeautifulAgentThinkingStep] = []
-    private(set) var streamingStatusLabel: String = ""
+    @ObservationIgnored private(set) var streamingDraft: String = ""
+    @ObservationIgnored private(set) var streamingThinking: String = ""
+    @ObservationIgnored private(set) var streamingSteps: [BeautifulAgentThinkingStep] = []
+    @ObservationIgnored private(set) var streamingStatusLabel: String = ""
     private(set) var streamingStartedAt: Date?
     private(set) var lastErrorMessage: String?
+    @ObservationIgnored private var lastStreamPatchSentAt: Date = .distantPast
     
     /// Pending draft/quote handoff injected from Editor selection, Result Panel, or NEWS center.
     var pendingDraftText: String?
@@ -233,9 +235,14 @@ final class CotButlerManager {
     }
     
     
-    private func emitStreamPatch() {
+    private func emitStreamPatch(force: Bool = false) {
         guard let msgID = self.streamingMessageID else { return }
-        let elapsedMs = self.streamingStartedAt.map { max(0, Int(Date().timeIntervalSince($0) * 1000)) } ?? 0
+        let now = Date()
+        if !force && now.timeIntervalSince(self.lastStreamPatchSentAt) < 0.028 {
+            return
+        }
+        self.lastStreamPatchSentAt = now
+        let elapsedMs = self.streamingStartedAt.map { max(0, Int(now.timeIntervalSince($0) * 1000)) } ?? 0
         let patch = BeautifulAgentStreamPatchPayload(
             messageId: msgID,
             text: self.streamingDraft,
@@ -379,9 +386,10 @@ final class CotButlerManager {
     }
     
     
-    // MARK: - Session Management
+    // MARK: - Session & Logical Workspace Management
     
     private func bootstrapSessionsAndMessages() {
+        self.workspaces = self.database.fetchButlerWorkspaces()
         var loaded = self.database.fetchButlerSessions()
         if loaded.isEmpty {
             let initial = self.database.createButlerSession(title: AppLanguage.text("新对话", en: "New Chat"))
@@ -454,29 +462,68 @@ final class CotButlerManager {
         self.sessions.first(where: { $0.id == self.activeSessionID })
     }
     
+    var activeWorkspaceID: String? {
+        self.activeSession?.workspaceID
+    }
+    
+    var activeWorkspace: ButlerWorkspaceRecord? {
+        guard let wid = self.activeWorkspaceID else { return nil }
+        return self.workspaces.first(where: { $0.id == wid })
+    }
+    
     var activeWorkspacePath: String? {
         self.activeSession?.workspacePath
     }
     
     
-    func startNewSession(workspacePath: String? = nil) {
+    private func resolveWorkspaceTarget(workspaceID: String?, workspacePath: String?) -> (id: String?, folderPath: String?) {
+        if let rawID = workspaceID?.trimmingCharacters(in: .whitespacesAndNewlines), !rawID.isEmpty {
+            if let ws = self.workspaces.first(where: { $0.id == rawID }) {
+                return (ws.id, ws.folderPath)
+            }
+            let fresh = self.database.fetchButlerWorkspaces()
+            self.workspaces = fresh
+            if let ws = fresh.first(where: { $0.id == rawID }) {
+                return (ws.id, ws.folderPath)
+            }
+        }
+        if let rawPath = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines), !rawPath.isEmpty {
+            let std = URL(filePath: rawPath).standardizedFileURL.path(percentEncoded: false)
+            if let existing = self.workspaces.first(where: { $0.folderPath == std })
+                ?? self.database.findButlerWorkspace(folderPath: std)
+            {
+                self.workspaces = self.database.fetchButlerWorkspaces()
+                return (existing.id, existing.folderPath ?? std)
+            }
+            let baseName = URL(filePath: std).lastPathComponent
+            let created = self.database.createButlerWorkspace(
+                name: baseName.isEmpty ? std : baseName,
+                folderPath: std
+            )
+            self.workspaces = self.database.fetchButlerWorkspaces()
+            return (created.id, created.folderPath)
+        }
+        return (nil, nil)
+    }
+    
+    
+    func startNewSession(workspaceID: String? = nil, workspacePath: String? = nil) {
         self.lastErrorMessage = nil
         let hadStreaming = self.isStreaming
         if hadStreaming {
             self.cancelAndResetStreaming(savePartial: true, resetRPC: true)
         }
-        let normalizedWorkspace: String? = {
-            guard let raw = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-                return nil
-            }
-            return URL(filePath: raw).standardizedFileURL.path(percentEncoded: false)
-        }()
+        let target = self.resolveWorkspaceTarget(workspaceID: workspaceID, workspacePath: workspacePath)
         if let active = self.sessions.first(where: { $0.id == self.activeSessionID }),
            self.messages.isEmpty,
            active.messageCount == 0
         {
-            if active.workspacePath != normalizedWorkspace {
-                self.database.updateButlerSessionWorkspace(id: active.id, workspacePath: normalizedWorkspace)
+            if active.workspaceID != target.id || active.workspacePath != target.folderPath {
+                self.database.updateButlerSessionWorkspace(
+                    id: active.id,
+                    workspaceID: target.id,
+                    workspacePath: target.folderPath
+                )
                 self.sessions = self.database.fetchButlerSessions()
             }
             if !hadStreaming, self.database === CotLocalDatabase.shared {
@@ -486,7 +533,8 @@ final class CotButlerManager {
         }
         let created = self.database.createButlerSession(
             title: AppLanguage.text("新对话", en: "New Chat"),
-            workspacePath: normalizedWorkspace
+            workspaceID: target.id,
+            workspacePath: target.folderPath
         )
         self.activeSessionID = created.id
         self.database.set(created.id, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
@@ -498,38 +546,163 @@ final class CotButlerManager {
     }
     
     
+    func setSessionWorkspace(_ sessionID: String, workspaceID: String?) {
+        let targetID = sessionID.isEmpty ? self.activeSessionID : sessionID
+        guard !targetID.isEmpty,
+              let previous = self.sessions.first(where: { $0.id == targetID })
+        else { return }
+        let resolved = self.resolveWorkspaceTarget(workspaceID: workspaceID, workspacePath: nil)
+        guard previous.workspaceID != resolved.id || previous.workspacePath != resolved.folderPath else { return }
+        self.database.updateButlerSessionWorkspace(
+            id: targetID,
+            workspaceID: resolved.id,
+            workspacePath: resolved.folderPath
+        )
+        self.sessions = self.database.fetchButlerSessions()
+        if targetID == self.activeSessionID,
+           previous.workspacePath != resolved.folderPath,
+           self.database === CotLocalDatabase.shared
+        {
+            PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: false)
+        }
+    }
+    
+    
     func setSessionWorkspace(_ sessionID: String, workspacePath: String?) {
         let targetID = sessionID.isEmpty ? self.activeSessionID : sessionID
         guard !targetID.isEmpty,
-              self.sessions.contains(where: { $0.id == targetID })
+              let previous = self.sessions.first(where: { $0.id == targetID })
         else { return }
-        let normalized: String? = {
-            guard let raw = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+        let resolved = self.resolveWorkspaceTarget(workspaceID: nil, workspacePath: workspacePath)
+        guard previous.workspaceID != resolved.id || previous.workspacePath != resolved.folderPath else { return }
+        self.database.updateButlerSessionWorkspace(
+            id: targetID,
+            workspaceID: resolved.id,
+            workspacePath: resolved.folderPath
+        )
+        self.sessions = self.database.fetchButlerSessions()
+        if targetID == self.activeSessionID,
+           previous.workspacePath != resolved.folderPath,
+           self.database === CotLocalDatabase.shared
+        {
+            PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: false)
+        }
+    }
+    
+    
+    @discardableResult
+    func createWorkspace(
+        name: String,
+        folderPath: String? = nil,
+        startSession: Bool = false,
+        assignSessionID: String? = nil
+    ) -> ButlerWorkspaceRecord? {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return nil }
+        let created = self.database.createButlerWorkspace(name: trimmedName, folderPath: folderPath)
+        self.workspaces = self.database.fetchButlerWorkspaces()
+        if let assignSessionID, !assignSessionID.isEmpty {
+            self.setSessionWorkspace(assignSessionID, workspaceID: created.id)
+        } else if startSession {
+            self.startNewSession(workspaceID: created.id)
+        }
+        return created
+    }
+    
+    
+    func renameWorkspace(_ workspaceID: String, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !workspaceID.isEmpty, !trimmed.isEmpty else { return }
+        self.database.renameButlerWorkspace(id: workspaceID, name: trimmed)
+        self.workspaces = self.database.fetchButlerWorkspaces()
+        self.sessions = self.database.fetchButlerSessions()
+    }
+    
+    
+    func updateWorkspaceFolder(_ workspaceID: String, folderPath: String?) {
+        guard !workspaceID.isEmpty,
+              self.workspaces.contains(where: { $0.id == workspaceID })
+        else { return }
+        let previousActivePath = self.activeWorkspacePath
+        self.database.updateButlerWorkspaceFolder(id: workspaceID, folderPath: folderPath)
+        self.workspaces = self.database.fetchButlerWorkspaces()
+        self.sessions = self.database.fetchButlerSessions()
+        if self.activeWorkspaceID == workspaceID,
+           previousActivePath != self.activeWorkspacePath,
+           self.database === CotLocalDatabase.shared
+        {
+            PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: false)
+        }
+    }
+    
+    
+    func deleteWorkspace(_ workspaceID: String) {
+        guard !workspaceID.isEmpty else { return }
+        let previousActivePath = self.activeWorkspacePath
+        self.database.deleteButlerWorkspace(id: workspaceID)
+        self.workspaces = self.database.fetchButlerWorkspaces()
+        self.sessions = self.database.fetchButlerSessions()
+        if previousActivePath != self.activeWorkspacePath,
+           self.database === CotLocalDatabase.shared
+        {
+            PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: false)
+        }
+    }
+    
+    
+    func reorderWorkspaces(_ orderedIDs: [String]) {
+        guard !orderedIDs.isEmpty else { return }
+        self.database.reorderButlerWorkspaces(orderedIDs: orderedIDs)
+        self.workspaces = self.database.fetchButlerWorkspaces()
+    }
+    
+    
+    func moveSession(
+        _ sessionID: String,
+        toWorkspaceID targetWorkspaceID: String?,
+        orderedSessionIDs: [String],
+        isPinned: Bool? = nil
+    ) {
+        guard !sessionID.isEmpty,
+              let previous = self.sessions.first(where: { $0.id == sessionID })
+        else { return }
+        let cleanTargetWS: String? = {
+            guard let raw = targetWorkspaceID?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
                 return nil
             }
-            return URL(filePath: raw).standardizedFileURL.path(percentEncoded: false)
+            return raw
         }()
-        let previous = self.sessions.first(where: { $0.id == targetID })?.workspacePath
-        guard previous != normalized else { return }
-        self.database.updateButlerSessionWorkspace(id: targetID, workspacePath: normalized)
+        let previousActivePath = self.activeWorkspacePath
+        self.database.moveButlerSession(
+            id: sessionID,
+            toWorkspaceID: cleanTargetWS,
+            orderedSessionIDs: orderedSessionIDs,
+            isPinned: isPinned
+        )
         self.sessions = self.database.fetchButlerSessions()
-        if targetID == self.activeSessionID, self.database === CotLocalDatabase.shared {
+        if sessionID == self.activeSessionID,
+           previousActivePath != self.activeWorkspacePath,
+           previous.workspaceID != cleanTargetWS,
+           self.database === CotLocalDatabase.shared
+        {
             PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: false)
         }
     }
     
     
     struct WorkspaceOption: Sendable, Equatable {
-        let path: String
+        let id: String
         let name: String
+        let folderPath: String?
         let subtitle: String
+        let isFolderBacked: Bool
         let isOpenInEditor: Bool
+        
+        var path: String { self.folderPath ?? "" }
     }
     
     
     func availableWorkspaces() -> [WorkspaceOption] {
-        var seen: Set<String> = []
-        var options: [WorkspaceOption] = []
         let home = FileManager.default.homeDirectoryForCurrentUser.path(percentEncoded: false)
         let compactSubtitle: (String) -> String = { fullPath in
             if fullPath.hasPrefix(home) {
@@ -537,34 +710,25 @@ final class CotButlerManager {
             }
             return fullPath
         }
+        let openDirs: Set<String> = (self.database === CotLocalDatabase.shared)
+            ? Set(CotAgentCoordinator.shared.openWorkspaceDirectories().map { $0.standardizedFileURL.path(percentEncoded: false) })
+            : []
         
-        if self.database === CotLocalDatabase.shared {
-            for dir in CotAgentCoordinator.shared.openWorkspaceDirectories() {
-                let path = dir.standardizedFileURL.path(percentEncoded: false)
-                guard seen.insert(path).inserted else { continue }
-                options.append(WorkspaceOption(
-                    path: path,
-                    name: dir.lastPathComponent.isEmpty ? path : dir.lastPathComponent,
-                    subtitle: compactSubtitle(path),
-                    isOpenInEditor: true
-                ))
-            }
+        return self.workspaces.map { ws in
+            let cleanFolder = ws.folderPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasFolder = (cleanFolder?.isEmpty == false)
+            let stdFolder = hasFolder ? URL(filePath: cleanFolder!).standardizedFileURL.path(percentEncoded: false) : nil
+            let subtitle = stdFolder.map(compactSubtitle) ?? AppLanguage.text("逻辑工作区", en: "Logical workspace")
+            let isOpen = stdFolder.map { openDirs.contains($0) } ?? false
+            return WorkspaceOption(
+                id: ws.id,
+                name: ws.name,
+                folderPath: stdFolder,
+                subtitle: subtitle,
+                isFolderBacked: hasFolder,
+                isOpenInEditor: isOpen
+            )
         }
-        for session in self.sessions {
-            guard let raw = session.workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !raw.isEmpty
-            else { continue }
-            let std = URL(filePath: raw).standardizedFileURL.path(percentEncoded: false)
-            guard FileManager.default.fileExists(atPath: std), seen.insert(std).inserted else { continue }
-            let url = URL(filePath: std)
-            options.append(WorkspaceOption(
-                path: std,
-                name: url.lastPathComponent.isEmpty ? std : url.lastPathComponent,
-                subtitle: compactSubtitle(std),
-                isOpenInEditor: false
-            ))
-        }
-        return options
     }
     
     
@@ -859,7 +1023,9 @@ final class CotButlerManager {
             self.bootstrapSessionsAndMessages()
         }
         let targetSessionID = self.activeSessionID
-        let sessionWorkspacePath = self.sessions.first(where: { $0.id == targetSessionID })?.workspacePath
+        let sessionRecord = self.sessions.first(where: { $0.id == targetSessionID })
+        let sessionWorkspacePath = sessionRecord?.workspacePath
+        let sessionWorkspaceName = sessionRecord?.workspaceName
         
         let inlineDocs = self.resolveInlineDocumentMentions(
             in: trimmedInput,
@@ -916,12 +1082,22 @@ final class CotButlerManager {
             actionsJSON: Self.encodeMetadata(userMeta),
             createdAt: Date()
         )
+        let effectiveBotID: AIBotID = targetBot ?? .butler
         self.database.appendButlerMessage(userMsg)
+        self.database.appendAIConversationLog(AIConversationLogRecord(
+            id: "butler:\(userMsg.id)",
+            channel: "butler",
+            sessionID: targetSessionID,
+            workspaceName: sessionWorkspaceName ?? "",
+            botID: effectiveBotID.rawValue,
+            role: "user",
+            content: text,
+            createdAt: userMsg.createdAt,
+            memoryExtracted: false
+        ))
         self.messages.append(userMsg)
         self.sessions = self.database.fetchButlerSessions()
         self.lastErrorMessage = nil
-        
-        let effectiveBotID: AIBotID = targetBot ?? .butler
         let resolvedConfig = AIBotStore.shared.resolvedConfiguration(for: effectiveBotID)
         guard resolvedConfig.isUsable else {
             await self.handleOfflineCommand(text, sessionID: targetSessionID)
@@ -986,7 +1162,7 @@ final class CotButlerManager {
         {
             return URL(filePath: raw).standardizedFileURL
         }
-        return CotAgentCoordinator.shared.activeWorkingDirectoryURL()
+        return nil
     }
     
     
@@ -1035,7 +1211,7 @@ final class CotButlerManager {
             ),
         ]
         self.streamingStatusLabel = AppLanguage.text("\(botName) 正在处理…", en: "\(botName) is working...")
-        self.emitStreamPatch()
+        self.emitStreamPatch(force: true)
         
         let botSystemPrompt = self.buildDelegatedBotSystemPrompt(
             for: botID,
@@ -1242,7 +1418,7 @@ final class CotButlerManager {
         if !globalPersona.isEmpty {
             parts.append("用户的全局表达偏好：\(globalPersona)")
         }
-        if let wp = workspacePath, !wp.isEmpty {
+        if let wp = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines), !wp.isEmpty {
             let url = URL(filePath: wp)
             let overview = CotAgentCoordinator.workspaceDirectoryOverview(at: url)
             var wsBlock = "当前会话绑定的工作区：\(url.lastPathComponent)（\(wp)）"
@@ -1250,6 +1426,8 @@ final class CotButlerManager {
                 wsBlock += "\n顶层目录：\(overview)"
             }
             parts.append(wsBlock)
+        } else if let wsName = self.activeSession?.workspaceName, !wsName.isEmpty {
+            parts.append("当前会话所在逻辑工作区：\(wsName)（逻辑主题分区，围绕用户的提问自由展开解答）。")
         }
         return parts.joined(separator: "\n\n")
     }
@@ -1412,7 +1590,7 @@ final class CotButlerManager {
                 self.streamingThinking = ""
                 self.streamingSteps = []
                 self.streamingStatusLabel = AppLanguage.text("正在检索实时数据…", en: "Fetching live data...")
-                self.emitStreamPatch()
+                self.emitStreamPatch(force: true)
             }
         }
         
@@ -1424,7 +1602,7 @@ final class CotButlerManager {
         if !enriched.steps.isEmpty {
             self.streamingSteps = enriched.steps
             self.streamingStatusLabel = AppLanguage.text("正在整理回复…", en: "Composing reply...")
-            self.emitStreamPatch()
+            self.emitStreamPatch(force: true)
         }
         
         let systemPrompt = self.buildButlerSystemPrompt(
@@ -1516,7 +1694,7 @@ final class CotButlerManager {
         switch event {
             case .status(let label):
                 self.streamingStatusLabel = label
-                self.emitStreamPatch()
+                self.emitStreamPatch(force: true)
                 
             case .thinkingStart(let startedAtMs):
                 self.streamingStatusLabel = AppLanguage.text("正在深度思考…", en: "Thinking deeply...")
@@ -1533,7 +1711,7 @@ final class CotButlerManager {
                         startedAtMs: startedAtMs
                     ))
                 }
-                self.emitStreamPatch()
+                self.emitStreamPatch(force: true)
                 
             case .thinkingDelta(let thinking):
                 self.streamingThinking = thinking
@@ -1560,12 +1738,12 @@ final class CotButlerManager {
                         startedAtMs: Date().timeIntervalSince1970 * 1000
                     ))
                 }
-                self.emitStreamPatch()
+                self.emitStreamPatch(force: false)
                 
             case .thinkingEnd(let thinking, let durationMs):
                 self.streamingThinking = thinking
                 self.closeRunningThinkingSteps(explicitDurationMs: durationMs)
-                self.emitStreamPatch()
+                self.emitStreamPatch(force: true)
                 
             case .toolStart(let id, let name, let label, let detail, let startedAtMs):
                 self.closeRunningThinkingSteps()
@@ -1586,13 +1764,13 @@ final class CotButlerManager {
                 } else {
                     self.streamingSteps.append(step)
                 }
-                self.emitStreamPatch()
+                self.emitStreamPatch(force: true)
                 
             case .toolUpdate(let id, let preview):
                 if let idx = self.streamingSteps.firstIndex(where: { $0.id == id }) {
                     let lines = Array(preview.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.prefix(4))
                     self.streamingSteps[idx].detail = lines.isEmpty ? nil : lines
-                    self.emitStreamPatch()
+                    self.emitStreamPatch(force: false)
                 }
                 
             case .toolEnd(let id, _, let isError, let durationMs, let preview):
@@ -1609,12 +1787,17 @@ final class CotButlerManager {
                     }
                 }
                 self.streamingStatusLabel = AppLanguage.text("正在整合结果…", en: "Synthesizing answer...")
-                self.emitStreamPatch()
+                self.emitStreamPatch(force: true)
                 
-            case .textDelta(let text), .textEnd(let text):
+            case .textDelta(let text):
                 self.closeRunningThinkingSteps()
                 self.streamingDraft = Self.stripActionEnvelope(text)
-                self.emitStreamPatch()
+                self.emitStreamPatch(force: false)
+                
+            case .textEnd(let text):
+                self.closeRunningThinkingSteps()
+                self.streamingDraft = Self.stripActionEnvelope(text)
+                self.emitStreamPatch(force: true)
                 
             case .error(let msg):
                 self.lastErrorMessage = msg
@@ -1635,6 +1818,23 @@ final class CotButlerManager {
             createdAt: Date()
         )
         self.database.appendButlerMessage(assistantMsg)
+        if metadata.errorMessage == nil {
+            let wsName = self.sessions.first(where: { $0.id == sessionID })?.workspaceName ?? ""
+            self.database.appendAIConversationLog(AIConversationLogRecord(
+                id: "butler:\(assistantMsg.id)",
+                channel: "butler",
+                sessionID: sessionID,
+                workspaceName: wsName,
+                botID: metadata.delegatedBotID ?? "butler",
+                role: "assistant",
+                content: text,
+                createdAt: assistantMsg.createdAt,
+                memoryExtracted: false
+            ))
+            if self.database === CotLocalDatabase.shared && !CotLocalDatabase.isRunningUnitTests {
+                CotMemoryExtractionAgent.shared.scheduleExtractionIfNeeded(reason: "butler_turn")
+            }
+        }
         if self.activeSessionID == sessionID {
             self.messages.append(assistantMsg)
         }
@@ -1723,20 +1923,20 @@ final class CotButlerManager {
         }
         if toolNames.contains("search_news") || toolNames.contains("web_search") {
             return [
-                AppLanguage.text("把这些要点整理成新笔记", en: "Save as Markdown note"),
+                AppLanguage.text("提炼成简明要点清单", en: "Summarize into bullet points"),
                 AppLanguage.text("帮我深挖背后的影响与风险", en: "Analyze deeper impact"),
             ]
         }
         if toolNames.contains("read_document") || toolNames.contains("search_documents") {
             return [
-                AppLanguage.text("提炼行动清单并插入编辑器", en: "Insert action items"),
+                AppLanguage.text("帮我梳理下一步行动建议", en: "Outline next action items"),
                 AppLanguage.text("帮我润色或重写重点段落", en: "Polish key paragraphs"),
             ]
         }
         if userText.count > 24 {
             return [
                 AppLanguage.text("展开具体细节", en: "Expand details"),
-                AppLanguage.text("整理成笔记保存", en: "Save as note"),
+                AppLanguage.text("继续深入分析关键问题", en: "Analyze key points deeper"),
             ]
         }
         return []
@@ -1795,7 +1995,8 @@ final class CotButlerManager {
         userMessage: String = "",
         now: Date = Date(),
         piToolsAvailable: Bool = false,
-        workspacePath: String? = nil
+        workspacePath: String? = nil,
+        workspaceName: String? = nil
     ) -> String {
         let workspaceSummary = CotAgentCoordinator.shared.workspaceContextSummary()
         let kyc = self.memoryStore.compiledKYCContext()
@@ -1854,15 +2055,31 @@ final class CotButlerManager {
                - `watch_stock` / `unwatch_stock`
                - `upsert_memory` / `delete_memory`
                - `rename_butler` / `update_bot` / `update_global_persona` / `play_podcast` / `follow_feed` / `follow_creator`
-            8. 你还具备本地文件阅读与命令行能力，用户要求分析本地项目/代码/日志时可直接动手。
+            8. `find_and_download_podcast(topic, reason?, openBoard?)` — 当用户说「帮我找一期关于某知识的播客、下载进来并提醒我听」时调用此工具；后台会自动搜索、下载音频到播客看板并发送收听提醒。
+            9. 你还具备本地文件阅读与命令行能力，用户要求分析本地项目/代码/日志时可直接动手。
             - **原则**：凡是能通过工具查到真实信息的问题，先调用工具，拿到结果后再整理成清晰回答；无需输出 `<cot_actions>`。
             """)
         } else {
             lines.append("""
             ## 帮用户执行操作（仅在需要时使用）
-            - 当用户明确需要操作编辑器（打开看盘/播客/资讯、新建文档、插入文本、改名、记住偏好、加自选股等）时，在回复末尾附带 `<cot_actions>[...]</cot_actions>` JSON 数组，系统会自动执行。
-            - 可用操作：`open_board`、`convert_tab`、`open_document`、`insert_to_editor`、`rename_butler`、`update_global_persona`、`update_bot`、`upsert_memory`、`delete_memory`、`watch_stock`、`unwatch_stock`、`follow_feed`、`follow_creator`、`play_podcast`。
+            - 当用户明确需要操作编辑器（打开看盘/播客/资讯、新建文档、插入文本、改名、记住偏好、加自选股、找并下载播客等）时，在回复末尾附带 `<cot_actions>[...]</cot_actions>` JSON 数组，系统会自动执行。
+            - 可用操作：`open_board`、`convert_tab`、`open_document`、`insert_to_editor`、`rename_butler`、`update_global_persona`、`update_bot`、`upsert_memory`、`delete_memory`、`watch_stock`、`unwatch_stock`、`follow_feed`、`follow_creator`、`play_podcast`、`curate_podcast`。
             """)
+        }
+        
+        if self.database === CotLocalDatabase.shared {
+            let snap = CotAgentCoordinator.shared.lastWorkspaceSnapshot
+            let personal = CotButlerProactiveEngine.shared.buildDeepPersonalContextSummary(
+                watchlist: CotMarketService.shared.watchlist,
+                quotes: CotMarketService.shared.quotes,
+                memories: self.memoryStore.memories,
+                unreadPodcasts: CotPodcastService.shared.unreadReminders,
+                browsingHistory: AIHotNewsService.shared.browsingHistory,
+                activeDocTitle: snap?.activeDocumentTitle
+            )
+            if !personal.isEmpty {
+                lines.append("## 你对这位用户的深度了解（自然融入对话与主动建议中，勿机械复读）\n\(personal)")
+            }
         }
         
         if !globalPersona.isEmpty {
@@ -1884,12 +2101,21 @@ final class CotButlerManager {
         if let wp = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines), !wp.isEmpty {
             let url = URL(filePath: wp)
             let overview = CotAgentCoordinator.workspaceDirectoryOverview(at: url)
-            var wsSection = "## 当前会话绑定的工作区\n目录名：\(url.lastPathComponent)\n路径：\(wp)"
+            let label = workspaceName ?? self.activeSession?.workspaceName ?? url.lastPathComponent
+            var wsSection = "## 当前会话绑定的工作区\n工作区名：\(label)\n本地目录：\(wp)"
             if !overview.isEmpty {
                 wsSection += "\n顶层内容：\(overview)"
             }
             wsSection += "\n请优先围绕这个工作区回答问题或使用文件/检索工具。"
             lines.append(wsSection)
+        } else if let wsName = (workspaceName ?? self.activeSession?.workspaceName)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !wsName.isEmpty
+        {
+            lines.append("""
+            ## 当前会话所在工作区
+            工作区名称：\(wsName)
+            这是一个逻辑主题工作区（未绑定本地磁盘目录）。请围绕用户在这个工作区里提出的问题自由展开讨论、分析与回答，无需假定本地文件系统路径。
+            """)
         }
         if !workspaceSummary.isEmpty {
             lines.append("## 用户当前正在看的文档与页面（仅供背景参考）\n\(workspaceSummary)")

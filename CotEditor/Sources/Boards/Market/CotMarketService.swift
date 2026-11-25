@@ -171,7 +171,8 @@ final class CotMarketService {
         guard let snapshot = try? await self.client.fetchQuoteAndBars(for: instrument, period: period) else {
             return nil
         }
-        var mergedBars = self.quotes[instrument.instrumentID]?.barsByPeriod ?? [:]
+        let existing = self.quotes[instrument.instrumentID]
+        var mergedBars = existing?.barsByPeriod ?? [:]
         for (p, bars) in snapshot.barsByPeriod {
             mergedBars[p] = bars
         }
@@ -184,7 +185,11 @@ final class CotMarketService {
             low: snapshot.low,
             volume: snapshot.volume,
             barsByPeriod: mergedBars,
-            updatedAt: snapshot.updatedAt
+            updatedAt: snapshot.updatedAt,
+            turnoverRate: snapshot.turnoverRate ?? existing?.turnoverRate,
+            amount: snapshot.amount ?? existing?.amount,
+            peRatio: snapshot.peRatio ?? existing?.peRatio,
+            marketCap: snapshot.marketCap ?? existing?.marketCap
         )
         self.quotes[instrument.instrumentID] = merged
         self.evictUnwatchedQuotesIfNeeded(preserving: instrument.instrumentID)

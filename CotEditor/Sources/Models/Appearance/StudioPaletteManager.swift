@@ -379,28 +379,113 @@ final class StudioPaletteManager {
             return hit
         }
         let triad = self.triad(for: resolvedID)
-        
         let lightPaperNS = Self.nsColor(hex: triad.lightPaperHex)
         let darkInkNS = Self.nsColor(hex: triad.darkInkHex)
         let accentNS = Self.nsColor(hex: triad.accentHex)
+        let isMatcha = (resolvedID == .matchaParchment)
         
-        let built: StudioColorTokens
+        let built: StudioColorTokens = if isDark {
+            Self.buildTokens(
+                isDark: true,
+                canvasTopNS: darkInkNS,
+                canvasBottomNS: Self.blend(darkInkNS, with: .white, ratio: 0.03),
+                cardNS: Self.blend(darkInkNS, with: .white, ratio: 0.06),
+                insetNS: Self.blend(darkInkNS, with: .white, ratio: 0.11),
+                insetHoverNS: Self.blend(darkInkNS, with: .white, ratio: 0.16),
+                emptyDotNS: Self.blend(darkInkNS, with: .white, ratio: 0.12),
+                primaryInkNS: lightPaperNS,
+                accentNS: accentNS
+            )
+        } else {
+            Self.buildTokens(
+                isDark: false,
+                canvasTopNS: isMatcha ? Self.blend(lightPaperNS, with: .white, ratio: 0.14) : lightPaperNS,
+                canvasBottomNS: isMatcha ? lightPaperNS : Self.blend(lightPaperNS, with: .white, ratio: 0.35),
+                cardNS: isMatcha ? Self.blend(lightPaperNS, with: .white, ratio: 0.62) : Self.blend(lightPaperNS, with: .white, ratio: 0.82),
+                insetNS: Self.blend(lightPaperNS, with: darkInkNS, ratio: 0.055),
+                insetHoverNS: Self.blend(lightPaperNS, with: darkInkNS, ratio: 0.105),
+                emptyDotNS: Self.blend(lightPaperNS, with: darkInkNS, ratio: 0.10),
+                primaryInkNS: darkInkNS,
+                accentNS: accentNS,
+                isMatcha: isMatcha
+            )
+        }
+        self.cachedTokensByKey[cacheKey] = built
+        return built
+    }
+    
+    
+    /// Derives cohesive surface, ink, hairline, and accent tokens synchronized with any active editor `Theme`.
+    func tokens(for theme: Theme?, themeName: String? = nil, isDark: Bool) -> StudioColorTokens {
+        if let themeName, let parsed = Self.parseStudioThemeName(themeName) {
+            return self.tokens(isDark: isDark, id: parsed.paletteID)
+        }
+        guard let theme else {
+            return self.tokens(isDark: isDark)
+        }
+        
+        let editorBg = theme.background.color.usingColorSpace(.sRGB) ?? theme.background.color
+        let themeText = theme.text.color.usingColorSpace(.sRGB) ?? theme.text.color
+        let isThemeDark = theme.isDarkTheme
+        
+        let rawAccent: NSColor = if !theme.highlight.usesSystemSetting {
+            theme.highlight.color.usingColorSpace(.sRGB) ?? theme.highlight.color
+        } else {
+            Self.nsColor(hex: isThemeDark ? "#519AFD" : "#2F7CF6")
+        }
+        let accentNS = Self.saturation(of: rawAccent) >= 0.08
+            ? rawAccent
+            : Self.nsColor(hex: isThemeDark ? "#519AFD" : "#2F7CF6")
+        
+        if isThemeDark {
+            return Self.buildTokens(
+                isDark: true,
+                canvasTopNS: editorBg,
+                canvasBottomNS: Self.blend(editorBg, with: .white, ratio: 0.022),
+                cardNS: Self.blend(editorBg, with: .white, ratio: 0.048),
+                insetNS: Self.blend(editorBg, with: .white, ratio: 0.082),
+                insetHoverNS: Self.blend(editorBg, with: .white, ratio: 0.125),
+                emptyDotNS: Self.blend(editorBg, with: .white, ratio: 0.11),
+                primaryInkNS: themeText,
+                accentNS: accentNS
+            )
+        } else {
+            return Self.buildTokens(
+                isDark: false,
+                canvasTopNS: editorBg,
+                canvasBottomNS: Self.blend(editorBg, with: themeText, ratio: 0.022),
+                cardNS: Self.blend(editorBg, with: .white, ratio: 0.88),
+                insetNS: Self.blend(editorBg, with: themeText, ratio: 0.045),
+                insetHoverNS: Self.blend(editorBg, with: themeText, ratio: 0.085),
+                emptyDotNS: Self.blend(editorBg, with: themeText, ratio: 0.09),
+                primaryInkNS: themeText,
+                accentNS: accentNS
+            )
+        }
+    }
+    
+    
+    private static func buildTokens(
+        isDark: Bool,
+        canvasTopNS: NSColor,
+        canvasBottomNS: NSColor,
+        cardNS: NSColor,
+        insetNS: NSColor,
+        insetHoverNS: NSColor,
+        emptyDotNS: NSColor,
+        primaryInkNS: NSColor,
+        accentNS: NSColor,
+        isMatcha: Bool = false
+    ) -> StudioColorTokens {
         if isDark {
-            let canvasTopNS = darkInkNS
-            let canvasBottomNS = Self.blend(darkInkNS, with: .white, ratio: 0.03)
-            let cardNS = Self.blend(darkInkNS, with: .white, ratio: 0.06)
-            let insetNS = Self.blend(darkInkNS, with: .white, ratio: 0.11)
-            let insetHoverNS = Self.blend(darkInkNS, with: .white, ratio: 0.16)
-            let emptyDotNS = Self.blend(darkInkNS, with: .white, ratio: 0.12)
-            let primaryInkNS = lightPaperNS
             let liftedAccentNS = Self.ensureDarkModeVisibility(accentNS)
-            let secondaryAccentNS = Self.blend(liftedAccentNS, with: darkInkNS, ratio: 0.30)
-            let paleAccentNS = Self.blend(liftedAccentNS, with: darkInkNS, ratio: 0.65)
+            let secondaryAccentNS = Self.blend(liftedAccentNS, with: canvasTopNS, ratio: 0.30)
+            let paleAccentNS = Self.blend(liftedAccentNS, with: canvasTopNS, ratio: 0.65)
             let onAccentInkNS = Self.relativeLuminance(accentNS) > 0.50
                 ? Self.nsColor(hex: "#121212")
                 : NSColor.white
             
-            built = StudioColorTokens(
+            return StudioColorTokens(
                 isDark: true,
                 canvasTop: Color(nsColor: canvasTopNS),
                 canvasBottom: Color(nsColor: canvasBottomNS),
@@ -409,9 +494,9 @@ final class StudioPaletteManager {
                 cardShadow: Color.black.opacity(0.32),
                 inset: Color(nsColor: insetNS),
                 insetHover: Color(nsColor: insetHoverNS),
-                hairline: Color.white.opacity(0.09),
-                hairlineStrong: Color(nsColor: liftedAccentNS).opacity(0.55),
-                topSpecular: Color.white.opacity(0.08),
+                hairline: Color.white.opacity(0.085),
+                hairlineStrong: Color.white.opacity(0.17),
+                topSpecular: Color.white.opacity(0.07),
                 architecturalDot: Color.white.opacity(0.045),
                 primaryInk: Color(nsColor: primaryInkNS),
                 accent: Color(nsColor: accentNS),
@@ -420,66 +505,49 @@ final class StudioPaletteManager {
                 secondaryAccent: Color(nsColor: secondaryAccentNS),
                 paleAccent: Color(nsColor: paleAccentNS),
                 emptyDot: Color(nsColor: emptyDotNS),
-                positivePillBg: Color(nsColor: accentNS).opacity(0.20),
+                positivePillBg: Color(nsColor: accentNS).opacity(0.18),
                 neutralPillBg: Color.white.opacity(0.08),
-                heat1: Color(nsColor: Self.blend(darkInkNS, with: liftedAccentNS, ratio: 0.24)),
-                heat2: Color(nsColor: Self.blend(darkInkNS, with: liftedAccentNS, ratio: 0.45)),
-                heat3: Color(nsColor: Self.blend(darkInkNS, with: liftedAccentNS, ratio: 0.72)),
+                heat1: Color(nsColor: Self.blend(canvasTopNS, with: liftedAccentNS, ratio: 0.24)),
+                heat2: Color(nsColor: Self.blend(canvasTopNS, with: liftedAccentNS, ratio: 0.45)),
+                heat3: Color(nsColor: Self.blend(canvasTopNS, with: liftedAccentNS, ratio: 0.72)),
                 heat4: Color(nsColor: liftedAccentNS)
             )
         } else {
-            let isMatcha = (resolvedID == .matchaParchment)
-            let canvasTopNS = isMatcha
-                ? Self.blend(lightPaperNS, with: .white, ratio: 0.14)
-                : lightPaperNS
-            let canvasBottomNS = isMatcha
-                ? lightPaperNS
-                : Self.blend(lightPaperNS, with: .white, ratio: 0.35)
-            let cardNS = isMatcha
-                ? Self.blend(lightPaperNS, with: .white, ratio: 0.62)
-                : Self.blend(lightPaperNS, with: .white, ratio: 0.82)
-            let insetNS = Self.blend(lightPaperNS, with: darkInkNS, ratio: 0.055)
-            let insetHoverNS = Self.blend(lightPaperNS, with: darkInkNS, ratio: 0.105)
-            let emptyDotNS = Self.blend(lightPaperNS, with: darkInkNS, ratio: 0.10)
-            
-            // Small text needs sufficient contrast on light paper (especially lime #A4CE46 on cream #E7DBB8).
             let readableAccentTextNS = Self.ensureLightModeTextContrast(accentNS, against: cardNS)
-            let secondaryAccentNS = Self.blend(accentNS, with: lightPaperNS, ratio: 0.36)
-            let paleAccentNS = Self.blend(accentNS, with: lightPaperNS, ratio: 0.72)
+            let secondaryAccentNS = Self.blend(accentNS, with: canvasTopNS, ratio: 0.36)
+            let paleAccentNS = Self.blend(accentNS, with: canvasTopNS, ratio: 0.72)
             let onAccentInkNS = Self.relativeLuminance(accentNS) > 0.48
-                ? darkInkNS
+                ? primaryInkNS
                 : NSColor.white
             
-            built = StudioColorTokens(
+            return StudioColorTokens(
                 isDark: false,
                 canvasTop: Color(nsColor: canvasTopNS),
                 canvasBottom: Color(nsColor: canvasBottomNS),
-                mistAccent: Color(nsColor: accentNS).opacity(0.14),
+                mistAccent: Color(nsColor: accentNS).opacity(0.12),
                 card: Color(nsColor: cardNS),
-                cardShadow: Color(nsColor: darkInkNS).opacity(0.065),
+                cardShadow: Color.black.opacity(0.055),
                 inset: Color(nsColor: insetNS),
                 insetHover: Color(nsColor: insetHoverNS),
-                hairline: Color(nsColor: darkInkNS).opacity(0.085),
-                hairlineStrong: Color(nsColor: accentNS).opacity(0.45),
-                topSpecular: Color.white.opacity(0.75),
-                architecturalDot: Color(nsColor: darkInkNS).opacity(0.05),
-                primaryInk: Color(nsColor: darkInkNS),
+                hairline: Color.black.opacity(0.08),
+                hairlineStrong: Color.black.opacity(0.16),
+                topSpecular: Color.white.opacity(0.78),
+                architecturalDot: Color.black.opacity(0.045),
+                primaryInk: Color(nsColor: primaryInkNS),
                 accent: Color(nsColor: accentNS),
                 accentText: Color(nsColor: readableAccentTextNS),
                 onAccentInk: Color(nsColor: onAccentInkNS),
                 secondaryAccent: Color(nsColor: secondaryAccentNS),
                 paleAccent: Color(nsColor: paleAccentNS),
                 emptyDot: Color(nsColor: emptyDotNS),
-                positivePillBg: Color(nsColor: accentNS).opacity(isMatcha ? 0.28 : 0.14),
-                neutralPillBg: Color(nsColor: darkInkNS).opacity(0.055),
-                heat1: Color(nsColor: Self.blend(lightPaperNS, with: accentNS, ratio: 0.28)),
-                heat2: Color(nsColor: Self.blend(lightPaperNS, with: accentNS, ratio: 0.52)),
-                heat3: Color(nsColor: Self.blend(lightPaperNS, with: accentNS, ratio: 0.76)),
+                positivePillBg: Color(nsColor: accentNS).opacity(isMatcha ? 0.28 : 0.12),
+                neutralPillBg: Color(nsColor: primaryInkNS).opacity(0.055),
+                heat1: Color(nsColor: Self.blend(canvasTopNS, with: accentNS, ratio: 0.28)),
+                heat2: Color(nsColor: Self.blend(canvasTopNS, with: accentNS, ratio: 0.52)),
+                heat3: Color(nsColor: Self.blend(canvasTopNS, with: accentNS, ratio: 0.76)),
                 heat4: Color(nsColor: accentNS)
             )
         }
-        self.cachedTokensByKey[cacheKey] = built
-        return built
     }
     
     
@@ -648,23 +716,27 @@ final class StudioPaletteManager {
             ?? (theme?.background.color ?? fallbackEditorBg)
         let themeText = (theme?.text.color ?? fallbackText).usingColorSpace(.sRGB)
             ?? (theme?.text.color ?? fallbackText)
-        let rawAccent = Self.nsColor(hex: triad.accentHex)
+        let rawAccent: NSColor = if let theme, !theme.highlight.usesSystemSetting {
+            theme.highlight.color.usingColorSpace(.sRGB) ?? theme.highlight.color
+        } else {
+            Self.nsColor(hex: triad.accentHex)
+        }
         
         let built: WindowChromePalette
         if isDark {
             let bgLum = Self.relativeLuminance(editorBg)
-            let tabBarBg = bgLum < 0.08
-                ? Self.blend(editorBg, with: .white, ratio: 0.032)
-                : Self.blend(editorBg, with: .black, ratio: 0.20)
-            let activeTabFill = Self.blend(editorBg, with: .white, ratio: 0.092)
-            let activeTabBorder = themeText.withAlphaComponent(0.13)
-            let hoveredTabFill = themeText.withAlphaComponent(0.065)
-            let separator = themeText.withAlphaComponent(0.10)
+            let tabBarBg = bgLum < 0.05
+                ? Self.blend(editorBg, with: .white, ratio: 0.025)
+                : Self.blend(editorBg, with: .black, ratio: 0.18)
+            let activeTabFill = Self.blend(editorBg, with: .white, ratio: 0.065)
+            let activeTabBorder = themeText.withAlphaComponent(0.11)
+            let hoveredTabFill = themeText.withAlphaComponent(0.06)
+            let separator = themeText.withAlphaComponent(0.09)
             let activeText = themeText.withAlphaComponent(0.95)
             let inactiveText = themeText.withAlphaComponent(0.56)
             let accent = Self.ensureDarkModeVisibility(rawAccent)
-            let pillFill = Self.blend(editorBg, with: .white, ratio: 0.14)
-            let pillHover = Self.blend(editorBg, with: .white, ratio: 0.20)
+            let pillFill = Self.blend(editorBg, with: .white, ratio: 0.12)
+            let pillHover = Self.blend(editorBg, with: .white, ratio: 0.18)
             
             built = WindowChromePalette(
                 isDark: true,
@@ -685,16 +757,16 @@ final class StudioPaletteManager {
                 toolbarPillText: activeText
             )
         } else {
-            let tabBarBg = Self.blend(editorBg, with: themeText, ratio: 0.044)
-            let activeTabFill = Self.blend(editorBg, with: .white, ratio: 0.50)
-            let activeTabBorder = themeText.withAlphaComponent(0.11)
-            let hoveredTabFill = themeText.withAlphaComponent(0.055)
-            let separator = themeText.withAlphaComponent(0.095)
+            let tabBarBg = Self.blend(editorBg, with: themeText, ratio: 0.032)
+            let activeTabFill = Self.blend(editorBg, with: .white, ratio: 0.85)
+            let activeTabBorder = themeText.withAlphaComponent(0.09)
+            let hoveredTabFill = themeText.withAlphaComponent(0.05)
+            let separator = themeText.withAlphaComponent(0.08)
             let activeText = themeText.withAlphaComponent(0.92)
             let inactiveText = themeText.withAlphaComponent(0.54)
             let accent = Self.ensureLightModeTextContrast(rawAccent, against: activeTabFill)
-            let pillFill = Self.blend(editorBg, with: themeText, ratio: 0.08)
-            let pillHover = Self.blend(editorBg, with: themeText, ratio: 0.13)
+            let pillFill = Self.blend(editorBg, with: themeText, ratio: 0.07)
+            let pillHover = Self.blend(editorBg, with: themeText, ratio: 0.12)
             
             built = WindowChromePalette(
                 isDark: false,
@@ -765,6 +837,17 @@ final class StudioPaletteManager {
     private static func relativeLuminance(_ c: NSColor) -> CGFloat {
         let srgb = c.usingColorSpace(.sRGB) ?? c
         return 0.2126 * srgb.redComponent + 0.7152 * srgb.greenComponent + 0.0722 * srgb.blueComponent
+    }
+    
+    
+    private static func saturation(of c: NSColor) -> CGFloat {
+        let srgb = c.usingColorSpace(.sRGB) ?? c
+        var h: CGFloat = 0
+        var s: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 1
+        srgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        return s
     }
     
     

@@ -112,6 +112,9 @@ struct MemoryStarMapSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     
     @State private var memoryStore = CotMemoryStore.shared
+    @State private var memoryAgent = CotMemoryExtractionAgent.shared
+    @State private var database = CotLocalDatabase.shared
+    @State private var pendingLogCount: Int = 0
     @State private var domains: [PreferenceDomainNode] = []
     @State private var expandedDomainIDs: Set<String> = []
     @State private var expandedCategoryIDs: Set<String> = []
@@ -126,6 +129,50 @@ struct MemoryStarMapSettingsView: View {
         
         ScrollView(.vertical, showsIndicators: true) {
             LazyVStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(AppLanguage.text("会话记忆抽取", en: "Memory Extraction"))
+                            .font(.system(size: 12.5, weight: .semibold))
+                        Text(
+                            self.pendingLogCount > 0
+                                ? AppLanguage.text("待抽取 \(self.pendingLogCount) 条", en: "\(self.pendingLogCount) pending")
+                                : AppLanguage.text("已同步归档", en: "Synced")
+                        )
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button {
+                        Task {
+                            _ = await self.memoryAgent.analyzePendingConversations(force: true)
+                            self.pendingLogCount = self.database.countUnextractedAIConversationUserTurns()
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            if self.memoryAgent.isExtracting {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(
+                                self.memoryAgent.isExtracting
+                                    ? AppLanguage.text("抽取中…", en: "Extracting…")
+                                    : AppLanguage.text("立即抽取记忆", en: "Extract Now")
+                            )
+                            .font(.system(size: 11.5, weight: .medium))
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(self.memoryAgent.isExtracting)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(cardSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(cardBorder, lineWidth: 1)
+                )
+                
                 ForEach(self.domains) { domain in
                     self.domainSection(
                         domain: domain,
@@ -143,13 +190,16 @@ struct MemoryStarMapSettingsView: View {
         }
         .onAppear {
             self.memoryStore.reloadFromDatabase()
+            self.pendingLogCount = self.database.countUnextractedAIConversationUserTurns()
             self.rebuildHierarchy(initializeExpansion: self.domains.isEmpty)
         }
         .onChange(of: self.memoryStore.revision) { _, _ in
+            self.pendingLogCount = self.database.countUnextractedAIConversationUserTurns()
             self.rebuildHierarchy(initializeExpansion: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
             self.memoryStore.reloadFromDatabase()
+            self.pendingLogCount = self.database.countUnextractedAIConversationUserTurns()
             self.rebuildHierarchy(initializeExpansion: true)
         }
     }

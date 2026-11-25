@@ -46,14 +46,19 @@ export type SessionSummary = {
   isPinned: boolean;
   messageCount?: number;
   updatedAt?: number;
+  workspaceID?: string | null;
   workspacePath?: string | null;
   workspaceName?: string | null;
+  sortOrder?: number;
 };
 
 export type WorkspaceOption = {
+  id: string;
   path: string;
   name: string;
+  folderPath?: string | null;
   subtitle: string;
+  isFolderBacked: boolean;
   isOpenInEditor: boolean;
 };
 
@@ -114,6 +119,25 @@ export type SlashCommandItem = {
   insertText: string;
 };
 
+export type ButlerProactiveCard = {
+  id: string;
+  badge: string;
+  title: string;
+  subtitle: string;
+  prompt: string;
+  icon: "market" | "podcast" | "news" | "memory" | "sparkle";
+};
+
+export type ButlerBackgroundWorker = {
+  id: string;
+  title: string;
+  status: "running" | "done" | "error";
+  detail?: string;
+  actionBoard?: string;
+  actionQuery?: string;
+  updatedAtMs: number;
+};
+
 export type HostState = {
   mode: AgentMode;
   isDark: boolean;
@@ -148,6 +172,10 @@ export type HostState = {
   availableWorkspaces?: WorkspaceOption[];
   availableDocuments?: DocumentMentionItem[];
   availableBots?: BotMentionItem[];
+  themePageHex?: string | null;
+  themeCanvasHex?: string | null;
+  proactiveCards?: ButlerProactiveCard[];
+  backgroundWorkers?: ButlerBackgroundWorker[];
 };
 
 export type StreamPatch = {

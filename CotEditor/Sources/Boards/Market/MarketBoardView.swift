@@ -29,6 +29,7 @@ struct MarketBoardView: View {
     @Binding var boardState: PaneBoardState
     let tokens: StudioColorTokens
     var surfaceColor: Color? = nil
+    var hasCustomBackground: Bool = false
     var onRevertToDocument: (() -> Void)? = nil
     var onOpenNote: ((String, String) -> Void)?
     
@@ -37,12 +38,8 @@ struct MarketBoardView: View {
     @State private var searchText: String = ""
     @State private var isSearchExpanded: Bool = false
     @State private var isWatchlistRailVisible: Bool = true
-    @State private var hoveredBarIndex: Int?
     @State private var searchTask: Task<Void, Never>?
-    @State private var visibleBarCount: Int = 64
-    @State private var barPanOffset: Int = 0
-    @State private var dragStartOffset: Int?
-    @State private var pinchBaseCount: Int?
+    @State private var showMovingAverages: Bool = true
     
     private var canvasBackground: Color {
         self.surfaceColor ?? self.tokens.canvasTop
@@ -76,14 +73,7 @@ struct MarketBoardView: View {
     private var displayedBars: [MarketBar] {
         let all = self.allPeriodBars
         guard !all.isEmpty else { return [] }
-        if self.boardState.marketPeriod == .intraday || all.count <= self.visibleBarCount {
-            return all
-        }
-        let maxOffset = max(0, all.count - self.visibleBarCount)
-        let clampedOffset = max(0, min(maxOffset, self.barPanOffset))
-        let endIdx = all.count - clampedOffset
-        let startIdx = max(0, endIdx - self.visibleBarCount)
-        return Array(all[startIdx..<endIdx])
+        return all
     }
     
     
@@ -103,7 +93,7 @@ struct MarketBoardView: View {
                 self.klineStage(showsCompactStrip: !showsRail)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .background(self.canvasBackground)
+            .background(self.hasCustomBackground ? Color.clear : self.canvasBackground)
         }
         .onAppear {
             self.bootstrapFromBoardState()
@@ -115,8 +105,6 @@ struct MarketBoardView: View {
             self.bootstrapFromBoardState()
         }
         .onChange(of: self.boardState.marketPeriod) { _, newPeriod in
-            self.barPanOffset = 0
-            self.hoveredBarIndex = nil
             if let inst = self.activeInstrument {
                 Task { _ = await self.marketService.refresh(instrument: inst, period: newPeriod) }
             }
@@ -287,6 +275,13 @@ struct MarketBoardView: View {
     private func klineStage(showsCompactStrip: Bool) -> some View {
         VStack(spacing: 0) {
             self.headerBar(showsCompactStrip: showsCompactStrip)
+            
+            if let inst = self.activeInstrument, let snap = self.activeSnapshot {
+                Rectangle()
+                    .fill(self.tokens.hairline.opacity(0.65))
+                    .frame(height: 1)
+                self.quoteStatsStrip(instrument: inst, snapshot: snap)
+            }
             
             Rectangle()
                 .fill(self.tokens.hairline)
@@ -502,6 +497,22 @@ struct MarketBoardView: View {
             .padding(2)
             .background(self.tokens.inset, in: Capsule())
             
+            if self.boardState.marketPeriod != .intraday {
+                Button {
+                    self.showMovingAverages.toggle()
+                } label: {
+                    Text("MA")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(self.showMovingAverages ? self.tokens.onAccentInk : self.secondaryInk)
+                        .padding(.horizontal, 7)
+                        .frame(height: 22)
+                        .background(self.showMovingAverages ? self.tokens.accent : self.tokens.inset, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help(AppLanguage.text("切换均线 MA5/MA10/MA20", en: "Toggle Moving Averages"))
+            }
+            
             if let inst {
                 Button {
                     self.marketService.toggleWatch(inst)
@@ -560,149 +571,42 @@ struct MarketBoardView: View {
     }
     
     
-    // MARK: - Interactive Candlestick & Intraday Canvas (Pinch Zoom + Pan + Crosshair Pills)
+    // MARK: - TradingView Lightweight Charts Canvas
     
-    private func chartCanvasSection(instrument: MarketInstrument, bars: [MarketBar]) -> some View {
-        let activeIdx = self.hoveredBarIndex.flatMap { bars.indices.contains($0) ? $0 : nil } ?? (bars.count - 1)
-        let inspectBar = bars[activeIdx]
-        let ma5 = Self.movingAverage(bars: bars, period: 5)
-        let ma10 = Self.movingAverage(bars: bars, period: 10)
-        let ma20 = Self.movingAverage(bars: bars, period: 20)
-        
-        return VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text(inspectBar.timeLabel)
-                    .font(.system(size: 11.5, weight: .medium).monospacedDigit())
-                    .foregroundStyle(self.secondaryInk)
-                
-                if self.boardState.marketPeriod != .intraday {
-                    self.ohlcChip("O", Self.formatPrice(inspectBar.open))
-                    self.ohlcChip("H", Self.formatPrice(inspectBar.high))
-                    self.ohlcChip("L", Self.formatPrice(inspectBar.low))
-                    self.ohlcChip("C", Self.formatPrice(inspectBar.close))
-                    
-                    Spacer(minLength: 4)
-                    
-                    if let v5 = ma5[activeIdx] {
-                        Text("MA5 \(Self.formatPrice(v5))")
-                            .font(.system(size: 11).monospacedDigit())
-                            .foregroundStyle(Color(red: 0.96, green: 0.68, blue: 0.16))
-                    }
-                    if let v10 = ma10[activeIdx] {
-                        Text("MA10 \(Self.formatPrice(v10))")
-                            .font(.system(size: 11).monospacedDigit())
-                            .foregroundStyle(Color(red: 0.22, green: 0.72, blue: 0.94))
-                    }
-                    if let v20 = ma20[activeIdx] {
-                        Text("MA20 \(Self.formatPrice(v20))")
-                            .font(.system(size: 11).monospacedDigit())
-                            .foregroundStyle(Color(red: 0.72, green: 0.45, blue: 0.94))
-                    }
-                    
-                    if self.allPeriodBars.count > 28 {
-                        HStack(spacing: 2) {
-                            Button {
-                                self.visibleBarCount = min(120, self.visibleBarCount + 14)
-                            } label: {
-                                Image(systemName: "minus")
-                                    .font(.system(size: 9.5, weight: .semibold))
-                                    .foregroundStyle(self.mutedInk)
-                                    .frame(width: 20, height: 18)
-                            }
-                            .buttonStyle(.plain)
-                            
-                            Button {
-                                self.visibleBarCount = max(24, self.visibleBarCount - 14)
-                            } label: {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 9.5, weight: .semibold))
-                                    .foregroundStyle(self.mutedInk)
-                                    .frame(width: 20, height: 18)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 4)
-                        .background(self.tokens.inset, in: Capsule())
-                    }
-                } else {
-                    self.ohlcChip("P", Self.formatPrice(inspectBar.close))
-                    Spacer(minLength: 4)
+    private func quoteStatsStrip(instrument: MarketInstrument, snapshot: MarketQuoteSnapshot) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 14) {
+                self.ohlcChip(AppLanguage.text("昨收", en: "Prev"), Self.formatPrice(snapshot.previousClose))
+                self.ohlcChip(AppLanguage.text("今开", en: "Open"), Self.formatPrice(snapshot.dayOpen))
+                self.ohlcChip(AppLanguage.text("最高", en: "High"), Self.formatPrice(snapshot.high))
+                self.ohlcChip(AppLanguage.text("最低", en: "Low"), Self.formatPrice(snapshot.low))
+                if let turnover = snapshot.turnoverRate {
+                    self.ohlcChip(AppLanguage.text("换手", en: "Turnover"), String(format: "%.2f%%", turnover))
+                }
+                if let pe = snapshot.peRatio {
+                    self.ohlcChip("PE", String(format: "%.1f", pe))
+                }
+                if let cap = snapshot.marketCap {
+                    self.ohlcChip(AppLanguage.text("市值", en: "Cap"), String(format: "%.1f亿", cap))
                 }
             }
             .padding(.horizontal, 14)
             .frame(height: 28)
-            
-            GeometryReader { chartGeo in
-                Canvas { context, size in
-                    if self.boardState.marketPeriod == .intraday {
-                        self.drawIntraday(
-                            context: context,
-                            size: size,
-                            bars: bars,
-                            previousClose: self.activeSnapshot?.previousClose ?? bars.first?.close ?? 0,
-                            market: instrument.market,
-                            hoverIndex: self.hoveredBarIndex
-                        )
-                    } else {
-                        self.drawCandlesticks(
-                            context: context,
-                            size: size,
-                            bars: bars,
-                            ma5: ma5,
-                            ma10: ma10,
-                            ma20: ma20,
-                            market: instrument.market,
-                            hoverIndex: self.hoveredBarIndex
-                        )
-                    }
-                }
-                .contentShape(Rectangle())
-                .onContinuousHover { phase in
-                    switch phase {
-                        case .active(let loc):
-                            let plotW = max(1, chartGeo.size.width - 74)
-                            let ratio = min(max((loc.x - 14) / plotW, 0), 1)
-                            let idx = Int((ratio * CGFloat(max(0, bars.count - 1))).rounded())
-                            self.hoveredBarIndex = bars.indices.contains(idx) ? idx : nil
-                        case .ended:
-                            self.hoveredBarIndex = nil
-                    }
-                }
-                .gesture(
-                    MagnifyGesture()
-                        .onChanged { value in
-                            if self.pinchBaseCount == nil {
-                                self.pinchBaseCount = self.visibleBarCount
-                            }
-                            let base = self.pinchBaseCount ?? 64
-                            let scaled = Int((CGFloat(base) / max(0.35, value.magnification)).rounded())
-                            self.visibleBarCount = max(24, min(120, scaled))
-                        }
-                        .onEnded { _ in
-                            self.pinchBaseCount = nil
-                        }
-                )
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 6)
-                        .onChanged { value in
-                            guard self.boardState.marketPeriod != .intraday else { return }
-                            if self.dragStartOffset == nil {
-                                self.dragStartOffset = self.barPanOffset
-                            }
-                            let plotW = max(40, chartGeo.size.width - 74)
-                            let pxPerBar = plotW / CGFloat(max(1, self.visibleBarCount))
-                            let deltaBars = Int((value.translation.width / max(3, pxPerBar)).rounded())
-                            let maxOffset = max(0, self.allPeriodBars.count - self.visibleBarCount)
-                            let base = self.dragStartOffset ?? 0
-                            self.barPanOffset = max(0, min(maxOffset, base + deltaBars))
-                        }
-                        .onEnded { _ in
-                            self.dragStartOffset = nil
-                        }
-                )
-            }
-            .padding(.bottom, 10)
         }
+        .background(Color.primary.opacity(self.tokens.isDark ? 0.02 : 0.015))
+    }
+    
+    
+    private func chartCanvasSection(instrument: MarketInstrument, bars: [MarketBar]) -> some View {
+        TradingViewLightweightChartView(
+            instrument: instrument,
+            period: self.boardState.marketPeriod,
+            bars: bars,
+            previousClose: self.activeSnapshot?.previousClose ?? bars.first?.close ?? 0,
+            isDark: self.tokens.isDark,
+            showMovingAverages: self.showMovingAverages
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     
     
@@ -718,226 +622,6 @@ struct MarketBoardView: View {
     }
     
     
-    private func drawCandlesticks(
-        context: GraphicsContext,
-        size: CGSize,
-        bars: [MarketBar],
-        ma5: [Double?],
-        ma10: [Double?],
-        ma20: [Double?],
-        market: MarketRegion,
-        hoverIndex: Int?
-    ) {
-        let leftPad: CGFloat = 14
-        let rightPad: CGFloat = 60
-        let topPad: CGFloat = 10
-        let bottomPad: CGFloat = 20
-        let plotW = max(40, size.width - leftPad - rightPad)
-        let totalH = max(80, size.height - topPad - bottomPad)
-        let priceH = totalH * 0.74
-        let volTop = topPad + priceH + 10
-        let volH = max(16, totalH - priceH - 10)
-        
-        let maxPrice = bars.map(\.high).max() ?? 1
-        let minPrice = bars.map(\.low).min() ?? 0
-        let priceSpan = max(maxPrice - minPrice, maxPrice * 0.005, 0.0001)
-        let maxVol = max(bars.map(\.volume).max() ?? 1, 1)
-        
-        func yForPrice(_ p: Double) -> CGFloat {
-            topPad + priceH * (1 - CGFloat((p - minPrice) / priceSpan))
-        }
-        
-        for step in 0...3 {
-            let ratio = CGFloat(step) / 3.0
-            let y = topPad + priceH * ratio
-            var grid = Path()
-            grid.move(to: CGPoint(x: leftPad, y: y))
-            grid.addLine(to: CGPoint(x: leftPad + plotW, y: y))
-            context.stroke(grid, with: .color(self.tokens.hairline), lineWidth: 0.6)
-            
-            let priceVal = maxPrice - priceSpan * Double(ratio)
-            context.draw(
-                Text(Self.formatPrice(priceVal))
-                    .font(.system(size: 10).monospacedDigit())
-                    .foregroundStyle(self.mutedInk),
-                at: CGPoint(x: leftPad + plotW + 6, y: y),
-                anchor: .leading
-            )
-        }
-        
-        let stepX = plotW / CGFloat(max(1, bars.count))
-        let candleW = max(2.2, min(11, stepX * 0.64))
-        
-        for (idx, bar) in bars.enumerated() {
-            let cx = leftPad + stepX * (CGFloat(idx) + 0.5)
-            let tone = MarketTonePalette.directionColor(isRising: bar.isRising, market: market)
-            
-            var wick = Path()
-            wick.move(to: CGPoint(x: cx, y: yForPrice(bar.high)))
-            wick.addLine(to: CGPoint(x: cx, y: yForPrice(bar.low)))
-            context.stroke(wick, with: .color(tone), lineWidth: 1.0)
-            
-            let openY = yForPrice(bar.open)
-            let closeY = yForPrice(bar.close)
-            let bodyTop = min(openY, closeY)
-            let bodyHeight = max(1.5, abs(closeY - openY))
-            let bodyRect = CGRect(x: cx - candleW * 0.5, y: bodyTop, width: candleW, height: bodyHeight)
-            context.fill(Path(roundedRect: bodyRect, cornerRadius: 0.8), with: .color(tone))
-            
-            let vh = volH * CGFloat(bar.volume / maxVol)
-            let volRect = CGRect(x: cx - candleW * 0.5, y: volTop + volH - vh, width: candleW, height: max(1, vh))
-            context.fill(Path(volRect), with: .color(tone.opacity(0.42)))
-        }
-        
-        let drawMA = { (series: [Double?], color: Color) in
-            var path = Path()
-            var started = false
-            for (idx, val) in series.enumerated() {
-                guard let val else { continue }
-                let pt = CGPoint(x: leftPad + stepX * (CGFloat(idx) + 0.5), y: yForPrice(val))
-                if !started {
-                    path.move(to: pt)
-                    started = true
-                } else {
-                    path.addLine(to: pt)
-                }
-            }
-            if !path.isEmpty {
-                context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
-            }
-        }
-        drawMA(ma5, Color(red: 0.96, green: 0.68, blue: 0.16))
-        drawMA(ma10, Color(red: 0.22, green: 0.72, blue: 0.94))
-        drawMA(ma20, Color(red: 0.72, green: 0.45, blue: 0.94))
-        
-        if let hoverIndex, bars.indices.contains(hoverIndex) {
-            let hx = leftPad + stepX * (CGFloat(hoverIndex) + 0.5)
-            let hy = yForPrice(bars[hoverIndex].close)
-            var cross = Path()
-            cross.move(to: CGPoint(x: hx, y: topPad))
-            cross.addLine(to: CGPoint(x: hx, y: volTop + volH))
-            cross.move(to: CGPoint(x: leftPad, y: hy))
-            cross.addLine(to: CGPoint(x: leftPad + plotW, y: hy))
-            context.stroke(cross, with: .color(self.secondaryInk.opacity(0.45)), style: StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
-            
-            // Floating right-axis price pill
-            let priceBadge = CGRect(x: leftPad + plotW + 3, y: hy - 8.5, width: 52, height: 17)
-            context.fill(RoundedRectangle(cornerRadius: 4, style: .continuous).path(in: priceBadge), with: .color(self.tokens.accent))
-            context.draw(
-                Text(Self.formatPrice(bars[hoverIndex].close))
-                    .font(.system(size: 9.5, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(self.tokens.onAccentInk),
-                at: CGPoint(x: priceBadge.midX, y: priceBadge.midY),
-                anchor: .center
-            )
-        }
-    }
-    
-    
-    private func drawIntraday(
-        context: GraphicsContext,
-        size: CGSize,
-        bars: [MarketBar],
-        previousClose: Double,
-        market: MarketRegion,
-        hoverIndex: Int?
-    ) {
-        let leftPad: CGFloat = 14
-        let rightPad: CGFloat = 60
-        let topPad: CGFloat = 12
-        let bottomPad: CGFloat = 20
-        let plotW = max(40, size.width - leftPad - rightPad)
-        let plotH = max(80, size.height - topPad - bottomPad)
-        
-        let prices = bars.map(\.close)
-        let ref = previousClose > 0 ? previousClose : (prices.first ?? 1)
-        let maxDev = max(
-            prices.map { abs($0 - ref) }.max() ?? 0.01,
-            ref * 0.002
-        )
-        let high = ref + maxDev * 1.1
-        let low = ref - maxDev * 1.1
-        let span = max(high - low, 0.0001)
-        
-        func yForPrice(_ p: Double) -> CGFloat {
-            topPad + plotH * (1 - CGFloat((p - low) / span))
-        }
-        
-        let waterY = yForPrice(ref)
-        var waterPath = Path()
-        waterPath.move(to: CGPoint(x: leftPad, y: waterY))
-        waterPath.addLine(to: CGPoint(x: leftPad + plotW, y: waterY))
-        context.stroke(waterPath, with: .color(self.mutedInk.opacity(0.45)), style: StrokeStyle(lineWidth: 0.9, dash: [3, 4]))
-        
-        context.draw(
-            Text(Self.formatPrice(ref))
-                .font(.system(size: 10).monospacedDigit())
-                .foregroundStyle(self.mutedInk),
-            at: CGPoint(x: leftPad + plotW + 6, y: waterY),
-            anchor: .leading
-        )
-        
-        let lastPrice = prices.last ?? ref
-        let tone = MarketTonePalette.directionColor(isRising: lastPrice >= ref, market: market)
-        
-        var linePath = Path()
-        var fillPath = Path()
-        for (idx, bar) in bars.enumerated() {
-            let x = leftPad + plotW * CGFloat(idx) / CGFloat(max(1, bars.count - 1))
-            let y = yForPrice(bar.close)
-            if idx == 0 {
-                linePath.move(to: CGPoint(x: x, y: y))
-                fillPath.move(to: CGPoint(x: x, y: topPad + plotH))
-                fillPath.addLine(to: CGPoint(x: x, y: y))
-            } else {
-                linePath.addLine(to: CGPoint(x: x, y: y))
-                fillPath.addLine(to: CGPoint(x: x, y: y))
-            }
-            if idx == bars.count - 1 {
-                fillPath.addLine(to: CGPoint(x: x, y: topPad + plotH))
-                fillPath.closeSubpath()
-            }
-        }
-        
-        context.fill(
-            fillPath,
-            with: .linearGradient(
-                Gradient(colors: [tone.opacity(0.18), tone.opacity(0.0)]),
-                startPoint: CGPoint(x: 0, y: topPad),
-                endPoint: CGPoint(x: 0, y: topPad + plotH)
-            )
-        )
-        context.stroke(linePath, with: .color(tone), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
-        
-        if let lastBar = bars.last {
-            let lx = leftPad + plotW
-            let ly = yForPrice(lastBar.close)
-            context.fill(Path(ellipseIn: CGRect(x: lx - 3, y: ly - 3, width: 6, height: 6)), with: .color(tone))
-        }
-        
-        if let hoverIndex, bars.indices.contains(hoverIndex) {
-            let hx = leftPad + plotW * CGFloat(hoverIndex) / CGFloat(max(1, bars.count - 1))
-            let hy = yForPrice(bars[hoverIndex].close)
-            var cross = Path()
-            cross.move(to: CGPoint(x: hx, y: topPad))
-            cross.addLine(to: CGPoint(x: hx, y: topPad + plotH))
-            cross.move(to: CGPoint(x: leftPad, y: hy))
-            cross.addLine(to: CGPoint(x: leftPad + plotW, y: hy))
-            context.stroke(cross, with: .color(self.secondaryInk.opacity(0.45)), style: StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
-            
-            let priceBadge = CGRect(x: leftPad + plotW + 3, y: hy - 8.5, width: 52, height: 17)
-            context.fill(RoundedRectangle(cornerRadius: 4, style: .continuous).path(in: priceBadge), with: .color(tone))
-            context.draw(
-                Text(Self.formatPrice(bars[hoverIndex].close))
-                    .font(.system(size: 9.5, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(self.tokens.onAccentInk),
-                at: CGPoint(x: priceBadge.midX, y: priceBadge.midY),
-                anchor: .center
-            )
-        }
-    }
-    
-    
     // MARK: - Actions & Resolution
     
     private func bootstrapFromBoardState() {
@@ -946,15 +630,23 @@ struct MarketBoardView: View {
                let resolved = await self.marketService.resolveInstrument(for: explicitID)
             {
                 self.selectInstrument(resolved)
+                await self.marketService.refreshWatchlist(period: .day)
                 return
             }
             let query = self.boardState.query.trimmingCharacters(in: .whitespacesAndNewlines)
             if !query.isEmpty, let resolved = await self.marketService.resolveInstrument(for: query) {
                 self.selectInstrument(resolved)
+                await self.marketService.refreshWatchlist(period: .day)
                 return
             }
-            if self.activeInstrument == nil, let first = self.marketService.watchlist.first {
-                self.selectInstrument(MarketInstrument(record: first))
+            if self.activeInstrument == nil {
+                if let focus = self.marketService.watchlist.first(where: { $0.instrumentID == "sh:600703" })
+                    ?? self.marketService.watchlist.first
+                {
+                    self.selectInstrument(MarketInstrument(record: focus))
+                } else if let sanAn = MarketAliasCatalog.resolve("三安光电") {
+                    self.selectInstrument(sanAn)
+                }
             }
             await self.marketService.refreshWatchlist(period: self.boardState.marketPeriod)
         }
@@ -965,8 +657,6 @@ struct MarketBoardView: View {
         self.activeInstrument = inst
         self.boardState.selectedInstrumentID = inst.instrumentID
         self.boardState.dynamicTitle = inst.name
-        self.hoveredBarIndex = nil
-        self.barPanOffset = 0
         Task {
             _ = await self.marketService.refresh(instrument: inst, period: self.boardState.marketPeriod)
         }

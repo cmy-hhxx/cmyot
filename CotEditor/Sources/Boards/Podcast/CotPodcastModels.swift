@@ -158,6 +158,57 @@ nonisolated enum PodcastTimeFormatter {
 }
 
 
+/// Interactive layout modes for `PodcastBoardView` (inspired by PodLilt & Airmedy).
+nonisolated enum PodcastLayoutMode: String, CaseIterable, Codable, Identifiable, Sendable {
+    
+    case split
+    case immersive
+    case compactMini
+    
+    var id: String { self.rawValue }
+    
+    var label: String {
+        switch self {
+            case .split: AppLanguage.text("分栏", en: "Split")
+            case .immersive: AppLanguage.text("沉浸", en: "Focus")
+            case .compactMini: AppLanguage.text("迷你", en: "Mini")
+        }
+    }
+    
+    var symbolName: String {
+        switch self {
+            case .split: "rectangle.split.2x1"
+            case .immersive: "sparkles.tv"
+            case .compactMini: "dock.rectangle"
+        }
+    }
+}
+
+
+nonisolated enum PodcastDownloadState: Equatable, Sendable {
+    
+    case notDownloaded
+    case downloading(Double)
+    case downloaded(String)
+    case failed(String)
+}
+
+
+nonisolated struct AgentPodcastRecommendation: Identifiable, Codable, Equatable, Sendable {
+    
+    let id: String
+    let episodeID: String
+    let topic: String
+    let reason: String
+    let episodeTitle: String
+    let showName: String
+    let artworkURL: String
+    let localFilePath: String?
+    let createdAt: Date
+    var isRead: Bool
+}
+
+
 /// Ambient artwork chroma extractor ported from PodPin's `ArtworkColorExtractor`.
 @MainActor @Observable
 final class PodcastArtworkColorModel {

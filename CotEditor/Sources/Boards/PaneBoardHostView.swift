@@ -58,6 +58,9 @@ struct PaneBoardHostView: View {
     @AppStorage(.documentAppearance) private var documentAppearance
     @AppStorage(.theme) private var activeThemeName
     @State private var studioPalette = StudioPaletteManager.shared
+    @State private var mediaLibrary = UserMediaLibraryStore.shared
+    @State private var isShowingBgPicker = false
+    @State private var isBgButtonHovered = false
     
     private var resolvedIsDark: Bool {
         switch self.documentAppearance {
@@ -69,13 +72,24 @@ struct PaneBoardHostView: View {
     
     private var tokens: StudioColorTokens {
         _ = self.studioPalette.revision
-        return self.studioPalette.tokens(isDark: self.resolvedIsDark)
+        return self.studioPalette.tokens(
+            for: self.resolvedTheme,
+            themeName: self.activeThemeName,
+            isDark: self.resolvedBoardIsDark
+        )
+    }
+    
+    private var resolvedTheme: Theme? {
+        (try? ThemeManager.shared.setting(name: self.activeThemeName))
+            ?? self.studioPalette.synthesizedTheme(named: self.activeThemeName)
+    }
+    
+    private var resolvedBoardIsDark: Bool {
+        self.resolvedTheme?.isDarkTheme ?? self.resolvedIsDark
     }
     
     private var editorSurfaceColor: Color {
-        if let theme = (try? ThemeManager.shared.setting(name: self.activeThemeName))
-            ?? self.studioPalette.synthesizedTheme(named: self.activeThemeName)
-        {
+        if let theme = self.resolvedTheme {
             return Color(nsColor: theme.background.color)
         }
         return self.tokens.canvasTop
@@ -83,8 +97,13 @@ struct PaneBoardHostView: View {
     
     
     var body: some View {
+        let _ = self.mediaLibrary.revision
         let activeTokens = self.tokens
         let surface = self.editorSurfaceColor
+        let bgSlot = BoardBackgroundSlot(paneBoardKind: self.model.state.kind)
+        let hasCustomBg = (self.mediaLibrary.boardAssignment(for: bgSlot) != nil
+            && self.mediaLibrary.boardBackgroundImage(for: bgSlot) != nil)
+        
         Group {
             switch self.model.state.kind {
                 case .market:
@@ -92,6 +111,7 @@ struct PaneBoardHostView: View {
                         boardState: self.$model.state,
                         tokens: activeTokens,
                         surfaceColor: surface,
+                        hasCustomBackground: hasCustomBg,
                         onRevertToDocument: self.onRevertToDocument,
                         onOpenNote: self.onOpenNote
                     )
@@ -100,6 +120,7 @@ struct PaneBoardHostView: View {
                         boardState: self.$model.state,
                         tokens: activeTokens,
                         surfaceColor: surface,
+                        hasCustomBackground: hasCustomBg,
                         onRevertToDocument: self.onRevertToDocument,
                         onOpenNote: self.onOpenNote
                     )
@@ -107,10 +128,12 @@ struct PaneBoardHostView: View {
                     DashboardNewsCenterView(
                         newsService: AIHotNewsService.shared,
                         tokens: activeTokens,
+                        surfaceColor: surface,
                         initialSelectedID: nil,
                         isEmbeddedInPane: true,
                         initialCategory: self.model.state.newsCategoryRaw.flatMap(NewsFeedCategory.init(rawValue:)),
                         initialSearchQuery: self.model.state.query,
+                        hasCustomBackground: hasCustomBg,
                         onClose: self.onRevertToDocument,
                         onOpenExcerptDocument: self.onOpenNote
                     )
@@ -119,11 +142,57 @@ struct PaneBoardHostView: View {
                         hostWindow: nil,
                         isDockedPane: true,
                         initialSeedPrompt: self.model.state.query,
+                        surfaceColor: surface,
+                        isDarkOverride: self.resolvedBoardIsDark,
+                        hasCustomBackground: hasCustomBg,
                         onDismiss: self.onRevertToDocument
                     )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(surface)
+        .background {
+            BoardBackgroundBackdropView(
+                slot: bgSlot,
+                baseSurface: surface,
+                isDark: self.resolvedBoardIsDark
+            )
+        }
+        .overlay(alignment: .trailing) {
+            Button {
+                self.isShowingBgPicker.toggle()
+            } label: {
+                Image(systemName: "photo.on.rectangle.angled")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(self.resolvedBoardIsDark ? Color.white.opacity(0.88) : Color.black.opacity(0.76))
+                    .frame(width: 26, height: 26)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .overlay(
+                        Circle()
+                            .strokeBorder(
+                                (self.resolvedBoardIsDark ? Color.white : Color.black).opacity(0.14),
+                                lineWidth: 0.75
+                            )
+                    )
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+            .opacity(self.isBgButtonHovered || self.isShowingBgPicker ? 1.0 : 0.48)
+            .padding(.trailing, 8)
+            .help(AppLanguage.text("设置当前看板背景", en: "Board Background"))
+            .onHover { hovering in
+                withAnimation(.easeOut(duration: 0.14)) {
+                    self.isBgButtonHovered = hovering
+                }
+            }
+            .popover(isPresented: self.$isShowingBgPicker, arrowEdge: .leading) {
+                BackgroundLibraryPickerPopover(
+                    title: AppLanguage.text("设置\(bgSlot.title)背景", en: "\(bgSlot.title) Background"),
+                    slot: bgSlot,
+                    onSelect: { asset in
+                        self.mediaLibrary.setBoardBackground(assetID: asset.id, for: bgSlot)
+                    }
+                )
+            }
+        }
     }
 }

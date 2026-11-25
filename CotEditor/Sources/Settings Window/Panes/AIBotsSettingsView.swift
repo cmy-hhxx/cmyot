@@ -2936,6 +2936,7 @@ private struct AIBotInlineInspectorView: View {
     @State private var customNicknameDraft: String = ""
     @State private var gatewayGroups: [AIBotStore.SelectableGatewayGroup] = []
     @State private var isRefreshingModels = false
+    @State private var isShowingAvatarLibraryPicker = false
     
     
     private var activeGatewayGroup: AIBotStore.SelectableGatewayGroup? {
@@ -3053,6 +3054,19 @@ private struct AIBotInlineInspectorView: View {
                     self.pickCustomAvatar()
                 }
                 .controlSize(.small)
+                
+                Button {
+                    self.isShowingAvatarLibraryPicker.toggle()
+                } label: {
+                    Label(AppLanguage.text("头像库", en: "Library"), systemImage: "photo.stack")
+                }
+                .controlSize(.small)
+                .popover(isPresented: self.$isShowingAvatarLibraryPicker, arrowEdge: .bottom) {
+                    AvatarLibraryPickerPopover { asset in
+                        _ = UserMediaLibraryStore.shared.applyAvatar(assetID: asset.id, to: self.botID, botStore: self.botStore)
+                        self.isShowingAvatarLibraryPicker = false
+                    }
+                }
                 
                 if let character, character.artworks.count > 1 {
                     Menu {
@@ -3272,7 +3286,10 @@ private struct AIBotInlineInspectorView: View {
                   let url = panel.url,
                   let data = try? Data(contentsOf: url)
             else { return }
-            self.botStore.setCustomAvatarData(data, for: self.botID)
+            Task { @MainActor in
+                _ = UserMediaLibraryStore.shared.importURLs([url], preferredKind: .avatar)
+                self.botStore.setCustomAvatarData(data, for: self.botID)
+            }
         }
     }
     

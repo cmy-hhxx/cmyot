@@ -355,13 +355,87 @@ final class WallpaperManager {
     }
     
     
+    /// Computes updated crop/pan framing from a drag translation vector inside a top-left-origin viewport.
+    nonisolated static func dragUpdatedFraming(
+        start: WallpaperFraming,
+        imageSize: CGSize,
+        viewportSize: CGSize,
+        translation: CGSize
+    ) -> WallpaperFraming {
+        let clampedStart = start.clamped()
+        guard imageSize.width > 0, imageSize.height > 0,
+              viewportSize.width > 0, viewportSize.height > 0
+        else { return clampedStart }
+        
+        let baseScale = max(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height)
+        let baseW = imageSize.width * baseScale * CGFloat(clampedStart.scale)
+        let baseH = imageSize.height * baseScale * CGFloat(clampedStart.scale)
+        let baseSlackX = max(0, (baseW - viewportSize.width) * 0.5)
+        let baseSlackY = max(0, (baseH - viewportSize.height) * 0.5)
+        
+        // If aspect ratio nearly matches the viewport at 1.0x, smoothly nudge zoom so dragging always frames freely.
+        let effectiveScale = (baseSlackX < 3 && baseSlackY < 3) ? max(clampedStart.scale, 1.22) : clampedStart.scale
+        let effW = imageSize.width * baseScale * CGFloat(effectiveScale)
+        let effH = imageSize.height * baseScale * CGFloat(effectiveScale)
+        let slackX = max(0, (effW - viewportSize.width) * 0.5)
+        let slackY = max(0, (effH - viewportSize.height) * 0.5)
+        
+        let nextPanX = slackX > 1 ? clampedStart.panX - Double(translation.width / slackX) : clampedStart.panX
+        let nextPanY = slackY > 1 ? clampedStart.panY - Double(translation.height / slackY) : clampedStart.panY
+        return WallpaperFraming(scale: effectiveScale, panX: nextPanX, panY: nextPanY).clamped()
+    }
+    
+    
+    nonisolated static func mediaLibraryWallpaperID(for assetID: String) -> String {
+        "lib-\(assetID)"
+    }
+    
+    
+    /// Saves a user-chosen file URL into App Support with EXIF orientation normalization, adds it to the catalog, and activates it.
+    @discardableResult
+    func saveCustomWallpaper(from url: URL, title: String? = nil) -> WallpaperItem? {
+        let resolvedTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+            ?? url.deletingPathExtension().lastPathComponent
+        if let normalized = Self.downsampledImage(from: url, maxPixelSize: 2400) {
+            return self.saveCustomWallpaper(normalized, title: resolvedTitle)
+        }
+        guard let fallback = NSImage(contentsOf: url) else { return nil }
+        return self.saveCustomWallpaper(fallback, title: resolvedTitle)
+    }
+    
+    
+    /// Selects (or imports once without duplicating) a background asset from `UserMediaLibraryStore` as the active editor wallpaper.
+    @discardableResult
+    func selectMediaLibraryBackground(assetID: String, title: String, fileURL: URL) -> WallpaperItem? {
+        let wallpaperID = Self.mediaLibraryWallpaperID(for: assetID)
+        if let existing = self.allItems.first(where: { $0.id == wallpaperID }) {
+            self.selectWallpaper(id: existing.id, enableIfDisabled: true)
+            return existing
+        }
+        if let normalized = Self.downsampledImage(from: fileURL, maxPixelSize: 2400) ?? NSImage(contentsOf: fileURL) {
+            return self.storeCustomWallpaper(normalized, customID: wallpaperID, title: title)
+        }
+        return nil
+    }
+    
+    
     /// Saves a user-chosen artwork image into App Support, adds it to the catalog, and activates it.
     @discardableResult
     func saveCustomWallpaper(_ image: NSImage, title: String? = nil) -> WallpaperItem? {
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        let id = "custom-\(UUID().uuidString.prefix(8).lowercased())"
+        return self.storeCustomWallpaper(image, customID: id, title: title)
+    }
+    
+    
+    @discardableResult
+    private func storeCustomWallpaper(_ image: NSImage, customID: String, title: String?) -> WallpaperItem? {
+        var proposed = NSRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                ?? image.cgImage(forProposedRect: &proposed, context: nil, hints: nil)
+        else {
             return nil
         }
-        let maxSide: CGFloat = 1920
+        let maxSide: CGFloat = 2400
         let w = CGFloat(cgImage.width)
         let h = CGFloat(cgImage.height)
         let scale = min(1.0, maxSide / max(1, max(w, h)))
@@ -392,8 +466,7 @@ final class WallpaperManager {
         }
         
         try? FileManager.default.createDirectory(at: self.storageDirectory, withIntermediateDirectories: true)
-        let id = "custom-\(UUID().uuidString.prefix(8).lowercased())"
-        let filename = "\(id).jpg"
+        let filename = "\(customID).jpg"
         let fileURL = self.storageDirectory.appending(path: filename)
         do {
             try jpegData.write(to: fileURL, options: .atomic)
@@ -403,16 +476,17 @@ final class WallpaperManager {
         
         let resolvedTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
             ?? "自定义壁纸 \(self.customRecords.count + 1)"
-        let record = WallpaperCustomRecord(id: id, title: resolvedTitle, filename: filename, createdAt: Date())
+        let record = WallpaperCustomRecord(id: customID, title: resolvedTitle, filename: filename, createdAt: Date())
+        self.customRecords.removeAll { $0.id == customID }
         self.customRecords.append(record)
         self.persistCustomCatalog()
         
         if let cachedImg = NSImage(data: jpegData) {
-            self.rawImageCache.setObject(cachedImg, forKey: id as NSString, cost: Self.estimatedImageCost(cachedImg))
+            self.rawImageCache.setObject(cachedImg, forKey: customID as NSString, cost: Self.estimatedImageCost(cachedImg))
         }
         self.catalogVersion += 1
-        self.selectWallpaper(id: id, enableIfDisabled: true)
-        return self.allItems.first { $0.id == id }
+        self.selectWallpaper(id: customID, enableIfDisabled: true)
+        return self.allItems.first { $0.id == customID }
     }
     
     

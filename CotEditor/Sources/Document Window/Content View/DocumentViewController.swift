@@ -1443,12 +1443,42 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         panel.present(on: window)
         
+        let actionSessionID = "action-\(UUID().uuidString)"
+        let docName = self.document.displayName ?? ""
+        let botID = AIBotID(action: action).rawValue
         let task = Task { [weak panel] in
             do {
                 let result = try await AIService.shared.run(action, on: text) { partial in
                     panel?.presentPartial(result: partial)
                 }
                 panel?.present(result: result)
+                let db = CotLocalDatabase.shared
+                let now = Date()
+                db.appendAIConversationLog(AIConversationLogRecord(
+                    id: "action-u-\(actionSessionID)",
+                    channel: "editor_action",
+                    sessionID: actionSessionID,
+                    workspaceName: docName,
+                    botID: botID,
+                    role: "user",
+                    content: String(text.prefix(2000)),
+                    createdAt: now,
+                    memoryExtracted: false
+                ))
+                db.appendAIConversationLog(AIConversationLogRecord(
+                    id: "action-a-\(actionSessionID)",
+                    channel: "editor_action",
+                    sessionID: actionSessionID,
+                    workspaceName: docName,
+                    botID: botID,
+                    role: "assistant",
+                    content: String(result.prefix(3000)),
+                    createdAt: now.addingTimeInterval(0.01),
+                    memoryExtracted: false
+                ))
+                if !CotLocalDatabase.isRunningUnitTests {
+                    CotMemoryExtractionAgent.shared.scheduleExtractionIfNeeded(reason: "editor_action")
+                }
             } catch is CancellationError {
                 return
             } catch {

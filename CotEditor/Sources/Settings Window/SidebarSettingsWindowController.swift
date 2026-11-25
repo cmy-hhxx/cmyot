@@ -35,6 +35,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
     case appIcon
     case appearance
     case wallpaper
+    case mediaLibrary
     case typography
     case editing
     case format
@@ -54,6 +55,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .appIcon: AppLanguage.text("图标", en: "App Icon")
             case .appearance: AppLanguage.text("外观", en: "Appearance")
             case .wallpaper: AppLanguage.text("壁纸", en: "Wallpaper")
+            case .mediaLibrary: AppLanguage.text("素材库", en: "Library")
             case .typography: AppLanguage.text("字体", en: "Fonts")
             case .editing: AppLanguage.text("编辑", en: "Editing")
             case .format: AppLanguage.text("格式", en: "Format")
@@ -73,6 +75,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .appIcon: "sparkles.rectangle.stack.fill"
             case .appearance: "paintpalette.fill"
             case .wallpaper: "photo.on.rectangle.angled"
+            case .mediaLibrary: "photo.stack.fill"
             case .typography: "textformat.size"
             case .editing: "square.and.pencil"
             case .format: "doc.text.fill"
@@ -92,6 +95,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .appIcon: Color(red: 0.85, green: 0.65, blue: 0.16)
             case .appearance: Color(red: 0.44, green: 0.36, blue: 0.70)
             case .wallpaper: Color(red: 0.18, green: 0.52, blue: 0.88)
+            case .mediaLibrary: Color(red: 0.90, green: 0.42, blue: 0.56)
             case .typography: Color(red: 0.25, green: 0.48, blue: 0.92)
             case .editing: Color(red: 0.04, green: 0.52, blue: 1.00)
             case .format: Color(red: 0.14, green: 0.65, blue: 0.58)
@@ -221,7 +225,7 @@ private enum SettingsDesignTokens {
     static let readoutWidth: CGFloat = 40
     
     static let sidebarClusters: [[SidebarSettingsItem]] = [
-        [.general, .appIcon, .appearance, .wallpaper],
+        [.general, .appIcon, .appearance, .wallpaper, .mediaLibrary],
         [.typography, .editing, .format, .effects],
         [.models, .bots, .memory, .scheduledTasks, .keyBindings, .pass],
     ]
@@ -266,28 +270,30 @@ private struct SidebarSettingsRootView: View {
                 SidebarVisualEffectBackdrop()
                     .ignoresSafeArea()
                 
-                VStack(alignment: .leading, spacing: 8) {
-                    Spacer().frame(height: 40)
+                VStack(alignment: .leading, spacing: 0) {
+                    Spacer().frame(height: 38)
                     
-                    ForEach(Array(SettingsDesignTokens.sidebarClusters.enumerated()), id: \.offset) { clusterIdx, cluster in
-                        if clusterIdx > 0 {
-                            Rectangle()
-                                .fill(isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
-                                .frame(height: 0.5)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(cluster) { item in
-                                self.sidebarRow(item, isDark: isDark, accent: accent, onAccent: onAccent)
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach(Array(SettingsDesignTokens.sidebarClusters.enumerated()), id: \.offset) { clusterIdx, cluster in
+                                if clusterIdx > 0 {
+                                    Rectangle()
+                                        .fill(isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
+                                        .frame(height: 0.5)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 2)
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    ForEach(cluster) { item in
+                                        self.sidebarRow(item, isDark: isDark, accent: accent, onAccent: onAccent)
+                                    }
+                                }
                             }
                         }
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 14)
                     }
-                    
-                    Spacer()
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 14)
             }
             .frame(width: SettingsDesignTokens.sidebarWidth)
             
@@ -340,6 +346,10 @@ private struct SidebarSettingsRootView: View {
                                     .frame(maxHeight: .infinity)
                             case .wallpaper:
                                 SidebarWallpaperSettingsPane()
+                                    .frame(width: SettingsDesignTokens.detailWidth)
+                                    .frame(maxHeight: .infinity)
+                            case .mediaLibrary:
+                                MediaLibrarySettingsView()
                                     .frame(width: SettingsDesignTokens.detailWidth)
                                     .frame(maxHeight: .infinity)
                             case .memory:
@@ -442,6 +452,8 @@ private struct SidebarSettingsRootView: View {
                 SidebarAppearanceSettingsPane()
             case .wallpaper:
                 SidebarWallpaperSettingsPane()
+            case .mediaLibrary:
+                EmptyView()
             case .typography:
                 SidebarTypographySettingsPane()
             case .editing:
@@ -672,6 +684,8 @@ private struct SidebarGeneralSettingsPane: View {
     @State private var isEditingActiveName = false
     @State private var isShowingStoredDocs = false
     @State private var isShowingVersionDetails = false
+    @State private var isShowingActiveAvatarLibrary = false
+    @State private var isShowingNewUserAvatarLibrary = false
     
     
     var body: some View {
@@ -769,6 +783,19 @@ private struct SidebarGeneralSettingsPane: View {
                     Spacer()
                     
                     Button {
+                        self.isShowingActiveAvatarLibrary.toggle()
+                    } label: {
+                        Label("头像库", systemImage: "photo.stack")
+                    }
+                    .controlSize(.small)
+                    .popover(isPresented: self.$isShowingActiveAvatarLibrary, arrowEdge: .bottom) {
+                        AvatarLibraryPickerPopover { asset in
+                            _ = UserMediaLibraryStore.shared.applyAvatarToActiveUser(assetID: asset.id, profileManager: self.profileManager)
+                            self.isShowingActiveAvatarLibrary = false
+                        }
+                    }
+                    
+                    Button {
                         withAnimation(.easeOut(duration: 0.16)) {
                             self.isCreatingUser.toggle()
                         }
@@ -812,6 +839,26 @@ private struct SidebarGeneralSettingsPane: View {
                             TextField("输入新用户昵称", text: self.$newUserName)
                                 .textFieldStyle(.roundedBorder)
                                 .onSubmit { self.submitNewUser() }
+                            
+                            Button {
+                                self.isShowingNewUserAvatarLibrary.toggle()
+                            } label: {
+                                Image(systemName: "photo.stack")
+                            }
+                            .controlSize(.small)
+                            .help("从头像库选择")
+                            .popover(isPresented: self.$isShowingNewUserAvatarLibrary, arrowEdge: .bottom) {
+                                AvatarLibraryPickerPopover { asset in
+                                    if let img = UserMediaLibraryStore.shared.fullImage(for: asset),
+                                       let data = UserProfileManager.processedAvatarPNGData(from: img),
+                                       let processed = NSImage(data: data)
+                                    {
+                                        self.newUserAvatarData = data
+                                        self.newUserAvatarImage = processed
+                                    }
+                                    self.isShowingNewUserAvatarLibrary = false
+                                }
+                            }
                             
                             Button {
                                 self.newUserName = GeneratedDocumentName.generateCandidate()
@@ -1054,6 +1101,7 @@ private struct SidebarGeneralSettingsPane: View {
                   let processed = NSImage(data: data)
             else { return }
             Task { @MainActor in
+                _ = UserMediaLibraryStore.shared.importURLs([url], preferredKind: .avatar)
                 if forActive {
                     self.profileManager.updateProfile(id: self.profileManager.activeProfile.id, avatarData: .some(data))
                 } else {
@@ -1062,6 +1110,167 @@ private struct SidebarGeneralSettingsPane: View {
                 }
             }
         }
+    }
+}
+
+
+// MARK: - AppKit Pan/Magnify/Drop Overlay (Prevents isMovableByWindowBackground from hijacking drag)
+
+/// AppKit interaction surface that returns `mouseDownCanMoveWindow == false` so dragging
+/// inside preview stages pans artwork smoothly without moving the Settings window.
+internal final class WallpaperFramingInteractionNSView: NSView {
+    
+    var isInteractive: Bool = true {
+        didSet {
+            if self.isInteractive != oldValue {
+                self.window?.invalidateCursorRects(for: self)
+            }
+        }
+    }
+    var onDragStart: (() -> Void)?
+    var onDragChanged: ((CGSize) -> Void)?
+    var onDragEnd: (() -> Void)?
+    var onMagnify: ((CGFloat, NSEvent.Phase) -> Void)?
+    var onDropTargetedChange: ((Bool) -> Void)?
+    var onDropURLs: (([URL]) -> Void)?
+    var onDropImages: (([NSImage]) -> Void)?
+    
+    private var dragStartPoint: NSPoint?
+    private var isCurrentlyDragging = false
+    
+    override var mouseDownCanMoveWindow: Bool { false }
+    override var isFlipped: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        self.registerForDraggedTypes([.fileURL, .tiff, .png])
+    }
+    
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard self.isInteractive else { return }
+        self.addCursorRect(self.bounds, cursor: self.isCurrentlyDragging ? .closedHand : .openHand)
+    }
+    
+    override func mouseDown(with event: NSEvent) {
+        guard self.isInteractive else {
+            super.mouseDown(with: event)
+            return
+        }
+        let pt = self.convert(event.locationInWindow, from: nil)
+        self.dragStartPoint = pt
+        self.isCurrentlyDragging = true
+        self.window?.invalidateCursorRects(for: self)
+        NSCursor.closedHand.set()
+        self.onDragStart?()
+    }
+    
+    override func mouseDragged(with event: NSEvent) {
+        guard self.isInteractive, let start = self.dragStartPoint else {
+            super.mouseDragged(with: event)
+            return
+        }
+        let pt = self.convert(event.locationInWindow, from: nil)
+        let translation = CGSize(width: pt.x - start.x, height: pt.y - start.y)
+        self.onDragChanged?(translation)
+    }
+    
+    override func mouseUp(with event: NSEvent) {
+        let wasDragging = self.isCurrentlyDragging
+        self.dragStartPoint = nil
+        self.isCurrentlyDragging = false
+        self.window?.invalidateCursorRects(for: self)
+        if self.isInteractive {
+            NSCursor.openHand.set()
+        }
+        if wasDragging {
+            self.onDragEnd?()
+        } else {
+            super.mouseUp(with: event)
+        }
+    }
+    
+    override func magnify(with event: NSEvent) {
+        guard self.isInteractive else {
+            super.magnify(with: event)
+            return
+        }
+        self.onMagnify?(event.magnification, event.phase)
+    }
+    
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        let pb = sender.draggingPasteboard
+        let hasURL = pb.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+        let hasImage = pb.canReadObject(forClasses: [NSImage.self], options: nil)
+        guard hasURL || hasImage else { return [] }
+        self.onDropTargetedChange?(true)
+        return .copy
+    }
+    
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        self.onDropTargetedChange?(false)
+    }
+    
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        self.onDropTargetedChange?(false)
+    }
+    
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        self.onDropTargetedChange?(false)
+        let pb = sender.draggingPasteboard
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           !urls.isEmpty
+        {
+            self.onDropURLs?(urls)
+            return true
+        }
+        if let images = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
+           !images.isEmpty
+        {
+            self.onDropImages?(images)
+            return true
+        }
+        return false
+    }
+}
+
+
+private struct WallpaperFramingInteractionOverlay: NSViewRepresentable {
+    
+    var isInteractive: Bool = true
+    var onDragStart: (() -> Void)? = nil
+    var onDragChanged: ((CGSize) -> Void)? = nil
+    var onDragEnd: (() -> Void)? = nil
+    var onMagnify: ((CGFloat, NSEvent.Phase) -> Void)? = nil
+    var onDropTargetedChange: ((Bool) -> Void)? = nil
+    var onDropURLs: (([URL]) -> Void)? = nil
+    var onDropImages: (([NSImage]) -> Void)? = nil
+    
+    func makeNSView(context: Context) -> WallpaperFramingInteractionNSView {
+        let view = WallpaperFramingInteractionNSView()
+        self.applyCallbacks(to: view)
+        return view
+    }
+    
+    func updateNSView(_ nsView: WallpaperFramingInteractionNSView, context: Context) {
+        self.applyCallbacks(to: nsView)
+    }
+    
+    private func applyCallbacks(to view: WallpaperFramingInteractionNSView) {
+        view.isInteractive = self.isInteractive
+        view.onDragStart = self.onDragStart
+        view.onDragChanged = self.onDragChanged
+        view.onDragEnd = self.onDragEnd
+        view.onMagnify = self.onMagnify
+        view.onDropTargetedChange = self.onDropTargetedChange
+        view.onDropURLs = self.onDropURLs
+        view.onDropImages = self.onDropImages
     }
 }
 
@@ -1145,25 +1354,6 @@ private struct SidebarAppIconSettingsPane: View {
                                     .frame(width: 96, height: 96)
                                     .scaleEffect(self.isDropTargeted ? 1.06 : 1.0)
                                     .animation(.spring(response: 0.24, dampingFraction: 0.76), value: self.isDropTargeted)
-                                    .gesture(
-                                        DragGesture(minimumDistance: 2)
-                                            .onChanged { value in
-                                                if self.dragStartOffset == nil {
-                                                    self.dragStartOffset = CGSize(
-                                                        width: self.iconManager.spec.imageOffsetX,
-                                                        height: self.iconManager.spec.imageOffsetY
-                                                    )
-                                                }
-                                                let base = self.dragStartOffset ?? .zero
-                                                self.iconManager.updateSpecLive { spec in
-                                                    spec.imageOffsetX = base.width + Double(value.translation.width) / 140.0
-                                                    spec.imageOffsetY = base.height - Double(value.translation.height) / 140.0
-                                                }
-                                            }
-                                            .onEnded { _ in
-                                                self.dragStartOffset = nil
-                                            }
-                                    )
                                 
                                 RoundedRectangle(cornerRadius: 11, style: .continuous)
                                     .fill(Color.primary.opacity(0.08))
@@ -1171,6 +1361,41 @@ private struct SidebarAppIconSettingsPane: View {
                                     .offset(y: -4)
                             }
                             .offset(y: 4)
+                            
+                            WallpaperFramingInteractionOverlay(
+                                isInteractive: true,
+                                onDragStart: {
+                                    self.dragStartOffset = CGSize(
+                                        width: self.iconManager.spec.imageOffsetX,
+                                        height: self.iconManager.spec.imageOffsetY
+                                    )
+                                },
+                                onDragChanged: { translation in
+                                    let base = self.dragStartOffset ?? .zero
+                                    self.iconManager.updateSpecLive { spec in
+                                        spec.imageOffsetX = base.width + Double(translation.width) / 140.0
+                                        spec.imageOffsetY = base.height - Double(translation.height) / 140.0
+                                    }
+                                },
+                                onDragEnd: {
+                                    self.dragStartOffset = nil
+                                },
+                                onDropTargetedChange: { targeted in
+                                    self.isDropTargeted = targeted
+                                },
+                                onDropURLs: { urls in
+                                    if let first = urls.first(where: { NSImage(contentsOf: $0) != nil }),
+                                       let image = NSImage(contentsOf: first)
+                                    {
+                                        _ = self.iconManager.saveCustomImage(image)
+                                    }
+                                },
+                                onDropImages: { images in
+                                    if let first = images.first {
+                                        _ = self.iconManager.saveCustomImage(first)
+                                    }
+                                }
+                            )
                         }
                         .frame(height: 124)
                         .overlay(
@@ -1179,10 +1404,8 @@ private struct SidebarAppIconSettingsPane: View {
                                     self.isDropTargeted ? Color.accentColor : Color.clear,
                                     style: StrokeStyle(lineWidth: 2, dash: [6, 4])
                                 )
+                                .allowsHitTesting(false)
                         )
-                        .onDrop(of: [.image, .fileURL], isTargeted: self.$isDropTargeted) { providers in
-                            self.handleDrop(providers: providers)
-                        }
                         
                         HStack(spacing: 8) {
                             Text(self.iconManager.spec.borderStyle.displayName)
@@ -1518,6 +1741,7 @@ private struct SidebarWallpaperSettingsPane: View {
     
     @Environment(\.colorScheme) private var colorScheme
     @State private var manager = WallpaperManager.shared
+    @State private var mediaLibrary = UserMediaLibraryStore.shared
     @State private var hoveredID: String?
     @State private var isDropTargeted = false
     @State private var dragStartFraming: WallpaperFraming?
@@ -1528,6 +1752,7 @@ private struct SidebarWallpaperSettingsPane: View {
     
     var body: some View {
         let _ = self.manager.catalogVersion
+        let _ = self.mediaLibrary.revision
         let items = self.manager.allItems
         let selectedItem = items.first { $0.id == self.manager.spec.selectedID } ?? items.first
         let framing = self.manager.spec.currentFraming
@@ -1550,10 +1775,8 @@ private struct SidebarWallpaperSettingsPane: View {
                                                 : (self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.08))),
                                         style: self.isDropTargeted ? StrokeStyle(lineWidth: 2, dash: [6, 4]) : StrokeStyle(lineWidth: (self.isFramingActive || self.showViewfinderGrid) ? 1.3 : 0.75)
                                     )
+                                    .allowsHitTesting(false)
                             )
-                            .onDrop(of: [.image, .fileURL], isTargeted: self.$isDropTargeted) { providers in
-                                self.handleDrop(providers: providers)
-                            }
                         
                         HStack(spacing: 8) {
                             if let selectedItem {
@@ -1602,6 +1825,18 @@ private struct SidebarWallpaperSettingsPane: View {
                             }
                             
                             Button {
+                                UserMediaLibraryImporter.presentFolderPicker(preferredKind: .background) { result in
+                                    if let firstID = result.firstAddedBackgroundID {
+                                        _ = self.mediaLibrary.applyBackgroundToEditorWallpaper(assetID: firstID, wallpaperManager: self.manager)
+                                    }
+                                }
+                            } label: {
+                                Image(systemName: "folder.badge.plus")
+                            }
+                            .controlSize(.small)
+                            .help(AppLanguage.text("导入背景文件夹", en: "Import Background Folder"))
+                            
+                            Button {
                                 self.pickCustomWallpaperImage()
                             } label: {
                                 Label(AppLanguage.text("上传图片", en: "Upload"), systemImage: "photo.badge.plus")
@@ -1622,6 +1857,20 @@ private struct SidebarWallpaperSettingsPane: View {
             // Scrollable Gallery & Backdrop Sliders
             ScrollView {
                 VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
+                    if !self.mediaLibrary.backgrounds.isEmpty {
+                        SettingsGroupCard(title: AppLanguage.text("我的背景库", en: "My Background Library")) {
+                            LazyVGrid(
+                                columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
+                                spacing: 8
+                            ) {
+                                ForEach(self.mediaLibrary.backgrounds) { asset in
+                                    self.backgroundLibraryTile(asset)
+                                }
+                            }
+                            .padding(12)
+                        }
+                    }
+                    
                     SettingsGroupCard(title: AppLanguage.text("精选壁纸", en: "Gallery")) {
                         LazyVGrid(
                             columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
@@ -1796,6 +2045,60 @@ private struct SidebarWallpaperSettingsPane: View {
                     
                     Spacer(minLength: 0)
                 }
+                .allowsHitTesting(false)
+                
+                // AppKit pan/pinch/drop overlay (mouseDownCanMoveWindow == false so dragging never moves window)
+                WallpaperFramingInteractionOverlay(
+                    isInteractive: artwork != nil,
+                    onDragStart: {
+                        guard artwork != nil else { return }
+                        if !self.manager.spec.isEnabled {
+                            self.manager.spec.isEnabled = true
+                        }
+                        self.dragStartFraming = self.manager.spec.currentFraming
+                        self.isFramingActive = true
+                    },
+                    onDragChanged: { translation in
+                        guard let artwork else { return }
+                        let start = self.dragStartFraming ?? self.manager.spec.currentFraming
+                        let updated = WallpaperManager.dragUpdatedFraming(
+                            start: start,
+                            imageSize: artwork.size,
+                            viewportSize: geo.size,
+                            translation: translation
+                        )
+                        self.manager.updateFraming(scale: updated.scale, panX: updated.panX, panY: updated.panY)
+                    },
+                    onDragEnd: {
+                        self.dragStartFraming = nil
+                        withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.22)) {
+                            self.isFramingActive = false
+                        }
+                    },
+                    onMagnify: { magnificationDelta, phase in
+                        if !self.manager.spec.isEnabled {
+                            self.manager.spec.isEnabled = true
+                        }
+                        if phase == .began {
+                            self.isFramingActive = true
+                        }
+                        self.manager.updateFraming(scale: self.manager.spec.scale * (1.0 + Double(magnificationDelta)))
+                        if phase == .ended || phase == .cancelled {
+                            withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.22)) {
+                                self.isFramingActive = false
+                            }
+                        }
+                    },
+                    onDropTargetedChange: { targeted in
+                        self.isDropTargeted = targeted
+                    },
+                    onDropURLs: { urls in
+                        self.handleDroppedURLs(urls)
+                    },
+                    onDropImages: { images in
+                        self.handleDroppedImages(images)
+                    }
+                )
                 
                 // Viewfinder 3x3 framing grid + corner brackets
                 if framingMode {
@@ -1813,60 +2116,9 @@ private struct SidebarWallpaperSettingsPane: View {
                             .padding(.vertical, 6)
                             .background(accent, in: Capsule())
                     }
+                    .allowsHitTesting(false)
                 }
             }
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in
-                        guard let artwork else { return }
-                        if self.dragStartFraming == nil {
-                            self.dragStartFraming = self.manager.spec.currentFraming
-                            self.isFramingActive = true
-                        }
-                        let start = self.dragStartFraming ?? self.manager.spec.currentFraming
-                        let imgSize = artwork.size
-                        let baseScale = max(geo.size.width / max(1, imgSize.width), geo.size.height / max(1, imgSize.height))
-                        let baseW = imgSize.width * baseScale * CGFloat(start.scale)
-                        let baseH = imgSize.height * baseScale * CGFloat(start.scale)
-                        let baseSlackX = max(0, (baseW - geo.size.width) * 0.5)
-                        let baseSlackY = max(0, (baseH - geo.size.height) * 0.5)
-                        
-                        // If aspect ratio nearly matches the viewport at 1.0x, smoothly nudge zoom so dragging always frames freely
-                        let effectiveScale = (baseSlackX < 3 && baseSlackY < 3) ? max(start.scale, 1.22) : start.scale
-                        let effW = imgSize.width * baseScale * CGFloat(effectiveScale)
-                        let effH = imgSize.height * baseScale * CGFloat(effectiveScale)
-                        let slackX = max(0, (effW - geo.size.width) * 0.5)
-                        let slackY = max(0, (effH - geo.size.height) * 0.5)
-                        
-                        let nextPanX = slackX > 1 ? start.panX - Double(value.translation.width / slackX) : start.panX
-                        let nextPanY = slackY > 1 ? start.panY - Double(value.translation.height / slackY) : start.panY
-                        self.manager.updateFraming(scale: effectiveScale, panX: nextPanX, panY: nextPanY)
-                    }
-                    .onEnded { _ in
-                        self.dragStartFraming = nil
-                        withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.22)) {
-                            self.isFramingActive = false
-                        }
-                    }
-            )
-            .simultaneousGesture(
-                MagnifyGesture()
-                    .onChanged { value in
-                        if self.magnifyStartScale == nil {
-                            self.magnifyStartScale = self.manager.spec.scale
-                            self.isFramingActive = true
-                        }
-                        let base = self.magnifyStartScale ?? 1.0
-                        self.manager.updateFraming(scale: base * value.magnification)
-                    }
-                    .onEnded { _ in
-                        self.magnifyStartScale = nil
-                        withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.22)) {
-                            self.isFramingActive = false
-                        }
-                    }
-            )
         }
     }
     
@@ -1980,50 +2232,110 @@ private struct SidebarWallpaperSettingsPane: View {
     }
     
     
-    private func pickCustomWallpaperImage() {
-        let panel = NSOpenPanel()
-        panel.title = AppLanguage.text("选择壁纸图片", en: "Choose Wallpaper Image")
-        panel.allowedContentTypes = [.image, .png, .jpeg, .heic, .tiff]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.begin { response in
-            guard response == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
-            let baseTitle = url.deletingPathExtension().lastPathComponent
-            Task { @MainActor in
-                _ = self.manager.saveCustomWallpaper(image, title: baseTitle)
+    @ViewBuilder
+    private func backgroundLibraryTile(_ asset: UserMediaAsset) -> some View {
+        let libWallpaperID = WallpaperManager.mediaLibraryWallpaperID(for: asset.id)
+        let isSelected = (self.manager.spec.selectedID == libWallpaperID)
+        let isHovered = (self.hoveredID == libWallpaperID)
+        let accent = StudioPaletteManager.shared.activeAccentColor
+        let thumb = self.mediaLibrary.thumbnailImage(for: asset, maxPixelSize: 320)
+        
+        Button {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                _ = self.mediaLibrary.applyBackgroundToEditorWallpaper(assetID: asset.id, wallpaperManager: self.manager)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                ZStack(alignment: .topTrailing) {
+                    Group {
+                        if let thumb {
+                            Image(nsImage: thumb)
+                                .resizable()
+                                .interpolation(.medium)
+                                .scaledToFill()
+                        } else {
+                            Rectangle().fill(Color.primary.opacity(0.08))
+                        }
+                    }
+                    .frame(height: 64)
+                    .frame(maxWidth: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(
+                                isSelected ? accent : Color.primary.opacity(isHovered ? 0.22 : 0.08),
+                                lineWidth: isSelected ? 2 : 0.75
+                            )
+                    )
+                    
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.white, accent)
+                            .padding(4)
+                    }
+                }
+                
+                Text(asset.title)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                    .lineLimit(1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { inside in
+            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.14)) {
+                self.hoveredID = inside ? libWallpaperID : (self.hoveredID == libWallpaperID ? nil : self.hoveredID)
             }
         }
     }
     
     
-    private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                    let url: URL? = if let data = item as? Data {
-                        URL(dataRepresentation: data, relativeTo: nil)
-                    } else {
-                        item as? URL
-                    }
-                    guard let url, let image = NSImage(contentsOf: url) else { return }
-                    let title = url.deletingPathExtension().lastPathComponent
-                    Task { @MainActor in
-                        _ = self.manager.saveCustomWallpaper(image, title: title)
-                    }
-                }
-                return true
-            }
-            if provider.canLoadObject(ofClass: NSImage.self) {
-                provider.loadObject(ofClass: NSImage.self) { object, _ in
-                    guard let image = object as? NSImage else { return }
-                    Task { @MainActor in
-                        _ = self.manager.saveCustomWallpaper(image)
-                    }
-                }
-                return true
+    private func pickCustomWallpaperImage() {
+        let panel = NSOpenPanel()
+        panel.title = AppLanguage.text("选择壁纸图片", en: "Choose Wallpaper Image")
+        panel.allowedContentTypes = [.image, .png, .jpeg, .heic, .tiff]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.begin { response in
+            guard response == .OK, !panel.urls.isEmpty else { return }
+            let urls = panel.urls
+            Task { @MainActor in
+                self.handleDroppedURLs(urls)
             }
         }
-        return false
+    }
+    
+    
+    private func handleDroppedURLs(_ urls: [URL]) {
+        let result = self.mediaLibrary.importURLs(urls, preferredKind: .background)
+        if let firstID = result.firstAddedBackgroundID {
+            _ = self.mediaLibrary.applyBackgroundToEditorWallpaper(assetID: firstID, wallpaperManager: self.manager)
+            return
+        }
+        if let firstURL = urls.first {
+            let outcome = self.mediaLibrary.addImage(from: firstURL, kind: .background)
+            if let existing = outcome.asset {
+                _ = self.mediaLibrary.applyBackgroundToEditorWallpaper(assetID: existing.id, wallpaperManager: self.manager)
+            } else {
+                _ = self.manager.saveCustomWallpaper(from: firstURL)
+            }
+        }
+    }
+    
+    
+    private func handleDroppedImages(_ images: [NSImage]) {
+        guard let first = images.first else { return }
+        let title = "自定义壁纸 \(self.manager.customRecords.count + 1)"
+        let outcome = self.mediaLibrary.addImage(first, title: title, kind: .background)
+        if let asset = outcome.asset {
+            _ = self.mediaLibrary.applyBackgroundToEditorWallpaper(assetID: asset.id, wallpaperManager: self.manager)
+        } else {
+            _ = self.manager.saveCustomWallpaper(first, title: title)
+        }
     }
 }
 

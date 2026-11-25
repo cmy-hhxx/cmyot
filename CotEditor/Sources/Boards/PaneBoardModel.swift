@@ -55,6 +55,7 @@ nonisolated enum PaneBoardKind: String, CaseIterable, Codable, Identifiable, Sen
 nonisolated enum MarketChartPeriod: String, CaseIterable, Codable, Identifiable, Sendable {
     
     case intraday
+    case fiveMin
     case day
     case week
     case month
@@ -64,6 +65,7 @@ nonisolated enum MarketChartPeriod: String, CaseIterable, Codable, Identifiable,
     var label: String {
         switch self {
             case .intraday: AppLanguage.text("分时", en: "1D")
+            case .fiveMin: AppLanguage.text("5分", en: "5m")
             case .day: AppLanguage.text("日K", en: "Day")
             case .week: AppLanguage.text("周K", en: "Week")
             case .month: AppLanguage.text("月K", en: "Month")

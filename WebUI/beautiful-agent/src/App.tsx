@@ -118,8 +118,8 @@ function AssistantMessageBlock({
   locale: "zh" | "en";
   statusLabel?: string;
   onRetry?: () => void;
-  onInsert: (text: string) => void;
-  onOpenNote: (text: string) => void;
+  onInsert?: (text: string) => void;
+  onOpenNote?: (text: string) => void;
   onFollowUp: (prompt: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -234,30 +234,34 @@ function AssistantMessageBlock({
                 </button>
               )}
 
-              <button
-                type="button"
-                onClick={() => onInsert(message.text)}
-                title={locale === "zh" ? "插入到当前编辑器光标处" : "Insert at editor cursor"}
-                className="flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[13px] transition-colors duration-100 hover:bg-hover-2 hover:text-ink-2"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 5v14M5 12l7 7 7-7" />
-                </svg>
-                <span>{locale === "zh" ? "插入" : "Insert"}</span>
-              </button>
+              {onInsert && (
+                <button
+                  type="button"
+                  onClick={() => onInsert(message.text)}
+                  title={locale === "zh" ? "插入到当前编辑器光标处" : "Insert at editor cursor"}
+                  className="flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[13px] transition-colors duration-100 hover:bg-hover-2 hover:text-ink-2"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 5v14M5 12l7 7 7-7" />
+                  </svg>
+                  <span>{locale === "zh" ? "插入" : "Insert"}</span>
+                </button>
+              )}
 
-              <button
-                type="button"
-                onClick={() => onOpenNote(message.text)}
-                title={locale === "zh" ? "存为新文档标签页" : "Save as new note tab"}
-                className="flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[13px] transition-colors duration-100 hover:bg-hover-2 hover:text-ink-2"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                  <path d="M14 2v6h6M12 18v-6M9 15h6" />
-                </svg>
-                <span>{locale === "zh" ? "存笔记" : "Note"}</span>
-              </button>
+              {onOpenNote && (
+                <button
+                  type="button"
+                  onClick={() => onOpenNote(message.text)}
+                  title={locale === "zh" ? "存为新文档标签页" : "Save as new note tab"}
+                  className="flex h-7 items-center gap-1.5 rounded-[7px] px-2 text-[13px] transition-colors duration-100 hover:bg-hover-2 hover:text-ink-2"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <path d="M14 2v6h6M12 18v-6M9 15h6" />
+                  </svg>
+                  <span>{locale === "zh" ? "存笔记" : "Note"}</span>
+                </button>
+              )}
             </div>
           )}
 
@@ -303,25 +307,39 @@ function AssistantMessageBlock({
 }
 
 function WorkspacePickerMenu({
-  activeWorkspacePath,
+  activeWorkspaceID,
   activeWorkspaceName,
+  activeWorkspacePath,
   availableWorkspaces,
   locale,
   onSelectWorkspace,
+  onCreateWorkspace,
   onChooseFolder,
+  onLinkWorkspaceFolder,
+  onUnlinkWorkspaceFolder,
 }: {
-  activeWorkspacePath?: string | null;
+  activeWorkspaceID?: string | null;
   activeWorkspaceName?: string | null;
+  activeWorkspacePath?: string | null;
   availableWorkspaces: WorkspaceOption[];
   locale: "zh" | "en";
-  onSelectWorkspace: (path: string | null) => void;
+  onSelectWorkspace: (workspaceID: string | null) => void;
+  onCreateWorkspace: (name: string) => void;
   onChooseFolder: () => void;
+  onLinkWorkspaceFolder: (workspaceID: string) => void;
+  onUnlinkWorkspaceFolder: (workspaceID: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [draftName, setDraftName] = useState("");
   const wrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setCreating(false);
+      setDraftName("");
+      return;
+    }
     const onDown = (e: PointerEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
         setOpen(false);
@@ -331,25 +349,46 @@ function WorkspacePickerMenu({
     return () => document.removeEventListener("pointerdown", onDown);
   }, [open]);
 
-  const isBound = Boolean(activeWorkspacePath && activeWorkspaceName);
+  const activeWS = availableWorkspaces.find((w) => w.id === activeWorkspaceID);
+  const isBound = Boolean(activeWorkspaceID && activeWorkspaceName);
+  const isFolderBacked = Boolean(activeWS?.isFolderBacked || activeWorkspacePath);
+
+  const submitNew = () => {
+    const clean = draftName.trim();
+    if (clean) {
+      onCreateWorkspace(clean);
+      setOpen(false);
+    }
+    setCreating(false);
+    setDraftName("");
+  };
 
   return (
     <div ref={wrapRef} className="relative">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title={activeWorkspacePath || (locale === "zh" ? "为当前会话绑定本地工作区目录" : "Bind workspace folder")}
+        title={activeWorkspacePath || activeWorkspaceName || (locale === "zh" ? "设置会话所属工作区" : "Select workspace")}
         className={`inline-flex h-7.5 max-w-[200px] items-center gap-1.5 rounded-[8px] px-2.5 text-[13px] font-medium transition-colors duration-120 ${
           isBound
             ? "bg-accent-tint text-accent-ink hover:opacity-90"
             : "bg-inset text-ink-2 shadow-hairline hover:bg-hover hover:text-ink"
         }`}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-        </svg>
+        {isFolderBacked ? (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+          </svg>
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+            <rect x="3" y="3" width="7" height="7" rx="1.5" />
+            <rect x="14" y="3" width="7" height="7" rx="1.5" />
+            <rect x="3" y="14" width="7" height="7" rx="1.5" />
+            <rect x="14" y="14" width="7" height="7" rx="1.5" />
+          </svg>
+        )}
         <span className="truncate">
-          {isBound ? activeWorkspaceName : locale === "zh" ? "绑定工作区" : "Workspace"}
+          {isBound ? activeWorkspaceName : locale === "zh" ? "工作区" : "Workspace"}
         </span>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-70">
           <path d="M6 9l6 6 6-6" />
@@ -364,30 +403,34 @@ function WorkspacePickerMenu({
           {availableWorkspaces.length > 0 && (
             <div className="bui-scroll max-h-56 overflow-y-auto">
               {availableWorkspaces.map((ws) => {
-                const selected = ws.path === activeWorkspacePath;
+                const selected = ws.id === activeWorkspaceID;
                 return (
                   <button
-                    key={ws.path}
+                    key={ws.id}
                     type="button"
                     onClick={() => {
-                      onSelectWorkspace(ws.path);
+                      onSelectWorkspace(ws.id);
                       setOpen(false);
                     }}
                     className={`flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-left transition-colors duration-100 hover:bg-hover ${
                       selected ? "bg-hover" : ""
                     }`}
                   >
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 ${selected ? "text-accent-ink" : "text-ink-2"}`}>
-                      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-                    </svg>
+                    {ws.isFolderBacked ? (
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 ${selected ? "text-accent-ink" : "text-ink-2"}`}>
+                        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                      </svg>
+                    ) : (
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 ${selected ? "text-accent-ink" : "text-ink-2"}`}>
+                        <rect x="3" y="3" width="7" height="7" rx="1.5" />
+                        <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                        <rect x="3" y="14" width="7" height="7" rx="1.5" />
+                        <rect x="14" y="14" width="7" height="7" rx="1.5" />
+                      </svg>
+                    )}
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
                         <span className="truncate text-[13.5px] font-medium text-ink">{ws.name}</span>
-                        {ws.isOpenInEditor && (
-                          <span className="shrink-0 text-[12.5px] text-accent-ink">
-                            {locale === "zh" ? "已打开" : "Open"}
-                          </span>
-                        )}
                       </div>
                       <div className="truncate text-[12.5px] text-ink-3">{ws.subtitle}</div>
                     </div>
@@ -403,34 +446,110 @@ function WorkspacePickerMenu({
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              onChooseFolder();
-            }}
-            className="flex h-9 w-full items-center gap-2 rounded-[8px] px-2.5 text-left text-[13.5px] font-medium text-ink transition-colors duration-100 hover:bg-hover"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-ink-2">
-              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-              <path d="M12 11v6M9 14h6" />
-            </svg>
-            <span>{locale === "zh" ? "选择本地文件夹…" : "Choose folder…"}</span>
-          </button>
+          {creating ? (
+            <div className="flex items-center gap-1.5 rounded-[8px] bg-inset px-2.5 py-1.5 shadow-hairline">
+              <input
+                autoFocus
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitNew();
+                  if (e.key === "Escape") {
+                    setCreating(false);
+                    setDraftName("");
+                  }
+                }}
+                placeholder={locale === "zh" ? "输入工作区名称，回车创建…" : "Workspace name…"}
+                className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-3 select-text"
+              />
+              <button
+                type="button"
+                onClick={submitNew}
+                className="shrink-0 rounded-[6px] bg-accent-tint px-2 py-0.5 text-[12.5px] font-medium text-accent-ink"
+              >
+                {locale === "zh" ? "创建" : "Create"}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setCreating(true)}
+              className="flex h-9 w-full items-center gap-2 rounded-[8px] px-2.5 text-left text-[13.5px] font-medium text-ink transition-colors duration-100 hover:bg-hover"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-ink-2">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              <span>{locale === "zh" ? "新建工作区…" : "New workspace…"}</span>
+            </button>
+          )}
 
-          {isBound && (
+          {isBound && activeWorkspaceID ? (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  onLinkWorkspaceFolder(activeWorkspaceID);
+                }}
+                className="flex h-9 w-full items-center gap-2 rounded-[8px] px-2.5 text-left text-[13.5px] text-ink transition-colors duration-100 hover:bg-hover"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-ink-2">
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                </svg>
+                <span>
+                  {isFolderBacked
+                    ? locale === "zh"
+                      ? "更换关联文件夹…"
+                      : "Change folder…"
+                    : locale === "zh"
+                      ? "关联本地文件夹…"
+                      : "Link local folder…"}
+                </span>
+              </button>
+
+              {isFolderBacked && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUnlinkWorkspaceFolder(activeWorkspaceID);
+                    setOpen(false);
+                  }}
+                  className="flex h-9 w-full items-center gap-2 rounded-[8px] px-2.5 text-left text-[13.5px] text-ink-2 transition-colors duration-100 hover:bg-hover hover:text-ink"
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="shrink-0 text-ink-3">
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                  <span>{locale === "zh" ? "取消文件夹关联" : "Unlink folder"}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  onSelectWorkspace(null);
+                  setOpen(false);
+                }}
+                className="flex h-9 w-full items-center gap-2 rounded-[8px] px-2.5 text-left text-[13.5px] text-ink-2 transition-colors duration-100 hover:bg-hover hover:text-ink"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="shrink-0 text-ink-3">
+                  <path d="M9 14l-4-4 4-4M5 10h11a4 4 0 0 1 0 8h-1" />
+                </svg>
+                <span>{locale === "zh" ? "移至通用会话" : "Move to General"}</span>
+              </button>
+            </>
+          ) : (
             <button
               type="button"
               onClick={() => {
-                onSelectWorkspace(null);
                 setOpen(false);
+                onChooseFolder();
               }}
               className="flex h-9 w-full items-center gap-2 rounded-[8px] px-2.5 text-left text-[13.5px] text-ink-2 transition-colors duration-100 hover:bg-hover hover:text-ink"
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="shrink-0 text-ink-3">
-                <path d="M18 6L6 18M6 6l12 12" />
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-ink-3">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
               </svg>
-              <span>{locale === "zh" ? "取消绑定（通用会话）" : "Unbind workspace"}</span>
+              <span>{locale === "zh" ? "关联本地文件夹…" : "Link local folder…"}</span>
             </button>
           )}
         </div>
@@ -461,78 +580,117 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const promptBarRef = useRef<PromptBarHandle>(null);
+  const pendingPatchRef = useRef<StreamPatch | null>(null);
+  const patchRafRef = useRef<number | null>(null);
 
   const effectiveQuote = localQuote ?? state.quotedExcerpt ?? null;
   const hasMessages = state.messages.length > 0;
 
-  const applyThemeClass = useCallback((isDark: boolean) => {
+  const applyThemeClass = useCallback((isDark: boolean, pageHex?: string | null, canvasHex?: string | null) => {
     const root = document.documentElement;
-    if (root.classList.contains("dark") === isDark) return;
-    root.classList.add("theme-switching");
-    root.classList.toggle("dark", isDark);
-    requestAnimationFrame(() => {
-      root.classList.remove("theme-switching");
-    });
+    const themeChanged = root.classList.contains("dark") !== isDark;
+    if (themeChanged) {
+      root.classList.add("theme-switching");
+      root.classList.toggle("dark", isDark);
+    }
+    if (pageHex) root.style.setProperty("--page", pageHex);
+    else root.style.removeProperty("--page");
+    if (canvasHex) root.style.setProperty("--canvas", canvasHex);
+    else root.style.removeProperty("--canvas");
+    if (themeChanged) {
+      requestAnimationFrame(() => {
+        root.classList.remove("theme-switching");
+      });
+    }
   }, []);
 
   useEffect(() => {
-    applyThemeClass(state.isDark);
-  }, [state.isDark, applyThemeClass]);
+    applyThemeClass(state.isDark, state.themePageHex, state.themeCanvasHex);
+  }, [state.isDark, state.themePageHex, state.themeCanvasHex, applyThemeClass]);
 
   useEffect(() => {
+    const flushPendingPatch = () => {
+      patchRafRef.current = null;
+      const patch = pendingPatchRef.current;
+      if (!patch) return;
+      pendingPatchRef.current = null;
+      setState((prev) => {
+        const idx = prev.messages.findIndex((m) => m.id === patch.messageId);
+        if (idx === -1) {
+          return {
+            ...prev,
+            isStreaming: true,
+            streamingStatusLabel: patch.statusLabel ?? prev.streamingStatusLabel,
+            messages: [
+              ...prev.messages,
+              {
+                id: patch.messageId,
+                role: "assistant",
+                text: patch.text ?? "",
+                thinking: patch.thinking ?? "",
+                thinkingDurationMs: patch.thinkingDurationMs,
+                steps: patch.steps ?? [],
+                isStreaming: true,
+                createdAt: Date.now(),
+              },
+            ],
+          };
+        }
+        const nextMsgs = prev.messages.slice();
+        const cur = nextMsgs[idx];
+        nextMsgs[idx] = {
+          ...cur,
+          text: patch.text !== undefined ? patch.text : cur.text,
+          thinking: patch.thinking !== undefined ? patch.thinking : cur.thinking,
+          thinkingDurationMs:
+            patch.thinkingDurationMs !== undefined ? patch.thinkingDurationMs : cur.thinkingDurationMs,
+          steps: patch.steps !== undefined ? patch.steps : cur.steps,
+          isStreaming: true,
+        };
+        return {
+          ...prev,
+          isStreaming: true,
+          streamingStatusLabel: patch.statusLabel ?? prev.streamingStatusLabel,
+          messages: nextMsgs,
+        };
+      });
+    };
+
     window.CotAgentBridge = {
       setState: (next: HostState) => {
-        applyThemeClass(next.isDark);
+        pendingPatchRef.current = null;
+        if (patchRafRef.current !== null) {
+          cancelAnimationFrame(patchRafRef.current);
+          patchRafRef.current = null;
+        }
+        applyThemeClass(next.isDark, next.themePageHex, next.themeCanvasHex);
         setState(next);
         if (next.quotedExcerpt !== undefined && next.quotedExcerpt !== null) {
           setLocalQuote(next.quotedExcerpt);
         }
       },
       setTheme: (isDark: boolean) => {
-        applyThemeClass(isDark);
+        applyThemeClass(isDark, state.themePageHex, state.themeCanvasHex);
         setState((prev) => (prev.isDark === isDark ? prev : { ...prev, isDark }));
       },
       patchStreaming: (patch: StreamPatch) => {
-        setState((prev) => {
-          const idx = prev.messages.findIndex((m) => m.id === patch.messageId);
-          if (idx === -1) {
-            return {
-              ...prev,
-              isStreaming: true,
-              streamingStatusLabel: patch.statusLabel ?? prev.streamingStatusLabel,
-              messages: [
-                ...prev.messages,
-                {
-                  id: patch.messageId,
-                  role: "assistant",
-                  text: patch.text ?? "",
-                  thinking: patch.thinking ?? "",
-                  thinkingDurationMs: patch.thinkingDurationMs,
-                  steps: patch.steps ?? [],
-                  isStreaming: true,
-                  createdAt: Date.now(),
-                },
-              ],
-            };
-          }
-          const nextMsgs = prev.messages.slice();
-          const cur = nextMsgs[idx];
-          nextMsgs[idx] = {
-            ...cur,
-            text: patch.text !== undefined ? patch.text : cur.text,
-            thinking: patch.thinking !== undefined ? patch.thinking : cur.thinking,
+        const prevPending = pendingPatchRef.current;
+        if (prevPending && prevPending.messageId === patch.messageId) {
+          pendingPatchRef.current = {
+            messageId: patch.messageId,
+            text: patch.text !== undefined ? patch.text : prevPending.text,
+            thinking: patch.thinking !== undefined ? patch.thinking : prevPending.thinking,
             thinkingDurationMs:
-              patch.thinkingDurationMs !== undefined ? patch.thinkingDurationMs : cur.thinkingDurationMs,
-            steps: patch.steps !== undefined ? patch.steps : cur.steps,
-            isStreaming: true,
+              patch.thinkingDurationMs !== undefined ? patch.thinkingDurationMs : prevPending.thinkingDurationMs,
+            steps: patch.steps !== undefined ? patch.steps : prevPending.steps,
+            statusLabel: patch.statusLabel !== undefined ? patch.statusLabel : prevPending.statusLabel,
           };
-          return {
-            ...prev,
-            isStreaming: true,
-            streamingStatusLabel: patch.statusLabel ?? prev.streamingStatusLabel,
-            messages: nextMsgs,
-          };
-        });
+        } else {
+          pendingPatchRef.current = patch;
+        }
+        if (patchRafRef.current === null) {
+          patchRafRef.current = requestAnimationFrame(flushPendingPatch);
+        }
       },
       injectDraft: (text: string, quote?: string | null) => {
         if (quote !== undefined) setLocalQuote(quote);
@@ -546,6 +704,11 @@ export default function App() {
 
     postToNative("ready");
     return () => {
+      if (patchRafRef.current !== null) {
+        cancelAnimationFrame(patchRafRef.current);
+        patchRafRef.current = null;
+      }
+      pendingPatchRef.current = null;
       delete window.CotAgentBridge;
     };
   }, [applyThemeClass]);
@@ -635,7 +798,7 @@ export default function App() {
       : state.botName;
 
   return (
-    <main className={`flex h-full w-full overflow-hidden text-ink ${showSidebar ? "bg-canvas" : "bg-page"}`}>
+    <main className="flex h-full w-full overflow-hidden bg-page text-ink">
       {showSidebar && (
         <SidebarNav
           botName={state.botName}
@@ -646,9 +809,33 @@ export default function App() {
           collapsed={sidebarCollapsed}
           locale={state.locale}
           onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
-          onNewChat={(workspacePath) => postToNative("newSession", { workspacePath: workspacePath ?? "" })}
-          onChooseNewWorkspaceSession={() =>
-            postToNative("chooseWorkspaceFolder", { sessionId: state.activeSessionID, createNew: true })
+          onNewChat={(workspaceID, workspacePath) =>
+            postToNative("newSession", {
+              workspaceId: workspaceID ?? "",
+              workspacePath: workspacePath ?? "",
+            })
+          }
+          onCreateWorkspace={(name) =>
+            postToNative("createWorkspace", { name, startSession: true })
+          }
+          onRenameWorkspace={(id, name) => postToNative("renameWorkspace", { id, name })}
+          onDeleteWorkspace={(id) => postToNative("deleteWorkspace", { id })}
+          onChooseWorkspaceFolder={(workspaceId) =>
+            postToNative("chooseWorkspaceFolderForWorkspace", { workspaceId })
+          }
+          onUnlinkWorkspaceFolder={(id) =>
+            postToNative("updateWorkspaceFolder", { id, folderPath: "" })
+          }
+          onReorderWorkspaces={(orderedIds) =>
+            postToNative("reorderWorkspaces", { orderedIds })
+          }
+          onMoveSession={(sessionId, targetWorkspaceId, orderedSessionIds, isPinned) =>
+            postToNative("moveSession", {
+              sessionId,
+              targetWorkspaceId: targetWorkspaceId ?? "",
+              orderedSessionIds,
+              ...(isPinned !== undefined ? { isPinned } : {}),
+            })
           }
           onSelectSession={(id) => postToNative("selectSession", { id })}
           onDeleteSession={(id) => postToNative("deleteSession", { id })}
@@ -659,11 +846,7 @@ export default function App() {
       )}
 
       {/* Main chat surface */}
-      <section
-        className={`relative flex min-w-0 flex-1 flex-col overflow-hidden bg-page ${
-          showSidebar ? "my-1.5 mr-1.5 rounded-[14px] border border-line shadow-hairline" : ""
-        }`}
-      >
+      <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-page">
         {/* Clean top header bar */}
         <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-line px-4">
           <div className="flex min-w-0 items-center gap-2.5">
@@ -677,14 +860,22 @@ export default function App() {
                   {activeSession?.title || state.botName}
                 </span>
                 <WorkspacePickerMenu
-                  activeWorkspacePath={activeSession?.workspacePath}
+                  activeWorkspaceID={activeSession?.workspaceID}
                   activeWorkspaceName={activeSession?.workspaceName}
+                  activeWorkspacePath={activeSession?.workspacePath}
                   availableWorkspaces={availableWorkspaces}
                   locale={state.locale}
-                  onSelectWorkspace={(wsPath) =>
+                  onSelectWorkspace={(wsID) =>
                     postToNative("setSessionWorkspace", {
                       sessionId: state.activeSessionID,
-                      workspacePath: wsPath ?? "",
+                      workspaceId: wsID ?? "",
+                    })
+                  }
+                  onCreateWorkspace={(name) =>
+                    postToNative("createWorkspace", {
+                      name,
+                      startSession: false,
+                      assignSessionId: state.activeSessionID,
                     })
                   }
                   onChooseFolder={() =>
@@ -692,6 +883,12 @@ export default function App() {
                       sessionId: state.activeSessionID,
                       createNew: false,
                     })
+                  }
+                  onLinkWorkspaceFolder={(workspaceId) =>
+                    postToNative("chooseWorkspaceFolderForWorkspace", { workspaceId })
+                  }
+                  onUnlinkWorkspaceFolder={(id) =>
+                    postToNative("updateWorkspaceFolder", { id, folderPath: "" })
                   }
                 />
               </>
@@ -777,6 +974,56 @@ export default function App() {
           </div>
         </header>
 
+        {/* Background Worker Watchdog Strip (DeepSeek Super-Agent Visibility) */}
+        {!isNews && state.backgroundWorkers && state.backgroundWorkers.length > 0 && (
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line bg-surface/65 px-4 py-1.5">
+            {state.backgroundWorkers.map((worker) => (
+              <div
+                key={worker.id}
+                className="flex max-w-full items-center gap-2 rounded-full border border-line bg-page px-2.5 py-1 text-[12px] text-ink-2"
+              >
+                <span
+                  className={`size-1.5 shrink-0 rounded-full ${
+                    worker.status === "running"
+                      ? "animate-pulse bg-accent"
+                      : worker.status === "done"
+                        ? "bg-green"
+                        : "bg-red"
+                  }`}
+                />
+                <span className="max-w-[240px] truncate font-medium text-ink">{worker.title}</span>
+                {worker.detail && (
+                  <span className="hidden max-w-[200px] truncate text-[11px] text-ink-3 sm:inline">
+                    {worker.detail}
+                  </span>
+                )}
+                {worker.status === "done" && worker.actionBoard && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      postToNative("openWorkerAction", {
+                        board: worker.actionBoard,
+                        query: worker.actionQuery || "",
+                      })
+                    }
+                    className="shrink-0 rounded-full bg-accent-tint px-2 py-0.5 text-[11px] font-medium text-accent-ink transition-colors hover:opacity-85"
+                  >
+                    {state.locale === "zh" ? "去查看" : "Open"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => postToNative("dismissWorker", { id: worker.id })}
+                  className="shrink-0 text-ink-3 hover:text-ink"
+                  aria-label="Dismiss worker"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Thread or Empty State */}
         {!hasMessages ? (
           <div className="bui-scroll flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-6 py-8">
@@ -805,7 +1052,7 @@ export default function App() {
                   availableBots={availableBots}
                   quotedExcerpt={effectiveQuote}
                   effort={state.effort}
-                  showEffort={isNews}
+                  showEffort={false}
                   onClearQuote={() => {
                     setLocalQuote(null);
                     postToNative("clearQuote");
@@ -817,6 +1064,52 @@ export default function App() {
                   onAbort={() => postToNative("abort")}
                 />
               </div>
+
+              {!isNews && state.proactiveCards && state.proactiveCards.length > 0 && (
+                <div
+                  className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-3"
+                  style={homeRevealStyle(revealStage >= 3)}
+                >
+                  {state.proactiveCards.map((card) => (
+                    <div
+                      key={card.id}
+                      onClick={() => handleSend(card.prompt)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          handleSend(card.prompt);
+                        }
+                      }}
+                      className="group relative flex cursor-pointer flex-col justify-between rounded-[11px] border border-line bg-surface/80 p-3 text-left transition-all duration-150 hover:border-line-strong hover:bg-hover"
+                    >
+                      <div className="mb-1.5 flex items-center justify-between gap-2">
+                        <span className="rounded-full bg-accent-tint px-2 py-0.5 text-[10.5px] font-semibold text-accent-ink">
+                          {card.badge}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            postToNative("dismissProactiveCard", { id: card.id });
+                          }}
+                          className="rounded p-0.5 text-[12px] leading-none text-ink-3 opacity-0 transition-opacity group-hover:opacity-100 hover:text-ink"
+                          aria-label="Dismiss card"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <div className="line-clamp-2 text-[12.5px] font-semibold leading-snug text-ink">
+                        {card.title}
+                      </div>
+                      <div className="mt-1 line-clamp-1 text-[11px] text-ink-3">
+                        {card.subtitle}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         ) : (
@@ -844,12 +1137,12 @@ export default function App() {
                       locale={state.locale}
                       statusLabel={isLastAssistant ? state.streamingStatusLabel : undefined}
                       onRetry={
-                        isLastAssistant && !state.isStreaming
+                        isNews && isLastAssistant && !state.isStreaming
                           ? () => postToNative("retry")
                           : undefined
                       }
-                      onInsert={(text) => postToNative("insertToEditor", { text })}
-                      onOpenNote={(text) => postToNative("openNewDocument", { text })}
+                      onInsert={isNews ? (text) => postToNative("insertToEditor", { text }) : undefined}
+                      onOpenNote={isNews ? (text) => postToNative("openNewDocument", { text }) : undefined}
                       onFollowUp={(prompt) => handleSend(prompt)}
                     />
                   );
@@ -900,7 +1193,7 @@ export default function App() {
                   availableBots={availableBots}
                   quotedExcerpt={effectiveQuote}
                   effort={state.effort}
-                  showEffort={isNews}
+                  showEffort={false}
                   onClearQuote={() => {
                     setLocalQuote(null);
                     postToNative("clearQuote");

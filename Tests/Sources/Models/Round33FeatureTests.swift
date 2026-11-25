@@ -307,7 +307,6 @@ struct Round33FeatureTests {
         
         let sliderHost = NSHostingController(rootView: VStack {
             passView
-            LeiBoxReasoningEffortSlider(effort: .constant(.deep), accent: .blue, isDark: false)
                 .frame(width: 280)
         })
         sliderHost.sizingOptions = []

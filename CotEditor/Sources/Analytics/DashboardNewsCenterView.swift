@@ -22,27 +22,31 @@
 import AppKit
 import SwiftUI
 
-/// Xiaohongshu-style visual card NEWS workspace with harmonious native reading (no embedded AIHot webview)
-/// and an AI follow-up chat powered by a LeiBox-style 3-stop Reasoning Effort Slider.
+/// Editorial magazine visual NEWS workspace with Douyin/Xiaohongshu-style fresh-batch refresh,
+/// full-text search, persistent browsing history, reliable article extraction, and fast-summarizing NEWS AI companion.
 struct DashboardNewsCenterView: View {
     
     @Bindable var newsService: AIHotNewsService
     let tokens: StudioColorTokens
+    var surfaceColor: Color? = nil
     let initialSelectedID: String?
     var isEmbeddedInPane: Bool = false
     var initialCategory: NewsFeedCategory? = nil
     var initialSearchQuery: String? = nil
+    var hasCustomBackground: Bool = false
     let onClose: () -> Void
     var onOpenExcerptDocument: ((String, String) -> Void)?
     
     @State private var selectedCategory: NewsFeedCategory
     @State private var searchText: String
     @State private var selectedItemID: String?
-    @State private var gridPage: Int = 1
-    @State private var knownTotalPages: Int = 1
-    @State private var pageTurnDirection: Int = 1
+    @State private var isShortFeedMode: Bool
+    @State private var shortFeedIndex: Int = 0
+    @State private var isSideAICollapsed: Bool = false
+    @State private var shortFeedTransitionEdge: Edge = .bottom
+    @State private var isHistoryPopoverPresented: Bool = false
+    @State private var feedScrollResetToken: UInt64 = 0
     @FocusState private var isSearchFieldFocused: Bool
-    @State private var reasoningEffort: NewsReasoningEffort = .balanced
     @State private var availableModels: [NewsChatModelOption] = []
     @State private var cachedModelOptions: [AgentModelOption] = []
     @State private var selectedModel: NewsChatModelOption?
@@ -60,27 +64,36 @@ struct DashboardNewsCenterView: View {
     init(
         newsService: AIHotNewsService,
         tokens: StudioColorTokens,
+        surfaceColor: Color? = nil,
         initialSelectedID: String?,
         isEmbeddedInPane: Bool = false,
         initialCategory: NewsFeedCategory? = nil,
         initialSearchQuery: String? = nil,
+        hasCustomBackground: Bool = false,
         onClose: @escaping () -> Void,
         onOpenExcerptDocument: ((String, String) -> Void)? = nil
     ) {
         self.newsService = newsService
         self.tokens = tokens
+        self.surfaceColor = surfaceColor
         self.initialSelectedID = initialSelectedID
         self.isEmbeddedInPane = isEmbeddedInPane
         self.initialCategory = initialCategory
         self.initialSearchQuery = initialSearchQuery
+        self.hasCustomBackground = hasCustomBackground
         self.onClose = onClose
         self.onOpenExcerptDocument = onOpenExcerptDocument
         self._selectedCategory = State(initialValue: initialCategory ?? newsService.selectedCategory)
         self._searchText = State(initialValue: initialSearchQuery ?? "")
         self._selectedItemID = State(initialValue: initialSelectedID)
+        self._isShortFeedMode = State(initialValue: isEmbeddedInPane && initialSelectedID == nil)
     }
     
     private let bodyFontSize: CGFloat = 15.5
+    
+    private var canvasBackground: Color {
+        self.surfaceColor ?? self.tokens.canvasTop
+    }
     
     private var secondaryInk: Color {
         self.tokens.isDark
@@ -94,24 +107,51 @@ struct DashboardNewsCenterView: View {
             : Color(red: 0.451, green: 0.486, blue: 0.561)
     }
     
+    private func matchesSearch(_ item: AIHotNewsItem, query: String) -> Bool {
+        if item.title.lowercased().contains(query)
+            || item.displayPublisherLabel.lowercased().contains(query)
+            || item.source.lowercased().contains(query)
+            || (item.tag?.lowercased().contains(query) ?? false)
+            || (item.summary?.lowercased().contains(query) ?? false)
+        {
+            return true
+        }
+        if let cachedBody = self.newsService.articleContents[item.id]?.markdownBody.lowercased(),
+           cachedBody.contains(query)
+        {
+            return true
+        }
+        return false
+    }
+    
     private var displayedItems: [AIHotNewsItem] {
-        let base = self.selectedCategory == .all
-            ? self.newsService.items
-            : self.newsService.items.filter { $0.resolvedCategory == self.selectedCategory }
-        
+        let base = self.newsService.feedItems(for: self.selectedCategory)
         let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return base }
-        return base.filter { item in
-            item.title.lowercased().contains(query)
-                || item.displayPublisherLabel.lowercased().contains(query)
-                || (item.summary?.lowercased().contains(query) ?? false)
-        }
+        return base.filter { self.matchesSearch($0, query: query) }
+    }
+    
+    private var crossCategorySearchMatchCount: Int {
+        let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty, self.selectedCategory != .all else { return 0 }
+        return self.newsService.feedItems(for: .all).filter { self.matchesSearch($0, query: query) }.count
     }
     
     private var selectedItem: AIHotNewsItem? {
         guard let id = self.selectedItemID else { return nil }
         return self.displayedItems.first(where: { $0.id == id })
-            ?? self.newsService.items.first(where: { $0.id == id })
+            ?? self.newsService.findItem(byID: id)
+    }
+    
+    private var activeShortFeedItem: AIHotNewsItem? {
+        let items = self.displayedItems
+        guard !items.isEmpty else { return nil }
+        let idx = min(max(0, self.shortFeedIndex), items.count - 1)
+        return items[idx]
+    }
+    
+    private var activeCompanionItemID: String? {
+        self.selectedItem?.id ?? (self.isShortFeedMode ? self.activeShortFeedItem?.id : nil)
     }
     
     private var adjacentItems: (previous: AIHotNewsItem?, next: AIHotNewsItem?) {
@@ -136,26 +176,41 @@ struct DashboardNewsCenterView: View {
             if let item = self.selectedItem {
                 self.detailAndChatStage(for: item)
                     .transition(.opacity)
+            } else if self.isShortFeedMode {
+                self.shortVideoFeedWithCompanionStage
+                    .transition(.opacity)
             } else {
-                self.xiaohongshuCardGridStage
+                self.editorialFeedStage
                     .transition(.opacity)
             }
         }
+        .background(alignment: .topLeading) {
+            Button("") {
+                if self.selectedItemID == nil {
+                    self.isSearchFieldFocused = true
+                }
+            }
+            .keyboardShortcut("f", modifiers: .command)
+            .opacity(0.001)
+            .allowsHitTesting(false)
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(self.tokens.canvasTop)
+        .background(self.hasCustomBackground ? Color.clear : self.canvasBackground)
         .onAppear {
             self.reloadAvailableModels()
             self.syncSelectionSideEffects()
+            self.syncShortFeedStorySideEffects()
             if self.newsChatStreamListenerID == nil {
                 let webCtrl = self.newsChatWebController
                 self.newsChatStreamListenerID = self.newsService.addChatStreamPatchListener { itemID, patch in
-                    if self.selectedItemID == itemID {
+                    if (self.selectedItemID ?? self.activeCompanionItemID) == itemID {
                         webCtrl.pushStreamPatch(patch)
                     }
                 }
             }
             Task {
                 await self.newsService.refreshIfNeeded()
+                self.syncShortFeedStorySideEffects()
             }
         }
         .onDisappear {
@@ -165,31 +220,39 @@ struct DashboardNewsCenterView: View {
             }
         }
         .onChange(of: self.selectedCategory) { _, _ in
-            self.gridPage = 1
+            self.shortFeedIndex = 0
+            self.feedScrollResetToken &+= 1
+            self.syncShortFeedStorySideEffects()
+        }
+        .onChange(of: self.shortFeedIndex) { _, _ in
+            self.newsQuotedExcerpt = nil
+            self.syncShortFeedStorySideEffects()
         }
         .onChange(of: self.searchText) { _, _ in
-            self.gridPage = 1
+            self.shortFeedIndex = 0
+        }
+        .onKeyPress(.upArrow) {
+            guard self.selectedItemID == nil, self.isShortFeedMode, !self.isSearchFieldFocused else { return .ignored }
+            self.stepShortFeed(delta: -1)
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            guard self.selectedItemID == nil, self.isShortFeedMode, !self.isSearchFieldFocused else { return .ignored }
+            self.stepShortFeed(delta: 1)
+            return .handled
         }
         .onChange(of: self.selectedItemID) { _, _ in
             self.isModelPopoverOpen = false
+            self.isHistoryPopoverPresented = false
             self.newsQuotedExcerpt = nil
             self.reloadAvailableModels()
             self.syncSelectionSideEffects()
         }
-        .onKeyPress(.leftArrow) {
-            guard self.selectedItemID == nil, !self.isSearchFieldFocused else { return .ignored }
-            if self.gridPage > 1 {
-                self.turnGridPage(to: self.gridPage - 1)
+        .onKeyPress(.escape) {
+            if self.isHistoryPopoverPresented {
+                self.isHistoryPopoverPresented = false
                 return .handled
             }
-            return .ignored
-        }
-        .onKeyPress(.rightArrow) {
-            guard self.selectedItemID == nil, !self.isSearchFieldFocused else { return .ignored }
-            self.turnGridPageByDelta(1)
-            return .handled
-        }
-        .onKeyPress(.escape) {
             if self.isModelPopoverOpen {
                 withAnimation(DashMotion.quick) {
                     self.isModelPopoverOpen = false
@@ -202,6 +265,10 @@ struct DashboardNewsCenterView: View {
                 }
                 return .handled
             }
+            if !self.searchText.isEmpty {
+                self.searchText = ""
+                return .handled
+            }
             self.onClose()
             return .handled
         }
@@ -211,7 +278,7 @@ struct DashboardNewsCenterView: View {
     // MARK: - Top Bar
     
     private var topBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             if !self.isEmbeddedInPane || self.selectedItemID != nil {
                 Button {
                     if self.selectedItemID != nil {
@@ -251,6 +318,12 @@ struct DashboardNewsCenterView: View {
                         Button {
                             self.selectedCategory = category
                             self.newsService.selectedCategory = category
+                            self.newsService.prefetchCovers(for: category, limit: 16)
+                            if self.newsService.feedItems(for: category).isEmpty {
+                                Task {
+                                    await self.newsService.refreshFeed(for: category, visibleCount: 12, forceNetwork: true)
+                                }
+                            }
                         } label: {
                             Text(category == .xSocial ? "X" : category.label)
                                 .font(.system(size: 12, weight: isActive ? .semibold : .regular))
@@ -284,17 +357,25 @@ struct DashboardNewsCenterView: View {
             Spacer(minLength: 8)
             
             if self.selectedItemID == nil {
+                // Upgraded Search Bar with match count & clear button
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 11.5, weight: .regular))
                         .foregroundStyle(self.mutedInk)
-                    TextField(AppLanguage.text("搜索资讯", en: "Search"), text: self.$searchText)
+                    TextField(AppLanguage.text("搜索标题、来源或正文 (⌘F)", en: "Search news (⌘F)"), text: self.$searchText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12.5))
                         .foregroundStyle(self.tokens.primaryInk)
                         .focused(self.$isSearchFieldFocused)
-                        .frame(minWidth: 120, maxWidth: 190)
+                        .frame(minWidth: 140, maxWidth: 220)
                     if !self.searchText.isEmpty {
+                        Text("\(self.displayedItems.count)")
+                            .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
+                            .foregroundStyle(self.mutedInk)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(self.tokens.inset, in: Capsule())
+                        
                         Button {
                             self.searchText = ""
                         } label: {
@@ -310,8 +391,105 @@ struct DashboardNewsCenterView: View {
                 .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
+                        .strokeBorder(self.isSearchFieldFocused ? self.tokens.accent.opacity(0.6) : self.tokens.hairline, lineWidth: 0.8)
                 )
+                
+                // Browsing History Popover Button
+                Button {
+                    self.isHistoryPopoverPresented.toggle()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 11.5, weight: .medium))
+                        Text(AppLanguage.text("历史", en: "History"))
+                            .font(.system(size: 12, weight: .medium))
+                        if !self.newsService.browsingHistory.isEmpty {
+                            Text("\(min(99, self.newsService.browsingHistory.count))")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced).monospacedDigit())
+                                .foregroundStyle(self.tokens.accent)
+                        }
+                    }
+                    .foregroundStyle(self.secondaryInk)
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+                    .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .popover(isPresented: self.$isHistoryPopoverPresented, arrowEdge: .bottom) {
+                    self.browsingHistoryPopover
+                }
+                
+                // Short-Video Reel vs Grid Mode Switcher
+                HStack(spacing: 2) {
+                    Button {
+                        withAnimation(DashMotion.quick) {
+                            self.isShortFeedMode = true
+                        }
+                        self.syncShortFeedStorySideEffects()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "play.rectangle.fill")
+                                .font(.system(size: 10.5))
+                            Text(AppLanguage.text("刷读", en: "Reel"))
+                                .font(.system(size: 11.5, weight: self.isShortFeedMode ? .semibold : .regular))
+                        }
+                        .foregroundStyle(self.isShortFeedMode ? self.tokens.onAccentInk : self.secondaryInk)
+                        .padding(.horizontal, 8)
+                        .frame(height: 24)
+                        .background(self.isShortFeedMode ? self.tokens.accent : Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    
+                    Button {
+                        withAnimation(DashMotion.quick) {
+                            self.isShortFeedMode = false
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "square.grid.2x2")
+                                .font(.system(size: 10.5))
+                            Text(AppLanguage.text("网格", en: "Grid"))
+                                .font(.system(size: 11.5, weight: !self.isShortFeedMode ? .semibold : .regular))
+                        }
+                        .foregroundStyle(!self.isShortFeedMode ? self.tokens.onAccentInk : self.secondaryInk)
+                        .padding(.horizontal, 8)
+                        .frame(height: 24)
+                        .background(!self.isShortFeedMode ? self.tokens.accent : Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                }
+                .padding(3)
+                .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(self.tokens.hairline, lineWidth: 0.8))
+                
+                // Douyin / Xiaohongshu-style Feed Refresh Pill
+                Button {
+                    self.triggerFeedRefresh()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: self.newsService.isLoading ? "hourglass" : "arrow.clockwise")
+                            .font(.system(size: 11.5, weight: .semibold))
+                        Text(AppLanguage.text("换一批", en: "Refresh"))
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(self.tokens.onAccentInk)
+                    .padding(.horizontal, 11)
+                    .frame(height: 30)
+                    .background(self.tokens.accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(self.newsService.isLoading)
+                .pointerStyle(.link)
+                .help(AppLanguage.text("刷新换一批新资讯", en: "Refresh with new items"))
             } else {
                 let neighbors = self.adjacentItems
                 HStack(spacing: 4) {
@@ -358,6 +536,24 @@ struct DashboardNewsCenterView: View {
                 )
                 
                 if let item = self.selectedItem {
+                    Button {
+                        self.newsService.toggleBookmark(item)
+                    } label: {
+                        Image(systemName: self.newsService.isBookmarked(item) ? "bookmark.fill" : "bookmark")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(self.newsService.isBookmarked(item) ? self.tokens.accent : self.secondaryInk)
+                            .frame(width: 30, height: 30)
+                            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
+                            )
+                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(AppLanguage.text("收藏", en: "Bookmark"))
+                    
                     Button {
                         let noteContent = self.newsService.buildMarkdownStudyNote(for: item)
                         if let handler = self.onOpenExcerptDocument {
@@ -443,38 +639,158 @@ struct DashboardNewsCenterView: View {
                     .buttonStyle(.plain)
                     .pointerStyle(.link)
                 }
-            }
-            
-            Button {
-                Task {
-                    await self.newsService.refreshIfNeeded(force: true)
+                
+                Button {
+                    if let item = self.selectedItem {
+                        Task {
+                            await self.newsService.refetchArticleExcerpt(for: item)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(self.secondaryInk)
+                        .frame(width: 30, height: 30)
+                        .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
-            } label: {
-                Image(systemName: self.newsService.isLoading ? "hourglass" : "arrow.clockwise")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(self.secondaryInk)
-                    .frame(width: 30, height: 30)
-                    .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(self.tokens.hairline, lineWidth: 0.8)
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help(AppLanguage.text("重新抓取原文正文", en: "Refetch article text"))
             }
-            .buttonStyle(.plain)
-            .disabled(self.newsService.isLoading)
-            .pointerStyle(.link)
-            .help(AppLanguage.text("刷新", en: "Refresh"))
         }
         .padding(.horizontal, 18)
         .frame(height: 50)
     }
     
     
-    // MARK: - Single-Screen Paginated Editorial Feed (2 Rows per Page · Zero Endless Scrolling)
+    // MARK: - Browsing History Popover
     
-    private static let pageTurnCurve = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)
-    private static let cardTextFooterHeight: CGFloat = 82
+    private var browsingHistoryPopover: some View {
+        VStack(spacing: 0) {
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(self.tokens.accent)
+                    Text(AppLanguage.text("浏览历史", en: "Browsing History"))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(self.tokens.primaryInk)
+                }
+                Spacer()
+                if !self.newsService.browsingHistory.isEmpty {
+                    Button {
+                        self.newsService.clearBrowsingHistory()
+                    } label: {
+                        Text(AppLanguage.text("清空", en: "Clear"))
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(self.mutedInk)
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            
+            Rectangle()
+                .fill(self.tokens.hairline)
+                .frame(height: 0.75)
+            
+            if self.newsService.browsingHistory.isEmpty {
+                VStack(spacing: 6) {
+                    Text(AppLanguage.text("暂无浏览记录", en: "No browsing history"))
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(self.mutedInk)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView(.vertical, showsIndicators: true) {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(self.newsService.browsingHistory.enumerated()), id: \.element.id) { idx, entry in
+                            if idx > 0 {
+                                Rectangle()
+                                    .fill(self.tokens.hairline.opacity(0.65))
+                                    .frame(height: 0.65)
+                                    .padding(.horizontal, 14)
+                            }
+                            HStack(alignment: .top, spacing: 8) {
+                                Button {
+                                    self.isHistoryPopoverPresented = false
+                                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                                        self.selectedItemID = entry.item.id
+                                    }
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(entry.item.title)
+                                            .font(.system(size: 12.5, weight: .medium))
+                                            .foregroundStyle(self.tokens.primaryInk)
+                                            .lineLimit(2)
+                                            .multilineTextAlignment(.leading)
+                                        
+                                        HStack(spacing: 6) {
+                                            Text(entry.item.resolvedCategory == .xSocial ? "X" : entry.item.resolvedCategory.badgeLabel)
+                                                .font(.system(size: 9.5, weight: .semibold))
+                                                .foregroundStyle(self.tokens.accent)
+                                                .padding(.horizontal, 5)
+                                                .padding(.vertical, 1)
+                                                .background(self.tokens.accent.opacity(0.11), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                            
+                                            let pub = entry.item.displayPublisherLabel
+                                            if !pub.isEmpty {
+                                                Text(pub)
+                                                    .font(.system(size: 11))
+                                                    .foregroundStyle(self.mutedInk)
+                                                    .lineLimit(1)
+                                            }
+                                            
+                                            Spacer(minLength: 4)
+                                            
+                                            Text(Self.relativeTimeString(from: entry.visitedAt))
+                                                .font(.system(size: 10.5, design: .monospaced).monospacedDigit())
+                                                .foregroundStyle(self.mutedInk)
+                                            
+                                            if entry.visitCount > 1 {
+                                                Text("· \(entry.visitCount)次")
+                                                    .font(.system(size: 10).monospacedDigit())
+                                                    .foregroundStyle(self.mutedInk.opacity(0.8))
+                                            }
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .pointerStyle(.link)
+                                
+                                Button {
+                                    self.newsService.removeBrowsingHistory(id: entry.id)
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 9.5, weight: .semibold))
+                                        .foregroundStyle(self.mutedInk)
+                                        .frame(width: 20, height: 20)
+                                }
+                                .buttonStyle(.plain)
+                                .pointerStyle(.link)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(width: 360, height: 420)
+        .background(self.tokens.card)
+    }
+    
+    
+    // MARK: - Douyin / Xiaohongshu-Style Editorial Feed (Zero Pagination)
     
     fileprivate static func stableSeed(for id: String) -> UInt64 {
         var hash: UInt64 = 14_695_981_039_346_656_037
@@ -498,321 +814,614 @@ struct DashboardNewsCenterView: View {
         return 2
     }
     
-    private func turnGridPage(to targetPage: Int, totalPages: Int? = nil) {
-        let clamped = totalPages.map { min(max(1, targetPage), $0) } ?? max(1, targetPage)
-        guard clamped != self.gridPage else { return }
-        self.pageTurnDirection = clamped > self.gridPage ? 1 : -1
-        withAnimation(Self.pageTurnCurve) {
-            self.gridPage = clamped
+    private func triggerFeedRefresh() {
+        self.shortFeedIndex = 0
+        self.feedScrollResetToken &+= 1
+        Task {
+            await self.newsService.refreshFeed(
+                for: self.selectedCategory,
+                visibleCount: 10,
+                forceNetwork: true
+            )
+            self.syncShortFeedStorySideEffects()
         }
     }
     
-    private func turnGridPageByDelta(_ delta: Int) {
-        let target = min(max(1, self.gridPage + delta), max(1, self.knownTotalPages))
-        guard target != self.gridPage else { return }
-        self.pageTurnDirection = delta >= 0 ? 1 : -1
-        withAnimation(Self.pageTurnCurve) {
-            self.gridPage = target
-        }
-    }
     
-    private func prefetchAdjacentPageCovers(items: [AIHotNewsItem], safePage: Int, pageSize: Int) {
-        guard !items.isEmpty, pageSize > 0 else { return }
-        let start = max(0, (safePage - 1) * pageSize)
-        let end = min(items.count, start + pageSize * 2)
-        guard start < end else { return }
-        for item in items[start..<end] {
-            self.newsService.requestCoverLoad(for: item)
-        }
-    }
+    // MARK: - Douyin / Short-Video Feed + Always-On Side AI Reading Companion
     
-    private static func visiblePageNumbers(current: Int, total: Int) -> [Int] {
-        guard total > 1 else { return [1] }
-        if total <= 7 {
-            return Array(1...total)
-        }
-        let windowRadius = 2
-        var lower = max(2, current - windowRadius)
-        var upper = min(total - 1, current + windowRadius)
-        if current <= 3 {
-            upper = min(total - 1, 5)
-        } else if current >= total - 2 {
-            lower = max(2, total - 4)
-        }
-        var result: [Int] = [1]
-        if lower > 2 { result.append(-1) }
-        result.append(contentsOf: lower...upper)
-        if upper < total - 1 { result.append(-2) }
-        result.append(total)
-        return result
-    }
-    
-    private var xiaohongshuCardGridStage: some View {
+    private func stepShortFeed(delta: Int) {
         let items = self.displayedItems
+        guard !items.isEmpty else { return }
+        let clampedCurrent = min(max(0, self.shortFeedIndex), items.count - 1)
+        let next = clampedCurrent + delta
+        if next >= items.count {
+            self.shortFeedTransitionEdge = .bottom
+            self.triggerFeedRefresh()
+            return
+        }
+        guard next >= 0 else { return }
+        self.shortFeedTransitionEdge = delta > 0 ? .bottom : .top
+        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) {
+            self.shortFeedIndex = next
+        }
+    }
+    
+    
+    private func syncShortFeedStorySideEffects() {
+        guard self.selectedItemID == nil, self.isShortFeedMode else { return }
+        let items = self.displayedItems
+        guard !items.isEmpty else { return }
+        let idx = min(max(0, self.shortFeedIndex), items.count - 1)
+        let active = items[idx]
+        self.newsService.recordBrowsingHistory(active)
+        self.newsService.requestCoverLoad(for: active)
+        Task {
+            await self.newsService.fetchArticleExcerptIfNeeded(for: active)
+        }
+        // Pre-warm next 2 cards in the feed so swiping is instantaneous
+        for lookAhead in 1...2 where idx + lookAhead < items.count {
+            let nextItem = items[idx + lookAhead]
+            self.newsService.requestCoverLoad(for: nextItem)
+            Task {
+                await self.newsService.fetchArticleExcerptIfNeeded(for: nextItem)
+            }
+        }
+    }
+    
+    
+    private var shortVideoFeedWithCompanionStage: some View {
+        let items = self.displayedItems
+        let bui = BeautifulUITokens.resolve(isDark: self.tokens.isDark)
+        
         return GeometryReader { geo in
-            let innerW = min(1320, max(320, geo.size.width - 48))
-            let colCount = Self.columnsForWidth(innerW)
-            let colSpacing: CGFloat = 16
-            let rowSpacing: CGFloat = 16
-            let topPad: CGFloat = 16
-            let bottomPad: CGFloat = 12
-            let estAvailH = max(200, geo.size.height - 48 - topPad - bottomPad)
-            let rowCount: Int = if estAvailH >= 980 {
-                4
-            } else if estAvailH >= 660 {
-                3
-            } else if estAvailH >= 340 {
-                2
+            if let story = self.activeShortFeedItem {
+                let idx = min(max(0, self.shortFeedIndex), max(0, items.count - 1))
+                let isWide = geo.size.width >= 680
+                let showCompanion = !self.isSideAICollapsed
+                let chatWidth = isWide ? min(440, max(300, geo.size.width * self.chatWidthFraction)) : geo.size.width
+                
+                if isWide {
+                    HStack(spacing: 0) {
+                        self.shortVideoReelStage(story: story, index: idx, totalCount: items.count, bui: bui)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        
+                        if showCompanion {
+                            self.newsSplitDivider(totalWidth: geo.size.width, bui: bui)
+                            self.shortFeedCompanionPanel(for: story, bui: bui)
+                                .frame(width: chatWidth)
+                                .frame(maxHeight: .infinity)
+                        }
+                    }
+                    .coordinateSpace(name: "newsSplitStage")
+                } else {
+                    VStack(spacing: 0) {
+                        self.shortVideoReelStage(story: story, index: idx, totalCount: items.count, bui: bui)
+                            .frame(height: showCompanion ? max(250, geo.size.height * 0.56) : geo.size.height)
+                        
+                        if showCompanion {
+                            Rectangle().fill(bui.line).frame(height: 1)
+                            self.shortFeedCompanionPanel(for: story, bui: bui)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    }
+                }
             } else {
-                1
-            }
-            let pageSize = max(1, colCount * rowCount)
-            let totalPages = max(1, Int(ceil(Double(items.count) / Double(pageSize))))
-            let safePage = min(max(1, self.gridPage), totalPages)
-            let startIdx = (safePage - 1) * pageSize
-            let endIdx = min(items.count, startIdx + pageSize)
-            let pageItems: [AIHotNewsItem] = (startIdx < endIdx) ? Array(items[startIdx..<endIdx]) : []
-            
-            let pagerH: CGFloat = totalPages > 1 ? 48 : 12
-            let cardWidth = max(120, (innerW - CGFloat(colCount - 1) * colSpacing) / CGFloat(colCount))
-            
-            // Dynamically size rows & cover height to fill the viewport cleanly with zero bottom void and zero scrollbar
-            let availGridH = max(180, geo.size.height - pagerH - topPad - bottomPad)
-            let idealCardH = floor((availGridH - CGFloat(max(0, rowCount - 1)) * rowSpacing) / CGFloat(rowCount))
-            let maxRatioCoverH = max(120, (cardWidth * 1.08).rounded())
-            let coverHeight = min(maxRatioCoverH, max(86, idealCardH - Self.cardTextFooterHeight))
-            let rows: [[AIHotNewsItem]] = (0..<rowCount).compactMap { rowIdx in
-                let rStart = rowIdx * colCount
-                guard rStart < pageItems.count else { return nil }
-                let rEnd = min(pageItems.count, rStart + colCount)
-                return Array(pageItems[rStart..<rEnd])
-            }
-            
-            if items.isEmpty {
-                VStack(spacing: 10) {
+                VStack(spacing: 12) {
                     Text(self.newsService.isLoading
-                         ? AppLanguage.text("正在加载资讯…", en: "Loading articles…")
-                         : AppLanguage.text("暂无匹配资讯", en: "No articles"))
-                        .font(.system(size: 13))
-                        .foregroundStyle(self.mutedInk)
+                         ? AppLanguage.text("正在加载精选内容流…", en: "Loading reel feed…")
+                         : AppLanguage.text("暂无匹配内容", en: "No matching stories"))
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(self.secondaryInk)
+                    Button {
+                        self.triggerFeedRefresh()
+                    } label: {
+                        Label(AppLanguage.text("刷新换一批", en: "Refresh Feed"), systemImage: "arrow.clockwise")
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(self.tokens.onAccentInk)
+                            .padding(.horizontal, 14)
+                            .frame(height: 32)
+                            .background(self.tokens.accent, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                VStack(spacing: 0) {
-                    let pageGrid = VStack(alignment: .leading, spacing: rowSpacing) {
-                        ForEach(Array(rows.enumerated()), id: \.offset) { _, rowItems in
-                            self.paginatedCardRow(
-                                rowItems: rowItems,
-                                colCount: colCount,
-                                colSpacing: colSpacing,
-                                cardWidth: cardWidth,
-                                coverHeight: coverHeight
-                            )
-                        }
-                    }
-                    .frame(width: innerW, height: availGridH, alignment: .topLeading)
-                    .id("news-page-\(self.selectedCategory.rawValue)-\(safePage)")
-                    .transition(
-                        .asymmetric(
-                            insertion: .opacity.combined(with: .offset(x: CGFloat(self.pageTurnDirection) * 20)),
-                            removal: .opacity.combined(with: .offset(x: CGFloat(-self.pageTurnDirection) * 16))
-                        )
-                    )
-                    
-                    ZStack {
-                        pageGrid
-                            .padding(.horizontal, 24)
-                            .padding(.top, topPad)
-                            .padding(.bottom, bottomPad)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                        
-                        if totalPages > 1 {
-                            NewsGridWheelPagerRepresentable { delta in
-                                let next = safePage + delta
-                                guard next >= 1 && next <= totalPages else { return }
-                                self.turnGridPage(to: next, totalPages: totalPages)
-                            }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-                    
-                    if totalPages > 1 {
-                        self.editorialPaginationBar(
-                            safePage: safePage,
-                            totalPages: totalPages,
-                            totalItems: items.count,
-                            innerWidth: innerW
-                        )
-                        .frame(height: pagerH)
-                    }
-                }
-                .onAppear {
-                    self.knownTotalPages = totalPages
-                    if self.gridPage != safePage {
-                        self.gridPage = safePage
-                    }
-                    self.prefetchAdjacentPageCovers(items: items, safePage: safePage, pageSize: pageSize)
-                }
-                .onChange(of: totalPages) { _, newTotal in
-                    self.knownTotalPages = newTotal
-                    if self.gridPage > newTotal {
-                        self.gridPage = newTotal
-                    }
-                }
-                .onChange(of: safePage) { _, newPage in
-                    if self.gridPage > totalPages {
-                        self.gridPage = totalPages
-                    }
-                    self.prefetchAdjacentPageCovers(items: items, safePage: newPage, pageSize: pageSize)
-                }
-                .onChange(of: items.count) { _, _ in
-                    self.knownTotalPages = totalPages
-                    if self.gridPage > totalPages {
-                        self.gridPage = totalPages
-                    }
-                    self.prefetchAdjacentPageCovers(items: items, safePage: min(self.gridPage, totalPages), pageSize: pageSize)
-                }
             }
         }
     }
     
-    @ViewBuilder
-    private func paginatedCardRow(
-        rowItems: [AIHotNewsItem],
-        colCount: Int,
-        colSpacing: CGFloat,
-        cardWidth: CGFloat,
-        coverHeight: CGFloat
-    ) -> some View {
-        HStack(alignment: .top, spacing: colSpacing) {
-            ForEach(rowItems) { item in
-                XiaohongshuNewsCard(
-                    item: item,
-                    cover: self.newsService.cachedCoverImage(for: item),
-                    coverHeight: coverHeight,
-                    isRead: self.newsService.isRead(item),
-                    hasAIBrief: !(self.newsService.aiBriefs[item.id] ?? "").isEmpty,
-                    tokens: self.tokens,
-                    secondaryInk: self.secondaryInk,
-                    mutedInk: self.mutedInk,
-                    onAppearLoadCover: {
-                        self.newsService.requestCoverLoad(for: item)
-                    }
-                ) {
-                    withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
-                        self.selectedItemID = item.id
-                    }
-                }
-                .equatable()
-                .frame(width: cardWidth)
-            }
-            if rowItems.count < colCount {
-                ForEach(0..<(colCount - rowItems.count), id: \.self) { _ in
-                    Color.clear
-                        .frame(width: cardWidth, height: coverHeight + Self.cardTextFooterHeight)
-                }
-            }
-        }
-    }
     
-    private func editorialPaginationBar(
-        safePage: Int,
-        totalPages: Int,
-        totalItems: Int,
-        innerWidth: CGFloat
-    ) -> some View {
-        let pages = Self.visiblePageNumbers(current: safePage, total: totalPages)
+    private func shortVideoReelStage(story: AIHotNewsItem, index: Int, totalCount: Int, bui: BeautifulUITokens) -> some View {
+        let blocks = self.newsService.articleContents[story.id]?.blocks ?? []
+        let isLoadingArticle = self.newsService.loadingArticleIDs.contains(story.id)
+        let cover: NSImage? = AIHotNewsService.isSyntheticOGCardURL(story.coverURLString)
+            ? nil
+            : self.newsService.cachedCoverImage(for: story)
+        let isSaved = self.newsService.isBookmarked(story)
         
-        return HStack(spacing: 12) {
-            Text(AppLanguage.text("共 \(totalItems) 篇", en: "\(totalItems) items"))
-                .font(.system(size: 11.5, weight: .medium, design: .monospaced).monospacedDigit())
-                .foregroundStyle(self.mutedInk)
-            
-            Spacer(minLength: 8)
-            
-            HStack(spacing: 5) {
-                Button {
-                    self.turnGridPage(to: safePage - 1, totalPages: totalPages)
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text(AppLanguage.text("上一页", en: "Prev"))
-                            .font(.system(size: 11.5, weight: .medium))
+        return HStack(spacing: 14) {
+            // Centered Focused Reel Card
+            VStack(spacing: 0) {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if let cover {
+                            ZStack(alignment: .bottomLeading) {
+                                Image(nsImage: cover)
+                                    .resizable()
+                                    .interpolation(.high)
+                                    .scaledToFill()
+                                    .frame(height: 210)
+                                    .frame(maxWidth: .infinity)
+                                    .clipped()
+                                
+                                LinearGradient(
+                                    colors: [.clear, Color.black.opacity(0.55)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                                .frame(height: 76)
+                                
+                                HStack(spacing: 8) {
+                                    Text(story.resolvedCategory == .xSocial ? "X" : story.resolvedCategory.badgeLabel)
+                                        .font(.system(size: 10.5, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(self.tokens.accent, in: Capsule())
+                                    
+                                    Text(story.displayPublisherLabel)
+                                        .font(.system(size: 11.5, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.92))
+                                    
+                                    Spacer()
+                                    
+                                    Text("\(index + 1) / \(totalCount)")
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced).monospacedDigit())
+                                        .foregroundStyle(.white.opacity(0.9))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Color.black.opacity(0.45), in: Capsule())
+                                }
+                                .padding(12)
+                            }
+                        } else {
+                            HStack(spacing: 8) {
+                                Text(story.resolvedCategory == .xSocial ? "X" : story.resolvedCategory.badgeLabel)
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(self.tokens.onAccentInk)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(self.tokens.accent, in: Capsule())
+                                
+                                Text(story.displayPublisherLabel)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(self.secondaryInk)
+                                
+                                Spacer()
+                                
+                                Text("\(index + 1) / \(totalCount)")
+                                    .font(.system(size: 11, weight: .semibold, design: .monospaced).monospacedDigit())
+                                    .foregroundStyle(self.secondaryInk)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(self.tokens.inset, in: Capsule())
+                            }
+                            .padding(.top, 4)
+                        }
+                        
+                        Text(story.title)
+                            .font(.system(size: 19, weight: .bold))
+                            .foregroundStyle(self.tokens.primaryInk)
+                            .lineSpacing(4)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                        
+                        if let summary = story.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+                            Text(summary)
+                                .font(.system(size: 13.5, weight: .medium))
+                                .foregroundStyle(self.secondaryInk)
+                                .lineSpacing(5)
+                                .padding(12)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(self.tokens.inset.opacity(0.72), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .textSelection(.enabled)
+                        }
+                        
+                        if isLoadingArticle && blocks.isEmpty {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text(AppLanguage.text("正在加载原文精读内容…", en: "Loading full article…"))
+                                    .font(.system(size: 12.5))
+                                    .foregroundStyle(self.mutedInk)
+                            }
+                            .padding(.vertical, 8)
+                        } else if blocks.isEmpty {
+                            HStack(spacing: 10) {
+                                Text(AppLanguage.text("该站点限制正文直读，可点右栏 AI 陪读或浏览器查看原文。", en: "Preview limited; ask the side AI or open source."))
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(self.mutedInk)
+                                Spacer()
+                                Button(AppLanguage.text("重新抓取", en: "Retry")) {
+                                    Task { await self.newsService.refetchArticleExcerpt(for: story) }
+                                }
+                                .controlSize(.small)
+                            }
+                            .padding(10)
+                            .background(self.tokens.inset.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        } else {
+                            VStack(alignment: .leading, spacing: 11) {
+                                ForEach(Array(blocks.prefix(24).enumerated()), id: \.offset) { _, block in
+                                    self.shortFeedArticleBlockView(block)
+                                }
+                            }
+                        }
                     }
-                    .foregroundStyle(safePage > 1 ? self.tokens.primaryInk : self.mutedInk.opacity(0.38))
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
-                    .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(self.tokens.hairline, lineWidth: 0.8))
-                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .padding(cover == nil ? 18 : 0)
+                    .padding(.horizontal, cover == nil ? 0 : 18)
+                    .padding(.bottom, 18)
+                }
+            }
+            .id(story.id)
+            .transition(.asymmetric(
+                insertion: .move(edge: self.shortFeedTransitionEdge).combined(with: .opacity),
+                removal: .opacity
+            ))
+            .frame(maxWidth: 660, maxHeight: .infinity)
+            .background(bui.surface.opacity(self.hasCustomBackground ? 0.90 : 1.0), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(bui.line, lineWidth: 0.9)
+            )
+            .shadow(color: Color.black.opacity(self.tokens.isDark ? 0.28 : 0.06), radius: 14, y: 5)
+            
+            // Douyin-Style Floating Vertical Action Rail
+            VStack(spacing: 12) {
+                Spacer()
+                
+                Button {
+                    self.stepShortFeed(delta: -1)
+                } label: {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(index > 0 ? self.tokens.primaryInk : self.mutedInk.opacity(0.45))
+                        .frame(width: 40, height: 40)
+                        .background(bui.surface, in: Circle())
+                        .overlay(Circle().strokeBorder(bui.line, lineWidth: 0.8))
                 }
                 .buttonStyle(.plain)
-                .disabled(safePage <= 1)
-                .pointerStyle(safePage > 1 ? .link : .default)
+                .disabled(index <= 0)
+                .pointerStyle(.link)
+                .help(AppLanguage.text("上一条 (↑)", en: "Previous (↑)"))
                 
-                ForEach(pages, id: \.self) { p in
-                    if p < 0 {
-                        Text("…")
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(self.mutedInk)
-                            .frame(width: 20, height: 28)
-                    } else {
-                        let isCurrent = (p == safePage)
+                Button {
+                    self.stepShortFeed(delta: 1)
+                } label: {
+                    Image(systemName: index + 1 >= totalCount ? "arrow.clockwise" : "chevron.down")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(self.tokens.onAccentInk)
+                        .frame(width: 42, height: 42)
+                        .background(self.tokens.accent, in: Circle())
+                        .shadow(color: self.tokens.accent.opacity(0.28), radius: 8, y: 3)
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help(index + 1 >= totalCount
+                      ? AppLanguage.text("换一批新内容 (↓)", en: "Load Fresh Batch (↓)")
+                      : AppLanguage.text("下一条 (↓)", en: "Next (↓)"))
+                
+                Button {
+                    self.newsService.toggleBookmark(story)
+                } label: {
+                    Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(isSaved ? self.tokens.accent : self.secondaryInk)
+                        .frame(width: 38, height: 38)
+                        .background(bui.surface, in: Circle())
+                        .overlay(Circle().strokeBorder(bui.line, lineWidth: 0.8))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help(AppLanguage.text("收藏", en: "Bookmark"))
+                
+                Button {
+                    if let url = URL(string: story.urlString) {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Image(systemName: "safari")
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(self.secondaryInk)
+                        .frame(width: 38, height: 38)
+                        .background(bui.surface, in: Circle())
+                        .overlay(Circle().strokeBorder(bui.line, lineWidth: 0.8))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help(AppLanguage.text("在浏览器打开原文", en: "Open Original"))
+                
+                Button {
+                    withAnimation(DashMotion.quick) {
+                        self.isSideAICollapsed.toggle()
+                    }
+                } label: {
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(self.isSideAICollapsed ? self.secondaryInk : self.tokens.accent)
+                        .frame(width: 38, height: 38)
+                        .background(bui.surface, in: Circle())
+                        .overlay(Circle().strokeBorder(self.isSideAICollapsed ? bui.line : self.tokens.accent.opacity(0.45), lineWidth: 0.9))
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help(self.isSideAICollapsed ? AppLanguage.text("显示 AI 陪读", en: "Show AI Companion") : AppLanguage.text("收起 AI 陪读", en: "Hide AI Companion"))
+                
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+    }
+    
+    
+    @ViewBuilder
+    private func shortFeedArticleBlockView(_ block: NewsArticleBlock) -> some View {
+        switch block {
+            case .heading(let level, let text):
+                Text(text)
+                    .font(.system(size: level <= 2 ? 16 : 14.5, weight: .bold))
+                    .foregroundStyle(self.tokens.primaryInk)
+                    .padding(.top, 4)
+                    .textSelection(.enabled)
+            case .paragraph(let text):
+                Text(text)
+                    .font(.system(size: 14.5))
+                    .lineSpacing(6)
+                    .foregroundStyle(self.tokens.primaryInk.opacity(0.92))
+                    .textSelection(.enabled)
+            case .quote(let text):
+                Text(text)
+                    .font(.system(size: 13.5))
+                    .lineSpacing(5)
+                    .foregroundStyle(self.secondaryInk)
+                    .padding(.leading, 10)
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(self.tokens.accent).frame(width: 2.5)
+                    }
+                    .textSelection(.enabled)
+            case .code(let text):
+                Text(text)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(self.tokens.primaryInk)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .textSelection(.enabled)
+            case .list(let items):
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(items.enumerated()), id: \.offset) { _, text in
+                        HStack(alignment: .top, spacing: 7) {
+                            Text("•")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(self.tokens.accent)
+                            Text(text)
+                                .font(.system(size: 14))
+                                .lineSpacing(5)
+                                .foregroundStyle(self.tokens.primaryInk.opacity(0.92))
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+        }
+    }
+    
+    
+    private func shortFeedCompanionPanel(for story: AIHotNewsItem, bui: BeautifulUITokens) -> some View {
+        let quickPrompts: [(label: String, prompt: String)] = [
+            (AppLanguage.text("30秒速读", en: "30s TLDR"), AppLanguage.text("用 3-4 条精炼要点告诉我这篇文章最核心的信息", en: "Give me 3-4 bullet takeaways of this article")),
+            (AppLanguage.text("深挖逻辑", en: "Why It Matters"), AppLanguage.text("这篇文章背后揭示了什么行业趋势或底层逻辑？", en: "What underlying trend or implication does this reveal?")),
+            (AppLanguage.text("关联影响", en: "Impact"), AppLanguage.text("对科技/市场/相关公司有什么值得关注的实际影响？", en: "What practical market or tech impact does this have?")),
+        ]
+        
+        return VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(quickPrompts, id: \.label) { chip in
                         Button {
-                            self.turnGridPage(to: p, totalPages: totalPages)
+                            guard self.newsService.streamingChatItemID != story.id else { return }
+                            Task {
+                                await self.newsService.sendChatFollowUp(
+                                    chip.prompt,
+                                    for: story,
+                                    quote: "",
+                                    effort: .simple,
+                                    selectedModel: self.selectedModel
+                                )
+                            }
                         } label: {
-                            Text("\(p)")
-                                .font(.system(size: 11.5, weight: isCurrent ? .semibold : .medium, design: .monospaced).monospacedDigit())
-                                .foregroundStyle(isCurrent ? self.tokens.onAccentInk : self.secondaryInk)
-                                .frame(minWidth: 28, minHeight: 28)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                        .fill(isCurrent ? self.tokens.accent : self.tokens.card)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                        .strokeBorder(isCurrent ? Color.clear : self.tokens.hairline, lineWidth: 0.8)
-                                )
-                                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            Text(chip.label)
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(self.tokens.accentText)
+                                .padding(.horizontal, 9)
+                                .frame(height: 24)
+                                .background(self.tokens.accent.opacity(0.11), in: Capsule())
                         }
                         .buttonStyle(.plain)
                         .pointerStyle(.link)
                     }
                 }
-                
-                Button {
-                    self.turnGridPage(to: safePage + 1, totalPages: totalPages)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(AppLanguage.text("下一页", en: "Next"))
-                            .font(.system(size: 11.5, weight: .medium))
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                    }
-                    .foregroundStyle(safePage < totalPages ? self.tokens.primaryInk : self.mutedInk.opacity(0.38))
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
-                    .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(self.tokens.hairline, lineWidth: 0.8))
-                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(safePage >= totalPages)
-                .pointerStyle(safePage < totalPages ? .link : .default)
+                .padding(.horizontal, 12)
+                .frame(height: 36)
             }
+            .background(bui.surface)
             
-            Spacer(minLength: 8)
+            Rectangle().fill(bui.line).frame(height: 1)
             
-            Text(AppLanguage.text("滚轮 / ← → 翻页", en: "Swipe / ← →"))
-                .font(.system(size: 11, weight: .regular))
-                .foregroundStyle(self.mutedInk.opacity(0.75))
+            self.aiChatPane(for: story, isCenteredCard: false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: innerWidth)
-        .padding(.horizontal, 24)
-        .frame(maxWidth: .infinity)
+    }
+    
+    private var editorialFeedStage: some View {
+        let items = self.displayedItems
+        let refreshToken = self.newsService.feedRefreshToken
+        return GeometryReader { geo in
+            let horizontalPad: CGFloat = geo.size.width >= 1000 ? 28 : 18
+            let innerW = min(1440, max(320, geo.size.width - horizontalPad * 2))
+            let colCount = Self.columnsForWidth(innerW)
+            let colSpacing: CGFloat = 14
+            let cardWidth = max(140, (innerW - CGFloat(colCount - 1) * colSpacing) / CGFloat(colCount))
+            let coverHeight = max(124, min(176, (cardWidth * 0.62).rounded()))
+            
+            if items.isEmpty {
+                VStack(spacing: 12) {
+                    Text(self.newsService.isLoading
+                         ? AppLanguage.text("正在加载最新资讯…", en: "Loading articles…")
+                         : (self.searchText.isEmpty
+                            ? AppLanguage.text("该分类暂无资讯", en: "No articles in this category")
+                            : AppLanguage.text("未找到匹配“\(self.searchText)”的资讯", en: "No matching articles")))
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(self.secondaryInk)
+                    
+                    HStack(spacing: 10) {
+                        if !self.searchText.isEmpty && self.crossCategorySearchMatchCount > 0 {
+                            Button {
+                                self.selectedCategory = .all
+                                self.newsService.selectedCategory = .all
+                            } label: {
+                                Text(AppLanguage.text("在「全部」中查看 \(self.crossCategorySearchMatchCount) 条结果", en: "Search All (\(self.crossCategorySearchMatchCount))"))
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .foregroundStyle(self.tokens.onAccentInk)
+                                    .padding(.horizontal, 14)
+                                    .frame(height: 32)
+                                    .background(self.tokens.accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        } else if !self.newsService.isLoading {
+                            Button {
+                                self.triggerFeedRefresh()
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "arrow.clockwise")
+                                        .font(.system(size: 11.5, weight: .medium))
+                                    Text(AppLanguage.text("刷新拉取", en: "Refresh Feed"))
+                                        .font(.system(size: 12.5, weight: .medium))
+                                }
+                                .foregroundStyle(self.tokens.primaryInk)
+                                .padding(.horizontal, 14)
+                                .frame(height: 32)
+                                .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(self.tokens.hairline, lineWidth: 0.8))
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { scrollProxy in
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            // Compact Editorial Status Strip
+                            HStack(spacing: 8) {
+                                Text(self.selectedCategory == .all
+                                     ? AppLanguage.text("精选信息流 · \(items.count) 篇", en: "Curated Stream · \(items.count)")
+                                     : AppLanguage.text("\(self.selectedCategory.label) · \(items.count) 篇", en: "\(self.selectedCategory.label) · \(items.count)"))
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(self.secondaryInk)
+                                
+                                if let updatedAt = self.newsService.lastUpdatedAt {
+                                    Text("·")
+                                        .foregroundStyle(self.mutedInk)
+                                    Text(AppLanguage.text("更新于 \(Self.relativeTimeString(from: updatedAt)) 前", en: "Updated \(Self.relativeTimeString(from: updatedAt)) ago"))
+                                        .font(.system(size: 11.5))
+                                        .foregroundStyle(self.mutedInk)
+                                }
+                                
+                                Spacer(minLength: 0)
+                                
+                                if !self.searchText.isEmpty {
+                                    Text(AppLanguage.text("点击卡片进入正文精读", en: "Click any card to read"))
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(self.mutedInk)
+                                }
+                            }
+                            .id("news-feed-top")
+                            
+                            let gridColumns = Array(repeating: GridItem(.flexible(), spacing: colSpacing, alignment: .top), count: colCount)
+                            LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 14) {
+                                ForEach(items) { item in
+                                    XiaohongshuNewsCard(
+                                        item: item,
+                                        cover: self.newsService.cachedCoverImage(for: item),
+                                        coverHeight: coverHeight,
+                                        showCategoryBadge: self.selectedCategory == .all,
+                                        isRead: self.newsService.isRead(item),
+                                        isBookmarked: self.newsService.isBookmarked(item),
+                                        hasAIBrief: !(self.newsService.aiBriefs[item.id] ?? "").isEmpty,
+                                        tokens: self.tokens,
+                                        secondaryInk: self.secondaryInk,
+                                        mutedInk: self.mutedInk,
+                                        onAppearLoadCover: {
+                                            self.newsService.requestCoverLoad(for: item)
+                                        },
+                                        onToggleBookmark: {
+                                            self.newsService.toggleBookmark(item)
+                                        }
+                                    ) {
+                                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.18)) {
+                                            self.selectedItemID = item.id
+                                        }
+                                    }
+                                    .equatable()
+                                }
+                            }
+                            .id("news-grid-\(self.selectedCategory.rawValue)-\(refreshToken)")
+                            .transition(.opacity)
+                            .animation(DashMotion.quick, value: refreshToken)
+                            
+                            // Bottom Douyin / Xiaohongshu-style Refresh Prompt
+                            HStack {
+                                Spacer()
+                                Button {
+                                    self.triggerFeedRefresh()
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: self.newsService.isLoading ? "hourglass" : "arrow.clockwise")
+                                            .font(.system(size: 12, weight: .semibold))
+                                        Text(AppLanguage.text("看完了，换一批新内容", en: "Load Fresh Batch"))
+                                            .font(.system(size: 12.5, weight: .medium))
+                                    }
+                                    .foregroundStyle(self.secondaryInk)
+                                    .padding(.horizontal, 16)
+                                    .frame(height: 34)
+                                    .background(self.tokens.card, in: Capsule())
+                                    .overlay(Capsule().strokeBorder(self.tokens.hairline, lineWidth: 0.8))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(self.newsService.isLoading)
+                                .pointerStyle(.link)
+                                Spacer()
+                            }
+                            .padding(.top, 8)
+                            .padding(.bottom, 12)
+                        }
+                        .padding(.horizontal, horizontalPad)
+                        .padding(.top, 14)
+                        .padding(.bottom, 16)
+                        .frame(maxWidth: innerW + horizontalPad * 2, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                    .onChange(of: self.feedScrollResetToken) { _, _ in
+                        withAnimation(DashMotion.quick) {
+                            scrollProxy.scrollTo("news-feed-top", anchor: .top)
+                        }
+                    }
+                }
+            }
+        }
     }
     
     
@@ -843,6 +1452,11 @@ struct DashboardNewsCenterView: View {
             self.newsChatWebController.injectDraft("", quote: self.newsQuotedExcerpt)
             self.newsChatWebController.focusComposer()
         }
+        let refetchHandler: () -> Void = {
+            Task {
+                await self.newsService.refetchArticleExcerpt(for: item)
+            }
+        }
         
         return GeometryReader { geo in
             let isCompact = geo.size.width < 840
@@ -853,6 +1467,7 @@ struct DashboardNewsCenterView: View {
                         cover: readerCover,
                         blocks: blocks,
                         isLoadingArticle: isLoadingArticle,
+                        hasAttemptedFetch: self.newsService.hasFinishedDetailFetch(for: item.id),
                         previousItem: neighbors.previous,
                         nextItem: neighbors.next,
                         relatedItems: relatedItems,
@@ -866,7 +1481,8 @@ struct DashboardNewsCenterView: View {
                                 self.selectedItemID = nextID
                             }
                         },
-                        onQuoteToAI: quoteHandler
+                        onQuoteToAI: quoteHandler,
+                        onRefetchArticle: refetchHandler
                     )
                     .equatable()
                     .frame(height: max(240, geo.size.height * 0.52))
@@ -893,6 +1509,7 @@ struct DashboardNewsCenterView: View {
                         cover: readerCover,
                         blocks: blocks,
                         isLoadingArticle: isLoadingArticle,
+                        hasAttemptedFetch: self.newsService.hasFinishedDetailFetch(for: item.id),
                         previousItem: neighbors.previous,
                         nextItem: neighbors.next,
                         relatedItems: relatedItems,
@@ -906,7 +1523,8 @@ struct DashboardNewsCenterView: View {
                                 self.selectedItemID = nextID
                             }
                         },
-                        onQuoteToAI: quoteHandler
+                        onQuoteToAI: quoteHandler,
+                        onRefetchArticle: refetchHandler
                     )
                     .equatable()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1068,14 +1686,8 @@ struct DashboardNewsCenterView: View {
             )
         }
         
-        let effortRaw: String = switch self.reasoningEffort {
-            case .simple: "simple"
-            case .balanced: "balanced"
-            case .deep: "deep"
-        }
-        
         let slashCommands: [BeautifulAgentSlashCommandPayload] = [
-            .init(key: "tldr", name: "/tldr", desc: AppLanguage.text("提炼核心事实与关键数字", en: "Quick key takeaways"), insertText: AppLanguage.text("用 3-5 条要点提炼这篇文章最核心的事实与数字", en: "Summarize the core facts in 3-5 bullets")),
+            .init(key: "tldr", name: "/tldr", desc: AppLanguage.text("快速提炼核心事实与关键数字", en: "Quick key takeaways"), insertText: AppLanguage.text("请快速用 3-5 条要点提炼这篇文章最核心的事实与关键数字", en: "Quickly summarize the core facts in 3-5 bullets")),
             .init(key: "stock", name: "/stock", desc: AppLanguage.text("查文中涉及公司的实时股价", en: "Lookup related stock quotes"), insertText: AppLanguage.text("查一下文中涉及公司的最新股价和近期走势，并分析市场影响", en: "Lookup live quotes for companies mentioned")),
             .init(key: "note", name: "/note", desc: AppLanguage.text("生成结构化阅读笔记并新建文档", en: "Create structured study note"), insertText: AppLanguage.text("请把这篇文章和核心观点整理成结构化 Markdown 阅读笔记，并直接新建一篇文档保存", en: "Create a structured Markdown note for this article")),
         ]
@@ -1102,8 +1714,8 @@ struct DashboardNewsCenterView: View {
                 ? self.newsService.streamingChatStatusLabel
                 : nil,
             errorMessage: self.newsService.chatErrorMessage,
-            placeholder: AppLanguage.text("输入问题，或选中左侧段落引用提问…", en: "Ask about this article…"),
-            greetingName: AppLanguage.text("围绕这篇文章", en: "About this article"),
+            placeholder: AppLanguage.text("快速提问、生成摘要，或选中左侧段落引用提问…", en: "Ask for a quick summary or follow up…"),
+            greetingName: AppLanguage.text("快速精读", en: "Quick Brief"),
             greetingSubtitle: nil,
             articleTitle: item.title,
             articleSource: sourceNote,
@@ -1111,7 +1723,7 @@ struct DashboardNewsCenterView: View {
             availableModels: mappedModels,
             selectedModelID: selectedTitle,
             selectedModelTitle: selectedTitle,
-            effort: effortRaw,
+            effort: nil,
             suggestions: [],
             contextSources: [],
             slashCommands: slashCommands
@@ -1133,7 +1745,7 @@ struct DashboardNewsCenterView: View {
                     prompt,
                     for: item,
                     quote: effectiveQuote,
-                    effort: self.reasoningEffort,
+                    effort: .simple,
                     selectedModel: self.selectedModel
                 )
             }
@@ -1144,7 +1756,7 @@ struct DashboardNewsCenterView: View {
         cb.onRetry = {
             self.newsService.retryLastChat(
                 for: item,
-                effort: self.reasoningEffort,
+                effort: .simple,
                 selectedModel: self.selectedModel
             )
         }
@@ -1166,13 +1778,6 @@ struct DashboardNewsCenterView: View {
             cfg.modelOverride = model.modelID
             botStore.updateConfig(cfg, for: .readingCompanion)
             _ = try? PiKernelManager.shared.syncWorkspace()
-        }
-        cb.onSelectEffort = { raw in
-            switch raw {
-                case "simple": self.reasoningEffort = .simple
-                case "deep": self.reasoningEffort = .deep
-                default: self.reasoningEffort = .balanced
-            }
         }
         cb.onInsertToEditor = { text in
             CotAgentCoordinator.shared.insertTextIntoActiveEditor(text)
@@ -1241,7 +1846,7 @@ struct DashboardNewsCenterView: View {
     
     private func syncSelectionSideEffects() {
         guard let item = self.selectedItem else { return }
-        self.newsService.markRead(item)
+        self.newsService.recordBrowsingHistory(item)
         Task {
             await self.newsService.fetchArticleExcerptIfNeeded(for: item)
         }
@@ -1272,6 +1877,7 @@ private struct NewsEditorialArticlePane: View, Equatable {
     let cover: NSImage?
     let blocks: [NewsArticleBlock]
     let isLoadingArticle: Bool
+    let hasAttemptedFetch: Bool
     let previousItem: AIHotNewsItem?
     let nextItem: AIHotNewsItem?
     let relatedItems: [AIHotNewsItem]
@@ -1282,6 +1888,7 @@ private struct NewsEditorialArticlePane: View, Equatable {
     let mutedInk: Color
     let onSelectItem: (String) -> Void
     let onQuoteToAI: (String) -> Void
+    let onRefetchArticle: () -> Void
     
     @State private var hoveredBlockIndex: Int? = nil
     @State private var hoveredRelatedID: String? = nil
@@ -1291,6 +1898,7 @@ private struct NewsEditorialArticlePane: View, Equatable {
             && lhs.cover === rhs.cover
             && lhs.blocks == rhs.blocks
             && lhs.isLoadingArticle == rhs.isLoadingArticle
+            && lhs.hasAttemptedFetch == rhs.hasAttemptedFetch
             && lhs.previousItem?.id == rhs.previousItem?.id
             && lhs.nextItem?.id == rhs.nextItem?.id
             && lhs.relatedItems.map(\.id) == rhs.relatedItems.map(\.id)
@@ -1440,6 +2048,12 @@ private struct NewsEditorialArticlePane: View, Equatable {
                             self.loadingPlaceholder
                         }
                         
+                        // Extraction incomplete / retry notice when page returned very short or empty text
+                        if !self.isLoadingArticle && self.hasAttemptedFetch && parsed.totalChars < 120 {
+                            self.incompleteExtractionNoticeCard
+                                .padding(.top, 18)
+                        }
+                        
                         // Clickable Source Attribution Card
                         let displaySource = effectiveSourceText ?? self.item.url?.host() ?? ""
                         if !displaySource.isEmpty || self.item.url != nil {
@@ -1508,6 +2122,44 @@ private struct NewsEditorialArticlePane: View, Equatable {
                 readerProxy.scrollTo("article-top", anchor: .top)
             }
         }
+    }
+    
+    
+    @ViewBuilder
+    private var incompleteExtractionNoticeCard: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(AppLanguage.text("原网页正文内容较少或存在访问限制", en: "Limited article preview available"))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(self.bui.ink)
+                Text(AppLanguage.text("可尝试重新多路抓取，或直接在浏览器中阅读完整原文。", en: "Try refetching full text or open the original page."))
+                    .font(.system(size: 12))
+                    .foregroundStyle(self.bui.ink3)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            
+            Button {
+                self.onRefetchArticle()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(AppLanguage.text("重新抓取", en: "Refetch"))
+                        .font(.system(size: 12.5, weight: .medium))
+                }
+                .foregroundStyle(self.bui.accentInk)
+                .padding(.horizontal, 12)
+                .frame(height: 30)
+                .background(self.bui.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(self.bui.lineStrong, lineWidth: 0.8))
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(self.bui.inset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(self.bui.line, lineWidth: 0.8))
     }
     
     
@@ -1793,231 +2445,6 @@ private struct NewsEditorialArticlePane: View, Equatable {
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)
-    }
-}
-
-
-// MARK: - LeiBox Reasoning Effort Slider (leibox.pantoria.cn/docs/animations/reasoning-effort-slider)
-
-/// Faithful three-stop thinking slider (`Simple -> Balanced -> Deep`) with:
-/// - Flowing star field drifting across the glowing active track
-/// - Velocity-driven jelly stretch/squash deformation on drag & tap
-/// - Soft spring snapping to the three discrete effort stops
-struct LeiBoxReasoningEffortSlider: View {
-    
-    @Binding var effort: NewsReasoningEffort
-    let accent: Color
-    let isDark: Bool
-    
-    @State private var normalizedProgress: CGFloat = 0.5
-    @State private var isDragging = false
-    @State private var jellyVelocity: CGFloat = 0
-    @State private var lastDragX: CGFloat?
-    @State private var activityGate = AppActivityRenderGate.shared
-    @State private var isWindowVisible = true
-    
-    private struct StarSeed {
-        let x: CGFloat
-        let y: CGFloat
-        let size: CGFloat
-        let speed: CGFloat
-        let phase: Double
-    }
-    
-    private static let stars: [StarSeed] = (0..<22).map { i in
-        let s = Double(i + 1)
-        let fx = CGFloat((sin(s * 12.9898) * 43758.5453).truncatingRemainder(dividingBy: 1.0))
-        let fy = CGFloat((sin(s * 78.233) * 24634.6345).truncatingRemainder(dividingBy: 1.0))
-        return StarSeed(
-            x: abs(fx),
-            y: 0.16 + abs(fy) * 0.68,
-            size: (i % 3 == 0) ? 2.2 : 1.4,
-            speed: 0.08 + CGFloat(i % 5) * 0.035,
-            phase: s * 1.7
-        )
-    }
-    
-    
-    var body: some View {
-        let trackBg = self.isDark ? Color.white.opacity(0.10) : Color(red: 0.922, green: 0.929, blue: 0.945)
-        let stretch = min(0.24, abs(self.jellyVelocity) * 0.012)
-        let scaleX: CGFloat = 1.0 + stretch
-        let scaleY: CGFloat = max(0.82, 1.0 - stretch * 0.50)
-        
-        VStack(spacing: 8) {
-            GeometryReader { geo in
-                let w = max(140, geo.size.width)
-                let h: CGFloat = 26
-                let knobD: CGFloat = 22
-                let pad: CGFloat = (h - knobD) * 0.5
-                let travelW = max(1, w - pad * 2 - knobD)
-                let clampedP = max(0, min(1, self.normalizedProgress))
-                let knobX = pad + clampedP * travelW
-                let fillWidth = max(h, knobX + knobD + pad)
-                
-                ZStack(alignment: .leading) {
-                    // Soft cool-gray recessed capsule track
-                    Capsule()
-                        .fill(trackBg)
-                    
-                    // Subtle right-end stop dot (exact detail from Deep Agent Composer)
-                    HStack {
-                        Spacer()
-                        Circle()
-                            .fill(self.isDark ? Color.white.opacity(0.24) : Color.black.opacity(0.18))
-                            .frame(width: 3.5, height: 3.5)
-                            .padding(.trailing, 11)
-                    }
-                    .allowsHitTesting(false)
-                    
-                    // Deep-night -> celestial-blue flowing star field active fill
-                    let starfieldPaused = AnimationConstants.isReducedMotionEnabled
-                        || !self.activityGate.isAppActive
-                        || !self.isWindowVisible
-                    TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: starfieldPaused)) { timeline in
-                        let t = timeline.date.timeIntervalSinceReferenceDate
-                        let speedBoost: CGFloat = CGFloat(1 + self.effort.rawValue) * 0.55
-                        Canvas(opaque: false, rendersAsynchronously: true) { ctx, size in
-                            let activeRect = CGRect(x: 0, y: 0, width: min(size.width, fillWidth), height: size.height)
-                            let activePath = Capsule().path(in: activeRect)
-                            ctx.fill(
-                                activePath,
-                                with: .linearGradient(
-                                    Gradient(colors: [
-                                        Color(red: 0.08, green: 0.11, blue: 0.18),
-                                        Color(red: 0.24, green: 0.37, blue: 0.67),
-                                        Color(red: 0.52, green: 0.66, blue: 0.96),
-                                    ]),
-                                    startPoint: .zero,
-                                    endPoint: CGPoint(x: max(28, activeRect.width), y: 0)
-                                )
-                            )
-                            
-                            ctx.drawLayer { layer in
-                                layer.clip(to: activePath)
-                                for star in Self.stars {
-                                    let drift = (star.x + CGFloat(t) * star.speed * speedBoost).truncatingRemainder(dividingBy: 1.0)
-                                    let sx = drift * size.width
-                                    let sy = star.y * size.height
-                                    let twinkle = 0.45 + 0.55 * (0.5 + 0.5 * sin(t * 2.8 + star.phase))
-                                    let r = star.size * 0.5
-                                    layer.fill(
-                                        Circle().path(in: CGRect(x: sx - r, y: sy - r, width: star.size, height: star.size)),
-                                        with: .color(Color.white.opacity(twinkle * 0.92))
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    .clipShape(Capsule())
-                    .allowsHitTesting(false)
-                    
-                    // Crisp white circular jelly thumb knob with periwinkle luminous halo
-                    Circle()
-                        .fill(Color.white)
-                        .overlay(
-                            Circle()
-                                .strokeBorder(Color(red: 0.45, green: 0.56, blue: 0.94).opacity(0.65), lineWidth: 1.4)
-                        )
-                        .shadow(color: Color(red: 0.26, green: 0.40, blue: 0.85).opacity(0.32), radius: self.isDragging ? 6 : 3.5, y: 1)
-                        .frame(width: knobD, height: knobD)
-                        .scaleEffect(x: scaleX, y: scaleY, anchor: .center)
-                        .offset(x: knobX)
-                        .allowsHitTesting(false)
-                    
-                    // Direct tap targets along the track
-                    HStack(spacing: 0) {
-                        ForEach(NewsReasoningEffort.allCases) { stop in
-                            Color.clear
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    self.snap(to: stop, impulse: stop.rawValue > self.effort.rawValue ? 13 : -13)
-                                }
-                        }
-                    }
-                }
-                .contentShape(Capsule())
-                .gesture(
-                    DragGesture(minimumDistance: 2)
-                        .onChanged { value in
-                            self.isDragging = true
-                            let rawP = (value.location.x - pad - knobD * 0.5) / travelW
-                            let clamped = max(0, min(1, rawP))
-                            if let prevX = self.lastDragX {
-                                let vx = value.location.x - prevX
-                                self.jellyVelocity = self.jellyVelocity * 0.55 + vx * 0.95
-                            }
-                            self.lastDragX = value.location.x
-                            self.normalizedProgress = clamped
-                            let nearestIdx = min(2, max(0, Int((clamped * 2.0).rounded())))
-                            if let nextStop = NewsReasoningEffort(rawValue: nearestIdx), nextStop != self.effort {
-                                self.effort = nextStop
-                            }
-                        }
-                        .onEnded { value in
-                            self.isDragging = false
-                            self.lastDragX = nil
-                            let rawP = (value.location.x - pad - knobD * 0.5) / travelW
-                            let clamped = max(0, min(1, rawP))
-                            let nearestIdx = min(2, max(0, Int((clamped * 2.0).rounded())))
-                            let stop = NewsReasoningEffort(rawValue: nearestIdx) ?? .balanced
-                            self.snap(to: stop, impulse: 0)
-                        }
-                )
-                .pointerStyle(.link)
-            }
-            .frame(height: 26)
-            
-            // Spacious unclipped 3-stop labels matching Deep Agent Composer (`简单 / 中度 / 深度`)
-            HStack {
-                ForEach(NewsReasoningEffort.allCases) { stop in
-                    let active = (self.effort == stop)
-                    let align: Alignment = stop == .simple ? .leading : (stop == .deep ? .trailing : .center)
-                    Button {
-                        self.snap(to: stop, impulse: stop.rawValue > self.effort.rawValue ? 13 : -13)
-                    } label: {
-                        Text(stop.title)
-                            .font(.system(size: 11.5, weight: active ? .semibold : .regular))
-                            .foregroundStyle(
-                                active
-                                    ? Color(red: 0.22, green: 0.38, blue: 0.86)
-                                    : (self.isDark ? Color.white.opacity(0.55) : Color.black.opacity(0.48))
-                            )
-                            .frame(maxWidth: .infinity, alignment: align)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                }
-            }
-            .padding(.horizontal, 2)
-        }
-        .observeWindowRenderActivity(self.$isWindowVisible)
-        .onAppear {
-            self.normalizedProgress = CGFloat(self.effort.rawValue) * 0.5
-        }
-        .onChange(of: self.effort) { _, next in
-            if !self.isDragging {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.72)) {
-                    self.normalizedProgress = CGFloat(next.rawValue) * 0.5
-                }
-            }
-        }
-    }
-    
-    
-    private func snap(to stop: NewsReasoningEffort, impulse: CGFloat) {
-        self.effort = stop
-        withAnimation(.spring(response: 0.24, dampingFraction: 0.58)) {
-            self.jellyVelocity = impulse
-            self.normalizedProgress = CGFloat(stop.rawValue) * 0.5
-        }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(120))
-            withAnimation(.spring(response: 0.36, dampingFraction: 0.62)) {
-                self.jellyVelocity = 0
-            }
-        }
     }
 }
 
@@ -2496,19 +2923,22 @@ private struct TypewriterStreamingCursor: View {
 }
 
 
-// MARK: - Xiaohongshu-Style Visual News Card
+// MARK: - Editorial Magazine News Card
 
 private struct XiaohongshuNewsCard: View, Equatable {
     
     let item: AIHotNewsItem
     let cover: NSImage?
     let coverHeight: CGFloat
+    let showCategoryBadge: Bool
     let isRead: Bool
+    let isBookmarked: Bool
     let hasAIBrief: Bool
     let tokens: StudioColorTokens
     let secondaryInk: Color
     let mutedInk: Color
     let onAppearLoadCover: () -> Void
+    let onToggleBookmark: () -> Void
     let onTap: () -> Void
     
     @State private var isHovered = false
@@ -2516,21 +2946,26 @@ private struct XiaohongshuNewsCard: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.item.id == rhs.item.id
             && lhs.item.title == rhs.item.title
+            && lhs.item.summary == rhs.item.summary
             && lhs.cover === rhs.cover
             && abs(lhs.coverHeight - rhs.coverHeight) < 0.5
+            && lhs.showCategoryBadge == rhs.showCategoryBadge
             && lhs.isRead == rhs.isRead
+            && lhs.isBookmarked == rhs.isBookmarked
             && lhs.hasAIBrief == rhs.hasAIBrief
             && lhs.tokens.isDark == rhs.tokens.isDark
     }
     
     
     private var accentColor: Color {
-        let seed = Int(DashboardNewsCenterView.stableSeed(for: self.item.id) % 4)
-        return switch seed {
-            case 0: self.tokens.accent
-            case 1: self.tokens.secondaryAccent
-            case 2: Color(red: 0.212, green: 0.478, blue: 0.612)
-            default: self.tokens.heat3
+        switch self.item.resolvedCategory {
+            case .finance:
+                return self.tokens.heat3
+            case .xSocial:
+                return Color(red: 0.212, green: 0.478, blue: 0.612)
+            case .ai, .all:
+                let seed = Int(DashboardNewsCenterView.stableSeed(for: self.item.id) % 2)
+                return seed == 0 ? self.tokens.accent : self.tokens.secondaryAccent
         }
     }
     
@@ -2540,104 +2975,137 @@ private struct XiaohongshuNewsCard: View, Equatable {
         let sourceLabel = publisher.isEmpty ? self.item.resolvedCategory.label : publisher
         let initialChar = String(sourceLabel.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1)).uppercased()
         let summarySnippet = self.item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let textBodyHeight: CGFloat = 112
         
-        Button(action: self.onTap) {
-            VStack(alignment: .leading, spacing: 0) {
-                ZStack(alignment: .topLeading) {
-                    if let cover = self.cover {
-                        Color.clear
-                            .frame(height: self.coverHeight)
-                            .overlay {
-                                Image(nsImage: cover)
-                                    .resizable()
-                                    .interpolation(.medium)
-                                    .antialiased(true)
-                                    .scaledToFill()
-                            }
-                            .clipped()
-                    } else {
-                        self.editorialCoverTile(summarySnippet: summarySnippet)
-                            .frame(height: self.coverHeight)
-                    }
-                    
-                    HStack {
-                        Text(self.item.resolvedCategory.label)
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                if let cover = self.cover {
+                    Color.clear
+                        .frame(height: self.coverHeight)
+                        .overlay {
+                            Image(nsImage: cover)
+                                .resizable()
+                                .interpolation(.medium)
+                                .antialiased(true)
+                                .scaledToFill()
+                        }
+                        .clipped()
+                } else {
+                    self.editorialCoverTile(sourceLabel: sourceLabel, initialChar: initialChar)
+                        .frame(height: self.coverHeight)
+                }
+                
+                HStack(spacing: 6) {
+                    if self.showCategoryBadge || self.cover != nil {
+                        Text(self.item.resolvedCategory == .xSocial ? "X" : self.item.resolvedCategory.badgeLabel)
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(self.tokens.primaryInk)
                             .padding(.horizontal, 7)
                             .frame(height: 20)
-                            .background(self.tokens.card.opacity(0.90), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        
-                        Spacer()
-                        
-                        if self.hasAIBrief {
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(self.tokens.onAccentInk)
-                                .frame(width: 20, height: 20)
-                                .background(self.tokens.accent, in: Circle())
-                        } else if !self.isRead {
-                            Circle()
-                                .fill(self.tokens.accent)
-                                .frame(width: 7, height: 7)
-                        }
+                            .background(self.tokens.card.opacity(0.88), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
-                    .padding(9)
-                }
-                .frame(maxWidth: .infinity)
-                .clipped()
-                
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(self.item.title)
-                        .font(.system(size: 13.5, weight: self.isRead ? .medium : .semibold))
-                        .foregroundStyle(self.isRead ? self.secondaryInk : self.tokens.primaryInk)
-                        .lineLimit(2)
-                        .lineSpacing(3)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
                     
                     Spacer(minLength: 4)
                     
-                    HStack(spacing: 6) {
-                        ZStack {
-                            Circle()
-                                .fill(self.accentColor.opacity(self.tokens.isDark ? 0.28 : 0.14))
-                            Text(initialChar.isEmpty ? "N" : initialChar)
-                                .font(.system(size: 9.5, weight: .bold))
-                                .foregroundStyle(self.accentColor)
+                    if self.isHovered || self.isBookmarked {
+                        Button {
+                            self.onToggleBookmark()
+                        } label: {
+                            Image(systemName: self.isBookmarked ? "bookmark.fill" : "bookmark")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(self.isBookmarked ? self.tokens.accent : self.tokens.primaryInk)
+                                .frame(width: 22, height: 22)
+                                .background(self.tokens.card.opacity(0.90), in: Circle())
                         }
-                        .frame(width: 18, height: 18)
-                        
-                        Text(sourceLabel)
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundStyle(self.mutedInk)
-                            .lineLimit(1)
-                        
-                        Spacer(minLength: 4)
-                        
-                        if let date = self.item.publishedAt {
-                            Text(DashboardNewsCenterView.relativeTimeString(from: date))
-                                .font(.system(size: 10.5, design: .monospaced).monospacedDigit())
-                                .foregroundStyle(self.mutedInk)
-                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                    } else if self.hasAIBrief {
+                        Text("AI")
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundStyle(self.tokens.onAccentInk)
+                            .padding(.horizontal, 5)
+                            .frame(height: 17)
+                            .background(self.tokens.accent, in: Capsule())
+                    } else if !self.isRead {
+                        Circle()
+                            .fill(self.tokens.accent)
+                            .frame(width: 7, height: 7)
                     }
                 }
-                .padding(.horizontal, 11)
-                .padding(.vertical, 10)
-                .frame(height: 82, alignment: .topLeading)
+                .padding(9)
             }
-            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(
-                        self.isHovered ? self.tokens.accent.opacity(0.48) : self.tokens.hairline,
-                        lineWidth: 1.0
-                    )
-            )
-            .shadow(color: self.tokens.cardShadow, radius: 4, x: 0, y: 2)
+            .frame(maxWidth: .infinity)
+            .clipped()
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text(self.item.title)
+                    .font(.system(size: 13.5, weight: self.isRead ? .medium : .semibold))
+                    .foregroundStyle(self.isRead ? self.secondaryInk : self.tokens.primaryInk)
+                    .lineLimit(2)
+                    .lineSpacing(2.5)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                
+                if !summarySnippet.isEmpty {
+                    Text(summarySnippet)
+                        .font(.system(size: 11.5, weight: .regular))
+                        .foregroundStyle(self.mutedInk)
+                        .lineLimit(2)
+                        .lineSpacing(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                
+                Spacer(minLength: 2)
+                
+                HStack(spacing: 6) {
+                    ZStack {
+                        Circle()
+                            .fill(self.accentColor.opacity(self.tokens.isDark ? 0.28 : 0.14))
+                        Text(initialChar.isEmpty ? "N" : initialChar)
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundStyle(self.accentColor)
+                    }
+                    .frame(width: 18, height: 18)
+                    
+                    Text(sourceLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(self.secondaryInk)
+                        .lineLimit(1)
+                    
+                    Spacer(minLength: 4)
+                    
+                    if let heat = self.item.heatScore, heat > 0 {
+                        Text("\(heat)°")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced).monospacedDigit())
+                            .foregroundStyle(self.accentColor)
+                    }
+                    
+                    if let date = self.item.publishedAt {
+                        Text(DashboardNewsCenterView.relativeTimeString(from: date))
+                            .font(.system(size: 10.5, design: .monospaced).monospacedDigit())
+                            .foregroundStyle(self.mutedInk)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(height: textBodyHeight, alignment: .topLeading)
         }
-        .buttonStyle(.plain)
+        .background(self.tokens.card, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(
+                    self.isHovered ? self.tokens.hairlineStrong : self.tokens.hairline,
+                    lineWidth: 0.9
+                )
+        )
+        .shadow(color: self.tokens.cardShadow, radius: self.isHovered ? 8 : 4, x: 0, y: 2)
+        .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .onTapGesture {
+            self.onTap()
+        }
         .pointerStyle(.link)
         .onAppear {
             self.onAppearLoadCover()
@@ -2650,139 +3118,38 @@ private struct XiaohongshuNewsCard: View, Equatable {
     }
     
     
-    private func editorialCoverTile(summarySnippet: String) -> some View {
+    private func editorialCoverTile(sourceLabel: String, initialChar: String) -> some View {
         let accent = self.accentColor
-        let headline = summarySnippet.isEmpty ? self.item.title : summarySnippet
-        return ZStack(alignment: .topLeading) {
+        return ZStack(alignment: .bottomLeading) {
             LinearGradient(
-                colors: [accent.opacity(self.tokens.isDark ? 0.28 : 0.14), self.tokens.inset],
+                colors: [
+                    accent.opacity(self.tokens.isDark ? 0.24 : 0.13),
+                    accent.opacity(self.tokens.isDark ? 0.08 : 0.04),
+                    self.tokens.inset,
+                ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
             
-            VStack(alignment: .leading, spacing: 6) {
-                Spacer(minLength: 24)
-                
-                Text("“")
-                    .font(.system(size: 28, weight: .bold, design: .serif))
-                    .foregroundStyle(accent.opacity(0.36))
-                    .frame(height: 18, alignment: .topLeading)
-                
-                Text(headline)
-                    .font(.system(size: summarySnippet.isEmpty ? 14 : 12.5, weight: summarySnippet.isEmpty ? .semibold : .medium))
-                    .foregroundStyle(self.tokens.primaryInk.opacity(0.84))
-                    .lineLimit(5)
-                    .lineSpacing(4)
-                    .multilineTextAlignment(.leading)
-                
-                Spacer(minLength: 4)
-            }
-            .padding(.horizontal, 13)
-            .padding(.bottom, 10)
-        }
-    }
-}
-
-
-// MARK: - Gesture-Locked Single-Page Trackpad / Mouse-Wheel Pager
-
-/// Non-hit-testing NSView that turns **strictly at most 1 page per trackpad swipe or discrete wheel step**
-/// (ignoring post-turn trackpad momentum tails so one flick never overshoots multiple pages).
-private final class NewsGridWheelPagerMonitorView: NSView {
-    
-    var onPageDelta: ((Int) -> Void)?
-    private nonisolated(unsafe) var eventMonitor: Any?
-    private var accumulatedDelta: CGFloat = 0
-    private var consumedInCurrentGesture = false
-    private var lastDiscreteTurnTime: TimeInterval = 0
-    
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-    
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        self.teardownMonitor()
-        guard self.window != nil else { return }
-        
-        self.eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel]) { [weak self] event in
-            guard let self,
-                  let window = self.window,
-                  event.window === window,
-                  !self.isHiddenOrHasHiddenAncestor
-            else { return event }
+            // Subtle editorial monogram watermark
+            Text(initialChar.isEmpty ? "N" : initialChar)
+                .font(.system(size: 64, weight: .black, design: .rounded))
+                .foregroundStyle(accent.opacity(self.tokens.isDark ? 0.12 : 0.08))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                .padding(.trailing, 14)
+                .padding(.top, 12)
             
-            let localPt = self.convert(event.locationInWindow, from: nil)
-            guard self.bounds.contains(localPt) else { return event }
-            
-            // Trackpad gesture lifecycle: allow at most 1 page turn per physical two-finger touch
-            if event.hasPreciseScrollingDeltas {
-                if event.phase == .began {
-                    self.accumulatedDelta = 0
-                    self.consumedInCurrentGesture = false
-                }
-                if !event.momentumPhase.isEmpty {
-                    return nil
-                }
-                if self.consumedInCurrentGesture {
-                    return nil
-                }
-                let dominant = abs(event.scrollingDeltaX) >= abs(event.scrollingDeltaY)
-                    ? event.scrollingDeltaX
-                    : event.scrollingDeltaY
-                self.accumulatedDelta += dominant
-                let threshold: CGFloat = 38.0
-                if abs(self.accumulatedDelta) >= threshold {
-                    let pageStep = self.accumulatedDelta < 0 ? 1 : -1
-                    self.consumedInCurrentGesture = true
-                    self.accumulatedDelta = 0
-                    self.onPageDelta?(pageStep)
-                }
-                if event.phase == .ended || event.phase == .cancelled {
-                    self.accumulatedDelta = 0
-                }
-                return nil
-            } else {
-                // Discrete notched mouse wheel
-                let now = ProcessInfo.processInfo.systemUptime
-                guard now - self.lastDiscreteTurnTime >= 0.24 else { return nil }
-                let raw = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
-                    ? event.scrollingDeltaY
-                    : event.scrollingDeltaX
-                guard abs(raw) > 0.05 else { return event }
-                self.lastDiscreteTurnTime = now
-                self.onPageDelta?(raw < 0 ? 1 : -1)
-                return nil
+            VStack(alignment: .leading, spacing: 5) {
+                Capsule()
+                    .fill(accent.opacity(0.75))
+                    .frame(width: 24, height: 3)
+                
+                Text(sourceLabel)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(self.tokens.primaryInk.opacity(0.86))
+                    .lineLimit(1)
             }
+            .padding(12)
         }
-    }
-    
-    private func teardownMonitor() {
-        if let monitor = self.eventMonitor {
-            NSEvent.removeMonitor(monitor)
-            self.eventMonitor = nil
-        }
-    }
-    
-    deinit {
-        if let monitor = self.eventMonitor {
-            NSEvent.removeMonitor(monitor)
-        }
-    }
-}
-
-
-private struct NewsGridWheelPagerRepresentable: NSViewRepresentable {
-    
-    let onPageDelta: (Int) -> Void
-    
-    func makeNSView(context: Context) -> NewsGridWheelPagerMonitorView {
-        let v = NewsGridWheelPagerMonitorView()
-        v.onPageDelta = self.onPageDelta
-        return v
-    }
-    
-    func updateNSView(_ nsView: NewsGridWheelPagerMonitorView, context: Context) {
-        nsView.onPageDelta = self.onPageDelta
     }
 }

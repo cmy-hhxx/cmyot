@@ -604,7 +604,7 @@ struct Round35AIBackendAndDashboardHeroTests {
         #expect(!html.contains("M12 2l2.4 7.2"))
         #expect(html.contains("@文档"))
         #expect(html.contains("@助手"))
-        #expect(html.contains("工作区会话"))
+        #expect(html.contains("新建工作区"))
     }
     
     

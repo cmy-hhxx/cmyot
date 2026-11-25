@@ -1,62 +1,62 @@
 {
   "attributes": {
-    "color": "#AF00DB"
+    "color": "#9333EA"
   },
   "background": {
-    "color": "#FFFFFF"
+    "color": "#F9F9FA"
   },
   "characters": {
-    "color": "#A31515"
+    "color": "#C2410C"
   },
   "commands": {
-    "color": "#795E26"
+    "color": "#6D4AFF"
   },
   "comments": {
-    "color": "#008000"
+    "color": "#737D91"
   },
   "highlight": {
-    "color": "#2F81F7",
+    "color": "#2562F3",
     "usesSystemSetting": false
   },
   "insertionPoint": {
-    "color": "#000000",
+    "color": "#2562F3",
     "usesSystemSetting": true
   },
   "invisibles": {
-    "color": "#C8C8C8"
+    "color": "#C5CAD4"
   },
   "keywords": {
-    "color": "#0000FF"
+    "color": "#2563EB"
   },
   "lineHighlight": {
-    "color": "#00000008"
+    "color": "#1D20260A"
   },
   "metadata": {
     "author": "1024jp",
-    "description": "VS Code Light Modern palette.",
+    "description": "Refined Apple editorial light palette.",
     "distributionURL": "https://coteditor.com",
     "license": "Same as CotEditor (Apache, ver.2)"
   },
   "numbers": {
-    "color": "#098658"
+    "color": "#047857"
   },
   "selection": {
-    "color": "#ADD6FF",
+    "color": "#CCE0FF",
     "usesSystemSetting": false
   },
   "strings": {
-    "color": "#A31515"
+    "color": "#B45309"
   },
   "text": {
-    "color": "#3B3B3B"
+    "color": "#16181C"
   },
   "types": {
-    "color": "#267F99"
+    "color": "#0F766E"
   },
   "values": {
-    "color": "#098658"
+    "color": "#047857"
   },
   "variables": {
-    "color": "#001080"
+    "color": "#1E3A5F"
   }
 }

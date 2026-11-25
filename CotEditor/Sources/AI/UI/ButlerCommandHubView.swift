@@ -174,9 +174,11 @@ final class ToolbarButlerBotButtonView: NSView {
             }
         )
         
+        let cornerRadius: CGFloat = 16
         let rootView = ButlerCommandHubView(
             hostWindow: hostWindow,
             isDockedPane: false,
+            panelCornerRadius: cornerRadius,
             isPinnedPanel: pinnedBinding,
             onDockToPane: { [weak self] in
                 self?.closeFloatingPanel()
@@ -193,13 +195,14 @@ final class ToolbarButlerBotButtonView: NSView {
             }
         )
         
-        let cornerRadius: CGFloat = 16
         let vfx = NSVisualEffectView()
         vfx.material = .popover
         vfx.blendingMode = .behindWindow
         vfx.state = .active
+        vfx.maskImage = UserAvatarToolbarButtonView.makeRoundedMaskImage(cornerRadius: cornerRadius)
         vfx.wantsLayer = true
         vfx.layer?.cornerRadius = cornerRadius
+        vfx.layer?.cornerCurve = .continuous
         vfx.layer?.masksToBounds = true
         vfx.layer?.backgroundColor = NSColor.clear.cgColor
         vfx.layer?.borderWidth = 0.5
@@ -222,6 +225,7 @@ final class ToolbarButlerBotButtonView: NSView {
         hosting.view.wantsLayer = true
         hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
         hosting.view.layer?.cornerRadius = cornerRadius
+        hosting.view.layer?.cornerCurve = .continuous
         hosting.view.layer?.masksToBounds = true
         vfx.addSubview(hosting.view)
         NSLayoutConstraint.activate([
@@ -411,6 +415,10 @@ struct ButlerCommandHubView: View {
     weak var hostWindow: NSWindow?
     var isDockedPane: Bool = false
     var initialSeedPrompt: String = ""
+    var panelCornerRadius: CGFloat = 0
+    var surfaceColor: Color? = nil
+    var isDarkOverride: Bool? = nil
+    var hasCustomBackground: Bool = false
     var isPinnedPanel: Binding<Bool> = .constant(false)
     var onDockToPane: (() -> Void)? = nil
     var onSetSuppressDismiss: ((Bool) -> Void)? = nil
@@ -423,17 +431,52 @@ struct ButlerCommandHubView: View {
     @State private var database = CotLocalDatabase.shared
     @State private var piKernel = PiKernelManager.shared
     @State private var userProfile = UserProfileManager.shared
+    @State private var proactiveEngine = CotButlerProactiveEngine.shared
+    @State private var marketService = CotMarketService.shared
+    @State private var podcastService = CotPodcastService.shared
+    @State private var newsService = AIHotNewsService.shared
     @State private var webController = BeautifulAgentWebController()
     @State private var availableModels: [BeautifulAgentModelPayload] = []
     @State private var quotedExcerpt: String? = nil
     @State private var streamListenerID: UUID? = nil
     
     private var resolvedIsDark: Bool {
-        switch self.documentAppearance {
-            case .light: false
-            case .dark: true
-            case .default: self.colorScheme == .dark
+        if let isDarkOverride {
+            return isDarkOverride
         }
+        switch self.documentAppearance {
+            case .light: return false
+            case .dark: return true
+            case .default: return self.colorScheme == .dark
+        }
+    }
+    
+    private func resolvedThemeSurfaces(isDark: Bool) -> (pageHex: String?, canvasHex: String?) {
+        guard self.isDockedPane, let surfaceColor else {
+            return (nil, nil)
+        }
+        let srgb = NSColor(surfaceColor).usingColorSpace(.sRGB) ?? NSColor(surfaceColor)
+        let target: NSColor = isDark ? .white : .black
+        let ratio: CGFloat = isDark ? 0.035 : 0.025
+        let blended = NSColor(
+            srgbRed: srgb.redComponent * (1 - ratio) + target.redComponent * ratio,
+            green: srgb.greenComponent * (1 - ratio) + target.greenComponent * ratio,
+            blue: srgb.blueComponent * (1 - ratio) + target.blueComponent * ratio,
+            alpha: 1.0
+        )
+        if self.hasCustomBackground {
+            let pr = Int((srgb.redComponent * 255).rounded())
+            let pg = Int((srgb.greenComponent * 255).rounded())
+            let pb = Int((srgb.blueComponent * 255).rounded())
+            let cr = Int((blended.redComponent * 255).rounded())
+            let cg = Int((blended.greenComponent * 255).rounded())
+            let cb = Int((blended.blueComponent * 255).rounded())
+            return (
+                "rgba(\(pr), \(pg), \(pb), 0.56)",
+                "rgba(\(cr), \(cg), \(cb), 0.78)"
+            )
+        }
+        return (StudioPaletteManager.hexString(from: srgb), StudioPaletteManager.hexString(from: blended))
     }
     
     private var activeModelID: String {
@@ -454,7 +497,8 @@ struct ButlerCommandHubView: View {
         BeautifulAgentWebView(
             state: self.buildHostState(),
             controller: self.webController,
-            callbacks: self.buildCallbacks()
+            callbacks: self.buildCallbacks(),
+            cornerRadius: self.panelCornerRadius
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
@@ -570,16 +614,21 @@ struct ButlerCommandHubView: View {
                 isPinned: $0.isPinned,
                 messageCount: $0.messageCount,
                 updatedAt: $0.updatedAt.timeIntervalSince1970 * 1000,
+                workspaceID: $0.workspaceID,
                 workspacePath: $0.workspacePath,
-                workspaceName: $0.workspaceName
+                workspaceName: $0.workspaceName,
+                sortOrder: $0.sortOrder
             )
         }
         
         let workspaces = self.butler.availableWorkspaces().map {
             BeautifulAgentWorkspacePayload(
+                id: $0.id,
                 path: $0.path,
                 name: $0.name,
+                folderPath: $0.folderPath,
                 subtitle: $0.subtitle,
+                isFolderBacked: $0.isFolderBacked,
                 isOpenInEditor: $0.isOpenInEditor
             )
         }
@@ -625,17 +674,27 @@ struct ButlerCommandHubView: View {
         let slashCommands: [BeautifulAgentSlashCommandPayload] = [
             .init(key: "market", name: "/market", desc: AppLanguage.text("查实时股价并分析走势", en: "Lookup live stock quote"), insertText: "/market "),
             .init(key: "news", name: "/news", desc: AppLanguage.text("汇总今天最值得关注的 AI/科技热点", en: "Summarize today's news"), insertText: "/news "),
-            .init(key: "note", name: "/note", desc: AppLanguage.text("把要点整理成一篇新 Markdown 笔记", en: "Create Markdown note"), insertText: "/note "),
             .init(key: "memory", name: "/memory", desc: AppLanguage.text("记住我的长期偏好或习惯", en: "Save to long-term memory"), insertText: "/memory "),
             .init(key: "new", name: "/new", desc: AppLanguage.text("开启一段全新对话", en: "Start a fresh chat"), insertText: "/new"),
         ]
         
         let userDisplayName = self.userProfile.activeProfile.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         let greetingName = userDisplayName.isEmpty ? self.butler.name : userDisplayName
+        let isDark = self.resolvedIsDark
+        let surfaces = self.resolvedThemeSurfaces(isDark: isDark)
+        let _ = self.proactiveEngine.revision
+        let proactiveCards = self.proactiveEngine.buildProactiveCards(
+            watchlist: self.marketService.watchlist,
+            quotes: self.marketService.quotes,
+            memories: CotMemoryStore.shared.memories,
+            unreadPodcasts: self.podcastService.unreadReminders,
+            recentNews: self.newsService.items
+        )
+        let workers = self.proactiveEngine.workers
         
         return BeautifulAgentHostStatePayload(
             mode: "butler",
-            isDark: self.resolvedIsDark,
+            isDark: isDark,
             locale: isZh ? "zh" : "en",
             botName: self.butler.name,
             botNickname: self.butler.nickname,
@@ -666,7 +725,11 @@ struct ButlerCommandHubView: View {
             slashCommands: slashCommands,
             availableWorkspaces: workspaces,
             availableDocuments: availableDocuments,
-            availableBots: availableBots
+            availableBots: availableBots,
+            themePageHex: surfaces.pageHex,
+            themeCanvasHex: surfaces.canvasHex,
+            proactiveCards: proactiveCards,
+            backgroundWorkers: workers
         )
     }
     
@@ -780,15 +843,15 @@ struct ButlerCommandHubView: View {
     }
     
     
-    private func presentWorkspaceFolderPicker(sessionID: String, createNewSession: Bool) {
+    private func presentWorkspaceFolderPicker(sessionID: String, createNewSession: Bool, workspaceID: String? = nil) {
         self.onSetSuppressDismiss?(true)
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
-        panel.prompt = AppLanguage.text("绑定工作区", en: "Select Workspace")
-        panel.message = AppLanguage.text("选择该对话会话对应的本地工作区目录", en: "Choose a local workspace folder for this session")
+        panel.prompt = AppLanguage.text("关联文件夹", en: "Link Folder")
+        panel.message = AppLanguage.text("可选：为该工作区关联一个本地文件夹（不选也可作为纯逻辑工作区使用）", en: "Optional: link a local folder to this workspace")
         if let existing = self.butler.activeWorkspacePath, FileManager.default.fileExists(atPath: existing) {
             panel.directoryURL = URL(filePath: existing)
         } else if let activeDir = CotAgentCoordinator.shared.activeWorkingDirectoryURL() {
@@ -798,10 +861,17 @@ struct ButlerCommandHubView: View {
         self.onSetSuppressDismiss?(false)
         guard response == .OK, let selectedURL = panel.url else { return }
         let path = selectedURL.standardizedFileURL.path(percentEncoded: false)
-        if createNewSession {
+        if let workspaceID, !workspaceID.isEmpty {
+            self.butler.updateWorkspaceFolder(workspaceID, folderPath: path)
+        } else if createNewSession {
             self.butler.startNewSession(workspacePath: path)
         } else {
-            self.butler.setSessionWorkspace(sessionID.isEmpty ? self.butler.activeSessionID : sessionID, workspacePath: path)
+            let targetSessionID = sessionID.isEmpty ? self.butler.activeSessionID : sessionID
+            if let existingWSID = self.butler.sessions.first(where: { $0.id == targetSessionID })?.workspaceID {
+                self.butler.updateWorkspaceFolder(existingWSID, folderPath: path)
+            } else {
+                self.butler.setSessionWorkspace(targetSessionID, workspacePath: path)
+            }
         }
         self.webController.focusComposer()
     }
@@ -815,7 +885,7 @@ struct ButlerCommandHubView: View {
         let handleSendRich: (String, String, [ButlerDocumentAttachment], String?) -> Void = { prompt, quote, attachedDocs, delegatedBotID in
             let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed == "/new" {
-                self.butler.startNewSession(workspacePath: self.butler.activeWorkspacePath)
+                self.butler.startNewSession(workspaceID: self.butler.activeWorkspaceID, workspacePath: self.butler.activeWorkspacePath)
                 return
             }
             let effectiveQuote = quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -880,10 +950,13 @@ struct ButlerCommandHubView: View {
             _ = try? PiKernelManager.shared.syncWorkspace()
         }
         cb.onNewSession = {
-            self.butler.startNewSession(workspacePath: self.butler.activeWorkspacePath)
+            self.butler.startNewSession(workspaceID: self.butler.activeWorkspaceID, workspacePath: self.butler.activeWorkspacePath)
         }
         cb.onNewSessionInWorkspace = { wsPath in
             self.butler.startNewSession(workspacePath: wsPath)
+        }
+        cb.onNewSessionInWorkspaceTarget = { wsID, wsPath in
+            self.butler.startNewSession(workspaceID: wsID, workspacePath: wsPath)
         }
         cb.onSelectSession = { id in
             self.butler.selectSession(id)
@@ -900,8 +973,44 @@ struct ButlerCommandHubView: View {
         cb.onSetSessionWorkspace = { sessionID, wsPath in
             self.butler.setSessionWorkspace(sessionID, workspacePath: wsPath)
         }
+        cb.onSetSessionWorkspaceTarget = { sessionID, wsID, wsPath in
+            if let wsID, !wsID.isEmpty {
+                self.butler.setSessionWorkspace(sessionID, workspaceID: wsID)
+            } else if let wsPath, !wsPath.isEmpty {
+                self.butler.setSessionWorkspace(sessionID, workspacePath: wsPath)
+            } else {
+                self.butler.setSessionWorkspace(sessionID, workspaceID: nil)
+            }
+        }
         cb.onChooseWorkspaceFolder = { sessionID, createNew in
             self.presentWorkspaceFolderPicker(sessionID: sessionID, createNewSession: createNew)
+        }
+        cb.onCreateWorkspace = { name, folderPath, startSession, assignSessionID in
+            _ = self.butler.createWorkspace(
+                name: name,
+                folderPath: folderPath,
+                startSession: startSession,
+                assignSessionID: assignSessionID
+            )
+            self.webController.focusComposer()
+        }
+        cb.onRenameWorkspace = { id, name in
+            self.butler.renameWorkspace(id, to: name)
+        }
+        cb.onDeleteWorkspace = { id in
+            self.butler.deleteWorkspace(id)
+        }
+        cb.onUpdateWorkspaceFolder = { id, folderPath in
+            self.butler.updateWorkspaceFolder(id, folderPath: folderPath)
+        }
+        cb.onChooseWorkspaceFolderForWorkspace = { wsID in
+            self.presentWorkspaceFolderPicker(sessionID: self.butler.activeSessionID, createNewSession: false, workspaceID: wsID)
+        }
+        cb.onReorderWorkspaces = { orderedIDs in
+            self.butler.reorderWorkspaces(orderedIDs)
+        }
+        cb.onMoveSession = { sessionID, targetWSID, orderedIDs, isPinned in
+            self.butler.moveSession(sessionID, toWorkspaceID: targetWSID, orderedSessionIDs: orderedIDs, isPinned: isPinned)
         }
         cb.onInsertToEditor = { text in
             CotAgentCoordinator.shared.insertTextIntoActiveEditor(text)
@@ -931,6 +1040,20 @@ struct ButlerCommandHubView: View {
         }
         cb.onDockToPane = {
             self.onDockToPane?()
+        }
+        cb.onDismissProactiveCard = { id in
+            self.proactiveEngine.dismissCard(id: id)
+        }
+        cb.onOpenWorkerAction = { board, query in
+            let splitRight = !self.isDockedPane
+            Task {
+                _ = await CotAgentCoordinator.shared.execute([
+                    CotAgentAction(type: "open_board", board: board, query: query, splitRight: splitRight),
+                ])
+            }
+        }
+        cb.onDismissWorker = { id in
+            self.proactiveEngine.dismissWorker(id: id)
         }
         return cb
     }
