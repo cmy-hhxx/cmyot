@@ -44,12 +44,48 @@ nonisolated struct AICompletionResponse: Sendable, Equatable {
 /// model list can use exactly the same ones.
 nonisolated struct AIClient: Sendable {
     
+    /// Shared warm HTTP/2 keep-alive session for fast consecutive AI requests (avoids repeated TLS handshakes).
+    private static let sharedSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.httpMaximumConnectionsPerHost = 6
+        config.waitsForConnectivity = false
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.timeoutIntervalForRequest = 60
+        return URLSession(configuration: config)
+    }()
+    
+    /// Remembers `(endpoint, baseURL, model)` pairs that returned HTTP 400 on thinking-control fields,
+    /// so subsequent quick actions never waste a retry round-trip.
+    private final class ThinkingRejectionCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var rejectedKeys: Set<String> = []
+        
+        func contains(_ key: String) -> Bool {
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            return self.rejectedKeys.contains(key)
+        }
+        
+        func insert(_ key: String) {
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            self.rejectedKeys.insert(key)
+        }
+    }
+    
+    private static let thinkingRejectionCache = ThinkingRejectionCache()
+    
     var configuration: AIConfiguration
     var maxOutputTokens: Int? = nil
     var timeoutInterval: TimeInterval = 120
     var disablesThinking: Bool = false
     
     private var wireConfig: AIConfiguration { self.configuration.wireConfiguration }
+    
+    private var thinkingCacheKey: String {
+        let cfg = self.wireConfig
+        return "\(cfg.endpoint.rawValue)|\(cfg.resolvedBaseURL)|\(cfg.model.lowercased())"
+    }
     
     
     /// Sends the messages and streams partial text chunks as they arrive, returning the final answer.
@@ -72,7 +108,8 @@ nonisolated struct AIClient: Sendable {
     ) async throws -> AICompletionResponse {
         
         var allowTemperature = Self.supportsTemperature(for: self.wireConfig.model)
-        var allowThinkingControl = true
+        let cacheKey = self.thinkingCacheKey
+        var allowThinkingControl = !Self.thinkingRejectionCache.contains(cacheKey)
         
         while true {
             do {
@@ -90,6 +127,7 @@ nonisolated struct AIClient: Sendable {
                 )
             } catch let error where allowThinkingControl && Self.isThinkingParameterRejectedError(error) {
                 allowThinkingControl = false
+                Self.thinkingRejectionCache.insert(cacheKey)
                 CotLogger.shared.info(
                     category: .ai,
                     "Model rejected thinking parameter; retrying without thinking control: model=\(self.wireConfig.model)"
@@ -156,7 +194,11 @@ nonisolated struct AIClient: Sendable {
         return lower.contains("thinking")
             || lower.contains("thinkingconfig")
             || lower.contains("thinking_budget")
+            || lower.contains("enable_thinking")
             || lower.contains("reasoning")
+            || lower.contains("reasoning_effort")
+            || (lower.contains("effort") && (lower.contains("invalid") || lower.contains("unsupported") || lower.contains("minimal")))
+            || (lower.contains("think") && (lower.contains("unknown") || lower.contains("unsupported") || lower.contains("invalid")))
     }
     
     
@@ -219,7 +261,7 @@ nonisolated struct AIClient: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await Self.sharedSession.data(for: request)
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as URLError where error.code == .cancelled {
@@ -259,11 +301,24 @@ nonisolated struct AIClient: Sendable {
     private var supportsSSEStreaming: Bool {
         
         switch self.wireConfig.endpoint {
-            case .openAIChatCompletions, .anthropicMessages, .ollama:
+            case .openAIChatCompletions, .openAIResponses, .anthropicMessages, .googleGemini, .ollama:
                 true
-            case .openAIResponses, .googleGemini:
-                false
         }
+    }
+    
+    
+    private func streamingURL(for config: AIConfiguration) -> URL? {
+        
+        guard let baseURL = config.requestURL else { return nil }
+        if config.endpoint == .googleGemini {
+            let raw = baseURL.absoluteString
+            if raw.contains(":generateContent") {
+                let replaced = raw.replacingOccurrences(of: ":generateContent", with: ":streamGenerateContent")
+                let separator = replaced.contains("?") ? "&" : "?"
+                return URL(string: replaced + separator + "alt=sse")
+            }
+        }
+        return baseURL
     }
     
     
@@ -275,7 +330,7 @@ nonisolated struct AIClient: Sendable {
     ) async throws -> AICompletionResponse {
         
         let config = self.wireConfig
-        guard let url = config.requestURL else { throw AIError.invalidURL(config.resolvedBaseURL) }
+        guard let url = self.streamingURL(for: config) else { throw AIError.invalidURL(config.resolvedBaseURL) }
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -297,7 +352,7 @@ nonisolated struct AIClient: Sendable {
         
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do {
-            (bytes, response) = try await URLSession.shared.bytes(for: request)
+            (bytes, response) = try await Self.sharedSession.bytes(for: request)
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as URLError where error.code == .cancelled {
@@ -411,6 +466,47 @@ nonisolated struct AIClient: Sendable {
                         accumulated += text
                         await onPartial(accumulated)
                     }
+                case .openAIResponses:
+                    let eventType = obj["type"] as? String
+                    if eventType == "response.output_text.delta",
+                       let delta = obj["delta"] as? String,
+                       !delta.isEmpty
+                    {
+                        accumulated += delta
+                        await onPartial(accumulated)
+                    } else if eventType == "response.completed",
+                              let resp = obj["response"] as? [String: Any]
+                    {
+                        if let usage = resp["usage"] as? [String: Any] {
+                            if let inTok = usage["input_tokens"] as? Int { inputTokens = inTok }
+                            if let outTok = usage["output_tokens"] as? Int { outputTokens = outTok }
+                        }
+                        if accumulated.isEmpty, let full = Self.openAIResponsesText(resp), !full.isEmpty {
+                            accumulated = full
+                            await onPartial(accumulated)
+                        }
+                    } else if eventType == "error" || eventType == "response.failed" {
+                        throw AIError.http(status: 400, message: Self.errorMessage(from: data))
+                    }
+                case .googleGemini:
+                    if let usage = obj["usageMetadata"] as? [String: Any] {
+                        if let inTok = usage["promptTokenCount"] as? Int { inputTokens = inTok }
+                        if let outTok = usage["candidatesTokenCount"] as? Int { outputTokens = outTok }
+                    }
+                    if let parts = (obj["candidates"] as? [[String: Any]])?
+                        .first
+                        .flatMap({ $0["content"] as? [String: Any] })
+                        .flatMap({ $0["parts"] as? [[String: Any]] })
+                    {
+                        let chunk = parts
+                            .filter { ($0["thought"] as? Bool) != true }
+                            .compactMap { $0["text"] as? String }
+                            .joined()
+                        if !chunk.isEmpty {
+                            accumulated += chunk
+                            await onPartial(accumulated)
+                        }
+                    }
                 default:
                     break
             }
@@ -439,6 +535,41 @@ nonisolated struct AIClient: Sendable {
             || m.contains("/o3")
             || m.contains("/o4")
             || m.contains("/gpt-5")
+            || m.contains("gemini-2.5")
+            || m.contains("gemini-3")
+    }
+    
+    
+    /// Lowest-latency reasoning effort accepted by OpenAI reasoning models when thinking should be minimized.
+    private static func fastestOpenAIReasoningEffort(for model: String) -> String {
+        let m = model.lowercased()
+        if m.hasPrefix("gpt-5") || m.contains("/gpt-5") {
+            return "minimal"
+        }
+        return "low"
+    }
+    
+    
+    /// Applies provider-appropriate thinking-off / minimal-reasoning flags on OpenAI-compatible Chat Completions
+    /// when `disablesThinking` is enabled for fast interactive actions.
+    private static func applyOpenAIChatDisableThinking(to body: inout [String: Any], model: String) {
+        let m = model.lowercased()
+        if m.contains("qwen3") || m.contains("qwen-3") || m.contains("qwq") {
+            body["enable_thinking"] = false
+        } else if m.contains("glm-4.5")
+                    || m.contains("glm-4.6")
+                    || m.contains("glm-4.7")
+                    || m.contains("glm-5")
+                    || m.contains("doubao")
+                    || m.contains("seed-1")
+                    || m.contains("seed-2")
+                    || m.contains("kimi-k2")
+                    || m.contains("minimax-m2")
+        {
+            body["thinking"] = ["type": "disabled"]
+        } else if Self.supportsOpenAIReasoningEffort(for: model) {
+            body["reasoning_effort"] = Self.fastestOpenAIReasoningEffort(for: model)
+        }
     }
     
     
@@ -510,14 +641,18 @@ nonisolated struct AIClient: Sendable {
                         ]
                     },
                 ]
+                if stream {
+                    body["stream"] = true
+                }
                 if !system.isEmpty {
                     body["instructions"] = system
                 }
-                if allowThinkingControl, !self.disablesThinking,
-                   Self.supportsOpenAIReasoningEffort(for: model),
-                   let effort = config.reasoningEffort, !effort.isEmpty
-                {
-                    body["reasoning"] = ["effort": effort]
+                if allowThinkingControl, Self.supportsOpenAIReasoningEffort(for: model) {
+                    if self.disablesThinking {
+                        body["reasoning"] = ["effort": Self.fastestOpenAIReasoningEffort(for: model)]
+                    } else if let effort = config.reasoningEffort, !effort.isEmpty {
+                        body["reasoning"] = ["effort": effort]
+                    }
                 }
                 if let maxTokens = self.maxOutputTokens {
                     body["max_output_tokens"] = maxTokens
@@ -547,11 +682,14 @@ nonisolated struct AIClient: Sendable {
                         body["max_tokens"] = maxTokens
                     }
                 }
-                if allowThinkingControl, !self.disablesThinking,
-                   Self.supportsOpenAIReasoningEffort(for: model),
-                   let effort = config.reasoningEffort, !effort.isEmpty
-                {
-                    body["reasoning_effort"] = effort
+                if allowThinkingControl {
+                    if self.disablesThinking {
+                        Self.applyOpenAIChatDisableThinking(to: &body, model: model)
+                    } else if Self.supportsOpenAIReasoningEffort(for: model),
+                              let effort = config.reasoningEffort, !effort.isEmpty
+                    {
+                        body["reasoning_effort"] = effort
+                    }
                 }
                 
                 return body
@@ -650,6 +788,9 @@ nonisolated struct AIClient: Sendable {
                         ]
                     },
                 ]
+                if allowThinkingControl, self.disablesThinking {
+                    body["think"] = false
+                }
                 if let maxTokens = self.maxOutputTokens {
                     body["options"] = ["num_predict": maxTokens]
                 }
@@ -707,6 +848,7 @@ nonisolated struct AIClient: Sendable {
                     .flatMap { $0["content"] as? [String: Any] }
                     .flatMap { $0["parts"] as? [[String: Any]] }
                 text = parts?
+                    .filter { ($0["thought"] as? Bool) != true }
                     .compactMap { $0["text"] as? String }
                     .joined()
             case .ollama:

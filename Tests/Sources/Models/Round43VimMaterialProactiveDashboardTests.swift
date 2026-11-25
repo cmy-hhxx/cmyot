@@ -522,4 +522,155 @@ struct Round43VimMaterialProactiveDashboardTests {
         let accept = machine.acceptPlan()
         #expect(accept?.replacement == semanticV2)
     }
+    
+    
+    // MARK: 7. Pixel-Exact Tab-Stop Table Alignment & Quick AI Fast Lane Wire Payloads
+    
+    @Test func structuredTableCleanerAlignsMultiColumnTablesToExactTabStopsAndFlattensWideKeyValueTables() throws {
+        let sample = """
+        ## 先备份：最后一轮没有待处理数据
+
+        我先停掉守护进程（避免它在自动轮次运行时和我的手动轮次冲突），然后手动跑一轮 `--incremental --no-full-fallback`：
+
+        | 树 | delta | 合并后 | verify | 耗时 | 时间 |
+        |---|---|---|---|---|---|
+        | aime_expert | **0** | 157,601 | noop | 45s | 15:22 |
+        | aime_fast | **0** | 460,501 | noop | 97s | 15:24 |
+
+        **两棵树均为 noop，说明截至 15:24 没有任何待聚类数据。** 我 13:00 预测的 fast 剩余回补，已在 14:29 那轮被完全吸收（当时 +1,429），没有留下尾巴。
+
+        附带刷新：`cases=211,339`、`traces_missing_case=0`、badcase **37,773**、goldencase **22,541**。
+
+        ## 状态干净性检查
+
+        | 检查项 | 结果 |
+        |---|---|
+        | `runs/*/run_new`、`run_delta` 残留 | 无 |
+        | `verify.json` errors、locator_mismatch | 0 / 0（两棵树） |
+        | 交付物 | expert 11 个文件、fast 11 个文件，完整 |
+        | `run_merged` | expert 1.2 GB、fast 2.7 GB 完整保留 |
+        | case 身份索引 | `cases_aime.jsonl` 173 MB 和 `state.json`，均在 |
+        | 内存 | anon 10.5 GB，`oom_kill` 仍为 23 |
+        """
+        
+        // Simulate a proportional CJK + Latin font (e.g. PingFang SC / SF Pro) where CJK != 2x space
+        let propMetrics = AIDocumentTextCleaner.TableLayoutMetrics(
+            tabInterval: 28.0,
+            minColumnGap: 10.0,
+            measureWidth: { text in
+                text.unicodeScalars.reduce(CGFloat(0)) { acc, s in
+                    if s.isASCII {
+                        return acc + (s == " " ? 3.5 : 7.2)
+                    }
+                    return acc + 13.0
+                }
+            }
+        )
+        
+        let cleaned = AIDocumentTextCleaner.cleanStructuredPlainText(sample, tableMetrics: propMetrics)
+        let lines = cleaned.components(separatedBy: "\n")
+        
+        // Zero Markdown decoration noise, glob path preserved intact
+        #expect(!cleaned.contains("**"))
+        #expect(!cleaned.contains("`"))
+        #expect(!cleaned.contains("|"))
+        #expect(cleaned.contains("runs/*/run_new、run_delta 残留：无"))
+        #expect(cleaned.contains("数据。我 13:00"))
+        
+        // Section headings sit flush left directly above Tab-indented content (no awkward blank line after heading)
+        let firstIdx = try #require(lines.firstIndex(of: "先备份：最后一轮没有待处理数据"))
+        #expect(lines[firstIdx + 1].hasPrefix("\t我先停掉守护进程"))
+        
+        // Verify EVERY column of the 6-column table lands on the EXACT same pixel Tab-stop X across all 3 rows!
+        let headerRow = try #require(lines.first { $0.contains("delta") && $0.contains("verify") })
+        let expertRow = try #require(lines.first { $0.contains("aime_expert") })
+        let fastRow = try #require(lines.first { $0.contains("aime_fast") })
+        
+        func columnStartPositions(for line: String, metrics: AIDocumentTextCleaner.TableLayoutMetrics) -> [CGFloat] {
+            var x: CGFloat = 0
+            var starts: [CGFloat] = []
+            var currentCell = ""
+            var inCell = false
+            for ch in line {
+                if ch == "\t" {
+                    if inCell {
+                        x += metrics.measureWidth(currentCell)
+                        currentCell = ""
+                        inCell = false
+                    }
+                    let nextStop = (floor((x + 0.01) / metrics.tabInterval) + 1) * metrics.tabInterval
+                    x = nextStop
+                } else {
+                    if !inCell {
+                        starts.append(x)
+                        inCell = true
+                    }
+                    currentCell.append(ch)
+                }
+            }
+            return starts
+        }
+        
+        let headerCols = columnStartPositions(for: headerRow, metrics: propMetrics)
+        let expertCols = columnStartPositions(for: expertRow, metrics: propMetrics)
+        let fastCols = columnStartPositions(for: fastRow, metrics: propMetrics)
+        #expect(headerCols.count == 6)
+        #expect(headerCols == expertCols)
+        #expect(headerCols == fastCols)
+        
+        // Wide 2-column key-value table converts cleanly into structured Tab-indented `- Key：Value` list
+        #expect(lines.contains("\t- runs/*/run_new、run_delta 残留：无"))
+        #expect(lines.contains("\t- verify.json errors、locator_mismatch：0 / 0（两棵树）"))
+        #expect(lines.contains("\t- 内存：anon 10.5 GB，oom_kill 仍为 23"))
+    }
+    
+    
+    @Test func quickActionsUseFastLaneAndDisableThinkingAcrossProviders() throws {
+        // Quick editor actions enable fast lane; heavy multi-doc/report actions keep full reasoning
+        #expect(AIAction.translate.isQuickAction == true)
+        #expect(AIAction.summarize.isQuickAction == true)
+        #expect(AIAction.explain.isQuickAction == true)
+        #expect(AIAction.semanticRestructure.isQuickAction == true)
+        #expect(AIAction.weeklyReportItem.isQuickAction == true)
+        #expect(AIAction.weeklyReport.isQuickAction == false)
+        #expect(AIAction.organizeAndMerge.isQuickAction == false)
+        
+        let msgs: [AIMessage] = [.system("sys"), .user("hello")]
+        
+        // GLM-5 on OpenAI Chat Completions with disablesThinking -> thinking.type = disabled
+        let glmCfg = AIConfiguration(endpoint: .openAIChatCompletions, baseURL: "https://opencode.ai/zen/go/v1", model: "glm-5", apiKey: "k")
+        let glmBody = AIClient(configuration: glmCfg, disablesThinking: true).debugRequestBody(for: msgs)
+        let glmThinking = try #require(glmBody["thinking"] as? [String: String])
+        #expect(glmThinking["type"] == "disabled")
+        
+        // Qwen3 on OpenAI Chat Completions with disablesThinking -> enable_thinking = false
+        let qwenCfg = AIConfiguration(endpoint: .openAIChatCompletions, baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3-235b", apiKey: "k")
+        let qwenBody = AIClient(configuration: qwenCfg, disablesThinking: true).debugRequestBody(for: msgs)
+        #expect(qwenBody["enable_thinking"] as? Bool == false)
+        
+        // GPT-5 on OpenAI Responses with disablesThinking -> reasoning.effort = minimal + stream = true
+        let gpt5Cfg = AIConfiguration(endpoint: .openAIResponses, baseURL: "https://api.openai.com/v1", model: "gpt-5", apiKey: "k")
+        let gpt5Body = AIClient(configuration: gpt5Cfg, disablesThinking: true).debugRequestBody(for: msgs, stream: true)
+        let gpt5Reasoning = try #require(gpt5Body["reasoning"] as? [String: String])
+        #expect(gpt5Reasoning["effort"] == "minimal")
+        #expect(gpt5Body["stream"] as? Bool == true)
+        
+        // Anthropic Claude with disablesThinking -> thinking.type = disabled
+        let claudeCfg = AIConfiguration(endpoint: .anthropicMessages, baseURL: "https://api.anthropic.com/v1", model: "claude-sonnet-4-5", apiKey: "k")
+        let claudeBody = AIClient(configuration: claudeCfg, disablesThinking: true).debugRequestBody(for: msgs)
+        let claudeThinking = try #require(claudeBody["thinking"] as? [String: String])
+        #expect(claudeThinking["type"] == "disabled")
+        
+        // Gemini with disablesThinking -> thinkingBudget = 0
+        let geminiCfg = AIConfiguration(endpoint: .googleGemini, baseURL: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.5-flash", apiKey: "k")
+        let geminiBody = AIClient(configuration: geminiCfg, disablesThinking: true).debugRequestBody(for: msgs)
+        let genCfg = try #require(geminiBody["generationConfig"] as? [String: Any])
+        let tCfg = try #require(genCfg["thinkingConfig"] as? [String: Any])
+        #expect(tCfg["thinkingBudget"] as? Int == 0)
+        
+        // Ollama with disablesThinking -> think = false
+        let ollamaCfg = AIConfiguration(endpoint: .ollama, baseURL: "http://localhost:11434", model: "qwen3:8b", apiKey: "")
+        let ollamaBody = AIClient(configuration: ollamaCfg, disablesThinking: true).debugRequestBody(for: msgs)
+        #expect(ollamaBody["think"] as? Bool == false)
+    }
 }

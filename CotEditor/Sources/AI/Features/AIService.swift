@@ -120,11 +120,16 @@ import Observation
         }
         
         let customBotPersona = botConfig.customPersona.trimmingCharacters(in: .whitespacesAndNewlines)
-        let persona = customBotPersona.isEmpty
-            ? db.aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
-            : customBotPersona
+        let isQuick = action.isQuickAction
+        let persona: String = if isQuick {
+            customBotPersona
+        } else {
+            customBotPersona.isEmpty
+                ? db.aiPersona.trimmingCharacters(in: .whitespacesAndNewlines)
+                : customBotPersona
+        }
         let stagePrompt = db.customStagePrompt(forKey: action.databaseConfigKey) ?? action.defaultSystemPrompt
-        let kycContext = CotMemoryStore.shared.compiledKYCContext()
+        let kycContext = isQuick ? "" : CotMemoryStore.shared.compiledKYCContext()
         let fullSystemPrompt = [persona, kycContext, stagePrompt]
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
@@ -166,7 +171,18 @@ import Observation
             .user(userPrompt, images: images),
         ]
         
-        let resolvedConfig = botStore.resolvedConfiguration(for: botID)
+        var resolvedConfig = botStore.resolvedConfiguration(for: botID)
+        let disablesThinking: Bool
+        if isQuick {
+            // Fast Lane for quick editor actions: disable extended thinking (or use lowest effort on pure reasoning models)
+            resolvedConfig.reasoningEffort = "low"
+            disablesThinking = !AINextTokenPredictor.isPureReasoningModel(resolvedConfig.model)
+        } else {
+            disablesThinking = false
+        }
+        let maxOutputTokens = action.fastLaneMaxOutputTokens(forInputLength: text.count)
+        let timeoutInterval: TimeInterval = isQuick ? 45 : 120
+        
         let rawResult = try await self.executeBot(
             botID,
             systemPrompt: fullSystemPrompt,
@@ -174,6 +190,9 @@ import Observation
             messages: messages,
             hasImages: !images.isEmpty,
             configuration: resolvedConfig,
+            disablesThinking: disablesThinking,
+            maxOutputTokens: maxOutputTokens,
+            timeoutInterval: timeoutInterval,
             analyticsFeature: action.analyticsKey,
             onPartial: onPartial
         )
@@ -235,6 +254,9 @@ import Observation
         messages: [AIMessage],
         hasImages: Bool,
         configuration: AIConfiguration,
+        disablesThinking: Bool = false,
+        maxOutputTokens: Int? = nil,
+        timeoutInterval: TimeInterval = 120,
         analyticsFeature: String,
         onPartial: (@MainActor @Sendable (String) -> Void)?
     ) async throws -> String {
@@ -288,6 +310,9 @@ import Observation
         return try await self.send(
             messages,
             configuration: configuration,
+            disablesThinking: disablesThinking,
+            maxOutputTokens: maxOutputTokens,
+            timeoutInterval: timeoutInterval,
             analyticsFeature: analyticsFeature,
             onPartial: onPartial
         )
@@ -349,10 +374,18 @@ import Observation
     /// - Throws: ``AIError`` when the request fails.
     func testConnection(configuration: AIConfiguration) async throws -> String {
         
-        try await self.send([
-            .system("You are a connectivity test. Whatever you receive, reply with exactly one word: OK."),
-            .user("Ping"),
-        ], configuration: configuration)
+        var fastConfig = configuration
+        fastConfig.reasoningEffort = "low"
+        return try await self.send(
+            [
+                .system("You are a connectivity test. Whatever you receive, reply with exactly one word: OK."),
+                .user("Ping"),
+            ],
+            configuration: fastConfig,
+            disablesThinking: true,
+            maxOutputTokens: 32,
+            timeoutInterval: 15
+        )
     }
     
     
@@ -393,6 +426,9 @@ import Observation
     private func send(
         _ messages: [AIMessage],
         configuration: AIConfiguration? = nil,
+        disablesThinking: Bool = false,
+        maxOutputTokens: Int? = nil,
+        timeoutInterval: TimeInterval = 120,
         analyticsFeature: String? = nil,
         onPartial: (@MainActor @Sendable (String) -> Void)? = nil
     ) async throws -> String {
@@ -405,7 +441,7 @@ import Observation
         
         // Deliver every chunk before the request returns. A detached task here used to let a
         // late chunk land after the final result, which flipped finished UI back to "running".
-        // Coalesce rapid SSE updates (>= 35ms) to cut MainActor hops during fast streaming.
+        // Coalesce rapid SSE updates (>= 24ms) to balance snappy streaming and minimal MainActor hops.
         final class PartialThrottleState: @unchecked Sendable {
             private let lock = NSLock()
             private var lastEmitTime: CFAbsoluteTime = 0
@@ -415,7 +451,7 @@ import Observation
                 self.lock.lock()
                 defer { self.lock.unlock() }
                 let now = CFAbsoluteTimeGetCurrent()
-                if now - self.lastEmitTime >= 0.035 {
+                if now - self.lastEmitTime >= 0.024 {
                     self.lastEmitTime = now
                     self.latestPending = nil
                     return text
@@ -447,7 +483,13 @@ import Observation
         let start = clock.now
         let effective = configuration.wireConfiguration
         do {
-            let response = try await AIClient(configuration: configuration).sendWithUsage(
+            let client = AIClient(
+                configuration: configuration,
+                maxOutputTokens: maxOutputTokens,
+                timeoutInterval: timeoutInterval,
+                disablesThinking: disablesThinking
+            )
+            let response = try await client.sendWithUsage(
                 messages,
                 onPartial: nonisolatedPartial
             )

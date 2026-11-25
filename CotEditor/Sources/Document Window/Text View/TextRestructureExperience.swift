@@ -656,8 +656,9 @@ final class TextRestructureSessionController {
         }
         
         let original = nsText.substring(with: targetRange)
+        let tableMetrics = Self.liveTableMetrics(for: textView)
         let cleaned = Self.preserveTrailingNewline(
-            AIDocumentTextCleaner.cleanStructuredPlainText(original),
+            AIDocumentTextCleaner.cleanStructuredPlainText(original, tableMetrics: tableMetrics),
             matching: original
         )
         
@@ -751,8 +752,9 @@ final class TextRestructureSessionController {
                 guard let self, let textView else { return }
                 self.activeTask = nil
                 
+                let tableMetrics = Self.liveTableMetrics(for: textView)
                 let finalResult = Self.preserveTrailingNewline(
-                    AIDocumentTextCleaner.cleanStructuredPlainText(rawResult),
+                    AIDocumentTextCleaner.cleanStructuredPlainText(rawResult, tableMetrics: tableMetrics),
                     matching: sourceOriginal
                 )
                 guard !finalResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -1143,6 +1145,36 @@ final class TextRestructureSessionController {
         guard let bar = self.barHostView else { return }
         self.barHostView = nil
         bar.removeFromSuperview()
+    }
+    
+    
+    private final class FontMeasureBox: @unchecked Sendable {
+        let attributes: [NSAttributedString.Key: Any]
+        init(font: NSFont) {
+            self.attributes = [.font: font]
+        }
+    }
+    
+    /// Builds live font-measured Tab-stop metrics directly from `EditorTextView`'s active font & tabWidth
+    /// so every column aligns to the sub-pixel across proportional and mixed CJK/Latin fonts.
+    private static func liveTableMetrics(for textView: EditorTextView) -> AIDocumentTextCleaner.TableLayoutMetrics {
+        guard let font = textView.font else { return .defaultMonospace }
+        let box = FontMeasureBox(font: font)
+        let spaceWidth = max(3.0, (" " as NSString).size(withAttributes: box.attributes).width)
+        let tabInterval: CGFloat
+        if let styleInterval = textView.defaultParagraphStyle?.defaultTabInterval, styleInterval > 0 {
+            tabInterval = styleInterval
+        } else {
+            tabInterval = CGFloat(max(1, textView.tabWidth)) * spaceWidth
+        }
+        let minGap = max(spaceWidth * 1.8, tabInterval * 0.38)
+        return AIDocumentTextCleaner.TableLayoutMetrics(
+            tabInterval: tabInterval,
+            minColumnGap: minGap,
+            measureWidth: { text in
+                (text as NSString).size(withAttributes: box.attributes).width
+            }
+        )
     }
     
     

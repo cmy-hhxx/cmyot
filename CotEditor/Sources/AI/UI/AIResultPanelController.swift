@@ -160,11 +160,11 @@ final class AIResultPanelController: NSWindowController {
         
         self.pendingPartialText = trimmed
         let elapsed = Date().timeIntervalSince(self.lastPartialRenderTime)
-        if elapsed >= 0.08 {
+        if elapsed >= 0.04 {
             self.flushPendingPartial()
         } else if self.partialRenderTask == nil {
             self.partialRenderTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(80))
+                try? await Task.sleep(for: .milliseconds(40))
                 guard let self, !Task.isCancelled else { return }
                 self.partialRenderTask = nil
                 self.flushPendingPartial()

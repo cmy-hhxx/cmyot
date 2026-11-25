@@ -19,6 +19,7 @@
 //  limitations under the License.
 //
 
+import CoreGraphics
 import Foundation
 
 /// Rewrites a model answer as plain document text.
@@ -30,6 +31,25 @@ import Foundation
 ///
 /// Fenced code is preserved verbatim, including its indentation and any symbols inside it.
 nonisolated enum AIDocumentTextCleaner {
+    
+    /// Layout measurement metrics used to align multi-column plain-text tables to exact editor Tab stops
+    /// across both monospaced and proportional CJK/Latin fonts.
+    nonisolated struct TableLayoutMetrics: Sendable {
+        let tabInterval: CGFloat
+        let minColumnGap: CGFloat
+        let measureWidth: @Sendable (String) -> CGFloat
+        
+        /// Headless East-Asian cell-width fallback (`tabWidth = 4`, CJK = 2, ASCII = 1).
+        static let defaultMonospace = TableLayoutMetrics(
+            tabInterval: 4.0,
+            minColumnGap: 2.0,
+            measureWidth: { text in
+                text.unicodeScalars.reduce(CGFloat(0)) { acc, scalar in
+                    acc + (scalar.isASCII ? 1.0 : 2.0)
+                }
+            }
+        )
+    }
     
     /// The only emoji a cleaned document keeps.
     private static let allowedEmoji: Set<Unicode.Scalar> = ["🔴", "✅", "❌", "⭐"]
@@ -50,6 +70,7 @@ nonisolated enum AIDocumentTextCleaner {
     private static let italicUnderscoreRegex = try! NSRegularExpression(pattern: #"(?<![A-Za-z0-9_])_(?![\s_])([^_\n]+?)_(?![A-Za-z0-9_])"#)
     private static let danglingTrailingStarRegex = try! NSRegularExpression(pattern: #"(?<=[^\s\*/_\[\\])\*+(?=$|[\s）)\]】」』》，。；：、！？])"#)
     private static let danglingLeadingStarRegex = try! NSRegularExpression(pattern: #"(?:^|(?<=[\s（(\[【「『《，。；：、]))\*+(?=[^\s\*\.\]\)/])"#)
+    private static let cjkPunctuationSpaceRegex = try! NSRegularExpression(pattern: #"(?<=[。！？：；，])[ \t]+(?=[\p{Han}])"#)
     
     
     private enum LayoutStyle {
@@ -88,8 +109,13 @@ nonisolated enum AIDocumentTextCleaner {
     /// - Keeps top-level section headings (ATX headings, numbered sections like `2. **标题*`, Chinese sections)
     ///   flush left with a clean blank line between sections.
     /// - Indents body lines, bullet points (`- `), and nested sub-points cleanly with `\t`, `\t\t`, etc.
+    /// - Aligns multi-column tables to exact editor Tab stops using `tableMetrics`, and turns wide 2-column
+    ///   key-value tables into crisp `- Key：Value` lists so nothing ever drifts in proportional or CJK fonts.
     /// - Preserves fenced code content, file paths, identifiers, and valid globs/math (`a * b`, `*.py`, `foo/*`).
-    static func cleanStructuredPlainText(_ text: String) -> String {
+    static func cleanStructuredPlainText(
+        _ text: String,
+        tableMetrics: TableLayoutMetrics = .defaultMonospace
+    ) -> String {
         
         let lines = text
             .replacingOccurrences(of: "\r\n", with: "\n")
@@ -100,6 +126,7 @@ nonisolated enum AIDocumentTextCleaner {
         var output: [String] = []
         var insideSection = false
         var insideATXSection = false
+        var justEmittedHeading = false
         var sectionBodyBaseTabs = 0
         var indentStack: [Int] = []
         var lastSectionNumber: Int?
@@ -127,6 +154,7 @@ nonisolated enum AIDocumentTextCleaner {
             
             // Preserve fenced code verbatim, removing only the fence markers.
             if trimmed.hasPrefix("```") {
+                justEmittedHeading = false
                 index += 1
                 let codePrefix = insideSection ? String(repeating: "\t", count: max(1, sectionBodyBaseTabs)) : ""
                 while index < lines.count,
@@ -142,13 +170,16 @@ nonisolated enum AIDocumentTextCleaner {
             }
             
             if trimmed.isEmpty {
-                appendBlankSeparatorIfNeeded()
+                if !justEmittedHeading {
+                    appendBlankSeparatorIfNeeded()
+                }
                 indentStack.removeAll()
                 index += 1
                 continue
             }
             
             if Self.isHorizontalRule(trimmed) {
+                justEmittedHeading = false
                 appendBlankSeparatorIfNeeded()
                 indentStack.removeAll()
                 index += 1
@@ -169,13 +200,15 @@ nonisolated enum AIDocumentTextCleaner {
                     insideATXSection = true
                     sectionBodyBaseTabs = 2
                 }
+                justEmittedHeading = true
                 indentStack.removeAll()
                 index += 1
                 continue
             }
             
-            // Markdown tables -> cleanly aligned plain columns
+            // Markdown tables -> smart 2-col Key-Value list OR font-exact Tab-stop aligned table
             if Self.isTableStart(lines: lines, at: index) {
+                justEmittedHeading = false
                 var tableRows: [[String]] = [Self.tableCells(lines[index]).map { Self.inline($0) }]
                 index += 2
                 while index < lines.count, Self.isTableRow(lines[index]) {
@@ -183,7 +216,7 @@ nonisolated enum AIDocumentTextCleaner {
                     index += 1
                 }
                 let prefix = insideSection ? String(repeating: "\t", count: max(1, sectionBodyBaseTabs)) : ""
-                for formatted in Self.alignedPlainTableRows(tableRows) {
+                for formatted in Self.formatStructuredTableRows(tableRows, metrics: tableMetrics) {
                     output.append(prefix + formatted)
                 }
                 indentStack.removeAll()
@@ -191,8 +224,12 @@ nonisolated enum AIDocumentTextCleaner {
             }
             
             if Self.isTableRow(rawLine) {
+                justEmittedHeading = false
                 let prefix = insideSection ? String(repeating: "\t", count: max(1, sectionBodyBaseTabs)) : ""
-                output.append(prefix + Self.plainTableRow(rawLine))
+                let cells = Self.tableCells(rawLine).map { Self.inline($0) }
+                if let formatted = Self.formatStructuredTableRows([cells], metrics: tableMetrics).first {
+                    output.append(prefix + formatted)
+                }
                 indentStack.removeAll()
                 index += 1
                 continue
@@ -227,6 +264,7 @@ nonisolated enum AIDocumentTextCleaner {
                 appendBlankSeparatorIfNeeded()
                 output.append("\(resolvedNumber). \(numbered.text)")
                 insideSection = true
+                justEmittedHeading = true
                 sectionBodyBaseTabs = 1
                 indentStack.removeAll()
                 index += 1
@@ -243,6 +281,7 @@ nonisolated enum AIDocumentTextCleaner {
                 appendBlankSeparatorIfNeeded()
                 output.append(Self.inline(content))
                 insideSection = true
+                justEmittedHeading = true
                 sectionBodyBaseTabs = 1
                 indentStack.removeAll()
                 index += 1
@@ -251,6 +290,7 @@ nonisolated enum AIDocumentTextCleaner {
             
             // Bullet list items (`- `, `* `, `+ `, `• `)
             if let bulletText = Self.parseBulletItem(in: content) {
+                justEmittedHeading = false
                 let depth = relativeIndentLevel(for: visualIndent)
                 let baseTabs = insideSection ? sectionBodyBaseTabs : (visualIndent > 0 ? 1 : 0)
                 let tabs = min(4, baseTabs + depth)
@@ -261,6 +301,7 @@ nonisolated enum AIDocumentTextCleaner {
             
             // Nested or standalone numbered list items
             if let numbered = Self.parseNumberedItem(in: content) {
+                justEmittedHeading = false
                 let depth = relativeIndentLevel(for: visualIndent)
                 let baseTabs = insideSection ? sectionBodyBaseTabs : (visualIndent > 0 ? 1 : 0)
                 let tabs = min(4, baseTabs + depth)
@@ -270,6 +311,7 @@ nonisolated enum AIDocumentTextCleaner {
             }
             
             // Regular paragraph or blockquote line
+            justEmittedHeading = false
             let cleanedText = Self.inline(content)
             if !cleanedText.isEmpty {
                 let tabs: Int
@@ -718,38 +760,81 @@ nonisolated enum AIDocumentTextCleaner {
     }
     
     
-    /// Aligns plain-text table rows with visual-width padding so columns stay crisp without `|`.
-    private static func alignedPlainTableRows(_ rows: [[String]]) -> [String] {
+    /// Formats a Markdown table for plain-text readability:
+    /// - Wide or uneven 2-column key-value tables (e.g. `检查项 | 结果`) become crisp `- Key：Value` lines
+    ///   so long descriptions never wrap awkwardly or leave huge whitespace chasms.
+    /// - Multi-column data tables (and compact 2-column tables) align every column to exact editor Tab stops
+    ///   using `metrics`, guaranteeing pixel-exact vertical alignment across proportional and CJK/Latin fonts.
+    static func formatStructuredTableRows(
+        _ rows: [[String]],
+        metrics: TableLayoutMetrics = .defaultMonospace
+    ) -> [String] {
         
         guard !rows.isEmpty else { return [] }
         let colCount = rows.map(\.count).max() ?? 0
         guard colCount > 0 else { return [] }
         
-        func displayWidth(_ s: String) -> Int {
-            s.unicodeScalars.reduce(0) { acc, scalar in
-                acc + (scalar.isASCII ? 1 : 2)
-            }
+        let tabInterval = max(1.0, metrics.tabInterval)
+        let normalizedRows = rows.map { row -> [String] in
+            if row.count >= colCount { return Array(row.prefix(colCount)) }
+            return row + Array(repeating: "", count: colCount - row.count)
         }
         
-        var widths = [Int](repeating: 0, count: colCount)
-        for row in rows {
-            for (c, cell) in row.enumerated() {
-                widths[c] = max(widths[c], displayWidth(cell))
-            }
-        }
-        
-        return rows.map { row in
-            var parts: [String] = []
-            for c in 0..<row.count {
-                let cell = row[c]
-                if c < row.count - 1 {
-                    let pad = max(0, widths[c] - displayWidth(cell)) + 3
-                    parts.append(cell + String(repeating: " ", count: pad))
-                } else {
-                    parts.append(cell)
+        if colCount == 2, normalizedRows.count >= 2 {
+            let dataRows = Array(normalizedRows.dropFirst())
+            let keyWidths = dataRows.map { metrics.measureWidth($0[0]) }
+            let valWidths = dataRows.map { metrics.measureWidth($0[1]) }
+            let maxKeySlots = (keyWidths.max() ?? 0) / tabInterval
+            let minKeySlots = (keyWidths.filter { $0 > 0 }.min() ?? 0) / tabInterval
+            let maxValSlots = (valWidths.max() ?? 0) / tabInterval
+            
+            let shouldFlattenKeyValue = maxKeySlots >= 4.0
+                || maxValSlots >= 5.0
+                || (minKeySlots > 0 && maxKeySlots >= minKeySlots * 2.5 && maxKeySlots >= 2.5)
+            
+            if shouldFlattenKeyValue {
+                return dataRows.compactMap { row in
+                    let key = row[0].trimmingCharacters(in: .whitespaces)
+                    let val = row[1].trimmingCharacters(in: .whitespaces)
+                    guard !key.isEmpty || !val.isEmpty else { return nil }
+                    if key.isEmpty { return "- \(val)" }
+                    if val.isEmpty { return "- \(key)" }
+                    let sep = (key.hasSuffix("：") || key.hasSuffix(":")) ? "" : "："
+                    return "- \(key)\(sep)\(val)"
                 }
             }
-            return parts.joined()
+        }
+        
+        // Pixel-exact Tab-stop alignment for multi-column & compact tables.
+        let minGap = max(0.5, metrics.minColumnGap)
+        var cellWidths = Array(repeating: Array(repeating: CGFloat(0), count: colCount), count: normalizedRows.count)
+        var colSlots = Array(repeating: 1, count: colCount)
+        
+        for c in 0..<colCount {
+            var maxW: CGFloat = 0
+            for r in 0..<normalizedRows.count {
+                let w = metrics.measureWidth(normalizedRows[r][c])
+                cellWidths[r][c] = w
+                if w > maxW { maxW = w }
+            }
+            if c < colCount - 1 {
+                colSlots[c] = max(1, Int(ceil((maxW + minGap) / tabInterval)))
+            }
+        }
+        
+        return normalizedRows.enumerated().map { r, row in
+            var line = ""
+            for c in 0..<colCount {
+                let cell = row[c]
+                line += cell
+                if c < colCount - 1 {
+                    let w = cellWidths[r][c]
+                    let consumedStops = Int(floor((w + 0.01) / tabInterval))
+                    let tabCount = max(1, colSlots[c] - consumedStops)
+                    line += String(repeating: "\t", count: tabCount)
+                }
+            }
+            return line
         }
     }
     
@@ -781,6 +866,7 @@ nonisolated enum AIDocumentTextCleaner {
         // Clean broken/unpaired trailing or leading Markdown `*` (e.g. `**标题*`) while keeping `a * b`, `*.py`, `dir/*`, `turns[*]`.
         result = Self.replacing(Self.danglingTrailingStarRegex, with: "", in: result)
         result = Self.replacing(Self.danglingLeadingStarRegex, with: "", in: result)
+        result = Self.replacing(Self.cjkPunctuationSpaceRegex, with: "", in: result)
         result = Self.removingDisallowedEmoji(from: result)
         
         return result.trimmingCharacters(in: .whitespaces)

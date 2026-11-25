@@ -157,6 +157,27 @@ nonisolated enum AIAction: Sendable, CaseIterable {
     }
     
     
+    /// Whether this action is an interactive quick editor command that prioritizes lowest latency
+    /// (thinking disabled or minimal/low, lean system prompt without KYC bloat, warm HTTP/2 pool).
+    var isQuickAction: Bool {
+        
+        switch self {
+            case .translate, .summarize, .explain, .semanticRestructure, .weeklyReportItem:
+                true
+            case .weeklyReport, .interactiveChart, .ocrPolish, .organizeAndMerge:
+                false
+        }
+    }
+    
+    
+    /// Output token budget tuned for fast-lane quick actions (avoids runaway generation while keeping full fidelity).
+    func fastLaneMaxOutputTokens(forInputLength inputLength: Int) -> Int? {
+        
+        guard self.isQuickAction else { return nil }
+        return max(1024, min(4096, inputLength * 3))
+    }
+    
+    
     /// Legacy v1 built-in prompts that should be migrated automatically when untouched by the user.
     var legacyDefaultSystemPrompts: [String] {
         
