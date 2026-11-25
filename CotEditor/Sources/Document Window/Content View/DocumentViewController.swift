@@ -1264,31 +1264,57 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// One-click aligns Markdown tables in the selection (or throughout the whole document if nothing is selected).
+    /// One-click aligns Markdown pipe tables AND Tab-delimited plain tables in the selection
+    /// (or throughout the whole document if nothing is selected) using live editor font metrics.
     @IBAction func alignMarkdownTable(_ sender: Any?) {
         
-        guard let textView = self.focusedTextView else {
+        guard let textView = self.focusedTextView, textView.isEditable else {
             NSSound.beep()
             return
         }
         
+        let nsText = textView.string as NSString
         let selectedRange = textView.selectedRange()
-        let targetRange = selectedRange.length > 0 ? selectedRange : NSRange(location: 0, length: (textView.string as NSString).length)
+        let targetRange = selectedRange.length > 0 ? selectedRange : NSRange(location: 0, length: nsText.length)
         guard targetRange.length > 0 else {
             NSSound.beep()
             return
         }
         
-        let original = (textView.string as NSString).substring(with: targetRange)
-        let aligned = MarkdownTableFormatter.formatTables(in: original)
-        guard aligned != original else { return }
+        let hostView = self.focusedChild?.view ?? textView.enclosingScrollView?.superview ?? self.view
+        let original = nsText.substring(with: targetRange)
+        let metrics = TextRestructureSessionController.liveTableMetrics(for: textView)
+        let aligned = MarkdownTableFormatter.formatTables(in: original, metrics: metrics)
+        
+        if aligned == original {
+            let hasTable = MarkdownTableFormatter.containsAnyTable(original)
+            self.textRestructureSession.notifyQuickFeedback(
+                in: textView,
+                hostView: hostView,
+                sweepRange: hasTable ? targetRange : nil,
+                message: hasTable
+                    ? AppLanguage.text("表格已对齐", en: "Tables Already Aligned")
+                    : AppLanguage.text("未检测到表格", en: "No Table Found")
+            )
+            return
+        }
         
         textView.insertText(aligned, replacementRange: targetRange)
+        textView.undoManager?.setActionName(AppLanguage.text("对齐表格", en: "Align Table"))
         textView.window?.makeFirstResponder(textView)
+        
+        let newRange = NSRange(location: targetRange.location, length: (aligned as NSString).length)
+        self.textRestructureSession.notifyQuickFeedback(
+            in: textView,
+            hostView: hostView,
+            sweepRange: newRange,
+            message: AppLanguage.text("已对齐表格", en: "Table Aligned")
+        )
     }
     
     
-    /// Renders an interactive HTML chart from the selected Markdown table (or document table) and asks AI for insights.
+    /// Renders an instant Apple-native interactive table & chart studio from Markdown/Tab tables (or prose numbers)
+    /// and fetches ultra-fast no-thinking AI insights in parallel.
     @IBAction func generateInteractiveChart(_ sender: Any?) {
         
         guard let textView = self.focusedTextView, let window = textView.window else {
@@ -1308,9 +1334,11 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         self.aiResultPanel = panel
         
         panel.present(on: window)
-        // Render an immediate interactive chart from the table data right away so the user doesn't wait
-        let instantHTML = MarkdownTableFormatter.generateInstantChartHTML(from: sourceText)
-        panel.presentChart(html: instantHTML)
+        let hadInstantTable = MarkdownTableFormatter.extractTable(from: sourceText) != nil
+        if hadInstantTable {
+            let instantHTML = MarkdownTableFormatter.generateInstantChartHTML(from: sourceText)
+            panel.presentChart(html: instantHTML)
+        }
         
         if AIService.shared.isConfigured(for: .interactiveChart) {
             let task = Task { [weak panel] in
@@ -1318,16 +1346,25 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                     let result = try await AIService.shared.run(.interactiveChart, on: sourceText) { partial in
                         panel?.presentPartial(result: partial)
                     }
+                    if !hadInstantTable, MarkdownTableFormatter.extractTable(from: result) != nil {
+                        panel?.presentChart(html: MarkdownTableFormatter.generateInstantChartHTML(from: result))
+                    }
                     panel?.present(result: result)
                 } catch is CancellationError {
                     return
                 } catch {
-                    // Keep the instant interactive chart usable and show the aligned table below
-                    panel?.present(result: MarkdownTableFormatter.formatTables(in: sourceText))
+                    if !hadInstantTable {
+                        panel?.present(error: error)
+                    } else {
+                        panel?.present(result: MarkdownTableFormatter.formatTables(in: sourceText))
+                    }
                 }
             }
             panel.onCancel = { task.cancel() }
         } else {
+            if !hadInstantTable {
+                panel.presentChart(html: MarkdownTableFormatter.generateInstantChartHTML(from: sourceText))
+            }
             panel.present(result: MarkdownTableFormatter.formatTables(in: sourceText))
         }
     }

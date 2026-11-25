@@ -37,17 +37,41 @@ nonisolated enum AIDocumentTextCleaner {
     nonisolated struct TableLayoutMetrics: Sendable {
         let tabInterval: CGFloat
         let minColumnGap: CGFloat
+        let spaceWidth: CGFloat
+        let hyphenWidth: CGFloat
         let measureWidth: @Sendable (String) -> CGFloat
+        /// Exact `NSLayoutManager` simulator returning the real rendered X coordinate right after `linePrefix`
+        /// (including all preceding `\t` stops). When provided, eliminates any width/kerning discrepancy at stop boundaries.
+        let measureLineEndX: (@Sendable (String) -> CGFloat)?
+        
+        init(
+            tabInterval: CGFloat,
+            minColumnGap: CGFloat,
+            spaceWidth: CGFloat = 1.0,
+            hyphenWidth: CGFloat = 1.0,
+            measureWidth: @escaping @Sendable (String) -> CGFloat,
+            measureLineEndX: (@Sendable (String) -> CGFloat)? = nil
+        ) {
+            self.tabInterval = tabInterval
+            self.minColumnGap = minColumnGap
+            self.spaceWidth = spaceWidth
+            self.hyphenWidth = hyphenWidth
+            self.measureWidth = measureWidth
+            self.measureLineEndX = measureLineEndX
+        }
         
         /// Headless East-Asian cell-width fallback (`tabWidth = 4`, CJK = 2, ASCII = 1).
         static let defaultMonospace = TableLayoutMetrics(
             tabInterval: 4.0,
             minColumnGap: 2.0,
+            spaceWidth: 1.0,
+            hyphenWidth: 1.0,
             measureWidth: { text in
                 text.unicodeScalars.reduce(CGFloat(0)) { acc, scalar in
                     acc + (scalar.isASCII ? 1.0 : 2.0)
                 }
-            }
+            },
+            measureLineEndX: nil
         )
     }
     
@@ -216,8 +240,8 @@ nonisolated enum AIDocumentTextCleaner {
                     index += 1
                 }
                 let prefix = insideSection ? String(repeating: "\t", count: max(1, sectionBodyBaseTabs)) : ""
-                for formatted in Self.formatStructuredTableRows(tableRows, metrics: tableMetrics) {
-                    output.append(prefix + formatted)
+                for formatted in Self.formatStructuredTableRows(tableRows, leadingPrefix: prefix, metrics: tableMetrics) {
+                    output.append(formatted)
                 }
                 indentStack.removeAll()
                 continue
@@ -227,8 +251,8 @@ nonisolated enum AIDocumentTextCleaner {
                 justEmittedHeading = false
                 let prefix = insideSection ? String(repeating: "\t", count: max(1, sectionBodyBaseTabs)) : ""
                 let cells = Self.tableCells(rawLine).map { Self.inline($0) }
-                if let formatted = Self.formatStructuredTableRows([cells], metrics: tableMetrics).first {
-                    output.append(prefix + formatted)
+                if let formatted = Self.formatStructuredTableRows([cells], leadingPrefix: prefix, metrics: tableMetrics).first {
+                    output.append(formatted)
                 }
                 indentStack.removeAll()
                 index += 1
@@ -760,13 +784,16 @@ nonisolated enum AIDocumentTextCleaner {
     }
     
     
-    /// Formats a Markdown table for plain-text readability:
+    /// Formats a Markdown or Tab-delimited table for plain-text readability:
     /// - Wide or uneven 2-column key-value tables (e.g. `检查项 | 结果`) become crisp `- Key：Value` lines
     ///   so long descriptions never wrap awkwardly or leave huge whitespace chasms.
     /// - Multi-column data tables (and compact 2-column tables) align every column to exact editor Tab stops
-    ///   using `metrics`, guaranteeing pixel-exact vertical alignment across proportional and CJK/Latin fonts.
+    ///   using `metrics` (simulating actual `NSLayoutManager` glyph X coordinates when available), guaranteeing
+    ///   sub-pixel vertical alignment and generous visual gutters across proportional and CJK/Latin fonts.
     static func formatStructuredTableRows(
         _ rows: [[String]],
+        leadingPrefix: String = "",
+        allowKeyValueFlatten: Bool = true,
         metrics: TableLayoutMetrics = .defaultMonospace
     ) -> [String] {
         
@@ -780,7 +807,7 @@ nonisolated enum AIDocumentTextCleaner {
             return row + Array(repeating: "", count: colCount - row.count)
         }
         
-        if colCount == 2, normalizedRows.count >= 2 {
+        if allowKeyValueFlatten, colCount == 2, normalizedRows.count >= 2 {
             let dataRows = Array(normalizedRows.dropFirst())
             let keyWidths = dataRows.map { metrics.measureWidth($0[0]) }
             let valWidths = dataRows.map { metrics.measureWidth($0[1]) }
@@ -797,45 +824,89 @@ nonisolated enum AIDocumentTextCleaner {
                     let key = row[0].trimmingCharacters(in: .whitespaces)
                     let val = row[1].trimmingCharacters(in: .whitespaces)
                     guard !key.isEmpty || !val.isEmpty else { return nil }
-                    if key.isEmpty { return "- \(val)" }
-                    if val.isEmpty { return "- \(key)" }
+                    if key.isEmpty { return leadingPrefix + "- \(val)" }
+                    if val.isEmpty { return leadingPrefix + "- \(key)" }
                     let sep = (key.hasSuffix("：") || key.hasSuffix(":")) ? "" : "："
-                    return "- \(key)\(sep)\(val)"
+                    return leadingPrefix + "- \(key)\(sep)\(val)"
                 }
             }
         }
         
-        // Pixel-exact Tab-stop alignment for multi-column & compact tables.
+        // Exact iterative Tab-stop alignment (uses real NSLayoutManager probe when available, or deterministic simulation).
         let minGap = max(0.5, metrics.minColumnGap)
-        var cellWidths = Array(repeating: Array(repeating: CGFloat(0), count: colCount), count: normalizedRows.count)
-        var colSlots = Array(repeating: 1, count: colCount)
+        let endXProbe: (String) -> CGFloat = metrics.measureLineEndX ?? { prefix in
+            Self.simulateTabStopEndX(of: prefix, metrics: metrics)
+        }
+        
+        var rowLines = Array(repeating: leadingPrefix, count: normalizedRows.count)
         
         for c in 0..<colCount {
-            var maxW: CGFloat = 0
             for r in 0..<normalizedRows.count {
-                let w = metrics.measureWidth(normalizedRows[r][c])
-                cellWidths[r][c] = w
-                if w > maxW { maxW = w }
+                rowLines[r] += normalizedRows[r][c]
             }
-            if c < colCount - 1 {
-                colSlots[c] = max(1, Int(ceil((maxW + minGap) / tabInterval)))
+            guard c < colCount - 1 else { break }
+            
+            var maxEndX: CGFloat = 0
+            var widestRow = 0
+            for r in 0..<normalizedRows.count {
+                let x = endXProbe(rowLines[r])
+                if x > maxEndX {
+                    maxEndX = x
+                    widestRow = r
+                }
+            }
+            
+            let minRequiredX = maxEndX + minGap
+            
+            // Advance the widest row by exact Tab stops until its next column start clears `minRequiredX`.
+            var targetColX = endXProbe(rowLines[widestRow])
+            var widestTabs = 0
+            while (widestTabs == 0 || targetColX < minRequiredX - 0.25) && widestTabs < 32 {
+                rowLines[widestRow] += "\t"
+                widestTabs += 1
+                targetColX = endXProbe(rowLines[widestRow])
+            }
+            
+            // Advance every other row by exact Tab stops until it lands on `targetColX`.
+            for r in 0..<normalizedRows.count where r != widestRow {
+                var currentX = endXProbe(rowLines[r])
+                var added = 0
+                while (added == 0 || currentX < targetColX - 0.5) && added < 32 {
+                    rowLines[r] += "\t"
+                    added += 1
+                    let nextX = endXProbe(rowLines[r])
+                    if nextX <= currentX + 0.01 { break }
+                    currentX = nextX
+                }
             }
         }
         
-        return normalizedRows.enumerated().map { r, row in
-            var line = ""
-            for c in 0..<colCount {
-                let cell = row[c]
-                line += cell
-                if c < colCount - 1 {
-                    let w = cellWidths[r][c]
-                    let consumedStops = Int(floor((w + 0.01) / tabInterval))
-                    let tabCount = max(1, colSlots[c] - consumedStops)
-                    line += String(repeating: "\t", count: tabCount)
+        return rowLines
+    }
+    
+    
+    /// Deterministic tab-stop cursor simulator matching Cocoa `NSLayoutManager.defaultTabInterval`.
+    static func simulateTabStopEndX(of linePrefix: String, metrics: TableLayoutMetrics) -> CGFloat {
+        
+        let interval = max(1.0, metrics.tabInterval)
+        var x: CGFloat = 0
+        var run = ""
+        for ch in linePrefix {
+            if ch == "\t" {
+                if !run.isEmpty {
+                    x += metrics.measureWidth(run)
+                    run = ""
                 }
+                let nextStop = (floor((x + 0.01) / interval) + 1) * interval
+                x = nextStop
+            } else {
+                run.append(ch)
             }
-            return line
         }
+        if !run.isEmpty {
+            x += metrics.measureWidth(run)
+        }
+        return x
     }
     
     

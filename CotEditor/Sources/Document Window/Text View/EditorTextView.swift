@@ -2253,7 +2253,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 symbol: "chart.xyaxis.line",
                 action: #selector(DocumentViewController.generateInteractiveChart(_:)),
                 target: documentViewController,
-                enabled: hasSelection || MarkdownTableFormatter.containsMarkdownTable(self.string)
+                enabled: hasSelection || MarkdownTableFormatter.containsAnyTable(self.string)
             ))
             let tableRootItem = makeItem(
                 title: AppLanguage.text("表格与数据图表", en: "Tables & Charts"),
@@ -5920,6 +5920,45 @@ private struct InlineImageTransformPopoverView: View {
 
 // MARK: - Inline 1-Click Highlight Swatch Row for Context Menu
 
+/// Deterministic layout geometry for `ContextMenuQuickHighlightRowView`, guaranteeing
+/// zero icon clipping, uniform spacing, and generous clearance around the vertical divider.
+nonisolated enum QuickHighlightRowMetrics {
+    
+    static let maxQuickSwatches: Int = 7
+    static let height: CGFloat = 34
+    static let leadingPadding: CGFloat = 14
+    static let leadingIconWidth: CGFloat = 16
+    static let iconToSwatchesGap: CGFloat = 10
+    static let swatchSize: CGFloat = 18
+    static let swatchSpacing: CGFloat = 3
+    static let swatchesToSeparatorMinGap: CGFloat = 10
+    static let separatorWidth: CGFloat = 1
+    static let separatorHeight: CGFloat = 14
+    static let separatorToToolsGap: CGFloat = 8
+    static let toolButtonSize: CGFloat = 20
+    static let toolsSpacing: CGFloat = 2
+    static let trailingPadding: CGFloat = 12
+    
+    static func minimumWidth(swatchCount: Int) -> CGFloat {
+        let count = max(0, min(self.maxQuickSwatches, swatchCount))
+        let swatchesW = count > 0
+            ? CGFloat(count) * self.swatchSize + CGFloat(max(0, count - 1)) * self.swatchSpacing
+            : 0
+        return self.leadingPadding
+            + self.leadingIconWidth
+            + self.iconToSwatchesGap
+            + swatchesW
+            + self.swatchesToSeparatorMinGap
+            + self.separatorWidth
+            + self.separatorToToolsGap
+            + self.toolButtonSize
+            + self.toolsSpacing
+            + self.toolButtonSize
+            + self.trailingPadding
+    }
+}
+
+
 private final class ContextMenuQuickHighlightRowView: NSView {
     
     private let onSelectColorIndex: (Int) -> Void
@@ -5935,87 +5974,80 @@ private final class ContextMenuQuickHighlightRowView: NSView {
         self.onSelectColorIndex = onSelectColorIndex
         self.onOpenPalette = onOpenPalette
         self.onClearHighlight = onClearHighlight
-        super.init(frame: NSRect(x: 0, y: 0, width: 244, height: 32))
+        
+        let presets = Array(HighlightColor.allCases.prefix(QuickHighlightRowMetrics.maxQuickSwatches))
+        let minWidth = QuickHighlightRowMetrics.minimumWidth(swatchCount: presets.count)
+        super.init(frame: NSRect(x: 0, y: 0, width: ceil(minWidth), height: QuickHighlightRowMetrics.height))
+        self.autoresizingMask = [.width]
         
         let iconView = NSImageView()
-        let symCfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        let symCfg = NSImage.SymbolConfiguration(pointSize: 12.5, weight: .medium)
         iconView.image = NSImage(systemSymbolName: "highlighter", accessibilityDescription: nil)?
             .withSymbolConfiguration(symCfg)
         iconView.contentTintColor = .secondaryLabelColor
+        iconView.imageScaling = .scaleNone
         iconView.translatesAutoresizingMaskIntoConstraints = false
         
-        let titleField = NSTextField(labelWithString: AppLanguage.text("高亮", en: "Highlight"))
-        titleField.font = .menuFont(ofSize: 13)
-        titleField.textColor = .labelColor
-        titleField.translatesAutoresizingMaskIntoConstraints = false
-        
         var swatchButtons: [NSView] = []
-        for (idx, color) in HighlightColor.allCases.enumerated() {
+        swatchButtons.reserveCapacity(presets.count)
+        for (idx, color) in presets.enumerated() {
             let btn = QuickSwatchDotButton(color: color.swatchColor, toolTipText: color.localizedName) { [weak self] in
                 self?.onSelectColorIndex(idx)
             }
             swatchButtons.append(btn)
         }
         
-        let sep = NSBox()
-        sep.boxType = .separator
-        sep.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            sep.widthAnchor.constraint(equalToConstant: 1),
-            sep.heightAnchor.constraint(equalToConstant: 14),
-        ])
+        let swatchStack = NSStackView(views: swatchButtons)
+        swatchStack.orientation = .horizontal
+        swatchStack.alignment = .centerY
+        swatchStack.spacing = QuickHighlightRowMetrics.swatchSpacing
+        swatchStack.translatesAutoresizingMaskIntoConstraints = false
         
-        let paletteBtn = NSButton()
-        paletteBtn.bezelStyle = .toolbar
-        paletteBtn.isBordered = false
-        paletteBtn.image = NSImage(systemSymbolName: "paintpalette", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12.5, weight: .medium))
-        paletteBtn.contentTintColor = .secondaryLabelColor
-        paletteBtn.toolTip = AppLanguage.text("自定义颜色…", en: "Custom Color…")
-        paletteBtn.target = self
-        paletteBtn.action = #selector(didTapPalette)
-        paletteBtn.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            paletteBtn.widthAnchor.constraint(equalToConstant: 22),
-            paletteBtn.heightAnchor.constraint(equalToConstant: 22),
-        ])
+        let separator = QuickMenuHairlineDividerView()
+        separator.translatesAutoresizingMaskIntoConstraints = false
         
-        let clearBtn = NSButton()
-        clearBtn.bezelStyle = .toolbar
-        clearBtn.isBordered = false
-        clearBtn.image = NSImage(systemSymbolName: "eraser", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12.5, weight: .medium))
-        clearBtn.contentTintColor = .secondaryLabelColor
-        clearBtn.toolTip = AppLanguage.text("清除高亮", en: "Clear Highlight")
-        clearBtn.target = self
-        clearBtn.action = #selector(didTapClear)
-        clearBtn.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            clearBtn.widthAnchor.constraint(equalToConstant: 22),
-            clearBtn.heightAnchor.constraint(equalToConstant: 22),
-        ])
+        let paletteBtn = QuickMenuIconButton(
+            symbolName: "paintpalette",
+            toolTipText: AppLanguage.text("自定义颜色…", en: "Custom Color…")
+        ) { [weak self] in
+            self?.onOpenPalette()
+        }
         
-        let trailingRow = NSStackView(views: swatchButtons + [sep, paletteBtn, clearBtn])
-        trailingRow.orientation = .horizontal
-        trailingRow.alignment = .centerY
-        trailingRow.spacing = 5
-        trailingRow.translatesAutoresizingMaskIntoConstraints = false
+        let clearBtn = QuickMenuIconButton(
+            symbolName: "eraser",
+            toolTipText: AppLanguage.text("清除高亮", en: "Clear Highlight")
+        ) { [weak self] in
+            self?.onClearHighlight()
+        }
+        
+        let toolsStack = NSStackView(views: [paletteBtn, clearBtn])
+        toolsStack.orientation = .horizontal
+        toolsStack.alignment = .centerY
+        toolsStack.spacing = QuickHighlightRowMetrics.toolsSpacing
+        toolsStack.translatesAutoresizingMaskIntoConstraints = false
         
         self.addSubview(iconView)
-        self.addSubview(titleField)
-        self.addSubview(trailingRow)
+        self.addSubview(swatchStack)
+        self.addSubview(separator)
+        self.addSubview(toolsStack)
         
         NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: 14),
+            iconView.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: QuickHighlightRowMetrics.leadingPadding),
             iconView.centerYAnchor.constraint(equalTo: self.centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 16),
+            iconView.widthAnchor.constraint(equalToConstant: QuickHighlightRowMetrics.leadingIconWidth),
+            iconView.heightAnchor.constraint(equalToConstant: QuickHighlightRowMetrics.leadingIconWidth),
             
-            titleField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 6),
-            titleField.centerYAnchor.constraint(equalTo: self.centerYAnchor),
+            swatchStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: QuickHighlightRowMetrics.iconToSwatchesGap),
+            swatchStack.centerYAnchor.constraint(equalTo: self.centerYAnchor),
             
-            trailingRow.leadingAnchor.constraint(greaterThanOrEqualTo: titleField.trailingAnchor, constant: 10),
-            trailingRow.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -12),
-            trailingRow.centerYAnchor.constraint(equalTo: self.centerYAnchor),
+            separator.leadingAnchor.constraint(greaterThanOrEqualTo: swatchStack.trailingAnchor, constant: QuickHighlightRowMetrics.swatchesToSeparatorMinGap),
+            separator.trailingAnchor.constraint(equalTo: toolsStack.leadingAnchor, constant: -QuickHighlightRowMetrics.separatorToToolsGap),
+            separator.centerYAnchor.constraint(equalTo: self.centerYAnchor),
+            separator.widthAnchor.constraint(equalToConstant: QuickHighlightRowMetrics.separatorWidth),
+            separator.heightAnchor.constraint(equalToConstant: QuickHighlightRowMetrics.separatorHeight),
+            
+            toolsStack.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -QuickHighlightRowMetrics.trailingPadding),
+            toolsStack.centerYAnchor.constraint(equalTo: self.centerYAnchor),
         ])
         _ = target
     }
@@ -6024,32 +6056,37 @@ private final class ContextMenuQuickHighlightRowView: NSView {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+}
+
+
+private final class QuickMenuHairlineDividerView: NSView {
     
-    @objc private func didTapPalette() {
-        self.onOpenPalette()
-    }
-    
-    @objc private func didTapClear() {
-        self.onClearHighlight()
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.separatorColor.withAlphaComponent(0.75).setFill()
+        NSBezierPath(roundedRect: self.bounds, xRadius: 0.5, yRadius: 0.5).fill()
     }
 }
 
 
-private final class QuickSwatchDotButton: NSControl {
+private final class QuickMenuIconButton: NSControl {
     
-    private let swatchColor: NSColor
+    private let iconImage: NSImage?
     private let onClick: () -> Void
     private var isHovered = false
     
-    init(color: NSColor, toolTipText: String, onClick: @escaping () -> Void) {
-        self.swatchColor = color
+    init(symbolName: String, toolTipText: String, onClick: @escaping () -> Void) {
+        let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+        self.iconImage = NSImage(systemSymbolName: symbolName, accessibilityDescription: toolTipText)?
+            .withSymbolConfiguration(cfg)
+        self.iconImage?.isTemplate = true
         self.onClick = onClick
-        super.init(frame: NSRect(x: 0, y: 0, width: 18, height: 18))
+        let side = QuickHighlightRowMetrics.toolButtonSize
+        super.init(frame: NSRect(x: 0, y: 0, width: side, height: side))
         self.toolTip = toolTipText
         self.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            self.widthAnchor.constraint(equalToConstant: 18),
-            self.heightAnchor.constraint(equalToConstant: 18),
+            self.widthAnchor.constraint(equalToConstant: side),
+            self.heightAnchor.constraint(equalToConstant: side),
         ])
         self.addTrackingArea(NSTrackingArea(
             rect: .zero,
@@ -6083,19 +6120,92 @@ private final class QuickSwatchDotButton: NSControl {
     
     override func draw(_ dirtyRect: NSRect) {
         if self.isHovered {
-            let ringRect = self.bounds.insetBy(dx: 0.75, dy: 0.75)
+            NSColor.labelColor.withAlphaComponent(0.085).setFill()
+            NSBezierPath(roundedRect: self.bounds, xRadius: 5.5, yRadius: 5.5).fill()
+        }
+        guard let image = self.iconImage else { return }
+        let tint: NSColor = self.isHovered ? .labelColor : .secondaryLabelColor
+        let imgSize = image.size
+        let drawRect = NSRect(
+            x: (self.bounds.width - imgSize.width) * 0.5,
+            y: (self.bounds.height - imgSize.height) * 0.5,
+            width: imgSize.width,
+            height: imgSize.height
+        )
+        let tinted = NSImage(size: imgSize, flipped: false) { rect in
+            image.draw(in: rect)
+            tint.set()
+            rect.fill(using: .sourceAtop)
+            return true
+        }
+        tinted.draw(in: drawRect)
+    }
+}
+
+
+private final class QuickSwatchDotButton: NSControl {
+    
+    private let swatchColor: NSColor
+    private let onClick: () -> Void
+    private var isHovered = false
+    
+    init(color: NSColor, toolTipText: String, onClick: @escaping () -> Void) {
+        self.swatchColor = color
+        self.onClick = onClick
+        let side = QuickHighlightRowMetrics.swatchSize
+        super.init(frame: NSRect(x: 0, y: 0, width: side, height: side))
+        self.toolTip = toolTipText
+        self.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            self.widthAnchor.constraint(equalToConstant: side),
+            self.heightAnchor.constraint(equalToConstant: side),
+        ])
+        self.addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+    
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func mouseEntered(with event: NSEvent) {
+        self.isHovered = true
+        self.needsDisplay = true
+    }
+    
+    override func mouseExited(with event: NSEvent) {
+        self.isHovered = false
+        self.needsDisplay = true
+    }
+    
+    override func mouseUp(with event: NSEvent) {
+        let local = self.convert(event.locationInWindow, from: nil)
+        if self.bounds.contains(local) {
+            self.onClick()
+        }
+    }
+    
+    override func draw(_ dirtyRect: NSRect) {
+        if self.isHovered {
+            let ringRect = self.bounds.insetBy(dx: 1.0, dy: 1.0)
             let ringPath = NSBezierPath(ovalIn: ringRect)
-            ringPath.lineWidth = 1.4
-            NSColor.controlAccentColor.withAlphaComponent(0.85).setStroke()
+            ringPath.lineWidth = 1.15
+            NSColor.labelColor.withAlphaComponent(0.32).setStroke()
             ringPath.stroke()
         }
-        let dotInset: CGFloat = self.isHovered ? 3.0 : 3.5
-        let dotRect = self.bounds.insetBy(dx: dotInset, dy: dotInset)
+        let dotRect = self.bounds.insetBy(dx: 3.0, dy: 3.0)
         let dotPath = NSBezierPath(ovalIn: dotRect)
         self.swatchColor.setFill()
         dotPath.fill()
-        NSColor.black.withAlphaComponent(0.18).setStroke()
-        dotPath.lineWidth = 0.6
+        
+        let isDark = self.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        (isDark ? NSColor.white.withAlphaComponent(0.18) : NSColor.black.withAlphaComponent(0.16)).setStroke()
+        dotPath.lineWidth = 0.5
         dotPath.stroke()
     }
 }

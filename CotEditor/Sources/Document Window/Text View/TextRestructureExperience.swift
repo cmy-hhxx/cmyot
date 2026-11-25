@@ -827,6 +827,22 @@ final class TextRestructureSessionController {
     }
     
     
+    /// Plays a brief completion sweep and transient pill notice (used by one-click table alignment).
+    func notifyQuickFeedback(
+        in textView: EditorTextView,
+        hostView: NSView,
+        sweepRange: NSRange?,
+        message: String
+    ) {
+        self.cancelInFlightTask()
+        self.bind(textView: textView, hostView: hostView)
+        if let sweepRange {
+            self.effectOverlay.playSweep(in: textView, range: sweepRange, direction: .down, keepReviewRail: false)
+        }
+        self.presentTransientNotice(message)
+    }
+    
+    
     func dismiss() {
         self.cancelInFlightTask()
         self.noticeDismissTask?.cancel()
@@ -1148,32 +1164,85 @@ final class TextRestructureSessionController {
     }
     
     
-    private final class FontMeasureBox: @unchecked Sendable {
-        let attributes: [NSAttributedString.Key: Any]
-        init(font: NSFont) {
-            self.attributes = [.font: font]
+    /// Single-line TextKit layout probe matching `EditorTextView`'s exact `typingAttributes`, `font`,
+    /// `paragraphStyle.defaultTabInterval`, and `tabStops` so Tab-aligned columns match rendered pixels 1:1.
+    private final class ExactTextKitLineProbe: @unchecked Sendable {
+        private let textStorage: NSTextStorage
+        private let layoutManager: NSLayoutManager
+        private let textContainer: NSTextContainer
+        private let attributes: [NSAttributedString.Key: Any]
+        
+        init(font: NSFont, paragraphStyle: NSParagraphStyle, typingAttributes: [NSAttributedString.Key: Any]) {
+            var attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .paragraphStyle: paragraphStyle,
+            ]
+            if let ligature = typingAttributes[.ligature] {
+                attrs[.ligature] = ligature
+            }
+            if let kern = typingAttributes[.kern] {
+                attrs[.kern] = kern
+            }
+            self.attributes = attrs
+            self.textStorage = NSTextStorage()
+            self.layoutManager = NSLayoutManager()
+            self.textContainer = NSTextContainer(size: CGSize(width: 100_000, height: 1000))
+            self.textContainer.lineFragmentPadding = 0
+            self.textContainer.maximumNumberOfLines = 1
+            self.layoutManager.addTextContainer(self.textContainer)
+            self.textStorage.addLayoutManager(self.layoutManager)
+        }
+        
+        func width(of text: String) -> CGFloat {
+            guard !text.isEmpty else { return 0 }
+            return self.endX(of: text)
+        }
+        
+        func endX(of linePrefix: String) -> CGFloat {
+            let probe = linePrefix + "|"
+            let probeCharIndex = (linePrefix as NSString).length
+            let attributed = NSAttributedString(string: probe, attributes: self.attributes)
+            self.textStorage.setAttributedString(attributed)
+            self.layoutManager.ensureLayout(for: self.textContainer)
+            let glyphIndex = self.layoutManager.glyphIndexForCharacter(at: probeCharIndex)
+            guard glyphIndex < self.layoutManager.numberOfGlyphs else { return 0 }
+            return self.layoutManager.location(forGlyphAt: glyphIndex).x
         }
     }
     
-    /// Builds live font-measured Tab-stop metrics directly from `EditorTextView`'s active font & tabWidth
-    /// so every column aligns to the sub-pixel across proportional and mixed CJK/Latin fonts.
-    private static func liveTableMetrics(for textView: EditorTextView) -> AIDocumentTextCleaner.TableLayoutMetrics {
+    /// Builds live TextKit-exact Tab-stop and width metrics directly from `EditorTextView`'s active
+    /// `font`, `tabWidth`, and `defaultParagraphStyle` so every column aligns with zero pixel drift.
+    static func liveTableMetrics(for textView: EditorTextView) -> AIDocumentTextCleaner.TableLayoutMetrics {
         guard let font = textView.font else { return .defaultMonospace }
-        let box = FontMeasureBox(font: font)
-        let spaceWidth = max(3.0, (" " as NSString).size(withAttributes: box.attributes).width)
+        
+        let mutableStyle = (textView.defaultParagraphStyle ?? .default).mutableCopy() as! NSMutableParagraphStyle
+        mutableStyle.tabStops = []
+        let spaceWidth = max(3.0, font.width(of: " "))
         let tabInterval: CGFloat
-        if let styleInterval = textView.defaultParagraphStyle?.defaultTabInterval, styleInterval > 0 {
-            tabInterval = styleInterval
+        if mutableStyle.defaultTabInterval > 0 {
+            tabInterval = mutableStyle.defaultTabInterval
         } else {
             tabInterval = CGFloat(max(1, textView.tabWidth)) * spaceWidth
+            mutableStyle.defaultTabInterval = tabInterval
         }
-        let minGap = max(spaceWidth * 1.8, tabInterval * 0.38)
+        
+        let probe = ExactTextKitLineProbe(
+            font: font,
+            paragraphStyle: mutableStyle,
+            typingAttributes: textView.typingAttributes
+        )
+        let exactSpaceWidth = max(2.5, probe.width(of: " "))
+        let exactHyphenWidth = max(2.5, probe.width(of: "-"))
+        // Generous minimum gutter (>= 18pt) prevents adjacent columns like `delta`/`合并后` or `noop`/`45s` from ever touching.
+        let minGap = max(18.0, tabInterval * 0.75)
+        
         return AIDocumentTextCleaner.TableLayoutMetrics(
             tabInterval: tabInterval,
             minColumnGap: minGap,
-            measureWidth: { text in
-                (text as NSString).size(withAttributes: box.attributes).width
-            }
+            spaceWidth: exactSpaceWidth,
+            hyphenWidth: exactHyphenWidth,
+            measureWidth: { text in probe.width(of: text) },
+            measureLineEndX: { prefix in probe.endX(of: prefix) }
         )
     }
     

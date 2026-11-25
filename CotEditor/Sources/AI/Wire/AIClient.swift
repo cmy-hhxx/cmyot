@@ -565,6 +565,7 @@ nonisolated struct AIClient: Sendable {
                     || m.contains("seed-2")
                     || m.contains("kimi-k2")
                     || m.contains("minimax-m2")
+                    || (m.contains("deepseek") && !m.contains("reasoner") && !m.contains("-r1"))
         {
             body["thinking"] = ["type": "disabled"]
         } else if Self.supportsOpenAIReasoningEffort(for: model) {

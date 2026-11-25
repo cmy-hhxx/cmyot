@@ -632,10 +632,18 @@ struct Round43VimMaterialProactiveDashboardTests {
         #expect(AIAction.explain.isQuickAction == true)
         #expect(AIAction.semanticRestructure.isQuickAction == true)
         #expect(AIAction.weeklyReportItem.isQuickAction == true)
+        #expect(AIAction.interactiveChart.isQuickAction == true)
+        #expect(AIAction.interactiveChart.fastLaneMaxOutputTokens(forInputLength: 1000) == 512)
         #expect(AIAction.weeklyReport.isQuickAction == false)
         #expect(AIAction.organizeAndMerge.isQuickAction == false)
         
         let msgs: [AIMessage] = [.system("sys"), .user("hello")]
+        
+        // DeepSeek-v4.1-flash on OpenCode Go with disablesThinking -> thinking.type = disabled
+        let dsFlashCfg = AIConfiguration(endpoint: .openAIChatCompletions, baseURL: "https://opencode.ai/zen/go/v1", model: "deepseek-v4.1-flash", apiKey: "k")
+        let dsFlashBody = AIClient(configuration: dsFlashCfg, disablesThinking: true).debugRequestBody(for: msgs)
+        let dsFlashThinking = try #require(dsFlashBody["thinking"] as? [String: String])
+        #expect(dsFlashThinking["type"] == "disabled")
         
         // GLM-5 on OpenAI Chat Completions with disablesThinking -> thinking.type = disabled
         let glmCfg = AIConfiguration(endpoint: .openAIChatCompletions, baseURL: "https://opencode.ai/zen/go/v1", model: "glm-5", apiKey: "k")
@@ -672,5 +680,103 @@ struct Round43VimMaterialProactiveDashboardTests {
         let ollamaCfg = AIConfiguration(endpoint: .ollama, baseURL: "http://localhost:11434", model: "qwen3:8b", apiKey: "")
         let ollamaBody = AIClient(configuration: ollamaCfg, disablesThinking: true).debugRequestBody(for: msgs)
         #expect(ollamaBody["think"] as? Bool == false)
+    }
+    
+    
+    @Test func realTextKitProportionalFontTableAlignmentAndInteractiveTableExtraction() throws {
+        // Real AppKit NSLayoutManager alignment test using proportional systemFont (reproducing Screenshot 1!)
+        let storage = NSTextStorage()
+        let scanner = LineEndingScanner(textStorage: storage, lineEnding: .lf)
+        let textView = EditorTextView(textStorage: storage, lineEndingScanner: scanner)
+        textView.font = NSFont.systemFont(ofSize: 13)
+        textView.tabWidth = 4
+        
+        let mdTable = """
+        | 树 | delta | 合并后 | verify | 耗时 | 时间 |
+        |---|---|---|---|---|---|
+        | aime_expert | **0** | 157,601 | noop | 45s | 15:22 |
+        | aime_fast | **0** | 460,501 | noop | 97s | 15:24 |
+        """
+        
+        let liveMetrics = TextRestructureSessionController.liveTableMetrics(for: textView)
+        let cleaned = AIDocumentTextCleaner.cleanStructuredPlainText(mdTable, tableMetrics: liveMetrics)
+        let rows = cleaned.components(separatedBy: "\n")
+        #expect(rows.count == 3)
+        
+        // Measure ACTUAL rendered glyph X of every column start in NSLayoutManager (must match to < 0.05pt with >= 16pt gap!)
+        let probeEndX = try #require(liveMetrics.measureLineEndX)
+        func realColumnBounds(for line: String) -> [(startX: CGFloat, endX: CGFloat)] {
+            var results: [(CGFloat, CGFloat)] = []
+            var prefix = ""
+            var cell = ""
+            var cellStartPrefix = ""
+            var inCell = false
+            for ch in line {
+                if ch == "\t" {
+                    if inCell {
+                        results.append((probeEndX(cellStartPrefix), probeEndX(cellStartPrefix + cell)))
+                        prefix += cell
+                        cell = ""
+                        inCell = false
+                    }
+                    prefix.append(ch)
+                } else {
+                    if !inCell {
+                        cellStartPrefix = prefix
+                        inCell = true
+                    }
+                    cell.append(ch)
+                }
+            }
+            if inCell {
+                results.append((probeEndX(cellStartPrefix), probeEndX(cellStartPrefix + cell)))
+            }
+            return results
+        }
+        
+        let headerBounds = realColumnBounds(for: rows[0])
+        let expertBounds = realColumnBounds(for: rows[1])
+        let fastBounds = realColumnBounds(for: rows[2])
+        #expect(headerBounds.count == 6)
+        #expect(expertBounds.count == 6)
+        #expect(fastBounds.count == 6)
+        
+        for c in 0..<6 {
+            #expect(abs(headerBounds[c].startX - expertBounds[c].startX) < 0.05)
+            #expect(abs(headerBounds[c].startX - fastBounds[c].startX) < 0.05)
+            if c > 0 {
+                let prevMaxEnd = max(headerBounds[c - 1].endX, max(expertBounds[c - 1].endX, fastBounds[c - 1].endX))
+                #expect(headerBounds[c].startX - prevMaxEnd >= 16.0)
+            }
+        }
+        
+        // One-click Align Table works on BOTH Markdown pipe tables AND cleaned Tab-separated plain tables!
+        let messyTabTable = "树\tdelta\t合并后\naime_expert\t0\t157,601\naime_fast\t0\t460,501"
+        let alignedTab = MarkdownTableFormatter.formatTables(in: messyTabTable, metrics: liveMetrics)
+        #expect(alignedTab != messyTabTable)
+        #expect(MarkdownTableFormatter.containsAnyTable(cleaned) == true)
+        
+        // Interactive Table & Chart Studio extracts cleanly from cleaned Tab-separated tables (zero blank chart!)
+        let extractedFromTabs = try #require(MarkdownTableFormatter.extractTable(from: cleaned))
+        #expect(extractedFromTabs.headers == ["树", "delta", "合并后", "verify", "耗时", "时间"])
+        #expect(extractedFromTabs.rows.count == 2)
+        #expect(extractedFromTabs.rows[0][0] == "aime_expert")
+        #expect(extractedFromTabs.rows[0][2] == "157,601")
+        
+        let html = MarkdownTableFormatter.generateInstantChartHTML(from: cleaned)
+        #expect(html.contains("studio-grid"))
+        #expect(html.contains("aime_expert"))
+        #expect(html.contains("157,601"))
+        #expect(!html.contains("**0**"))
+    }
+    
+    
+    @Test func contextMenuQuickHighlightRowFitsAllIconsWithBalancedDividerClearance() {
+        let count = min(QuickHighlightRowMetrics.maxQuickSwatches, HighlightColor.allCases.count)
+        let minW = QuickHighlightRowMetrics.minimumWidth(swatchCount: count)
+        #expect(count == 7)
+        #expect(minW <= 260)
+        #expect(QuickHighlightRowMetrics.swatchesToSeparatorMinGap >= 8)
+        #expect(QuickHighlightRowMetrics.separatorToToolsGap >= 8)
     }
 }

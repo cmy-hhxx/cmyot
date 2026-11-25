@@ -101,14 +101,14 @@ final class AIResultPanelController: NSWindowController {
         self.action = action
         
         let isChart = (action == .interactiveChart)
-        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: isChart ? 680 : 560, height: isChart ? 560 : 420),
+        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: isChart ? 760 : 560, height: isChart ? 580 : 420),
                              styleMask: [.titled, .resizable],
                              backing: .buffered,
                              defer: false)
         window.title = action.title
         window.isFloatingPanel = false
         window.hidesOnDeactivate = false
-        window.contentMinSize = NSSize(width: 460, height: 320)
+        window.contentMinSize = NSSize(width: isChart ? 560 : 460, height: isChart ? 420 : 320)
         
         super.init(window: window)
         
@@ -200,7 +200,7 @@ final class AIResultPanelController: NSWindowController {
     func presentChart(html: String) {
         
         self.chartCardView.isHidden = false
-        self.chartHeightConstraint?.constant = 290
+        self.chartHeightConstraint?.constant = 344
         self.webView.loadHTMLString(html, baseURL: nil)
     }
     
@@ -390,6 +390,9 @@ final class AIResultPanelController: NSWindowController {
         
         self.webView.translatesAutoresizingMaskIntoConstraints = false
         self.webView.setValue(false, forKey: "drawsBackground")
+        self.webView.wantsLayer = true
+        self.webView.layer?.cornerRadius = 9
+        self.webView.layer?.masksToBounds = true
         self.chartCardView.translatesAutoresizingMaskIntoConstraints = false
         self.chartCardView.isHidden = true
         self.chartCardView.addSubview(self.webView)

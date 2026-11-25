@@ -162,9 +162,9 @@ nonisolated enum AIAction: Sendable, CaseIterable {
     var isQuickAction: Bool {
         
         switch self {
-            case .translate, .summarize, .explain, .semanticRestructure, .weeklyReportItem:
+            case .translate, .summarize, .explain, .semanticRestructure, .weeklyReportItem, .interactiveChart:
                 true
-            case .weeklyReport, .interactiveChart, .ocrPolish, .organizeAndMerge:
+            case .weeklyReport, .ocrPolish, .organizeAndMerge:
                 false
         }
     }
@@ -173,8 +173,14 @@ nonisolated enum AIAction: Sendable, CaseIterable {
     /// Output token budget tuned for fast-lane quick actions (avoids runaway generation while keeping full fidelity).
     func fastLaneMaxOutputTokens(forInputLength inputLength: Int) -> Int? {
         
-        guard self.isQuickAction else { return nil }
-        return max(1024, min(4096, inputLength * 3))
+        switch self {
+            case .interactiveChart:
+                return 512
+            case .translate, .summarize, .explain, .semanticRestructure, .weeklyReportItem:
+                return max(1024, min(4096, inputLength * 3))
+            case .weeklyReport, .ocrPolish, .organizeAndMerge:
+                return nil
+        }
     }
     
     
@@ -234,6 +240,16 @@ nonisolated enum AIAction: Sendable, CaseIterable {
                     2. 用 Markdown 无序列表输出，每条一句话，抓结论而不是复述过程。
                     3. 保留关键数字、人名、日期和结论性判断。
                     4. 只输出总结本身，不要前言和后记。
+                    """,
+                ]
+            case .interactiveChart:
+                [
+                    """
+                    你是一名数据可视化专家。请根据用户提供的 Markdown 表格或数据，先输出一段简明的数据洞察总结（Markdown 列表，2~3 条），然后紧接着输出一个完整、可独立运行的交互式 HTML 数据图表代码块（使用 ```html ... ``` 包裹）。
+                    HTML 图表要求：
+                    1. 零外部网络依赖（纯原生 HTML5 + CSS + SVG/Canvas + Vanilla JS），支持深浅色自适应。
+                    2. 支持鼠标悬浮 Tooltip 显示详细数值、支持切换图表视图（柱状图 / 折线图 / 占比条）或点击列排序。
+                    3. 视觉现代精致，配色優雅，圆角卡片布局。
                     """,
                 ]
             case .organizeAndMerge:
@@ -389,11 +405,11 @@ nonisolated enum AIAction: Sendable, CaseIterable {
                 """
             case .interactiveChart:
                 """
-                你是一名数据可视化专家。请根据用户提供的 Markdown 表格或数据，先输出一段简明的数据洞察总结（Markdown 列表，2~3 条），然后紧接着输出一个完整、可独立运行的交互式 HTML 数据图表代码块（使用 ```html ... ``` 包裹）。
-                HTML 图表要求：
-                1. 零外部网络依赖（纯原生 HTML5 + CSS + SVG/Canvas + Vanilla JS），支持深浅色自适应。
-                2. 支持鼠标悬浮 Tooltip 显示详细数值、支持切换图表视图（柱状图 / 折线图 / 占比条）或点击列排序。
-                3. 视觉现代精致，配色優雅，圆角卡片布局。
+                你是一名高效的数据分析师。交互式表格与图表已经由本地引擎即时渲染，你不需要输出任何 HTML/JS 代码。
+                请直接给出 2~4 条极简、有洞察的数据结论：
+                1. 每条一句话，直接点出关键对比、异常值或状态结论，保留真实数字。
+                2. 如果原文不是表格而是一段散落数字，请先在最前面附一个极简 Markdown 表格（仅含核心指标），再跟 2 条结论。
+                3. 严禁输出 ```html 代码块，不要寒暄和废话，追求极简极速。
                 """
             case .ocrPolish:
                 """
