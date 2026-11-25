@@ -4159,16 +4159,17 @@ private struct DashboardHeatmapCard: View {
             
             // Tightly coupled Heatmap -> 14d Scope Bridge -> Telemetry Wave Stack
             GeometryReader { bodyGeo in
-                let gap: CGFloat = self.compact ? 4 : 6
+                let gap: CGFloat = self.compact ? 5 : 6
                 let bridgeH: CGFloat = 16
-                let minWaveH: CGFloat = self.compact ? 54 : 84
+                let minWaveH: CGFloat = self.compact ? 50 : 66
                 let rawHeatmapH = HeatmapGridLayout.intrinsicHeight(forWidth: bodyGeo.size.width, weekCount: weekCount)
-                let maxHeatmapH = max(72, bodyGeo.size.height - bridgeH - gap * 2 - minWaveH)
-                let heatmapH = min(rawHeatmapH, maxHeatmapH)
+                let maxHeatmapH = max(76, bodyGeo.size.height - bridgeH - gap * 2 - minWaveH)
+                let targetHeatmapH = min(rawHeatmapH, maxHeatmapH)
                 let layout = HeatmapGridLayout.compute(
-                    size: CGSize(width: bodyGeo.size.width, height: heatmapH),
+                    size: CGSize(width: bodyGeo.size.width, height: targetHeatmapH),
                     weekCount: weekCount
                 )
+                let heatmapH = layout.canvasHeight
                 
                 VStack(alignment: .leading, spacing: gap) {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -4178,6 +4179,7 @@ private struct DashboardHeatmapCard: View {
                                 recentDayIDs: recentDayIDs,
                                 layout: layout,
                                 heatmapHeight: heatmapH,
+                                overPhoto: self.overPhoto,
                                 palette: self.palette
                             )
                             .equatable()
@@ -4235,14 +4237,14 @@ private struct DashboardHeatmapCard: View {
                     
                     // Micro-Bridge Strip linking the trailing 14-day heatmap cells to the wave chart
                     HStack(spacing: 6) {
-                        HStack(spacing: 4) {
-                            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                                .strokeBorder(self.palette.accentFill.opacity(0.65), lineWidth: 0.9)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                                        .fill(self.palette.accentFill.opacity(0.16))
+                        HStack(spacing: 5) {
+                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                .fill(self.palette.accentFill.opacity(self.palette.tokens.isDark ? 0.16 : 0.10))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                        .strokeBorder(self.palette.accentFill.opacity(self.palette.tokens.isDark ? 0.56 : 0.44), lineWidth: 1.0)
                                 )
-                                .frame(width: 8, height: 8)
+                                .frame(width: 9, height: 9)
                             Text(AppLanguage.text("近 14 日趋势", en: "14d Trend"))
                                 .font(.system(size: 10.5, weight: .medium))
                                 .foregroundStyle(self.palette.mutedInk)
@@ -4563,10 +4565,20 @@ private struct HeatmapStaticBaseCanvas: View, Equatable {
     let recentDayIDs: Set<String>
     let layout: HeatmapGridLayout
     let heatmapHeight: CGFloat
+    var overPhoto: Bool = false
     let palette: DashPalette
     
     
     var body: some View {
+        let isDark = self.palette.tokens.isDark
+        let emptyCellFill: Color = if self.overPhoto {
+            isDark
+                ? Color.white.opacity(0.085)
+                : self.palette.pine.opacity(0.065)
+        } else {
+            self.palette.emptyDot
+        }
+        
         Canvas(rendersAsynchronously: true) { context, canvasSize in
             guard canvasSize.width.isFinite, canvasSize.height.isFinite,
                   canvasSize.width > 10, canvasSize.height > 10 else { return }
@@ -4578,34 +4590,29 @@ private struct HeatmapStaticBaseCanvas: View, Equatable {
                 lastLabelRightX = x
                 context.draw(
                     Text("\(marker.month)")
-                        .font(.system(size: 8.5, weight: .medium, design: .rounded).monospacedDigit())
-                        .foregroundStyle(self.palette.pine.opacity(0.36)),
-                    at: CGPoint(x: x, y: self.layout.gridOriginY - 7),
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(self.palette.pine.opacity(0.46)),
+                    at: CGPoint(x: x, y: HeatmapGridLayout.monthLabelBaselineY),
                     anchor: .leading
                 )
             }
             
-            // Highlight recent 14-day window columns to visually anchor the trend lens below
+            // Highlight recent 14-day window columns with strict unclipped concentric rounded frame
             let scopedCols = self.yearlyHeatmap.weeks.enumerated().compactMap { colIdx, week in
                 week.contains(where: { self.recentDayIDs.contains($0.id) && !$0.isOutOfYear && !$0.isFuture }) ? colIdx : nil
             }
             if let minCol = scopedCols.min(), let maxCol = scopedCols.max() {
-                let colSpan = maxCol - minCol + 1
-                let scopeRect = CGRect(
-                    x: self.layout.gridOriginX + CGFloat(minCol) * self.layout.pitch - 2,
-                    y: self.layout.gridOriginY - 2,
-                    width: CGFloat(colSpan) * self.layout.cellSide + CGFloat(max(0, colSpan - 1)) * self.layout.gap + 4,
-                    height: 7 * self.layout.cellSide + 6 * self.layout.gap + 4
-                )
-                let scopePath = RoundedRectangle(cornerRadius: self.layout.cornerRadius + 2, style: .continuous).path(in: scopeRect)
+                let scopeRect = self.layout.scopeRect(minCol: minCol, maxCol: maxCol)
+                let scopePath = RoundedRectangle(cornerRadius: self.layout.scopeCornerRadius, style: .continuous)
+                    .path(in: scopeRect)
                 context.fill(
                     scopePath,
-                    with: .color(self.palette.accentFill.opacity(self.palette.tokens.isDark ? 0.14 : 0.08))
+                    with: .color(self.palette.accentFill.opacity(isDark ? 0.14 : 0.08))
                 )
                 context.stroke(
                     scopePath,
-                    with: .color(self.palette.accentFill.opacity(0.28)),
-                    lineWidth: 0.75
+                    with: .color(self.palette.accentFill.opacity(isDark ? 0.50 : 0.38)),
+                    lineWidth: HeatmapGridLayout.scopeStrokeWidth
                 )
             }
             
@@ -4615,7 +4622,8 @@ private struct HeatmapStaticBaseCanvas: View, Equatable {
                     let rect = self.layout.cellRect(col: colIndex, row: rowIndex)
                     let path = RoundedRectangle(cornerRadius: self.layout.cornerRadius, style: .continuous)
                         .path(in: rect)
-                    context.fill(path, with: .color(self.palette.heat(cell.level)))
+                    let fill = (cell.level == 0) ? emptyCellFill : self.palette.heat(cell.level)
+                    context.fill(path, with: .color(fill))
                 }
             }
         }
@@ -4624,8 +4632,14 @@ private struct HeatmapStaticBaseCanvas: View, Equatable {
 }
 
 
-/// Strict 1:1 square-cell layout for the yearly activity heatmap with left weekday labels & top month markers.
+/// Strict 1:1 square-cell layout for the yearly activity heatmap with guaranteed unclipped scope bleed margins.
 struct HeatmapGridLayout: Equatable {
+    
+    static let sidePad: CGFloat = 6.0
+    static let topAxis: CGFloat = 18.0
+    static let bottomPad: CGFloat = 6.0
+    static let monthLabelBaselineY: CGFloat = 6.5
+    static let scopeStrokeWidth: CGFloat = 1.0
     
     let gridOriginX: CGFloat
     let gridOriginY: CGFloat
@@ -4637,56 +4651,68 @@ struct HeatmapGridLayout: Equatable {
     
     var pitch: CGFloat { self.cellSide + self.gap }
     
+    /// Concentric outward padding for the 14-day scope frame, strictly inside `sidePad` & `bottomPad`.
+    var scopeOutset: CGFloat {
+        self.cellSide < 9.0 ? 2.5 : 3.0
+    }
+    
+    /// Concentric rounded corner radius matching `cellCornerRadius + scopeOutset`.
+    var scopeCornerRadius: CGFloat {
+        self.cornerRadius + self.scopeOutset
+    }
+    
     
     static func intrinsicHeight(forWidth width: CGFloat, weekCount: Int) -> CGFloat {
         let cols = max(1, weekCount)
         let rows = 7
-        let leftAxis: CGFloat = 2
-        let topAxis: CGFloat = 14
-        let trailingPad: CGFloat = 4
-        let bottomPad: CGFloat = 2
         
-        let availW = max(120, width - leftAxis - trailingPad)
+        let availW = max(120, width - Self.sidePad * 2)
         let gap: CGFloat = cols > 40 ? 2.5 : 3.0
         let fitW = (availW - CGFloat(cols - 1) * gap) / CGFloat(cols)
         let cellSide = max(9.5, min(15.0, floor(fitW * 2) / 2))
         let gridH = CGFloat(rows) * cellSide + CGFloat(rows - 1) * gap
-        return ceil(topAxis + gridH + bottomPad)
+        return ceil(Self.topAxis + gridH + Self.bottomPad)
     }
     
     
     static func compute(size: CGSize, weekCount: Int) -> HeatmapGridLayout {
         let cols = max(1, weekCount)
         let rows = 7
-        let leftAxis: CGFloat = 2
-        let topAxis: CGFloat = 14
-        let trailingPad: CGFloat = 4
-        let bottomPad: CGFloat = 2
         
-        let availW = max(120, size.width - leftAxis - trailingPad)
-        let availH = max(72, size.height - topAxis - bottomPad)
+        let availW = max(120, size.width - Self.sidePad * 2)
+        let availH = max(48, size.height - Self.topAxis - Self.bottomPad)
         
-        let gap: CGFloat = cols > 40 ? 2.5 : 3.0
+        let standardGap: CGFloat = cols > 40 ? 2.5 : 3.0
+        let fitHStandard = (availH - CGFloat(rows - 1) * standardGap) / CGFloat(rows)
+        let gap: CGFloat = fitHStandard < 9.0 ? 2.0 : standardGap
+        
         let fitW = (availW - CGFloat(cols - 1) * gap) / CGFloat(cols)
         let fitH = (availH - CGFloat(rows - 1) * gap) / CGFloat(rows)
         
-        let minSide: CGFloat = 9.5
         let maxSide: CGFloat = 15.0
-        let idealSide = min(fitW, fitH)
-        let cellSide = max(minSide, min(maxSide, floor(idealSide * 2) / 2))
+        // Keep >= 9.5pt whenever vertical space permits (preserving crisp cells & horizontal scrolling on wide years),
+        // and gracefully scale down to 6.5pt on short viewports so the 7 rows + scope frame NEVER clip vertically.
+        let cellSide: CGFloat
+        if fitH >= 9.5 {
+            let idealSide = min(fitW, fitH)
+            cellSide = max(9.5, min(maxSide, floor(idealSide * 2) / 2))
+        } else {
+            cellSide = max(6.0, min(maxSide, floor(fitH * 2) / 2))
+        }
         
         let gridW = CGFloat(cols) * cellSide + CGFloat(cols - 1) * gap
         let gridH = CGFloat(rows) * cellSide + CGFloat(rows - 1) * gap
         
-        let contentW = leftAxis + gridW + trailingPad
+        let contentW = Self.sidePad * 2 + gridW
+        let contentH = ceil(Self.topAxis + gridH + Self.bottomPad)
         let canvasWidth = max(size.width, contentW)
-        let canvasHeight = max(size.height, topAxis + gridH + bottomPad)
+        let canvasHeight = contentH
         
         let gridOriginX = contentW < size.width
-            ? leftAxis + floor((size.width - contentW) * 0.5)
-            : leftAxis
-        let gridOriginY = topAxis
-        let cornerRadius = max(2.0, min(3.5, cellSide * 0.25))
+            ? Self.sidePad + floor((size.width - contentW) * 0.5)
+            : Self.sidePad
+        let gridOriginY = Self.topAxis
+        let cornerRadius = max(1.8, min(3.5, cellSide * 0.25))
         
         return HeatmapGridLayout(
             gridOriginX: gridOriginX,
@@ -4704,6 +4730,20 @@ struct HeatmapGridLayout: Equatable {
         let x = self.gridOriginX + CGFloat(col) * self.pitch
         let y = self.gridOriginY + CGFloat(row) * self.pitch
         return CGRect(x: x, y: y, width: self.cellSide, height: self.cellSide)
+    }
+    
+    
+    /// Exact concentric highlight rectangle enclosing columns `minCol...maxCol` across all 7 weekday rows.
+    func scopeRect(minCol: Int, maxCol: Int) -> CGRect {
+        let first = self.cellRect(col: minCol, row: 0)
+        let last = self.cellRect(col: maxCol, row: 6)
+        let outset = self.scopeOutset
+        return CGRect(
+            x: first.minX - outset,
+            y: first.minY - outset,
+            width: (last.maxX - first.minX) + outset * 2,
+            height: (last.maxY - first.minY) + outset * 2
+        )
     }
     
     

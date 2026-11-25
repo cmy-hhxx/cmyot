@@ -263,6 +263,28 @@ struct Round43VimMaterialProactiveDashboardTests {
     }
     
     
+    @Test func heatmapScopeBorderNeverClipsAcrossTightAndWideViewports() {
+        let strokeHalf = HeatmapGridLayout.scopeStrokeWidth * 0.5
+        let testSizes: [(CGSize, Int)] = [
+            (CGSize(width: 480, height: 78), 48),
+            (CGSize(width: 560, height: 88), 52),
+            (CGSize(width: 640, height: 106), 53),
+            (CGSize(width: 720, height: 140), 20),
+            (CGSize(width: 560, height: 240), 53),
+        ]
+        for (size, weeks) in testSizes {
+            let layout = HeatmapGridLayout.compute(size: size, weekCount: weeks)
+            let scope = layout.scopeRect(minCol: max(0, weeks - 3), maxCol: weeks - 1)
+            #expect(scope.minX - strokeHalf >= 1.5)
+            #expect(scope.maxX + strokeHalf <= layout.canvasWidth - 1.5)
+            #expect(scope.minY - strokeHalf >= 10.0)
+            #expect(scope.maxY + strokeHalf <= layout.canvasHeight - 1.5)
+            #expect(layout.canvasHeight <= size.height + 1.0)
+            #expect(abs(layout.scopeCornerRadius - (layout.cornerRadius + layout.scopeOutset)) < 0.001)
+        }
+    }
+    
+    
     // MARK: 5. Lossless Vector Zoom Metrics for Document Center & Weekly Report Star-Map
     
     @Test func starMapLosslessVectorZoomScalesTypographyAndAnchorsViewportCenter() {
