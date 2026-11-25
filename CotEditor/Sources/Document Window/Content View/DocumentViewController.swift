@@ -125,6 +125,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     /// The split view items hidden by the zoom, restored when zooming out.
     private var itemsCollapsedByZoom: [NSSplitViewItem] = []
     private var aiResultPanel: AIResultPanelController?
+    private let textRestructureSession = TextRestructureSessionController()
     
     private var themeName: String?
     private var theme: Theme?  { self.focusedTextView?.theme }
@@ -1185,6 +1186,63 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
+    /// Cleans messy Markdown decoration (`**`, broken `*`, backticks, `#`) and structures paragraphs with `\t` in place
+    /// with a luminous sweep effect and a regret-proof floating review bar (compare / upgrade / revert / keep).
+    @IBAction func cleanAndStructureText(_ sender: Any?) {
+        
+        guard let textView = self.focusedTextView, textView.isEditable else {
+            NSSound.beep()
+            return
+        }
+        
+        let hostView = self.focusedChild?.view ?? textView.enclosingScrollView?.superview ?? self.view
+        self.textRestructureSession.onFallbackToPanel = { [weak self] action, _, result in
+            self?.presentCompletedAIResultPanel(action: action, result: result)
+        }
+        self.textRestructureSession.runFormatClean(in: textView, hostView: hostView)
+    }
+    
+    
+    /// Semantically reorganizes verbose or tangled text into a clear, easy-to-understand Tab-structured version via AI,
+    /// using an inline ambient scan shimmer, completion sweep, and regret-proof floating review bar (compare / retry / keep both / revert).
+    @IBAction func semanticRestructureText(_ sender: Any?) {
+        
+        guard let textView = self.focusedTextView, let window = textView.window else {
+            NSSound.beep()
+            return
+        }
+        
+        // Read-only documents cannot be mutated in place, so fall back to the preview/copy sheet cleanly.
+        guard textView.isEditable else {
+            self.runAIAction(.semanticRestructure, allowFullDocumentFallback: true)
+            return
+        }
+        
+        guard AIService.shared.isConfigured(for: AIBotID(action: .semanticRestructure)) else {
+            self.presentAIConfigurationAlert(on: window)
+            return
+        }
+        
+        let hostView = self.focusedChild?.view ?? textView.enclosingScrollView?.superview ?? self.view
+        self.textRestructureSession.onFallbackToPanel = { [weak self] action, _, result in
+            self?.presentCompletedAIResultPanel(action: action, result: result)
+        }
+        self.textRestructureSession.runSemanticRestructure(in: textView, hostView: hostView)
+    }
+    
+    
+    private func presentCompletedAIResultPanel(action: AIAction, result: String) {
+        
+        guard let window = self.focusedTextView?.window ?? self.view.window else { return }
+        let panel = AIResultPanelController(action: action)
+        panel.onReplace = { [weak self] text in self?.applyAIResult(text, replacingSelection: true) }
+        panel.onInsert = { [weak self] text in self?.applyAIResult(text, replacingSelection: false) }
+        self.aiResultPanel = panel
+        panel.present(on: window)
+        panel.present(result: result)
+    }
+    
+    
     /// Aggregates weekly-report-relevant work across all open windows and documents.
     @IBAction func generateWeeklyReport(_ sender: Any?) {
         
@@ -1410,9 +1468,9 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         }
         
         let selected = textView.selectedString
-        let text = (!selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !allowFullDocumentFallback)
-            ? selected
-            : textView.string
+        let hasSelection = !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let useFullDocument = !hasSelection && allowFullDocumentFallback
+        let text = useFullDocument ? textView.string : selected
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             NSSound.beep()
             return
@@ -1424,8 +1482,13 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         }
         
         let panel = AIResultPanelController(action: action)
-        panel.onReplace = { [weak self] result in self?.applyAIResult(result, replacingSelection: true) }
-        panel.onInsert = { [weak self] result in self?.applyAIResult(result, replacingSelection: false) }
+        panel.replacesWholeDocument = useFullDocument
+        panel.onReplace = { [weak self] result in
+            self?.applyAIResult(result, replacingSelection: true, replaceWholeDocument: useFullDocument)
+        }
+        panel.onInsert = { [weak self] result in
+            self?.applyAIResult(result, replacingSelection: false, replaceWholeDocument: false)
+        }
         panel.onContinueInButler = { result in
             let quoteBody = """
             【原文片段】
@@ -1605,13 +1668,29 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     /// - Parameters:
     ///   - result: The answer text.
     ///   - replacingSelection: Whether to replace the selection instead of inserting at the caret.
-    private func applyAIResult(_ result: String, replacingSelection: Bool) {
+    private func applyAIResult(_ result: String, replacingSelection: Bool, replaceWholeDocument: Bool = false) {
         
         guard let textView = self.focusedTextView else { return }
         
-        let range = replacingSelection ? textView.selectedRange() : NSRange(location: textView.selectedRange().upperBound, length: 0)
+        let nsText = textView.string as NSString
+        let range: NSRange
+        if replacingSelection && replaceWholeDocument {
+            range = NSRange(location: 0, length: nsText.length)
+        } else if replacingSelection {
+            range = textView.selectedRange()
+        } else {
+            range = NSRange(location: textView.selectedRange().upperBound, length: 0)
+        }
         
-        textView.insertText(result, replacementRange: range)
+        var finalResult = result
+        if replacingSelection, range.length > 0 {
+            let original = nsText.substring(with: range)
+            if original.hasSuffix("\n"), !finalResult.isEmpty, !finalResult.hasSuffix("\n") {
+                finalResult += "\n"
+            }
+        }
+        
+        textView.insertText(finalResult, replacementRange: range)
         textView.window?.makeFirstResponder(textView)
     }
     

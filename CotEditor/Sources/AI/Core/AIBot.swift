@@ -800,7 +800,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
         switch action {
             case .translate: self = .translate
             case .summarize: self = .summarize
-            case .explain: self = .explain
+            case .explain, .semanticRestructure: self = .explain
             case .weeklyReport: self = .weeklyReport
             case .weeklyReportItem: self = .weeklyReportItem
             case .interactiveChart: self = .interactiveChart

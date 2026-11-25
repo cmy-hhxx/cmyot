@@ -3,15 +3,36 @@ import GlideMenu from "./GlideMenu";
 import type { SessionSummary, WorkspaceOption } from "../types";
 
 /* ─────────────────────────────────────────────────────────
- * SIDEBAR NAV — Logical Workspaces & Drag-Reorderable Sessions
- *   · Arbitrary logical workspaces (optional local folder link) + General
+ * SIDEBAR NAV — Claude-Style Hierarchical Workspaces & Sessions
+ *   · Two-tier hierarchy: collapsible Projects/Workspaces (with indented
+ *     child rail & count) separated cleanly from General/Recent sessions
  *   · Pointer-event drag & drop to reorder sessions & move across groups
  *   · Pointer-event drag & drop to reorder workspace groups
  *   · Inline search, double-click rename, pin, delete
- *   · Zero tiny text: all copy ≥ 13px for crisp readability
+ *   · Clean restraint: zero explainer copy, crisp typography & spacing
  * ───────────────────────────────────────────────────────── */
 
 const GENERAL_GROUP_ID = "__general__";
+const COLLAPSED_GROUPS_STORAGE_KEY = "cot.sidebar.collapsedGroups.v1";
+
+function loadCollapsedGroups(): Record<string, boolean> {
+  try {
+    const raw = window.localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveCollapsedGroups(next: Record<string, boolean>) {
+  try {
+    window.localStorage.setItem(COLLAPSED_GROUPS_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Ignore storage quota or private-mode restrictions
+  }
+}
 
 type SidebarNavProps = {
   botName: string;
@@ -83,32 +104,36 @@ type WorkspaceDropTarget = {
 function WorkspaceGlyph({
   isFolderBacked,
   isGeneral,
+  expanded = false,
   className = "",
 }: {
   isFolderBacked?: boolean;
   isGeneral?: boolean;
+  expanded?: boolean;
   className?: string;
 }) {
   if (isGeneral) {
     return (
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 ${className}`}>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 ${className}`}>
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
       </svg>
     );
   }
   if (isFolderBacked) {
     return (
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 ${className}`}>
-        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 ${className}`}>
+        {expanded ? (
+          <path d="M3 7a2 2 0 0 1 2-2h4.2l1.8 2H19a2 2 0 0 1 2 2v1.5M3 11.5h18l-1.6 6.5a2 2 0 0 1-1.94 1.5H5.54a2 2 0 0 1-1.94-1.5L2 11.5z" />
+        ) : (
+          <path d="M3 7a2 2 0 0 1 2-2h4.2l1.8 2H19a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        )}
       </svg>
     );
   }
   return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 ${className}`}>
-      <rect x="3" y="3" width="7" height="7" rx="1.5" />
-      <rect x="14" y="3" width="7" height="7" rx="1.5" />
-      <rect x="3" y="14" width="7" height="7" rx="1.5" />
-      <rect x="14" y="14" width="7" height="7" rx="1.5" />
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 ${className}`}>
+      <path d="M3 7.5a2 2 0 0 1 2-2h4.2l1.8 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      {expanded && <path d="M7.5 13.5h9" strokeOpacity="0.65" />}
     </svg>
   );
 }
@@ -146,6 +171,9 @@ export default function SidebarNav({
   const [renamingWSID, setRenamingWSID] = useState<string | null>(null);
   const [renameWSDraft, setRenameWSDraft] = useState("");
   const [openMenuWSID, setOpenMenuWSID] = useState<string | null>(null);
+  const [collapsedGroupMap, setCollapsedGroupMap] = useState<Record<string, boolean>>(() =>
+    loadCollapsedGroups(),
+  );
 
   const [dragSession, setDragSession] = useState<SessionDragState | null>(null);
   const [sessionDropTarget, setSessionDropTarget] = useState<SessionDropTarget | null>(null);
@@ -200,6 +228,27 @@ export default function SidebarNav({
 
   const activeSession = sessions.find((s) => s.id === activeSessionID);
 
+  const setGroupExpanded = (groupId: string, expanded: boolean) => {
+    setCollapsedGroupMap((prev) => {
+      const collapsedFlag = !expanded;
+      if (prev[groupId] === collapsedFlag) return prev;
+      const next = { ...prev, [groupId]: collapsedFlag };
+      saveCollapsedGroups(next);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const wid = activeSession?.workspaceID?.trim();
+    if (!wid) return;
+    setCollapsedGroupMap((prev) => {
+      if (prev[wid] === false) return prev;
+      const next = { ...prev, [wid]: false };
+      saveCollapsedGroups(next);
+      return next;
+    });
+  }, [activeSession?.workspaceID]);
+
   const visibleSessions = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return sessions;
@@ -251,8 +300,16 @@ export default function SidebarNav({
     return groups;
   }, [visibleSessions, availableWorkspaces, query, locale]);
 
-  const showGroupHeaders = availableWorkspaces.length > 0 || dragSession !== null;
-  const canDrag = !collapsed && query.trim().length === 0 && !renamingID && !renamingWSID;
+  const isSearching = query.trim().length > 0;
+  const canDrag = !collapsed && !isSearching && !renamingID && !renamingWSID;
+
+  const isGroupExpanded = (group: SessionGroup): boolean => {
+    if (isSearching) return true;
+    if (Object.prototype.hasOwnProperty.call(collapsedGroupMap, group.id)) {
+      return !collapsedGroupMap[group.id];
+    }
+    return group.sessions.length > 0;
+  };
 
   // Keep latest callbacks/groups in refs for window pointer listeners
   const latestRef = useRef({
@@ -260,12 +317,14 @@ export default function SidebarNav({
     availableWorkspaces,
     onMoveSession,
     onReorderWorkspaces,
+    setGroupExpanded,
   });
   latestRef.current = {
     groupedSessions,
     availableWorkspaces,
     onMoveSession,
     onReorderWorkspaces,
+    setGroupExpanded,
   };
 
   useEffect(() => {
@@ -397,8 +456,13 @@ export default function SidebarNav({
         }, 60);
       }
 
-      const { groupedSessions: groups, availableWorkspaces: wss, onMoveSession: moveSess, onReorderWorkspaces: reorderWS } =
-        latestRef.current;
+      const {
+        groupedSessions: groups,
+        availableWorkspaces: wss,
+        onMoveSession: moveSess,
+        onReorderWorkspaces: reorderWS,
+        setGroupExpanded: expandGroup,
+      } = latestRef.current;
 
       if (activeSess && dropSess) {
         const targetGroup = groups.find((g) => g.id === dropSess.groupId);
@@ -459,6 +523,9 @@ export default function SidebarNav({
             nextList.map((s) => s.id),
             activeSess.session.isPinned,
           );
+          if (dropSess.groupId !== GENERAL_GROUP_ID) {
+            expandGroup(dropSess.groupId, true);
+          }
         }
         return;
       }
@@ -504,7 +571,7 @@ export default function SidebarNav({
     setNewWorkspaceDraft("");
   };
 
-  const renderSessionRow = (session: SessionSummary, groupId: string) => {
+  const renderSessionRow = (session: SessionSummary, groupId: string, nested = false) => {
     const active = session.id === activeSessionID;
     const isRenaming = renamingID === session.id;
     const isBeingDragged = dragSession?.session.id === session.id;
@@ -552,11 +619,13 @@ export default function SidebarNav({
             onSelectSession(session.id);
           }
         }}
-        className={`group/item sidebar-row relative z-10 mx-2 flex h-8.5 items-center gap-1.5 rounded-[8px] px-2 transition-[width,background-color,opacity] duration-100 select-none ${
+        className={`group/item relative z-10 flex items-center gap-1.5 rounded-[7px] px-2 transition-[background-color,opacity] duration-100 select-none ${
+          nested ? "h-[30px] w-full" : "mx-2 h-8"
+        } ${
           isBeingDragged
             ? "opacity-35"
             : active
-              ? "bg-hover-2 group-hover/glide:bg-transparent"
+              ? "bg-hover-2"
               : ""
         } ${canDrag ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"}`}
       >
@@ -578,7 +647,7 @@ export default function SidebarNav({
         )}
 
         {session.isPinned && (
-          <span className="sidebar-copy size-1.5 shrink-0 rounded-full bg-accent" />
+          <span className="size-1.5 shrink-0 rounded-full bg-accent" />
         )}
 
         {isRenaming ? (
@@ -596,8 +665,8 @@ export default function SidebarNav({
           />
         ) : (
           <span
-            className={`sidebar-copy min-w-0 flex-1 truncate text-[13px] ${
-              active ? "font-medium text-ink" : "text-ink-2"
+            className={`min-w-0 flex-1 truncate text-[13px] ${
+              active ? "font-medium text-ink" : "font-normal text-ink-2 group-hover/item:text-ink"
             }`}
           >
             {session.title}
@@ -605,7 +674,7 @@ export default function SidebarNav({
         )}
 
         {!isRenaming && !collapsed && !dragSession && (
-          <div className="sidebar-copy flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-100 group-hover/item:opacity-100">
+          <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-100 group-hover/item:opacity-100">
             <button
               type="button"
               data-row-action="true"
@@ -614,10 +683,10 @@ export default function SidebarNav({
                 e.stopPropagation();
                 onTogglePinSession(session.id);
               }}
-              className="flex size-6 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink"
+              className="flex size-5.5 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-ink"
               title={session.isPinned ? (locale === "zh" ? "取消置顶" : "Unpin") : locale === "zh" ? "置顶" : "Pin"}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill={session.isPinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2">
+              <svg width="11.5" height="11.5" viewBox="0 0 24 24" fill={session.isPinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2">
                 <path d="M12 17v5M5 9l7-7 7 7-3 3v4H8v-4z" />
               </svg>
             </button>
@@ -629,10 +698,10 @@ export default function SidebarNav({
                 e.stopPropagation();
                 onDeleteSession(session.id);
               }}
-              className="flex size-6 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-red"
+              className="flex size-5.5 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover hover:text-red"
               title={locale === "zh" ? "删除" : "Delete"}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+              <svg width="11.5" height="11.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
                 <path d="M18 6L6 18M6 6l12 12" />
               </svg>
             </button>
@@ -772,40 +841,48 @@ export default function SidebarNav({
           </div>
         )}
 
-        {/* Searchable workspace-grouped session history with pointer drag & drop */}
-        <div ref={listContainerRef} className="bui-scroll mt-3 min-h-0 flex-1 overflow-y-auto">
-          <div className="sidebar-copy relative mx-2 mb-1.5 h-8">
+        {/* Searchable two-tier Claude-style workspace tree & general sessions */}
+        <div ref={listContainerRef} className="sidebar-copy bui-scroll mt-3 min-h-0 flex-1 overflow-y-auto">
+          <div className="relative mx-2 mb-1.5 h-7">
             <div
               aria-hidden={searchOpen}
-              className={`absolute inset-0 flex items-center gap-1 px-2 text-[13px] font-medium text-ink-3 transition-[opacity,transform] duration-180 ${
+              className={`absolute inset-0 flex items-center gap-1 px-2 text-[12px] font-medium text-ink-3 transition-[opacity,transform] duration-180 ${
                 searchOpen ? "pointer-events-none -translate-x-1 opacity-0" : "translate-x-0 opacity-100"
               }`}
             >
-              <span>{locale === "zh" ? "会话列表" : "Sessions"}</span>
+              <span>
+                {availableWorkspaces.length > 0
+                  ? locale === "zh"
+                    ? "工作区"
+                    : "Projects"
+                  : locale === "zh"
+                    ? "会话列表"
+                    : "Sessions"}
+              </span>
             </div>
 
             <button
               type="button"
               aria-label="Search sessions"
               onClick={() => setSearchOpen(true)}
-              className={`absolute right-0 top-0 z-10 flex size-8 items-center justify-center rounded-[7px] text-ink-3 transition-[opacity,background-color,color] duration-150 hover:bg-hover-2 hover:text-ink ${
+              className={`absolute right-0 top-0 z-10 flex size-7 items-center justify-center rounded-[7px] text-ink-3 transition-[opacity,background-color,color] duration-150 hover:bg-hover-2 hover:text-ink ${
                 searchOpen ? "pointer-events-none opacity-0" : "opacity-100"
               }`}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <svg width="13.5" height="13.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <circle cx="11" cy="11" r="7" />
                 <path d="M21 21l-4.3-4.3" />
               </svg>
             </button>
 
             <div
-              className={`absolute right-0 top-0 z-20 flex h-8 items-center overflow-hidden rounded-[8px] bg-surface text-ink-3 shadow-hairline transition-[width,opacity] duration-180 ${
+              className={`absolute right-0 top-0 z-20 flex h-7 items-center overflow-hidden rounded-[7px] bg-surface text-ink-3 shadow-hairline transition-[width,opacity] duration-180 ${
                 searchOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
               }`}
-              style={{ width: searchOpen ? "100%" : 32 }}
+              style={{ width: searchOpen ? "100%" : 28 }}
             >
               <span className="ml-2 flex shrink-0 items-center justify-center">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                   <circle cx="11" cy="11" r="7" />
                   <path d="M21 21l-4.3-4.3" />
                 </svg>
@@ -820,8 +897,8 @@ export default function SidebarNav({
                     setQuery("");
                   }
                 }}
-                placeholder={locale === "zh" ? "搜索会话或工作区" : "Search sessions"}
-                className="ml-1.5 min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-3 select-text"
+                placeholder={locale === "zh" ? "搜索" : "Search"}
+                className="ml-1.5 min-w-0 flex-1 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-3 select-text"
               />
               <button
                 type="button"
@@ -830,9 +907,9 @@ export default function SidebarNav({
                   setSearchOpen(false);
                   setQuery("");
                 }}
-                className="flex size-7 shrink-0 items-center justify-center text-ink-3 hover:text-ink"
+                className="flex size-6.5 shrink-0 items-center justify-center text-ink-3 hover:text-ink"
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                <svg width="11.5" height="11.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
                   <path d="M18 6L6 18M6 6l12 12" />
                 </svg>
               </button>
@@ -841,52 +918,55 @@ export default function SidebarNav({
 
           <GlideMenu
             rowSelector="[data-row]"
-            highlightClassName={`sidebar-glide-highlight rounded-[8px] bg-hover-2 ${dragSession || dragWorkspace ? "hidden" : ""}`}
-            className="group/glide flex flex-col gap-0.5"
+            highlightClassName={`sidebar-glide-highlight rounded-[7px] bg-hover-2 ${dragSession || dragWorkspace ? "hidden" : ""}`}
+            className="group/glide flex flex-col"
           >
-            {groupedSessions.map((group) => {
-              const isGroupDropHighlight =
-                sessionDropTarget?.kind === "group" && sessionDropTarget.groupId === group.id;
-              const ws = group.workspace;
-              const isWSDragged = ws ? dragWorkspace?.workspace.id === ws.id : false;
-              const showWSBefore =
-                ws &&
-                workspaceDropTarget?.targetWorkspaceId === ws.id &&
-                workspaceDropTarget.position === "before" &&
-                !isWSDragged;
-              const showWSAfter =
-                ws &&
-                workspaceDropTarget?.targetWorkspaceId === ws.id &&
-                workspaceDropTarget.position === "after" &&
-                !isWSDragged;
+            {/* Tier 1: Collapsible Project / Workspace Folders with Indented Tree Rail */}
+            {groupedSessions
+              .filter((g) => g.workspace !== null)
+              .map((group) => {
+                const ws = group.workspace!;
+                const expanded = isGroupExpanded(group);
+                const containsActive = group.sessions.some((s) => s.id === activeSessionID);
+                const isGroupDropHighlight =
+                  sessionDropTarget?.kind === "group" && sessionDropTarget.groupId === group.id;
+                const isWSDragged = dragWorkspace?.workspace.id === ws.id;
+                const showWSBefore =
+                  workspaceDropTarget?.targetWorkspaceId === ws.id &&
+                  workspaceDropTarget.position === "before" &&
+                  !isWSDragged;
+                const showWSAfter =
+                  workspaceDropTarget?.targetWorkspaceId === ws.id &&
+                  workspaceDropTarget.position === "after" &&
+                  !isWSDragged;
+                const menuOpen = openMenuWSID === ws.id;
 
-              return (
-                <div
-                  key={group.id}
-                  data-group-drop-id={group.id}
-                  data-workspace-group-id={ws?.id}
-                  className={`relative mb-2 rounded-[9px] transition-colors duration-100 last:mb-0 ${
-                    isGroupDropHighlight ? "bg-accent-tint ring-1 ring-accent/40" : ""
-                  } ${isWSDragged ? "opacity-40" : ""}`}
-                >
-                  {showWSBefore && (
-                    <span
-                      aria-hidden
-                      className="pointer-events-none absolute inset-x-3 -top-0.5 z-30 h-0.5 rounded-full bg-accent"
-                    />
-                  )}
-                  {showWSAfter && (
-                    <span
-                      aria-hidden
-                      className="pointer-events-none absolute inset-x-3 -bottom-0.5 z-30 h-0.5 rounded-full bg-accent"
-                    />
-                  )}
+                return (
+                  <div
+                    key={group.id}
+                    data-group-drop-id={group.id}
+                    data-workspace-group-id={ws.id}
+                    className={`relative mb-0.5 rounded-[8px] transition-colors duration-100 ${
+                      isGroupDropHighlight ? "bg-accent-tint/80 ring-1 ring-accent/45" : ""
+                    } ${isWSDragged ? "opacity-40" : ""}`}
+                  >
+                    {showWSBefore && (
+                      <span
+                        aria-hidden
+                        className="pointer-events-none absolute inset-x-3 -top-0.5 z-30 h-0.5 rounded-full bg-accent"
+                      />
+                    )}
+                    {showWSAfter && (
+                      <span
+                        aria-hidden
+                        className="pointer-events-none absolute inset-x-3 -bottom-0.5 z-30 h-0.5 rounded-full bg-accent"
+                      />
+                    )}
 
-                  {showGroupHeaders && (
                     <div
-                      data-workspace-drag-id={ws?.id}
+                      data-workspace-drag-id={ws.id}
                       onPointerDown={(e) => {
-                        if (!ws || !canDrag || e.button !== 0) return;
+                        if (!canDrag || e.button !== 0) return;
                         if ((e.target as HTMLElement).closest("[data-ws-action], input, button")) return;
                         pendingWSDragRef.current = {
                           workspace: ws,
@@ -894,11 +974,26 @@ export default function SidebarNav({
                           startY: e.clientY,
                         };
                       }}
-                      className={`group/ws sidebar-copy relative mx-2 mb-0.5 flex h-7.5 items-center justify-between gap-1 rounded-[7px] px-2 ${
-                        ws && canDrag ? "cursor-grab active:cursor-grabbing" : ""
+                      onClick={(e) => {
+                        if (suppressClickRef.current || renamingWSID === ws.id) return;
+                        if ((e.target as HTMLElement).closest("[data-ws-action], input, button")) return;
+                        setGroupExpanded(group.id, !expanded);
+                      }}
+                      className={`group/ws relative mx-2 flex h-8 items-center gap-1 rounded-[7px] px-1.5 transition-colors duration-100 hover:bg-hover ${
+                        canDrag ? "cursor-pointer active:cursor-grabbing" : "cursor-pointer"
                       }`}
                     >
-                      {ws && renamingWSID === ws.id ? (
+                      <span
+                        className={`flex size-4 shrink-0 items-center justify-center text-ink-3 transition-transform duration-150 ${
+                          expanded ? "rotate-90" : "rotate-0"
+                        } ${group.sessions.length === 0 && !expanded ? "opacity-45" : "opacity-85 group-hover/ws:text-ink-2"}`}
+                      >
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M9 6l6 6-6 6" />
+                        </svg>
+                      </span>
+
+                      {renamingWSID === ws.id ? (
                         <input
                           autoFocus
                           value={renameWSDraft}
@@ -913,46 +1008,65 @@ export default function SidebarNav({
                         />
                       ) : (
                         <span
-                          onDoubleClick={() => {
-                            if (!ws) return;
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
                             setRenameWSDraft(ws.name);
                             setRenamingWSID(ws.id);
                           }}
-                          className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] font-medium text-ink-2 select-none"
-                          title={ws ? `${ws.name} · ${ws.subtitle}` : group.label}
+                          className={`flex min-w-0 flex-1 items-center gap-1.5 text-[13px] font-medium select-none ${
+                            containsActive ? "text-ink" : "text-ink-2 group-hover/ws:text-ink"
+                          }`}
+                          title={ws.subtitle ? `${ws.name} · ${ws.subtitle}` : ws.name}
                         >
                           <WorkspaceGlyph
-                            isFolderBacked={ws?.isFolderBacked}
-                            isGeneral={!ws}
-                            className={ws ? "text-accent-ink" : "text-ink-3"}
+                            isFolderBacked={ws.isFolderBacked}
+                            expanded={expanded && group.sessions.length > 0}
+                            className={containsActive ? "text-ink" : "text-ink-3 group-hover/ws:text-ink-2"}
                           />
                           <span className="truncate">{group.label}</span>
                         </span>
                       )}
 
-                      {!dragSession && !dragWorkspace && renamingWSID !== ws?.id && (
-                        <div className="flex shrink-0 items-center gap-0.5">
-                          <button
-                            type="button"
-                            data-ws-action="true"
-                            onClick={() => onNewChat(group.workspaceID, ws?.folderPath ?? null)}
-                            title={
-                              ws
-                                ? locale === "zh"
-                                  ? `在「${group.label}」新建会话`
-                                  : `New session in ${group.label}`
-                                : locale === "zh"
-                                  ? "新建通用会话"
-                                  : "New general session"
-                            }
-                            className="flex size-6 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-colors duration-100 hover:bg-hover-2 hover:text-ink"
+                      {!dragSession && !dragWorkspace && renamingWSID !== ws.id && (
+                        <div className="relative flex shrink-0 items-center">
+                          {/* Resting count & collapsed active indicator */}
+                          <div
+                            className={`flex items-center gap-1.5 pr-1 transition-opacity duration-100 ${
+                              menuOpen ? "opacity-0 pointer-events-none" : "opacity-100 group-hover/ws:opacity-0 group-hover/ws:pointer-events-none"
+                            }`}
                           >
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
-                              <path d="M12 5v14M5 12h14" />
-                            </svg>
-                          </button>
+                            {!expanded && containsActive && (
+                              <span className="size-1.5 rounded-full bg-accent" />
+                            )}
+                            {group.sessions.length > 0 && (
+                              <span className="text-[11.5px] tabular-nums text-ink-3">
+                                {group.sessions.length}
+                              </span>
+                            )}
+                          </div>
 
-                          {ws && (
+                          {/* Hover action controls */}
+                          <div
+                            className={`absolute right-0 flex items-center gap-0.5 transition-opacity duration-100 ${
+                              menuOpen ? "opacity-100" : "opacity-0 pointer-events-none group-hover/ws:opacity-100 group-hover/ws:pointer-events-auto"
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              data-ws-action="true"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setGroupExpanded(group.id, true);
+                                onNewChat(group.workspaceID, ws.folderPath ?? null);
+                              }}
+                              title={locale === "zh" ? `在「${group.label}」新建会话` : `New session in ${group.label}`}
+                              className="flex size-5.5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-colors duration-100 hover:bg-hover-2 hover:text-ink"
+                            >
+                              <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                                <path d="M12 5v14M5 12h14" />
+                              </svg>
+                            </button>
+
                             <div data-ws-menu-wrap className="relative">
                               <button
                                 type="button"
@@ -962,18 +1076,16 @@ export default function SidebarNav({
                                   e.stopPropagation();
                                   setOpenMenuWSID((cur) => (cur === ws.id ? null : ws.id));
                                 }}
-                                className={`flex size-6 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-opacity duration-100 hover:bg-hover-2 hover:text-ink ${
-                                  openMenuWSID === ws.id ? "opacity-100" : "opacity-0 group-hover/ws:opacity-100"
-                                }`}
+                                className="flex size-5.5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 transition-colors duration-100 hover:bg-hover-2 hover:text-ink"
                               >
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                                <svg width="12.5" height="12.5" viewBox="0 0 24 24" fill="currentColor">
                                   <circle cx="5" cy="12" r="1.8" />
                                   <circle cx="12" cy="12" r="1.8" />
                                   <circle cx="19" cy="12" r="1.8" />
                                 </svg>
                               </button>
 
-                              {openMenuWSID === ws.id && (
+                              {menuOpen && (
                                 <div
                                   className="absolute right-0 top-full z-40 mt-1 w-44 rounded-[10px] bg-surface p-1 shadow-raised"
                                   style={{ animation: "pop-in 140ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "top right" }}
@@ -1035,27 +1147,93 @@ export default function SidebarNav({
                                 </div>
                               )}
                             </div>
-                          )}
+                          </div>
                         </div>
                       )}
                     </div>
+
+                    {/* Indented child sessions lane with vertical hierarchy rail */}
+                    {expanded && (
+                      <div className="relative ml-[18px] mr-2 mt-0.5 mb-1.5 flex flex-col gap-0.5 border-l border-line-strong/80 pl-2">
+                        {group.sessions.length > 0 ? (
+                          group.sessions.map((s) => renderSessionRow(s, group.id, true))
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setGroupExpanded(group.id, true);
+                              onNewChat(group.workspaceID, ws.folderPath ?? null);
+                            }}
+                            className="flex h-7 w-full items-center gap-1.5 rounded-[6px] px-2 text-left text-[12px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink-2"
+                          >
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                              <path d="M12 5v14M5 12h14" />
+                            </svg>
+                            <span>{locale === "zh" ? "新建会话" : "New chat"}</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+            {/* Tier 2: General / Ungrouped Sessions separated by clean hairline */}
+            {(() => {
+              const generalGroup = groupedSessions.find((g) => g.workspace === null);
+              if (!generalGroup) return null;
+              const hasWorkspaces = availableWorkspaces.length > 0;
+              const isGroupDropHighlight =
+                sessionDropTarget?.kind === "group" && sessionDropTarget.groupId === generalGroup.id;
+
+              return (
+                <div
+                  key={generalGroup.id}
+                  data-group-drop-id={generalGroup.id}
+                  className={`relative rounded-[8px] transition-colors duration-100 ${
+                    isGroupDropHighlight ? "bg-accent-tint/80 ring-1 ring-accent/45" : ""
+                  }`}
+                >
+                  {hasWorkspaces && (
+                    <>
+                      <div className="mx-3 my-2 border-t border-line" />
+                      <div className="group/general mx-2 mb-1 flex h-6 items-center justify-between px-2">
+                        <span className="text-[11.5px] font-medium text-ink-3 select-none">
+                          {generalGroup.label}
+                        </span>
+                        {!dragSession && !dragWorkspace && (
+                          <button
+                            type="button"
+                            onClick={() => onNewChat(null, null)}
+                            title={locale === "zh" ? "新建通用会话" : "New general session"}
+                            className="flex size-5.5 items-center justify-center rounded-[5px] text-ink-3 opacity-60 transition-[opacity,background-color,color] duration-100 hover:bg-hover-2 hover:text-ink hover:opacity-100"
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                              <path d="M12 5v14M5 12h14" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    </>
                   )}
 
-                  {group.sessions.length > 0 ? (
-                    group.sessions.map((s) => renderSessionRow(s, group.id))
+                  {generalGroup.sessions.length > 0 ? (
+                    <div className="flex flex-col gap-0.5">
+                      {generalGroup.sessions.map((s) => renderSessionRow(s, generalGroup.id, false))}
+                    </div>
                   ) : (
-                    !collapsed && (
-                      <div className="sidebar-copy mx-3 rounded-[7px] px-2 py-1.5 text-[12.5px] text-ink-3">
-                        {locale === "zh" ? "拖入会话或点击 + 新建" : "Drag chat here or click +"}
+                    hasWorkspaces && (
+                      <div className="mx-2 px-2 py-1 text-[12px] text-ink-3/70 select-none">
+                        {locale === "zh" ? "暂无会话" : "No chats"}
                       </div>
                     )
                   )}
                 </div>
               );
-            })}
+            })()}
 
             {query && visibleSessions.length === 0 && (
-              <div className="sidebar-copy mx-2 px-2 py-2 text-[13px] text-ink-3">
+              <div className="mx-2 px-2 py-2 text-[12.5px] text-ink-3">
                 {locale === "zh" ? "未找到匹配会话" : "No sessions found"}
               </div>
             )}
@@ -1087,7 +1265,7 @@ export default function SidebarNav({
             top: (dragSession?.y ?? dragWorkspace?.y ?? 0) - 14,
           }}
         >
-          {dragWorkspace && <WorkspaceGlyph isFolderBacked={dragWorkspace.workspace.isFolderBacked} className="text-accent-ink" />}
+          {dragWorkspace && <WorkspaceGlyph isFolderBacked={dragWorkspace.workspace.isFolderBacked} className="text-ink-2" />}
           <span className="truncate">{dragSession?.session.title ?? dragWorkspace?.workspace.name}</span>
         </div>
       )}

@@ -40,6 +40,16 @@ final class AIResultPanelController: NSWindowController {
     
     // MARK: Public Properties
     
+    /// Whether the Replace button will overwrite the entire document instead of a selection.
+    var replacesWholeDocument = false {
+        didSet {
+            let title = self.replacesWholeDocument
+                ? AppLanguage.text("替换全文", en: "Replace Document")
+                : String(localized: "ai.result.replace", defaultValue: "Replace Selection", table: "AI")
+            self.replaceButton.title = title
+        }
+    }
+    
     /// Called with the answer when the user chooses to replace the selection.
     var onReplace: ((String) -> Void)?
     
@@ -168,11 +178,18 @@ final class AIResultPanelController: NSWindowController {
         guard let trimmed = self.pendingPartialText, !trimmed.isEmpty else { return }
         self.pendingPartialText = nil
         self.lastPartialRenderTime = .now
-        let display = self.action.outputsPlainDocumentText
-            ? AIDocumentTextCleaner.clean(trimmed)
-            : trimmed
+        let display: String = if self.action.outputsStructuredPlainText {
+            AIDocumentTextCleaner.cleanStructuredPlainText(trimmed)
+        } else if self.action.outputsPlainDocumentText {
+            AIDocumentTextCleaner.clean(trimmed)
+        } else {
+            trimmed
+        }
         self.answer = display
-        self.setText(AIAnswerFormatter.attributedString(from: display))
+        let formatted = self.action.outputsStructuredPlainText
+            ? AIAnswerFormatter.structuredPlainTextAttributedString(from: display)
+            : AIAnswerFormatter.attributedString(from: display)
+        self.setText(formatted)
         self.updateButtons(canApply: true)
     }
     
@@ -198,9 +215,13 @@ final class AIResultPanelController: NSWindowController {
         self.partialRenderTask = nil
         self.pendingPartialText = nil
         
-        let rawText = self.action.outputsPlainDocumentText
-            ? AIDocumentTextCleaner.clean(result)
-            : result
+        let rawText: String = if self.action.outputsStructuredPlainText {
+            AIDocumentTextCleaner.cleanStructuredPlainText(result)
+        } else if self.action.outputsPlainDocumentText {
+            AIDocumentTextCleaner.clean(result)
+        } else {
+            result
+        }
         let raw = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         self.orbHost.rootView = ThinkingOrbsParticleView(mode: .composing, size: 20, paused: true)
         self.orbHost.isHidden = true
@@ -210,11 +231,16 @@ final class AIResultPanelController: NSWindowController {
             self.presentChart(html: extractedHTML.html)
             let cleanedText = extractedHTML.remainingMarkdown.isEmpty ? raw : extractedHTML.remainingMarkdown
             self.answer = MarkdownTableFormatter.formatTables(in: cleanedText)
+        } else if self.action.outputsStructuredPlainText {
+            self.answer = raw
         } else {
             self.answer = MarkdownTableFormatter.formatTables(in: raw)
         }
         
-        self.setText(AIAnswerFormatter.attributedString(from: self.answer))
+        let formatted = self.action.outputsStructuredPlainText
+            ? AIAnswerFormatter.structuredPlainTextAttributedString(from: self.answer)
+            : AIAnswerFormatter.attributedString(from: self.answer)
+        self.setText(formatted)
         self.updateButtons(canApply: !self.answer.isEmpty)
         self.scrollView.contentView.scroll(to: .zero)
         self.scrollView.reflectScrolledClipView(self.scrollView.contentView)

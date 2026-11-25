@@ -43,6 +43,8 @@ struct Round34BeautifulAgentAndPiTests {
         #expect(html.contains("CotAgentBridge"))
         #expect(html.contains("<!doctype html>") || html.contains("<!DOCTYPE html>"))
         #expect(!html.contains("not found in application bundle"))
+        #expect(html.contains("cot.sidebar.collapsedGroups"))
+        #expect(!html.contains("拖入会话或点击 + 新建"))
     }
     
     

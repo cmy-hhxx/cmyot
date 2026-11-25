@@ -152,6 +152,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let promptTranslate = "ai.prompt.translate"
         static let promptSummarize = "ai.prompt.summarize"
         static let promptExplain = "ai.prompt.explain"
+        static let promptSemanticRestructure = "ai.prompt.semanticRestructure"
         static let promptWeeklyReport = "ai.prompt.weeklyReport"
         static let promptWeeklyReportPart = "ai.prompt.weeklyReportPart"
         static let promptChart = "ai.prompt.chart"
@@ -2302,6 +2303,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
             (ConfigKey.promptTranslate, AIAction.translate.defaultSystemPrompt),
             (ConfigKey.promptSummarize, AIAction.summarize.defaultSystemPrompt),
             (ConfigKey.promptExplain, AIAction.explain.defaultSystemPrompt),
+            (ConfigKey.promptSemanticRestructure, AIAction.semanticRestructure.defaultSystemPrompt),
             (ConfigKey.promptWeeklyReport, AIAction.weeklyReport.defaultSystemPrompt),
             (ConfigKey.promptWeeklyReportPart, AIAction.weeklyReportItem.defaultSystemPrompt),
             (ConfigKey.promptChart, AIAction.interactiveChart.defaultSystemPrompt),

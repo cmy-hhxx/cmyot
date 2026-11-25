@@ -990,7 +990,7 @@ struct DashPalette: Sendable, Equatable {
 
 struct DashboardSnapshot {
     
-    struct ChartDay: Identifiable {
+    struct ChartDay: Identifiable, Sendable, Equatable {
         var id: String
         var date: Date
         var typed: Int
@@ -4026,6 +4026,14 @@ private struct DashboardHeatmapCard: View {
     
     @State private var hoveredHit: HeatmapGridLayout.Hit?
     @State private var hoveredBarDayID: String?
+    @State private var selectedEndWeek: Int?
+    @State private var trendDragAnchorEndWeek: Int?
+    @State private var heatmapDragAnchorEndWeek: Int?
+    @State private var heatmapDragStartsInsideScope = false
+    @State private var isDraggingTrend = false
+    @State private var isDraggingHeatmap = false
+    @State private var cachedWindowKey = ""
+    @State private var cachedWindowSlice: HeatmapTrendWindowEngine.Slice?
     @State private var waveReveal: CGFloat = DashMotion.isReducedMotion ? 1.0 : 0.0
     @State private var isPrevYearHovered = false
     @State private var isNextYearHovered = false
@@ -4039,128 +4047,75 @@ private struct DashboardHeatmapCard: View {
         self.availableYears.first { $0 > self.yearlyHeatmap.year }
     }
     
-    private var activeLinkedDayID: String? {
-        self.hoveredBarDayID ?? self.hoveredHit?.cell.id
+    private var isDraggingWindow: Bool {
+        self.isDraggingTrend || self.isDraggingHeatmap
     }
     
-    private var activeReadout: (label: String, total: Int, typed: Int, ai: Int) {
-        if let barID = self.hoveredBarDayID,
-           let day = self.days14.first(where: { $0.id == barID })
+    private var activeLinkedDayID: String? {
+        guard !self.isDraggingWindow else { return nil }
+        return self.hoveredBarDayID ?? self.hoveredHit?.cell.id
+    }
+    
+    private var windowCacheKey: String {
+        "\(self.yearlyHeatmap.year)|\(self.yearlyHeatmap.weeks.count)|\(self.yearlyHeatmap.totalTypedChars)|\(self.yearlyHeatmap.activeDays)|\(self.selectedEndWeek ?? -1)"
+    }
+    
+    private var activeWindowSlice: HeatmapTrendWindowEngine.Slice {
+        if self.cachedWindowKey == self.windowCacheKey, let cached = self.cachedWindowSlice {
+            return cached
+        }
+        return HeatmapTrendWindowEngine.slice(
+            weeks: self.yearlyHeatmap.weeks,
+            requestedEndWeek: self.selectedEndWeek
+        )
+    }
+    
+    private func activeReadout(windowDays: [DashboardSnapshot.ChartDay]) -> (label: String, total: Int, typed: Int, ai: Int) {
+        if !self.isDraggingWindow,
+           let barID = self.hoveredBarDayID,
+           let day = windowDays.first(where: { $0.id == barID })
         {
             return (Self.shortDateFormatter.string(from: day.date), day.typed + day.ai, day.typed, day.ai)
         }
-        if let cell = self.hoveredHit?.cell {
+        if !self.isDraggingWindow, let cell = self.hoveredHit?.cell {
             return (Self.shortDateFormatter.string(from: cell.date), cell.typedChars + cell.aiCompletedChars, cell.typedChars, cell.aiCompletedChars)
         }
         let total = self.today.typedChars + self.today.aiCompletedChars
         return ("今日码字", total, self.today.typedChars, self.today.aiCompletedChars)
     }
     
+    private func formattedWindowRange(_ slice: HeatmapTrendWindowEngine.Slice) -> String {
+        guard let start = slice.startDate, let end = slice.endDate else { return "" }
+        let s = Self.compactMonthDayFormatter.string(from: start)
+        let e = Self.compactMonthDayFormatter.string(from: end)
+        return s == e ? s : "\(s) – \(e)"
+    }
+    
+    private func syncWindowCache() {
+        let key = self.windowCacheKey
+        guard self.cachedWindowKey != key else { return }
+        self.cachedWindowSlice = HeatmapTrendWindowEngine.slice(
+            weeks: self.yearlyHeatmap.weeks,
+            requestedEndWeek: self.selectedEndWeek
+        )
+        self.cachedWindowKey = key
+    }
+    
     
     var body: some View {
-        let readout = self.activeReadout
+        let slice = self.activeWindowSlice
+        let readout = self.activeReadout(windowDays: slice.days)
         let isInspecting = (self.activeLinkedDayID != nil)
-        let curve = self.trendCurve14
         let weekCount = max(1, self.yearlyHeatmap.weeks.count)
-        let recentDayIDs = Set(self.days14.map(\.id))
-        let avg14 = Int(curve.averageValue.rounded())
+        let avgWindow = Int(slice.totalCurve.averageValue.rounded())
         
         VStack(alignment: .leading, spacing: self.compact ? 4 : 6) {
-            // Minimal Telemetry Top Bar
-            HStack(alignment: .center, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(isInspecting ? readout.label : AppLanguage.text("今日码字", en: "Typed Today"))
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(isInspecting ? self.palette.emerald : self.palette.mutedInk)
-                    
-                    HStack(alignment: .firstTextBaseline, spacing: 3) {
-                        Text(readout.total.formatted())
-                            .font(.system(size: self.compact ? 17 : 20, weight: .semibold).monospacedDigit())
-                            .foregroundStyle(isInspecting ? self.palette.emerald : self.palette.pine)
-                        Text("字")
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundStyle(self.palette.mutedInk)
-                    }
-                }
-                
-                Spacer(minLength: 4)
-                
-                if !self.compact {
-                    HStack(spacing: 2.5) {
-                        ForEach(0..<5, id: \.self) { level in
-                            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                .fill(self.palette.heat(level))
-                                .frame(width: 8, height: 8)
-                        }
-                    }
-                    .padding(.trailing, 4)
-                }
-                
-                HStack(spacing: 2) {
-                    Button {
-                        if let prev = self.previousYear {
-                            withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                                self.selectedYear = prev
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(self.previousYear != nil ? (self.isPrevYearHovered ? self.palette.pine : self.palette.secondaryInk) : self.palette.pine.opacity(0.20))
-                            .frame(width: 20, height: 20)
-                            .background(
-                                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                    .fill(self.isPrevYearHovered && self.previousYear != nil ? self.palette.insetHover : Color.clear)
-                            )
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(self.previousYear == nil)
-                    .onHover { hovering in
-                        withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                            self.isPrevYearHovered = hovering
-                        }
-                    }
-                    
-                    Text("\(String(self.yearlyHeatmap.year))")
-                        .font(.system(size: 11.5, weight: .medium, design: .monospaced).monospacedDigit())
-                        .foregroundStyle(self.palette.pine)
-                        .contentTransition(.numericText())
-                    
-                    Button {
-                        if let next = self.nextYear {
-                            withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                                self.selectedYear = next
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(self.nextYear != nil ? (self.isNextYearHovered ? self.palette.pine : self.palette.secondaryInk) : self.palette.pine.opacity(0.20))
-                            .frame(width: 20, height: 20)
-                            .background(
-                                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                    .fill(self.isNextYearHovered && self.nextYear != nil ? self.palette.insetHover : Color.clear)
-                            )
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(self.nextYear == nil)
-                    .onHover { hovering in
-                        withAnimation(DashMotion.resolve(DashMotion.quick)) {
-                            self.isNextYearHovered = hovering
-                        }
-                    }
-                }
-                .padding(.horizontal, 4)
-                .frame(height: 22)
-                .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            }
+            self.topTelemetryBar(readout: readout, isInspecting: isInspecting)
             
-            // Tightly coupled Heatmap -> 14d Scope Bridge -> Telemetry Wave Stack
+            // Tightly coupled Upright 2-Week Heatmap Frame -> Window Bridge -> Draggable Telemetry Wave
             GeometryReader { bodyGeo in
                 let gap: CGFloat = self.compact ? 5 : 6
-                let bridgeH: CGFloat = 16
+                let bridgeH: CGFloat = 18
                 let minWaveH: CGFloat = self.compact ? 50 : 66
                 let rawHeatmapH = HeatmapGridLayout.intrinsicHeight(forWidth: bodyGeo.size.width, weekCount: weekCount)
                 let maxHeatmapH = max(76, bodyGeo.size.height - bridgeH - gap * 2 - minWaveH)
@@ -4172,156 +4127,24 @@ private struct DashboardHeatmapCard: View {
                 let heatmapH = layout.canvasHeight
                 
                 VStack(alignment: .leading, spacing: gap) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        ZStack(alignment: .topLeading) {
-                            HeatmapStaticBaseCanvas(
-                                yearlyHeatmap: self.yearlyHeatmap,
-                                recentDayIDs: recentDayIDs,
-                                layout: layout,
-                                heatmapHeight: heatmapH,
-                                overPhoto: self.overPhoto,
-                                palette: self.palette
-                            )
-                            .equatable()
-                            
-                            if let linkedID = self.activeLinkedDayID {
-                                Canvas { context, _ in
-                                    for (colIndex, week) in self.yearlyHeatmap.weeks.enumerated() {
-                                        for (rowIndex, cell) in week.enumerated() {
-                                            guard rowIndex < 7, !cell.isOutOfYear, !cell.isFuture, cell.id == linkedID else { continue }
-                                            let rect = layout.cellRect(col: colIndex, row: rowIndex)
-                                            let path = RoundedRectangle(cornerRadius: layout.cornerRadius, style: .continuous)
-                                                .path(in: rect)
-                                            context.fill(path, with: .color(self.palette.emerald))
-                                            context.stroke(
-                                                path,
-                                                with: .color(self.palette.pine.opacity(0.85)),
-                                                lineWidth: 1.35
-                                            )
-                                            return
-                                        }
-                                    }
-                                }
-                                .frame(width: layout.canvasWidth, height: heatmapH)
-                                .allowsHitTesting(false)
-                            }
-                            
-                            Color.clear
-                                .contentShape(Rectangle())
-                                .frame(width: layout.canvasWidth, height: heatmapH)
-                                .onContinuousHover { phase in
-                                switch phase {
-                                    case .active(let location):
-                                        let hit = layout.hitTestCoord(point: location, weeks: self.yearlyHeatmap.weeks)
-                                        if hit != self.hoveredHit {
-                                            self.hoveredHit = hit
-                                        }
-                                    case .ended:
-                                        if self.hoveredHit != nil {
-                                            self.hoveredHit = nil
-                                        }
-                                }
-                            }
-                            
-                            if let hit = self.hoveredHit {
-                                self.hoverTooltip(
-                                    hit: hit,
-                                    layout: layout,
-                                    in: CGSize(width: layout.canvasWidth, height: heatmapH)
-                                )
-                            }
-                        }
-                    }
-                    .defaultScrollAnchor(.trailing)
-                    .frame(height: heatmapH)
+                    self.heatmapScrollLayer(
+                        layout: layout,
+                        heatmapH: heatmapH,
+                        weekCount: weekCount,
+                        range: slice.range
+                    )
                     
-                    // Micro-Bridge Strip linking the trailing 14-day heatmap cells to the wave chart
-                    HStack(spacing: 6) {
-                        HStack(spacing: 5) {
-                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                                .fill(self.palette.accentFill.opacity(self.palette.tokens.isDark ? 0.16 : 0.10))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                                        .strokeBorder(self.palette.accentFill.opacity(self.palette.tokens.isDark ? 0.56 : 0.44), lineWidth: 1.0)
-                                )
-                                .frame(width: 9, height: 9)
-                            Text(AppLanguage.text("近 14 日趋势", en: "14d Trend"))
-                                .font(.system(size: 10.5, weight: .medium))
-                                .foregroundStyle(self.palette.mutedInk)
-                        }
-                        
-                        Rectangle()
-                            .fill(self.palette.hairline)
-                            .frame(height: 0.7)
-                        
-                        if isInspecting {
-                            Text("手写 \(readout.typed.formatted()) · AI \(readout.ai.formatted())")
-                                .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
-                                .foregroundStyle(self.palette.emerald)
-                                .fixedSize(horizontal: true, vertical: false)
-                        } else {
-                            HStack(spacing: 6) {
-                                HStack(spacing: 3) {
-                                    Circle()
-                                        .fill(self.palette.accentFill)
-                                        .frame(width: 5, height: 5)
-                                    Text(AppLanguage.text("手写", en: "Typed"))
-                                }
-                                HStack(spacing: 3) {
-                                    Circle()
-                                        .fill(self.palette.emerald)
-                                        .frame(width: 5, height: 5)
-                                    Text("AI")
-                                }
-                                if avg14 > 0 {
-                                    Text("· 日均 \(avg14.formatted()) 字")
-                                }
-                            }
-                            .font(.system(size: 10, weight: .regular).monospacedDigit())
-                            .foregroundStyle(self.palette.mutedInk)
-                            .fixedSize(horizontal: true, vertical: false)
-                        }
-                    }
-                    .frame(height: bridgeH)
+                    self.windowBridgeBar(
+                        slice: slice,
+                        readout: readout,
+                        isInspecting: isInspecting,
+                        avgWindow: avgWindow,
+                        height: bridgeH
+                    )
                     
-                    // Bottom: Enriched Dual-Layer Telemetry Wave in unified recessed slot (all animations preserved)
-                    GeometryReader { waveGeo in
-                        let count = self.days14.count
-                        TelemetryWaveCanvas(
-                            days14: self.days14,
-                            curve: curve,
-                            aiCurve: self.aiTrendCurve14,
-                            activeLinkedDayID: self.activeLinkedDayID,
-                            compact: self.compact,
-                            palette: self.palette,
-                            reveal: self.waveReveal
-                        )
-                        .contentShape(Rectangle())
-                        .onContinuousHover { phase in
-                            guard count > 0 else { return }
-                            let padX: CGFloat = 6
-                            let plotW = max(10, waveGeo.size.width - padX * 2)
-                            switch phase {
-                                case .active(let loc):
-                                    let norm = max(0, min(1, (loc.x - padX) / plotW))
-                                    let idx = min(count - 1, max(0, Int((norm * CGFloat(max(1, count - 1))).rounded())))
-                                    let nextID = self.days14[idx].id
-                                    if nextID != self.hoveredBarDayID {
-                                        self.hoveredBarDayID = nextID
-                                    }
-                                case .ended:
-                                    if self.hoveredBarDayID != nil {
-                                        self.hoveredBarDayID = nil
-                                    }
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(
-                        RoundedRectangle(cornerRadius: DashboardCornerMetrics.nestedWellRadius, style: .continuous)
-                            .fill(self.palette.inset.opacity(self.palette.tokens.isDark ? 0.38 : (self.overPhoto ? 0.44 : 0.58)))
+                    self.draggableTrendWaveWell(
+                        slice: slice,
+                        weekCount: weekCount
                     )
                 }
             }
@@ -4330,11 +4153,463 @@ private struct DashboardHeatmapCard: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, overPhoto: self.overPhoto)
         .onAppear {
+            self.syncWindowCache()
             guard self.waveReveal < 1.0 else { return }
             withAnimation(DashMotion.resolve(DashMotion.chartReveal.delay(0.10))) {
                 self.waveReveal = 1.0
             }
         }
+        .onChange(of: self.yearlyHeatmap.year) { _, _ in
+            self.selectedEndWeek = nil
+            self.hoveredHit = nil
+            self.hoveredBarDayID = nil
+            self.syncWindowCache()
+        }
+        .onChange(of: self.windowCacheKey) { _, _ in
+            self.syncWindowCache()
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func topTelemetryBar(
+        readout: (label: String, total: Int, typed: Int, ai: Int),
+        isInspecting: Bool
+    ) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(isInspecting ? readout.label : AppLanguage.text("今日码字", en: "Typed Today"))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(isInspecting ? self.palette.emerald : self.palette.mutedInk)
+                
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text(readout.total.formatted())
+                        .font(.system(size: self.compact ? 17 : 20, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(isInspecting ? self.palette.emerald : self.palette.pine)
+                    Text("字")
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(self.palette.mutedInk)
+                }
+            }
+            
+            Spacer(minLength: 4)
+            
+            if !self.compact {
+                HStack(spacing: 2.5) {
+                    ForEach(0..<5, id: \.self) { level in
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(self.palette.heat(level))
+                            .frame(width: 8, height: 8)
+                    }
+                }
+                .padding(.trailing, 4)
+            }
+            
+            HStack(spacing: 2) {
+                Button {
+                    if let prev = self.previousYear {
+                        withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                            self.selectedYear = prev
+                        }
+                    }
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(self.previousYear != nil ? (self.isPrevYearHovered ? self.palette.pine : self.palette.secondaryInk) : self.palette.pine.opacity(0.20))
+                        .frame(width: 20, height: 20)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(self.isPrevYearHovered && self.previousYear != nil ? self.palette.insetHover : Color.clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(self.previousYear == nil)
+                .onHover { hovering in
+                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                        self.isPrevYearHovered = hovering
+                    }
+                }
+                
+                Text("\(String(self.yearlyHeatmap.year))")
+                    .font(.system(size: 11.5, weight: .medium, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(self.palette.pine)
+                    .contentTransition(.numericText())
+                
+                Button {
+                    if let next = self.nextYear {
+                        withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                            self.selectedYear = next
+                        }
+                    }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(self.nextYear != nil ? (self.isNextYearHovered ? self.palette.pine : self.palette.secondaryInk) : self.palette.pine.opacity(0.20))
+                        .frame(width: 20, height: 20)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(self.isNextYearHovered && self.nextYear != nil ? self.palette.insetHover : Color.clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(self.nextYear == nil)
+                .onHover { hovering in
+                    withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                        self.isNextYearHovered = hovering
+                    }
+                }
+            }
+            .padding(.horizontal, 4)
+            .frame(height: 22)
+            .background(self.palette.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func heatmapScrollLayer(
+        layout: HeatmapGridLayout,
+        heatmapH: CGFloat,
+        weekCount: Int,
+        range: HeatmapTrendWindowEngine.WindowRange
+    ) -> some View {
+        ScrollViewReader { scrollProxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                ZStack(alignment: .topLeading) {
+                    HStack(spacing: 0) {
+                        Color.clear.frame(width: layout.gridOriginX, height: 1)
+                        ForEach(0..<weekCount, id: \.self) { col in
+                            Color.clear
+                                .frame(width: layout.pitch, height: 1)
+                                .id(col)
+                        }
+                    }
+                    .allowsHitTesting(false)
+                    
+                    HeatmapStaticBaseCanvas(
+                        yearlyHeatmap: self.yearlyHeatmap,
+                        scopeStartWeek: range.startWeek,
+                        scopeEndWeek: range.endWeek,
+                        isDraggingScope: self.isDraggingWindow,
+                        layout: layout,
+                        heatmapHeight: heatmapH,
+                        overPhoto: self.overPhoto,
+                        palette: self.palette
+                    )
+                    .equatable()
+                    
+                    if let linkedID = self.activeLinkedDayID {
+                        Canvas { context, _ in
+                            for (colIndex, week) in self.yearlyHeatmap.weeks.enumerated() {
+                                for (rowIndex, cell) in week.enumerated() {
+                                    guard rowIndex < 7, !cell.isOutOfYear, !cell.isFuture, cell.id == linkedID else { continue }
+                                    let rect = layout.cellRect(col: colIndex, row: rowIndex)
+                                    let path = RoundedRectangle(cornerRadius: layout.cornerRadius, style: .continuous)
+                                        .path(in: rect)
+                                    context.fill(path, with: .color(self.palette.emerald))
+                                    context.stroke(
+                                        path,
+                                        with: .color(self.palette.pine.opacity(0.85)),
+                                        lineWidth: 1.35
+                                    )
+                                    return
+                                }
+                            }
+                        }
+                        .frame(width: layout.canvasWidth, height: heatmapH)
+                        .allowsHitTesting(false)
+                    }
+                    
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .frame(width: layout.canvasWidth, height: heatmapH)
+                        .onContinuousHover { phase in
+                            guard !self.isDraggingWindow else { return }
+                            switch phase {
+                                case .active(let location):
+                                    let hit = layout.hitTestCoord(point: location, weeks: self.yearlyHeatmap.weeks)
+                                    if hit != self.hoveredHit {
+                                        self.hoveredHit = hit
+                                    }
+                                case .ended:
+                                    if self.hoveredHit != nil {
+                                        self.hoveredHit = nil
+                                    }
+                            }
+                        }
+                        .onTapGesture(coordinateSpace: .local) { location in
+                            let target = HeatmapTrendWindowEngine.endWeekForHeatmapTap(
+                                locationX: location.x,
+                                layout: layout,
+                                weekCount: weekCount
+                            )
+                            self.selectedEndWeek = target
+                        }
+                        .gesture(
+                            DragGesture(minimumDistance: 4, coordinateSpace: .local)
+                                .onChanged { value in
+                                    if self.heatmapDragAnchorEndWeek == nil {
+                                        let scopeBox = layout.scopeRect(
+                                            minCol: range.startWeek,
+                                            maxCol: range.endWeek
+                                        ).insetBy(dx: -8, dy: -6)
+                                        self.heatmapDragStartsInsideScope = scopeBox.contains(value.startLocation)
+                                        self.heatmapDragAnchorEndWeek = range.endWeek
+                                        self.isDraggingHeatmap = true
+                                        self.hoveredHit = nil
+                                        self.hoveredBarDayID = nil
+                                    }
+                                    let nextEnd: Int
+                                    if self.heatmapDragStartsInsideScope, let anchor = self.heatmapDragAnchorEndWeek {
+                                        nextEnd = HeatmapTrendWindowEngine.endWeekForHeatmapDrag(
+                                            anchorEndWeek: anchor,
+                                            translationX: value.translation.width,
+                                            pitch: layout.pitch,
+                                            weekCount: weekCount
+                                        )
+                                    } else {
+                                        nextEnd = HeatmapTrendWindowEngine.endWeekForHeatmapTap(
+                                            locationX: value.location.x,
+                                            layout: layout,
+                                            weekCount: weekCount
+                                        )
+                                    }
+                                    if nextEnd != self.selectedEndWeek {
+                                        self.selectedEndWeek = nextEnd
+                                    }
+                                }
+                                .onEnded { _ in
+                                    self.heatmapDragAnchorEndWeek = nil
+                                    self.heatmapDragStartsInsideScope = false
+                                    self.isDraggingHeatmap = false
+                                }
+                        )
+                    
+                    if !self.isDraggingWindow, let hit = self.hoveredHit {
+                        self.hoverTooltip(
+                            hit: hit,
+                            layout: layout,
+                            in: CGSize(width: layout.canvasWidth, height: heatmapH)
+                        )
+                    }
+                }
+            }
+            .defaultScrollAnchor(.trailing)
+            .frame(height: heatmapH)
+            .onChange(of: range.endWeek) { _, newEndWeek in
+                guard !self.isDraggingHeatmap else { return }
+                withAnimation(DashMotion.resolve(DashMotion.quick)) {
+                    scrollProxy.scrollTo(newEndWeek, anchor: .center)
+                }
+            }
+        }
+    }
+    
+    
+    @ViewBuilder
+    private func windowBridgeBar(
+        slice: HeatmapTrendWindowEngine.Slice,
+        readout: (label: String, total: Int, typed: Int, ai: Int),
+        isInspecting: Bool,
+        avgWindow: Int,
+        height: CGFloat
+    ) -> some View {
+        let rangeText = self.formattedWindowRange(slice)
+        HStack(spacing: 6) {
+            HStack(spacing: 5) {
+                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                    .fill(self.palette.accentFill.opacity(self.palette.tokens.isDark ? 0.16 : 0.10))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                            .strokeBorder(self.palette.accentFill.opacity(self.palette.tokens.isDark ? 0.58 : 0.48), lineWidth: 1.0)
+                    )
+                    .frame(width: 9, height: 9)
+                
+                Text(
+                    slice.range.isLatest
+                        ? AppLanguage.text("两周趋势", en: "2W Trend")
+                        : rangeText
+                )
+                .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                .foregroundStyle(slice.range.isLatest ? self.palette.mutedInk : self.palette.pine)
+                .fixedSize(horizontal: true, vertical: false)
+                
+                if slice.range.isLatest, !rangeText.isEmpty, !self.compact {
+                    Text(rangeText)
+                        .font(.system(size: 10, weight: .regular).monospacedDigit())
+                        .foregroundStyle(self.palette.mutedInk.opacity(0.82))
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            
+            HStack(spacing: 1) {
+                Button {
+                    let prev = HeatmapTrendWindowEngine.clampedRange(
+                        weekCount: self.yearlyHeatmap.weeks.count,
+                        requestedEndWeek: slice.range.endWeek - 1
+                    ).endWeek
+                    self.selectedEndWeek = prev
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(slice.range.canStepBackward ? self.palette.secondaryInk : self.palette.pine.opacity(0.18))
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!slice.range.canStepBackward)
+                
+                Button {
+                    let next = HeatmapTrendWindowEngine.clampedRange(
+                        weekCount: self.yearlyHeatmap.weeks.count,
+                        requestedEndWeek: slice.range.endWeek + 1
+                    ).endWeek
+                    self.selectedEndWeek = (next >= slice.range.maxEndWeek) ? nil : next
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(slice.range.canStepForward ? self.palette.secondaryInk : self.palette.pine.opacity(0.18))
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!slice.range.canStepForward)
+            }
+            
+            if !slice.range.isLatest {
+                Button {
+                    self.selectedEndWeek = nil
+                } label: {
+                    Text(AppLanguage.text("最新", en: "Latest"))
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(self.palette.secondaryInk)
+                        .padding(.horizontal, 5.5)
+                        .padding(.vertical, 1.5)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(self.palette.inset)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+            
+            Rectangle()
+                .fill(self.palette.hairline)
+                .frame(height: 0.7)
+            
+            if isInspecting {
+                Text("手写 \(readout.typed.formatted()) · AI \(readout.ai.formatted())")
+                    .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(self.palette.emerald)
+                    .fixedSize(horizontal: true, vertical: false)
+            } else {
+                HStack(spacing: 6) {
+                    HStack(spacing: 3) {
+                        Circle()
+                            .fill(self.palette.accentFill)
+                            .frame(width: 5, height: 5)
+                        Text(AppLanguage.text("手写", en: "Typed"))
+                    }
+                    HStack(spacing: 3) {
+                        Circle()
+                            .fill(self.palette.emerald)
+                            .frame(width: 5, height: 5)
+                        Text("AI")
+                    }
+                    if avgWindow > 0 {
+                        Text("· 日均 \(avgWindow.formatted()) 字")
+                    }
+                }
+                .font(.system(size: 10, weight: .regular).monospacedDigit())
+                .foregroundStyle(self.palette.mutedInk)
+                .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .frame(height: height)
+    }
+    
+    
+    @ViewBuilder
+    private func draggableTrendWaveWell(
+        slice: HeatmapTrendWindowEngine.Slice,
+        weekCount: Int
+    ) -> some View {
+        GeometryReader { waveGeo in
+            let days = slice.days
+            let count = days.count
+            TelemetryWaveCanvas(
+                days14: days,
+                curve: slice.totalCurve,
+                aiCurve: slice.aiCurve,
+                activeLinkedDayID: self.activeLinkedDayID,
+                compact: self.compact,
+                palette: self.palette,
+                reveal: self.waveReveal
+            )
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                guard count > 0, !self.isDraggingWindow else { return }
+                let padX: CGFloat = 6
+                let plotW = max(10, waveGeo.size.width - padX * 2)
+                switch phase {
+                    case .active(let loc):
+                        let norm = max(0, min(1, (loc.x - padX) / plotW))
+                        let idx = min(count - 1, max(0, Int((norm * CGFloat(max(1, count - 1))).rounded())))
+                        let nextID = days[idx].id
+                        if nextID != self.hoveredBarDayID {
+                            self.hoveredBarDayID = nextID
+                        }
+                    case .ended:
+                        if self.hoveredBarDayID != nil {
+                            self.hoveredBarDayID = nil
+                        }
+                }
+            }
+            .onTapGesture(count: 2) {
+                if !slice.range.isLatest {
+                    self.selectedEndWeek = nil
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 5, coordinateSpace: .local)
+                    .onChanged { value in
+                        if self.trendDragAnchorEndWeek == nil {
+                            self.trendDragAnchorEndWeek = slice.range.endWeek
+                            self.isDraggingTrend = true
+                            self.hoveredBarDayID = nil
+                            self.hoveredHit = nil
+                        }
+                        guard let anchor = self.trendDragAnchorEndWeek else { return }
+                        let plotW = max(40, waveGeo.size.width - 12)
+                        let nextEnd = HeatmapTrendWindowEngine.endWeekForTrendDrag(
+                            anchorEndWeek: anchor,
+                            translationX: value.translation.width,
+                            plotWidth: plotW,
+                            weekCount: weekCount
+                        )
+                        if nextEnd != self.selectedEndWeek {
+                            self.selectedEndWeek = (nextEnd >= slice.range.maxEndWeek) ? nil : nextEnd
+                        }
+                    }
+                    .onEnded { _ in
+                        self.trendDragAnchorEndWeek = nil
+                        self.isDraggingTrend = false
+                    }
+            )
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: DashboardCornerMetrics.nestedWellRadius, style: .continuous)
+                .fill(self.palette.inset.opacity(self.palette.tokens.isDark ? (self.isDraggingTrend ? 0.52 : 0.38) : (self.overPhoto ? 0.44 : (self.isDraggingTrend ? 0.72 : 0.58))))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DashboardCornerMetrics.nestedWellRadius, style: .continuous)
+                .strokeBorder(self.isDraggingTrend ? self.palette.hairlineStrong : Color.clear, lineWidth: 0.8)
+        )
     }
     
     
@@ -4367,6 +4642,12 @@ private struct DashboardHeatmapCard: View {
     private static let shortDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "M月d日"
+        return f
+    }()
+    
+    private static let compactMonthDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "M/d"
         return f
     }()
 }
@@ -4562,7 +4843,9 @@ private struct TelemetryWaveCanvas: View, Animatable {
 private struct HeatmapStaticBaseCanvas: View, Equatable {
     
     let yearlyHeatmap: YearlyHeatmapData
-    let recentDayIDs: Set<String>
+    let scopeStartWeek: Int
+    let scopeEndWeek: Int
+    let isDraggingScope: Bool
     let layout: HeatmapGridLayout
     let heatmapHeight: CGFloat
     var overPhoto: Bool = false
@@ -4578,6 +4861,7 @@ private struct HeatmapStaticBaseCanvas: View, Equatable {
         } else {
             self.palette.emptyDot
         }
+        let weekCount = self.yearlyHeatmap.weeks.count
         
         Canvas(rendersAsynchronously: true) { context, canvasSize in
             guard canvasSize.width.isFinite, canvasSize.height.isFinite,
@@ -4597,37 +4881,50 @@ private struct HeatmapStaticBaseCanvas: View, Equatable {
                 )
             }
             
-            // Highlight exact recent 14-day cells with a gutter-centered, zero-overlap orthogonal contour
-            let scopeLoops = self.layout.scopeContourLoops(
-                weeks: self.yearlyHeatmap.weeks,
-                matchingIDs: self.recentDayIDs
-            )
-            let scopePath = self.layout.scopeContourPath(for: scopeLoops)
-            if !scopePath.isEmpty {
-                context.fill(
-                    scopePath,
-                    with: .color(self.palette.accentFill.opacity(isDark ? 0.14 : 0.085))
-                )
+            // Upright, symmetrical 2-week rectangular lens strictly centered in the cell gutters
+            let hasScope = weekCount > 0 && self.scopeStartWeek <= self.scopeEndWeek && self.scopeEndWeek < weekCount
+            let scopeBox = hasScope
+                ? self.layout.scopeRect(minCol: max(0, self.scopeStartWeek), maxCol: min(weekCount - 1, self.scopeEndWeek))
+                : .zero
+            let scopePath = hasScope
+                ? RoundedRectangle(cornerRadius: self.layout.scopeCornerRadius, style: .continuous).path(in: scopeBox)
+                : Path()
+            
+            if hasScope {
+                let fillOpacity: Double = isDark
+                    ? (self.isDraggingScope ? 0.19 : 0.12)
+                    : (self.isDraggingScope ? 0.13 : 0.075)
+                context.fill(scopePath, with: .color(self.palette.accentFill.opacity(fillOpacity)))
             }
             
             for (colIndex, week) in self.yearlyHeatmap.weeks.enumerated() {
                 for (rowIndex, cell) in week.enumerated() {
-                    guard rowIndex < 7, !cell.isOutOfYear, !cell.isFuture else { continue }
+                    guard rowIndex < 7, !cell.isOutOfYear else { continue }
                     let rect = self.layout.cellRect(col: colIndex, row: rowIndex)
                     let path = RoundedRectangle(cornerRadius: self.layout.cornerRadius, style: .continuous)
                         .path(in: rect)
-                    let fill = (cell.level == 0) ? emptyCellFill : self.palette.heat(cell.level)
-                    context.fill(path, with: .color(fill))
+                    if cell.isFuture {
+                        // Subtle balanced placeholder slots for upcoming days in the current week
+                        context.fill(path, with: .color(emptyCellFill.opacity(isDark ? 0.24 : 0.34)))
+                        context.stroke(path, with: .color(self.palette.hairline.opacity(0.85)), lineWidth: 0.5)
+                    } else {
+                        let fill = (cell.level == 0) ? emptyCellFill : self.palette.heat(cell.level)
+                        context.fill(path, with: .color(fill))
+                    }
                 }
             }
             
-            // Stroke the contour on top, strictly centered in the cell gutter so it is 100% unbroken and never touches any cell
-            if !scopePath.isEmpty {
+            // Unbroken rectangular border on top, strictly centered in the gutter with zero cell overlap
+            if hasScope {
+                let strokeOpacity: Double = isDark
+                    ? (self.isDraggingScope ? 0.82 : 0.58)
+                    : (self.isDraggingScope ? 0.72 : 0.48)
+                let strokeW = self.layout.scopeStrokeWidth(isDragging: self.isDraggingScope)
                 context.stroke(
                     scopePath,
-                    with: .color(self.palette.accentFill.opacity(isDark ? 0.56 : 0.44)),
+                    with: .color(self.palette.accentFill.opacity(strokeOpacity)),
                     style: StrokeStyle(
-                        lineWidth: self.layout.scopeStrokeWidth,
+                        lineWidth: strokeW,
                         lineCap: .round,
                         lineJoin: .round
                     )
@@ -4666,12 +4963,19 @@ struct HeatmapGridLayout: Equatable {
     
     /// Stroke width tuned to always stay strictly clear of both inner and outer cell edges inside the gutter.
     var scopeStrokeWidth: CGFloat {
-        self.gap <= 2.0 ? 0.9 : 1.0
+        self.scopeStrokeWidth(isDragging: false)
     }
     
-    /// Concentric rounded corner radius matching `cellCornerRadius + scopeOutset`, capped safely below half-pitch.
+    func scopeStrokeWidth(isDragging: Bool) -> CGFloat {
+        if isDragging {
+            return self.gap <= 2.0 ? 1.25 : 1.35
+        }
+        return self.gap <= 2.0 ? 0.9 : 1.0
+    }
+    
+    /// Concentric rounded corner radius matching `cellCornerRadius + scopeOutset`, capped cleanly for crisp geometry.
     var scopeCornerRadius: CGFloat {
-        min(self.cornerRadius + self.scopeOutset, self.pitch * 0.42)
+        min(self.cornerRadius + self.scopeOutset, 5.0)
     }
     
     
@@ -4746,7 +5050,7 @@ struct HeatmapGridLayout: Equatable {
     }
     
     
-    /// Exact gutter-centered highlight rectangle enclosing columns `minCol...maxCol` across all 7 weekday rows.
+    /// Exact gutter-centered upright highlight rectangle enclosing columns `minCol...maxCol` across all 7 weekday rows.
     func scopeRect(minCol: Int, maxCol: Int) -> CGRect {
         let first = self.cellRect(col: minCol, row: 0)
         let last = self.cellRect(col: maxCol, row: 6)
@@ -4757,152 +5061,6 @@ struct HeatmapGridLayout: Equatable {
             width: (last.maxX - first.minX) + outset * 2,
             height: (last.maxY - first.minY) + outset * 2
         )
-    }
-    
-    
-    /// Computes the exact orthogonal boundary loop(s) in canvas coordinates enclosing ONLY the matched heatmap cells,
-    /// running strictly along the dead-center of cell gutters so the outline never collides with adjacent cells
-    /// and never wraps older days or empty future slots.
-    func scopeContourLoops(
-        weeks: [[HeatmapDayCell]],
-        matchingIDs: Set<String>
-    ) -> [[CGPoint]] {
-        struct GridCoord: Hashable {
-            let x: Int
-            let y: Int
-        }
-        struct DirectedEdge: Hashable {
-            let from: GridCoord
-            let to: GridCoord
-        }
-        
-        var occupied = Set<GridCoord>()
-        for (colIdx, week) in weeks.enumerated() {
-            for (rowIdx, cell) in week.enumerated() where rowIdx < 7 && !cell.isOutOfYear && !cell.isFuture {
-                if matchingIDs.contains(cell.id) {
-                    occupied.insert(GridCoord(x: colIdx, y: rowIdx))
-                }
-            }
-        }
-        guard !occupied.isEmpty else { return [] }
-        
-        var outgoing: [GridCoord: [DirectedEdge]] = [:]
-        var allEdges: [DirectedEdge] = []
-        
-        func addEdge(_ from: GridCoord, _ to: GridCoord) {
-            let e = DirectedEdge(from: from, to: to)
-            outgoing[from, default: []].append(e)
-            allEdges.append(e)
-        }
-        
-        for cell in occupied {
-            if !occupied.contains(GridCoord(x: cell.x, y: cell.y - 1)) {
-                addEdge(GridCoord(x: cell.x, y: cell.y), GridCoord(x: cell.x + 1, y: cell.y))
-            }
-            if !occupied.contains(GridCoord(x: cell.x + 1, y: cell.y)) {
-                addEdge(GridCoord(x: cell.x + 1, y: cell.y), GridCoord(x: cell.x + 1, y: cell.y + 1))
-            }
-            if !occupied.contains(GridCoord(x: cell.x, y: cell.y + 1)) {
-                addEdge(GridCoord(x: cell.x + 1, y: cell.y + 1), GridCoord(x: cell.x, y: cell.y + 1))
-            }
-            if !occupied.contains(GridCoord(x: cell.x - 1, y: cell.y)) {
-                addEdge(GridCoord(x: cell.x, y: cell.y + 1), GridCoord(x: cell.x, y: cell.y))
-            }
-        }
-        
-        var used = Set<DirectedEdge>()
-        var loops: [[CGPoint]] = []
-        let outset = self.scopeOutset
-        
-        for startEdge in allEdges where !used.contains(startEdge) {
-            var rawVertices: [GridCoord] = [startEdge.from]
-            var current = startEdge
-            used.insert(current)
-            
-            var safety = 0
-            while current.to != startEdge.from && safety < allEdges.count + 4 {
-                safety += 1
-                rawVertices.append(current.to)
-                let candidates = (outgoing[current.to] ?? []).filter { !used.contains($0) }
-                guard !candidates.isEmpty else { break }
-                
-                // Prefer turning right/continuing cleanly without self-crossing at touch vertices.
-                let dx = current.to.x - current.from.x
-                let dy = current.to.y - current.from.y
-                let next = candidates.min { lhs, rhs in
-                    let ldx = lhs.to.x - lhs.from.x
-                    let ldy = lhs.to.y - lhs.from.y
-                    let rdx = rhs.to.x - rhs.from.x
-                    let rdy = rhs.to.y - rhs.from.y
-                    let lScore = Self.turnPriority(dx: dx, dy: dy, ndx: ldx, ndy: ldy)
-                    let rScore = Self.turnPriority(dx: dx, dy: dy, ndx: rdx, ndy: rdy)
-                    return lScore < rScore
-                } ?? candidates[0]
-                
-                used.insert(next)
-                current = next
-            }
-            
-            guard rawVertices.count >= 4 else { continue }
-            
-            // Collapse collinear intermediate vertices so only true 90° corners remain.
-            var corners: [GridCoord] = []
-            let n = rawVertices.count
-            for i in 0..<n {
-                let prev = rawVertices[(i + n - 1) % n]
-                let curr = rawVertices[i]
-                let next = rawVertices[(i + 1) % n]
-                let cross = (curr.x - prev.x) * (next.y - curr.y) - (curr.y - prev.y) * (next.x - curr.x)
-                if cross != 0 {
-                    corners.append(curr)
-                }
-            }
-            guard corners.count >= 4 else { continue }
-            
-            let points = corners.map { v in
-                CGPoint(
-                    x: self.gridOriginX + CGFloat(v.x) * self.pitch - outset,
-                    y: self.gridOriginY + CGFloat(v.y) * self.pitch - outset
-                )
-            }
-            loops.append(points)
-        }
-        return loops
-    }
-    
-    
-    /// Builds a smooth rounded orthogonal `Path` from closed contour loops with concentric corner radii.
-    func scopeContourPath(for loops: [[CGPoint]]) -> Path {
-        var path = Path()
-        let baseRadius = self.scopeCornerRadius
-        for loop in loops where loop.count >= 4 {
-            let count = loop.count
-            let last = loop[count - 1]
-            let first = loop[0]
-            let startMid = CGPoint(x: (last.x + first.x) * 0.5, y: (last.y + first.y) * 0.5)
-            path.move(to: startMid)
-            for i in 0..<count {
-                let curr = loop[i]
-                let next = loop[(i + 1) % count]
-                let prev = loop[(i + count - 1) % count]
-                let lenPrev = hypot(curr.x - prev.x, curr.y - prev.y)
-                let lenNext = hypot(next.x - curr.x, next.y - curr.y)
-                let cornerR = min(baseRadius, min(lenPrev, lenNext) * 0.45)
-                path.addArc(tangent1End: curr, tangent2End: next, radius: cornerR)
-            }
-            path.closeSubpath()
-        }
-        return path
-    }
-    
-    
-    private static func turnPriority(dx: Int, dy: Int, ndx: Int, ndy: Int) -> Int {
-        // In flipped Y-down screen coordinates, clockwise interior keeps right-hand interior:
-        // cross < 0 is a left (concave) turn, cross == 0 is straight, cross > 0 is a right (convex) turn.
-        let cross = dx * ndy - dy * ndx
-        if cross < 0 { return 0 }
-        if cross == 0 { return 1 }
-        return 2
     }
     
     
@@ -4925,6 +5083,131 @@ struct HeatmapGridLayout: Equatable {
         let cell = weeks[col][row]
         guard !cell.isOutOfYear, !cell.isFuture else { return nil }
         return Hit(col: col, row: row, cell: cell)
+    }
+}
+
+
+/// Pure deterministic engine coupling the yearly heatmap's upright 2-week rectangular window
+/// with the draggable bottom trend chart.
+nonisolated enum HeatmapTrendWindowEngine {
+    
+    static let windowWeeks: Int = 2
+    
+    struct WindowRange: Equatable, Sendable {
+        let startWeek: Int
+        let endWeek: Int
+        let maxEndWeek: Int
+        let minEndWeek: Int
+        
+        var isLatest: Bool { self.endWeek >= self.maxEndWeek }
+        var canStepBackward: Bool { self.endWeek > self.minEndWeek }
+        var canStepForward: Bool { self.endWeek < self.maxEndWeek }
+    }
+    
+    struct Slice: Sendable {
+        let range: WindowRange
+        let days: [DashboardSnapshot.ChartDay]
+        let totalCurve: MathematicalTrendCurveEngine.Result
+        let aiCurve: MathematicalTrendCurveEngine.Result
+        let startDate: Date?
+        let endDate: Date?
+    }
+    
+    /// Clamps `requestedEndWeek` into the valid 2-week sliding window range for `weekCount` columns.
+    static func clampedRange(weekCount: Int, requestedEndWeek: Int?) -> WindowRange {
+        let count = max(1, weekCount)
+        let maxEnd = count - 1
+        let minEnd = min(maxEnd, Self.windowWeeks - 1)
+        let rawEnd = requestedEndWeek ?? maxEnd
+        let end = min(maxEnd, max(minEnd, rawEnd))
+        let start = max(0, end - (Self.windowWeeks - 1))
+        return WindowRange(
+            startWeek: start,
+            endWeek: end,
+            maxEndWeek: maxEnd,
+            minEndWeek: minEnd
+        )
+    }
+    
+    /// Maps a horizontal drag on the trend chart to a clamped `endWeek`.
+    /// Dragging right pulls earlier history into view (decreases `endWeek`);
+    /// dragging left advances forward toward today (increases `endWeek`).
+    static func endWeekForTrendDrag(
+        anchorEndWeek: Int,
+        translationX: CGFloat,
+        plotWidth: CGFloat,
+        weekCount: Int
+    ) -> Int {
+        let stepWidth = max(24.0, min(44.0, plotWidth / 12.0))
+        let deltaWeeks = Int(((-translationX) / stepWidth).rounded())
+        return Self.clampedRange(weekCount: weekCount, requestedEndWeek: anchorEndWeek + deltaWeeks).endWeek
+    }
+    
+    /// Maps a horizontal drag on the heatmap's upright window frame to a clamped `endWeek`.
+    static func endWeekForHeatmapDrag(
+        anchorEndWeek: Int,
+        translationX: CGFloat,
+        pitch: CGFloat,
+        weekCount: Int
+    ) -> Int {
+        let safePitch = max(6.0, pitch)
+        let deltaWeeks = Int((translationX / safePitch).rounded())
+        return Self.clampedRange(weekCount: weekCount, requestedEndWeek: anchorEndWeek + deltaWeeks).endWeek
+    }
+    
+    /// Maps a click/scrub x-coordinate on the heatmap canvas to a clamped `endWeek` framing that week.
+    static func endWeekForHeatmapTap(
+        locationX: CGFloat,
+        layout: HeatmapGridLayout,
+        weekCount: Int
+    ) -> Int {
+        let rawCol = Int(floor((locationX - layout.gridOriginX) / max(6.0, layout.pitch)))
+        let clampedCol = min(max(0, weekCount - 1), max(0, rawCol))
+        return Self.clampedRange(weekCount: weekCount, requestedEndWeek: clampedCol).endWeek
+    }
+    
+    /// Extracts the active days inside columns `startWeek...endWeek` and computes total & AI Hermite curves.
+    static func slice(
+        weeks: [[HeatmapDayCell]],
+        requestedEndWeek: Int?
+    ) -> Slice {
+        let range = Self.clampedRange(weekCount: weeks.count, requestedEndWeek: requestedEndWeek)
+        var days: [DashboardSnapshot.ChartDay] = []
+        days.reserveCapacity(Self.windowWeeks * 7)
+        
+        if !weeks.isEmpty, range.startWeek <= range.endWeek {
+            for col in range.startWeek...min(range.endWeek, weeks.count - 1) {
+                for (rowIdx, cell) in weeks[col].enumerated() where rowIdx < 7 && !cell.isOutOfYear && !cell.isFuture {
+                    days.append(
+                        DashboardSnapshot.ChartDay(
+                            id: cell.id,
+                            date: cell.date,
+                            typed: cell.typedChars,
+                            ai: cell.aiCompletedChars
+                        )
+                    )
+                }
+            }
+        }
+        
+        let totalCurve = MathematicalTrendCurveEngine.compute(
+            values: days.map { Double($0.typed + $0.ai) },
+            samplesPerSegment: 8,
+            bandwidth: 1.65
+        )
+        let aiCurve = MathematicalTrendCurveEngine.compute(
+            values: days.map { Double($0.ai) },
+            samplesPerSegment: 6,
+            bandwidth: 1.5
+        )
+        return Slice(
+            range: range,
+            days: days,
+            totalCurve: totalCurve,
+            aiCurve: aiCurve,
+            startDate: days.first?.date,
+            endDate: days.last?.date
+        )
     }
 }
 

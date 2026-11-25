@@ -34,6 +34,23 @@ nonisolated enum AIDocumentTextCleaner {
     /// The only emoji a cleaned document keeps.
     private static let allowedEmoji: Set<Unicode.Scalar> = ["🔴", "✅", "❌", "⭐"]
     
+    // Precompiled regexes (never allocated inside line loops).
+    private static let trailingWhitespaceRegex = try! NSRegularExpression(pattern: #"[ \t]+$"#)
+    private static let trailingHashesRegex = try! NSRegularExpression(pattern: #"\s+#+$"#)
+    private static let chineseSectionPrefixRegex = try! NSRegularExpression(pattern: #"^(?:[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|\([一二三四五六七八九十]+\)|第[一二三四五六七八九十0-9]+[部分章节条点])"#)
+    private static let tableSeparatorCellRegex = try! NSRegularExpression(pattern: #"^:?-{3,}:?$"#)
+    private static let imageMarkdownRegex = try! NSRegularExpression(pattern: #"!\[([^\]]*)\]\(([^)]*)\)"#)
+    private static let linkMarkdownRegex = try! NSRegularExpression(pattern: #"\[([^\]]+)\]\(([^)]+)\)"#)
+    private static let tripleBoldRegex = try! NSRegularExpression(pattern: #"\*\*\*(.+?)\*\*\*"#)
+    private static let doubleBoldRegex = try! NSRegularExpression(pattern: #"\*\*(.+?)\*\*"#)
+    private static let doubleUnderlineRegex = try! NSRegularExpression(pattern: #"__(.+?)__"#)
+    private static let strikethroughRegex = try! NSRegularExpression(pattern: #"~~(.+?)~~"#)
+    private static let inlineCodeRegex = try! NSRegularExpression(pattern: #"`([^`]+)`"#)
+    private static let italicStarRegex = try! NSRegularExpression(pattern: #"(?:^|(?<=[\s（(\[【「『《，。；：、—–\-]))\*(?!\s)([^*\n]+?)(?<!\s)\*(?=$|[\s）)\]】」』》，。；：、！？—–\-])"#)
+    private static let italicUnderscoreRegex = try! NSRegularExpression(pattern: #"(?<![A-Za-z0-9_])_(?![\s_])([^_\n]+?)_(?![A-Za-z0-9_])"#)
+    private static let danglingTrailingStarRegex = try! NSRegularExpression(pattern: #"(?<=[^\s\*/_\[\\])\*+(?=$|[\s）)\]】」』》，。；：、！？])"#)
+    private static let danglingLeadingStarRegex = try! NSRegularExpression(pattern: #"(?:^|(?<=[\s（(\[【「『《，。；：、]))\*+(?=[^\s\*\.\]\)/])"#)
+    
     
     private enum LayoutStyle {
         /// Original plain-text layout: subheadings indented with 4 spaces, body flush left.
@@ -61,6 +78,217 @@ nonisolated enum AIDocumentTextCleaner {
     static func cleanOrganized(_ text: String) -> String {
         
         self.clean(text, style: .flushHeadingsIndentedBody)
+    }
+    
+    
+    /// Cleans messy AI-copied Markdown / mixed plain text into crisp, logically structured plain text
+    /// indented with `\t` per hierarchy level.
+    ///
+    /// - Strips paired and broken/unpaired Markdown decorations (`**`, `*`, `` ` ``, `#`, `~~`, `__`, `>`).
+    /// - Keeps top-level section headings (ATX headings, numbered sections like `2. **标题*`, Chinese sections)
+    ///   flush left with a clean blank line between sections.
+    /// - Indents body lines, bullet points (`- `), and nested sub-points cleanly with `\t`, `\t\t`, etc.
+    /// - Preserves fenced code content, file paths, identifiers, and valid globs/math (`a * b`, `*.py`, `foo/*`).
+    static func cleanStructuredPlainText(_ text: String) -> String {
+        
+        let lines = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+        
+        let hasFlushNumberedSections = Self.detectFlushNumberedSections(in: lines)
+        var output: [String] = []
+        var insideSection = false
+        var insideATXSection = false
+        var sectionBodyBaseTabs = 0
+        var indentStack: [Int] = []
+        var lastSectionNumber: Int?
+        var index = 0
+        
+        func appendBlankSeparatorIfNeeded() {
+            if let last = output.last, !last.isEmpty {
+                output.append("")
+            }
+        }
+        
+        func relativeIndentLevel(for visualIndent: Int) -> Int {
+            while let top = indentStack.last, top > visualIndent {
+                indentStack.removeLast()
+            }
+            if indentStack.last != visualIndent {
+                indentStack.append(visualIndent)
+            }
+            return max(0, indentStack.count - 1)
+        }
+        
+        while index < lines.count {
+            let rawLine = lines[index]
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            
+            // Preserve fenced code verbatim, removing only the fence markers.
+            if trimmed.hasPrefix("```") {
+                index += 1
+                let codePrefix = insideSection ? String(repeating: "\t", count: max(1, sectionBodyBaseTabs)) : ""
+                while index < lines.count,
+                      !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix("```")
+                {
+                    let codeLine = lines[index]
+                    output.append(codeLine.isEmpty ? "" : codePrefix + codeLine)
+                    index += 1
+                }
+                index += 1
+                indentStack.removeAll()
+                continue
+            }
+            
+            if trimmed.isEmpty {
+                appendBlankSeparatorIfNeeded()
+                indentStack.removeAll()
+                index += 1
+                continue
+            }
+            
+            if Self.isHorizontalRule(trimmed) {
+                appendBlankSeparatorIfNeeded()
+                indentStack.removeAll()
+                index += 1
+                continue
+            }
+            
+            // ATX headings (`#`, `##`, `###`, ...)
+            if let heading = Self.heading(in: trimmed) {
+                let isSubheading = heading.level >= 3 && insideSection
+                if !isSubheading {
+                    appendBlankSeparatorIfNeeded()
+                    output.append(heading.text)
+                    insideSection = true
+                    insideATXSection = true
+                    sectionBodyBaseTabs = 1
+                } else {
+                    output.append("\t" + heading.text)
+                    insideATXSection = true
+                    sectionBodyBaseTabs = 2
+                }
+                indentStack.removeAll()
+                index += 1
+                continue
+            }
+            
+            // Markdown tables -> cleanly aligned plain columns
+            if Self.isTableStart(lines: lines, at: index) {
+                var tableRows: [[String]] = [Self.tableCells(lines[index]).map { Self.inline($0) }]
+                index += 2
+                while index < lines.count, Self.isTableRow(lines[index]) {
+                    tableRows.append(Self.tableCells(lines[index]).map { Self.inline($0) })
+                    index += 1
+                }
+                let prefix = insideSection ? String(repeating: "\t", count: max(1, sectionBodyBaseTabs)) : ""
+                for formatted in Self.alignedPlainTableRows(tableRows) {
+                    output.append(prefix + formatted)
+                }
+                indentStack.removeAll()
+                continue
+            }
+            
+            if Self.isTableRow(rawLine) {
+                let prefix = insideSection ? String(repeating: "\t", count: max(1, sectionBodyBaseTabs)) : ""
+                output.append(prefix + Self.plainTableRow(rawLine))
+                indentStack.removeAll()
+                index += 1
+                continue
+            }
+            
+            let visualIndent = Self.visualIndentWidth(of: rawLine)
+            var content = trimmed
+            var isBlockquote = false
+            if content.hasPrefix(">") {
+                isBlockquote = true
+                content = String(content.dropFirst()).trimmingCharacters(in: .whitespaces)
+                if content.isEmpty {
+                    index += 1
+                    continue
+                }
+            }
+            
+            // Flush-left numbered section heading (e.g. `2. **本次重评范围*` followed by indented bullets/paragraphs)
+            if !isBlockquote,
+               !insideATXSection,
+               visualIndent == 0,
+               let numbered = Self.parseNumberedItem(in: content),
+               hasFlushNumberedSections || Self.hasIndentedOrBulletFollowers(in: lines, after: index)
+            {
+                let resolvedNumber: Int
+                if let prev = lastSectionNumber, numbered.number <= prev {
+                    resolvedNumber = prev + 1
+                } else {
+                    resolvedNumber = numbered.number
+                }
+                lastSectionNumber = resolvedNumber
+                appendBlankSeparatorIfNeeded()
+                output.append("\(resolvedNumber). \(numbered.text)")
+                insideSection = true
+                sectionBodyBaseTabs = 1
+                indentStack.removeAll()
+                index += 1
+                continue
+            }
+            
+            // Flush-left plain / bold / Chinese section heading (e.g. `一、背景` or `**结论**` followed by body)
+            if !isBlockquote,
+               visualIndent == 0,
+               Self.parseBulletItem(in: content) == nil,
+               Self.parseNumberedItem(in: content) == nil,
+               Self.isStructuredSectionHeading(rawTrimmed: content, lines: lines, at: index)
+            {
+                appendBlankSeparatorIfNeeded()
+                output.append(Self.inline(content))
+                insideSection = true
+                sectionBodyBaseTabs = 1
+                indentStack.removeAll()
+                index += 1
+                continue
+            }
+            
+            // Bullet list items (`- `, `* `, `+ `, `• `)
+            if let bulletText = Self.parseBulletItem(in: content) {
+                let depth = relativeIndentLevel(for: visualIndent)
+                let baseTabs = insideSection ? sectionBodyBaseTabs : (visualIndent > 0 ? 1 : 0)
+                let tabs = min(4, baseTabs + depth)
+                output.append(String(repeating: "\t", count: tabs) + "- " + bulletText)
+                index += 1
+                continue
+            }
+            
+            // Nested or standalone numbered list items
+            if let numbered = Self.parseNumberedItem(in: content) {
+                let depth = relativeIndentLevel(for: visualIndent)
+                let baseTabs = insideSection ? sectionBodyBaseTabs : (visualIndent > 0 ? 1 : 0)
+                let tabs = min(4, baseTabs + depth)
+                output.append(String(repeating: "\t", count: tabs) + "\(numbered.number). " + numbered.text)
+                index += 1
+                continue
+            }
+            
+            // Regular paragraph or blockquote line
+            let cleanedText = Self.inline(content)
+            if !cleanedText.isEmpty {
+                let tabs: Int
+                if insideSection {
+                    let extra = visualIndent > 0 ? min(2, Self.tabIndentDepth(of: rawLine) - 1) : 0
+                    tabs = min(4, max(sectionBodyBaseTabs, sectionBodyBaseTabs + max(0, extra)))
+                } else {
+                    tabs = min(3, Self.tabIndentDepth(of: rawLine))
+                }
+                output.append(String(repeating: "\t", count: tabs) + cleanedText)
+            }
+            index += 1
+        }
+        
+        var cleaned = output.map { Self.stripTrailingWhitespace($0) }
+        while cleaned.first?.isEmpty == true { cleaned.removeFirst() }
+        while cleaned.last?.isEmpty == true { cleaned.removeLast() }
+        
+        return cleaned.joined(separator: "\n")
     }
     
     
@@ -384,34 +612,184 @@ nonisolated enum AIDocumentTextCleaner {
     }
     
     
+    /// Visual indentation width (`\t` = 4, space = 1) for accurate nested list stack tracking.
+    private static func visualIndentWidth(of line: String) -> Int {
+        
+        line.prefix { $0 == " " || $0 == "\t" }
+            .reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+    }
+    
+    
+    /// Parses a bullet item (`- `, `* `, `+ `, `• `, `◦ `, `▪ `), preserving checkbox status cleanly.
+    private static func parseBulletItem(in line: String) -> String? {
+        
+        let prefixes = ["- ", "* ", "+ ", "• ", "◦ ", "▪ "]
+        guard let prefix = prefixes.first(where: { line.hasPrefix($0) }) else { return nil }
+        var text = String(line.dropFirst(prefix.count))
+        if text.hasPrefix("[x] ") || text.hasPrefix("[X] ") {
+            text = "✅ " + String(text.dropFirst(4))
+        } else if text.hasPrefix("[ ] ") {
+            text = String(text.dropFirst(4))
+        }
+        return Self.inline(text)
+    }
+    
+    
+    /// Parses a numbered item (`1. ...`, `2) ...`, `3、...`).
+    private static func parseNumberedItem(in line: String) -> (number: Int, text: String)? {
+        
+        let digits = line.prefix { $0.isASCII && $0.isNumber }
+        guard !digits.isEmpty, let number = Int(digits) else { return nil }
+        let rest = line.dropFirst(digits.count)
+        let body: Substring
+        if rest.hasPrefix(". ") || rest.hasPrefix(") ") {
+            body = rest.dropFirst(2)
+        } else if rest.hasPrefix("、") {
+            body = rest.dropFirst(1)
+        } else {
+            return nil
+        }
+        return (number, Self.inline(String(body)))
+    }
+    
+    
+    /// Returns true when the document uses flush-left numbered items as section headings
+    /// (at least one flush-left numbered item is followed by indented lines or bullets).
+    private static func detectFlushNumberedSections(in lines: [String]) -> Bool {
+        
+        for (idx, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty,
+                  Self.visualIndentWidth(of: line) == 0,
+                  Self.parseNumberedItem(in: trimmed) != nil
+            else { continue }
+            if Self.hasIndentedOrBulletFollowers(in: lines, after: idx) {
+                return true
+            }
+        }
+        return false
+    }
+    
+    
+    /// Whether the next non-empty line after `index` is indented or starts a bullet list.
+    private static func hasIndentedOrBulletFollowers(in lines: [String], after index: Int) -> Bool {
+        
+        var nextIndex = index + 1
+        while nextIndex < lines.count, lines[nextIndex].trimmingCharacters(in: .whitespaces).isEmpty {
+            nextIndex += 1
+        }
+        guard nextIndex < lines.count else { return false }
+        let nextLine = lines[nextIndex]
+        if Self.visualIndentWidth(of: nextLine) > 0 {
+            return true
+        }
+        let nextTrimmed = nextLine.trimmingCharacters(in: .whitespaces)
+        return Self.parseBulletItem(in: nextTrimmed) != nil
+    }
+    
+    
+    /// Recognizes a flush-left section heading in structured cleaning mode:
+    /// indented follower lines, Chinese section prefixes (`一、...`), or short bold standalone headings (`**标题**`).
+    private static func isStructuredSectionHeading(rawTrimmed: String, lines: [String], at index: Int) -> Bool {
+        
+        if Self.isPlainHeading(rawTrimmed, lines: lines, at: index) {
+            return true
+        }
+        var nextIndex = index + 1
+        while nextIndex < lines.count, lines[nextIndex].trimmingCharacters(in: .whitespaces).isEmpty {
+            nextIndex += 1
+        }
+        guard nextIndex < lines.count else { return false }
+        let nextTrimmed = lines[nextIndex].trimmingCharacters(in: .whitespaces)
+        let isFollowedByBullet = Self.parseBulletItem(in: nextTrimmed) != nil
+            || Self.parseNumberedItem(in: nextTrimmed) != nil
+        
+        let range = NSRange(location: 0, length: (rawTrimmed as NSString).length)
+        if Self.chineseSectionPrefixRegex.firstMatch(in: rawTrimmed, range: range) != nil {
+            return true
+        }
+        let looksBoldStandalone = rawTrimmed.hasPrefix("**")
+            && (rawTrimmed.hasSuffix("**") || rawTrimmed.hasSuffix("*") || rawTrimmed.hasSuffix("：") || rawTrimmed.hasSuffix(":"))
+            && rawTrimmed.count <= 48
+        if looksBoldStandalone && (isFollowedByBullet || !nextTrimmed.isEmpty) {
+            return true
+        }
+        return false
+    }
+    
+    
+    /// Aligns plain-text table rows with visual-width padding so columns stay crisp without `|`.
+    private static func alignedPlainTableRows(_ rows: [[String]]) -> [String] {
+        
+        guard !rows.isEmpty else { return [] }
+        let colCount = rows.map(\.count).max() ?? 0
+        guard colCount > 0 else { return [] }
+        
+        func displayWidth(_ s: String) -> Int {
+            s.unicodeScalars.reduce(0) { acc, scalar in
+                acc + (scalar.isASCII ? 1 : 2)
+            }
+        }
+        
+        var widths = [Int](repeating: 0, count: colCount)
+        for row in rows {
+            for (c, cell) in row.enumerated() {
+                widths[c] = max(widths[c], displayWidth(cell))
+            }
+        }
+        
+        return rows.map { row in
+            var parts: [String] = []
+            for c in 0..<row.count {
+                let cell = row[c]
+                if c < row.count - 1 {
+                    let pad = max(0, widths[c] - displayWidth(cell)) + 3
+                    parts.append(cell + String(repeating: " ", count: pad))
+                } else {
+                    parts.append(cell)
+                }
+            }
+            return parts.joined()
+        }
+    }
+    
+    
+    private static func stripTrailingWhitespace(_ line: String) -> String {
+        
+        Self.replacing(Self.trailingWhitespaceRegex, with: "", in: line)
+    }
+    
+    
     // MARK: Inline Cleanup
     
-    /// Removes inline Markdown decoration and disallowed emoji from one run of text.
+    /// Removes inline Markdown decoration (including broken/unpaired `*` and `**`) and disallowed emoji.
     private static func inline(_ text: String) -> String {
         
         var result = text
-        result = Self.replacing(#"!\[([^\]]*)\]\(([^)]*)\)"#, with: "$1", in: result)
-        result = Self.replacing(#"\[([^\]]+)\]\(([^)]+)\)"#, with: "$1 ($2)", in: result)
-        result = Self.replacing(#"\*\*(.+?)\*\*"#, with: "$1", in: result)
-        result = Self.replacing(#"__(.+?)__"#, with: "$1", in: result)
-        result = Self.replacing(#"~~(.+?)~~"#, with: "$1", in: result)
-        result = Self.replacing(#"`([^`]+)`"#, with: "$1", in: result)
-        result = Self.replacing(#"(?<![A-Za-z0-9*])\*(?![\s*])([^*\n]+?)\*(?![A-Za-z0-9*])"#, with: "$1", in: result)
-        result = Self.replacing(#"(?<![A-Za-z0-9_])_(?![\s_])([^_\n]+?)_(?![A-Za-z0-9_])"#, with: "$1", in: result)
+        result = Self.replacing(Self.imageMarkdownRegex, with: "$1", in: result)
+        result = Self.replacing(Self.linkMarkdownRegex, with: "$1 ($2)", in: result)
+        result = Self.replacing(Self.tripleBoldRegex, with: "$1", in: result)
+        result = Self.replacing(Self.doubleBoldRegex, with: "$1", in: result)
+        result = Self.replacing(Self.doubleUnderlineRegex, with: "$1", in: result)
+        result = Self.replacing(Self.strikethroughRegex, with: "$1", in: result)
+        result = Self.replacing(Self.inlineCodeRegex, with: "$1", in: result)
+        result = Self.replacing(Self.italicStarRegex, with: "$1", in: result)
+        result = Self.replacing(Self.italicUnderscoreRegex, with: "$1", in: result)
         result = result
             .replacingOccurrences(of: "**", with: "")
             .replacingOccurrences(of: "`", with: "")
+        // Clean broken/unpaired trailing or leading Markdown `*` (e.g. `**标题*`) while keeping `a * b`, `*.py`, `dir/*`, `turns[*]`.
+        result = Self.replacing(Self.danglingTrailingStarRegex, with: "", in: result)
+        result = Self.replacing(Self.danglingLeadingStarRegex, with: "", in: result)
         result = Self.removingDisallowedEmoji(from: result)
         
         return result.trimmingCharacters(in: .whitespaces)
     }
     
     
-    private static func replacing(_ pattern: String, with template: String, in text: String) -> String {
+    private static func replacing(_ regex: NSRegularExpression, with template: String, in text: String) -> String {
         
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
-        
-        return regex.stringByReplacingMatches(
+        regex.stringByReplacingMatches(
             in: text,
             range: NSRange(location: 0, length: (text as NSString).length),
             withTemplate: template

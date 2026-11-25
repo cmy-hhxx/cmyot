@@ -40,6 +40,9 @@ nonisolated enum AIAction: Sendable, CaseIterable {
     /// Rewrite the text in plain, easy words.
     case explain
     
+    /// Reorganize verbose or messy text into a clear, easy-to-understand, Tab-structured plain-text version.
+    case semanticRestructure
+    
     /// Turn notes or work logs into a structured weekly report.
     case weeklyReport
     
@@ -72,6 +75,8 @@ nonisolated enum AIAction: Sendable, CaseIterable {
                 String(localized: "ai.action.explain",
                        defaultValue: "Explain",
                        table: "AI")
+            case .semanticRestructure:
+                AppLanguage.text("语义规整", en: "Semantic Restructure")
             case .weeklyReport:
                 String(localized: "ai.action.weeklyReport",
                        defaultValue: "Summarize All to Weekly Report",
@@ -103,6 +108,7 @@ nonisolated enum AIAction: Sendable, CaseIterable {
             case .translate: "translate"
             case .summarize: "summarize"
             case .explain: "explain"
+            case .semanticRestructure: "semanticRestructure"
             case .weeklyReport: "weeklyReport"
             case .weeklyReportItem: "weeklyReportItem"
             case .interactiveChart: "interactiveChart"
@@ -119,6 +125,7 @@ nonisolated enum AIAction: Sendable, CaseIterable {
             case .translate: CotLocalDatabase.ConfigKey.promptTranslate
             case .summarize: CotLocalDatabase.ConfigKey.promptSummarize
             case .explain: CotLocalDatabase.ConfigKey.promptExplain
+            case .semanticRestructure: CotLocalDatabase.ConfigKey.promptSemanticRestructure
             case .weeklyReport: CotLocalDatabase.ConfigKey.promptWeeklyReport
             case .weeklyReportItem: CotLocalDatabase.ConfigKey.promptWeeklyReportPart
             case .interactiveChart: CotLocalDatabase.ConfigKey.promptChart
@@ -137,9 +144,16 @@ nonisolated enum AIAction: Sendable, CaseIterable {
         switch self {
             case .summarize, .weeklyReport, .weeklyReportItem:
                 true
-            case .translate, .explain, .interactiveChart, .ocrPolish, .organizeAndMerge:
+            case .translate, .explain, .semanticRestructure, .interactiveChart, .ocrPolish, .organizeAndMerge:
                 false
         }
+    }
+    
+    
+    /// Whether the answer is structured plain text indented with `\t` per logical section.
+    var outputsStructuredPlainText: Bool {
+        
+        self == .semanticRestructure
     }
     
     
@@ -301,6 +315,22 @@ nonisolated enum AIAction: Sendable, CaseIterable {
                 2. 去掉行话和套话，遇到专业词就顺手用一句话解释它。
                 3. 保留原文的关键结论和可执行的动作，不添加原文没有的事实。
                 4. 只输出改写后的内容，不要“这段话的意思是”之类的前缀。
+                """
+            case .semanticRestructure:
+                """
+                你是一名擅长把啰嗦、杂乱文档梳理清晰的技术编辑。请把用户提供的内容重新梳理成结构清楚、容易理解的纯文本版本。
+
+                内容要求：
+                1. 删掉废话、重复铺垫和绕弯子的表达，把同一件事合并讲透，用直白自然的语言讲清结论、影响和需要配合的动作。
+                2. 按清晰逻辑重新归类分段（例如：范围与结论 → 路径与影响 → 需要配合的动作/注意点），让读者一眼看懂重点。
+                3. 严格保真：保留原文中的关键数字、日期范围、字段名、文件路径、口径差异与限制条件，绝不编造原文没有的事实，也不遗漏关键约束。
+                4. 使用与原文相同的语言。
+
+                排版要求（纯文本 Tab 分层）：
+                1. 一级分节标题顶格写（可用 1. 2. 3. 编号），节与节之间空一行；禁止使用 # 标题符号。
+                2. 标题下的要点与说明统一在行首用一个 Tab（\t）缩进；子要点再用两个 Tab（\t\t）缩进；要点统一用 "- " 开头。
+                3. 严禁任何 Markdown 修饰符号：不要输出 **、*、__、~~、反引号 `、> 引用、| 表格或多余装饰 emoji。
+                4. 只输出梳理后的正文，不要任何开场白、总结语或解释。
                 """
             case .weeklyReport:
                 """

@@ -2160,8 +2160,28 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             menu.addItem(swatchRowItem)
         }
         
-        // MARK: 3. Bots · 选区润色 & 4. 工作流与工具
+        // MARK: 3. 文本规整 (Format Clean & Semantic Restructure)
         if let documentViewController = self.documentViewController {
+            menu.addItem(.separator())
+            menu.addItem(.sectionHeader(title: AppLanguage.text("文本规整", en: "Structure & Clean")))
+            
+            menu.addItem(makeItem(
+                title: AppLanguage.text("清洗规整", en: "Clean & Structure"),
+                symbol: "list.bullet.indent",
+                action: #selector(DocumentViewController.cleanAndStructureText(_:)),
+                target: documentViewController,
+                enabled: self.isEditable && !self.string.isEmpty
+            ))
+            
+            menu.addItem(makeItem(
+                title: AppLanguage.text("语义规整", en: "Semantic Restructure"),
+                symbol: "doc.plaintext",
+                action: #selector(DocumentViewController.semanticRestructureText(_:)),
+                target: documentViewController,
+                enabled: !self.string.isEmpty
+            ))
+            
+            // MARK: 4. Bots · 选区润色 & 5. 工作流与工具
             menu.addItem(.separator())
             menu.addItem(.sectionHeader(title: AppLanguage.text("Bots · 选区润色", en: "Bots · Selection")))
             

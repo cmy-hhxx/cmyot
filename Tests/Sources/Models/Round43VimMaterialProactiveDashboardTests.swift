@@ -274,26 +274,28 @@ struct Round43VimMaterialProactiveDashboardTests {
         for (size, weeksCount) in testSizes {
             let layout = HeatmapGridLayout.compute(size: size, weekCount: weeksCount)
             let strokeHalf = layout.scopeStrokeWidth * 0.5
-            let scope = layout.scopeRect(minCol: max(0, weeksCount - 3), maxCol: weeksCount - 1)
-            #expect(scope.minX - strokeHalf >= 1.5)
-            #expect(scope.maxX + strokeHalf <= layout.canvasWidth - 1.5)
-            #expect(scope.minY - strokeHalf >= 10.0)
-            #expect(scope.maxY + strokeHalf <= layout.canvasHeight - 1.5)
+            let dragStrokeHalf = layout.scopeStrokeWidth(isDragging: true) * 0.5
+            let scope = layout.scopeRect(minCol: max(0, weeksCount - 2), maxCol: weeksCount - 1)
+            #expect(scope.minX - dragStrokeHalf >= 1.5)
+            #expect(scope.maxX + dragStrokeHalf <= layout.canvasWidth - 1.5)
+            #expect(scope.minY - dragStrokeHalf >= 10.0)
+            #expect(scope.maxY + dragStrokeHalf <= layout.canvasHeight - 1.5)
             #expect(layout.canvasHeight <= size.height + 1.0)
             // Gutter clearance: half-gutter outset minus half-stroke leaves strictly positive air gap before neighbor cells
             #expect(layout.scopeOutset == layout.gap * 0.5)
             #expect(layout.scopeOutset - strokeHalf >= 0.45)
+            #expect(layout.scopeOutset - dragStrokeHalf >= 0.30)
         }
         
-        // Exact stepped 14-day orthogonal contour (e.g. ending on Wednesday row=3 -> 8 corners, zero neighbor overlap, zero future/past cells)
-        let weeks: [[HeatmapDayCell]] = (0..<10).map { col in
+        // Verify upright 2-week window engine: latest mid-week slice + dragging left/right + heatmap scrub clamping
+        let weeks: [[HeatmapDayCell]] = (0..<12).map { col in
             (0..<7).map { row in
-                let isFuture = (col == 9 && row > 3)
+                let isFuture = (col == 11 && row > 2)
                 return HeatmapDayCell(
                     dateKey: "c\(col)r\(row)",
-                    date: Date(),
-                    typedChars: 100,
-                    aiCompletedChars: 0,
+                    date: Date(timeIntervalSince1970: Double((col * 7 + row) * 86_400)),
+                    typedChars: (col + 1) * 100 + row * 10,
+                    aiCompletedChars: row * 5,
                     filesCreated: 0,
                     aiRequests: 0,
                     level: 1,
@@ -302,59 +304,62 @@ struct Round43VimMaterialProactiveDashboardTests {
                 )
             }
         }
-        // Last 14 days ending at (col 9, row 3): col 7 rows 4..6 (3d) + col 8 rows 0..6 (7d) + col 9 rows 0..3 (4d)
-        var recentIDs = Set<String>()
-        for row in 4...6 { recentIDs.insert("c7r\(row)") }
-        for row in 0...6 { recentIDs.insert("c8r\(row)") }
-        for row in 0...3 { recentIDs.insert("c9r\(row)") }
         
-        let layout = HeatmapGridLayout.compute(size: CGSize(width: 560, height: 106), weekCount: 10)
-        let loops = layout.scopeContourLoops(weeks: weeks, matchingIDs: recentIDs)
-        #expect(loops.count == 1)
-        #expect(loops[0].count == 8)
+        // Default latest 2-week window frames exact upright columns 10...11 (7 + 3 = 10 active days, excluding 4 future slots)
+        let latest = HeatmapTrendWindowEngine.slice(weeks: weeks, requestedEndWeek: nil)
+        #expect(latest.range.startWeek == 10)
+        #expect(latest.range.endWeek == 11)
+        #expect(latest.range.isLatest == true)
+        #expect(latest.range.canStepBackward == true)
+        #expect(latest.range.canStepForward == false)
+        #expect(latest.days.count == 10)
+        #expect(latest.days.first?.id == "c10r0")
+        #expect(latest.days.last?.id == "c11r2")
         
-        let path = layout.scopeContourPath(for: loops)
-        let bounds = path.boundingRect
-        let strokeHalf = layout.scopeStrokeWidth * 0.5
-        #expect(bounds.minX - strokeHalf >= 1.5)
-        #expect(bounds.maxX + strokeHalf <= layout.canvasWidth - 1.5)
-        #expect(bounds.minY - strokeHalf >= 10.0)
-        #expect(bounds.maxY + strokeHalf <= layout.canvasHeight - 1.5)
+        // Dragging trend chart right pulls earlier history into view (decreases endWeek)
+        let draggedBackEnd = HeatmapTrendWindowEngine.endWeekForTrendDrag(
+            anchorEndWeek: 11,
+            translationX: 120,
+            plotWidth: 360,
+            weekCount: 12
+        )
+        #expect(draggedBackEnd < 11)
+        let earlierSlice = HeatmapTrendWindowEngine.slice(weeks: weeks, requestedEndWeek: draggedBackEnd)
+        #expect(earlierSlice.range.isLatest == false)
+        #expect(earlierSlice.range.endWeek - earlierSlice.range.startWeek == 1)
+        #expect(earlierSlice.days.count == 14)
         
-        // Verify contour encloses all 14 recent cell centers and excludes older top-left cells (c7r0..c7r3) and future cells (c9r4..c9r6)
-        for col in 0..<10 {
-            for row in 0..<7 {
-                let rect = layout.cellRect(col: col, row: row)
-                let center = CGPoint(x: rect.midX, y: rect.midY)
-                let id = "c\(col)r\(row)"
-                let inside = path.contains(center)
-                #expect(inside == recentIDs.contains(id))
-            }
-        }
+        // Dragging past year boundaries clamps cleanly to [1, weekCount - 1]
+        let clampedLeft = HeatmapTrendWindowEngine.endWeekForTrendDrag(
+            anchorEndWeek: 11,
+            translationX: 2000,
+            plotWidth: 360,
+            weekCount: 12
+        )
+        #expect(clampedLeft == 1)
+        let clampedRight = HeatmapTrendWindowEngine.endWeekForTrendDrag(
+            anchorEndWeek: 3,
+            translationX: -2000,
+            plotWidth: 360,
+            weekCount: 12
+        )
+        #expect(clampedRight == 11)
         
-        // Full 2-week Saturday case (ending at row=6) produces exact 4-corner rounded rectangle
-        var fullWeekIDs = Set<String>()
-        for col in 8...9 {
-            for row in 0...6 { fullWeekIDs.insert("c\(col)r\(row)") }
-        }
-        let fullWeeks: [[HeatmapDayCell]] = (0..<10).map { col in
-            (0..<7).map { row in
-                HeatmapDayCell(
-                    dateKey: "c\(col)r\(row)",
-                    date: Date(),
-                    typedChars: 50,
-                    aiCompletedChars: 0,
-                    filesCreated: 0,
-                    aiRequests: 0,
-                    level: 1,
-                    isFuture: false,
-                    isOutOfYear: false
-                )
-            }
-        }
-        let rectLoops = layout.scopeContourLoops(weeks: fullWeeks, matchingIDs: fullWeekIDs)
-        #expect(rectLoops.count == 1)
-        #expect(rectLoops[0].count == 4)
+        // Heatmap direct drag slides viewport in pointer direction (left drag -> earlier weeks, right drag -> later weeks)
+        let layout = HeatmapGridLayout.compute(size: CGSize(width: 560, height: 106), weekCount: 12)
+        let heatBack = HeatmapTrendWindowEngine.endWeekForHeatmapDrag(
+            anchorEndWeek: 11,
+            translationX: -layout.pitch * 3,
+            pitch: layout.pitch,
+            weekCount: 12
+        )
+        #expect(heatBack == 8)
+        let heatTapCol0 = HeatmapTrendWindowEngine.endWeekForHeatmapTap(
+            locationX: layout.gridOriginX + 2,
+            layout: layout,
+            weekCount: 12
+        )
+        #expect(heatTapCol0 == 1)
     }
     
     
@@ -381,5 +386,140 @@ struct Round43VimMaterialProactiveDashboardTests {
         #expect(abs(screenBefore.y - vpCenter.y) < 0.01)
         #expect(abs(screenAfter.x - vpCenter.x) < 0.01)
         #expect(abs(screenAfter.y - vpCenter.y) < 0.01)
+    }
+    
+    
+    // MARK: 6. Right-Click Format Clean (`清洗规整`) & Semantic Restructure (`语义规整`)
+    
+    @Test func structuredPlainTextCleanerStripsBrokenStarsAndIndentsWithTabs() {
+        let messyAIPaste = """
+        2. **本次重评范围（第一批约 4.5 万条）*
+           - **全部 `both`（问句错位 + 缺前序历史）**：全日期约 **3.38 万条**（`aime_fast` ~3.24 万 + `aime_expert` ~0.13 万，主要集中在 `10-28`–`11-22`）。
+           - **`2026-11-12` 起全部 `only_prior`（问句对但原缺前序历史）**：约 **1.11 万条**（主要为近期 `aime_expert`）。
+           - *注：`2026-11-11` 及更早的 `only_prior`（约 7.4 万条）暂未纳入第一批重评。*
+
+        3. **产物路径与对聚类的影响**
+           - 重评结果先独立写入 **`/mnt/aime_eval_ssd/1_aime/eval_output/0_daily_eval_reeval_r533/`**，待跑完验收后，再通过脚本按 `(session_id, trace_id)` 原子替换回 **`/mnt/aime_eval_ssd/1_aime/eval_output/0_daily_eval/`**（替换前会保留原文件备份）。
+           - 这 ~4.5 万条 case 替换后，其 `turns[].problem` 会整体更新（预期误报率明显下降）。
+
+        4. **需要聚类侧配合的动作**
+           - **等待回写通知**：建议等这批重评跑完并合入 `0_daily_eval/` 后，再做正式聚类出数或大盘口径更新。
+           - **按 `(session_id, trace_id)` 覆盖或重聚，切勿增量直接相加**：这批 case 在替换后属于同一批 trace 的新判词；如果增量聚类直接追加，会导致同一 trace 新旧两套 problem 重复统计。建议：
+             - 要么按 `(session_id, trace_id)` 删除旧 `item_index` 中对应条目后再重新归类这批更新后的 case；
+             - 要么直接对受影响日期（至少 **`2026-11-12`–`2026-11-22`**，以及包含 `v1_traces` 回填的 **`2026-10-28`–`2026-11-07`**）重跑聚类。
+           - **口径标注**：合入后，`2026-11-12` 及之后全量为 `r533` 口径；`11-11` 之前仅 `both` 样本为 `r533`、`only_prior` 仍为旧口径（如需全历史拉齐可后续安排第二批）。
+        """
+        
+        let cleaned = AIDocumentTextCleaner.cleanStructuredPlainText(messyAIPaste)
+        let lines = cleaned.components(separatedBy: "\n")
+        
+        // Zero leftover Markdown bold/italic/backtick noise
+        #expect(!cleaned.contains("**"))
+        #expect(!cleaned.contains("`"))
+        #expect(!cleaned.contains("*注："))
+        #expect(!cleaned.contains("）*"))
+        
+        // Section headings stay flush left with sequential numbers preserved
+        #expect(lines.contains("2. 本次重评范围（第一批约 4.5 万条）"))
+        #expect(lines.contains("3. 产物路径与对聚类的影响"))
+        #expect(lines.contains("4. 需要聚类侧配合的动作"))
+        
+        // Level-1 points use single Tab, Level-2 nested options use double Tab
+        #expect(lines.contains("\t- 全部 both（问句错位 + 缺前序历史）：全日期约 3.38 万条（aime_fast ~3.24 万 + aime_expert ~0.13 万，主要集中在 10-28–11-22）。"))
+        #expect(lines.contains("\t- 注：2026-11-11 及更早的 only_prior（约 7.4 万条）暂未纳入第一批重评。"))
+        #expect(lines.contains("\t- 重评结果先独立写入 /mnt/aime_eval_ssd/1_aime/eval_output/0_daily_eval_reeval_r533/，待跑完验收后，再通过脚本按 (session_id, trace_id) 原子替换回 /mnt/aime_eval_ssd/1_aime/eval_output/0_daily_eval/（替换前会保留原文件备份）。"))
+        #expect(lines.contains("\t\t- 要么按 (session_id, trace_id) 删除旧 item_index 中对应条目后再重新归类这批更新后的 case；"))
+        #expect(lines.contains("\t\t- 要么直接对受影响日期（至少 2026-11-12–2026-11-22，以及包含 v1_traces 回填的 2026-10-28–2026-11-07）重跑聚类。"))
+        
+        // Preserve legitimate math, globs, and ATX sub-lists properly
+        let edgeCase = """
+        ## 操作步骤
+        1. **扫描** `*.py` 和 `dir/*`（计算 `2 * 3` 与 `turns[*]`）
+           - 保留 `file_*.json`
+        """
+        let edgeCleaned = AIDocumentTextCleaner.cleanStructuredPlainText(edgeCase)
+        #expect(edgeCleaned == "操作步骤\n\t1. 扫描 *.py 和 dir/*（计算 2 * 3 与 turns[*]）\n\t\t- 保留 file_*.json")
+        
+        // Semantic restructure action metadata & prompt wiring
+        #expect(AIAction.semanticRestructure.outputsStructuredPlainText == true)
+        #expect(AIBotID(action: .semanticRestructure) == .explain)
+        #expect(AIAction.semanticRestructure.defaultSystemPrompt.contains("Tab"))
+    }
+    
+    
+    @Test func restructureReviewMachinePreservesUntouchedOriginalAcrossCompareUpgradeRetryAndKeepBoth() {
+        let untouched = "2. **重评范围*\n   - **全部 `both`**：约 **3.38 万条**。\n"
+        let cleaned = AIDocumentTextCleaner.cleanStructuredPlainText(untouched) + "\n"
+        let semanticV1 = "1. 重评范围\n\t- both 全量约 3.38 万条。\n"
+        let semanticV2 = "1. 范围结论\n\t- 第一批覆盖 both 约 3.38 万条。\n"
+        
+        // Metrics count stripped Markdown noise & Tab-indented lines accurately
+        let cleanMetrics = TextRestructureMetrics.compute(original: untouched, result: cleaned)
+        #expect(cleanMetrics.removedMarkerCount >= 6)
+        #expect(cleanMetrics.tabIndentedLineCount == 1)
+        #expect(cleanMetrics.summaryText(for: .formatClean).contains("清除"))
+        
+        // Start with format clean at offset 10
+        var machine = TextRestructureReviewMachine(
+            mode: .formatClean,
+            originalText: untouched,
+            transformedText: cleaned,
+            originLocation: 10,
+            isWholeDocument: false
+        )
+        #expect(machine.showingOriginal == false)
+        #expect(machine.activeDisplayedText == cleaned)
+        #expect(machine.activeRange == NSRange(location: 10, length: (cleaned as NSString).length))
+        
+        // Toggle A/B compare -> shows untouched original cleanly, then flips back
+        let toOriginal = machine.toggleCompare()
+        #expect(toOriginal.replacement == untouched)
+        #expect(toOriginal.isRevertingOrOriginal == true)
+        #expect(machine.showingOriginal == true)
+        #expect(machine.activeRange.length == (untouched as NSString).length)
+        
+        let backToClean = machine.toggleCompare()
+        #expect(backToClean.replacement == cleaned)
+        #expect(backToClean.isRevertingOrOriginal == false)
+        #expect(machine.showingOriginal == false)
+        
+        // Seamless upgrade from formatClean -> semanticRestructure v1, then Retry -> v2
+        let upgradePlan = machine.appendRevision(mode: .semanticRestructure, transformedText: semanticV1)
+        #expect(upgradePlan.replacement == semanticV1)
+        #expect(machine.revisions.count == 2)
+        #expect(machine.selectedRevisionIndex == 1)
+        #expect(machine.untouchedOriginalText == untouched)
+        
+        let retryPlan = machine.appendRevision(mode: .semanticRestructure, transformedText: semanticV2)
+        #expect(retryPlan.replacement == semanticV2)
+        #expect(machine.revisions.count == 3)
+        #expect(machine.selectedRevisionIndex == 2)
+        #expect(machine.canStepPreviousRevision == true)
+        #expect(machine.canStepNextRevision == false)
+        
+        // Step back to v1 and forward to v2
+        let backStep = machine.stepRevision(delta: -1)
+        #expect(backStep?.replacement == semanticV1)
+        #expect(machine.selectedRevisionIndex == 1)
+        let fwdStep = machine.stepRevision(delta: 1)
+        #expect(fwdStep?.replacement == semanticV2)
+        #expect(machine.selectedRevisionIndex == 2)
+        
+        // Keep Both preserves untouched original + blank line + selected restructured version
+        let keepBoth = machine.keepBothPlan()
+        #expect(keepBoth.replacement.hasPrefix(untouched.trimmingCharacters(in: .newlines)))
+        #expect(keepBoth.replacement.contains("\n\n"))
+        #expect(keepBoth.replacement.hasSuffix(semanticV2))
+        
+        // Revert STILL restores the very first untouched original even after clean -> semantic -> retry
+        let revert = machine.revertPlan()
+        #expect(revert?.replacement == untouched)
+        #expect(revert?.isRevertingOrOriginal == true)
+        
+        // Accept while viewing original restores the active transformed revision
+        _ = machine.toggleCompare()
+        #expect(machine.showingOriginal == true)
+        let accept = machine.acceptPlan()
+        #expect(accept?.replacement == semanticV2)
     }
 }

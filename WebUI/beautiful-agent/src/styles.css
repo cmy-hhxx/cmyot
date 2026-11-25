@@ -215,8 +215,7 @@ select:focus-visible {
     transform var(--sidebar-copy-duration, 180ms) var(--sidebar-easing, cubic-bezier(0.16, 1, 0.3, 1));
 }
 .sidebar-glide-highlight {
-  right: 8px;
-  left: 8px;
+  will-change: left, top, width, height, opacity;
 }
 [data-sidebar-collapsed="true"] .sidebar-row {
   width: 34px;
@@ -225,10 +224,6 @@ select:focus-visible {
   pointer-events: none;
   opacity: 0;
   transform: translateX(-8px);
-}
-[data-sidebar-collapsed="true"] .sidebar-glide-highlight {
-  right: auto;
-  width: 34px;
 }
 
 /* Beautiful UI shared animations */

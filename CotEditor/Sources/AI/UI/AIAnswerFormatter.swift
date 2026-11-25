@@ -123,6 +123,57 @@ enum AIAnswerFormatter {
     }
     
     
+    /// Renders Tab-indented structured plain text verbatim with crisp hierarchical indentation
+    /// (preserving every `\t` level visually without Markdown parsing interference).
+    static func structuredPlainTextAttributedString(from text: String) -> NSAttributedString {
+        
+        let lines = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+        
+        let output = NSMutableAttributedString()
+        let baseFont = NSFont.systemFont(ofSize: 13, weight: .regular)
+        let headingFont = NSFont.systemFont(ofSize: 13.5, weight: .semibold)
+        
+        for (idx, rawLine) in lines.enumerated() {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                let spacerStyle = NSMutableParagraphStyle()
+                spacerStyle.maximumLineHeight = 8
+                spacerStyle.paragraphSpacing = 2
+                output.append(NSAttributedString(string: "\n", attributes: [
+                    .font: NSFont.systemFont(ofSize: 10),
+                    .paragraphStyle: spacerStyle,
+                ]))
+                continue
+            }
+            
+            let tabDepth = rawLine.prefix { $0 == "\t" }.count
+            let isHeading = (tabDepth == 0 && !trimmed.hasPrefix("- "))
+            let indent = CGFloat(tabDepth) * 18
+            let isBullet = trimmed.hasPrefix("- ")
+            
+            let style = NSMutableParagraphStyle()
+            style.lineSpacing = 3
+            style.paragraphSpacing = isHeading ? 4 : 3
+            if isHeading, idx > 0 {
+                style.paragraphSpacingBefore = 6
+            }
+            style.firstLineHeadIndent = indent
+            style.headIndent = isBullet ? (indent + 12) : indent
+            
+            output.append(NSAttributedString(string: trimmed + "\n", attributes: [
+                .font: isHeading ? headingFont : baseFont,
+                .foregroundColor: NSColor.labelColor,
+                .paragraphStyle: style,
+            ]))
+        }
+        
+        return output
+    }
+    
+    
     // MARK: Private Block Builders
     
     private static func paragraph(_ text: String) -> NSAttributedString {

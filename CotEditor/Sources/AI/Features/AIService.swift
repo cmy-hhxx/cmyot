@@ -177,9 +177,13 @@ import Observation
             analyticsFeature: action.analyticsKey,
             onPartial: onPartial
         )
-        let result = action.outputsPlainDocumentText
-            ? AIDocumentTextCleaner.clean(rawResult)
-            : rawResult
+        let result: String = if action.outputsStructuredPlainText {
+            AIDocumentTextCleaner.cleanStructuredPlainText(rawResult)
+        } else if action.outputsPlainDocumentText {
+            AIDocumentTextCleaner.clean(rawResult)
+        } else {
+            rawResult
+        }
         
         if action == .weeklyReportItem {
             db.appendWeeklyReportFragment(result)
