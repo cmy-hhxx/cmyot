@@ -38,7 +38,7 @@ struct DocumentCenterView: View {
     @Environment(\.registerWorkspaceCenterEscPop) private var registerEscPop
     @State private var db = CotLocalDatabase.shared
     @State private var focusedClusterID: String?
-    @State private var quickLookItemID: String?
+    @State private var quickLook = StarMapQuickLookController()
     @State private var panRequestToken = 0
     @State private var fitRequestToken = 0
     @State private var isSearchHUDCollapsed = false
@@ -69,7 +69,7 @@ struct DocumentCenterView: View {
         let tokens = DashPalette.editorialTokens(isDark: self.colorScheme == .dark)
         let clusters = self.state.buildStarMapClusters(tokens: tokens)
         let hasQuery = !self.state.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let quickLookItem = self.quickLookItemID.flatMap { id in
+        let quickLookItem = self.quickLook.mountedID.flatMap { id in
             displayedItems.first(where: { $0.id == id }) ?? self.state.items.first(where: { $0.id == id })
         }
         
@@ -92,7 +92,7 @@ struct DocumentCenterView: View {
                     activeItem: activeItem,
                     clusters: clusters,
                     hasQuery: hasQuery,
-                    showingQuickLook: quickLookItem != nil,
+                    showingQuickLook: self.quickLook.isOpen,
                     tokens: tokens
                 )
             }
@@ -100,10 +100,12 @@ struct DocumentCenterView: View {
             
             if let qItem = quickLookItem {
                 self.quickLookOverlay(qItem: qItem, displayedItems: displayedItems, tokens: tokens)
+                    .zIndex(20)
             }
             
             if let toastMessage = self.toastMessage {
                 self.toastPill(message: toastMessage, tokens: tokens)
+                    .zIndex(30)
             }
         }
         .onAppear {
@@ -116,6 +118,7 @@ struct DocumentCenterView: View {
             self.removeKeyboardMonitor()
             self.searchDebounceTask?.cancel()
             self.organizeTask?.cancel()
+            self.quickLook.cancelPendingDismiss()
             self.registerEscPop?(nil)
         }
         .onChange(of: self.db.documents.count) { _, _ in self.state.refresh() }
@@ -168,6 +171,10 @@ struct DocumentCenterView: View {
                     searchQuery: self.state.searchText,
                     panRequestToken: self.panRequestToken,
                     fitRequestToken: self.fitRequestToken,
+                    isOverlayBlockingInteraction: self.quickLook.mountedID != nil,
+                    onSelectedLeafFrameChange: { rect in
+                        self.quickLook.anchorRect = rect.map { $0.offsetBy(dx: 0, dy: 49) }
+                    },
                     onSelectLeaf: { leafID in
                         self.isRenaming = false
                         self.state.selectedID = leafID
@@ -176,9 +183,7 @@ struct DocumentCenterView: View {
                         self.state.selectedID = leafID
                         guard let target = displayedItems.first(where: { $0.id == leafID }) else { return }
                         if target.isTrashed {
-                            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                                self.quickLookItemID = target.id
-                            }
+                            self.quickLook.open(target.id)
                         } else {
                             self.open(item: target)
                         }
@@ -227,9 +232,7 @@ struct DocumentCenterView: View {
                     onPreviewHit: { hitID in
                         self.unfocusSearchField()
                         self.state.selectedID = hitID
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                            self.quickLookItemID = hitID
-                        }
+                        self.quickLook.open(hitID)
                     },
                     onOpenHit: { hitID in
                         if let target = displayedItems.first(where: { $0.id == hitID }) ?? self.state.items.first(where: { $0.id == hitID }) {
@@ -264,40 +267,49 @@ struct DocumentCenterView: View {
         let related = self.state.relatedNodes(for: qItem.id, in: self.state.items)
         let highlightTerms = StarMapSearchEngine.parseTerms(self.state.searchText)
         
+        let indexText: String? = navList.count > 1 ? "\(curIdx + 1) / \(navList.count)" : nil
+        
         return StarMapQuickLookOverlay(
+            isPresented: self.quickLook.isVisible,
             title: qItem.title,
             subtitle: "\(qItem.groupName.isEmpty ? "未分组" : qItem.groupName) · \(qItem.compactCharCount) · \(qItem.relativeTimeText)",
+            indexText: indexText,
+            anchorRect: self.quickLook.anchorRect,
+            isExpanded: self.quickLook.isExpanded,
             canStepPrevious: canPrev,
             canStepNext: canNext,
+            onToggleExpand: {
+                self.quickLook.isExpanded.toggle()
+            },
             onPrevious: {
                 guard canPrev else { return }
                 let prev = navList[curIdx - 1]
                 self.state.selectedID = prev.id
-                self.quickLookItemID = prev.id
+                self.quickLook.step(to: prev.id)
+                self.panRequestToken &+= 1
             },
             onNext: {
                 guard canNext else { return }
                 let next = navList[curIdx + 1]
                 self.state.selectedID = next.id
-                self.quickLookItemID = next.id
+                self.quickLook.step(to: next.id)
+                self.panRequestToken &+= 1
             },
             onClose: {
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                    self.quickLookItemID = nil
-                }
+                self.quickLook.close(animated: true)
             },
             headerActions: {
                 HStack(spacing: 6) {
                     if qItem.isTrashed {
                         Button("恢复") {
                             self.restore(item: qItem)
-                            self.quickLookItemID = nil
+                            self.quickLook.close(animated: true)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                     } else {
                         Button("打开") {
-                            self.quickLookItemID = nil
+                            self.quickLook.close(animated: false)
                             self.open(item: qItem)
                         }
                         .buttonStyle(.borderedProminent)
@@ -327,7 +339,7 @@ struct DocumentCenterView: View {
                                 ForEach(related.prefix(5), id: \.item.id) { entry in
                                     Button {
                                         self.state.selectedID = entry.item.id
-                                        self.quickLookItemID = entry.item.id
+                                        self.quickLook.step(to: entry.item.id)
                                         self.panRequestToken &+= 1
                                     } label: {
                                         Text("\(entry.item.title) · \(entry.reason)")
@@ -917,9 +929,8 @@ struct DocumentCenterView: View {
         tokens: StudioColorTokens
     ) -> some View {
         Button {
-            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                self.quickLookItemID = item.id
-            }
+            self.state.selectedID = item.id
+            self.quickLook.open(item.id)
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "eye")
@@ -1061,7 +1072,7 @@ struct DocumentCenterView: View {
     ) -> some View {
         Button("空格预览") {
             self.state.selectedID = item.id
-            self.quickLookItemID = item.id
+            self.quickLook.open(item.id)
         }
         if item.isTrashed {
             Button("恢复") { self.restore(item: item) }
@@ -1146,7 +1157,7 @@ struct DocumentCenterView: View {
             
             // Reset view into a crisp, uncluttered post-organize constellation.
             self.focusedClusterID = nil
-            self.quickLookItemID = nil
+            self.quickLook.close(animated: false)
             self.isRenaming = false
             if self.state.sidebarFilter != .all && self.state.sidebarFilter != .trash {
                 self.state.sidebarFilter = .all
@@ -1158,10 +1169,12 @@ struct DocumentCenterView: View {
             
             var summaryParts: [String] = []
             if stats.deletedJunk > 0 { summaryParts.append("删 \(stats.deletedJunk) 无效") }
-            if stats.mergedDuplicates > 0 { summaryParts.append("合 \(stats.mergedDuplicates) 重复") }
+            if stats.mergedDuplicates > 0 { summaryParts.append("合并 \(stats.mergedDuplicates) 篇同类") }
             if stats.renamed > 0 { summaryParts.append("重命名 \(stats.renamed) 篇") }
-            if stats.regrouped > 0 {
-                summaryParts.append(stats.groupCount > 0 ? "归类 \(stats.regrouped) 篇 · \(stats.groupCount) 组" : "归类 \(stats.regrouped) 篇")
+            if stats.groupCount > 0 {
+                summaryParts.append("\(stats.groupCount) 组")
+            } else if stats.regrouped > 0 {
+                summaryParts.append("归类 \(stats.regrouped) 篇")
             }
             
             if summaryParts.isEmpty {
@@ -1204,11 +1217,13 @@ struct DocumentCenterView: View {
                 itemsByID: itemsByID,
                 undoEntries: &undoEntries
             )
-            stats.mergedDuplicates = self.applyDuplicateMerges(
+            let mergeOutcome = self.applyDuplicateMerges(
                 fullPlan.funnel.mergeClusters,
                 itemsByID: itemsByID,
                 undoEntries: &undoEntries
             )
+            stats.mergedDuplicates = mergeOutcome.merged
+            stats.renamed += mergeOutcome.renamed
             self.applyShardedAssignments(
                 fullPlan.assignments,
                 itemsByID: itemsByID,
@@ -1266,11 +1281,13 @@ struct DocumentCenterView: View {
         _ clusters: [OrganizeMergeCluster],
         itemsByID: [String: DocumentCenterState.ManagedDocumentItem],
         undoEntries: inout [DocumentCenterState.OrganizeUndoEntry]
-    ) -> Int {
+    ) -> (merged: Int, renamed: Int) {
         var mergedCount = 0
+        var renamedCount = 0
         for cluster in clusters {
             guard let primaryItem = itemsByID[cluster.primary.id] else { continue }
             let primaryRecordID = primaryItem.dbRecordID ?? primaryItem.id
+            let didRenamePrimary = (cluster.bestTitle != primaryItem.title)
             undoEntries.append(DocumentCenterState.OrganizeUndoEntry(
                 kind: .mergedPrimary,
                 itemID: primaryItem.id,
@@ -1278,21 +1295,28 @@ struct DocumentCenterView: View {
                 filePath: primaryItem.filePath,
                 previousGroup: primaryItem.groupName,
                 previousTitle: primaryItem.title,
-                titleWasChanged: cluster.bestTitle != primaryItem.title,
+                titleWasChanged: didRenamePrimary,
                 syntax: primaryItem.syntax,
                 content: primaryItem.content
             ))
             
-            if let liveDoc = self.state.liveDocument(for: primaryItem.id),
-               cluster.mergedContent != liveDoc.textStorage.string
-            {
-                liveDoc.textStorage.replaceCharacters(
-                    in: NSRange(location: 0, length: liveDoc.textStorage.length),
-                    with: cluster.mergedContent
-                )
-                if liveDoc.fileURL == nil {
-                    liveDoc.updateChangeCount(.changeCleared)
+            if let liveDoc = self.state.liveDocument(for: primaryItem.id) {
+                if cluster.mergedContent != liveDoc.textStorage.string {
+                    liveDoc.textStorage.replaceCharacters(
+                        in: NSRange(location: 0, length: liveDoc.textStorage.length),
+                        with: cluster.mergedContent
+                    )
+                    if liveDoc.fileURL == nil {
+                        liveDoc.updateChangeCount(.changeCleared)
+                    }
                 }
+                if didRenamePrimary, liveDoc.fileURL == nil {
+                    liveDoc.displayName = cluster.bestTitle
+                    liveDoc.isExplicitlyNamed = true
+                }
+            }
+            if didRenamePrimary {
+                renamedCount += 1
             }
             self.db.saveDocument(
                 id: primaryRecordID,
@@ -1322,7 +1346,7 @@ struct DocumentCenterView: View {
                 mergedCount += 1
             }
         }
-        return mergedCount
+        return (mergedCount, renamedCount)
     }
     
     
@@ -1563,10 +1587,8 @@ struct DocumentCenterView: View {
             self.isRenaming = false
             return true
         }
-        if self.quickLookItemID != nil {
-            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                self.quickLookItemID = nil
-            }
+        if self.quickLook.isOpen {
+            self.quickLook.close(animated: true)
             return true
         }
         if self.isCreatingGroup {
@@ -1595,7 +1617,7 @@ struct DocumentCenterView: View {
         self.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [self] event in
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if flags == .command && event.charactersIgnoringModifiers?.lowercased() == "f" {
-                self.quickLookItemID = nil
+                self.quickLook.close(animated: true)
                 self.isSearchFocused = true
                 return nil
             }
@@ -1611,16 +1633,13 @@ struct DocumentCenterView: View {
             
             switch event.keyCode {
                 case 49:
-                    if self.quickLookItemID != nil {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.15)) {
-                            self.quickLookItemID = nil
-                        }
+                    if self.quickLook.isOpen {
+                        self.quickLook.close(animated: true)
                         return nil
                     }
                     if let active = self.selectedItem(in: navList) {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                            self.quickLookItemID = active.id
-                        }
+                        self.state.selectedID = active.id
+                        self.quickLook.open(active.id)
                         return nil
                     }
                 case 123, 126:
@@ -1631,7 +1650,7 @@ struct DocumentCenterView: View {
                     return nil
                 case 36:
                     if let active = self.selectedItem(in: navList), !active.isTrashed {
-                        self.quickLookItemID = nil
+                        self.quickLook.close(animated: false)
                         self.open(item: active)
                         return nil
                     }
@@ -1657,8 +1676,9 @@ struct DocumentCenterView: View {
         let nextIdx = (curIdx + delta + list.count) % list.count
         let nextID = list[nextIdx].id
         self.state.selectedID = nextID
-        if self.quickLookItemID != nil {
-            self.quickLookItemID = nextID
+        if self.quickLook.isOpen {
+            self.quickLook.step(to: nextID)
+            self.panRequestToken &+= 1
         }
     }
     
@@ -1699,7 +1719,7 @@ struct DocumentCenterView: View {
             let nextItem = list.indices.contains(idx + 1) ? list[idx + 1] : (idx > 0 ? list[idx - 1] : nil)
             self.state.selectedID = nextItem?.id
         }
-        if self.quickLookItemID == item.id { self.quickLookItemID = nil }
+        if self.quickLook.mountedID == item.id { self.quickLook.close(animated: false) }
         if let onDeleteDocument = self.onDeleteDocument {
             onDeleteDocument(item)
         } else if let recordID = item.dbRecordID {
@@ -1720,7 +1740,7 @@ struct DocumentCenterView: View {
     private func permanentlyDelete(item: DocumentCenterState.ManagedDocumentItem) {
         self.confirmDestructive(title: "彻底删除「\(item.title)」？") {
             self.db.permanentlyDeleteDocument(id: item.dbRecordID ?? item.id, filePath: item.filePath)
-            if self.quickLookItemID == item.id { self.quickLookItemID = nil }
+            if self.quickLook.mountedID == item.id { self.quickLook.close(animated: false) }
             self.state.refresh()
             self.showToast("已彻底删除")
         }
@@ -1730,7 +1750,7 @@ struct DocumentCenterView: View {
     private func confirmEmptyTrash() {
         self.confirmDestructive(title: "清空废纸篓（\(self.state.trashedItems.count) 篇）？") {
             self.db.emptyDocumentTrash()
-            self.quickLookItemID = nil
+            self.quickLook.close(animated: false)
             self.state.refresh()
             self.showToast("已清空废纸篓")
         }

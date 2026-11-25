@@ -90,13 +90,13 @@ nonisolated enum OrganizeFunnelProgress: Sendable, Equatable {
     var statusText: String {
         switch self {
             case .filteringJunk(let total):
-                "漏斗清洗 \(total) 篇"
+                "清洗去重 \(total) 篇"
             case .mergingDuplicates(let remaining, let junk):
-                junk > 0 ? "已筛 \(junk) 篇 · 去重合并 \(remaining) 篇" : "去重合并 \(remaining) 篇"
+                junk > 0 ? "已删 \(junk) 篇 · 语义合并 \(remaining) 篇" : "语义合并 \(remaining) 篇"
             case .shardedOrganizing(let done, let total, _):
-                "分片整理 \(done)/\(total) 批"
+                "合并归类 \(done)/\(total) 批"
             case .consolidating:
-                "收敛星图分组"
+                "收敛精简星图"
         }
     }
 }
@@ -515,6 +515,20 @@ nonisolated enum DocumentOrganizeFunnel {
             unite: unite
         )
         
+        // Pass 2D: Content-aware semantic merge for fragmented scratch notes on the exact same concrete topic.
+        var postNearRoots: [Int] = []
+        var seenPostNear = Set<Int>()
+        for idx in 0..<n {
+            let r = find(idx)
+            if seenPostNear.insert(r).inserted { postNearRoots.append(r) }
+        }
+        Self.mergeSemanticSameTopicRoots(
+            Array(postNearRoots.prefix(180)),
+            cleanItems: cleanItems,
+            find: find,
+            unite: unite
+        )
+        
         var bucketsByRoot: [Int: [Int]] = [:]
         var rootOrder: [Int] = []
         for idx in 0..<n {
@@ -525,6 +539,115 @@ nonisolated enum DocumentOrganizeFunnel {
         let groups = rootOrder.compactMap { bucketsByRoot[$0] }
         let reasons = rootOrder.map { mergeReasons[$0] ?? "重复文档合并" }
         return (groups, reasons)
+    }
+    
+    
+    private static let genericTopicStopWords: Set<String> = [
+        "优化", "方案", "设计", "文档", "记录", "测试", "项目", "数据", "统计", "会议",
+        "纪要", "周报", "总结", "清单", "待办", "脚本", "配置", "架构", "需求", "计划",
+        "任务", "处理", "更新", "检查", "结果", "说明", "背景", "目标", "问题", "排查",
+        "分析", "整理", "内容", "核心", "阶段", "第一", "第二", "补充", "支持", "实现",
+        "功能", "页面", "版本", "时间", "状态", "步骤", "建议", "注意", "如下", "需要",
+    ]
+    
+    private static let maxSemanticClusterDocs = 5
+    private static let maxSemanticClusterChars = 14_000
+    
+    
+    private static func isStrongEntityToken(_ token: String) -> Bool {
+        if token.unicodeScalars.allSatisfy(\.isASCII) {
+            let hasDetail = token.contains("_") || token.contains("-") || token.contains(".")
+                || token.contains(where: \.isNumber)
+                || (token.count >= 4 && token.contains(where: \.isUppercase))
+            return token.count >= 3 && (hasDetail || token.count >= 5)
+        }
+        return token.count >= 3 && !Self.genericTopicStopWords.contains(token)
+    }
+    
+    
+    private static func mergeSemanticSameTopicRoots(
+        _ roots: [Int],
+        cleanItems: [OrganizeFunnelInput],
+        find: (Int) -> Int,
+        unite: (Int, Int, String) -> Void
+    ) {
+        guard roots.count >= 2 else { return }
+        
+        var rawTermsByRoot: [Int: Set<String>] = [:]
+        var docFreq: [String: Int] = [:]
+        for idx in roots {
+            let item = cleanItems[idx]
+            let titleForTerms = item.isUntitled ? "" : item.title
+            let extracted = StarMapRelationEngine.extractKeyTerms(title: titleForTerms, content: item.content)
+                .map { $0.lowercased() }
+                .filter { !Self.genericTopicStopWords.contains($0) && $0.count >= 2 }
+            let termSet = Set(extracted)
+            rawTermsByRoot[idx] = termSet
+            for term in termSet {
+                docFreq[term, default: 0] += 1
+            }
+        }
+        
+        let maxCommonDF = roots.count >= 4 ? max(2, Int(Double(roots.count) * 0.45)) : roots.count
+        var specificTermsByRoot: [Int: Set<String>] = [:]
+        for idx in roots {
+            let filtered = (rawTermsByRoot[idx] ?? []).filter { (docFreq[$0] ?? 0) <= maxCommonDF }
+            specificTermsByRoot[idx] = filtered
+        }
+        
+        var clusterSize: [Int: Int] = [:]
+        var clusterChars: [Int: Int] = [:]
+        for itemIdx in 0..<cleanItems.count {
+            let r = find(itemIdx)
+            clusterSize[r, default: 0] += 1
+            clusterChars[r, default: 0] += cleanItems[itemIdx].content.count
+        }
+        let maxAllowedByCorpus = roots.count >= 6 ? max(3, roots.count / 2) : Self.maxSemanticClusterDocs
+        
+        for i in 0..<roots.count {
+            let a = roots[i]
+            let itemA = cleanItems[a]
+            guard itemA.content.count <= 8_000 else { continue }
+            let termsA = specificTermsByRoot[a] ?? []
+            guard termsA.count >= 2 else { continue }
+            
+            for j in (i + 1)..<roots.count {
+                let b = roots[j]
+                let ra = find(a)
+                let rb = find(b)
+                if ra == rb { continue }
+                
+                let itemB = cleanItems[b]
+                guard itemB.content.count <= 8_000 else { continue }
+                // Protect two distinct saved files on disk from local heuristic merging.
+                if itemA.filePath != nil && itemB.filePath != nil { continue }
+                
+                let combinedDocs = (clusterSize[ra] ?? 1) + (clusterSize[rb] ?? 1)
+                let combinedChars = (clusterChars[ra] ?? itemA.content.count) + (clusterChars[rb] ?? itemB.content.count)
+                guard combinedDocs <= min(Self.maxSemanticClusterDocs, maxAllowedByCorpus),
+                      combinedChars <= Self.maxSemanticClusterChars
+                else { continue }
+                
+                let termsB = specificTermsByRoot[b] ?? []
+                guard termsB.count >= 2 else { continue }
+                let shared = termsA.intersection(termsB)
+                guard shared.count >= 3 else { continue }
+                
+                let minLen = min(termsA.count, termsB.count)
+                let overlap = Double(shared.count) / Double(max(1, minLen))
+                let dice = (2.0 * Double(shared.count)) / Double(max(1, termsA.count + termsB.count))
+                let strongShared = shared.filter(Self.isStrongEntityToken).count
+                
+                let isSameTopic = (shared.count >= 4 && dice >= 0.30 && overlap >= 0.42)
+                    || (strongShared >= 2 && shared.count >= 3 && overlap >= 0.35)
+                if isSameTopic {
+                    unite(a, b, "同主题文档合并")
+                    let newRoot = find(a)
+                    clusterSize[newRoot] = combinedDocs
+                    clusterChars[newRoot] = combinedChars
+                }
+            }
+        }
     }
     
     
@@ -595,7 +718,7 @@ nonisolated enum DocumentOrganizeFunnel {
             let ranked = group.sorted(by: Self.isBetterPrimary)
             let primary = ranked[0]
             let duplicates = Array(ranked.dropFirst())
-            let mergedContent = Self.mergeContents(primary: primary.content, secondaries: duplicates.map(\.content))
+            let mergedContent = Self.mergeStructuredContents(primary: primary, secondaries: duplicates)
             let bestGroup = ranked.first(where: { !$0.currentGroup.isEmpty })?.currentGroup ?? primary.currentGroup
             let bestTitle = ranked.first(where: { !$0.isUntitled })?.title ?? primary.title
             let reason = reasons[idx]
@@ -657,6 +780,59 @@ nonisolated enum DocumentOrganizeFunnel {
     }
     
     
+    /// Merges same-topic fragments cleanly in chronological order, deduplicating repeated paragraphs
+    /// and inserting readable section separators without leaking whimsical placeholder titles.
+    static func mergeStructuredContents(
+        primary: OrganizeFunnelInput,
+        secondaries: [OrganizeFunnelInput]
+    ) -> String {
+        let orderedSecondaries = secondaries.sorted { $0.updatedAt < $1.updatedAt }
+        let baseNormalized = Self.normalizeBody(primary.content)
+        var resultParagraphs = Self.splitParagraphs(primary.content)
+        var seenParagraphKeys = Set(resultParagraphs.map(Self.normalizeBody).filter { !$0.isEmpty })
+        var runningNormalized = baseNormalized
+        
+        for sec in orderedSecondaries {
+            let secNorm = Self.normalizeBody(sec.content)
+            if secNorm.isEmpty || runningNormalized.contains(secNorm) {
+                continue
+            }
+            var freshParagraphs: [String] = []
+            for paragraph in Self.splitParagraphs(sec.content) {
+                let pKey = Self.normalizeBody(paragraph)
+                guard pKey.count >= 4 else { continue }
+                if seenParagraphKeys.contains(pKey) || runningNormalized.contains(pKey) {
+                    continue
+                }
+                seenParagraphKeys.insert(pKey)
+                runningNormalized += " " + pKey
+                freshParagraphs.append(paragraph)
+            }
+            guard !freshParagraphs.isEmpty else { continue }
+            
+            // Add a clean sub-heading only when this fragment adds distinct content and doesn't already start with one.
+            let startsWithHeading = freshParagraphs[0].trimmingCharacters(in: .whitespaces).hasPrefix("#")
+            if !startsWithHeading,
+               !sec.isUntitled,
+               sec.title.caseInsensitiveCompare(primary.title) != .orderedSame,
+               !DocumentCenterAgentOrganizer.isGenericUntitled(sec.title, hasFilePath: false)
+            {
+                let headingKey = Self.normalizeBody(sec.title)
+                if !headingKey.isEmpty && !runningNormalized.contains(headingKey) {
+                    resultParagraphs.append("## \(sec.title)")
+                }
+            }
+            resultParagraphs.append(contentsOf: freshParagraphs)
+        }
+        
+        let joined = resultParagraphs.joined(separator: "\n\n")
+        let range = NSRange(joined.startIndex..<joined.endIndex, in: joined)
+        return Self.multiBlankLinesRegex
+            .stringByReplacingMatches(in: joined, range: range, withTemplate: "\n\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    
     // MARK: Stage 3 & 4 — Sharded Parallel AI Batching + Group Convergence
     
     static func makeShards<T>(_ items: [T], shardSize: Int = defaultShardSize) -> [[T]] {
@@ -697,10 +873,237 @@ nonisolated enum DocumentOrganizeFunnel {
     }
     
     
+    /// Validates AI-proposed semantic merges with strict anti-over-merge guardrails and folds them
+    /// losslessly into the funnel result so Undo tracks every original pre-merge document cleanly.
+    static func applyValidatedAIMerges(
+        _ proposals: [DocumentCenterAgentOrganizer.SemanticMergeProposal],
+        baseFunnel: OrganizeFunnelStageResult,
+        rawAssignments: [DocumentCenterAgentOrganizer.Assignment]
+    ) -> (funnel: OrganizeFunnelStageResult, assignments: [DocumentCenterAgentOrganizer.Assignment]) {
+        guard !proposals.isEmpty, baseFunnel.survivors.count >= 2 else {
+            return (baseFunnel, rawAssignments)
+        }
+        
+        let survivorByID = Dictionary(uniqueKeysWithValues: baseFunnel.survivors.map { ($0.id, $0) })
+        let maxSingleClusterDocs = baseFunnel.survivors.count >= 5
+            ? min(5, max(2, Int(Double(baseFunnel.survivors.count) * 0.60)))
+            : min(4, max(2, baseFunnel.survivors.count - 1))
+        let maxMergedChars = 24_000
+        
+        var claimedIDs = Set<String>()
+        var existingClustersByPrimary = Dictionary(uniqueKeysWithValues: baseFunnel.mergeClusters.map { ($0.primary.id, $0) })
+        var absorbedSurvivorIDs = Set<String>()
+        var updatedSurvivorsByID = survivorByID
+        var assignmentPatchByPrimaryID: [String: (group: String?, title: String?)] = [:]
+        
+        for proposal in proposals {
+            let candidateIDs = [proposal.primaryId] + proposal.mergeIds
+            let validCandidates = candidateIDs.compactMap { id -> OrganizeFunnelInput? in
+                guard !claimedIDs.contains(id), let doc = survivorByID[id] else { return nil }
+                return doc
+            }
+            guard validCandidates.count >= 2, validCandidates.count <= maxSingleClusterDocs else { continue }
+            
+            // Protect multiple distinct saved disk files from being folded together by AI heuristics.
+            let ranked = validCandidates.sorted(by: Self.isBetterPrimary)
+            let primary = ranked[0]
+            let mergeables = ranked.dropFirst().filter { sec in
+                !(primary.filePath != nil && sec.filePath != nil)
+            }
+            guard !mergeables.isEmpty else { continue }
+            
+            let totalChars = primary.content.count + mergeables.reduce(0) { $0 + $1.content.count }
+            guard totalChars <= maxMergedChars else { continue }
+            
+            claimedIDs.insert(primary.id)
+            for sec in mergeables { claimedIDs.insert(sec.id) }
+            
+            let mergedContent = Self.mergeStructuredContents(primary: primary, secondaries: Array(mergeables))
+            let preferredTitle = proposal.mergedTitle
+                ?? (primary.isUntitled ? DocumentCenterAgentOrganizer.deriveTitleFromExcerpt(mergedContent) : nil)
+                ?? ranked.first(where: { !$0.isUntitled })?.title
+                ?? primary.title
+            let preferredGroup = proposal.group
+                ?? ranked.first(where: { !$0.currentGroup.isEmpty })?.currentGroup
+                ?? primary.currentGroup
+            
+            // Flatten any earlier Stage-2 clusters so every original pre-organize item stays in `duplicates`.
+            let originalPrimary = existingClustersByPrimary[primary.id]?.primary ?? primary
+            var combinedDuplicates: [OrganizeFunnelInput] = existingClustersByPrimary[primary.id]?.duplicates ?? []
+            for sec in mergeables {
+                absorbedSurvivorIDs.insert(sec.id)
+                if let secCluster = existingClustersByPrimary.removeValue(forKey: sec.id) {
+                    combinedDuplicates.append(secCluster.primary)
+                    combinedDuplicates.append(contentsOf: secCluster.duplicates)
+                } else {
+                    combinedDuplicates.append(sec)
+                }
+            }
+            
+            existingClustersByPrimary[primary.id] = OrganizeMergeCluster(
+                primary: originalPrimary,
+                duplicates: combinedDuplicates,
+                mergedContent: mergedContent,
+                bestGroup: preferredGroup,
+                bestTitle: preferredTitle,
+                reason: proposal.reason ?? "AI 同主题语义合并"
+            )
+            
+            updatedSurvivorsByID[primary.id] = OrganizeFunnelInput(
+                id: primary.id,
+                dbRecordID: primary.dbRecordID,
+                title: preferredTitle,
+                filePath: primary.filePath,
+                syntax: primary.syntax,
+                currentGroup: preferredGroup,
+                content: mergedContent,
+                updatedAt: ([primary] + mergeables).map(\.updatedAt).max() ?? primary.updatedAt,
+                isOpenNow: ([primary] + mergeables).contains(where: \.isOpenNow),
+                isUntitled: DocumentCenterAgentOrganizer.isGenericUntitled(preferredTitle, hasFilePath: primary.filePath != nil)
+            )
+            assignmentPatchByPrimaryID[primary.id] = (proposal.group, proposal.mergedTitle)
+        }
+        
+        guard !absorbedSurvivorIDs.isEmpty else {
+            return (baseFunnel, rawAssignments)
+        }
+        
+        let finalSurvivors = baseFunnel.survivors.compactMap { item -> OrganizeFunnelInput? in
+            guard !absorbedSurvivorIDs.contains(item.id) else { return nil }
+            return updatedSurvivorsByID[item.id] ?? item
+        }
+        let orderedPrimaryIDs = finalSurvivors.map(\.id)
+        let finalClusters = orderedPrimaryIDs.compactMap { existingClustersByPrimary[$0] }
+        
+        let filteredAssignments: [DocumentCenterAgentOrganizer.Assignment] = rawAssignments.compactMap { item in
+            guard !absorbedSurvivorIDs.contains(item.id) else { return nil }
+            if let patch = assignmentPatchByPrimaryID[item.id] {
+                return DocumentCenterAgentOrganizer.Assignment(
+                    id: item.id,
+                    group: patch.group ?? item.group,
+                    suggestedTitle: patch.title ?? item.suggestedTitle
+                )
+            }
+            return item
+        }
+        
+        let updatedFunnel = OrganizeFunnelStageResult(
+            junkToDelete: baseFunnel.junkToDelete,
+            mergeClusters: finalClusters,
+            survivors: finalSurvivors
+        )
+        return (updatedFunnel, filteredAssignments)
+    }
+    
+    
+    /// Target maximum group count so the Star Map stays crisp and avoids tiny 1–2 doc micro-groups.
+    static func targetMaxGroups(for survivorCount: Int) -> Int {
+        switch survivorCount {
+            case ...4: 2
+            case 5...10: 3
+            case 11...18: 4
+            case 19...30: 5
+            default: 6
+        }
+    }
+    
+    
+    private static let coarseGroupParentMap: [String: String] = [
+        "评测分析": "评测与数据",
+        "数据分析": "评测与数据",
+        "配置数据": "工程与开发",
+        "代码开发": "工程与开发",
+        "技术笔记": "工程与开发",
+        "项目方案": "方案与会议",
+        "会议纪要": "方案与会议",
+        "工作清单": "周报与待办",
+        "日常记录": "日常随记",
+    ]
+    
+    
+    /// Compacts overly fine-grained or 1-doc singleton groups into a crisp, balanced set of 2–5 pillars.
+    static func compactFragmentedGroups(
+        _ assignments: [DocumentCenterAgentOrganizer.Assignment],
+        survivorByID: [String: OrganizeFunnelInput]
+    ) -> [DocumentCenterAgentOrganizer.Assignment] {
+        guard assignments.count >= 4 else { return assignments }
+        var result = assignments
+        let maxGroups = Self.targetMaxGroups(for: assignments.count)
+        
+        func countsByGroup() -> [String: Int] {
+            var counts: [String: Int] = [:]
+            for a in result where !a.group.isEmpty { counts[a.group, default: 0] += 1 }
+            return counts
+        }
+        
+        // Pass 1: Roll overlapping micro-categories (e.g. 评测分析 + 数据分析) into clean pillars when over-fragmented.
+        var counts = countsByGroup()
+        let hasSingleton = counts.values.contains(1)
+        if counts.count > maxGroups || (counts.count >= 4 && hasSingleton) {
+            for idx in 0..<result.count {
+                let g = result[idx].group
+                guard let parent = Self.coarseGroupParentMap[g] else { continue }
+                let isSmallOrOverBudget = (counts[g] ?? 0) <= 2 || counts.count > maxGroups
+                if isSmallOrOverBudget {
+                    result[idx] = DocumentCenterAgentOrganizer.Assignment(
+                        id: result[idx].id,
+                        group: parent,
+                        suggestedTitle: result[idx].suggestedTitle
+                    )
+                }
+            }
+            counts = countsByGroup()
+        }
+        
+        // Pass 2: Absorb any remaining excess smallest/singleton groups into the nearest semantic sibling (< 8 docs).
+        while counts.count > maxGroups || (counts.count >= 4 && counts.values.contains(1)) {
+            let sortedGroups = counts.sorted { lhs, rhs in
+                if lhs.value != rhs.value { return lhs.value < rhs.value }
+                return lhs.key < rhs.key
+            }
+            guard let smallest = sortedGroups.first else { break }
+            let donorGroup = smallest.key
+            let donorCount = smallest.value
+            let donorIndices = result.indices.filter { result[$0].group == donorGroup }
+            let donorTerms = Set(donorIndices.flatMap { idx -> [String] in
+                guard let doc = survivorByID[result[idx].id] else { return [] }
+                return Array(StarMapRelationEngine.extractKeyTerms(title: doc.isUntitled ? "" : doc.title, content: doc.content))
+            })
+            
+            var bestTarget: String?
+            var bestScore = -1
+            for (candidateGroup, candidateCount) in counts where candidateGroup != donorGroup {
+                guard candidateCount + donorCount <= 8 else { continue }
+                let candidateTerms = Set(result.indices.filter { result[$0].group == candidateGroup }.flatMap { idx -> [String] in
+                    guard let doc = survivorByID[result[idx].id] else { return [] }
+                    return Array(StarMapRelationEngine.extractKeyTerms(title: doc.isUntitled ? "" : doc.title, content: doc.content))
+                })
+                let affinity = donorTerms.intersection(candidateTerms).count * 10 + candidateCount
+                if affinity > bestScore {
+                    bestScore = affinity
+                    bestTarget = candidateGroup
+                }
+            }
+            guard let targetGroup = bestTarget else { break }
+            for idx in donorIndices {
+                result[idx] = DocumentCenterAgentOrganizer.Assignment(
+                    id: result[idx].id,
+                    group: targetGroup,
+                    suggestedTitle: result[idx].suggestedTitle
+                )
+            }
+            counts = countsByGroup()
+        }
+        
+        return result
+    }
+    
+    
     /// Guarantees clean Star-Map output after AI or local classification:
     /// 1) Consolidates synonym drift;
     /// 2) Splits any remaining oversized monolithic group (`>= 10` docs) into crisp topic buckets;
-    /// 3) Ensures every untitled / whimsical-generated document receives a unique, content-derived title.
+    /// 3) Compacts overly fine-grained / singleton micro-groups into a balanced 2–5 pillar overview;
+    /// 4) Ensures every untitled / whimsical-generated document receives a unique, content-derived title.
     static func finalizeAssignments(
         _ assignments: [DocumentCenterAgentOrganizer.Assignment],
         survivors: [OrganizeFunnelInput],
@@ -709,12 +1112,12 @@ nonisolated enum DocumentOrganizeFunnel {
         var result = Self.consolidateAssignments(assignments, existingGroups: existingGroups)
         let survivorByID = Dictionary(uniqueKeysWithValues: survivors.map { ($0.id, $0) })
         
-        // 1. Anti-monolith guard: if any single group still holds >= 10 docs, split by content semantics.
+        // 1. Anti-monolith guard: if any single group holds >= 10 docs or swallows >= 80% of a >= 5 doc workspace, split by content semantics.
         var indicesByGroup: [String: [Int]] = [:]
         for (idx, item) in result.enumerated() where !item.group.isEmpty {
             indicesByGroup[item.group, default: []].append(idx)
         }
-        for (_, bucketIndices) in indicesByGroup where bucketIndices.count >= 10 {
+        for (_, bucketIndices) in indicesByGroup where bucketIndices.count >= 10 || (result.count >= 5 && bucketIndices.count == result.count) {
             let subInputs: [DocumentCenterAgentOrganizer.InputItem] = bucketIndices.compactMap { idx in
                 guard let doc = survivorByID[result[idx].id] else { return nil }
                 return DocumentCenterAgentOrganizer.InputItem(
@@ -747,7 +1150,10 @@ nonisolated enum DocumentOrganizeFunnel {
             }
         }
         
-        // 2. Guaranteed meaningful title + deduplication for every untitled / whimsical-generated survivor.
+        // 2. Compact fragmented micro-groups so the Star Map stays genuinely uncluttered.
+        result = Self.compactFragmentedGroups(result, survivorByID: survivorByID)
+        
+        // 3. Guaranteed meaningful title + deduplication for every untitled / whimsical-generated survivor.
         var usedTitles = Set(
             survivors
                 .filter { !$0.isUntitled }
@@ -791,7 +1197,7 @@ nonisolated enum DocumentOrganizeFunnel {
     
     
     /// Executes the complete 4-stage Data Funnel:
-    /// 1) Local junk/gibberish deletion -> 2) Duplicate merging -> 3) Parallel fast-lane AI classification -> 4) Group convergence & title guarantee.
+    /// 1) Local junk/gibberish deletion -> 2) Exact & same-topic semantic merging -> 3) Parallel fast-lane AI merge & classification -> 4) Group compaction & title guarantee.
     @MainActor
     static func runFullPipeline(
         items: [OrganizeFunnelInput],
@@ -812,26 +1218,26 @@ nonisolated enum DocumentOrganizeFunnel {
         }
         
         onProgress?(.filteringJunk(total: items.count))
-        let funnel = await Task.detached(priority: .userInitiated) {
+        let localFunnel = await Task.detached(priority: .userInitiated) {
             Self.runLocalFunnel(items: items)
         }.value
         
         onProgress?(.mergingDuplicates(
-            remaining: funnel.survivors.count,
-            junkDeleted: funnel.junkToDelete.count
+            remaining: localFunnel.survivors.count,
+            junkDeleted: localFunnel.junkToDelete.count
         ))
         
-        guard !funnel.survivors.isEmpty else {
-            return OrganizeFullPlan(funnel: funnel, assignments: [], batchCount: 0, usedAI: false)
+        guard !localFunnel.survivors.isEmpty else {
+            return OrganizeFullPlan(funnel: localFunnel, assignments: [], batchCount: 0, usedAI: false)
         }
         
-        let agentInputs: [DocumentCenterAgentOrganizer.InputItem] = funnel.survivors.map { item in
+        let agentInputs: [DocumentCenterAgentOrganizer.InputItem] = localFunnel.survivors.map { item in
             DocumentCenterAgentOrganizer.InputItem(
                 id: item.id,
                 title: item.title,
                 syntax: item.syntax,
                 currentGroup: item.currentGroup,
-                excerpt: String(item.content.prefix(480)),
+                excerpt: String(item.content.prefix(640)),
                 isUntitled: item.isUntitled
             )
         }
@@ -847,11 +1253,11 @@ nonisolated enum DocumentOrganizeFunnel {
             )
             let finalized = Self.finalizeAssignments(
                 localPlan.assignments,
-                survivors: funnel.survivors,
+                survivors: localFunnel.survivors,
                 existingGroups: existingGroups
             )
             return OrganizeFullPlan(
-                funnel: funnel,
+                funnel: localFunnel,
                 assignments: finalized,
                 batchCount: totalBatches,
                 usedAI: false
@@ -860,26 +1266,38 @@ nonisolated enum DocumentOrganizeFunnel {
         
         // Detect bloated (>= 8 docs) or generic catch-all groups across the whole corpus before sharding.
         var survivorGroupCounts: [String: Int] = [:]
-        for item in funnel.survivors where !item.currentGroup.isEmpty {
+        for item in localFunnel.survivors where !item.currentGroup.isEmpty {
             survivorGroupCounts[item.currentGroup, default: 0] += 1
         }
+        let totalSurvivors = localFunnel.survivors.count
         let bloatedGroups = survivorGroupCounts
-            .filter { $0.value >= DocumentCenterAgentOrganizer.bloatedGroupThreshold || DocumentCenterAgentOrganizer.catchAllGroupNames.contains($0.key) }
+            .filter {
+                DocumentCenterAgentOrganizer.isMonolithicGroup(count: $0.value, totalItems: totalSurvivors)
+                    || DocumentCenterAgentOrganizer.catchAllGroupNames.contains($0.key)
+            }
             .map(\.key)
             .sorted()
         let healthyExisting = existingGroups.filter {
             !DocumentCenterAgentOrganizer.catchAllGroupNames.contains($0)
-                && (survivorGroupCounts[$0, default: 0] < DocumentCenterAgentOrganizer.bloatedGroupThreshold)
+                && !DocumentCenterAgentOrganizer.isMonolithicGroup(count: survivorGroupCounts[$0, default: 0], totalItems: totalSurvivors)
         }
+        let targetGroups = Self.targetMaxGroups(for: localFunnel.survivors.count)
+        let survivorMetaByID = Dictionary(uniqueKeysWithValues: localFunnel.survivors.map { ($0.id, $0) })
         
         onProgress?(.shardedOrganizing(completedBatches: 0, totalBatches: totalBatches, survivorCount: agentInputs.count))
         
-        var orderedResults: [(index: Int, assignments: [DocumentCenterAgentOrganizer.Assignment], usedAI: Bool)] = []
+        typealias ShardOutcome = (
+            index: Int,
+            assignments: [DocumentCenterAgentOrganizer.Assignment],
+            merges: [DocumentCenterAgentOrganizer.SemanticMergeProposal],
+            usedAI: Bool
+        )
+        var orderedResults: [ShardOutcome] = []
         orderedResults.reserveCapacity(totalBatches)
         var completedBatches = 0
         let concurrencyLimit = max(1, min(maxConcurrency, totalBatches))
         
-        await withTaskGroup(of: (Int, [DocumentCenterAgentOrganizer.Assignment], Bool).self) { group in
+        await withTaskGroup(of: ShardOutcome.self) { group in
             var nextShardIndex = 0
             
             func enqueueNext() {
@@ -890,13 +1308,15 @@ nonisolated enum DocumentOrganizeFunnel {
                 group.addTask {
                     let outcome = await Self.organizeSingleShard(
                         shard,
+                        survivorMetaByID: survivorMetaByID,
                         healthyExistingGroups: healthyExisting,
                         bloatedGroups: bloatedGroups,
+                        targetMaxGroups: targetGroups,
                         shardIndex: idx,
                         totalShards: totalBatches,
                         analyticsFeature: analyticsFeature
                     )
-                    return (idx, outcome.assignments, outcome.usedAI)
+                    return (idx, outcome.assignments, outcome.merges, outcome.usedAI)
                 }
             }
             
@@ -918,16 +1338,22 @@ nonisolated enum DocumentOrganizeFunnel {
         
         onProgress?(.consolidating)
         orderedResults.sort { $0.index < $1.index }
-        let mergedAssignments = orderedResults.flatMap(\.assignments)
+        let rawAssignments = orderedResults.flatMap(\.assignments)
+        let allAIMerges = orderedResults.flatMap(\.merges)
+        let mergedOutcome = Self.applyValidatedAIMerges(
+            allAIMerges,
+            baseFunnel: localFunnel,
+            rawAssignments: rawAssignments
+        )
         let finalized = Self.finalizeAssignments(
-            mergedAssignments,
-            survivors: funnel.survivors,
+            mergedOutcome.assignments,
+            survivors: mergedOutcome.funnel.survivors,
             existingGroups: existingGroups
         )
         let anyUsedAI = orderedResults.contains(where: \.usedAI)
         
         return OrganizeFullPlan(
-            funnel: funnel,
+            funnel: mergedOutcome.funnel,
             assignments: finalized,
             batchCount: totalBatches,
             usedAI: anyUsedAI
@@ -938,35 +1364,50 @@ nonisolated enum DocumentOrganizeFunnel {
     @MainActor
     private static func organizeSingleShard(
         _ shard: [DocumentCenterAgentOrganizer.InputItem],
+        survivorMetaByID: [String: OrganizeFunnelInput],
         healthyExistingGroups: [String],
         bloatedGroups: [String],
+        targetMaxGroups: Int,
         shardIndex: Int,
         totalShards: Int,
         analyticsFeature: String
-    ) async -> (assignments: [DocumentCenterAgentOrganizer.Assignment], usedAI: Bool) {
+    ) async -> (
+        assignments: [DocumentCenterAgentOrganizer.Assignment],
+        merges: [DocumentCenterAgentOrganizer.SemanticMergeProposal],
+        usedAI: Bool
+    ) {
         let validIDs = Set(shard.map(\.id))
         let manifestLines = shard.enumerated().map { idx, item -> String in
-            let snippet = DocumentCenterState.cleanExcerpt(from: item.excerpt, maxLength: 180)
-            let groupTag = bloatedGroups.contains(item.currentGroup) ? "\(item.currentGroup)(待细分)" : item.currentGroup
-            return "[\(idx + 1)] id=\"\(item.id)\" | title=\"\(item.title)\" | syntax=\"\(item.syntax)\" | group=\"\(groupTag)\" | untitled=\(item.isUntitled ? "true" : "false") | snippet=\"\(snippet)\""
+            let snippet = DocumentCenterState.cleanExcerpt(from: item.excerpt, maxLength: 240)
+            let meta = survivorMetaByID[item.id]
+            let charCount = meta?.content.count ?? item.excerpt.count
+            let isScratch = (meta?.filePath == nil)
+            let groupTag = bloatedGroups.contains(item.currentGroup) ? "\(item.currentGroup)(待重分)" : item.currentGroup
+            return "[\(idx + 1)] id=\"\(item.id)\" | title=\"\(item.title)\" | chars=\(charCount) | scratch=\(isScratch ? "true" : "false") | group=\"\(groupTag)\" | untitled=\(item.isUntitled ? "true" : "false") | snippet=\"\(snippet)\""
         }.joined(separator: "\n")
         
         var palette: [String] = []
-        for g in healthyExistingGroups + DocumentCenterAgentOrganizer.coreTopicPalette {
+        for g in DocumentCenterAgentOrganizer.coreTopicPalette + healthyExistingGroups.prefix(3) {
             if !palette.contains(g) { palette.append(g) }
         }
         let groupPalette = palette.joined(separator: "、")
         let bloatedHint = bloatedGroups.isEmpty
             ? ""
-            : "\n特别要求：原分组「\(bloatedGroups.joined(separator: "、"))」过于臃肿或泛化，禁止把这些文档原封不动塞回同一组，请按真实主题细分成多个清爽的专题分组。"
+            : "\n- 原分组「\(bloatedGroups.joined(separator: "、"))」过于臃肿或泛化，禁止原封不动塞回同一组，请结合实际主题整合。"
         
         let systemPrompt = """
-        你是文档星图极速整理 Agent（第 \(shardIndex + 1)/\(totalShards) 批）。目标：让星图从杂乱变得清爽有序，一眼看清文档结构。
-        规则：
-        1. 按真实主题聚类，每个分组尽量控制在 2-7 篇，总分组数克制在 3-8 组；可参考分组体系：\(groupPalette)（也可新建 2-5 字简洁中文专题名）。\(bloatedHint)
-        2. 所有 untitled=true 的文档（包含系统随机趣名如「啃瓜的小浣熊」「潜艇里的柴犬」等），**必须**根据 snippet 提炼 4-16 字精准、清爽的中文标题填入 suggestedTitle，禁止填 null，禁止照抄随机名，禁止包含 Markdown 符号。untitled=false 时 suggestedTitle 填 null。
-        3. 仅输出严格合法 JSON，禁止解释文字：{"assignments":[{"id":"原id","group":"分组名","suggestedTitle":"标题或null"}]}
-        4. 本批每个 id 必须出现且仅出现一次。
+        你是文档星图极速整理与语义合并 Agent（第 \(shardIndex + 1)/\(totalShards) 批）。用户觉得碎片文件太多、看不过来，需要真正精简且清晰的结构。
+        核心规则：
+        1. **审慎而主动地语义合并（merges）**：
+           - 凡是内容实质属于**同一具体事项/同一项目迭代/同一问题排查/同一实验或任务的多次记录**（尤其是 scratch=true 的碎片草稿），请合并为 1 篇完整文档（填入 merges，单次最多合并 2-5 篇，并给出 4-16 字精准 mergedTitle）。
+           - **严禁过度合并**：主题独立、用途不同的文档（如不同项目、规范口径 vs 排障记录 vs 周报 vs 个人备忘）必须保持独立，绝不能把无关文档强行合为一篇大杂烩；也不要把两篇 scratch=false 的独立磁盘文件强行合并。
+        2. **克制清爽的分组粒度（assignments）**：
+           - 杜绝拆分过细！合并后全批总分组数严格收敛在 **2-\(targetMaxGroups) 个高辨识度大类**，避免出现只有 1 篇文档的零散小分组。
+           - 优先使用简洁大类：\(groupPalette)（如需自拟仅限 2-5 字清晰中文名）。\(bloatedHint)
+        3. **彻底清洗占位名**：所有 untitled=true（含系统随机趣名如「啃瓜的小浣熊」「潜艇里的柴犬」）必须根据正文提炼 4-16 字清爽中文标题，禁止填 null 或照抄随机名，不含 Markdown 符号。
+        4. 仅输出严格合法 JSON，无任何解释：
+           {"merges":[{"primaryId":"主文档id","mergeIds":["被并入id"],"mergedTitle":"合并后标题","group":"分组名","reason":"简短合并原因"}],"assignments":[{"id":"原id","group":"分组名","suggestedTitle":"untitled=true时必填，否则null"}]}
+        5. assignments 需覆盖本批每个未被 mergeIds 吸收的 id（每个 id 仅出现一次）。
         """
         let userPrompt = "本批待整理文档（\(shard.count) 篇）：\n\(manifestLines)"
         
@@ -974,22 +1415,22 @@ nonisolated enum DocumentOrganizeFunnel {
             let raw = try await AIService.shared.chat(
                 [.system(systemPrompt), .user(userPrompt)],
                 disablesThinking: true,
-                maxOutputTokens: 2048,
+                maxOutputTokens: 2400,
                 timeoutInterval: 35,
                 analyticsFeature: analyticsFeature
             )
             if let parsed = DocumentCenterAgentOrganizer.parsePlan(from: raw, validIDs: validIDs) {
-                // Fill any missed IDs in this shard deterministically so 100% of items are covered.
-                let covered = Set(parsed.assignments.map(\.id))
+                let absorbed = Set(parsed.merges.flatMap(\.mergeIds))
+                let covered = Set(parsed.assignments.map(\.id)).union(absorbed)
                 let missed = shard.filter { !covered.contains($0.id) }
                 if missed.isEmpty {
-                    return (parsed.assignments, true)
+                    return (parsed.assignments, parsed.merges, true)
                 }
                 let patch = DocumentCenterAgentOrganizer.buildLocalFallbackPlan(
                     items: missed,
                     existingGroups: healthyExistingGroups
                 ).assignments
-                return (parsed.assignments + patch, true)
+                return (parsed.assignments + patch, parsed.merges, true)
             }
         } catch {
             CotLogger.shared.error(category: .ai, "Shard organize fallback (\(shardIndex + 1)/\(totalShards))", error: error)
@@ -999,7 +1440,7 @@ nonisolated enum DocumentOrganizeFunnel {
             items: shard,
             existingGroups: healthyExistingGroups
         )
-        return (fallback.assignments, false)
+        return (fallback.assignments, [], false)
     }
     
     

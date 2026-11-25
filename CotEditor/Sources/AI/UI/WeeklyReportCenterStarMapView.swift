@@ -35,7 +35,7 @@ struct WeeklyReportCenterView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.registerWorkspaceCenterEscPop) private var registerEscPop
     @State private var db = CotLocalDatabase.shared
-    @State private var quickLookReportID: String?
+    @State private var quickLook = StarMapQuickLookController()
     @State private var focusedClusterID: String?
     @State private var panRequestToken: Int = 0
     @State private var isSearchHUDCollapsed: Bool = false
@@ -78,16 +78,19 @@ struct WeeklyReportCenterView: View {
             }
             .background(tokens.canvasTop)
             
-            if let qID = self.quickLookReportID, let qRow = self.quickLookRow(id: qID, rows: rows) {
+            if let qID = self.quickLook.mountedID, let qRow = self.quickLookRow(id: qID, rows: rows) {
                 self.quickLookOverlay(qRow: qRow, rows: rows, navList: navList, searchTerms: searchTerms, tokens: tokens)
+                    .zIndex(20)
             }
             
             if self.state.isGeneratorActive {
                 self.generatorOverlay(tokens: tokens)
+                    .zIndex(25)
             }
             
             if let toastMessage = self.toastMessage {
                 self.toastPill(message: toastMessage, tokens: tokens)
+                    .zIndex(30)
             }
         }
         .onAppear {
@@ -100,6 +103,7 @@ struct WeeklyReportCenterView: View {
         .onDisappear {
             self.removeKeyboardMonitor()
             self.searchDebounceTask?.cancel()
+            self.quickLook.cancelPendingDismiss()
             self.registerEscPop?(nil)
         }
         .onChange(of: self.state.isGeneratorActive) { _, isActive in
@@ -150,6 +154,10 @@ struct WeeklyReportCenterView: View {
                     focusedClusterID: self.focusedClusterID,
                     searchQuery: self.state.searchText,
                     panRequestToken: self.panRequestToken,
+                    isOverlayBlockingInteraction: self.quickLook.mountedID != nil || self.state.isGeneratorActive,
+                    onSelectedLeafFrameChange: { rect in
+                        self.quickLook.anchorRect = rect.map { $0.offsetBy(dx: 0, dy: 49) }
+                    },
                     onSelectLeaf: { leafID in
                         self.unfocusSearchField()
                         self.isRenamingSelected = false
@@ -200,9 +208,7 @@ struct WeeklyReportCenterView: View {
                     onPreviewHit: { hitID in
                         self.unfocusSearchField()
                         self.state.selectedReportID = hitID
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                            self.quickLookReportID = hitID
-                        }
+                        self.quickLook.open(hitID)
                     },
                     onOpenHit: { hitID in
                         self.unfocusSearchField()
@@ -216,7 +222,7 @@ struct WeeklyReportCenterView: View {
                 .padding(.trailing, 16)
             }
             
-            if let activeRow, self.quickLookReportID == nil {
+            if let activeRow, !self.quickLook.isOpen {
                 self.bottomSelectionCapsule(row: activeRow, allRows: rows, tokens: tokens)
                     .padding(.horizontal, 20)
                     .padding(.bottom, 16)
@@ -253,9 +259,7 @@ struct WeeklyReportCenterView: View {
     ) -> some View {
         Button("空格预览") {
             self.state.selectedReportID = target.id
-            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                self.quickLookReportID = target.id
-            }
+            self.quickLook.open(target.id)
         }
         Button("在编辑器打开") { self.open(report: target.report) }
         Button("编辑") {
@@ -263,9 +267,7 @@ struct WeeklyReportCenterView: View {
             self.editingReportID = target.id
             self.editingDraft = target.report.content
             self.isEditing = true
-            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                self.quickLookReportID = target.id
-            }
+            self.quickLook.open(target.id)
         }
         Button("重命名") {
             self.state.selectedReportID = target.id
@@ -300,30 +302,43 @@ struct WeeklyReportCenterView: View {
             + (qRow.rangeDesc.map { " (\($0))" } ?? "")
             + " · \(qRow.compactCharCount)"
         
+        let indexText: String? = if let curIdx, navList.count > 1 {
+            "\(curIdx + 1) / \(navList.count)"
+        } else {
+            nil
+        }
+        
         return StarMapQuickLookOverlay(
+            isPresented: self.quickLook.isVisible,
             title: qReport.title,
             subtitle: subtitle,
+            indexText: indexText,
+            anchorRect: self.quickLook.anchorRect,
+            isExpanded: self.quickLook.isExpanded,
             canStepPrevious: canPrev,
             canStepNext: canNext,
+            onToggleExpand: {
+                self.quickLook.isExpanded.toggle()
+            },
             onPrevious: {
                 guard canPrev, let curIdx else { return }
                 let prev = navList[curIdx - 1]
                 self.isEditing = false
                 self.state.selectedReportID = prev.id
-                self.quickLookReportID = prev.id
+                self.quickLook.step(to: prev.id)
+                self.panRequestToken &+= 1
             },
             onNext: {
                 guard canNext, let curIdx else { return }
                 let next = navList[curIdx + 1]
                 self.isEditing = false
                 self.state.selectedReportID = next.id
-                self.quickLookReportID = next.id
+                self.quickLook.step(to: next.id)
+                self.panRequestToken &+= 1
             },
             onClose: {
                 self.isEditing = false
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                    self.quickLookReportID = nil
-                }
+                self.quickLook.close(animated: true)
             },
             headerActions: {
                 self.quickLookHeaderActions(
@@ -412,7 +427,7 @@ struct WeeklyReportCenterView: View {
                     .background(tokens.accent.opacity(0.14), in: Capsule())
             }
             Button {
-                self.quickLookReportID = nil
+                self.quickLook.close(animated: false)
                 self.open(report: qReport)
             } label: {
                 Text("打开")
@@ -488,7 +503,7 @@ struct WeeklyReportCenterView: View {
                     ForEach(related, id: \.row.id) { rel in
                         Button {
                             self.state.selectedReportID = rel.row.id
-                            self.quickLookReportID = rel.row.id
+                            self.quickLook.step(to: rel.row.id)
                             self.panRequestToken &+= 1
                         } label: {
                             Text("\(rel.row.title) · \(rel.reason)")
@@ -915,9 +930,8 @@ struct WeeklyReportCenterView: View {
         tokens: StudioColorTokens
     ) -> some View {
         Button {
-            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                self.quickLookReportID = report.id
-            }
+            self.state.selectedReportID = report.id
+            self.quickLook.open(report.id)
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "eye").font(.system(size: 10.5, weight: .medium))
@@ -932,12 +946,11 @@ struct WeeklyReportCenterView: View {
         .pointerStyle(.link)
         
         Button {
+            self.state.selectedReportID = report.id
             self.editingReportID = report.id
             self.editingDraft = report.content
             self.isEditing = true
-            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) {
-                self.quickLookReportID = report.id
-            }
+            self.quickLook.open(report.id)
         } label: {
             Text("编辑")
                 .font(.system(size: 11.5, weight: .medium))
@@ -1253,8 +1266,8 @@ struct WeeklyReportCenterView: View {
             self.isEditing = false
             return true
         }
-        if self.quickLookReportID != nil {
-            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) { self.quickLookReportID = nil }
+        if self.quickLook.isOpen {
+            self.quickLook.close(animated: true)
             return true
         }
         if self.isRenamingSelected {
@@ -1279,7 +1292,7 @@ struct WeeklyReportCenterView: View {
             if self.state.isGeneratorActive || self.isEditing { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if flags == .command && event.charactersIgnoringModifiers?.lowercased() == "f" {
-                self.quickLookReportID = nil
+                self.quickLook.close(animated: true)
                 self.isSearchFocused = true
                 return nil
             }
@@ -1295,12 +1308,13 @@ struct WeeklyReportCenterView: View {
             
             switch event.keyCode {
                 case 49:
-                    if self.quickLookReportID != nil {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.15)) { self.quickLookReportID = nil }
+                    if self.quickLook.isOpen {
+                        self.quickLook.close(animated: true)
                         return nil
                     }
                     if let active = self.selectedRow(in: navList) {
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.16)) { self.quickLookReportID = active.id }
+                        self.state.selectedReportID = active.id
+                        self.quickLook.open(active.id)
                         return nil
                     }
                 case 123, 126:
@@ -1311,7 +1325,7 @@ struct WeeklyReportCenterView: View {
                     return nil
                 case 36:
                     if let active = self.selectedRow(in: navList) {
-                        self.quickLookReportID = nil
+                        self.quickLook.close(animated: false)
                         self.open(report: active.report)
                         return nil
                     }
@@ -1333,12 +1347,15 @@ struct WeeklyReportCenterView: View {
     
     private func stepSelection(by delta: Int, in list: [WeeklyReportCenterState.ReportRowItem]) {
         guard !list.isEmpty else { return }
-        let currentID = self.quickLookReportID ?? self.state.selectedReportID
+        let currentID = self.quickLook.activeID ?? self.state.selectedReportID
         let curIdx = list.firstIndex(where: { $0.id == currentID }) ?? 0
         let nextIdx = (curIdx + delta + list.count) % list.count
         let target = list[nextIdx].id
         self.state.selectedReportID = target
-        if self.quickLookReportID != nil { self.quickLookReportID = target }
+        if self.quickLook.isOpen {
+            self.quickLook.step(to: target)
+            self.panRequestToken &+= 1
+        }
     }
     
     
@@ -1349,7 +1366,7 @@ struct WeeklyReportCenterView: View {
         self.state.rebuildGroups()
         self.state.isGeneratorActive = false
         self.state.selectedReportID = result.report.id
-        self.quickLookReportID = result.report.id
+        self.quickLook.open(result.report.id)
         self.panRequestToken &+= 1
         self.editingReportID = result.report.id
         self.editingDraft = result.report.content
@@ -1389,7 +1406,13 @@ struct WeeklyReportCenterView: View {
         self.state.rebuildGroups()
         self.isEditing = false
         self.editingReportID = nil
-        if self.quickLookReportID == report.id { self.quickLookReportID = self.state.selectedReportID }
+        if self.quickLook.mountedID == report.id {
+            if let nextID = self.state.selectedReportID {
+                self.quickLook.step(to: nextID)
+            } else {
+                self.quickLook.close(animated: false)
+            }
+        }
         self.showToast("已删除")
     }
     

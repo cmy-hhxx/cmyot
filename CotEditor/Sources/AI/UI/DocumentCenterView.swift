@@ -48,8 +48,7 @@ struct CenterPreviewTextView: NSViewRepresentable {
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
-        scrollView.drawsBackground = true
-        scrollView.backgroundColor = .textBackgroundColor
+        scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.scrollerStyle = .overlay
         
@@ -63,7 +62,7 @@ struct CenterPreviewTextView: NSViewRepresentable {
         textView.isAutomaticLinkDetectionEnabled = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
-        textView.textContainerInset = NSSize(width: 28, height: 22)
+        textView.textContainerInset = NSSize(width: 30, height: 22)
         textView.minSize = .zero
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
@@ -968,19 +967,51 @@ nonisolated enum DocumentCenterAgentOrganizer {
         let suggestedTitle: String?
     }
     
+    struct SemanticMergeProposal: Codable, Sendable, Equatable {
+        let primaryId: String
+        let mergeIds: [String]
+        let mergedTitle: String?
+        let group: String?
+        let reason: String?
+    }
+    
     struct Plan: Codable, Sendable, Equatable {
         let assignments: [Assignment]
+        let merges: [SemanticMergeProposal]
+        
+        enum CodingKeys: String, CodingKey {
+            case assignments
+            case merges
+        }
+        
+        init(assignments: [Assignment], merges: [SemanticMergeProposal] = []) {
+            self.assignments = assignments
+            self.merges = merges
+        }
+        
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.assignments = try container.decodeIfPresent([Assignment].self, forKey: .assignments) ?? []
+            self.merges = try container.decodeIfPresent([SemanticMergeProposal].self, forKey: .merges) ?? []
+        }
     }
     
     
     static let bloatedGroupThreshold = 8
     
+    static func isMonolithicGroup(count: Int, totalItems: Int) -> Bool {
+        if count >= Self.bloatedGroupThreshold {
+            return true
+        }
+        return totalItems >= 4 && Double(count) / Double(max(1, totalItems)) >= 0.70
+    }
+    
     static let catchAllGroupNames: Set<String> = [
-        "未分组", "日常记录", "杂记", "随笔", "默认", "其他", "临时", "综合",
+        "未分组", "日常记录", "日常随记", "杂记", "随笔", "默认", "其他", "临时", "综合",
     ]
     
     static let coreTopicPalette: [String] = [
-        "项目方案", "评测分析", "数据分析", "技术笔记", "代码开发", "会议纪要", "工作清单", "配置数据", "日常记录",
+        "评测与数据", "工程与开发", "方案与会议", "周报与待办", "日常随记",
     ]
     
     /// Checks whether a document title is generic / placeholder (including `GeneratedDocumentName`
@@ -1025,21 +1056,50 @@ nonisolated enum DocumentCenterAgentOrganizer {
             guard validIDs.contains(item.id), seen.insert(item.id).inserted else { continue }
             let rawGroup = item.group.trimmingCharacters(in: .whitespacesAndNewlines)
             let group = (rawGroup == "未分组" || rawGroup.isEmpty) ? "" : String(rawGroup.prefix(14))
-            let title: String? = item.suggestedTitle.flatMap { raw in
-                let trimmed = raw
-                    .replacingOccurrences(of: "/", with: "-")
-                    .replacingOccurrences(of: ":", with: "-")
-                    .replacingOccurrences(of: "**", with: "")
-                    .replacingOccurrences(of: "`", with: "")
-                    .trimmingCharacters(in: CharacterSet(charactersIn: " \t\n\r\"'“”《》【】#*-•>"))
-                guard trimmed.count >= 2,
-                      !Self.isGenericUntitled(trimmed, hasFilePath: false)
-                else { return nil }
-                return String(trimmed.prefix(36))
-            }
+            let title = Self.sanitizeSuggestedTitle(item.suggestedTitle)
             sanitized.append(Assignment(id: item.id, group: group, suggestedTitle: title))
         }
-        return sanitized.isEmpty ? nil : Plan(assignments: sanitized)
+        
+        var sanitizedMerges: [SemanticMergeProposal] = []
+        for proposal in decoded.merges {
+            guard validIDs.contains(proposal.primaryId) else { continue }
+            var uniqueMergeIDs: [String] = []
+            var mergeSeen = Set<String>([proposal.primaryId])
+            for mid in proposal.mergeIds where validIDs.contains(mid) && mergeSeen.insert(mid).inserted {
+                uniqueMergeIDs.append(mid)
+            }
+            guard !uniqueMergeIDs.isEmpty else { continue }
+            let cleanGroup: String? = proposal.group.flatMap { raw in
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                return (trimmed.isEmpty || trimmed == "未分组") ? nil : String(trimmed.prefix(14))
+            }
+            sanitizedMerges.append(SemanticMergeProposal(
+                primaryId: proposal.primaryId,
+                mergeIds: uniqueMergeIDs,
+                mergedTitle: Self.sanitizeSuggestedTitle(proposal.mergedTitle),
+                group: cleanGroup,
+                reason: proposal.reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ))
+        }
+        
+        return (sanitized.isEmpty && sanitizedMerges.isEmpty)
+            ? nil
+            : Plan(assignments: sanitized, merges: sanitizedMerges)
+    }
+    
+    
+    static func sanitizeSuggestedTitle(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \t\n\r\"'“”《》【】#*-•>"))
+        guard trimmed.count >= 2,
+              !Self.isGenericUntitled(trimmed, hasFilePath: false)
+        else { return nil }
+        return String(trimmed.prefix(36))
     }
     
     
@@ -1064,6 +1124,7 @@ nonisolated enum DocumentCenterAgentOrganizer {
                 for: item,
                 existingSet: existingSet,
                 groupCounts: groupCounts,
+                totalItems: items.count,
                 allowPreserveExisting: allowPreserveExisting
             )
             let suggestedTitle: String? = item.isUntitled ? Self.deriveTitleFromExcerpt(item.excerpt) : nil
@@ -1077,13 +1138,14 @@ nonisolated enum DocumentCenterAgentOrganizer {
         for item: InputItem,
         existingSet: Set<String>,
         groupCounts: [String: Int],
+        totalItems: Int,
         allowPreserveExisting: Bool
     ) -> String {
         if allowPreserveExisting,
            !item.currentGroup.isEmpty,
            existingSet.contains(item.currentGroup),
            !Self.catchAllGroupNames.contains(item.currentGroup),
-           groupCounts[item.currentGroup, default: 0] < Self.bloatedGroupThreshold
+           !Self.isMonolithicGroup(count: groupCounts[item.currentGroup, default: 0], totalItems: totalItems)
         {
             return item.currentGroup
         }
@@ -2189,6 +2251,7 @@ private final class StarMapTrackpadEventMonitorNSView: NSView {
     
     var onPan: ((CGFloat, CGFloat) -> Void)?
     var onZoom: ((CGFloat) -> Void)?
+    var isBlockedByOverlay: Bool = false
     private var eventMonitor: Any?
     
     
@@ -2198,6 +2261,7 @@ private final class StarMapTrackpadEventMonitorNSView: NSView {
         guard self.window != nil else { return }
         self.eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify]) { [weak self] event in
             guard let self,
+                  !self.isBlockedByOverlay,
                   let window = self.window,
                   event.window === window,
                   !self.isHiddenOrHasHiddenAncestor
@@ -2251,12 +2315,14 @@ private struct StarMapTrackpadPanZoomRepresentable: NSViewRepresentable {
     
     let onPan: (CGFloat, CGFloat) -> Void
     let onZoom: (CGFloat) -> Void
+    let isBlockedByOverlay: Bool
     
     
     func makeNSView(context: Context) -> StarMapTrackpadEventMonitorNSView {
         let v = StarMapTrackpadEventMonitorNSView()
         v.onPan = self.onPan
         v.onZoom = self.onZoom
+        v.isBlockedByOverlay = self.isBlockedByOverlay
         return v
     }
     
@@ -2264,6 +2330,7 @@ private struct StarMapTrackpadPanZoomRepresentable: NSViewRepresentable {
     func updateNSView(_ nsView: StarMapTrackpadEventMonitorNSView, context: Context) {
         nsView.onPan = self.onPan
         nsView.onZoom = self.onZoom
+        nsView.isBlockedByOverlay = self.isBlockedByOverlay
     }
 }
 
@@ -2331,6 +2398,8 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     let searchQuery: String
     let panRequestToken: Int
     let fitRequestToken: Int
+    let isOverlayBlockingInteraction: Bool
+    let onSelectedLeafFrameChange: ((CGRect?) -> Void)?
     let onSelectLeaf: (String) -> Void
     let onDoubleClickLeaf: (String) -> Void
     let onToggleCluster: (String) -> Void
@@ -2347,6 +2416,8 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
         searchQuery: String,
         panRequestToken: Int = 0,
         fitRequestToken: Int = 0,
+        isOverlayBlockingInteraction: Bool = false,
+        onSelectedLeafFrameChange: ((CGRect?) -> Void)? = nil,
         onSelectLeaf: @escaping (String) -> Void,
         onDoubleClickLeaf: @escaping (String) -> Void,
         onToggleCluster: @escaping (String) -> Void,
@@ -2362,6 +2433,8 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
         self.searchQuery = searchQuery
         self.panRequestToken = panRequestToken
         self.fitRequestToken = fitRequestToken
+        self.isOverlayBlockingInteraction = isOverlayBlockingInteraction
+        self.onSelectedLeafFrameChange = onSelectedLeafFrameChange
         self.onSelectLeaf = onSelectLeaf
         self.onDoubleClickLeaf = onDoubleClickLeaf
         self.onToggleCluster = onToggleCluster
@@ -2447,7 +2520,8 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                     },
                     onZoom: { factor in
                         self.applyZoom(to: self.zoomScale * factor, animated: false)
-                    }
+                    },
+                    isBlockedByOverlay: self.isOverlayBlockingInteraction
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 
@@ -2583,16 +2657,29 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                     self.hasAutoFitted = true
                     self.fitViewport(bounds: layout.bounds, size: geo.size, animated: false)
                 }
+                self.reportSelectedLeafFrame(layout: layout, viewportCenter: viewportCenter)
             }
             .onChange(of: self.clusters) { _, nextClusters in
                 self.cachedLayout = layout
                 self.cachedClustersSnapshot = nextClusters
+                self.reportSelectedLeafFrame(layout: layout, viewportCenter: viewportCenter)
+            }
+            .onChange(of: self.selectedLeafID) { _, _ in
+                self.reportSelectedLeafFrame(layout: layout, viewportCenter: viewportCenter)
+            }
+            .onChange(of: self.panOffset) { _, _ in
+                self.reportSelectedLeafFrame(layout: layout, viewportCenter: viewportCenter)
+            }
+            .onChange(of: self.zoomScale) { _, _ in
+                self.reportSelectedLeafFrame(layout: layout, viewportCenter: viewportCenter)
             }
             .onChange(of: geo.size) { _, newSize in
                 if !self.hasAutoFitted && newSize.width > 100 {
                     self.hasAutoFitted = true
                     self.fitViewport(bounds: layout.bounds, size: newSize, animated: false)
                 }
+                let nextCenter = CGPoint(x: newSize.width * 0.5, y: newSize.height * 0.5 + 8)
+                self.reportSelectedLeafFrame(layout: layout, viewportCenter: nextCenter)
             }
             .onChange(of: self.searchQuery) { _, _ in
                 self.fitViewport(bounds: layout.bounds, size: geo.size, animated: true)
@@ -2633,6 +2720,25 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 }
             }
         }
+    }
+    
+    
+    private func reportSelectedLeafFrame(layout: StarMapLayoutEngine.LayoutResult, viewportCenter: CGPoint) {
+        guard let onSelectedLeafFrameChange = self.onSelectedLeafFrameChange else { return }
+        guard let selID = self.selectedLeafID, let lPos = layout.leafPositionsByID[selID] else {
+            onSelectedLeafFrameChange(nil)
+            return
+        }
+        let metrics = StarMapZoomMetrics(zoom: self.zoomScale)
+        let center = StarMapZoomMetrics.screenPoint(
+            world: lPos.worldPoint,
+            viewportCenter: viewportCenter,
+            panOffset: self.panOffset,
+            zoom: self.zoomScale
+        )
+        let w = metrics.scaled(StarMapLayoutEngine.leafFootprint.width - 8)
+        let h = metrics.scaled(StarMapLayoutEngine.leafFootprint.height - 6)
+        onSelectedLeafFrameChange(CGRect(x: center.x - w * 0.5, y: center.y - h * 0.5, width: w, height: h))
     }
     
     
@@ -3367,112 +3473,8 @@ private struct StarMapStaticBackdropView: View, Equatable {
 }
 
 
-/// Clean macOS QuickLook-style Spacebar preview overlay floating over the Star-Map.
-struct StarMapQuickLookOverlay<HeaderActions: View, BodyContent: View>: View {
-    
-    let title: String
-    let subtitle: String
-    let canStepPrevious: Bool
-    let canStepNext: Bool
-    let onPrevious: () -> Void
-    let onNext: () -> Void
-    let onClose: () -> Void
-    @ViewBuilder let headerActions: () -> HeaderActions
-    @ViewBuilder let bodyContent: () -> BodyContent
-    
-    @Environment(\.colorScheme) private var colorScheme
-    
-    
-    var body: some View {
-        let tokens = DashPalette.editorialTokens(isDark: self.colorScheme == .dark)
-        
-        ZStack {
-            Color.black.opacity(self.colorScheme == .dark ? 0.50 : 0.24)
-                .ignoresSafeArea()
-                .onTapGesture {
-                    self.onClose()
-                }
-            
-            VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    HStack(spacing: 4) {
-                        Button(action: self.onPrevious) {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .frame(width: 26, height: 26)
-                                .background(tokens.inset, in: Circle())
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(self.canStepPrevious ? .link : .default)
-                        .disabled(!self.canStepPrevious)
-                        .opacity(self.canStepPrevious ? 1 : 0.35)
-                        
-                        Button(action: self.onNext) {
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .frame(width: 26, height: 26)
-                                .background(tokens.inset, in: Circle())
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(self.canStepNext ? .link : .default)
-                        .disabled(!self.canStepNext)
-                        .opacity(self.canStepNext ? 1 : 0.35)
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(self.title)
-                            .font(.system(size: 14.5, weight: .semibold))
-                            .foregroundStyle(tokens.primaryInk)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if !self.subtitle.isEmpty {
-                            Text(self.subtitle)
-                                .font(.system(size: 11, weight: .regular, design: .rounded).monospacedDigit())
-                                .foregroundStyle(tokens.primaryInk.opacity(0.52))
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    
-                    Spacer(minLength: 8)
-                    
-                    self.headerActions()
-                    
-                    Button(action: self.onClose) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(tokens.primaryInk.opacity(0.72))
-                            .frame(width: 28, height: 28)
-                            .background(tokens.inset, in: Circle())
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                    .help("按空格或 Esc 关闭预览")
-                }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 10)
-                .frame(minHeight: 54)
-                
-                Rectangle()
-                    .fill(tokens.hairline)
-                    .frame(height: 1)
-                
-                self.bodyContent()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .frame(maxWidth: 760, maxHeight: 580)
-            .background(tokens.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(tokens.hairlineStrong, lineWidth: 1)
-            )
-            .shadow(color: Color.black.opacity(self.colorScheme == .dark ? 0.55 : 0.20), radius: 28, y: 12)
-            .padding(28)
-        }
-        .transition(.opacity.combined(with: .scale(scale: 0.97)))
-    }
-}
+// `StarMapQuickLookOverlay`, `StarMapQuickLookController`, and `StarMapQuickLookGeometry`
+// live in `StarMapQuickLookOverlay.swift`.
 
 
 // MARK: - Floating Search Results & Snippets HUD (Shared by Document Center & Weekly Report Center)
@@ -4051,12 +4053,21 @@ struct StarMapSearchResultsHUD: View {
                     
                     for cluster in fullPlan.funnel.mergeClusters {
                         guard let primaryItem = byID[cluster.primary.id] else { continue }
-                        if let liveDoc = primaryItem.liveDoc, cluster.mergedContent != liveDoc.textStorage.string {
-                            liveDoc.textStorage.replaceCharacters(
-                                in: NSRange(location: 0, length: liveDoc.textStorage.length),
-                                with: cluster.mergedContent
-                            )
-                            if liveDoc.fileURL == nil { liveDoc.updateChangeCount(.changeCleared) }
+                        if let liveDoc = primaryItem.liveDoc {
+                            if cluster.mergedContent != liveDoc.textStorage.string {
+                                liveDoc.textStorage.replaceCharacters(
+                                    in: NSRange(location: 0, length: liveDoc.textStorage.length),
+                                    with: cluster.mergedContent
+                                )
+                                if liveDoc.fileURL == nil { liveDoc.updateChangeCount(.changeCleared) }
+                            }
+                            if cluster.bestTitle != primaryItem.title, liveDoc.fileURL == nil {
+                                liveDoc.displayName = cluster.bestTitle
+                                liveDoc.isExplicitlyNamed = true
+                            }
+                        }
+                        if cluster.bestTitle != primaryItem.title {
+                            renamedCount += 1
                         }
                         self.database.saveDocument(
                             id: primaryItem.dbRecordID,

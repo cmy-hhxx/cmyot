@@ -842,10 +842,10 @@ struct Round43VimMaterialProactiveDashboardTests {
         #expect(plan.funnel.junkToDelete.map(\.item.id) == ["doc:10"])
         #expect(plan.assignments.count == 9)
         
-        // Bloated group ("技术笔记") MUST be split into multiple clean semantic clusters (no giant wall!).
+        // Bloated group ("技术笔记") MUST be split into crisp, balanced pillars (not 1 wall, not over-fragmented).
         let groups = Dictionary(grouping: plan.assignments, by: \.group)
-        #expect(groups.count >= 4)
-        #expect((groups.values.map(\.count).max() ?? 99) <= 4)
+        #expect(groups.count >= 2 && groups.count <= DocumentOrganizeFunnel.targetMaxGroups(for: plan.assignments.count))
+        #expect((groups.values.map(\.count).max() ?? 99) <= 5)
         
         // Every surviving whimsical-named doc MUST get a crisp, non-generated, unique suggestedTitle.
         var seenTitles = Set<String>()
@@ -866,6 +866,178 @@ struct Round43VimMaterialProactiveDashboardTests {
             existingGroups: ["技术笔记"]
         )
         #expect(finalized[0].suggestedTitle == "评测看板全站优化")
+    }
+    
+    
+    @Test func semanticMergeConsolidatesSameTopicFragmentsWithoutOverMergingDistinctDocs() async throws {
+        let now = Date()
+        let inputs: [OrganizeFunnelInput] = [
+            // Thread A: 3 fragmented scratch notes about AIME r533 re-eval & incremental clustering (SHOULD merge into 1)
+            OrganizeFunnelInput(
+                id: "doc:aime-1",
+                dbRecordID: "doc:aime-1",
+                title: "啃瓜的小浣熊",
+                filePath: nil,
+                syntax: "Markdown",
+                currentGroup: "技术笔记",
+                content: "# AIME r533 重评范围与聚类回写\n本次第一批重评约 4.5 万条，包含 aime_fast 与 aime_expert，写入 0_daily_eval_reeval_r533 后按 trace_id 回写聚类。",
+                updatedAt: now.addingTimeInterval(-600),
+                isOpenNow: false,
+                isUntitled: true
+            ),
+            OrganizeFunnelInput(
+                id: "doc:aime-2",
+                dbRecordID: "doc:aime-2",
+                title: "晚风的熊猫",
+                filePath: nil,
+                syntax: "Markdown",
+                currentGroup: "技术笔记",
+                content: "# AIME 增量聚类备份状态\naime_expert delta=0 合并后 157,601，aime_fast delta=0 合并后 460,501，verify.json errors=0，run_merged 完整保留，0_daily_eval_reeval_r533 待回写。",
+                updatedAt: now.addingTimeInterval(-300),
+                isOpenNow: false,
+                isUntitled: true
+            ),
+            OrganizeFunnelInput(
+                id: "doc:aime-3",
+                dbRecordID: "doc:aime-3",
+                title: "泡茶的烤冷面",
+                filePath: nil,
+                syntax: "Markdown",
+                currentGroup: "技术笔记",
+                content: "# AIME r533 聚类口径核对\n确认 aime_fast 与 aime_expert 的 r533 重评结果按 trace_id 覆盖回写，verify.json 校验通过。",
+                updatedAt: now,
+                isOpenNow: false,
+                isUntitled: true
+            ),
+            // Thread B: 2 fragmented notes about Worker OOM pressure testing (SHOULD merge into 1)
+            OrganizeFunnelInput(
+                id: "doc:worker-1",
+                dbRecordID: "doc:worker-1",
+                title: "口袋里的风铃",
+                filePath: nil,
+                syntax: "Markdown",
+                currentGroup: "技术笔记",
+                content: "# 评测 Worker 压测与内存监控\nworker_runner 并发 32 压测，anon 内存峰值 10.5 GB，oom_kill 计数升至 23。",
+                updatedAt: now.addingTimeInterval(-200),
+                isOpenNow: false,
+                isUntitled: true
+            ),
+            OrganizeFunnelInput(
+                id: "doc:worker-2",
+                dbRecordID: "doc:worker-2",
+                title: "写诗的柴犬",
+                filePath: nil,
+                syntax: "Markdown",
+                currentGroup: "技术笔记",
+                content: "# 评测 Worker OOM 排查步骤\n定位 worker_runner 压测期间触发 oom_kill 的内存泄露点，调整并发上限并复测。",
+                updatedAt: now,
+                isOpenNow: false,
+                isUntitled: true
+            ),
+            // Independent distinct topics (MUST NOT merge with each other or with AIME / Worker!)
+            OrganizeFunnelInput(
+                id: "doc:prd",
+                dbRecordID: "doc:prd",
+                title: "晒太阳的章鱼",
+                filePath: nil,
+                syntax: "Markdown",
+                currentGroup: "技术笔记",
+                content: "# 权限中心多租户角色方案\n规划组织架构、RBAC 角色继承、审批流与前端菜单可见性控制。",
+                updatedAt: now,
+                isOpenNow: false,
+                isUntitled: true
+            ),
+            OrganizeFunnelInput(
+                id: "doc:meeting",
+                dbRecordID: "doc:meeting",
+                title: "躲雨的柯基",
+                filePath: nil,
+                syntax: "Markdown",
+                currentGroup: "技术笔记",
+                content: "# 周三视觉改版评审会议纪要\n确定图标圆角规范、深浅色对比度标准以及周五提测窗口。",
+                updatedAt: now,
+                isOpenNow: false,
+                isUntitled: true
+            ),
+            OrganizeFunnelInput(
+                id: "doc:weekly",
+                dbRecordID: "doc:weekly",
+                title: "潜艇里的柴犬",
+                filePath: nil,
+                syntax: "Markdown",
+                currentGroup: "技术笔记",
+                content: "# 本周工作周报与下周排期\n汇总个人交付进度、跨团队协调事项以及下周里程碑 todo。",
+                updatedAt: now,
+                isOpenNow: false,
+                isUntitled: true
+            ),
+        ]
+        
+        let plan = await DocumentOrganizeFunnel.runFullPipeline(
+            items: inputs,
+            existingGroups: ["技术笔记"],
+            allowRemoteAI: false
+        )
+        
+        // 8 fragmented notes consolidate cleanly to 5 meaningful standalone documents (3 merged away, NOT collapsed into 1!).
+        #expect(plan.funnel.survivors.count == 5)
+        #expect(plan.funnel.deletedDuplicateCount == 3)
+        #expect(plan.funnel.mergeClusters.count == 2)
+        
+        let aimeCluster = try #require(plan.funnel.mergeClusters.first(where: { $0.primary.id.hasPrefix("doc:aime") }))
+        #expect(aimeCluster.duplicates.count == 2)
+        #expect(aimeCluster.mergedContent.contains("157,601"))
+        #expect(aimeCluster.mergedContent.contains("4.5 万条"))
+        
+        let workerCluster = try #require(plan.funnel.mergeClusters.first(where: { $0.primary.id.hasPrefix("doc:worker") }))
+        #expect(workerCluster.duplicates.count == 1)
+        #expect(workerCluster.mergedContent.contains("oom_kill"))
+        
+        // Independent topics stayed separate and groups compacted cleanly to <= 3 pillars.
+        let survivorIDs = Set(plan.funnel.survivors.map(\.id))
+        #expect(survivorIDs.contains("doc:prd"))
+        #expect(survivorIDs.contains("doc:meeting"))
+        #expect(survivorIDs.contains("doc:weekly"))
+        let finalGroups = Set(plan.assignments.map(\.group))
+        #expect(finalGroups.count >= 2 && finalGroups.count <= 3)
+        
+        // AI merge guardrails: accept a sane 2-doc semantic merge, reject mega-dump (>60%) & saved-file-to-saved-file merge.
+        let baseSurvivors: [OrganizeFunnelInput] = [
+            OrganizeFunnelInput(id: "s1", dbRecordID: "s1", title: "草稿一", filePath: nil, syntax: "Markdown", currentGroup: "", content: "接口鉴权方案背景与目标说明。", updatedAt: now, isOpenNow: false, isUntitled: true),
+            OrganizeFunnelInput(id: "s2", dbRecordID: "s2", title: "草稿二", filePath: nil, syntax: "Markdown", currentGroup: "", content: "接口鉴权 Token 刷新流程补充。", updatedAt: now, isOpenNow: false, isUntitled: true),
+            OrganizeFunnelInput(id: "s3", dbRecordID: "s3", title: "fileA.md", filePath: "/tmp/fileA.md", syntax: "Markdown", currentGroup: "", content: "本地磁盘文件 A 内容。", updatedAt: now, isOpenNow: false, isUntitled: false),
+            OrganizeFunnelInput(id: "s4", dbRecordID: "s4", title: "fileB.md", filePath: "/tmp/fileB.md", syntax: "Markdown", currentGroup: "", content: "本地磁盘文件 B 内容。", updatedAt: now, isOpenNow: false, isUntitled: false),
+            OrganizeFunnelInput(id: "s5", dbRecordID: "s5", title: "周报", filePath: nil, syntax: "Markdown", currentGroup: "", content: "本周总结。", updatedAt: now, isOpenNow: false, isUntitled: false),
+            OrganizeFunnelInput(id: "s6", dbRecordID: "s6", title: "备忘", filePath: nil, syntax: "Markdown", currentGroup: "", content: "个人购物清单。", updatedAt: now, isOpenNow: false, isUntitled: false),
+        ]
+        let baseFunnel = OrganizeFunnelStageResult(junkToDelete: [], mergeClusters: [], survivors: baseSurvivors)
+        let baseAssignments = baseSurvivors.map {
+            DocumentCenterAgentOrganizer.Assignment(id: $0.id, group: "工程与开发", suggestedTitle: nil)
+        }
+        
+        // 1) Over-merge proposal (5 of 6 docs > 60%) MUST be rejected.
+        let overMergeOutcome = DocumentOrganizeFunnel.applyValidatedAIMerges(
+            [.init(primaryId: "s1", mergeIds: ["s2", "s3", "s5", "s6"], mergedTitle: "全部文档大合集", group: "综合", reason: "全部合并")],
+            baseFunnel: baseFunnel,
+            rawAssignments: baseAssignments
+        )
+        #expect(overMergeOutcome.funnel.survivors.count == 6)
+        
+        // 2) Two saved disk files (s3 + s4) MUST NOT be merged, while valid scratch pair (s1 + s2) IS merged cleanly!
+        let mixedOutcome = DocumentOrganizeFunnel.applyValidatedAIMerges(
+            [
+                .init(primaryId: "s1", mergeIds: ["s2"], mergedTitle: "接口鉴权方案汇总", group: "工程与开发", reason: "同属接口鉴权草稿"),
+                .init(primaryId: "s3", mergeIds: ["s4"], mergedTitle: "合并磁盘文件", group: "工程与开发", reason: "测试保护"),
+            ],
+            baseFunnel: baseFunnel,
+            rawAssignments: baseAssignments
+        )
+        #expect(mixedOutcome.funnel.survivors.count == 5)
+        #expect(mixedOutcome.funnel.mergeClusters.count == 1)
+        #expect(mixedOutcome.funnel.mergeClusters[0].bestTitle == "接口鉴权方案汇总")
+        #expect(mixedOutcome.funnel.mergeClusters[0].mergedContent.contains("Token 刷新流程补充"))
+        #expect(mixedOutcome.funnel.survivors.contains(where: { $0.id == "s3" }))
+        #expect(mixedOutcome.funnel.survivors.contains(where: { $0.id == "s4" }))
     }
     
     
@@ -917,5 +1089,70 @@ struct Round43VimMaterialProactiveDashboardTests {
         #expect(pruned.contains("旧杂项"))
         #expect(!db.documentGroups.contains("旧杂项"))
         #expect(db.documentGroups.contains("评测分析"))
+    }
+    
+    
+    // MARK: 13. Apple-Style Spacebar Quick Look Spatial Geometry & Interruptible Lifecycle
+    
+    @Test func quickLookSpatialGeometryAnchorsToSourceCardAndInterruptibleControllerReversesCleanly() async throws {
+        let container = CGSize(width: 1280, height: 800)
+        let compactSize = StarMapQuickLookGeometry.panelSize(in: container, isExpanded: false)
+        let expandedSize = StarMapQuickLookGeometry.panelSize(in: container, isExpanded: true)
+        #expect(compactSize.width == 780)
+        #expect(compactSize.height == 580)
+        #expect(expandedSize.width > compactSize.width)
+        #expect(expandedSize.height > compactSize.height)
+        
+        // Left-top card anchors zoom origin directly over the source card (negative X/Y offset, card-matched scale).
+        let leftCard = CGRect(x: 120, y: 150, width: 188, height: 50)
+        let anchored = StarMapQuickLookGeometry.collapsedTransform(from: leftCard, panelSize: compactSize, in: container)
+        #expect(anchored.offset.width < -350)
+        #expect(anchored.offset.height < -180)
+        #expect(anchored.scale >= 0.24 && anchored.scale <= 0.46)
+        
+        // Off-screen card clamps gracefully inside viewport margins instead of flying wildly off-screen.
+        let farOffscreen = CGRect(x: -900, y: 2400, width: 188, height: 50)
+        let clamped = StarMapQuickLookGeometry.collapsedTransform(from: farOffscreen, panelSize: compactSize, in: container)
+        #expect(clamped.offset.width >= -(container.width * 0.5))
+        #expect(clamped.offset.height <= (container.height * 0.5))
+        
+        // Missing anchor falls back to crisp Apple center-lift transform.
+        let fallback = StarMapQuickLookGeometry.collapsedTransform(from: nil, panelSize: compactSize, in: container)
+        #expect(fallback.offset.width == 0)
+        #expect(fallback.scale == 0.88)
+        
+        // Drag offset stays reachable within window bounds.
+        let extremeDrag = StarMapQuickLookGeometry.clampedDragOffset(
+            CGSize(width: 5000, height: -5000),
+            panelSize: compactSize,
+            in: container
+        )
+        #expect(extremeDrag.width < 1000)
+        #expect(extremeDrag.height > -500)
+        
+        // Interruptible presentation controller: open -> step -> close retains mountedID during retract -> rapid re-toggle cancels dismiss cleanly!
+        let controller = StarMapQuickLookController()
+        controller.open("doc:a", anchorRect: leftCard)
+        #expect(controller.isOpen)
+        #expect(controller.mountedID == "doc:a")
+        
+        controller.step(to: "doc:b")
+        #expect(controller.isOpen)
+        #expect(controller.mountedID == "doc:b")
+        
+        controller.close(animated: true)
+        #expect(!controller.isOpen)
+        #expect(controller.mountedID == "doc:b") // Retained for smooth retract animation!
+        
+        // Rapid Spacebar tap mid-retract smoothly reverses back open without unmounting!
+        controller.toggle("doc:b")
+        #expect(controller.isOpen)
+        #expect(controller.mountedID == "doc:b")
+        
+        // Full animated close unmounts cleanly after retract window.
+        controller.close(animated: true)
+        try await Task.sleep(for: .milliseconds(StarMapQuickLookGeometry.dismissRetractDurationMs + 80))
+        #expect(!controller.isOpen)
+        #expect(controller.mountedID == nil)
     }
 }
