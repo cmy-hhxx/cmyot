@@ -336,18 +336,27 @@ import Observation
     }
     
     
-    /// Runs a multi-turn chat conversation with streaming partial updates (used by NEWS AI chat).
+    /// Runs a multi-turn chat conversation with streaming partial updates (used by NEWS AI chat & fast background classifiers).
     func chat(
         _ messages: [AIMessage],
         configuration: AIConfiguration? = nil,
+        disablesThinking: Bool = false,
+        maxOutputTokens: Int? = nil,
+        timeoutInterval: TimeInterval = 120,
         analyticsFeature: String = "newsChat",
         onPartial: (@MainActor @Sendable (String) -> Void)? = nil
     ) async throws -> String {
         
-        let resolvedConfig = configuration ?? AIBotStore.shared.resolvedConfiguration(for: .summarize, baseConfig: .current)
+        var resolvedConfig = configuration ?? AIBotStore.shared.resolvedConfiguration(for: .summarize, baseConfig: .current)
+        if disablesThinking {
+            resolvedConfig.reasoningEffort = "low"
+        }
         return try await self.send(
             messages,
             configuration: resolvedConfig,
+            disablesThinking: disablesThinking,
+            maxOutputTokens: maxOutputTokens,
+            timeoutInterval: timeoutInterval,
             analyticsFeature: analyticsFeature,
             onPartial: onPartial
         )

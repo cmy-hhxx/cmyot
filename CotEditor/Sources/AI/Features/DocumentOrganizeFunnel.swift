@@ -114,7 +114,7 @@ nonisolated struct OrganizeFullPlan: Sendable, Equatable {
 
 nonisolated enum DocumentOrganizeFunnel {
     
-    static let defaultShardSize = 14
+    static let defaultShardSize = 24
     static let defaultMaxConcurrency = 4
     
     private static let copySuffixRegex = try! NSRegularExpression(
@@ -406,6 +406,7 @@ nonisolated enum DocumentOrganizeFunnel {
     private static func isTestTitle(_ title: String) -> Bool {
         let lower = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if lower.isEmpty { return true }
+        if GeneratedDocumentName.isGeneratedName(title) { return true }
         let markers = ["test", "tmp", "temp", "demo", "测试", "随便", "草稿", "untitled", "未命名", "新建文档"]
         return markers.contains(where: { lower == $0 || lower.hasPrefix($0) })
     }
@@ -696,8 +697,101 @@ nonisolated enum DocumentOrganizeFunnel {
     }
     
     
+    /// Guarantees clean Star-Map output after AI or local classification:
+    /// 1) Consolidates synonym drift;
+    /// 2) Splits any remaining oversized monolithic group (`>= 10` docs) into crisp topic buckets;
+    /// 3) Ensures every untitled / whimsical-generated document receives a unique, content-derived title.
+    static func finalizeAssignments(
+        _ assignments: [DocumentCenterAgentOrganizer.Assignment],
+        survivors: [OrganizeFunnelInput],
+        existingGroups: [String]
+    ) -> [DocumentCenterAgentOrganizer.Assignment] {
+        var result = Self.consolidateAssignments(assignments, existingGroups: existingGroups)
+        let survivorByID = Dictionary(uniqueKeysWithValues: survivors.map { ($0.id, $0) })
+        
+        // 1. Anti-monolith guard: if any single group still holds >= 10 docs, split by content semantics.
+        var indicesByGroup: [String: [Int]] = [:]
+        for (idx, item) in result.enumerated() where !item.group.isEmpty {
+            indicesByGroup[item.group, default: []].append(idx)
+        }
+        for (_, bucketIndices) in indicesByGroup where bucketIndices.count >= 10 {
+            let subInputs: [DocumentCenterAgentOrganizer.InputItem] = bucketIndices.compactMap { idx in
+                guard let doc = survivorByID[result[idx].id] else { return nil }
+                return DocumentCenterAgentOrganizer.InputItem(
+                    id: doc.id,
+                    title: doc.title,
+                    syntax: doc.syntax,
+                    currentGroup: doc.currentGroup,
+                    excerpt: String(doc.content.prefix(480)),
+                    isUntitled: doc.isUntitled
+                )
+            }
+            let splitPlan = DocumentCenterAgentOrganizer.buildLocalFallbackPlan(
+                items: subInputs,
+                existingGroups: [],
+                allowPreserveExisting: false
+            )
+            let distinctGroups = Set(splitPlan.assignments.map(\.group).filter { !$0.isEmpty })
+            if distinctGroups.count >= 2 {
+                let splitByID = Dictionary(uniqueKeysWithValues: splitPlan.assignments.map { ($0.id, $0.group) })
+                for idx in bucketIndices {
+                    let current = result[idx]
+                    if let betterGroup = splitByID[current.id], !betterGroup.isEmpty {
+                        result[idx] = DocumentCenterAgentOrganizer.Assignment(
+                            id: current.id,
+                            group: betterGroup,
+                            suggestedTitle: current.suggestedTitle
+                        )
+                    }
+                }
+            }
+        }
+        
+        // 2. Guaranteed meaningful title + deduplication for every untitled / whimsical-generated survivor.
+        var usedTitles = Set(
+            survivors
+                .filter { !$0.isUntitled }
+                .map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        )
+        
+        for idx in 0..<result.count {
+            let current = result[idx]
+            guard let doc = survivorByID[current.id], doc.isUntitled else { continue }
+            
+            var candidate = current.suggestedTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let existing = candidate,
+               (existing.isEmpty || DocumentCenterAgentOrganizer.isGenericUntitled(existing, hasFilePath: false))
+            {
+                candidate = nil
+            }
+            if candidate == nil {
+                candidate = DocumentCenterAgentOrganizer.deriveTitleFromExcerpt(doc.content)
+            }
+            guard var finalTitle = candidate, !finalTitle.isEmpty else { continue }
+            
+            let base = finalTitle
+            var suffix = 2
+            while usedTitles.contains(finalTitle.lowercased()) && suffix <= 99 {
+                finalTitle = "\(base) \(suffix)"
+                suffix += 1
+            }
+            usedTitles.insert(finalTitle.lowercased())
+            
+            if finalTitle != current.suggestedTitle {
+                result[idx] = DocumentCenterAgentOrganizer.Assignment(
+                    id: current.id,
+                    group: current.group,
+                    suggestedTitle: finalTitle
+                )
+            }
+        }
+        
+        return result
+    }
+    
+    
     /// Executes the complete 4-stage Data Funnel:
-    /// 1) Local junk/gibberish deletion -> 2) Duplicate merging -> 3) Parallel sharded AI classification -> 4) Group convergence.
+    /// 1) Local junk/gibberish deletion -> 2) Duplicate merging -> 3) Parallel fast-lane AI classification -> 4) Group convergence & title guarantee.
     @MainActor
     static func runFullPipeline(
         items: [OrganizeFunnelInput],
@@ -737,7 +831,7 @@ nonisolated enum DocumentOrganizeFunnel {
                 title: item.title,
                 syntax: item.syntax,
                 currentGroup: item.currentGroup,
-                excerpt: String(item.content.prefix(360)),
+                excerpt: String(item.content.prefix(480)),
                 isUntitled: item.isUntitled
             )
         }
@@ -751,13 +845,31 @@ nonisolated enum DocumentOrganizeFunnel {
                 items: agentInputs,
                 existingGroups: existingGroups
             )
-            let consolidated = Self.consolidateAssignments(localPlan.assignments, existingGroups: existingGroups)
+            let finalized = Self.finalizeAssignments(
+                localPlan.assignments,
+                survivors: funnel.survivors,
+                existingGroups: existingGroups
+            )
             return OrganizeFullPlan(
                 funnel: funnel,
-                assignments: consolidated,
+                assignments: finalized,
                 batchCount: totalBatches,
                 usedAI: false
             )
+        }
+        
+        // Detect bloated (>= 8 docs) or generic catch-all groups across the whole corpus before sharding.
+        var survivorGroupCounts: [String: Int] = [:]
+        for item in funnel.survivors where !item.currentGroup.isEmpty {
+            survivorGroupCounts[item.currentGroup, default: 0] += 1
+        }
+        let bloatedGroups = survivorGroupCounts
+            .filter { $0.value >= DocumentCenterAgentOrganizer.bloatedGroupThreshold || DocumentCenterAgentOrganizer.catchAllGroupNames.contains($0.key) }
+            .map(\.key)
+            .sorted()
+        let healthyExisting = existingGroups.filter {
+            !DocumentCenterAgentOrganizer.catchAllGroupNames.contains($0)
+                && (survivorGroupCounts[$0, default: 0] < DocumentCenterAgentOrganizer.bloatedGroupThreshold)
         }
         
         onProgress?(.shardedOrganizing(completedBatches: 0, totalBatches: totalBatches, survivorCount: agentInputs.count))
@@ -778,7 +890,8 @@ nonisolated enum DocumentOrganizeFunnel {
                 group.addTask {
                     let outcome = await Self.organizeSingleShard(
                         shard,
-                        existingGroups: existingGroups,
+                        healthyExistingGroups: healthyExisting,
+                        bloatedGroups: bloatedGroups,
                         shardIndex: idx,
                         totalShards: totalBatches,
                         analyticsFeature: analyticsFeature
@@ -806,12 +919,16 @@ nonisolated enum DocumentOrganizeFunnel {
         onProgress?(.consolidating)
         orderedResults.sort { $0.index < $1.index }
         let mergedAssignments = orderedResults.flatMap(\.assignments)
-        let consolidated = Self.consolidateAssignments(mergedAssignments, existingGroups: existingGroups)
+        let finalized = Self.finalizeAssignments(
+            mergedAssignments,
+            survivors: funnel.survivors,
+            existingGroups: existingGroups
+        )
         let anyUsedAI = orderedResults.contains(where: \.usedAI)
         
         return OrganizeFullPlan(
             funnel: funnel,
-            assignments: consolidated,
+            assignments: finalized,
             batchCount: totalBatches,
             usedAI: anyUsedAI
         )
@@ -821,34 +938,44 @@ nonisolated enum DocumentOrganizeFunnel {
     @MainActor
     private static func organizeSingleShard(
         _ shard: [DocumentCenterAgentOrganizer.InputItem],
-        existingGroups: [String],
+        healthyExistingGroups: [String],
+        bloatedGroups: [String],
         shardIndex: Int,
         totalShards: Int,
         analyticsFeature: String
     ) async -> (assignments: [DocumentCenterAgentOrganizer.Assignment], usedAI: Bool) {
         let validIDs = Set(shard.map(\.id))
         let manifestLines = shard.enumerated().map { idx, item -> String in
-            let snippet = DocumentCenterState.cleanExcerpt(from: item.excerpt, maxLength: 150)
-            return "[\(idx + 1)] id=\"\(item.id)\" | title=\"\(item.title)\" | syntax=\"\(item.syntax)\" | group=\"\(item.currentGroup)\" | untitled=\(item.isUntitled ? "true" : "false") | snippet=\"\(snippet)\""
+            let snippet = DocumentCenterState.cleanExcerpt(from: item.excerpt, maxLength: 180)
+            let groupTag = bloatedGroups.contains(item.currentGroup) ? "\(item.currentGroup)(待细分)" : item.currentGroup
+            return "[\(idx + 1)] id=\"\(item.id)\" | title=\"\(item.title)\" | syntax=\"\(item.syntax)\" | group=\"\(groupTag)\" | untitled=\(item.isUntitled ? "true" : "false") | snippet=\"\(snippet)\""
         }.joined(separator: "\n")
         
-        let baseGroups = existingGroups.isEmpty
-            ? ["项目方案", "技术笔记", "代码开发", "会议纪要", "工作清单", "配置数据", "日常记录"]
-            : existingGroups
-        let groupPalette = baseGroups.joined(separator: "、")
+        var palette: [String] = []
+        for g in healthyExistingGroups + DocumentCenterAgentOrganizer.coreTopicPalette {
+            if !palette.contains(g) { palette.append(g) }
+        }
+        let groupPalette = palette.joined(separator: "、")
+        let bloatedHint = bloatedGroups.isEmpty
+            ? ""
+            : "\n特别要求：原分组「\(bloatedGroups.joined(separator: "、"))」过于臃肿或泛化，禁止把这些文档原封不动塞回同一组，请按真实主题细分成多个清爽的专题分组。"
         
         let systemPrompt = """
-        你是文档星图分片整理 Agent（第 \(shardIndex + 1)/\(totalShards) 批）。请高速、精准地为本批文档归类，并为未命名草稿提炼简短准确的中文标题。
+        你是文档星图极速整理 Agent（第 \(shardIndex + 1)/\(totalShards) 批）。目标：让星图从杂乱变得清爽有序，一眼看清文档结构。
         规则：
-        1. 优先复用给定分组体系：\(groupPalette)（如需新增分组仅限 2-5 字中文名，保持克制）。
-        2. 仅输出严格合法 JSON，禁止任何解释文字：{"assignments":[{"id":"原id","group":"分组名","suggestedTitle":"仅当untitled=true时填4-16字精准标题，否则null"}]}
-        3. 本批每个 id 必须出现且仅出现一次。
+        1. 按真实主题聚类，每个分组尽量控制在 2-7 篇，总分组数克制在 3-8 组；可参考分组体系：\(groupPalette)（也可新建 2-5 字简洁中文专题名）。\(bloatedHint)
+        2. 所有 untitled=true 的文档（包含系统随机趣名如「啃瓜的小浣熊」「潜艇里的柴犬」等），**必须**根据 snippet 提炼 4-16 字精准、清爽的中文标题填入 suggestedTitle，禁止填 null，禁止照抄随机名，禁止包含 Markdown 符号。untitled=false 时 suggestedTitle 填 null。
+        3. 仅输出严格合法 JSON，禁止解释文字：{"assignments":[{"id":"原id","group":"分组名","suggestedTitle":"标题或null"}]}
+        4. 本批每个 id 必须出现且仅出现一次。
         """
         let userPrompt = "本批待整理文档（\(shard.count) 篇）：\n\(manifestLines)"
         
         do {
             let raw = try await AIService.shared.chat(
                 [.system(systemPrompt), .user(userPrompt)],
+                disablesThinking: true,
+                maxOutputTokens: 2048,
+                timeoutInterval: 35,
                 analyticsFeature: analyticsFeature
             )
             if let parsed = DocumentCenterAgentOrganizer.parsePlan(from: raw, validIDs: validIDs) {
@@ -860,7 +987,7 @@ nonisolated enum DocumentOrganizeFunnel {
                 }
                 let patch = DocumentCenterAgentOrganizer.buildLocalFallbackPlan(
                     items: missed,
-                    existingGroups: existingGroups
+                    existingGroups: healthyExistingGroups
                 ).assignments
                 return (parsed.assignments + patch, true)
             }
@@ -870,7 +997,7 @@ nonisolated enum DocumentOrganizeFunnel {
         
         let fallback = DocumentCenterAgentOrganizer.buildLocalFallbackPlan(
             items: shard,
-            existingGroups: existingGroups
+            existingGroups: healthyExistingGroups
         )
         return (fallback.assignments, false)
     }

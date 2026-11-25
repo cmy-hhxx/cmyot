@@ -40,6 +40,7 @@ struct DocumentCenterView: View {
     @State private var focusedClusterID: String?
     @State private var quickLookItemID: String?
     @State private var panRequestToken = 0
+    @State private var fitRequestToken = 0
     @State private var isSearchHUDCollapsed = false
     @FocusState private var isSearchFocused: Bool
     
@@ -166,6 +167,7 @@ struct DocumentCenterView: View {
                     focusedClusterID: self.focusedClusterID,
                     searchQuery: self.state.searchText,
                     panRequestToken: self.panRequestToken,
+                    fitRequestToken: self.fitRequestToken,
                     onSelectLeaf: { leafID in
                         self.isRenaming = false
                         self.state.selectedID = leafID
@@ -1141,16 +1143,29 @@ struct DocumentCenterView: View {
             
             let stats = self.applyOrganizeFullPlan(fullPlan, itemsByID: itemsByID)
             self.state.isAgentOrganizing = false
+            
+            // Reset view into a crisp, uncluttered post-organize constellation.
+            self.focusedClusterID = nil
+            self.quickLookItemID = nil
+            self.isRenaming = false
+            if self.state.sidebarFilter != .all && self.state.sidebarFilter != .trash {
+                self.state.sidebarFilter = .all
+            }
             self.state.refresh()
+            self.state.selectedID = nil
+            self.state.applyCleanPostOrganizeClusterState()
+            self.fitRequestToken &+= 1
             
             var summaryParts: [String] = []
             if stats.deletedJunk > 0 { summaryParts.append("删 \(stats.deletedJunk) 无效") }
             if stats.mergedDuplicates > 0 { summaryParts.append("合 \(stats.mergedDuplicates) 重复") }
-            if stats.classified > 0 { summaryParts.append("整理 \(stats.classified) 篇") }
-            if stats.groupCount > 0 { summaryParts.append("\(stats.groupCount) 组") }
+            if stats.renamed > 0 { summaryParts.append("重命名 \(stats.renamed) 篇") }
+            if stats.regrouped > 0 {
+                summaryParts.append(stats.groupCount > 0 ? "归类 \(stats.regrouped) 篇 · \(stats.groupCount) 组" : "归类 \(stats.regrouped) 篇")
+            }
             
             if summaryParts.isEmpty {
-                self.showToast("星图已整齐，无需调整")
+                self.showToast("星图已整理清晰")
             } else {
                 self.state.agentOrganizeSummary = summaryParts.joined(separator: " · ")
             }
@@ -1158,172 +1173,237 @@ struct DocumentCenterView: View {
     }
     
     
+    private struct OrganizeApplyStats {
+        var deletedJunk: Int = 0
+        var mergedDuplicates: Int = 0
+        var renamed: Int = 0
+        var regrouped: Int = 0
+        var groupCount: Int = 0
+        
+        var hasChanges: Bool {
+            self.deletedJunk > 0 || self.mergedDuplicates > 0 || self.renamed > 0 || self.regrouped > 0
+        }
+    }
+    
+    
     private func applyOrganizeFullPlan(
         _ fullPlan: OrganizeFullPlan,
         itemsByID: [String: DocumentCenterState.ManagedDocumentItem]
-    ) -> (deletedJunk: Int, mergedDuplicates: Int, classified: Int, groupCount: Int) {
+    ) -> OrganizeApplyStats {
         var undoEntries: [DocumentCenterState.OrganizeUndoEntry] = []
         var existingGroupSet = Set(self.db.documentGroups)
         var createdGroups: [String] = []
         var touchedGroups = Set<String>()
-        var deletedJunk = 0
-        var mergedDuplicates = 0
-        var classifiedCount = 0
+        var stats = OrganizeApplyStats()
         
         let mergedByPrimaryID = Dictionary(uniqueKeysWithValues: fullPlan.funnel.mergeClusters.map { ($0.primary.id, $0) })
         
         self.db.withTransaction {
-            // 1. Delete meaningless test / empty / garbled documents directly.
-            for decision in fullPlan.funnel.junkToDelete {
-                guard let item = itemsByID[decision.item.id] else { continue }
-                let recordID = item.dbRecordID ?? item.id
+            stats.deletedJunk = self.applyJunkDeletions(
+                fullPlan.funnel.junkToDelete,
+                itemsByID: itemsByID,
+                undoEntries: &undoEntries
+            )
+            stats.mergedDuplicates = self.applyDuplicateMerges(
+                fullPlan.funnel.mergeClusters,
+                itemsByID: itemsByID,
+                undoEntries: &undoEntries
+            )
+            self.applyShardedAssignments(
+                fullPlan.assignments,
+                itemsByID: itemsByID,
+                mergedByPrimaryID: mergedByPrimaryID,
+                existingGroupSet: &existingGroupSet,
+                createdGroups: &createdGroups,
+                touchedGroups: &touchedGroups,
+                undoEntries: &undoEntries,
+                stats: &stats
+            )
+        }
+        
+        var removedEmptyGroups: [String] = []
+        if stats.hasChanges {
+            removedEmptyGroups = self.db.pruneEmptyDocumentGroups(reloadAfter: false)
+            self.db.reloadDocuments()
+        }
+        stats.groupCount = Set(self.db.documents.map(\.groupName).filter { !$0.isEmpty }).count
+        self.state.lastOrganizeUndoSnapshot = undoEntries
+        self.state.lastOrganizeCreatedGroups = createdGroups
+        self.state.lastOrganizeRemovedGroups = removedEmptyGroups
+        return stats
+    }
+    
+    
+    private func applyJunkDeletions(
+        _ decisions: [OrganizeJunkDecision],
+        itemsByID: [String: DocumentCenterState.ManagedDocumentItem],
+        undoEntries: inout [DocumentCenterState.OrganizeUndoEntry]
+    ) -> Int {
+        var count = 0
+        for decision in decisions {
+            guard let item = itemsByID[decision.item.id] else { continue }
+            let recordID = item.dbRecordID ?? item.id
+            undoEntries.append(DocumentCenterState.OrganizeUndoEntry(
+                kind: .deleted,
+                itemID: item.id,
+                dbRecordID: recordID,
+                filePath: item.filePath,
+                previousGroup: item.groupName,
+                previousTitle: item.title,
+                titleWasChanged: false,
+                syntax: item.syntax,
+                content: item.content
+            ))
+            self.db.permanentlyDeleteDocument(id: recordID, filePath: item.filePath)
+            self.closeUntitledLiveDocumentIfPresent(canonicalID: item.id)
+            count += 1
+        }
+        return count
+    }
+    
+    
+    private func applyDuplicateMerges(
+        _ clusters: [OrganizeMergeCluster],
+        itemsByID: [String: DocumentCenterState.ManagedDocumentItem],
+        undoEntries: inout [DocumentCenterState.OrganizeUndoEntry]
+    ) -> Int {
+        var mergedCount = 0
+        for cluster in clusters {
+            guard let primaryItem = itemsByID[cluster.primary.id] else { continue }
+            let primaryRecordID = primaryItem.dbRecordID ?? primaryItem.id
+            undoEntries.append(DocumentCenterState.OrganizeUndoEntry(
+                kind: .mergedPrimary,
+                itemID: primaryItem.id,
+                dbRecordID: primaryRecordID,
+                filePath: primaryItem.filePath,
+                previousGroup: primaryItem.groupName,
+                previousTitle: primaryItem.title,
+                titleWasChanged: cluster.bestTitle != primaryItem.title,
+                syntax: primaryItem.syntax,
+                content: primaryItem.content
+            ))
+            
+            if let liveDoc = self.state.liveDocument(for: primaryItem.id),
+               cluster.mergedContent != liveDoc.textStorage.string
+            {
+                liveDoc.textStorage.replaceCharacters(
+                    in: NSRange(location: 0, length: liveDoc.textStorage.length),
+                    with: cluster.mergedContent
+                )
+                if liveDoc.fileURL == nil {
+                    liveDoc.updateChangeCount(.changeCleared)
+                }
+            }
+            self.db.saveDocument(
+                id: primaryRecordID,
+                title: cluster.bestTitle,
+                filePath: primaryItem.filePath,
+                syntax: primaryItem.syntax,
+                content: cluster.mergedContent,
+                groupName: cluster.bestGroup
+            )
+            
+            for dup in cluster.duplicates {
+                guard let dupItem = itemsByID[dup.id] else { continue }
+                let dupRecordID = dupItem.dbRecordID ?? dupItem.id
                 undoEntries.append(DocumentCenterState.OrganizeUndoEntry(
                     kind: .deleted,
+                    itemID: dupItem.id,
+                    dbRecordID: dupRecordID,
+                    filePath: dupItem.filePath,
+                    previousGroup: dupItem.groupName,
+                    previousTitle: dupItem.title,
+                    titleWasChanged: false,
+                    syntax: dupItem.syntax,
+                    content: dupItem.content
+                ))
+                self.db.permanentlyDeleteDocument(id: dupRecordID, filePath: dupItem.filePath)
+                self.closeUntitledLiveDocumentIfPresent(canonicalID: dupItem.id)
+                mergedCount += 1
+            }
+        }
+        return mergedCount
+    }
+    
+    
+    private func applyShardedAssignments(
+        _ assignments: [DocumentCenterAgentOrganizer.Assignment],
+        itemsByID: [String: DocumentCenterState.ManagedDocumentItem],
+        mergedByPrimaryID: [String: OrganizeMergeCluster],
+        existingGroupSet: inout Set<String>,
+        createdGroups: inout [String],
+        touchedGroups: inout Set<String>,
+        undoEntries: inout [DocumentCenterState.OrganizeUndoEntry],
+        stats: inout OrganizeApplyStats
+    ) {
+        for assignment in assignments {
+            guard let item = itemsByID[assignment.id] else { continue }
+            let mergedCluster = mergedByPrimaryID[assignment.id]
+            let effectiveTitle = mergedCluster?.bestTitle ?? item.title
+            let effectiveGroup = mergedCluster?.bestGroup ?? item.groupName
+            let effectiveContent = mergedCluster?.mergedContent ?? item.content
+            
+            let targetGroup = assignment.group
+            let wantsRename: String? = {
+                guard let suggested = assignment.suggestedTitle,
+                      !suggested.isEmpty,
+                      suggested != effectiveTitle,
+                      DocumentCenterAgentOrganizer.isGenericUntitled(effectiveTitle, hasFilePath: item.filePath != nil)
+                else { return nil }
+                return suggested
+            }()
+            let groupChanged = (targetGroup != effectiveGroup)
+            guard groupChanged || wantsRename != nil else { continue }
+            
+            let recordID = item.dbRecordID ?? item.id
+            if mergedCluster == nil {
+                undoEntries.append(DocumentCenterState.OrganizeUndoEntry(
+                    kind: .modified,
                     itemID: item.id,
                     dbRecordID: recordID,
                     filePath: item.filePath,
                     previousGroup: item.groupName,
                     previousTitle: item.title,
-                    titleWasChanged: false,
+                    titleWasChanged: wantsRename != nil,
                     syntax: item.syntax,
                     content: item.content
                 ))
-                self.db.permanentlyDeleteDocument(id: recordID, filePath: item.filePath)
-                self.closeUntitledLiveDocumentIfPresent(canonicalID: item.id)
-                deletedJunk += 1
             }
             
-            // 2. Merge duplicate documents losslessly into their canonical primary.
-            for cluster in fullPlan.funnel.mergeClusters {
-                guard let primaryItem = itemsByID[cluster.primary.id] else { continue }
-                let primaryRecordID = primaryItem.dbRecordID ?? primaryItem.id
-                undoEntries.append(DocumentCenterState.OrganizeUndoEntry(
-                    kind: .mergedPrimary,
-                    itemID: primaryItem.id,
-                    dbRecordID: primaryRecordID,
-                    filePath: primaryItem.filePath,
-                    previousGroup: primaryItem.groupName,
-                    previousTitle: primaryItem.title,
-                    titleWasChanged: cluster.bestTitle != primaryItem.title,
-                    syntax: primaryItem.syntax,
-                    content: primaryItem.content
-                ))
-                
-                if let liveDoc = self.state.liveDocument(for: primaryItem.id),
-                   cluster.mergedContent != liveDoc.textStorage.string
-                {
-                    liveDoc.textStorage.replaceCharacters(
-                        in: NSRange(location: 0, length: liveDoc.textStorage.length),
-                        with: cluster.mergedContent
-                    )
-                    if liveDoc.fileURL == nil {
-                        liveDoc.updateChangeCount(.changeCleared)
-                    }
-                }
-                self.db.saveDocument(
-                    id: primaryRecordID,
-                    title: cluster.bestTitle,
-                    filePath: primaryItem.filePath,
-                    syntax: primaryItem.syntax,
-                    content: cluster.mergedContent,
-                    groupName: cluster.bestGroup
-                )
-                
-                for dup in cluster.duplicates {
-                    guard let dupItem = itemsByID[dup.id] else { continue }
-                    let dupRecordID = dupItem.dbRecordID ?? dupItem.id
-                    undoEntries.append(DocumentCenterState.OrganizeUndoEntry(
-                        kind: .deleted,
-                        itemID: dupItem.id,
-                        dbRecordID: dupRecordID,
-                        filePath: dupItem.filePath,
-                        previousGroup: dupItem.groupName,
-                        previousTitle: dupItem.title,
-                        titleWasChanged: false,
-                        syntax: dupItem.syntax,
-                        content: dupItem.content
-                    ))
-                    self.db.permanentlyDeleteDocument(id: dupRecordID, filePath: dupItem.filePath)
-                    self.closeUntitledLiveDocumentIfPresent(canonicalID: dupItem.id)
-                    mergedDuplicates += 1
-                }
-            }
-            
-            // 3. Apply sharded classification & untitled renaming on clean survivors.
-            for assignment in fullPlan.assignments {
-                guard let item = itemsByID[assignment.id] else { continue }
-                let mergedCluster = mergedByPrimaryID[assignment.id]
-                let effectiveTitle = mergedCluster?.bestTitle ?? item.title
-                let effectiveGroup = mergedCluster?.bestGroup ?? item.groupName
-                let effectiveContent = mergedCluster?.mergedContent ?? item.content
-                
-                let targetGroup = assignment.group
-                let wantsRename: String? = {
-                    guard let suggested = assignment.suggestedTitle,
-                          !suggested.isEmpty,
-                          suggested != effectiveTitle,
-                          DocumentCenterAgentOrganizer.isGenericUntitled(effectiveTitle, hasFilePath: item.filePath != nil)
-                    else { return nil }
-                    return suggested
-                }()
-                let groupChanged = (targetGroup != effectiveGroup)
-                guard groupChanged || wantsRename != nil else { continue }
-                
-                let recordID = item.dbRecordID ?? item.id
-                if mergedCluster == nil {
-                    undoEntries.append(DocumentCenterState.OrganizeUndoEntry(
-                        kind: .modified,
-                        itemID: item.id,
-                        dbRecordID: recordID,
-                        filePath: item.filePath,
-                        previousGroup: item.groupName,
-                        previousTitle: item.title,
-                        titleWasChanged: wantsRename != nil,
-                        syntax: item.syntax,
-                        content: item.content
-                    ))
-                }
-                
-                if groupChanged {
-                    if !targetGroup.isEmpty, existingGroupSet.insert(targetGroup).inserted {
-                        createdGroups.append(targetGroup)
-                    }
-                    self.db.assignDocumentGroup(
-                        id: recordID,
-                        filePath: item.filePath,
-                        groupName: targetGroup,
-                        fallbackTitle: wantsRename ?? effectiveTitle,
-                        fallbackSyntax: item.syntax,
-                        fallbackContent: effectiveContent,
+            // Rename FIRST so live document sync never overwrites the newly assigned group.
+            if let newTitle = wantsRename {
+                if let liveDoc = self.state.liveDocument(for: item.id) {
+                    _ = try? WorkspaceOrganizer.renameDocument(liveDoc, to: newTitle, reloadAfter: false)
+                } else if item.filePath == nil {
+                    self.db.renameDocument(
+                        oldID: recordID,
+                        oldFilePath: nil,
+                        newID: recordID,
+                        newTitle: newTitle,
+                        newFilePath: nil,
                         reloadAfter: false
                     )
-                    if !targetGroup.isEmpty { touchedGroups.insert(targetGroup) }
                 }
-                
-                if let newTitle = wantsRename {
-                    if let liveDoc = self.state.liveDocument(for: item.id) {
-                        _ = try? WorkspaceOrganizer.renameDocument(liveDoc, to: newTitle, reloadAfter: false)
-                    } else if item.filePath == nil {
-                        self.db.renameDocument(
-                            oldID: recordID,
-                            oldFilePath: nil,
-                            newID: recordID,
-                            newTitle: newTitle,
-                            newFilePath: nil,
-                            reloadAfter: false
-                        )
-                    }
+                stats.renamed += 1
+            }
+            
+            if groupChanged {
+                if !targetGroup.isEmpty, existingGroupSet.insert(targetGroup).inserted {
+                    createdGroups.append(targetGroup)
                 }
-                classifiedCount += 1
+                self.db.assignDocumentGroup(
+                    id: recordID,
+                    filePath: item.filePath,
+                    groupName: targetGroup,
+                    fallbackTitle: wantsRename ?? effectiveTitle,
+                    fallbackSyntax: item.syntax,
+                    fallbackContent: effectiveContent,
+                    reloadAfter: false
+                )
+                if !targetGroup.isEmpty { touchedGroups.insert(targetGroup) }
+                stats.regrouped += 1
             }
         }
-        
-        if deletedJunk > 0 || mergedDuplicates > 0 || classifiedCount > 0 {
-            self.db.reloadDocuments()
-        }
-        self.state.lastOrganizeUndoSnapshot = undoEntries
-        self.state.lastOrganizeCreatedGroups = createdGroups
-        return (deletedJunk, mergedDuplicates, classifiedCount, touchedGroups.count)
     }
     
     
@@ -1353,9 +1433,13 @@ struct DocumentCenterView: View {
     private func undoAgentOrganize() {
         let entries = self.state.lastOrganizeUndoSnapshot
         let createdGroups = self.state.lastOrganizeCreatedGroups
+        let removedGroups = self.state.lastOrganizeRemovedGroups
         guard !entries.isEmpty else { return }
         
         self.db.withTransaction {
+            for group in removedGroups {
+                self.db.createDocumentGroup(named: group)
+            }
             for entry in entries {
                 switch entry.kind {
                     case .deleted:
@@ -1389,15 +1473,6 @@ struct DocumentCenterView: View {
                             groupName: entry.previousGroup
                         )
                     case .modified:
-                        self.db.assignDocumentGroup(
-                            id: entry.dbRecordID,
-                            filePath: entry.filePath,
-                            groupName: entry.previousGroup,
-                            fallbackTitle: entry.previousTitle,
-                            fallbackSyntax: entry.syntax,
-                            fallbackContent: entry.content,
-                            reloadAfter: false
-                        )
                         if entry.titleWasChanged {
                             if let liveDoc = self.state.liveDocument(for: entry.itemID) {
                                 _ = try? WorkspaceOrganizer.renameDocument(liveDoc, to: entry.previousTitle, reloadAfter: false)
@@ -1412,6 +1487,15 @@ struct DocumentCenterView: View {
                                 )
                             }
                         }
+                        self.db.assignDocumentGroup(
+                            id: entry.dbRecordID,
+                            filePath: entry.filePath,
+                            groupName: entry.previousGroup,
+                            fallbackTitle: entry.previousTitle,
+                            fallbackSyntax: entry.syntax,
+                            fallbackContent: entry.content,
+                            reloadAfter: false
+                        )
                 }
             }
             
@@ -1423,9 +1507,11 @@ struct DocumentCenterView: View {
         
         self.state.lastOrganizeUndoSnapshot = []
         self.state.lastOrganizeCreatedGroups = []
+        self.state.lastOrganizeRemovedGroups = []
         self.state.agentOrganizeSummary = nil
         self.state.sidebarFilter = .all
         self.state.refresh()
+        self.fitRequestToken &+= 1
         self.showToast("已撤销整理")
     }
     

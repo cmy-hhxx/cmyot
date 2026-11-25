@@ -762,6 +762,40 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     }
     
     
+    /// Removes stored Document Center groups that no longer contain any active document.
+    ///
+    /// - Returns: The group names that were pruned so callers can record them for undo.
+    @discardableResult
+    func pruneEmptyDocumentGroups(reloadAfter: Bool = true) -> [String] {
+        
+        var activeGroups = Set<String>()
+        let sql = "SELECT DISTINCT group_name FROM documents WHERE deleted_at IS NULL AND group_name IS NOT NULL AND group_name != '';"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let ptr = sqlite3_column_text(stmt, 0) {
+                    activeGroups.insert(String(cString: ptr))
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        
+        let stored = self.loadStoredGroupList()
+        let removed = stored.filter { !activeGroups.contains($0) }
+        guard !removed.isEmpty else { return [] }
+        
+        let kept = stored.filter { activeGroups.contains($0) }
+        self.saveStoredGroupList(kept)
+        if reloadAfter {
+            self.reloadDocuments()
+        } else {
+            self.documentGroups = kept
+            self.documentsRevision &+= 1
+        }
+        return removed
+    }
+    
+    
     /// Assigns a document (by ID or file path, creating the record first if needed) to `groupName`.
     func assignDocumentGroup(
         id: String,
@@ -1002,25 +1036,47 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
                 sqlite3_finalize(delStmt)
             }
             
-            let updateSQL = "UPDATE documents SET id = ?, title = ?, file_path = ?, group_name = COALESCE(NULLIF(?, ''), group_name), updated_at = ? WHERE id = ?;"
-            var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(self.db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
-                sqlite3_bind_text(stmt, 1, newID, -1, self.transientDestructor)
-                sqlite3_bind_text(stmt, 2, newTitle, -1, self.transientDestructor)
-                if let newFilePath {
-                    sqlite3_bind_text(stmt, 3, newFilePath, -1, self.transientDestructor)
-                } else {
-                    sqlite3_bind_null(stmt, 3)
+            // Never clobber SQLite's latest `group_name` with a stale in-memory cache when renaming
+            // in-place (especially inside batch transactions after `assignDocumentGroup`).
+            if oldRecord.id == newID {
+                let updateSQL = "UPDATE documents SET title = ?, file_path = ?, updated_at = ? WHERE id = ?;"
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(self.db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(stmt, 1, newTitle, -1, self.transientDestructor)
+                    if let newFilePath {
+                        sqlite3_bind_text(stmt, 2, newFilePath, -1, self.transientDestructor)
+                    } else {
+                        sqlite3_bind_null(stmt, 2)
+                    }
+                    sqlite3_bind_double(stmt, 3, now)
+                    sqlite3_bind_text(stmt, 4, oldRecord.id, -1, self.transientDestructor)
+                    let rc = sqlite3_step(stmt)
+                    if rc != SQLITE_DONE {
+                        self.logSQLiteError("renameDocument.updateInPlace", code: rc)
+                    }
                 }
-                sqlite3_bind_text(stmt, 4, preservedGroup, -1, self.transientDestructor)
-                sqlite3_bind_double(stmt, 5, now)
-                sqlite3_bind_text(stmt, 6, oldRecord.id, -1, self.transientDestructor)
-                let rc = sqlite3_step(stmt)
-                if rc != SQLITE_DONE {
-                    self.logSQLiteError("renameDocument.updateOld", code: rc)
+                sqlite3_finalize(stmt)
+            } else {
+                let updateSQL = "UPDATE documents SET id = ?, title = ?, file_path = ?, group_name = COALESCE(NULLIF(group_name, ''), ?), updated_at = ? WHERE id = ?;"
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(self.db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(stmt, 1, newID, -1, self.transientDestructor)
+                    sqlite3_bind_text(stmt, 2, newTitle, -1, self.transientDestructor)
+                    if let newFilePath {
+                        sqlite3_bind_text(stmt, 3, newFilePath, -1, self.transientDestructor)
+                    } else {
+                        sqlite3_bind_null(stmt, 3)
+                    }
+                    sqlite3_bind_text(stmt, 4, preservedGroup, -1, self.transientDestructor)
+                    sqlite3_bind_double(stmt, 5, now)
+                    sqlite3_bind_text(stmt, 6, oldRecord.id, -1, self.transientDestructor)
+                    let rc = sqlite3_step(stmt)
+                    if rc != SQLITE_DONE {
+                        self.logSQLiteError("renameDocument.updateOld", code: rc)
+                    }
                 }
+                sqlite3_finalize(stmt)
             }
-            sqlite3_finalize(stmt)
         } else if let newRecord = matchedNew {
             let updateSQL = "UPDATE documents SET id = ?, title = ?, file_path = ?, updated_at = ? WHERE id = ?;"
             var stmt: OpaquePointer?
@@ -1037,6 +1093,28 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
                 let rc = sqlite3_step(stmt)
                 if rc != SQLITE_DONE {
                     self.logSQLiteError("renameDocument.updateNew", code: rc)
+                }
+            }
+            sqlite3_finalize(stmt)
+        } else {
+            // Direct SQLite fallback for rows inserted earlier inside the same uncommitted transaction.
+            let prefixedOld = "doc:\(cleanOldID)"
+            let updateSQL = "UPDATE documents SET title = ?, file_path = COALESCE(?, file_path), updated_at = ? WHERE id = ? OR id = ? OR id = ?;"
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, newTitle, -1, self.transientDestructor)
+                if let newFilePath {
+                    sqlite3_bind_text(stmt, 2, newFilePath, -1, self.transientDestructor)
+                } else {
+                    sqlite3_bind_null(stmt, 2)
+                }
+                sqlite3_bind_double(stmt, 3, now)
+                sqlite3_bind_text(stmt, 4, oldID, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 5, cleanOldID, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 6, prefixedOld, -1, self.transientDestructor)
+                let rc = sqlite3_step(stmt)
+                if rc != SQLITE_DONE {
+                    self.logSQLiteError("renameDocument.updateDirect", code: rc)
                 }
             }
             sqlite3_finalize(stmt)

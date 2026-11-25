@@ -973,11 +973,26 @@ nonisolated enum DocumentCenterAgentOrganizer {
     }
     
     
-    /// Checks whether a document title is generic / placeholder and safe for Agent title cleanup.
+    static let bloatedGroupThreshold = 8
+    
+    static let catchAllGroupNames: Set<String> = [
+        "未分组", "日常记录", "杂记", "随笔", "默认", "其他", "临时", "综合",
+    ]
+    
+    static let coreTopicPalette: [String] = [
+        "项目方案", "评测分析", "数据分析", "技术笔记", "代码开发", "会议纪要", "工作清单", "配置数据", "日常记录",
+    ]
+    
+    /// Checks whether a document title is generic / placeholder (including `GeneratedDocumentName`
+    /// whimsical names like `"啃瓜的小浣熊"`) and safe for Agent title cleanup.
     static func isGenericUntitled(_ title: String, hasFilePath: Bool) -> Bool {
         if hasFilePath { return false }
-        let clean = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = trimmed.lowercased()
         if clean.isEmpty || clean.count == 1 { return true }
+        if GeneratedDocumentName.isGeneratedName(trimmed) {
+            return true
+        }
         let prefixes = [
             "untitled", "未命名", "新建文档", "无标题", "note ", "draft ",
             "草稿", "临时", "新建", "随便写", "备忘", "test", "tmp", "temp",
@@ -1014,8 +1029,13 @@ nonisolated enum DocumentCenterAgentOrganizer {
                 let trimmed = raw
                     .replacingOccurrences(of: "/", with: "-")
                     .replacingOccurrences(of: ":", with: "-")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return trimmed.isEmpty ? nil : String(trimmed.prefix(36))
+                    .replacingOccurrences(of: "**", with: "")
+                    .replacingOccurrences(of: "`", with: "")
+                    .trimmingCharacters(in: CharacterSet(charactersIn: " \t\n\r\"'“”《》【】#*-•>"))
+                guard trimmed.count >= 2,
+                      !Self.isGenericUntitled(trimmed, hasFilePath: false)
+                else { return nil }
+                return String(trimmed.prefix(36))
             }
             sanitized.append(Assignment(id: item.id, group: group, suggestedTitle: title))
         }
@@ -1023,40 +1043,29 @@ nonisolated enum DocumentCenterAgentOrganizer {
     }
     
     
-    /// Fast deterministic local classifier used when AI is unconfigured or returns invalid JSON.
-    static func buildLocalFallbackPlan(items: [InputItem], existingGroups: [String]) -> Plan {
-        let codeSyntaxes: Set<String> = [
-            "swift", "python", "javascript", "typescript", "json", "yaml", "toml",
-            "html", "css", "sql", "shell script", "bash", "c", "c++", "rust", "go", "java", "ruby",
-        ]
+    /// Fast deterministic local classifier used when AI is unconfigured, offline, or returns partial JSON.
+    /// Automatically splits bloated (`>= 8` docs) or catch-all groups by content semantics instead of freezing them.
+    static func buildLocalFallbackPlan(
+        items: [InputItem],
+        existingGroups: [String],
+        allowPreserveExisting: Bool = true
+    ) -> Plan {
+        var groupCounts: [String: Int] = [:]
+        for item in items where !item.currentGroup.isEmpty {
+            groupCounts[item.currentGroup, default: 0] += 1
+        }
+        let existingSet = Set(existingGroups)
         
         var assignments: [Assignment] = []
         assignments.reserveCapacity(items.count)
         
         for item in items {
-            let titleLower = item.title.lowercased()
-            let syntaxLower = item.syntax.lowercased()
-            let sampleLower = (item.title + "\n" + item.excerpt).lowercased()
-            
-            let resolvedGroup: String
-            if !item.currentGroup.isEmpty && existingGroups.contains(item.currentGroup) {
-                resolvedGroup = item.currentGroup
-            } else if sampleLower.contains("会议") || sampleLower.contains("纪要") || sampleLower.contains("meeting") || sampleLower.contains("sync") {
-                resolvedGroup = "会议纪要"
-            } else if sampleLower.contains("方案") || sampleLower.contains("需求") || sampleLower.contains("prd") || sampleLower.contains("设计") || sampleLower.contains("规划") || sampleLower.contains("架构") {
-                resolvedGroup = "项目方案"
-            } else if sampleLower.contains("周报") || sampleLower.contains("日报") || sampleLower.contains("复盘") || sampleLower.contains("总结") || sampleLower.contains("todo") || sampleLower.contains("清单") {
-                resolvedGroup = "工作清单"
-            } else if syntaxLower == "json" || syntaxLower == "yaml" || syntaxLower == "toml" || syntaxLower == "xml" || syntaxLower == "csv" || titleLower.hasSuffix(".env") {
-                resolvedGroup = "配置数据"
-            } else if codeSyntaxes.contains(syntaxLower) || sampleLower.contains("func ") || sampleLower.contains("import ") || sampleLower.contains("class ") {
-                resolvedGroup = "代码开发"
-            } else if sampleLower.contains("api") || sampleLower.contains("bug") || sampleLower.contains("debug") || sampleLower.contains("文档") || sampleLower.contains("教程") || sampleLower.contains("笔记") {
-                resolvedGroup = "技术笔记"
-            } else {
-                resolvedGroup = "日常记录"
-            }
-            
+            let resolvedGroup = Self.classifyTopicGroup(
+                for: item,
+                existingSet: existingSet,
+                groupCounts: groupCounts,
+                allowPreserveExisting: allowPreserveExisting
+            )
             let suggestedTitle: String? = item.isUntitled ? Self.deriveTitleFromExcerpt(item.excerpt) : nil
             assignments.append(Assignment(id: item.id, group: resolvedGroup, suggestedTitle: suggestedTitle))
         }
@@ -1064,17 +1073,147 @@ nonisolated enum DocumentCenterAgentOrganizer {
     }
     
     
-    private static func deriveTitleFromExcerpt(_ excerpt: String) -> String? {
+    private static func classifyTopicGroup(
+        for item: InputItem,
+        existingSet: Set<String>,
+        groupCounts: [String: Int],
+        allowPreserveExisting: Bool
+    ) -> String {
+        if allowPreserveExisting,
+           !item.currentGroup.isEmpty,
+           existingSet.contains(item.currentGroup),
+           !Self.catchAllGroupNames.contains(item.currentGroup),
+           groupCounts[item.currentGroup, default: 0] < Self.bloatedGroupThreshold
+        {
+            return item.currentGroup
+        }
+        
+        let codeSyntaxes: Set<String> = [
+            "swift", "python", "javascript", "typescript", "json", "yaml", "toml",
+            "html", "css", "sql", "shell script", "bash", "c", "c++", "rust", "go", "java", "ruby",
+        ]
+        let titleLower = item.title.lowercased()
+        let syntaxLower = item.syntax.lowercased()
+        let effectiveTitle = item.isUntitled ? "" : item.title
+        let sampleLower = (effectiveTitle + "\n" + item.excerpt).lowercased()
+        
+        if sampleLower.contains("会议") || sampleLower.contains("纪要") || sampleLower.contains("例会") || sampleLower.contains("周会") || sampleLower.contains("meeting") || sampleLower.contains("sync") {
+            return "会议纪要"
+        }
+        if sampleLower.contains("方案") || sampleLower.contains("需求") || sampleLower.contains("prd") || sampleLower.contains("设计") || sampleLower.contains("规划") || sampleLower.contains("架构") || sampleLower.contains("roadmap") {
+            return "项目方案"
+        }
+        if sampleLower.contains("评测") || sampleLower.contains("重评") || sampleLower.contains("归因") || sampleLower.contains("badcase") || sampleLower.contains("goldencase") || sampleLower.contains("评级") || sampleLower.contains("压测") || sampleLower.contains("基准") || sampleLower.contains("看板") || sampleLower.contains("eval") || sampleLower.contains("benchmark") {
+            return "评测分析"
+        }
+        if sampleLower.contains("数据梳理") || sampleLower.contains("聚类") || sampleLower.contains("统计") || sampleLower.contains("指标") || sampleLower.contains("大盘") || sampleLower.contains("口径") || sampleLower.contains("报表") || sampleLower.contains("trace") || sampleLower.contains("dataset") {
+            return "数据分析"
+        }
+        if sampleLower.contains("周报") || sampleLower.contains("日报") || sampleLower.contains("复盘") || sampleLower.contains("总结") || sampleLower.contains("todo") || sampleLower.contains("清单") || sampleLower.contains("排期") || sampleLower.contains("待办") {
+            return "工作清单"
+        }
+        if syntaxLower == "json" || syntaxLower == "yaml" || syntaxLower == "toml" || syntaxLower == "xml" || syntaxLower == "csv" || titleLower.hasSuffix(".env") {
+            return "配置数据"
+        }
+        if codeSyntaxes.contains(syntaxLower) || sampleLower.contains("func ") || sampleLower.contains("import ") || sampleLower.contains("class ") || sampleLower.contains("def ") || sampleLower.contains("部署") || sampleLower.contains("worker") || sampleLower.contains("脚本") || sampleLower.contains("docker") {
+            return "代码开发"
+        }
+        if sampleLower.contains("api") || sampleLower.contains("bug") || sampleLower.contains("debug") || sampleLower.contains("排查") || sampleLower.contains("文档") || sampleLower.contains("教程") || sampleLower.contains("笔记") || sampleLower.contains("优化") {
+            return "技术笔记"
+        }
+        return "日常记录"
+    }
+    
+    
+    /// Derives a crisp, human-readable title from document content, stripping Markdown chrome,
+    /// code fences, URLs, and table divider lines.
+    static func deriveTitleFromExcerpt(_ excerpt: String) -> String? {
         for rawLine in excerpt.components(separatedBy: .newlines) {
-            let trimmed = rawLine
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "#*-•> "))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.count >= 2 else { continue }
-            let clean = trimmed
+            var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("```") || line.hasPrefix("~~~") { continue }
+            
+            // Skip horizontal rules & markdown table separator rows (e.g. "|---|---|")
+            let ruleSet = CharacterSet(charactersIn: "-*_=|: ")
+            if line.count >= 3, line.unicodeScalars.allSatisfy({ ruleSet.contains($0) }) {
+                continue
+            }
+            
+            // Turn a markdown table header row into a concise readable title
+            if line.hasPrefix("|") && line.contains("|") {
+                let cells = line
+                    .split(separator: "|", omittingEmptySubsequences: true)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                if cells.count >= 2 {
+                    let preview = cells.prefix(3).joined(separator: "·")
+                    let tableTitle = String("\(preview) 数据表".prefix(22))
+                    if !Self.isGenericUntitled(tableTitle, hasFilePath: false) {
+                        return tableTitle
+                    }
+                }
+                continue
+            }
+            
+            // Skip bare URL lines
+            let lower = line.lowercased()
+            if lower.hasPrefix("http://") || lower.hasPrefix("https://") { continue }
+            
+            // Strip leading markdown heading / quote / bullet / numbered list prefixes
+            while let first = line.first, first == "#" || first == ">" {
+                line.removeFirst()
+                line = line.trimmingCharacters(in: .whitespaces)
+            }
+            for prefix in ["- [ ] ", "- [x] ", "- [X] ", "- ", "* ", "+ ", "• "] {
+                if line.hasPrefix(prefix) {
+                    line.removeFirst(prefix.count)
+                    line = line.trimmingCharacters(in: .whitespaces)
+                    break
+                }
+            }
+            if let dotIdx = line.firstIndex(where: { !$0.isNumber }),
+               dotIdx > line.startIndex,
+               line[dotIdx] == "." || line[dotIdx] == ")" || line[dotIdx] == "、"
+            {
+                let after = line.index(after: dotIdx)
+                if after < line.endIndex {
+                    line = String(line[after...]).trimmingCharacters(in: .whitespaces)
+                }
+            }
+            
+            // Strip inline markdown wrappers and filesystem-unsafe separators
+            line = line
+                .replacingOccurrences(of: "**", with: "")
+                .replacingOccurrences(of: "__", with: "")
+                .replacingOccurrences(of: "`", with: "")
+                .replacingOccurrences(of: "~~", with: "")
                 .replacingOccurrences(of: "/", with: "-")
-                .replacingOccurrences(of: ":", with: "-")
-            return String(clean.prefix(24))
+                .replacingOccurrences(of: ":", with: " ")
+                .replacingOccurrences(of: "：", with: " ")
+                .components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+                .trimmingCharacters(in: CharacterSet(charactersIn: " \t\"'“”()（）[]【】—–-，,。.;；、"))
+            
+            guard line.count >= 2 else { continue }
+            
+            // Prefer cutting at a natural clause boundary when the first line is a full paragraph
+            var candidate = line
+            if candidate.count > 22 {
+                let stopChars: Set<Character> = ["。", "；", ";", "，", ",", "？", "?", "！", "!"]
+                if let breakIdx = candidate.firstIndex(where: { stopChars.contains($0) }),
+                   candidate.distance(from: candidate.startIndex, to: breakIdx) >= 6,
+                   candidate.distance(from: candidate.startIndex, to: breakIdx) <= 22
+                {
+                    candidate = String(candidate[..<breakIdx])
+                } else {
+                    candidate = String(candidate.prefix(20))
+                }
+                candidate = candidate.trimmingCharacters(in: CharacterSet(charactersIn: " \t—–-，,。.;；、"))
+            }
+            
+            guard candidate.count >= 2, !Self.isGenericUntitled(candidate, hasFilePath: false) else { continue }
+            return candidate
         }
         return nil
     }
@@ -1290,6 +1429,7 @@ nonisolated enum DocumentCenterAgentOrganizer {
     var agentOrganizeSummary: String?
     var lastOrganizeUndoSnapshot: [OrganizeUndoEntry] = []
     var lastOrganizeCreatedGroups: [String] = []
+    var lastOrganizeRemovedGroups: [String] = []
     
     private var liveDocsByID: [String: Document] = [:]
     @ObservationIgnored private var cachedRelationsCorpus: [StarMapRelationEngine.CorpusDocument] = []
@@ -1365,6 +1505,26 @@ nonisolated enum DocumentCenterAgentOrganizer {
         for cid in ids {
             self.initializedClusterIDs.insert(cid)
             self.collapsedClusterIDs.insert(cid)
+        }
+    }
+    
+    /// Sets a crisp post-organize expansion state: expands all clusters when every group fits
+    /// cleanly into a single vertical column (`<= 24` docs total and `<= 8` per group), or
+    /// presents a clean collapsed cluster overview when the corpus is larger.
+    func applyCleanPostOrganizeClusterState() {
+        var countsByCluster: [String: Int] = [:]
+        for item in self.displayedItems {
+            let cid = item.groupName.isEmpty ? "__ungrouped__" : "group:\(item.groupName)"
+            countsByCluster[cid, default: 0] += 1
+        }
+        let clusterIDs = Array(countsByCluster.keys)
+        guard !clusterIDs.isEmpty else { return }
+        
+        let maxClusterSize = countsByCluster.values.max() ?? 0
+        if self.displayedItems.count <= 24 && maxClusterSize <= 8 {
+            self.expandAllClusters(clusterIDs)
+        } else {
+            self.collapseAllClusters(clusterIDs)
         }
     }
     
@@ -2170,6 +2330,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     let focusedClusterID: String?
     let searchQuery: String
     let panRequestToken: Int
+    let fitRequestToken: Int
     let onSelectLeaf: (String) -> Void
     let onDoubleClickLeaf: (String) -> Void
     let onToggleCluster: (String) -> Void
@@ -2185,6 +2346,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
         focusedClusterID: String?,
         searchQuery: String,
         panRequestToken: Int = 0,
+        fitRequestToken: Int = 0,
         onSelectLeaf: @escaping (String) -> Void,
         onDoubleClickLeaf: @escaping (String) -> Void,
         onToggleCluster: @escaping (String) -> Void,
@@ -2199,6 +2361,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
         self.focusedClusterID = focusedClusterID
         self.searchQuery = searchQuery
         self.panRequestToken = panRequestToken
+        self.fitRequestToken = fitRequestToken
         self.onSelectLeaf = onSelectLeaf
         self.onDoubleClickLeaf = onDoubleClickLeaf
         self.onToggleCluster = onToggleCluster
@@ -2447,6 +2610,13 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                     }
                 }
             }
+            .onChange(of: self.fitRequestToken) { _, _ in
+                guard geo.size.width > 100 else { return }
+                let freshLayout = Self.computeLayout(for: self.clusters)
+                self.cachedLayout = freshLayout
+                self.cachedClustersSnapshot = self.clusters
+                self.fitViewport(bounds: freshLayout.bounds, size: geo.size, animated: true)
+            }
             .onChange(of: self.focusedClusterID) { _, nextCID in
                 guard geo.size.width > 100 else { return }
                 if let nextCID, let cPos = layout.clusters.first(where: { $0.id == nextCID }) {
@@ -2682,7 +2852,7 @@ private struct StarMapViewportConnectorsCanvas: View {
                 }
             }
             
-            // 3. Focused Cross-Node Semantic Arcs (ONLY for selected leaf, max 2 clean curves — zero idle clutter!)
+            // 3. Focused Cross-Node Semantic Arcs (ONLY for selected leaf, routed cleanly outside cards — zero card slicing!)
             if let selID = self.selectedLeafID {
                 let incident = self.relations
                     .filter { $0.sourceID == selID || $0.targetID == selID }
@@ -2691,19 +2861,40 @@ private struct StarMapViewportConnectorsCanvas: View {
                     guard let a = leafPosByID[edge.sourceID],
                           let b = leafPosByID[edge.targetID]
                     else { continue }
-                    let p0 = self.toScreen(a.worldPoint)
-                    let p1 = self.toScreen(b.worldPoint)
-                    let dx = p1.x - p0.x
-                    let dy = p1.y - p0.y
-                    let mid = CGPoint(x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5)
-                    let ctrl = CGPoint(x: mid.x - dy * 0.12, y: mid.y + dx * 0.12 - 24 * z)
+                    let sideA: CGFloat = a.worldPoint.x >= 0 ? 1.0 : -1.0
+                    let sideB: CGFloat = b.worldPoint.x >= 0 ? 1.0 : -1.0
                     var arc = Path()
-                    arc.move(to: p0)
-                    arc.addQuadCurve(to: p1, control: ctrl)
+                    if sideA == sideB {
+                        // Same-side cards: exit outer card edges and arch gently through outer whitespace.
+                        let p0 = self.toScreen(CGPoint(x: a.worldPoint.x + sideA * leafHalfW, y: a.worldPoint.y))
+                        let p1 = self.toScreen(CGPoint(x: b.worldPoint.x + sideB * leafHalfW, y: b.worldPoint.y))
+                        let outerWorldX = sideA > 0
+                            ? max(a.worldPoint.x, b.worldPoint.x) + leafHalfW
+                            : min(a.worldPoint.x, b.worldPoint.x) - leafHalfW
+                        let bowOut = min(76, max(30, abs(b.worldPoint.y - a.worldPoint.y) * 0.22))
+                        let cX = self.toScreen(CGPoint(x: outerWorldX + sideA * bowOut, y: 0)).x
+                        arc.move(to: p0)
+                        arc.addCurve(
+                            to: p1,
+                            control1: CGPoint(x: cX, y: p0.y),
+                            control2: CGPoint(x: cX, y: p1.y)
+                        )
+                    } else {
+                        // Cross-side cards: anchor on inner edges facing the spine corridor.
+                        let p0 = self.toScreen(CGPoint(x: a.worldPoint.x - sideA * leafHalfW, y: a.worldPoint.y))
+                        let p1 = self.toScreen(CGPoint(x: b.worldPoint.x - sideB * leafHalfW, y: b.worldPoint.y))
+                        let midX = (p0.x + p1.x) * 0.5
+                        arc.move(to: p0)
+                        arc.addCurve(
+                            to: p1,
+                            control1: CGPoint(x: midX, y: p0.y),
+                            control2: CGPoint(x: midX, y: p1.y)
+                        )
+                    }
                     context.stroke(
                         arc,
-                        with: .color(self.tokens.accent.opacity(0.65)),
-                        style: StrokeStyle(lineWidth: metrics.strokeWidth(1.4), lineCap: .round, dash: [5 * z, 4 * z])
+                        with: .color(self.tokens.accent.opacity(0.42)),
+                        style: StrokeStyle(lineWidth: metrics.strokeWidth(1.15), lineCap: .round, dash: [4 * z, 4 * z])
                     )
                 }
             }
@@ -3904,19 +4095,6 @@ struct StarMapSearchResultsHUD: View {
                     let groupChanged = allowRegroup && (targetGroup != effectiveGroup)
                     guard groupChanged || wantsRename != nil else { continue }
                     
-                    if groupChanged {
-                        self.database.assignDocumentGroup(
-                            id: item.dbRecordID,
-                            filePath: item.filePath,
-                            groupName: targetGroup,
-                            fallbackTitle: wantsRename ?? effectiveTitle,
-                            fallbackSyntax: item.syntax,
-                            fallbackContent: effectiveContent,
-                            reloadAfter: false
-                        )
-                        regroupedCount += 1
-                    }
-                    
                     if let newTitle = wantsRename {
                         if let liveDoc = item.liveDoc {
                             _ = try? WorkspaceOrganizer.renameDocument(liveDoc, to: newTitle, reloadAfter: false)
@@ -3931,6 +4109,19 @@ struct StarMapSearchResultsHUD: View {
                             )
                         }
                         renamedCount += 1
+                    }
+                    
+                    if groupChanged {
+                        self.database.assignDocumentGroup(
+                            id: item.dbRecordID,
+                            filePath: item.filePath,
+                            groupName: targetGroup,
+                            fallbackTitle: wantsRename ?? effectiveTitle,
+                            fallbackSyntax: item.syntax,
+                            fallbackContent: effectiveContent,
+                            reloadAfter: false
+                        )
+                        regroupedCount += 1
                     }
                 }
             }

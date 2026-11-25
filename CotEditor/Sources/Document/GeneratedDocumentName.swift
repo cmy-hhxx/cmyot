@@ -26,11 +26,11 @@ import Foundation
 /// numbering them (未命名 2, 未命名 3, …) as soon as a second one is open, which says
 /// nothing about which window is which. A made-up name is easier to tell apart and
 /// becomes the suggested file name if the document is ever saved.
-enum GeneratedDocumentName {
+nonisolated enum GeneratedDocumentName {
     
     // MARK: Types
     
-    private struct ScenePhrase {
+    private struct ScenePhrase: Sendable {
         let text: String
         let connector: String
         
@@ -100,7 +100,67 @@ enum GeneratedDocumentName {
     ]
     
     
+    private static let shortFallbacks: [String] = [
+        "发呆猫", "摸鱼獭", "偷懒鹅", "咸鱼王", "小浣熊", "小布丁", "摸鱼猫",
+    ]
+    
+    private static let knownPrefixes: Set<String> = Set(
+        moods + actions + scenes.map(\.combinedPrefix)
+    )
+    
+    private static let knownNouns: [String] = nouns.sorted { $0.count > $1.count }
+    
+    private static let shortFallbackSet: Set<String> = Set(shortFallbacks)
+    
+    private static let copyTailRegex = try! NSRegularExpression(
+        pattern: #"(?:\s*(?:\(\d+\)|（\d+）|[-_]\d+|\s+\d+|副本\s*\d*|copy\s*\d*|\d+))+$"#,
+        options: [.caseInsensitive]
+    )
+    
+    
     // MARK: Public Methods
+    
+    /// Returns `true` when `title` matches a whimsical placeholder produced by `GeneratedDocumentName`
+    /// (e.g. `"啃瓜的小浣熊"`, `"机房里的袋鼠"`, `"潜艇里的柴犬"`), so one-click & nightly organizers
+    /// know it is safe to replace with a content-derived title.
+    static func isGeneratedName(_ title: String) -> Bool {
+        
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 14 else { return false }
+        
+        let candidates: [String] = {
+            var result = [trimmed]
+            let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+            let stripped = Self.copyTailRegex
+                .stringByReplacingMatches(in: trimmed, range: range, withTemplate: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !stripped.isEmpty && stripped != trimmed {
+                result.append(stripped)
+            }
+            return result
+        }()
+        
+        for candidate in candidates {
+            if Self.shortFallbackSet.contains(candidate) {
+                return true
+            }
+            for noun in Self.knownNouns where candidate.hasSuffix(noun) && candidate.count > noun.count {
+                let prefix = String(candidate.dropLast(noun.count))
+                if Self.knownPrefixes.contains(prefix) {
+                    return true
+                }
+                // Catch historical generated phrases like "<2-4字>里的<noun>" from earlier builds.
+                if prefix.hasSuffix("里的") {
+                    let stem = prefix.dropLast(2)
+                    if stem.count >= 2 && stem.count <= 4 {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+    
     
     /// Returns a name that none of the given documents or recent history uses yet.
     ///
@@ -128,9 +188,8 @@ enum GeneratedDocumentName {
             }
         }
         
-        let shortFallbacks = ["发呆猫", "摸鱼獭", "偷懒鹅", "咸鱼王", "小浣熊", "小布丁"]
         let base = self.randomName()
-        let clippedBase = base.count <= 5 ? base : (shortFallbacks.randomElement() ?? "摸鱼猫")
+        let clippedBase = base.count <= 5 ? base : (Self.shortFallbacks.randomElement() ?? "摸鱼猫")
         let fallback = clippedBase + String(usedNames.count + 1)
         self.record(fallback, in: recent)
         return fallback
